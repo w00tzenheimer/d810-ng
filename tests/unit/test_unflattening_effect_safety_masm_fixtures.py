@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 import re
 
@@ -22,6 +23,48 @@ WORKTREE = Path(__file__).parents[2]
 MASM_DIR = WORKTREE / "samples" / "src" / "masm"
 
 
+def _subject_id(anchor: str) -> str:
+    return f"sha256:{hashlib.sha256(anchor.encode()).hexdigest()}"
+
+
+def _obligation(
+    *,
+    subject: str = "blk1@0x1000",
+    dimension: str = "structural_accounting",
+    supports: list[str] | None = None,
+    refutes: list[str] | None = None,
+) -> dict:
+    return {
+        "subject": subject,
+        "subject_id": _subject_id(subject),
+        "dimension": dimension,
+        "state": "satisfied",
+        "supports": ["justification-1"] if supports is None else supports,
+        "refutes": [] if refutes is None else refutes,
+    }
+
+
+def _explanation(
+    *,
+    justification_id: str = "justification-1",
+    rule: str = "retired_infrastructure_proven",
+    premise_ids: list[str] | None = None,
+    polarity: str = "supports",
+    claim_id: str | None = "claim-1",
+) -> dict:
+    return {
+        "justification_id": justification_id,
+        "rule": rule,
+        "premise_ids": ["evidence-1"] if premise_ids is None else premise_ids,
+        "conclusion": {
+            "subject": "blk1@0x1000",
+            "dimension": "structural_accounting",
+        },
+        "polarity": polarity,
+        "claim_id": claim_id,
+    }
+
+
 def _authority_phase(
     phase: str,
     *,
@@ -34,7 +77,7 @@ def _authority_phase(
     projected = phase == "projected_preflight"
     case_id = case_id or ("case-p" if projected else "case-o")
     return {
-        "schema": "unflatten_authority_phase.v1",
+        "schema": "unflatten_authority_phase.v2",
         "phase": phase,
         "authority_id": authority_id,
         "plan_id": plan_id,
@@ -48,7 +91,7 @@ def _authority_phase(
         "candidate_fingerprint": "candidate-1",
         "generation": 1,
         "bindings": [{"generation": 1}],
-        "obligation_states": [{"state": "satisfied"}],
+        "obligation_states": [_obligation()],
         "coverage": [],
         "loss_ledger": [],
         "observed_only_loss": [],
@@ -59,6 +102,9 @@ def _authority_phase(
             "conflicting": [],
             "observed_only": [],
         },
+        "evidence_ids": ["evidence-1"],
+        "justification_ids": ["justification-1"],
+        "explanations": [_explanation()],
         "metrics": {
             "source_inventory_builds": 1,
             "candidate_inventory_builds": 1,
@@ -86,6 +132,7 @@ def _loss_row(
     classification: str,
     *,
     structural_state: str = "satisfied",
+    binding_status: str | None = None,
     evidence_ids: list[str] | None = None,
     supporting_justification_ids: list[str] | None = None,
     claim_ids: list[str] | None = None,
@@ -93,8 +140,19 @@ def _loss_row(
 ) -> dict:
     return {
         "subject": anchor,
+        "subject_id": _subject_id(anchor),
         "classification": classification,
-        "binding_status": "unique",
+        "binding_status": binding_status
+        or (
+            "unique"
+            if classification
+            in {
+                "retired_dispatcher_infrastructure",
+                "exact_infeasible_effect",
+                "local_alias_scalarization",
+            }
+            else "missing"
+        ),
         "source_binding_status": "unique",
         "anchor": anchor,
         "structural": {
@@ -115,6 +173,7 @@ def _loss_row(
 def _corridor_obligation(subject: str = "blk1@0x1000") -> dict:
     return {
         "subject": subject,
+        "subject_id": _subject_id(subject),
         "dimension": "corridor_coverage",
         "state": "satisfied",
         "supports": [],
@@ -125,6 +184,7 @@ def _corridor_obligation(subject: str = "blk1@0x1000") -> dict:
 def _coverage_row(subject: str = "blk1@0x1000") -> dict:
     return {
         "subject": subject,
+        "subject_id": _subject_id(subject),
         "dimension": "corridor_coverage",
         "state": "satisfied",
     }
@@ -411,17 +471,8 @@ def test_authority_payload_aggregation_returns_valid_projected_observed_rows() -
     "mutation",
     [
         lambda payload: payload.update(
-            coverage=[
-                {
-                    "subject": "blk1@0x1000",
-                    "dimension": "corridor_coverage",
-                    "state": "satisfied",
-                }
-            ],
-            obligation_states=[
-                {"state": "satisfied"},
-                _corridor_obligation(),
-            ],
+            coverage=[_coverage_row()],
+            obligation_states=[_obligation(), _corridor_obligation()],
         ),
         lambda payload: payload.update(
             loss_ledger=[_loss_row("blk1@0x1000", "retired_dispatcher_infrastructure")],
@@ -455,10 +506,7 @@ def test_authority_removal_targets_require_observed_coverage_and_retired_loss(
     payloads = _authority_payloads()
     observed = payloads[1]
     observed["coverage"] = [_coverage_row()]
-    observed["obligation_states"] = [
-        {"state": "satisfied"},
-        _corridor_obligation(),
-    ]
+    observed["obligation_states"] = [_obligation(), _corridor_obligation()]
     observed["loss_ledger"] = [
         _loss_row("blk1@0x1000", "retired_dispatcher_infrastructure")
     ]
@@ -517,22 +565,56 @@ def test_authority_parser_preserves_a_typed_observed_only_loss() -> None:
     )
 
 
+def test_authority_loss_delta_uses_subject_id_when_anchor_is_reused() -> None:
+    payloads = _authority_payloads()
+    projected, observed = payloads
+    projected_row = _loss_row("blk2@0x2000", "exact_infeasible_effect")
+    observed_row = {
+        **_loss_row("blk2@0x2000", "exact_infeasible_effect"),
+        "subject_id": _subject_id("observed-canonical-subject-at-same-block"),
+    }
+    projected["loss_ledger"] = [projected_row]
+    projected["loss_summary"] = {
+        "structurally_lost": ["blk2@0x2000"],
+        "allowed": ["blk2@0x2000"],
+        "forbidden": [],
+        "conflicting": [],
+        "observed_only": [],
+    }
+    observed["loss_ledger"] = [observed_row]
+    observed["observed_only_loss"] = [observed_row]
+    observed["loss_summary"] = {
+        "structurally_lost": ["blk2@0x2000"],
+        "allowed": ["blk2@0x2000"],
+        "forbidden": [],
+        "conflicting": [],
+        "observed_only": ["blk2@0x2000"],
+    }
+
+    evidence = parse_authority_phase_payloads(payloads)
+
+    assert (
+        evidence.observed.observed_only_loss_rows[0].subject_id
+        == (observed_row["subject_id"])
+    )
+
+
 @pytest.mark.parametrize(
     "coverage_rows, obligation_rows, message",
     [
         (
             [_coverage_row(), _coverage_row()],
-            [{"state": "satisfied"}, _corridor_obligation()],
+            [_obligation(), _corridor_obligation()],
             "coverage",
         ),
         (
             [{**_coverage_row(), "state": "unproven"}],
-            [{"state": "satisfied"}],
+            [_obligation()],
             "coverage",
         ),
         (
             [_coverage_row()],
-            [{"state": "satisfied"}],
+            [_obligation()],
             "coverage",
         ),
     ],
@@ -548,6 +630,29 @@ def test_authority_parser_rejects_noncanonical_coverage_projection(
 
     with pytest.raises(ValueError, match=message):
         parse_authority_phase_payloads(payloads)
+
+
+def test_authority_coverage_uses_subject_id_when_labels_collide() -> None:
+    payloads = _authority_payloads()
+    observed = payloads[1]
+    first = _corridor_obligation()
+    second = {
+        **_corridor_obligation(),
+        "subject_id": _subject_id("second-canonical-subject-at-same-block"),
+    }
+    observed["obligation_states"] = [_obligation(), first, second]
+    observed["coverage"] = [
+        _coverage_row(),
+        {**_coverage_row(), "subject_id": second["subject_id"]},
+    ]
+
+    evidence = parse_authority_phase_payloads(payloads)
+
+    assert tuple(row.subject for row in evidence.observed.coverage_rows) == (
+        "blk1@0x1000",
+        "blk1@0x1000",
+    )
+    assert len({row.subject_id for row in evidence.observed.coverage_rows}) == 2
 
 
 @pytest.mark.parametrize("failure", ["absent", "projected", "classification"])
@@ -610,6 +715,170 @@ def test_authority_parser_rejects_projected_observed_only_loss() -> None:
 
 
 @pytest.mark.parametrize(
+    "mutation, message",
+    [
+        (
+            lambda payload: payload.update(
+                obligation_states=[
+                    {
+                        key: value
+                        for key, value in _obligation().items()
+                        if key != "refutes"
+                    }
+                ]
+            ),
+            "obligation",
+        ),
+        (
+            lambda payload: payload.update(
+                obligation_states=[_obligation(), _obligation()],
+            ),
+            "unique",
+        ),
+        (
+            lambda payload: payload.update(
+                obligation_states=[
+                    _obligation(
+                        supports=["justification-1"], refutes=["justification-1"]
+                    )
+                ]
+            ),
+            "disjoint",
+        ),
+    ],
+)
+def test_authority_parser_requires_closed_unique_obligation_rows(
+    mutation,
+    message: str,
+) -> None:
+    payloads = _authority_payloads()
+    mutation(payloads[0])
+
+    with pytest.raises(ValueError, match=message):
+        parse_authority_phase_payloads(payloads)
+
+
+@pytest.mark.parametrize(
+    "mutation, message",
+    [
+        (
+            lambda payload: payload["loss_ledger"][0].update(binding_status="invented"),
+            "binding status",
+        ),
+        (
+            lambda payload: payload["loss_ledger"][0].update(
+                source_binding_status="missing"
+            ),
+            "source binding",
+        ),
+        (
+            lambda payload: payload["loss_ledger"][0].update(
+                evidence_ids=["foreign-evidence"]
+            ),
+            "evidence",
+        ),
+        (
+            lambda payload: payload["loss_ledger"][0].update(
+                supporting_justification_ids=["foreign-justification"]
+            ),
+            "justification",
+        ),
+        (
+            lambda payload: payload["loss_ledger"][0].update(
+                refuting_justification_ids=["justification-1"],
+            ),
+            "disjoint",
+        ),
+    ],
+)
+def test_authority_parser_requires_loss_rows_to_use_phase_inventories(
+    mutation,
+    message: str,
+) -> None:
+    payloads = _authority_payloads()
+    observed = payloads[1]
+    observed["loss_ledger"] = [
+        _loss_row("blk1@0x1000", "retired_dispatcher_infrastructure")
+    ]
+    observed["loss_summary"] = {
+        "structurally_lost": ["blk1@0x1000"],
+        "allowed": ["blk1@0x1000"],
+        "forbidden": [],
+        "conflicting": [],
+        "observed_only": ["blk1@0x1000"],
+    }
+    observed["observed_only_loss"] = [
+        _loss_row("blk1@0x1000", "retired_dispatcher_infrastructure")
+    ]
+    mutation(observed)
+
+    with pytest.raises(ValueError, match=message):
+        parse_authority_phase_payloads(payloads)
+
+
+@pytest.mark.parametrize(
+    "mutation, message",
+    [
+        (
+            lambda payload: payload.update(evidence_ids=["evidence-1", "evidence-1"]),
+            "evidence_ids",
+        ),
+        (
+            lambda payload: payload.update(
+                justification_ids=["justification-1", "justification-1"]
+            ),
+            "justification_ids",
+        ),
+        (
+            lambda payload: payload["explanations"][0].update(polarity="refutes"),
+            "retired",
+        ),
+        (
+            lambda payload: payload["explanations"][0].update(
+                rule="exact_infeasible_effect_proven"
+            ),
+            "retired",
+        ),
+        (
+            lambda payload: payload["explanations"][0].update(claim_id="foreign-claim"),
+            "retired",
+        ),
+        (
+            lambda payload: payload["explanations"][0].update(
+                premise_ids=["evidence-2"]
+            ),
+            "premise",
+        ),
+    ],
+)
+def test_authority_removal_policy_requires_sealed_retirement_explanations(
+    mutation,
+    message: str,
+) -> None:
+    payloads = _authority_payloads()
+    observed = payloads[1]
+    observed["coverage"] = [_coverage_row()]
+    observed["obligation_states"] = [_obligation(), _corridor_obligation()]
+    observed["loss_ledger"] = [
+        _loss_row("blk1@0x1000", "retired_dispatcher_infrastructure")
+    ]
+    observed["loss_summary"] = {
+        "structurally_lost": ["blk1@0x1000"],
+        "allowed": ["blk1@0x1000"],
+        "forbidden": [],
+        "conflicting": [],
+        "observed_only": ["blk1@0x1000"],
+    }
+    observed["observed_only_loss"] = [
+        _loss_row("blk1@0x1000", "retired_dispatcher_infrastructure")
+    ]
+    mutation(observed)
+
+    with pytest.raises(ValueError, match=message):
+        require_target_authority_policy(parse_authority_phase_payloads(payloads), "B")
+
+
+@pytest.mark.parametrize(
     "field, value",
     [
         ("structural", {"dimension": "structural_accounting", "state": "unproven"}),
@@ -625,7 +894,7 @@ def test_authority_removal_policy_requires_structural_claim_support(
     payloads = _authority_payloads()
     observed = payloads[1]
     observed["coverage"] = [_coverage_row()]
-    observed["obligation_states"] = [{"state": "satisfied"}, _corridor_obligation()]
+    observed["obligation_states"] = [_obligation(), _corridor_obligation()]
     retired = _loss_row("blk1@0x1000", "retired_dispatcher_infrastructure")
     retired[field] = value
     observed["loss_ledger"] = [retired]
@@ -888,7 +1157,7 @@ def test_authority_payload_aggregation_rejects_wrong_expected_session() -> None:
 
 def test_authority_payload_aggregation_rejects_unknown_obligation_state() -> None:
     payloads = _authority_payloads()
-    payloads[0]["obligation_states"] = [{"state": "unsupported"}]
+    payloads[0]["obligation_states"] = [{**_obligation(), "state": "unsupported"}]
     with pytest.raises(ValueError, match="obligation state"):
         parse_authority_phase_payloads(payloads)
 

@@ -16,7 +16,10 @@ from d810.transforms.unflatten_authority.diagnostics import (
     build_phase_payload,
     phase_observation,
 )
-from d810.transforms.unflatten_authority.evaluate import build_semantic_case, evaluate_case
+from d810.transforms.unflatten_authority.evaluate import (
+    build_semantic_case,
+    evaluate_case,
+)
 from d810.transforms.unflatten_authority import views
 from d810.transforms.unflatten_authority.ids import canonical_bytes, canonical_decode
 from d810.transforms.cfg_transaction import TransactionAttemptId
@@ -28,12 +31,17 @@ def test_one_anchored_fact_observation_per_authoritative_phase() -> None:
         accepted=False,
         phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
         reason=model.UnflattenAuthorityReason.PROJECTED_BINDING_FAILED,
-        authority_id=authority_id("authority"), binding_id=None, case_id=None,
-        candidate_fingerprint=authority_id("candidate"), safety_case=None,
+        authority_id=authority_id("authority"),
+        binding_id=None,
+        case_id=None,
+        candidate_fingerprint=authority_id("candidate"),
+        safety_case=None,
         failed_obligations=(),
     )
     observation = phase_observation(
-        verdict, maturity="MMAT_GLBOPT1", source_ea=0x401000,
+        verdict,
+        maturity="MMAT_GLBOPT1",
+        source_ea=0x401000,
         timings=PhaseTimings(inventory_ms=0.5),
     )
     assert observation.fact_id.startswith("sha256:")
@@ -44,11 +52,11 @@ def test_one_anchored_fact_observation_per_authoritative_phase() -> None:
     assert observation.block_fingerprint == authority_id("candidate")
     assert observation.payload["binding_id"] is None
     assert observation.payload["loss_ledger"] == ()
-    assert observation.payload["schema_version"] == 1
+    assert observation.payload["schema_version"] == 2
     assert observation.payload["rule_set_version"] == 1
     assert observation.payload["verdict"] == "rejected"
     assert observation.payload["log_lines"]
-    assert build_phase_payload(verdict)["schema"] == "unflatten_authority_phase.v1"
+    assert build_phase_payload(verdict)["schema"] == "unflatten_authority_phase.v2"
 
 
 def test_direct_diagnostics_project_receipted_ledgers_without_rebuilding_them(
@@ -74,13 +82,18 @@ def test_direct_diagnostics_project_receipted_ledgers_without_rebuilding_them(
         loss_ledger=accepted.observed_ledger,
     )
     monkeypatch.setattr(
-        diagnostics, "observed_loss_delta",
-        lambda _projected, _observed: pytest.fail("accepted diagnostics rebuilt a delta"),
+        diagnostics,
+        "observed_loss_delta",
+        lambda _projected, _observed: pytest.fail(
+            "accepted diagnostics rebuilt a delta"
+        ),
     )
 
     payload = build_phase_payload(verdict)
 
-    assert payload["authority_id"] == prepared.authority_id == observed_case.authority_id
+    assert (
+        payload["authority_id"] == prepared.authority_id == observed_case.authority_id
+    )
     assert tuple(row["anchor"] for row in payload["loss_ledger"]) == tuple(
         row.anchored_location for row in accepted.observed_ledger.rows
     )
@@ -137,15 +150,21 @@ def test_observed_precase_with_projected_case_is_total_and_typed() -> None:
         accepted=False,
         phase=model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY,
         reason=model.UnflattenAuthorityReason.LIVE_BINDING_FAILED,
-        authority_id=projected_case.authority_id, binding_id=None, case_id=None,
-        candidate_fingerprint=authority_id("observed-precase"), safety_case=None,
+        authority_id=projected_case.authority_id,
+        binding_id=None,
+        case_id=None,
+        candidate_fingerprint=authority_id("observed-precase"),
+        safety_case=None,
         failed_obligations=(),
     )
     payload = build_phase_payload(verdict, projected_case=projected_case)
     assert payload["source_fingerprint"] == projected_case.source_fingerprint
     assert payload["loss_ledger"] == ()
     assert payload["observed_only_loss"] == ()
-    assert payload["observed_only_loss_rejection"]["reason"] == "canonical_observed_ledger_missing"
+    assert (
+        payload["observed_only_loss_rejection"]["reason"]
+        == "canonical_observed_ledger_missing"
+    )
 
 
 def test_accepted_observed_diagnostics_do_not_reclassify_a_receipted_ledger(
@@ -202,13 +221,13 @@ def test_accepted_observed_diagnostics_do_not_reclassify_a_receipted_ledger(
         "mba_to_block_snapshots",
         lambda _mba: (_ for _ in ()).throw(AssertionError("must not serialize MBA")),
     )
-    monkeypatch.setattr(authority_observability, "_has_subscribers", lambda _event: True)
+    monkeypatch.setattr(
+        authority_observability, "_has_subscribers", lambda _event: True
+    )
     monkeypatch.setattr(
         observability_preanalysis,
         "observe_fact_observations_for_latest_snapshot",
-        lambda source_ea, observations: captured.append(
-            (source_ea, observations)
-        ),
+        lambda source_ea, observations: captured.append((source_ea, observations)),
     )
     authority_observability.observe_unflatten_authority_phase(
         mba=SimpleNamespace(entry_ea=0x401000, maturity=0),
@@ -218,7 +237,10 @@ def test_accepted_observed_diagnostics_do_not_reclassify_a_receipted_ledger(
     assert len(captured) == 1
     assert captured[0][0] == 0x401000
     persisted = captured[0][1][0]
-    assert persisted.fact_id == f"{observation.fact_id}:attempt:{observation.payload['attempt_id']}"
+    assert (
+        persisted.fact_id
+        == f"{observation.fact_id}:attempt:{observation.payload['attempt_id']}"
+    )
     assert persisted.payload["canonical_fact_id"] == observation.fact_id
 
 
@@ -302,47 +324,62 @@ def test_complete_phase_timings_require_the_canonical_component_sum() -> None:
             views_ms=4.0,
             total_authority_ms=11.0,
         )
-    assert PhaseTimings(
-        inventory_ms=1.0,
-        binding_ms=2.0,
-        evaluation_ms=3.0,
-        views_ms=4.0,
-        total_authority_ms=10.0,
-    ).total_authority_ms == 10.0
+    assert (
+        PhaseTimings(
+            inventory_ms=1.0,
+            binding_ms=2.0,
+            evaluation_ms=3.0,
+            views_ms=4.0,
+            total_authority_ms=10.0,
+        ).total_authority_ms
+        == 10.0
+    )
 
 
-def test_one_anchored_fact_observation_per_case_phase_has_exact_ids_and_labels() -> None:
+def test_one_anchored_fact_observation_per_case_phase_has_exact_ids_and_labels() -> (
+    None
+):
     from .test_views import _bound_direct_authority_cases
 
     prepared, accepted = _bound_direct_authority_cases(exact_effect_loss=True)
     attempt = accepted.bound_authority.attempt_id
     projected = model.UnflattenAuthorityVerdict(
-        accepted=True, phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        accepted=True,
+        phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
         reason=model.UnflattenAuthorityReason.ACCEPTED,
-        authority_id=prepared.authority_id, binding_id=None,
+        authority_id=prepared.authority_id,
+        binding_id=None,
         case_id=prepared.projected_case.case_id,
         candidate_fingerprint=prepared.projected_case.candidate_fingerprint,
-        safety_case=prepared.projected_case, failed_obligations=(),
+        safety_case=prepared.projected_case,
+        failed_obligations=(),
         loss_ledger=prepared.projected_loss_ledger,
     )
     observed = model.UnflattenAuthorityVerdict(
-        accepted=True, phase=model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY,
+        accepted=True,
+        phase=model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY,
         reason=model.UnflattenAuthorityReason.ACCEPTED,
         authority_id=accepted.observed_case.authority_id,
         binding_id=accepted.bound_authority.binding_id,
         case_id=accepted.observed_case.case_id,
         candidate_fingerprint=accepted.observed_case.candidate_fingerprint,
-        safety_case=accepted.observed_case, failed_obligations=(),
+        safety_case=accepted.observed_case,
+        failed_obligations=(),
         observed_acceptance=accepted,
         loss_ledger=accepted.observed_ledger,
     )
     rows = (
         phase_observation(
-            projected, maturity="MMAT_GLBOPT1", source_ea=0x401000,
-            correlation=attempt, prepared_authority=prepared,
+            projected,
+            maturity="MMAT_GLBOPT1",
+            source_ea=0x401000,
+            correlation=attempt,
+            prepared_authority=prepared,
         ),
         phase_observation(
-            observed, maturity="MMAT_GLBOPT1", source_ea=0x401000,
+            observed,
+            maturity="MMAT_GLBOPT1",
+            source_ea=0x401000,
             correlation=attempt,
         ),
     )
@@ -358,8 +395,26 @@ def test_one_anchored_fact_observation_per_case_phase_has_exact_ids_and_labels()
     assert all(row.payload["attempt_id"] == attempt.attempt_id for row in rows)
     assert all(row.payload["session_id"] == attempt.session_id for row in rows)
     assert all(row.payload["generation"] == attempt.generation for row in rows)
-    assert all("serial" not in binding for row in rows for binding in row.payload["bindings"])
+    assert all(
+        "serial" not in binding for row in rows for binding in row.payload["bindings"]
+    )
     assert all(
         re.fullmatch(r"(blk[0-9]+|subject:[^@]+)(@0x[0-9a-f]+)?", item["subject"])
-        for row in rows for item in row.payload["obligation_states"]
+        for row in rows
+        for item in row.payload["obligation_states"]
+    )
+    assert all(
+        re.fullmatch(r"sha256:[0-9a-f]{64}", item["subject_id"])
+        for row in rows
+        for item in row.payload["obligation_states"]
+    )
+    assert all(
+        set(item) == {"subject", "subject_id", "dimension", "state"}
+        for row in rows
+        for item in row.payload["coverage"]
+    )
+    assert all(
+        re.fullmatch(r"sha256:[0-9a-f]{64}", item["subject_id"])
+        for row in rows
+        for item in row.payload["loss_ledger"]
     )

@@ -25,14 +25,24 @@ class CanonicalPhaseCounters:
     view_graph_traversals: int
 
     def __post_init__(self) -> None:
-        for name in ("source_inventory_builds", "candidate_inventory_builds", "index_folds", "view_graph_traversals"):
+        for name in (
+            "source_inventory_builds",
+            "candidate_inventory_builds",
+            "index_folds",
+            "view_graph_traversals",
+        ):
             value = getattr(self, name)
             if type(value) is not int or value < 0:
                 raise TypeError(f"{name} must be a non-negative exact int")
 
     @property
     def tuple(self) -> tuple[int, int, int, int]:
-        return (self.source_inventory_builds, self.candidate_inventory_builds, self.index_folds, self.view_graph_traversals)
+        return (
+            self.source_inventory_builds,
+            self.candidate_inventory_builds,
+            self.index_folds,
+            self.view_graph_traversals,
+        )
 
     @classmethod
     def from_case(cls, case: model.SemanticSafetyCase) -> "CanonicalPhaseCounters":
@@ -49,6 +59,7 @@ class CanonicalPhaseCounters:
             metrics.view_graph_traversals,
         )
 
+
 @dataclass(frozen=True, slots=True)
 class PhaseTimings:
     """Closed timing values supplied by the transaction observer."""
@@ -61,7 +72,10 @@ class PhaseTimings:
 
     def __post_init__(self) -> None:
         for name in (
-            "inventory_ms", "binding_ms", "evaluation_ms", "views_ms",
+            "inventory_ms",
+            "binding_ms",
+            "evaluation_ms",
+            "views_ms",
             "total_authority_ms",
         ):
             value = getattr(self, name)
@@ -80,9 +94,7 @@ class PhaseTimings:
                 "views_ms and total_authority_ms must be supplied together"
             )
         if self.total_authority_ms is not None:
-            expected_total = sum(
-                value for value in components if value is not None
-            )
+            expected_total = sum(value for value in components if value is not None)
             if not math.isclose(
                 self.total_authority_ms,
                 expected_total,
@@ -121,10 +133,15 @@ def _binding_label(binding: model.PhaseSubjectBinding) -> str:
 
 
 def _case_subject_label(
-    case: model.SemanticSafetyCase, subject: model.SemanticSubjectRef,
+    case: model.SemanticSafetyCase,
+    subject: model.SemanticSubjectRef,
 ) -> str:
     binding = next(
-        (item for item in case.bindings if item.subject.subject_id == subject.subject_id),
+        (
+            item
+            for item in case.bindings
+            if item.subject.subject_id == subject.subject_id
+        ),
         None,
     )
     return _binding_label(binding) if binding is not None else _subject_label(subject)
@@ -139,10 +156,9 @@ def _obligation_payload(
     binding = bindings_by_subject.get(subject.subject_id)
     return {
         "subject": (
-            _binding_label(binding)
-            if binding is not None
-            else _subject_label(subject)
+            _binding_label(binding) if binding is not None else _subject_label(subject)
         ),
+        "subject_id": subject.subject_id,
         "dimension": cell.key.dimension.value,
         "state": cell.state.value,
         "supports": cell.supporting_justification_ids,
@@ -172,6 +188,7 @@ def _loss_row_payload(
 ) -> dict[str, object]:
     return {
         "subject": _binding_label(row.candidate_binding),
+        "subject_id": row.source_subject.subject_id,
         "classification": row.kind.value,
         "binding_status": row.candidate_binding.status.value,
         "source_binding_status": row.source_binding.status.value,
@@ -222,30 +239,47 @@ def _phase_view_projection(
     acceptance = verdict.observed_acceptance
     if prepared_authority is not None:
         if type(prepared_authority) is not model.PreparedUnflattenAuthority:
-            raise TypeError("prepared_authority must be PreparedUnflattenAuthority or None")
+            raise TypeError(
+                "prepared_authority must be PreparedUnflattenAuthority or None"
+            )
         prepared_authority.__post_init__()
     ledger = verdict.loss_ledger
     if acceptance is not None:
         if ledger is not acceptance.observed_ledger:
-            raise ValueError("observed diagnostics lost the canonical ledger occurrence")
+            raise ValueError(
+                "observed diagnostics lost the canonical ledger occurrence"
+            )
     elif verdict.accepted:
         if verdict.phase is not model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT:
-            raise ValueError("accepted observed diagnostics require a closed observed acceptance")
+            raise ValueError(
+                "accepted observed diagnostics require a closed observed acceptance"
+            )
         if prepared_authority is None:
-            raise ValueError("accepted projected diagnostics require the prepared authority occurrence")
+            raise ValueError(
+                "accepted projected diagnostics require the prepared authority occurrence"
+            )
         if (
             prepared_authority.projected_case is not case
             or prepared_authority.authority_id != verdict.authority_id
         ):
-            raise ValueError("prepared authority is foreign to projected diagnostic verdict")
+            raise ValueError(
+                "prepared authority is foreign to projected diagnostic verdict"
+            )
         if ledger is not prepared_authority.projected_loss_ledger:
-            raise ValueError("projected diagnostics lost the canonical ledger occurrence")
+            raise ValueError(
+                "projected diagnostics lost the canonical ledger occurrence"
+            )
     observed_delta = None
     observed_delta_rejection = None
     observed_reclassifications: tuple[ObservedLossReclassification, ...] = ()
     if acceptance is not None:
-        if projected_case is not None and projected_case is not acceptance.bound_authority.prepared.projected_case:
-            raise ValueError("diagnostic projected case is foreign to accepted observed authority")
+        if (
+            projected_case is not None
+            and projected_case is not acceptance.bound_authority.prepared.projected_case
+        ):
+            raise ValueError(
+                "diagnostic projected case is foreign to accepted observed authority"
+            )
         observed_delta = acceptance.delta
     elif (
         projected_case is not None
@@ -254,9 +288,12 @@ def _phase_view_projection(
         and prepared_authority is not None
     ):
         if projected_case is not prepared_authority.projected_case:
-            raise ValueError("diagnostic projected case is foreign to prepared authority")
+            raise ValueError(
+                "diagnostic projected case is foreign to prepared authority"
+            )
         projection = observed_loss_delta(
-            prepared_authority.projected_loss_ledger, ledger,
+            prepared_authority.projected_loss_ledger,
+            ledger,
         )
         observed_delta = projection.rows
         observed_reclassifications = projection.reclassifications
@@ -277,49 +314,84 @@ def build_phase_payload(
     correlation: TransactionAttemptId | None = None,
     _view_projection: tuple[
         object,
-        model.ObservedSemanticLossDelta | tuple["SemanticLossProjectionRow", ...] | None,
+        model.ObservedSemanticLossDelta
+        | tuple["SemanticLossProjectionRow", ...]
+        | None,
         dict[str, str] | None,
         tuple[ObservedLossReclassification, ...],
-    ] | None = None,
+    ]
+    | None = None,
 ) -> dict[str, object]:
     """Build one complete, typed payload from a canonical verdict."""
 
     if type(verdict) is not model.UnflattenAuthorityVerdict:
         raise TypeError("verdict must be UnflattenAuthorityVerdict")
     case = verdict.safety_case
-    if projected_case is not None and type(projected_case) is not model.SemanticSafetyCase:
+    if (
+        projected_case is not None
+        and type(projected_case) is not model.SemanticSafetyCase
+    ):
         raise TypeError("projected_case must be SemanticSafetyCase or None")
-    if projected_case is not None and verdict.phase is not model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY:
+    if (
+        projected_case is not None
+        and verdict.phase is not model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY
+    ):
         raise ValueError("projected_case is only valid for observed diagnostics")
     if correlation is not None and type(correlation) is not TransactionAttemptId:
         raise TypeError("correlation must be TransactionAttemptId or None")
     if _view_projection is None:
         _view_projection = _phase_view_projection(
-            verdict, projected_case, prepared_authority,
+            verdict,
+            projected_case,
+            prepared_authority,
         )
-    ledger, observed_delta, observed_delta_rejection, observed_reclassifications = _view_projection
-    bindings_by_subject = {} if case is None else {
-        binding.subject.subject_id: binding for binding in case.bindings
-    }
-    cells_by_key = {} if case is None else {
-        cell.key: cell for cell in case.obligation_index.cells
-    }
-    states = () if case is None else tuple(
-        _obligation_payload(case, cell, bindings_by_subject)
-        for cell in case.obligation_index.cells
+    ledger, observed_delta, observed_delta_rejection, observed_reclassifications = (
+        _view_projection
     )
-    bindings = () if case is None else tuple(
-        {"subject": _binding_label(binding), "phase": binding.phase.value, "fingerprint": binding.graph_fingerprint, "generation": binding.generation, "status": binding.status.value}
-        for binding in case.bindings
+    bindings_by_subject = (
+        {}
+        if case is None
+        else {binding.subject.subject_id: binding for binding in case.bindings}
+    )
+    cells_by_key = (
+        {} if case is None else {cell.key: cell for cell in case.obligation_index.cells}
+    )
+    states = (
+        ()
+        if case is None
+        else tuple(
+            _obligation_payload(case, cell, bindings_by_subject)
+            for cell in case.obligation_index.cells
+        )
+    )
+    bindings = (
+        ()
+        if case is None
+        else tuple(
+            {
+                "subject": _binding_label(binding),
+                "phase": binding.phase.value,
+                "fingerprint": binding.graph_fingerprint,
+                "generation": binding.generation,
+                "status": binding.status.value,
+            }
+            for binding in case.bindings
+        )
     )
     prep = None if case is None else case.phase_metrics.preparation_metrics
-    cumulative_counters = None if case is None else CanonicalPhaseCounters.from_case(case)
-    loss_ledger = () if ledger is None else tuple(_loss_row_payload(row) for row in ledger.rows)
+    cumulative_counters = (
+        None if case is None else CanonicalPhaseCounters.from_case(case)
+    )
+    loss_ledger = (
+        () if ledger is None else tuple(_loss_row_payload(row) for row in ledger.rows)
+    )
     anchored_loss_labels = tuple(
         row["anchor"] for row in loss_ledger if row["anchor"] is not None
     )
-    explanations = () if case is None else tuple(
-        _justification_payload(case, item) for item in case.justifications
+    explanations = (
+        ()
+        if case is None
+        else tuple(_justification_payload(case, item) for item in case.justifications)
     )
     state_counts = {
         state.value: sum(row["state"] == state.value for row in states)
@@ -356,38 +428,54 @@ def build_phase_payload(
         else tuple(
             _loss_row_payload(row)
             for row in (
-                observed_delta
-                if type(observed_delta) is tuple
-                else observed_delta.rows
+                observed_delta if type(observed_delta) is tuple else observed_delta.rows
             )
         )
     )
     loss_summary = {
-        "structurally_lost": tuple(row.anchored_location for row in (() if ledger is None else ledger.rows)),
-        "allowed": tuple(row.anchored_location for row in (() if ledger is None else ledger.allowed)),
-        "forbidden": tuple(row.anchored_location for row in (() if ledger is None else ledger.unclassified)),
-        "conflicting": tuple(row.anchored_location for row in (() if ledger is None else ledger.conflicting)),
+        "structurally_lost": tuple(
+            row.anchored_location for row in (() if ledger is None else ledger.rows)
+        ),
+        "allowed": tuple(
+            row.anchored_location for row in (() if ledger is None else ledger.allowed)
+        ),
+        "forbidden": tuple(
+            row.anchored_location
+            for row in (() if ledger is None else ledger.unclassified)
+        ),
+        "conflicting": tuple(
+            row.anchored_location
+            for row in (() if ledger is None else ledger.conflicting)
+        ),
         "observed_only": tuple(row["anchor"] for row in observed_loss_rows),
     }
     payload: dict[str, object] = {
-        "schema": "unflatten_authority_phase.v1",
-        "schema_version": 1,
+        "schema": "unflatten_authority_phase.v2",
+        "schema_version": 2,
         "rule_set_version": 1,
-        "phase": verdict.phase.value, "reason": verdict.reason.value, "accepted": verdict.accepted,
+        "phase": verdict.phase.value,
+        "reason": verdict.reason.value,
+        "accepted": verdict.accepted,
         "verdict": "accepted" if verdict.accepted else "rejected",
-        "authority_id": verdict.authority_id, "binding_id": verdict.binding_id,
-        "case_id": verdict.case_id, "candidate_fingerprint": verdict.candidate_fingerprint,
+        "authority_id": verdict.authority_id,
+        "binding_id": verdict.binding_id,
+        "case_id": verdict.case_id,
+        "candidate_fingerprint": verdict.candidate_fingerprint,
         # The closed verdict intentionally carries only the candidate
         # fingerprint; no diagnostic projection may mislabel the authority ID
         # as a source graph fingerprint.
         "source_fingerprint": (
-            case.source_fingerprint if case is not None
-            else None if projected_case is None
+            case.source_fingerprint
+            if case is not None
+            else None
+            if projected_case is None
             else projected_case.source_fingerprint
         ),
         "source_graph_fingerprint": (
-            case.source_fingerprint if case is not None
-            else None if projected_case is None
+            case.source_fingerprint
+            if case is not None
+            else None
+            if projected_case is None
             else projected_case.source_fingerprint
         ),
         "candidate_graph_fingerprint": verdict.candidate_fingerprint,
@@ -411,18 +499,46 @@ def build_phase_payload(
         "observed_only_loss": observed_loss_rows,
         "observed_only_loss_rejection": observed_delta_rejection,
         "observed_loss_reclassification": tuple(
-            _loss_reclassification_payload(row)
-            for row in observed_reclassifications
+            _loss_reclassification_payload(row) for row in observed_reclassifications
         ),
         "bindings": bindings,
-        "handlers": () if case is None else tuple(_case_subject_label(case, subject) for subject in case.subjects if subject.role is model.SemanticSubjectRole.AUTHORITATIVE_HANDLER),
-        "terminals": () if case is None else tuple(_case_subject_label(case, subject) for subject in case.subjects if subject.role is model.SemanticSubjectRole.TERMINAL_SITE),
-        "coverage": () if case is None else tuple({"subject": _case_subject_label(case, item.key.subject), "dimension": item.key.dimension.value, "state": item.state.value} for item in case.obligation_index.cells if item.key.dimension is model.SafetyDimension.CORRIDOR_COVERAGE),
-        "evidence_ids": () if case is None else tuple(item.evidence_id for item in case.evidence),
-        "justification_ids": () if case is None else tuple(item.justification_id for item in case.justifications),
+        "handlers": ()
+        if case is None
+        else tuple(
+            _case_subject_label(case, subject)
+            for subject in case.subjects
+            if subject.role is model.SemanticSubjectRole.AUTHORITATIVE_HANDLER
+        ),
+        "terminals": ()
+        if case is None
+        else tuple(
+            _case_subject_label(case, subject)
+            for subject in case.subjects
+            if subject.role is model.SemanticSubjectRole.TERMINAL_SITE
+        ),
+        "coverage": ()
+        if case is None
+        else tuple(
+            {
+                "subject": _case_subject_label(case, item.key.subject),
+                "subject_id": item.key.subject.subject_id,
+                "dimension": item.key.dimension.value,
+                "state": item.state.value,
+            }
+            for item in case.obligation_index.cells
+            if item.key.dimension is model.SafetyDimension.CORRIDOR_COVERAGE
+        ),
+        "evidence_ids": ()
+        if case is None
+        else tuple(item.evidence_id for item in case.evidence),
+        "justification_ids": ()
+        if case is None
+        else tuple(item.justification_id for item in case.justifications),
         "explanations": explanations,
         "log_lines": log_lines,
-        "metrics": None if prep is None else {
+        "metrics": None
+        if prep is None
+        else {
             "source_inventory_builds": cumulative_counters.source_inventory_builds,
             "candidate_inventory_builds": cumulative_counters.candidate_inventory_builds,
             "inventory_ms": case.phase_metrics.phase_build_metrics.inventory_ms,
@@ -440,7 +556,9 @@ def build_phase_payload(
         payload["views"] = {
             "index_folds": views.index_folds,
             "view_graph_traversals": views.view_graph_traversals,
-            "inventory_ms": None if views.phase_build_metrics is None else views.phase_build_metrics.inventory_ms,
+            "inventory_ms": None
+            if views.phase_build_metrics is None
+            else views.phase_build_metrics.inventory_ms,
         }
     if timings is not None:
         if type(timings) is not PhaseTimings:
@@ -453,18 +571,22 @@ def build_phase_payload(
             "total_authority_ms": timings.total_authority_ms,
         }
     if correlation is not None:
-        payload.update({
-            "plan_id": correlation.plan_id,
-            "attempt_id": correlation.attempt_id,
-            "session_id": correlation.session_id,
-            "generation": correlation.generation,
-        })
+        payload.update(
+            {
+                "plan_id": correlation.plan_id,
+                "attempt_id": correlation.attempt_id,
+                "session_id": correlation.session_id,
+                "generation": correlation.generation,
+            }
+        )
     return payload
 
 
 def phase_observation(
     verdict: model.UnflattenAuthorityVerdict,
-    *, maturity: str, source_ea: int,
+    *,
+    maturity: str,
+    source_ea: int,
     timings: PhaseTimings | None = None,
     views: ViewMetrics | None = None,
     projected_case: model.SemanticSafetyCase | None = None,
@@ -475,15 +597,21 @@ def phase_observation(
 
     view_started_ns = perf_counter_ns()
     view_projection = _phase_view_projection(
-        verdict, projected_case, prepared_authority,
+        verdict,
+        projected_case,
+        prepared_authority,
     )
     views_ms = (perf_counter_ns() - view_started_ns) / 1_000_000.0
     if timings is not None and timings.views_ms is None:
         components = tuple(
-            value for value in (
-                timings.inventory_ms, timings.binding_ms,
-                timings.evaluation_ms, views_ms,
-            ) if value is not None
+            value
+            for value in (
+                timings.inventory_ms,
+                timings.binding_ms,
+                timings.evaluation_ms,
+                views_ms,
+            )
+            if value is not None
         )
         timings = PhaseTimings(
             inventory_ms=timings.inventory_ms,
@@ -493,7 +621,11 @@ def phase_observation(
             total_authority_ms=sum(components),
         )
     payload = build_phase_payload(
-        verdict, views, timings, projected_case, prepared_authority,
+        verdict,
+        views,
+        timings,
+        projected_case,
+        prepared_authority,
         correlation,
         _view_projection=view_projection,
     )
@@ -512,19 +644,26 @@ def phase_observation(
         else precase_id
     )
     fact_id = verdict.case_id or precase_id
-    evidence = tuple(sorted(
-        (*payload["evidence_ids"], *payload["justification_ids"])
-    ))
+    evidence = tuple(sorted((*payload["evidence_ids"], *payload["justification_ids"])))
     return FactObservation(
-        fact_id=fact_id, kind="unflatten_authority_phase",
-        semantic_key=verdict.authority_id or semantic_precase_key, maturity=str(maturity),
-        phase=verdict.phase.value, confidence=1.0, source_block=None,
-        source_ea=int(source_ea), block_fingerprint=verdict.candidate_fingerprint,
-        mop_signature=None, payload=payload, evidence=evidence,
+        fact_id=fact_id,
+        kind="unflatten_authority_phase",
+        semantic_key=verdict.authority_id or semantic_precase_key,
+        maturity=str(maturity),
+        phase=verdict.phase.value,
+        confidence=1.0,
+        source_block=None,
+        source_ea=int(source_ea),
+        block_fingerprint=verdict.candidate_fingerprint,
+        mop_signature=None,
+        payload=payload,
+        evidence=evidence,
     )
 
 
 __all__ = [
-    "CanonicalPhaseCounters", "PhaseTimings", "build_phase_payload",
+    "CanonicalPhaseCounters",
+    "PhaseTimings",
+    "build_phase_payload",
     "phase_observation",
 ]

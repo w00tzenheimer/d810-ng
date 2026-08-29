@@ -38,23 +38,65 @@ _LOSS_SUMMARY_BUCKETS = (
     "observed_only",
 )
 _UNACCEPTED_LOSS_KINDS = frozenset({"unclassified", "conflicting"})
+_BINDING_STATUSES = frozenset(
+    {
+        "unique",
+        "missing",
+        "ambiguous",
+        "stale_generation",
+    }
+)
+_UNIQUE_CANDIDATE_LOSS_KINDS = frozenset(
+    {
+        "retired_dispatcher_infrastructure",
+        "exact_infeasible_effect",
+        "local_alias_scalarization",
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
 class AuthorityCoverageOracleRow:
     subject: str
+    subject_id: str
     dimension: str
     state: str
 
 
 @dataclass(frozen=True, slots=True)
+class AuthorityObligationOracleRow:
+    subject: str
+    subject_id: str
+    dimension: str
+    state: str
+    supporting_justification_ids: tuple[str, ...]
+    refuting_justification_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class AuthorityExplanationOracleRow:
+    justification_id: str
+    rule: str
+    premise_ids: tuple[str, ...]
+    conclusion_subject: str
+    conclusion_dimension: str
+    polarity: str
+    claim_id: str | None
+
+
+@dataclass(frozen=True, slots=True)
 class AuthorityLossOracleRow:
+    subject: str
+    subject_id: str
     anchor: str
     classification: str
+    binding_status: str
+    source_binding_status: str
     structural_dimension: str
     structural_state: str
     evidence_ids: tuple[str, ...]
     supporting_justification_ids: tuple[str, ...]
+    refuting_justification_ids: tuple[str, ...]
     claim_ids: tuple[str, ...]
     rules: tuple[str, ...]
 
@@ -80,6 +122,9 @@ class AuthorityPhaseOracleRow:
     candidate_fingerprint: str
     generation: int
     anchored_loss_labels: tuple[str, ...]
+    evidence_ids: tuple[str, ...]
+    justification_ids: tuple[str, ...]
+    explanations: tuple[AuthorityExplanationOracleRow, ...]
     coverage_rows: tuple[AuthorityCoverageOracleRow, ...]
     loss_rows: tuple[AuthorityLossOracleRow, ...]
     observed_only_loss_rows: tuple[AuthorityLossOracleRow, ...]
@@ -176,8 +221,149 @@ def _authority_finite_nonnegative(value: object, field: str) -> float:
     return result
 
 
+def _authority_ids(value: object, field: str) -> tuple[str, ...]:
+    if (
+        not isinstance(value, (list, tuple))
+        or any(not isinstance(item, str) or not item for item in value)
+        or len(set(value)) != len(value)
+    ):
+        raise ValueError(f"authority {field} is invalid")
+    return tuple(value)
+
+
+def _authority_subject_id(value: object, field: str) -> str:
+    if not isinstance(value, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", value):
+        raise ValueError(f"authority {field} is invalid")
+    return value
+
+
+def _authority_explanations(
+    value: object,
+    *,
+    evidence_ids: tuple[str, ...],
+    justification_ids: tuple[str, ...],
+) -> tuple[AuthorityExplanationOracleRow, ...]:
+    if not isinstance(value, (list, tuple)):
+        raise ValueError("authority explanations are missing")
+    rows: list[AuthorityExplanationOracleRow] = []
+    for item in value:
+        if not isinstance(item, Mapping) or set(item) != {
+            "justification_id",
+            "rule",
+            "premise_ids",
+            "conclusion",
+            "polarity",
+            "claim_id",
+        }:
+            raise ValueError("authority explanation schema is invalid")
+        justification_id = item.get("justification_id")
+        rule = item.get("rule")
+        premise_ids = _authority_ids(item.get("premise_ids"), "explanation premise_ids")
+        conclusion = item.get("conclusion")
+        polarity = item.get("polarity")
+        claim_id = item.get("claim_id")
+        if (
+            not isinstance(justification_id, str)
+            or not justification_id
+            or not isinstance(rule, str)
+            or not rule
+            or not isinstance(conclusion, Mapping)
+            or set(conclusion) != {"subject", "dimension"}
+            or not isinstance(conclusion.get("subject"), str)
+            or not conclusion["subject"]
+            or not isinstance(conclusion.get("dimension"), str)
+            or not conclusion["dimension"]
+            or polarity not in {"supports", "refutes"}
+            or (
+                claim_id is not None and (not isinstance(claim_id, str) or not claim_id)
+            )
+        ):
+            raise ValueError("authority explanation is invalid")
+        if not set(premise_ids).issubset(evidence_ids):
+            raise ValueError("authority explanation premise is outside phase evidence")
+        rows.append(
+            AuthorityExplanationOracleRow(
+                justification_id,
+                rule,
+                premise_ids,
+                conclusion["subject"],
+                conclusion["dimension"],
+                polarity,
+                claim_id,
+            )
+        )
+    if len({row.justification_id for row in rows}) != len(rows):
+        raise ValueError("authority explanations are not unique")
+    if tuple(row.justification_id for row in rows) != justification_ids:
+        raise ValueError("authority explanations do not match justification_ids")
+    return tuple(rows)
+
+
+def _authority_obligation_rows(
+    value: object,
+    *,
+    justification_ids: tuple[str, ...],
+) -> tuple[AuthorityObligationOracleRow, ...]:
+    if not isinstance(value, (list, tuple)):
+        raise ValueError("authority obligation states are missing")
+    rows: list[AuthorityObligationOracleRow] = []
+    for item in value:
+        if not isinstance(item, Mapping) or set(item) != {
+            "subject",
+            "subject_id",
+            "dimension",
+            "state",
+            "supports",
+            "refutes",
+        }:
+            raise ValueError("authority obligation state is invalid")
+        subject = item.get("subject")
+        subject_id = _authority_subject_id(
+            item.get("subject_id"), "obligation subject_id"
+        )
+        dimension = item.get("dimension")
+        state = item.get("state")
+        supports = _authority_ids(item.get("supports"), "obligation supports")
+        refutes = _authority_ids(item.get("refutes"), "obligation refutes")
+        if (
+            not isinstance(subject, str)
+            or not subject
+            or not isinstance(dimension, str)
+            or not dimension
+            or state not in _OBLIGATION_STATES
+        ):
+            raise ValueError("authority obligation state is invalid")
+        if state != "satisfied":
+            raise ValueError("authority obligation state is not satisfied")
+        if set(supports) & set(refutes):
+            raise ValueError(
+                "authority obligation supports and refutes are not disjoint"
+            )
+        if not set((*supports, *refutes)).issubset(justification_ids):
+            raise ValueError(
+                "authority obligation justification is outside phase inventory"
+            )
+        rows.append(
+            AuthorityObligationOracleRow(
+                subject,
+                subject_id,
+                dimension,
+                state,
+                supports,
+                refutes,
+            )
+        )
+    if len({(row.subject_id, row.dimension) for row in rows}) != len(rows):
+        raise ValueError("authority obligation rows are not unique")
+    return tuple(rows)
+
+
 def _authority_loss_rows(
-    value: object, field: str
+    value: object,
+    field: str,
+    *,
+    evidence_ids: tuple[str, ...],
+    justification_ids: tuple[str, ...],
 ) -> tuple[AuthorityLossOracleRow, ...]:
     if not isinstance(value, (list, tuple)):
         raise ValueError(f"authority {field} is missing")
@@ -185,10 +371,16 @@ def _authority_loss_rows(
     for loss in value:
         if not isinstance(loss, Mapping):
             raise ValueError(f"authority {field} row is invalid")
-        for name in ("subject", "binding_status", "source_binding_status"):
-            item = loss.get(name)
-            if not isinstance(item, str) or not item:
-                raise ValueError(f"authority loss {name} is invalid")
+        subject = loss.get("subject")
+        subject_id = _authority_subject_id(loss.get("subject_id"), "loss subject_id")
+        binding_status = loss.get("binding_status")
+        source_binding_status = loss.get("source_binding_status")
+        if not isinstance(subject, str) or not subject:
+            raise ValueError("authority loss subject is invalid")
+        if binding_status not in _BINDING_STATUSES:
+            raise ValueError("authority loss binding status is invalid")
+        if source_binding_status != "unique":
+            raise ValueError("authority loss source binding status is invalid")
         label = loss.get("anchor")
         if not isinstance(label, str) or not re.fullmatch(
             r"(?:blk[0-9]+|subject:sha256:[0-9a-f]{64})@0x[0-9a-f]+", label
@@ -197,6 +389,13 @@ def _authority_loss_rows(
         classification = loss.get("classification")
         if not isinstance(classification, str) or classification not in _LOSS_KINDS:
             raise ValueError("authority loss classification is invalid")
+        if binding_status not in {"missing", "unique"} or (
+            binding_status == "unique"
+            and classification not in _UNIQUE_CANDIDATE_LOSS_KINDS
+        ):
+            raise ValueError(
+                "authority loss binding status is not valid for classification"
+            )
         structural = loss.get("structural")
         if not isinstance(structural, Mapping) or set(structural) != {
             "dimension",
@@ -225,31 +424,43 @@ def _authority_loss_rows(
             ):
                 raise ValueError("authority loss semantic state is invalid")
 
-        def ids(name: str) -> tuple[str, ...]:
-            raw = loss.get(name)
-            if (
-                not isinstance(raw, (list, tuple))
-                or any(not isinstance(item, str) or not item for item in raw)
-                or len(set(raw)) != len(raw)
-            ):
-                raise ValueError(f"authority loss {name} is invalid")
-            return tuple(raw)
+        row_evidence_ids = _authority_ids(loss.get("evidence_ids"), "loss evidence_ids")
+        supports = _authority_ids(
+            loss.get("supporting_justification_ids"),
+            "loss supporting_justification_ids",
+        )
+        refutes = _authority_ids(
+            loss.get("refuting_justification_ids"),
+            "loss refuting_justification_ids",
+        )
+        claim_ids = _authority_ids(loss.get("claim_ids"), "loss claim_ids")
+        rules = _authority_ids(loss.get("rules"), "loss rules")
+        if not set(row_evidence_ids).issubset(evidence_ids):
+            raise ValueError("authority loss evidence is outside phase inventory")
+        if set(supports) & set(refutes):
+            raise ValueError("authority loss supports and refutes are not disjoint")
+        if not set((*supports, *refutes)).issubset(justification_ids):
+            raise ValueError("authority loss justification is outside phase inventory")
 
         rows.append(
             AuthorityLossOracleRow(
+                subject,
+                subject_id,
                 label,
                 classification,
+                binding_status,
+                source_binding_status,
                 structural_dimension,
                 structural_state,
-                ids("evidence_ids"),
-                ids("supporting_justification_ids"),
-                ids("claim_ids"),
-                ids("rules"),
+                row_evidence_ids,
+                supports,
+                refutes,
+                claim_ids,
+                rules,
             )
         )
-        ids("refuting_justification_ids")
-    if len({row.anchor for row in rows}) != len(rows):
-        raise ValueError(f"authority {field} anchors are not unique")
+    if len({row.subject_id for row in rows}) != len(rows):
+        raise ValueError(f"authority {field} subject_ids are not unique")
     return tuple(rows)
 
 
@@ -314,12 +525,13 @@ def _authority_coverage_rows(value: object) -> tuple[AuthorityCoverageOracleRow,
     for item in value:
         if not isinstance(item, Mapping) or set(item) != {
             "subject",
+            "subject_id",
             "dimension",
             "state",
         }:
             raise ValueError("authority coverage row is invalid")
-        subject, dimension, state = (
-            item.get(name) for name in ("subject", "dimension", "state")
+        subject, subject_id, dimension, state = (
+            item.get(name) for name in ("subject", "subject_id", "dimension", "state")
         )
         if not isinstance(subject, str) or not subject:
             raise ValueError("authority coverage subject is invalid")
@@ -327,27 +539,31 @@ def _authority_coverage_rows(value: object) -> tuple[AuthorityCoverageOracleRow,
             raise ValueError("authority coverage row is invalid")
         if state != "satisfied":
             raise ValueError("authority coverage row is not satisfied")
-        rows.append(AuthorityCoverageOracleRow(subject, dimension, state))
-    if len({(row.subject, row.dimension) for row in rows}) != len(rows):
+        rows.append(
+            AuthorityCoverageOracleRow(
+                subject,
+                _authority_subject_id(subject_id, "coverage subject_id"),
+                dimension,
+                state,
+            )
+        )
+    if len({(row.subject_id, row.dimension) for row in rows}) != len(rows):
         raise ValueError("authority coverage rows are not unique")
     return tuple(rows)
 
 
 def _validate_coverage_obligations(
     coverage_rows: tuple[AuthorityCoverageOracleRow, ...],
-    states: tuple[Mapping[str, object], ...],
+    states: tuple[AuthorityObligationOracleRow, ...],
 ) -> None:
     """Require coverage to be the exact canonical obligation projection."""
     obligations: set[tuple[str, str, str]] = set()
     for item in states:
-        subject = item.get("subject")
-        dimension = item.get("dimension")
-        state = item.get("state")
-        if dimension == "corridor_coverage":
-            if not isinstance(subject, str) or not subject or state != "satisfied":
-                raise ValueError("authority corridor coverage obligation is invalid")
-            obligations.add((subject, dimension, state))
-    coverage = {(row.subject, row.dimension, row.state) for row in coverage_rows}
+        if item.dimension == "corridor_coverage":
+            obligations.add((item.subject, item.subject_id, item.dimension, item.state))
+    coverage = {
+        (row.subject, row.subject_id, row.dimension, row.state) for row in coverage_rows
+    }
     if coverage != obligations:
         raise ValueError("authority coverage does not match canonical obligations")
 
@@ -355,7 +571,7 @@ def _validate_coverage_obligations(
 def _authority_phase_row(
     payload: Mapping[str, object], phase: str
 ) -> AuthorityPhaseOracleRow:
-    if payload.get("schema") != "unflatten_authority_phase.v1":
+    if payload.get("schema") != "unflatten_authority_phase.v2":
         raise ValueError("authority phase schema is invalid")
     if payload.get("phase") != phase:
         raise ValueError(f"authority phase must be {phase}")
@@ -411,33 +627,48 @@ def _authority_phase_row(
             )
     if not bindings:
         raise ValueError("authority bindings are missing")
+    evidence_ids = _authority_ids(payload.get("evidence_ids"), "evidence_ids")
+    justification_ids = _authority_ids(
+        payload.get("justification_ids"),
+        "justification_ids",
+    )
+    explanations = _authority_explanations(
+        payload.get("explanations"),
+        evidence_ids=evidence_ids,
+        justification_ids=justification_ids,
+    )
+    state_rows = _authority_obligation_rows(
+        payload.get("obligation_states"),
+        justification_ids=justification_ids,
+    )
+    obligation_keys = {(row.subject, row.dimension) for row in state_rows}
+    if any(
+        (row.conclusion_subject, row.conclusion_dimension) not in obligation_keys
+        for row in explanations
+    ):
+        raise ValueError(
+            "authority explanation conclusion is outside obligation states"
+        )
     coverage_rows = _authority_coverage_rows(payload.get("coverage"))
-    loss_rows = _authority_loss_rows(payload.get("loss_ledger"), "loss ledger")
+    _validate_coverage_obligations(coverage_rows, state_rows)
+    loss_rows = _authority_loss_rows(
+        payload.get("loss_ledger"),
+        "loss ledger",
+        evidence_ids=evidence_ids,
+        justification_ids=justification_ids,
+    )
     observed_only_loss_rows = _authority_loss_rows(
         payload.get("observed_only_loss"),
         "observed-only loss",
+        evidence_ids=evidence_ids,
+        justification_ids=justification_ids,
     )
     loss_summary = _authority_loss_summary(
         payload.get("loss_summary"),
         loss_rows=loss_rows,
         observed_only_loss_rows=observed_only_loss_rows,
     )
-    states = payload.get("obligation_states")
-    if not isinstance(states, (list, tuple)):
-        raise ValueError("authority obligation states are missing")
-    if not states:
-        raise ValueError("authority obligation states are missing")
     counts = {state: 0 for state in ("unproven", "violated", "inconsistent")}
-    state_rows: list[Mapping[str, object]] = []
-    for item in states:
-        if not isinstance(item, Mapping) or item.get("state") not in _OBLIGATION_STATES:
-            raise ValueError("authority obligation state is invalid")
-        if item["state"] != "satisfied":
-            raise ValueError("authority obligation state is not satisfied")
-        state_rows.append(item)
-        if item["state"] in counts:
-            counts[item["state"]] += 1
-    _validate_coverage_obligations(coverage_rows, tuple(state_rows))
     metrics = payload.get("metrics")
     if not isinstance(metrics, Mapping):
         raise ValueError("authority phase metrics are missing")
@@ -472,6 +703,9 @@ def _authority_phase_row(
         candidate_fingerprint=candidate_fingerprint,
         generation=generation,
         anchored_loss_labels=tuple(row.anchor for row in loss_rows),
+        evidence_ids=evidence_ids,
+        justification_ids=justification_ids,
+        explanations=explanations,
         coverage_rows=coverage_rows,
         loss_rows=loss_rows,
         observed_only_loss_rows=observed_only_loss_rows,
@@ -550,13 +784,15 @@ def parse_authority_phase_payloads(
         raise ValueError("authority obligation states are not accepted")
     if projected.observed_only_loss_rows or projected.loss_summary.observed_only:
         raise ValueError("projected authority phase cannot carry observed-only loss")
-    projected_by_anchor = {row.anchor: row for row in projected.loss_rows}
+    projected_by_subject_id = {row.subject_id: row for row in projected.loss_rows}
     expected_observed_only = tuple(
-        row for row in observed.loss_rows if row.anchor not in projected_by_anchor
+        row
+        for row in observed.loss_rows
+        if row.subject_id not in projected_by_subject_id
     )
     if tuple(
-        (row.anchor, row.classification) for row in observed.observed_only_loss_rows
-    ) != tuple((row.anchor, row.classification) for row in expected_observed_only):
+        (row.subject_id, row.classification) for row in observed.observed_only_loss_rows
+    ) != tuple((row.subject_id, row.classification) for row in expected_observed_only):
         raise ValueError("observed-only loss does not match canonical ledger delta")
     return AuthorityOracleEvidence(
         projected,
@@ -599,17 +835,33 @@ def require_target_authority_policy(
         raise ValueError(
             "dispatcher-removal target requires observed corridor coverage"
         )
-    retired_rows = tuple(
-        row
-        for row in observed.loss_rows
-        if row.classification == "retired_dispatcher_infrastructure"
-        and row.structural_dimension == "structural_accounting"
-        and row.structural_state == "satisfied"
-        and row.evidence_ids
-        and row.supporting_justification_ids
-        and row.claim_ids
-        and "retired_infrastructure_proven" in row.rules
-    )
+    explanations_by_id = {row.justification_id: row for row in observed.explanations}
+
+    def sealed_retirement(row: AuthorityLossOracleRow) -> bool:
+        if not (
+            row.classification == "retired_dispatcher_infrastructure"
+            and row.structural_dimension == "structural_accounting"
+            and row.structural_state == "satisfied"
+            and row.evidence_ids
+            and row.supporting_justification_ids
+            and row.claim_ids
+            and row.rules == ("retired_infrastructure_proven",)
+        ):
+            return False
+        support = tuple(
+            explanations_by_id[justification_id]
+            for justification_id in row.supporting_justification_ids
+        )
+        return all(
+            explanation.polarity == "supports"
+            and explanation.rule == "retired_infrastructure_proven"
+            and explanation.claim_id in row.claim_ids
+            and bool(explanation.premise_ids)
+            and set(explanation.premise_ids).issubset(row.evidence_ids)
+            for explanation in support
+        )
+
+    retired_rows = tuple(row for row in observed.loss_rows if sealed_retirement(row))
     if not retired_rows:
         raise ValueError("dispatcher-removal target requires retired dispatcher loss")
 
