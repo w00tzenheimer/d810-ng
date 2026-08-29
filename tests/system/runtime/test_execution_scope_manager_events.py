@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 from pathlib import Path
 
 from d810.core.persistence import FunctionStorageLocator
@@ -31,21 +32,32 @@ def _build_manager() -> D810Manager:
     return manager
 
 
-def test_set_function_tags_emits_function_level_invalidation():
+@contextlib.contextmanager
+def _managed_manager():
     manager = _build_manager()
-    fake_storage = _FakeStorage()
-    manager.storage = fake_storage
+    try:
+        yield manager
+    finally:
+        manager.stop()
 
-    captured: list[ExecutionScopeInvalidation] = []
-    manager.event_emitter.on(
-        ExecutionScopeEvent.FUNCTION_TAGS_UPDATED,
-        lambda payload: captured.append(payload),
-    )
 
-    manager.set_function_tags(function_addr=0x401000, tags={"flattened", "dispatcher"})
+def test_set_function_tags_emits_function_level_invalidation():
+    with _managed_manager() as manager:
+        fake_storage = _FakeStorage()
+        manager.storage = fake_storage
 
-    locator = FunctionStorageLocator("idb", "proj", 0x401000)
-    assert fake_storage.get_function_tags(locator) == {"flattened", "dispatcher"}
-    assert len(captured) == 1
-    assert captured[0].reason == ExecutionScopeEvent.FUNCTION_TAGS_UPDATED
-    assert captured[0].func_eas == frozenset({0x401000})
+        captured: list[ExecutionScopeInvalidation] = []
+        manager.event_emitter.on(
+            ExecutionScopeEvent.FUNCTION_TAGS_UPDATED,
+            lambda payload: captured.append(payload),
+        )
+
+        manager.set_function_tags(
+            function_addr=0x401000, tags={"flattened", "dispatcher"}
+        )
+
+        locator = FunctionStorageLocator("idb", "proj", 0x401000)
+        assert fake_storage.get_function_tags(locator) == {"flattened", "dispatcher"}
+        assert len(captured) == 1
+        assert captured[0].reason == ExecutionScopeEvent.FUNCTION_TAGS_UPDATED
+        assert captured[0].func_eas == frozenset({0x401000})
