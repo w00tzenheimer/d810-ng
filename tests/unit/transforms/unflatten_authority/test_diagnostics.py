@@ -192,27 +192,34 @@ def test_accepted_observed_diagnostics_do_not_reclassify_a_receipted_ledger(
     from d810.core import observability_preanalysis
 
     captured = []
-    monkeypatch.setattr(authority_observability, "diagnostics_enabled", lambda: True)
-    monkeypatch.setattr(authority_observability, "mba_to_block_snapshots", lambda _mba: ())
-    snapshot = object()
     monkeypatch.setattr(
         authority_observability,
         "request_capture_mba_snapshot",
-        lambda **_kwargs: snapshot,
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("must not capture MBA")),
     )
     monkeypatch.setattr(
+        authority_observability,
+        "mba_to_block_snapshots",
+        lambda _mba: (_ for _ in ()).throw(AssertionError("must not serialize MBA")),
+    )
+    monkeypatch.setattr(authority_observability, "_has_subscribers", lambda _event: True)
+    monkeypatch.setattr(
         observability_preanalysis,
-        "observe_fact_observation",
-        lambda snapshot_arg, source_ea, observations: captured.append(
-            (snapshot_arg, source_ea, observations)
+        "observe_fact_observations_for_latest_snapshot",
+        lambda source_ea, observations: captured.append(
+            (source_ea, observations)
         ),
     )
     authority_observability.observe_unflatten_authority_phase(
-        mba=SimpleNamespace(func_ea=0x401000, maturity=0),
+        mba=SimpleNamespace(entry_ea=0x401000, maturity=0),
         verdict=verdict,
         observation_factory=lambda: (observation,),
     )
-    assert captured == [(snapshot, 0x401000, (observation,))]
+    assert len(captured) == 1
+    assert captured[0][0] == 0x401000
+    persisted = captured[0][1][0]
+    assert persisted.fact_id == f"{observation.fact_id}:attempt:{observation.payload['attempt_id']}"
+    assert persisted.payload["canonical_fact_id"] == observation.fact_id
 
 
 def test_precase_fact_id_excludes_attempt_correlation() -> None:

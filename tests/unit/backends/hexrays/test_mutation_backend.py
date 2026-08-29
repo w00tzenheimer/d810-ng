@@ -2856,6 +2856,7 @@ def test_canonical_phase_observer_contains_subscriber_failure(
         source_ea=0x401000,
     )
 
+    monkeypatch.setattr(authority_observability, "_has_subscribers", lambda _event: True)
     subscriber_calls = []
 
     def fail_subscriber(*args, **kwargs):
@@ -3025,7 +3026,6 @@ def test_canonical_phase_observer_attaches_to_snapshot_captured_before_authority
         maturity="MMAT_GLBOPT1",
         phase="projected_preflight",
         confidence=1.0,
-        source_ea=func_ea,
         payload={"attempt_id": "attempt-1", "session_id": "session-1"},
     )
 
@@ -3053,7 +3053,7 @@ def test_canonical_phase_observer_attaches_to_snapshot_captured_before_authority
         )
 
         authority_observability.observe_unflatten_authority_phase(
-            mba=SimpleNamespace(func_ea=func_ea),
+            mba=SimpleNamespace(entry_ea=func_ea),
             verdict=verdict,
             observations=(observation,),
         )
@@ -3076,6 +3076,34 @@ def test_canonical_phase_observer_contains_invalid_verdict() -> None:
         mba=SimpleNamespace(func_ea=0x401000, maturity=0),
         verdict=object(),
     )
+
+
+def test_canonical_phase_observer_skips_factory_without_latest_subscriber(
+    monkeypatch,
+) -> None:
+    import d810.hexrays.observability as authority_observability
+
+    verdict = authority_model.UnflattenAuthorityVerdict(
+        False,
+        authority_model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        authority_model.UnflattenAuthorityReason.PROJECTED_BINDING_FAILED,
+        authority_id("observer-gate-authority"),
+        None,
+        None,
+        authority_id("observer-gate-candidate"),
+        None,
+        (),
+    )
+    factory_calls = []
+    monkeypatch.setattr(authority_observability, "_has_subscribers", lambda _event: False)
+
+    authority_observability.observe_unflatten_authority_phase(
+        mba=SimpleNamespace(entry_ea=0x401000),
+        verdict=verdict,
+        observation_factory=lambda: factory_calls.append(object()),
+    )
+
+    assert factory_calls == []
 
 
 def test_canonical_phase_observer_rejects_non_singleton_rows(

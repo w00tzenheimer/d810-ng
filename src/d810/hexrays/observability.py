@@ -31,6 +31,7 @@ from d810.core.observability import (
 # facade re-exports it so call sites don't have to know where it lives.
 from d810.core.observability_events import (
     CaptureMbaSnapshotRequested as CaptureMbaSnapshotRequested,
+    FactObservationsForLatestSnapshot as FactObservationsForLatestSnapshot,
     OptblockCallbackExceptionObserved as OptblockCallbackExceptionObserved,
 )
 from d810.core.observability_models import (
@@ -141,6 +142,8 @@ def observe_unflatten_authority_phase(
 ) -> None:
     """Publish one canonical authority-phase observation when subscribed."""
     try:
+        if not _has_subscribers(FactObservationsForLatestSnapshot):
+            return
         from d810.analyses.value_flow.observation import FactObservation
         from d810.transforms.unflatten_authority.model import (
             UnflattenAuthorityVerdict,
@@ -174,13 +177,16 @@ def observe_unflatten_authority_phase(
             from dataclasses import replace
 
             observation = replace(observation, payload=payload)
+        func_ea = observation.source_ea
+        if func_ea is None:
+            func_ea = getattr(mba, "entry_ea", None)
+        if func_ea is None:
+            raise ValueError("authority phase lacks a canonical function EA")
         from d810.core.observability_preanalysis import (
             observe_fact_observations_for_latest_snapshot,
         )
 
-        observe_fact_observations_for_latest_snapshot(
-            int(getattr(mba, "func_ea", 0)), (observation,)
-        )
+        observe_fact_observations_for_latest_snapshot(int(func_ea), (observation,))
     except Exception:
         _LOGGER.exception("unflatten authority diagnostics failed")
 
