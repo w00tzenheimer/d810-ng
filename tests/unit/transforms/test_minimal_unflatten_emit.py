@@ -1659,7 +1659,8 @@ def test_native_bound_route_recovers_initial_state_and_entry_bridge(monkeypatch)
     assert (0, 2, 20) in gotos
 
 
-def test_typed_entry_native_route_registers_its_canonical_proof(monkeypatch, _seam):
+@pytest.mark.parametrize("duplicate_entry_fact", (False, True))
+def test_typed_entry_native_route_registers_its_canonical_proof(monkeypatch, _seam, duplicate_entry_fact):
     """An entry-only native receipt owns proposal evidence without a back edge."""
 
     class _CleanUseDefSafety:
@@ -1682,6 +1683,7 @@ def test_typed_entry_native_route_registers_its_canonical_proof(monkeypatch, _se
         "recover_state_write_transitions_via_partitioned_fixpoint",
         lambda *_args, **_kwargs: (StateWriteTransition(0, None, None, True, None),),
     )
+    entry_route = NativeBoundTransitionRoute("entry", 0x1001, 0, state, 20)
     plan = emit_minimal_unflatten(
         fg, _disp({state: 20}, exit_block=99), state_var_stkoff=_STATE,
         dispatcher_entry_serial=2,
@@ -1693,14 +1695,18 @@ def test_typed_entry_native_route_registers_its_canonical_proof(monkeypatch, _se
                 exact_instruction_eas=tuple(insn.ea for insn in block.insn_snapshots),
             )) for serial, block in fg.blocks.items()
         },
-        native_bound_transition_routes=(NativeBoundTransitionRoute("entry", 0x1001, 0, state, 20),),
+        native_bound_transition_routes=(entry_route, entry_route) if duplicate_entry_fact else (entry_route,),
         dispatcher_region_serials=frozenset({2}),
         authoritative_handler_serials=frozenset({20}),
         use_def_safety=_CleanUseDefSafety(),
         live_function=object(),
     )
-    assert plan.unflatten_proposal is not None
-    assert sum(bool(getattr(claim, "route_proof_ids", ())) for claim in plan.unflatten_proposal.claims) == 1
+    if duplicate_entry_fact:
+        assert graph_modifications(plan) == []
+        assert plan.unflatten_proposal is None
+    else:
+        assert plan.unflatten_proposal is not None
+        assert sum(bool(getattr(claim, "route_proof_ids", ())) for claim in plan.unflatten_proposal.claims) == 1
 
 
 def test_native_bound_routes_seed_missing_current_backedge_transition(
