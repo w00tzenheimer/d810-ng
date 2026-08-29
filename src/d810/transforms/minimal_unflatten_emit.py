@@ -8533,7 +8533,6 @@ def _conditional_arm_route_forecast(
         or arm.target_handler is None
         or arm.is_return
         or arm.write_block is None
-        or int(modification.from_serial) != int(arm.write_block)
         or int(modification.new_target) != int(arm.target_handler)
         or not 0 <= int(arm.next_state) <= 0xFFFFFFFF
     ):
@@ -8547,9 +8546,22 @@ def _conditional_arm_route_forecast(
         source is None or branch is None or exit_block is None
         or not path or any(block is None for block in path_blocks) or int(arm.branch_block) not in path
         or int(arm.write_block) not in path or int(arm.exit_block) not in path
-        or int(modification.old_target) not in tuple(int(item) for item in source.succs)
+        or int(modification.from_serial) not in path
     ):
         return None
+    operation_source = flow_graph.get_block(int(modification.from_serial))
+    if (
+        operation_source is None
+        or int(modification.old_target) not in tuple(int(item) for item in operation_source.succs)
+    ):
+        return None
+    if int(modification.from_serial) != int(arm.write_block):
+        operation_index = path.index(int(modification.from_serial))
+        if (
+            operation_index + 1 >= len(path)
+            or int(path[operation_index + 1]) != int(modification.old_target)
+        ):
+            return None
     branch_index = path.index(int(arm.branch_block))
     branch_tail = branch.tail
     if (

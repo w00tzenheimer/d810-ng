@@ -256,6 +256,31 @@ def test_conditional_arm_forecast_mints_complete_decision_dag_fact() -> None:
     ) is None
 
 
+def test_conditional_arm_forecast_binds_branch_operation_to_writer_route() -> None:
+    """A shared-write cut keeps its operation identity and writer DAG proof."""
+
+    state, graph, arm, dag = _direct_conditional_arm_fixture()
+    forecast = _conditional_arm_route_forecast(
+        RedirectBranch(0, 1, 3), arm, graph, dag,
+        state_var_stkoff=_STATE, state_var_reg=None,
+    )
+
+    assert forecast is not None
+    assert forecast.modification == RedirectBranch(0, 1, 3)
+    assert forecast.route_fact.owner_serial == arm.write_block
+    assert forecast.route_fact.source_serial == arm.write_block
+    # The operation is a branch cut inside the writer's proven arm path; a
+    # same-target redirect from an unrelated block cannot borrow that route.
+    assert _conditional_arm_route_forecast(
+        RedirectGoto(5, 0, 3), arm, graph, dag,
+        state_var_stkoff=_STATE, state_var_reg=None,
+    ) is None
+    assert _conditional_arm_route_forecast(
+        RedirectBranch(0, 5, 3), arm, graph, dag,
+        state_var_stkoff=_STATE, state_var_reg=None,
+    ) is None
+
+
 def _direct_conditional_arm_fixture(
     *,
     selector_kind: InsnKind = InsnKind.COND_JUMP,
