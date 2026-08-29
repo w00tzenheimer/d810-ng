@@ -1148,7 +1148,7 @@ class PatternOptimizer(InstructionOptimizer):
             allowed_rule_names=allowed_rule_names,
             scheduled_rule_names=scheduled_rule_names,
         )
-        if not fallback_rules or structural_lowering is None:
+        if not fallback_rules:
             return None
         fallback_bucket_size = len(fallback_rules)
         fallback_attempt_count = 0

@@ -1637,6 +1637,83 @@ def test_structural_selection_failure_publishes_terminal_receipt() -> None:
     assert terminal.matcher.terminal_stop_reason == "fallback_unavailable"
 
 
+@pytest.mark.parametrize("preparer_outcome", ["raises", "none"])
+def test_try_matches_publishes_one_terminal_receipt_when_preparation_fails(
+    monkeypatch, preparer_outcome: str
+) -> None:
+    """A production fallback attempt records preparation failure exactly once."""
+
+    class Instruction:
+        class d:
+            size = 4
+
+    x = Var("x")
+    rule = SimpleNamespace(
+        name="preparation-failure",
+        description="preparation-failure",
+        pattern=x + Const("one", 1),
+        replacement=x,
+        maturities=[7],
+    )
+    adapter = IDAPatternAdapter(rule)
+    adapter._canonical_fallback_enabled = True
+    adapter._structural_matching_enabled = True
+    adapter._provider_outcome_capture_depth = 1
+    adapter._canonical_fallback_root_shapes = (("add", 32, 2),)
+    adapter.observe_structural_match = lambda *_args, **_kwargs: None
+
+    prepare_calls = 0
+
+    def prepare(*_args, **_kwargs):
+        nonlocal prepare_calls
+        prepare_calls += 1
+        if preparer_outcome == "raises":
+            raise RuntimeError("preparation failed")
+        return None
+
+    monkeypatch.setattr(adapter, "prepare_structural_candidate", prepare)
+    optimizer = object.__new__(PatternOptimizer)
+    optimizer.stats = None
+    optimizer.cur_maturity = 7
+    optimizer._use_nomut_matching = False
+    optimizer._use_legacy_storage = False
+    optimizer._run_later_callback = None
+    optimizer._pending_replacement_rule = None
+    optimizer._canonical_fallback_rules_by_root_shape = {
+        ("add", 32, 2): [adapter]
+    }
+    optimizer._get_candidates = lambda _ast: []
+
+    assert (
+        optimizer._try_matches(
+            None,
+            Instruction(),
+            object(),
+            allowed_rule_names=None,
+            scheduled_rule_names=None,
+            source_label="preparation-failure",
+        )
+        is None
+    )
+    assert prepare_calls == 1
+    outcomes = adapter.provider_outcomes()
+    assert len(outcomes) == 1
+    terminal = outcomes[0]
+    assert terminal.status is ProviderOutcomeStatus.RECONSTRUCTION_FAILED
+    assert terminal.refusal_reason == "profile_unavailable"
+    assert terminal.matcher is not None
+    assert terminal.matcher.selection is MatcherSelection.CANONICAL_FALLBACK
+    assert terminal.matcher.terminal_stop_reason == "fallback_unavailable"
+    assert terminal.matcher.native_equivalence_verdict is None
+    assert adapter._attempt_input_ast is None
+    assert adapter._attempt_instruction is None
+    assert adapter._shadow_lowering is None
+    assert adapter._structural_selection_active is False
+    assert rule._current_blk is None
+    assert rule._current_ins is None
+    assert rule._runtime_constant_evaluator is None
+
+
 def test_profile_for_ast_reuses_exact_structural_lowering(monkeypatch) -> None:
     """Telemetry must not lower a structural fallback root a second time."""
 
