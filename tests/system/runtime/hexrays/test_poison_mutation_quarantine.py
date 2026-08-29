@@ -63,7 +63,7 @@ def test_instruction_callback_abstains_before_optimizer_and_nested_visitor() -> 
     block = SimpleNamespace(mba=mba)
     instruction = SimpleNamespace(ea=FUNCTION_EA + 1)
 
-    assert InstructionOptimizerManager.func(manager, block, instruction) is False
+    assert manager.func(block, instruction) is False
     assert counts == {"log": 0, "optimizer": 0, "visitor": 0}
     assert lifecycle.observations == [
         (FUNCTION_EA, ida_hexrays.MMAT_LOCOPT, NativeMutationBoundary.OPTINSN)
@@ -286,15 +286,15 @@ def test_adapter_quarantine_events_use_real_coordinator_deduplication(
 
     instruction_manager = object.__new__(InstructionOptimizerManager)
     instruction_manager._decompilation_lifecycle = coordinator
-    assert InstructionOptimizerManager.func(instruction_manager, block, instruction) is False
-    assert InstructionOptimizerManager.func(instruction_manager, block, instruction) is False
+    assert instruction_manager.func(block, instruction) is False
+    assert instruction_manager.func(block, instruction) is False
 
     mba.maturity = ida_hexrays.MMAT_CALLS
-    assert InstructionOptimizerManager.func(instruction_manager, block, instruction) is False
+    assert instruction_manager.func(block, instruction) is False
 
     coordinator.begin_current_mba_generation(function_ea=FUNCTION_EA)
     mba.maturity = ida_hexrays.MMAT_LOCOPT
-    assert InstructionOptimizerManager.func(instruction_manager, block, instruction) is False
+    assert instruction_manager.func(block, instruction) is False
 
     block_manager = object.__new__(BlockOptimizerManager)
     block_manager._decompilation_lifecycle = coordinator

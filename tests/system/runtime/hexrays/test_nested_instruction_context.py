@@ -76,7 +76,14 @@ def test_nested_instruction_visitor_uses_top_level_owner_as_anchor() -> None:
     calls: list[tuple[object, object, object]] = []
 
     class _Manager:
-        def optimize(self, block, candidate, *, contextual_anchor_ins=None):
+        def optimize(
+            self,
+            block,
+            candidate,
+            *,
+            contextual_anchor_ins=None,
+            **_kwargs,
+        ):
             calls.append((block, candidate, contextual_anchor_ins))
             return False
 
@@ -101,7 +108,14 @@ def test_nested_instruction_visitor_falls_back_to_candidate_without_topins() -> 
     calls: list[object] = []
 
     class _Manager:
-        def optimize(self, _block, _candidate, *, contextual_anchor_ins=None):
+        def optimize(
+            self,
+            _block,
+            _candidate,
+            *,
+            contextual_anchor_ins=None,
+            **_kwargs,
+        ):
             calls.append(contextual_anchor_ins)
             return False
 
@@ -244,7 +258,14 @@ class TestNativeNestedInstructionTraversal:
             def __init__(self) -> None:
                 self.calls: list[tuple[object, object, object]] = []
 
-            def optimize(self, block, candidate, *, contextual_anchor_ins=None):
+            def optimize(
+                self,
+                block,
+                candidate,
+                *,
+                contextual_anchor_ins=None,
+                **_kwargs,
+            ):
                 self.calls.append((block, candidate, contextual_anchor_ins))
                 return False
 
@@ -280,17 +301,20 @@ class TestNativeNestedInstructionTraversal:
         mba = gen_microcode_at_maturity(source_ea, ida_hexrays.MMAT_LOCOPT)
         assert mba is not None
         block = mba.get_mblock(0)
-        manager = SimpleNamespace(
-            _decompilation_lifecycle=None,
-            _last_optimizer_tried=None,
-            instruction_visitor=visitor,
-            log_info_on_input=lambda *_args: False,
-            optimize=lambda *_args: False,
-            _capture_callback_nop_sites=lambda *_args: None,
-            _report_callback_nop_delta=lambda *_args, **_kwargs: None,
+        manager = InstructionOptimizerManager.__new__(InstructionOptimizerManager)
+        manager.__dict__.update(
+            dict(
+                _decompilation_lifecycle=None,
+                _last_optimizer_tried=None,
+                instruction_visitor=visitor,
+                log_info_on_input=lambda *_args: False,
+                optimize=lambda *_args: False,
+                _capture_callback_nop_sites=lambda *_args: None,
+                _report_callback_nop_delta=lambda *_args, **_kwargs: None,
+            )
         )
 
-        assert InstructionOptimizerManager.func(manager, block, owner) is False
+        assert manager.func(block, owner) is False
 
         nested_calls = [call for call in capture.calls if call[1] is not owner]
         assert nested_calls, capture.calls

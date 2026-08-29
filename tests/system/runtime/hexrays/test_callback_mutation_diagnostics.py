@@ -605,11 +605,16 @@ def test_instruction_optimizer_reports_a_nop_write_that_returns_false() -> None:
     )
     _Mba((block,))
     persisted = []
-    manager = SimpleNamespace(
-        _fact_consumer_callback=(lambda _func_ea, records: persisted.extend(records)),
-        current_maturity=ida_hexrays.MMAT_GLBOPT2,
-        instruction_visitor=SimpleNamespace(blk=None),
-        _last_optimizer_tried="synthetic_nop_writer",
+    manager = InstructionOptimizerManager.__new__(InstructionOptimizerManager)
+    manager.__dict__.update(
+        dict(
+            _fact_consumer_callback=(
+                lambda _func_ea, records: persisted.extend(records)
+            ),
+            current_maturity=ida_hexrays.MMAT_GLBOPT2,
+            instruction_visitor=SimpleNamespace(blk=None),
+            _last_optimizer_tried="synthetic_nop_writer",
+        )
     )
     manager._capture_callback_nop_sites = MethodType(
         InstructionOptimizerManager._capture_callback_nop_sites,
@@ -627,7 +632,7 @@ def test_instruction_optimizer_reports_a_nop_write_that_returns_false() -> None:
 
     manager.optimize = create_unreported_nop
 
-    assert InstructionOptimizerManager.func(manager, block, instruction) is False
+    assert manager.func(block, instruction) is False
 
     assert len(persisted) == 1
     assert persisted[0].decision == "mutation_unreported"
@@ -666,12 +671,15 @@ def test_instruction_optimizer_records_a_completed_mba_mutation_child(
             execution_journal=journal,
         )
         lifecycle = SimpleNamespace(current_session=lambda _func_ea: session)
-        manager = SimpleNamespace(
-            _fact_consumer_callback=None,
-            current_maturity=ida_hexrays.MMAT_GLBOPT2,
-            instruction_visitor=SimpleNamespace(blk=None),
-            _last_optimizer_tried="synthetic_writer",
-            _decompilation_lifecycle=lifecycle,
+        manager = InstructionOptimizerManager.__new__(InstructionOptimizerManager)
+        manager.__dict__.update(
+            dict(
+                _fact_consumer_callback=None,
+                current_maturity=ida_hexrays.MMAT_GLBOPT2,
+                instruction_visitor=SimpleNamespace(blk=None),
+                _last_optimizer_tried="synthetic_writer",
+                _decompilation_lifecycle=lifecycle,
+            )
         )
         manager._capture_callback_nop_sites = MethodType(
             InstructionOptimizerManager._capture_callback_nop_sites,
@@ -684,7 +692,7 @@ def test_instruction_optimizer_records_a_completed_mba_mutation_child(
         manager.log_info_on_input = lambda _blk, _ins: False
         manager.optimize = lambda _blk, _ins: True
 
-        assert InstructionOptimizerManager.func(manager, block, instruction) is True
+        assert manager.func(block, instruction) is True
 
         hook = journal.only_attempt(
             session_id,
@@ -730,14 +738,17 @@ def test_instruction_optimizer_summarizes_a_noop_callback_by_default(
             preanalysis_attempt_id=parent.attempt_id,
             execution_journal=journal,
         )
-        manager = SimpleNamespace(
-            _fact_consumer_callback=None,
-            current_maturity=ida_hexrays.MMAT_GLBOPT2,
-            instruction_visitor=SimpleNamespace(blk=None),
-            _last_optimizer_tried="synthetic_noop",
-            _decompilation_lifecycle=SimpleNamespace(
-                current_session=lambda _func_ea: session
-            ),
+        manager = InstructionOptimizerManager.__new__(InstructionOptimizerManager)
+        manager.__dict__.update(
+            dict(
+                _fact_consumer_callback=None,
+                current_maturity=ida_hexrays.MMAT_GLBOPT2,
+                instruction_visitor=SimpleNamespace(blk=None),
+                _last_optimizer_tried="synthetic_noop",
+                _decompilation_lifecycle=SimpleNamespace(
+                    current_session=lambda _func_ea: session
+                ),
+            )
         )
         manager._capture_callback_nop_sites = MethodType(
             InstructionOptimizerManager._capture_callback_nop_sites,
@@ -750,7 +761,7 @@ def test_instruction_optimizer_summarizes_a_noop_callback_by_default(
         manager.log_info_on_input = lambda _blk, _ins: False
         manager.optimize = lambda _blk, _ins: False
 
-        assert InstructionOptimizerManager.func(manager, block, instruction) is False
+        assert manager.func(block, instruction) is False
         assert len(journal.attempts_for_session(session_id)) == 1
 
         summary = journal.flush_callback_summaries(
@@ -1082,11 +1093,16 @@ def test_instruction_optimizer_nop_diagnostics_are_callback_block_local() -> Non
         )
     )
     persisted = []
-    manager = SimpleNamespace(
-        _fact_consumer_callback=(lambda _func_ea, records: persisted.extend(records)),
-        current_maturity=ida_hexrays.MMAT_GLBOPT2,
-        instruction_visitor=SimpleNamespace(blk=None),
-        _last_optimizer_tried="synthetic_nop_writer",
+    manager = InstructionOptimizerManager.__new__(InstructionOptimizerManager)
+    manager.__dict__.update(
+        dict(
+            _fact_consumer_callback=(
+                lambda _func_ea, records: persisted.extend(records)
+            ),
+            current_maturity=ida_hexrays.MMAT_GLBOPT2,
+            instruction_visitor=SimpleNamespace(blk=None),
+            _last_optimizer_tried="synthetic_nop_writer",
+        )
     )
     manager._capture_callback_nop_sites = MethodType(
         InstructionOptimizerManager._capture_callback_nop_sites,
@@ -1104,7 +1120,7 @@ def test_instruction_optimizer_nop_diagnostics_are_callback_block_local() -> Non
 
     manager.optimize = create_unreported_nop
 
-    assert InstructionOptimizerManager.func(manager, block, instruction) is False
+    assert manager.func(block, instruction) is False
 
     assert len(persisted) == 1
     assert persisted[0].decision == "mutation_unreported"
