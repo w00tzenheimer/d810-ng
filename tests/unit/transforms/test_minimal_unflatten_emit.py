@@ -1796,18 +1796,16 @@ def test_supplied_canonical_evidence_missing_entry_proof_abstains(monkeypatch, _
 
 
 def test_non_prefix_transition_competing_for_entry_proof_rejects_atomically(
-    monkeypatch, _seam,
+    monkeypatch, caplog, _seam,
 ):
-    graph, state, entry_route, kwargs = _typed_entry_native_route_fixture(monkeypatch)
+    graph, state, _entry_route, kwargs = _typed_entry_native_route_fixture(monkeypatch)
     produced = emit_minimal_unflatten(graph, native_key=NATIVE_KEY, **kwargs)
     evidence = produced.unflatten_proposal.route_evidence
-    entry_fact = minimal_unflatten_emit_module._native_bound_route_fact(graph, entry_route)
-    assert entry_fact is not None
     monkeypatch.setattr(
         minimal_unflatten_emit_module,
         "recover_state_write_transitions_via_partitioned_fixpoint",
         lambda *_args, **_kwargs: (
-            StateWriteTransition(20, state, 20, False, None, semantic_route_fact=entry_fact),
+            StateWriteTransition(20, state, 20, False, None, via_block=0),
         ),
     )
     monkeypatch.setattr(
@@ -1826,6 +1824,10 @@ def test_non_prefix_transition_competing_for_entry_proof_rejects_atomically(
 
     assert graph_modifications(plan) == []
     assert plan.unflatten_proposal is None
+    assert any(
+        "concrete entry proof is already owned" in record.getMessage()
+        for record in caplog.records
+    )
 
 
 def test_native_bound_routes_seed_missing_current_backedge_transition(
