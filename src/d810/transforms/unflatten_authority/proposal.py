@@ -1277,10 +1277,6 @@ def attach_typed_proposal(
     if any(key in LEGACY_UNFLATTEN_KEYS for key, _value in metadata_items):
         raise ValueError("typed producer plans cannot carry reserved legacy metadata")
     full_dispatcher_retirement = False
-    aggregate_corridor_coverage = (
-        corridor_coverage is not None
-        and not corridor_coverage.residual_corridors
-    )
     if dispatcher_removal_forecast is not None:
         candidate_catalog = retirement_candidate_catalog_from_forecast(
             dispatcher_removal_forecast,
@@ -1323,7 +1319,7 @@ def attach_typed_proposal(
             )
             requires_corridor_forecast = (
                 coverage_dependent_claim
-                or aggregate_corridor_coverage
+                or full_dispatcher_retirement
             )
             if requires_corridor_forecast and corridor_coverage is None:
                 raise ValueError("coverage-dependent proposal requires coverage metadata")
@@ -1349,18 +1345,6 @@ def attach_typed_proposal(
                     ) if requires_corridor_forecast else None
                 ),
             )
-    # A complete route rewrite has an aggregate corridor obligation even when
-    # it does not mint retirement-family claims.  Conversely, a route-only
-    # partial rewrite deliberately carries no aggregate corridor forecast.
-    if aggregate_corridor_coverage and proposal.corridor_coverage_forecast is None:
-        proposal = replace(
-            proposal,
-            corridor_coverage_forecast=corridor_coverage_forecast_from_analysis(
-                corridor_coverage,
-                proposal=proposal,
-                block_refs_by_serial=source_refs_by_serial,
-            ),
-        )
     if (
         proposal.retirement_candidate_catalog is not None
         or any(type(claim) is RetiredDispatcherInfrastructureClaim for claim in proposal.claims)
