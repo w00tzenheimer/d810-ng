@@ -24,10 +24,7 @@ from d810.core.typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 import ida_hexrays
 
-from d810.backends.mba.native_pod_matcher import (
-    active_runtime_identity,
-    matcher_backend as _native_matcher_backend,
-)
+from d810.backends.mba.native_pod_matcher import active_runtime_identity
 from d810.backends.mba.runtime_semantics import (
     runtime_semantics_digest as _compute_runtime_semantics_digest,
 )
@@ -54,6 +51,7 @@ from d810.mba.provider_outcome import (
     MbaProviderKind,
     MbaProviderOutcome,
     ProviderOutcomeStatus,
+    RawMatcherWorkReceipt,
 )
 from d810.mba.provider_history import ProviderOutcomeHistory
 from d810.hexrays.ir.number_operand import safe_make_number
@@ -546,7 +544,7 @@ class IDAPatternAdapter:
         self._shadow_native_equivalence_verdict: bool | None = None
         self._raw_match_selected = False
         self._raw_match_attempted = False
-        self._raw_match_backend = "unknown"
+        self._raw_work_receipt = RawMatcherWorkReceipt(0, 0, "unknown")
         self._legacy_binding_paths: (
             dict[str, frozenset[tuple[int, ...]]] | None
         ) = None
@@ -615,7 +613,7 @@ class IDAPatternAdapter:
         self._shadow_parity_recorded = False
         self._raw_match_selected = False
         self._raw_match_attempted = False
-        self._raw_match_backend = "unknown"
+        self._raw_work_receipt = RawMatcherWorkReceipt(0, 0, "unknown")
         self._structural_selection_active = False
         self._structural_dispatch_bucket_size = 0
         self._structural_dispatch_attempt_count = 0
@@ -1057,6 +1055,9 @@ class IDAPatternAdapter:
             return None
 
     def _matcher_metadata(self) -> MatcherOutcomeMetadata | None:
+        raw_receipt = getattr(
+            self, "_raw_work_receipt", RawMatcherWorkReceipt(0, 0, "unknown")
+        )
         report = getattr(self, "_shadow_match_report", None)
         structural_selection = bool(
             getattr(self, "_structural_selection_active", False)
@@ -1089,8 +1090,14 @@ class IDAPatternAdapter:
                     if getattr(self, "_raw_match_selected", False)
                     else MatcherSelection.NONE
                 ),
-                backend="python" if structural_selection else getattr(
-                    self, "_raw_match_backend", "unknown"
+                raw_comparisons=raw_receipt.comparisons,
+                raw_lazy_swaps=raw_receipt.lazy_swaps,
+                backend=(
+                    raw_receipt.backend
+                    if raw_receipt.comparisons
+                    else "python"
+                    if structural_selection
+                    else raw_receipt.backend
                 ),
                 terminal_stop_reason=stop_reason,
             )
@@ -1109,10 +1116,16 @@ class IDAPatternAdapter:
                 if structural_selection and report.bindings is not None
                 else MatcherSelection.NONE
             ),
-            backend="python",
             fallback_comparisons=report.comparisons,
             fallback_flattened_arity=report.flattened_nodes,
             terminal_stop_reason=terminal_stop_reason,
+            raw_comparisons=raw_receipt.comparisons,
+            raw_lazy_swaps=raw_receipt.lazy_swaps,
+            backend=(
+                raw_receipt.backend
+                if raw_receipt.comparisons
+                else "python"
+            ),
             provenance_rejection_count=getattr(
                 self, "_provenance_rejection_count", 0
             ),
@@ -1120,6 +1133,13 @@ class IDAPatternAdapter:
                 self, "_shadow_native_equivalence_verdict", None
             ),
         )
+
+    def record_raw_match_receipt(self, receipt: RawMatcherWorkReceipt) -> None:
+        """Publish exact handler-owned raw work for the current attempt."""
+
+        if not isinstance(receipt, RawMatcherWorkReceipt):
+            raise TypeError("receipt must be a RawMatcherWorkReceipt")
+        self._raw_work_receipt = receipt
 
     def record_legacy_match_bindings(
         self, candidate_pattern: Any, source_ast: Any | None = None
@@ -1483,10 +1503,6 @@ class IDAPatternAdapter:
         if raw_native:
             self._raw_match_attempted = True
             self._raw_match_selected = True
-            try:
-                self._raw_match_backend = str(_native_matcher_backend())
-            except Exception:
-                self._raw_match_backend = "unknown"
         raw_identity = None
         if raw_native and getattr(self, "_attempt_instruction", None) is not None:
             profile = None
@@ -1618,10 +1634,6 @@ class IDAPatternAdapter:
         )
         if not structural_selection:
             self._raw_match_attempted = True
-            try:
-                self._raw_match_backend = str(_native_matcher_backend())
-            except Exception:
-                self._raw_match_backend = "unknown"
         lowering = getattr(self, "_shadow_lowering", None)
         profile = (
             getattr(lowering, "profile", None)

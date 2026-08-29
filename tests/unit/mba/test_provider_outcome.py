@@ -13,6 +13,7 @@ from d810.mba.provider_outcome import (
     MbaProviderKind,
     MbaProviderOutcome,
     ProviderOutcomeStatus,
+    RawMatcherWorkReceipt,
 )
 
 
@@ -224,3 +225,18 @@ def test_matcher_metadata_serializes_fallback_selection_and_proof_telemetry() ->
             matcher=matcher,
         ).to_json()
     )["matcher"] == matcher.to_dict()
+
+
+def test_raw_matcher_work_receipt_has_stable_pod_serialization() -> None:
+    receipt = RawMatcherWorkReceipt(3, 0, "legacy_ast")
+
+    assert receipt.to_dict() == {
+        "backend": "legacy_ast",
+        "comparisons": 3,
+        "lazy_swaps": 0,
+    }
+    assert tuple(receipt.__dataclass_fields__) == (
+        "comparisons",
+        "lazy_swaps",
+        "backend",
+    )

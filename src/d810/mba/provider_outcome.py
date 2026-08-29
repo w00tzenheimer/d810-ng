@@ -35,6 +35,39 @@ class MatcherSelection(enum.StrEnum):
     NONE = "none"
 
 
+@dataclass(frozen=True)
+class RawMatcherWorkReceipt:
+    """Exact work performed by one raw handler attempt.
+
+    ``comparisons`` counts candidate-pattern comparisons started by the live
+    handler. ``lazy_swaps`` counts only runtime operand swaps; generated legacy
+    permutations are already represented by separate comparisons. ``backend``
+    is the route that performed those comparisons (``legacy_ast`` for the
+    mutating AstNode path, or the normalized Python/Cython engine name).
+    """
+
+    comparisons: int
+    lazy_swaps: int
+    backend: str
+
+    def __post_init__(self) -> None:
+        for field_name in ("comparisons", "lazy_swaps"):
+            value = getattr(self, field_name)
+            if type(value) is not int or value < 0:
+                raise ValueError(f"{field_name} must be a non-negative integer")
+        if type(self.backend) is not str or not self.backend:
+            raise ValueError("backend must be a non-empty string")
+
+    def to_dict(self) -> dict[str, object]:
+        """Return the stable JSON/POD representation."""
+
+        return {
+            "comparisons": self.comparisons,
+            "lazy_swaps": self.lazy_swaps,
+            "backend": self.backend,
+        }
+
+
 JsonValue: TypeAlias = (
     None
     | bool
@@ -241,6 +274,7 @@ class MbaProviderOutcome:
 __all__ = [
     "MatcherOutcomeMetadata",
     "MatcherSelection",
+    "RawMatcherWorkReceipt",
     "MbaProviderKind",
     "MbaProviderOutcome",
     "ProviderOutcomeStatus",

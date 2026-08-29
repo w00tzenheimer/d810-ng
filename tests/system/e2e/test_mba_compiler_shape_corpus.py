@@ -21,8 +21,9 @@ from collections.abc import Mapping
 from dataclasses import replace
 from pathlib import Path
 
-import pytest
+import idapro
 import idaapi
+import pytest
 
 from d810.core.config import ProjectConfiguration
 from d810.backends.mba import ida as ida_backend
@@ -38,7 +39,11 @@ from d810.mba.native_corpus_capture import (
     capture_manifest_native_cases,
     select_native_capture_profile,
 )
-from d810.mba.provider_outcome import MbaProviderKind, ProviderOutcomeStatus
+from d810.mba.provider_outcome import (
+    MatcherSelection,
+    MbaProviderKind,
+    ProviderOutcomeStatus,
+)
 from d810.mba.native_corpus_capture import capture_native_provider_histories
 from d810.optimizers.microcode.instructions.pattern_matching.engine import (
     get_engine_info,
@@ -838,6 +843,15 @@ class TestCompilerShapeCatalogueNative:
         assert certificate["unsafe_mutations"] == 0
         assert certificate["unproved_structural_replacements"] == 0
 
+        # Earlier tests in this class intentionally mutate the class-scoped
+        # database. Reopen the fixture-owned input before activation so the
+        # raw/fallback partition is measured from one clean native snapshot.
+        database_path = ida_database.get("temp_path")
+        if database_path is not None:
+            idapro.close_database(False)
+            assert idapro.open_database(str(database_path), True) == 0
+            idaapi.auto_wait()
+
         # Capture the exact legacy registration shape before the certificate
         # request.  A stale certificate must restore this cache shape rather
         # than merely expose a non-structural adapter.
@@ -912,7 +926,21 @@ class TestCompilerShapeCatalogueNative:
                 "prove_native_ast_equivalence",
                 record_native_proof,
             )
-            accepted_structural_by_function: dict[str, tuple[object, ...]] = {}
+            # The GCC/IDA lowering may be raw-match-complete in the Cython
+            # runtime, so force one admitted rule's raw legacy comparison to
+            # miss. This is a controlled live fallback witness; the primary
+            # rollout flag and certificate authorization remain unchanged.
+            forced_fallback_rule = next(
+                adapter
+                for adapter in adapters
+                if adapter.name == "Add_HackersDelightRule_2"
+            )
+            monkeypatch.setattr(
+                forced_fallback_rule,
+                "check_pattern_and_replace",
+                lambda _pattern, _candidate: None,
+            )
+            accepted_catalogue_by_function: dict[str, tuple[object, ...]] = {}
             with capture_native_provider_histories(adapters):
                 handler_started = time.monotonic()
                 state.start_d810()
@@ -952,41 +980,79 @@ class TestCompilerShapeCatalogueNative:
                         for outcome in new_outcomes
                         if outcome.provider is MbaProviderKind.CATALOGUE
                         and outcome.status is ProviderOutcomeStatus.APPLIED
-                        and "structural_dispatch" in outcome.metadata
                     )
-                    accepted_structural_by_function[function] = accepted
-                    assert sum(native_proof_results[proof_start:]) >= len(accepted)
+                    accepted_catalogue_by_function[function] = accepted
+                    fallback_count = sum(
+                        outcome.matcher is not None
+                        and outcome.matcher.selection is MatcherSelection.CANONICAL_FALLBACK
+                        for outcome in accepted
+                    )
+                    assert sum(native_proof_results[proof_start:]) >= fallback_count
                 state.stop_d810()
-            outcomes = tuple(
+            applied_catalogue_outcomes = tuple(
                 outcome
-                for adapter in adapters
-                for outcome in adapter.provider_outcomes()
-            )
-            structural_outcomes = tuple(
-                outcome
-                for outcome in outcomes
+                for function_outcomes in accepted_catalogue_by_function.values()
+                for outcome in function_outcomes
                 if outcome.provider is MbaProviderKind.CATALOGUE
                 and outcome.status is ProviderOutcomeStatus.APPLIED
-                and "structural_dispatch" in outcome.metadata
             )
-            assert structural_outcomes
-            assert sum(len(items) for items in accepted_structural_by_function.values()) == len(
-                structural_outcomes
+            raw_outcomes = tuple(
+                outcome
+                for outcome in applied_catalogue_outcomes
+                if outcome.matcher is not None
+                and outcome.matcher.selection is MatcherSelection.RAW
             )
-            assert all(outcome.matcher is not None for outcome in structural_outcomes)
+            fallback_outcomes = tuple(
+                outcome
+                for outcome in applied_catalogue_outcomes
+                if outcome.matcher is not None
+                and outcome.matcher.selection is MatcherSelection.CANONICAL_FALLBACK
+            )
+            assert fallback_outcomes, (
+                "activation must observe a canonical fallback: "
+                + repr(
+                    [
+                        (
+                            outcome.matcher.selection.value
+                            if outcome.matcher is not None
+                            else None,
+                            outcome.matcher.raw_comparisons
+                            if outcome.matcher is not None
+                            else None,
+                            outcome.matcher.fallback_comparisons
+                            if outcome.matcher is not None
+                            else None,
+                        )
+                        for outcome in applied_catalogue_outcomes
+                    ]
+                )
+            )
+            assert raw_outcomes, "activation must observe a raw catalogue selection"
+            assert len(applied_catalogue_outcomes) == len(raw_outcomes) + len(
+                fallback_outcomes
+            )
             assert all(
-                outcome.metadata["mutation_outcome"] == "accepted"
-                for outcome in structural_outcomes
+                outcome.matcher is not None
+                and outcome.matcher.raw_comparisons > 0
+                and outcome.matcher.fallback_comparisons == 0
+                and outcome.matcher.backend == "legacy_ast"
+                and outcome.matcher.native_equivalence_verdict is None
+                and "structural_dispatch" not in outcome.metadata
+                and outcome.metadata.get("mutation_outcome") == "accepted"
+                for outcome in raw_outcomes
+            )
+            assert all(
+                outcome.matcher is not None
+                and outcome.matcher.raw_comparisons > 0
+                and outcome.matcher.fallback_comparisons > 0
+                and outcome.matcher.selection is MatcherSelection.CANONICAL_FALLBACK
+                and outcome.matcher.native_equivalence_verdict is True
+                and outcome.metadata.get("structural_dispatch") is not None
+                and outcome.metadata["mutation_outcome"] == "accepted"
+                for outcome in fallback_outcomes
             )
             assert native_proof_results
             assert any(native_proof_results)
-            applied_catalogue_outcomes = tuple(
-                outcome
-                for outcome in outcomes
-                if outcome.provider is MbaProviderKind.CATALOGUE
-                and outcome.status is ProviderOutcomeStatus.APPLIED
-            )
-            assert len(applied_catalogue_outcomes) == len(structural_outcomes)
             report_evidence_path = artifacts / f"mba-structural-report-evidence-{runtime_mode}.json"
             report_evidence_path.write_text(
                 json.dumps(
@@ -1008,7 +1074,7 @@ class TestCompilerShapeCatalogueNative:
                                         == "comparison_budget"
                                     ),
                                 }
-                                for outcome in structural_outcomes
+                                for outcome in fallback_outcomes
                             ],
                             "lifecycle_measurements": {
                                 "cold_snapshot_ms": [cold_snapshot_ms],

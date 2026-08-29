@@ -32,7 +32,10 @@ from d810.mba.certified_catalogue import (  # noqa: E402
 )
 from d810.mba.dsl import Const, Var, Zext  # noqa: E402
 from d810.mba.typed_term import TypedBvTerm  # noqa: E402
-from d810.mba.provider_outcome import ProviderOutcomeStatus  # noqa: E402
+from d810.mba.provider_outcome import (  # noqa: E402
+    ProviderOutcomeStatus,
+    RawMatcherWorkReceipt,
+)
 from tools.scripts.mba_structural_matcher_certificate import (  # noqa: E402
     build_certificate,
 )
@@ -1147,6 +1150,123 @@ def test_legacy_dispatch_does_not_shadow_or_collect_outcomes_by_default(
         )
         is not None
     )
+
+
+def test_pattern_optimizer_publishes_typed_raw_work_receipt(monkeypatch) -> None:
+    """The actual legacy AstNode handler boundary records one attempted comparison."""
+
+    class Instruction:
+        ea = 0x401000
+
+        class d:
+            size = 4
+
+        @staticmethod
+        def _print():
+            return "raw-receipt"
+
+    class LegacyRule:
+        name = "LegacyReceiptRule"
+        maturities = [7]
+        uses_structural_matching = False
+
+        def __init__(self) -> None:
+            self.receipts: list[RawMatcherWorkReceipt] = []
+
+        def bind_match_context(self, _blk, _ins):
+            return None
+
+        def record_raw_match_receipt(self, receipt):
+            self.receipts.append(receipt)
+
+        def check_pattern_and_replace(self, _pattern, _candidate):
+            return Instruction()
+
+    rule = LegacyRule()
+    optimizer = object.__new__(PatternOptimizer)
+    optimizer.stats = None
+    optimizer.cur_maturity = 7
+    optimizer._use_nomut_matching = False
+    optimizer._use_legacy_storage = False
+    optimizer._run_later_callback = None
+    optimizer._pending_replacement_rule = None
+    optimizer._get_candidates = lambda _candidate: [RulePatternInfo(rule, object())]
+
+    assert optimizer._try_matches(
+        None,
+        Instruction(),
+        object(),
+        allowed_rule_names=None,
+        scheduled_rule_names=None,
+        source_label="raw-receipt",
+    ) is not None
+    assert rule.receipts == [RawMatcherWorkReceipt(1, 0, "legacy_ast")]
+
+
+@pytest.mark.parametrize("expected_backend", ("python", "cython"))
+def test_nomut_handler_receipt_uses_selected_engine_backend(
+    monkeypatch, expected_backend: str
+) -> None:
+    """The non-mutating handler reports the selected Python/Cython engine."""
+
+    from d810.optimizers.microcode.instructions.pattern_matching import handler as handler_module
+
+    class Instruction:
+        ea = 0x401000
+
+        class d:
+            size = 4
+
+        @staticmethod
+        def _print():
+            return "nomut-receipt"
+
+    class NomutRule:
+        name = "NomutReceiptRule"
+        maturities = [7]
+        uses_structural_matching = False
+
+        def __init__(self) -> None:
+            self.receipts: list[RawMatcherWorkReceipt] = []
+
+        def bind_match_context(self, _blk, _ins):
+            return None
+
+        def record_raw_match_receipt(self, receipt):
+            self.receipts.append(receipt)
+
+        @staticmethod
+        def check_candidate(_candidate):
+            return True
+
+        @staticmethod
+        def get_replacement(_candidate):
+            return Instruction()
+
+    monkeypatch.setattr(
+        handler_module, "get_engine_info", lambda: {"backend": expected_backend}
+    )
+    monkeypatch.setattr(handler_module, "_match_nomut", lambda *_args: True)
+    rule = NomutRule()
+    optimizer = object.__new__(PatternOptimizer)
+    optimizer.stats = None
+    optimizer.cur_maturity = 7
+    optimizer._use_nomut_matching = True
+    optimizer._use_legacy_storage = False
+    optimizer._run_later_callback = None
+    optimizer._pending_replacement_rule = None
+    optimizer._match_bindings = handler_module.MatchBindings()
+    optimizer._get_candidates = lambda _candidate: [RulePatternInfo(rule, object())]
+
+    assert optimizer._try_matches(
+        None,
+        Instruction(),
+        object(),
+        allowed_rule_names=None,
+        scheduled_rule_names=None,
+        source_label="nomut-receipt",
+    ) is not None
+    assert rule.receipts == [RawMatcherWorkReceipt(1, 0, expected_backend)]
 
 
 def test_structural_pattern_capability_accepts_reused_leaves_but_rejects_cycles() -> None:

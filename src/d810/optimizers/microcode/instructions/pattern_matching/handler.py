@@ -12,6 +12,7 @@ from d810.core.settings import get_settings
 from d810.hexrays.expr.ast import AstBase, AstNode, AstNodeProtocol
 from d810.hexrays.ir.minsn_utils import minsn_to_ast
 from d810.hexrays.utils.hexrays_formatters import format_minsn_t
+from d810.mba.provider_outcome import RawMatcherWorkReceipt
 from d810.optimizers.microcode.instructions.handler import (
     GenericPatternRule,
     InstructionOptimizationRule,
@@ -874,6 +875,36 @@ class PatternOptimizer(InstructionOptimizer):
         status = getattr(getattr(outcome, "status", None), "value", None)
         return status in {"error", "over_budget", "unavailable"}
 
+    def _raw_work_backend(self) -> str:
+        """Identify the actual raw matcher route for this handler attempt."""
+
+        if self._use_nomut_matching and not self._use_legacy_storage:
+            try:
+                return str(get_engine_info()["backend"])
+            except (KeyError, TypeError, ValueError):
+                return "unknown"
+        return "legacy_ast"
+
+    def _record_raw_work(
+        self,
+        rule: object,
+        *,
+        comparisons: int,
+        lazy_swaps: int,
+        backend: str,
+    ) -> None:
+        """Forward observational raw work without affecting matching."""
+
+        record = getattr(rule, "record_raw_match_receipt", None)
+        if record is None:
+            return
+        try:
+            record(RawMatcherWorkReceipt(comparisons, lazy_swaps, backend))
+        except Exception:
+            optimizer_logger.debug(
+                "Raw matcher work telemetry failed for %s", rule, exc_info=True
+            )
+
     def _canonical_fallback_rules_for(
         self, root_shape: tuple[str, int, int] | None
     ) -> tuple[InstructionOptimizationRule, ...]:
@@ -962,6 +993,9 @@ class PatternOptimizer(InstructionOptimizer):
         all_matches = self._get_candidates(test_ast)
         match_len = len(all_matches)
         scheduled_rule_names = scheduled_rule_names or frozenset()
+        raw_comparisons = 0
+        raw_lazy_swaps = 0
+        raw_backend = self._raw_work_backend()
         for i, rule_pattern_info in enumerate(all_matches):
             rule_name = str(rule_pattern_info.rule.name)
             if not self._rule_is_eligible(
@@ -992,6 +1026,16 @@ class PatternOptimizer(InstructionOptimizer):
             try:
                 if bind_match_context is not None:
                     bind_match_context(blk, ins)
+                # One receipt entry corresponds to one candidate-pattern
+                # comparison actually started by this handler. Generated
+                # legacy permutations are comparisons, not lazy swaps.
+                raw_comparisons += 1
+                self._record_raw_work(
+                    rule_pattern_info.rule,
+                    comparisons=1,
+                    lazy_swaps=raw_lazy_swaps,
+                    backend=raw_backend,
+                )
 
                 # Task 7 shadow mode remains in force for legacy rules.
                 observe_structural_match = getattr(
@@ -1110,6 +1154,15 @@ class PatternOptimizer(InstructionOptimizer):
             try:
                 if bind_match_context is not None:
                     bind_match_context(blk, ins)
+                # Carry the complete raw work performed for this root into the
+                # fallback outcome. A fallback candidate has its own adapter
+                # context, so the receipt must cross this boundary explicitly.
+                self._record_raw_work(
+                    rule,
+                    comparisons=raw_comparisons,
+                    lazy_swaps=raw_lazy_swaps,
+                    backend=raw_backend,
+                )
                 match_structural_and_replace = getattr(
                     rule, "match_structural_and_replace", None
                 )
