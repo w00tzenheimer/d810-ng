@@ -518,6 +518,8 @@ class IDAPatternAdapter:
         self._shadow_parity_ledger = None
         self._shadow_parity_recorded = False
         self._shadow_canonical_templates: dict[int, Any] = {}
+        self._canonical_fallback_enabled = False
+        self._canonical_fallback_root_shapes: tuple[tuple[str, int, int], ...] = ()
         self._structural_matching_enabled = False
         self._structural_parity_authorized = False
         self._structural_selection_active = False
@@ -659,6 +661,17 @@ class IDAPatternAdapter:
     ) -> None:
         """Attach one configuration-time snapshot and select its matcher mode."""
 
+        snapshot_replaced = (
+            getattr(self, "_certified_catalogue_snapshot", None) is not snapshot
+            or getattr(self, "_certified_catalogue_rule_id", None) != rule_id
+        )
+        if snapshot_replaced:
+            # Adapters are reused across project reloads. Never carry frozen
+            # templates, raw candidates, or replacement bindings across a new
+            # immutable catalogue snapshot.
+            self._shadow_canonical_templates = {}
+            self._pattern_candidates_cache = None
+            self._replacement_pattern_cache = None
         self._certified_catalogue_snapshot = snapshot
         self._certified_catalogue_rule_id = rule_id
         self._shadow_parity_ledger = ledger
@@ -676,7 +689,7 @@ class IDAPatternAdapter:
                 snapshot, runtime_mode, parity_expectation
             )
         )
-        structural_matching_enabled = (
+        canonical_fallback_enabled = (
             _supports_structural_dsl_pattern(getattr(self.rule, "pattern", None))
             and _snapshot_rule_widths_are_structurally_eligible(
                 snapshot,
@@ -687,17 +700,41 @@ class IDAPatternAdapter:
             and os.environ.get("D810_LEGACY_DSL_PERMUTATIONS", "0") != "1"
             and self._structural_parity_authorized
         )
-        if self._structural_matching_enabled != structural_matching_enabled:
+        if self._canonical_fallback_enabled != canonical_fallback_enabled:
             # A reused adapter survives project reloads. Its generated legacy
             # variants and its structural base form cannot share one cache.
             self._pattern_candidates_cache = None
-        self._structural_matching_enabled = structural_matching_enabled
+        self._canonical_fallback_enabled = canonical_fallback_enabled
+        self._structural_matching_enabled = canonical_fallback_enabled
+        if canonical_fallback_enabled:
+            self._canonical_fallback_root_shapes = tuple(
+                shape
+                for shape, rule_ids in snapshot.canonical_rule_ids_by_root_shape.items()
+                if self._certified_catalogue_rule_id in rule_ids
+            )
+        else:
+            self._canonical_fallback_root_shapes = ()
+
+    @property
+    def canonical_fallback_enabled(self) -> bool:
+        """Whether certified canonical matching is enabled as a fallback."""
+
+        return bool(getattr(self, "_canonical_fallback_enabled", False))
+
+    @property
+    def canonical_fallback_root_shapes(self) -> tuple[tuple[str, int, int], ...]:
+        """Certified canonical root shapes in declaration/frozen order."""
+
+        return tuple(getattr(self, "_canonical_fallback_root_shapes", ()))
 
     @property
     def uses_structural_matching(self) -> bool:
-        """Whether this snapshot-selected DSL rule uses the portable matcher."""
+        """Deprecated alias for :attr:`canonical_fallback_enabled`."""
 
-        return bool(getattr(self, "_structural_matching_enabled", False))
+        return bool(
+            getattr(self, "_canonical_fallback_enabled", False)
+            or getattr(self, "_structural_matching_enabled", False)
+        )
 
     def match_structural_and_replace(
         self,
@@ -715,7 +752,9 @@ class IDAPatternAdapter:
         boundary.  A lowerer miss or any unusable binding remains a no-op.
         """
 
-        if not self.uses_structural_matching:
+        if not self.canonical_fallback_enabled and not getattr(
+            self, "_structural_matching_enabled", False
+        ):
             return None
         self._structural_selection_active = True
         self._structural_dispatch_bucket_size = max(0, int(bucket_size))
@@ -1544,7 +1583,8 @@ class IDAPatternAdapter:
             # the configuration-selected certified DSL catalogue.  All other
             # adapters keep the historical path.
             if (
-                self.uses_structural_matching
+                self.canonical_fallback_enabled
+                or self.uses_structural_matching
                 or not self._generate_commutative_permutations
                 or not getattr(self.rule, "GENERATE_COMMUTATIVE_PERMUTATIONS", True)
             ):

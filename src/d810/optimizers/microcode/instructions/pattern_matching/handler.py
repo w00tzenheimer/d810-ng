@@ -332,12 +332,11 @@ class PatternOptimizer(InstructionOptimizer):
         # PR2: Opcode-indexed storage (new storage backend)
         self._indexed_storage = _IndexedStorage()
 
-        # Task 8: snapshot-selected certified DSL rules bypass the binary
-        # fingerprint store.  Their final shape check is the portable bounded
-        # structural matcher, so root opcode is the only native dispatch key
-        # required here.  Legacy and non-DSL rules stay in both old stores.
-        self._structural_rules_by_root_opcode: dict[
-            int, list[InstructionOptimizationRule]
+        # Certified DSL adapters keep their declared pattern in the normal raw
+        # stores. Their canonical templates are indexed separately and are
+        # consulted only after every eligible raw candidate misses.
+        self._canonical_fallback_rules_by_root_shape: dict[
+            tuple[str, int, int], list[InstructionOptimizationRule]
         ] = {}
 
         # PR2: Feature flag for rollback to legacy PatternStorage
@@ -431,7 +430,7 @@ class PatternOptimizer(InstructionOptimizer):
         self.pattern_storage = PatternStorage(depth=1)
         self._indexed_storage = _IndexedStorage()
         self._allowed_root_opcodes = set()
-        self._structural_rules_by_root_opcode = {}
+        self._canonical_fallback_rules_by_root_shape = {}
         self._generation += 1
         self._compiled_view = None
 
@@ -496,18 +495,19 @@ class PatternOptimizer(InstructionOptimizer):
                 if isinstance(pattern, AstNodeProtocol) and pattern.opcode is not None:
                     opcode = int(pattern.opcode)
                     self._allowed_root_opcodes.add(opcode)
-                    if bool(getattr(rule, "uses_structural_matching", False)):
-                        bucket = self._structural_rules_by_root_opcode.setdefault(
-                            opcode, []
-                        )
-                        if rule not in bucket:
-                            bucket.append(rule)
-                        continue
             except Exception:
                 pass
             # PR2: Register legacy rules to both storages during migration.
             self.pattern_storage.add_pattern_for_rule(pattern, rule)
             self._indexed_storage.add_pattern(pattern, rule)
+
+        if self._canonical_fallback_enabled_for(rule):
+            for root_shape in getattr(rule, "canonical_fallback_root_shapes", ()):
+                bucket = self._canonical_fallback_rules_by_root_shape.setdefault(
+                    tuple(root_shape), []
+                )
+                if rule not in bucket:
+                    bucket.append(rule)
 
         # Invalidate compiled view after adding rule (PR3)
         self._generation += 1
@@ -546,18 +546,19 @@ class PatternOptimizer(InstructionOptimizer):
                 if isinstance(pattern, AstNodeProtocol) and pattern.opcode is not None:
                     opcode = int(pattern.opcode)
                     self._allowed_root_opcodes.add(opcode)
-                    if bool(getattr(rule, "uses_structural_matching", False)):
-                        bucket = self._structural_rules_by_root_opcode.setdefault(
-                            opcode, []
-                        )
-                        if rule not in bucket:
-                            bucket.append(rule)
-                        continue
             except Exception:
                 pass
             # PR2: Register legacy rules to both storages during migration.
             self.pattern_storage.add_pattern_for_rule(pattern, rule)
             self._indexed_storage.add_pattern(pattern, rule)
+
+        if self._canonical_fallback_enabled_for(rule):
+            for root_shape in getattr(rule, "canonical_fallback_root_shapes", ()):
+                bucket = self._canonical_fallback_rules_by_root_shape.setdefault(
+                    tuple(root_shape), []
+                )
+                if rule not in bucket:
+                    bucket.append(rule)
 
         # Invalidate compiled view after adding rule (PR3)
         self._generation += 1
@@ -812,21 +813,71 @@ class PatternOptimizer(InstructionOptimizer):
                 return False
         return True
 
+    @staticmethod
+    def _canonical_fallback_enabled_for(rule: object) -> bool:
+        """Read the explicit fallback flag, with a deprecated compatibility alias."""
+
+        if hasattr(rule, "canonical_fallback_enabled"):
+            return bool(getattr(rule, "canonical_fallback_enabled"))
+        return bool(getattr(rule, "uses_structural_matching", False))
+
+    @staticmethod
+    def _raw_attempt_abstains(rule: object) -> bool:
+        """Stop fallback after a typed raw budget/unsupported/error outcome."""
+
+        stop_reason = getattr(rule, "raw_stop_reason", None)
+        if getattr(stop_reason, "value", stop_reason) in {
+            "raw_budget",
+            "raw_unsupported",
+        }:
+            return True
+        outcome = getattr(rule, "_last_provider_outcome", None)
+        status = getattr(getattr(outcome, "status", None), "value", None)
+        return status in {"error", "over_budget", "unavailable"}
+
+    def _canonical_fallback_rules_for(
+        self, root_shape: tuple[str, int, int] | None
+    ) -> tuple[InstructionOptimizationRule, ...]:
+        if root_shape is None:
+            return ()
+        return tuple(
+            self._canonical_fallback_rules_by_root_shape.get(tuple(root_shape), ())
+        )
+
+    def _prepare_canonical_fallback(
+        self,
+        test_ast: AstBase,
+        ins: ida_hexrays.minsn_t,
+    ) -> tuple[object | None, tuple[InstructionOptimizationRule, ...]]:
+        """Lower one root and select its certified canonical declaration bucket."""
+
+        if not getattr(self, "_canonical_fallback_rules_by_root_shape", None):
+            return None, ()
+        rules = tuple(
+            rule
+            for bucket in self._canonical_fallback_rules_by_root_shape.values()
+            for rule in bucket
+        )
+        if not rules:
+            return None, ()
+        prepare = getattr(rules[0], "prepare_structural_candidate", None)
+        if prepare is None:
+            return None, ()
+        destination_size = getattr(getattr(ins, "d", None), "size", None)
+        lowering = prepare(test_ast, destination_size=destination_size)
+        term = getattr(lowering, "term", None)
+        if term is None:
+            return lowering, ()
+        from d810.mba.certified_catalogue import root_shape_for_term
+
+        return lowering, self._canonical_fallback_rules_for(root_shape_for_term(term))
+
     def _get_candidates(self, ast: AstBase) -> list[RulePatternInfo]:
-        structural: list[RulePatternInfo] = []
-        try:
-            opcode = int(getattr(ast, "opcode", -1)) if ast.is_node() else -1
-            structural = [
-                RulePatternInfo(rule, None)
-                for rule in self._structural_rules_by_root_opcode.get(opcode, ())
-            ]
-        except Exception:
-            structural = []
         if self._use_legacy_storage:
-            return structural + self.pattern_storage.get_matching_rule_pattern_info(ast)
+            return self.pattern_storage.get_matching_rule_pattern_info(ast)
         candidates = self._indexed_storage.get_candidates(ast)
         if candidates or not self._use_indexed_legacy_fallback:
-            return structural + candidates
+            return candidates
         fallback_candidates = self.pattern_storage.get_matching_rule_pattern_info(ast)
         if fallback_candidates and optimizer_logger.debug_on:
             optimizer_logger.debug(
@@ -834,7 +885,7 @@ class PatternOptimizer(InstructionOptimizer):
                 len(fallback_candidates),
                 ast,
             )
-        return structural + fallback_candidates
+        return fallback_candidates
 
     def _try_matches(
         self,
@@ -848,33 +899,7 @@ class PatternOptimizer(InstructionOptimizer):
     ) -> ida_hexrays.minsn_t | None:
         all_matches = self._get_candidates(test_ast)
         match_len = len(all_matches)
-        structural_bucket_size = sum(
-            bool(getattr(info.rule, "uses_structural_matching", False))
-            for info in all_matches
-        )
-        # Lower once for the entire root bucket.  Rule-specific comparisons
-        # still run in certified declaration order, but no adapter may repeat
-        # native-to-portable lowering for the same instruction.
-        structural_lowering = None
-        structural_lowering_prepared = False
-        if structural_bucket_size:
-            destination_size = getattr(getattr(ins, "d", None), "size", None)
-            for info in all_matches:
-                if not bool(getattr(info.rule, "uses_structural_matching", False)):
-                    continue
-                prepare_structural_candidate = getattr(
-                    info.rule,
-                    "prepare_structural_candidate",
-                    None,
-                )
-                if prepare_structural_candidate is not None:
-                    structural_lowering = prepare_structural_candidate(
-                        test_ast,
-                        destination_size=destination_size,
-                    )
-                    structural_lowering_prepared = True
-                break
-        structural_attempt_count = 0
+        raw_match_error = False
         scheduled_rule_names = scheduled_rule_names or frozenset()
         for i, rule_pattern_info in enumerate(all_matches):
             rule_name = str(rule_pattern_info.rule.name)
@@ -919,78 +944,56 @@ class PatternOptimizer(InstructionOptimizer):
                     "match_structural_and_replace",
                     None,
                 )
+                # Task 7 shadow mode remains in force for legacy rules.
+                observe_structural_match = getattr(
+                    rule_pattern_info.rule,
+                    "observe_structural_match",
+                    None,
+                )
                 if (
-                    bool(
-                        getattr(
-                            rule_pattern_info.rule, "uses_structural_matching", False
-                        )
-                    )
-                    and match_structural_and_replace is not None
+                    observe_structural_match is not None
+                    and os.environ.get("D810_SHADOW_DSL_MATCHING", "0") == "1"
                 ):
-                    structural_attempt_count += 1
-                    if structural_lowering_prepared:
-                        new_ins = match_structural_and_replace(
-                            test_ast,
-                            bucket_size=structural_bucket_size,
-                            attempted_rule_count=structural_attempt_count,
-                            lowering=structural_lowering,
-                            lowering_provided=True,
-                        )
-                    else:
-                        new_ins = match_structural_and_replace(
-                            test_ast,
-                            bucket_size=structural_bucket_size,
-                            attempted_rule_count=structural_attempt_count,
-                        )
-                else:
-                    # Task 7 shadow mode remains in force for legacy rules.
-                    observe_structural_match = getattr(
+                    observe_structural_match(test_ast)
+
+                # PR4: Non-mutating match path (when enabled and using indexed storage)
+                if self._use_nomut_matching and not self._use_legacy_storage:
+                    # Non-mutating match: pattern stays frozen, bindings go to separate object
+                    if not _match_nomut(
+                        rule_pattern_info.pattern, test_ast, self._match_bindings
+                    ):
+                        continue
+                    proxy = BindingsProxy(self._match_bindings)
+                    if not rule_pattern_info.rule.check_candidate(proxy):
+                        continue
+                    record_legacy_match_bindings = getattr(
                         rule_pattern_info.rule,
-                        "observe_structural_match",
+                        "record_legacy_match_bindings",
                         None,
                     )
-                    if (
-                        observe_structural_match is not None
-                        and os.environ.get("D810_SHADOW_DSL_MATCHING", "0") == "1"
-                    ):
-                        observe_structural_match(test_ast)
-
-                    # PR4: Non-mutating match path (when enabled and using indexed storage)
-                    if self._use_nomut_matching and not self._use_legacy_storage:
-                        # Non-mutating match: pattern stays frozen, bindings go to separate object
-                        if not _match_nomut(
-                            rule_pattern_info.pattern, test_ast, self._match_bindings
-                        ):
-                            continue
-                        proxy = BindingsProxy(self._match_bindings)
-                        if not rule_pattern_info.rule.check_candidate(proxy):
-                            continue
-                        record_legacy_match_bindings = getattr(
+                    if record_legacy_match_bindings is not None:
+                        record_legacy_match_bindings(
+                            rule_pattern_info.pattern,
+                            test_ast,
+                        )
+                    new_ins = rule_pattern_info.rule.get_replacement(proxy)
+                    if new_ins is not None:
+                        record_bound_replacement_outcome = getattr(
                             rule_pattern_info.rule,
-                            "record_legacy_match_bindings",
+                            "record_bound_replacement_outcome",
                             None,
                         )
-                        if record_legacy_match_bindings is not None:
-                            record_legacy_match_bindings(
-                                rule_pattern_info.pattern,
-                                test_ast,
+                        if record_bound_replacement_outcome is not None:
+                            record_bound_replacement_outcome(
+                                rule_pattern_info.rule.REPLACEMENT_PATTERN
                             )
-                        new_ins = rule_pattern_info.rule.get_replacement(proxy)
-                        if new_ins is not None:
-                            record_bound_replacement_outcome = getattr(
-                                rule_pattern_info.rule,
-                                "record_bound_replacement_outcome",
-                                None,
-                            )
-                            if record_bound_replacement_outcome is not None:
-                                record_bound_replacement_outcome(
-                                    rule_pattern_info.rule.REPLACEMENT_PATTERN
-                                )
-                    else:
-                        # Legacy mutating path: pattern gets mop references copied into it
-                        new_ins = rule_pattern_info.rule.check_pattern_and_replace(
-                            rule_pattern_info.pattern, test_ast
-                        )
+                else:
+                    # Legacy mutating path: pattern gets mop references copied into it
+                    new_ins = rule_pattern_info.rule.check_pattern_and_replace(
+                        rule_pattern_info.pattern, test_ast
+                    )
+                if self._raw_attempt_abstains(rule_pattern_info.rule):
+                    raw_match_error = True
 
                 if new_ins is not None:
                     if optimizer_logger.info_on:
@@ -1008,6 +1011,7 @@ class PatternOptimizer(InstructionOptimizer):
                     self._pending_replacement_rule = rule_pattern_info.rule
                     return new_ins
             except RuntimeError as e:
+                raw_match_error = True
                 record_attempt_error = getattr(
                     rule_pattern_info.rule,
                     "record_attempt_error",
@@ -1028,6 +1032,60 @@ class PatternOptimizer(InstructionOptimizer):
                         rule_pattern_info.rule,
                         self.cur_maturity,
                     )
+                if clear_match_context is not None:
+                    clear_match_context()
+
+        # Canonical matching is a fallback only: prepare the native island
+        # after all eligible raw candidates have cleanly missed.
+        if raw_match_error:
+            return None
+        structural_lowering, fallback_rules = self._prepare_canonical_fallback(
+            test_ast, ins
+        )
+        if not fallback_rules or structural_lowering is None:
+            return None
+        fallback_bucket_size = len(fallback_rules)
+        fallback_attempt_count = 0
+        for rule in fallback_rules:
+            rule_name = str(rule.name)
+            if rule_name in getattr(self, "_cycle_quarantined_rule_names", frozenset()):
+                continue
+            if allowed_rule_names is not None and rule_name not in allowed_rule_names:
+                continue
+            if (
+                self.cur_maturity not in rule.maturities
+                and rule_name not in scheduled_rule_names
+            ):
+                continue
+            bind_match_context = getattr(rule, "bind_match_context", None)
+            clear_match_context = getattr(rule, "clear_match_context", None)
+            try:
+                if bind_match_context is not None:
+                    bind_match_context(blk, ins)
+                match_structural_and_replace = getattr(
+                    rule, "match_structural_and_replace", None
+                )
+                if match_structural_and_replace is None:
+                    continue
+                fallback_attempt_count += 1
+                new_ins = match_structural_and_replace(
+                    test_ast,
+                    bucket_size=fallback_bucket_size,
+                    attempted_rule_count=fallback_attempt_count,
+                    lowering=structural_lowering,
+                    lowering_provided=True,
+                )
+                if new_ins is not None:
+                    self.last_matched_rule_name = rule_name
+                    self._pending_replacement_rule = rule
+                    return new_ins
+            except RuntimeError as e:
+                record_attempt_error = getattr(rule, "record_attempt_error", None)
+                if record_attempt_error is not None:
+                    record_attempt_error(e)
+            finally:
+                if self._run_later_callback is not None:
+                    self._run_later_callback(rule, self.cur_maturity)
                 if clear_match_context is not None:
                     clear_match_context()
         return None

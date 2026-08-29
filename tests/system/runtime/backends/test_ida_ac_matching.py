@@ -747,7 +747,7 @@ def test_selected_unsupported_dsl_rules_keep_legacy_dispatch_by_default(
     assert adapter.uses_structural_matching is False
     assert all(
         adapter not in rules
-        for rules in optimizer._structural_rules_by_root_opcode.values()
+        for rules in optimizer._canonical_fallback_rules_by_root_shape.values()
     )
     assert optimizer._indexed_storage.total_patterns == len(adapter.pattern_candidates)
 
@@ -954,14 +954,21 @@ def test_structural_dispatch_is_root_bucketed_and_reports_attempt_count(
         name = "CertifiedDsl"
         maturities = [7]
         uses_structural_matching = True
+        canonical_fallback_enabled = True
 
         def __init__(self) -> None:
             self.calls: list[tuple[object, int, int]] = []
             self.prepared: list[tuple[object, int]] = []
 
+        def check_pattern_and_replace(self, _pattern, _candidate):
+            return None
+
         def prepare_structural_candidate(self, candidate, *, destination_size: int):
             self.prepared.append((candidate, destination_size))
-            return "lowered-once"
+            leaf = TypedBvTerm(None, 32, leaf_key=("mop", "x"))
+            return SimpleNamespace(
+                term=TypedBvTerm("add", 32, children=(leaf, leaf)),
+            )
 
         def match_structural_and_replace(
             self,
@@ -973,7 +980,7 @@ def test_structural_dispatch_is_root_bucketed_and_reports_attempt_count(
             lowering_provided: bool,
         ):
             self.calls.append((candidate, bucket_size, attempted_rule_count))
-            assert lowering == "lowered-once"
+            assert lowering.term.operation == "add"
             assert lowering_provided is True
             return Instruction()
 
@@ -985,10 +992,10 @@ def test_structural_dispatch_is_root_bucketed_and_reports_attempt_count(
     optimizer._use_legacy_storage = False
     optimizer._run_later_callback = None
     optimizer._pending_replacement_rule = None
-    optimizer._get_candidates = lambda _ast: [
-        RulePatternInfo(rule, object()),
-        RulePatternInfo(object(), object()),
-    ]
+    optimizer._canonical_fallback_rules_by_root_shape = {
+        ("add", 32, 2): [rule]
+    }
+    optimizer._get_candidates = lambda _ast: [RulePatternInfo(rule, object())]
 
     result = optimizer._try_matches(
         None,
@@ -1002,6 +1009,30 @@ def test_structural_dispatch_is_root_bucketed_and_reports_attempt_count(
     assert result is not None
     assert rule.prepared == [("candidate-ast", 4)]
     assert rule.calls == [("candidate-ast", 1, 1)]
+
+
+def test_canonical_fallback_registration_keeps_declared_raw_base_shape() -> None:
+    """Fallback-enabled adapters register one raw base and a separate shape bucket."""
+
+    x = Var("x")
+
+    class Rule:
+        name = "CanonicalFallbackRule"
+        maturities = [7]
+        pattern = x + Const("one", 1)
+
+    adapter = IDAPatternAdapter(Rule())
+    adapter._canonical_fallback_enabled = True
+    adapter._structural_matching_enabled = True
+    adapter._canonical_fallback_root_shapes = (("add", 32, 2),)
+    optimizer = PatternOptimizer(maturities=[7], stats=None, log_dir=None)
+
+    assert optimizer._add_rule_internal(adapter)
+    assert len(adapter.pattern_candidates) == 1
+    assert optimizer._indexed_storage.total_patterns == 1
+    assert optimizer._canonical_fallback_rules_by_root_shape[("add", 32, 2)] == [
+        adapter
+    ]
 
 
 def test_structural_only_hit_is_proven_without_becoming_a_live_rewrite(monkeypatch) -> None:
