@@ -210,6 +210,132 @@ def test_conditional_arm_forecast_mints_complete_decision_dag_fact() -> None:
         state_var_stkoff=_STATE, state_var_reg=None,
     ) is None
 
+
+def _direct_conditional_arm_fixture(
+    *,
+    selector_kind: InsnKind = InsnKind.COND_JUMP,
+    selector_target: int = 1,
+) -> tuple[int, FlowGraph, TransitionArm, DecisionDag]:
+    state = 0x12345678
+    selector = InsnSnapshot(
+        opcode=_OP_MOV,
+        ea=0x1000,
+        operands=(),
+        l=MopSnapshot(kind=OperandKind.STACK, size=4, stkoff=_STATE),
+        r=MopSnapshot(kind=OperandKind.NUMBER, size=4, value=state),
+        d=MopSnapshot(kind=OperandKind.BLOCK, block_ref=selector_target),
+        kind=selector_kind,
+        branch_predicate=PredicateKind.EQ,
+        is_conditional_jump=True,
+    )
+    route_branch = replace(selector, ea=0x1080, d=MopSnapshot(kind=OperandKind.BLOCK, block_ref=3))
+    graph = FlowGraph(
+        {
+            0: replace(
+                _b(0, (1, 5), (), (selector,)),
+                kind=BlockKind.TWO_WAY,
+                tail_kind=selector_kind,
+            ),
+            1: replace(
+                _b(1, (2,), (0,), (_mov_state(0x1044, state),)),
+                kind=BlockKind.ONE_WAY,
+                tail_kind=InsnKind.MOV,
+            ),
+            2: replace(
+                _b(2, (3, 4), (1,), (route_branch,)),
+                kind=BlockKind.TWO_WAY,
+                tail_kind=InsnKind.COND_JUMP,
+            ),
+            3: _b(3, (), (2,), ()),
+            4: _b(4, (), (2,), ()),
+            5: _b(5, (), (0,), ()),
+        },
+        entry_serial=0,
+        func_ea=0x1000,
+    )
+    return (
+        state,
+        graph,
+        TransitionArm(state, 3, False, 0, 1, 1, (0, 1)),
+        DecisionDag(32, {2: RouteComparison(2, "jz", state, 3, 4)}, root=2),
+    )
+
+
+def _forecast_direct_arm(graph: FlowGraph, arm: TransitionArm, dag: DecisionDag):
+    return _conditional_arm_route_forecast(
+        RedirectGoto(1, 2, 3),
+        arm,
+        graph,
+        dag,
+        state_var_stkoff=_STATE,
+        state_var_reg=None,
+    )
+
+
+def test_conditional_arm_forecast_rejects_absent_intermediate_path_block() -> None:
+    _state, graph, arm, dag = _direct_conditional_arm_fixture()
+    assert _forecast_direct_arm(
+        graph,
+        replace(arm, ordered_path=(0, 99, 1)),
+        dag,
+    ) is None
+
+
+def test_conditional_arm_forecast_rejects_disconnected_path_edge() -> None:
+    _state, graph, arm, dag = _direct_conditional_arm_fixture()
+    detached = _b(6, (5,), (0,), ())
+    graph = FlowGraph(
+        {
+            **graph.blocks,
+            0: replace(graph.blocks[0], succs=(6, 5)),
+            6: detached,
+        },
+        entry_serial=graph.entry_serial,
+        func_ea=graph.func_ea,
+    )
+    assert _forecast_direct_arm(
+        graph,
+        replace(arm, ordered_path=(0, 6, 1)),
+        dag,
+    ) is None
+
+
+def test_conditional_arm_forecast_rejects_selector_equal_to_writer() -> None:
+    _state, graph, arm, dag = _direct_conditional_arm_fixture()
+    same_block = replace(
+        arm,
+        branch_block=1,
+        write_block=1,
+        exit_block=1,
+        ordered_path=(1,),
+    )
+    assert _forecast_direct_arm(graph, same_block, dag) is None
+
+
+def test_conditional_arm_forecast_rejects_one_way_nonselector() -> None:
+    _state, graph, arm, dag = _direct_conditional_arm_fixture()
+    graph = FlowGraph(
+        {
+            **graph.blocks,
+            0: replace(graph.blocks[0], kind=BlockKind.ONE_WAY, succs=(1,)),
+        },
+        entry_serial=graph.entry_serial,
+        func_ea=graph.func_ea,
+    )
+    assert _forecast_direct_arm(graph, arm, dag) is None
+
+
+def test_conditional_arm_forecast_rejects_tail_target_outside_successors() -> None:
+    _state, graph, arm, dag = _direct_conditional_arm_fixture(selector_target=99)
+    assert _forecast_direct_arm(graph, arm, dag) is None
+
+
+def test_conditional_arm_forecast_accepts_equality_jump_selector() -> None:
+    _state, graph, arm, dag = _direct_conditional_arm_fixture(
+        selector_kind=InsnKind.EQUALITY_JUMP,
+    )
+    assert _forecast_direct_arm(graph, arm, dag) is not None
+
 _OP_MOV = 4
 _T_NUM, _T_STK, _T_REG = 2, 4, 1
 _STATE = 0x64

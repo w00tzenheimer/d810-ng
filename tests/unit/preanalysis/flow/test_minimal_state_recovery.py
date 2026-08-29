@@ -5116,6 +5116,31 @@ def test_exact_state_normalizer_chain_routes_to_semantic_destination() -> None:
     assert resolved.is_return is False
 
 
+def test_u32_state_router_without_normalizer_feeder_abstains_cleanly() -> None:
+    """Arm routing cannot traverse a normalizer without its exact feeder."""
+
+    graph, dag = _typed_state_route_reconciliation_fixture()
+    transition = _coarse_transition(14, 0x1BABC1DC, 13)
+
+    assert minimal_state_recovery._route_u32_state_through_decision_dag(
+        0x1BABC1DC,
+        graph,
+        dag,
+        state_var_stkoff=_STATE_OFF,
+        state_var_reg=None,
+        via_block=None,
+    ) is None
+    routed = minimal_state_recovery._route_state_through_decision_dag(
+        transition,
+        graph,
+        dag,
+        state_var_stkoff=_STATE_OFF,
+        state_var_reg=None,
+    )
+    assert routed is not None
+    assert routed.target == 19
+
+
 def test_recovered_semantic_handler_is_not_reclassified_as_invalid_normalizer() -> None:
     """A semantic handler may end with the shared next-state carrier shape.
 

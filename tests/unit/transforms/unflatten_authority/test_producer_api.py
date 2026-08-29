@@ -41,6 +41,7 @@ def test_conditional_arm_adapter_requires_the_complete_decision_dag_witness() ->
         SemanticRouteFact,
         SemanticRouteFactKind,
         build_canonical_semantic_evidence,
+        canonical_semantic_evidence_from_proofs,
     )
     from d810.analyses.control_flow.route_predicate import RouteComparison
     from d810.core.native_preanalysis_key import NativePreanalysisKey
@@ -110,6 +111,32 @@ def test_conditional_arm_adapter_requires_the_complete_decision_dag_witness() ->
     altered_dag = replace(raw_dag, path_anchors=(0x1201,))
     with pytest.raises(ValueError):
         producer_module.adapt_conditional_arm_route(replace(forecast, route_fact=replace(fact, decision_dag_witness=altered_dag)), **kwargs)
+
+    proof = result.evidence.route_proofs[0]
+    assert proof.state_dag is not None
+    (comparison,) = proof.state_dag.witness.comparisons
+    drifted_comparison = replace(
+        comparison,
+        node=replace(comparison.node, anchor_ea=0x1201),
+    )
+    drifted_witness = replace(
+        proof.state_dag.witness,
+        comparisons=(drifted_comparison,),
+    )
+    drifted_proof = replace(
+        proof,
+        state_dag=replace(proof.state_dag, witness=drifted_witness),
+    )
+    drifted_evidence = canonical_semantic_evidence_from_proofs(
+        result.evidence.native_key,
+        result.evidence.generation,
+        (drifted_proof,),
+    )
+    with pytest.raises(ValueError):
+        producer_module.adapt_conditional_arm_route(
+            forecast,
+            **{**kwargs, "canonical_evidence": drifted_evidence},
+        )
 
 
 def _block(*instructions: InsnSnapshot, kind: BlockKind = BlockKind.UNKNOWN, succs: tuple[int, ...] = ()) -> BlockSnapshot:

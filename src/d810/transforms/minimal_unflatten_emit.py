@@ -8417,14 +8417,17 @@ def _conditional_arm_route_forecast(
         or int(modification.old_target) not in tuple(int(item) for item in source.succs)
     ):
         return None
+    branch_index = path.index(int(arm.branch_block))
     branch_tail = branch.tail
     if (
-        branch.nsucc != 2 or branch_tail is None
-        or branch_tail.kind is not InsnKind.COND_JUMP
+        branch_index + 1 >= len(path)
+        or branch.kind is not BlockKind.TWO_WAY or branch.nsucc != 2 or branch_tail is None
+        or branch_tail.kind not in (InsnKind.COND_JUMP, InsnKind.EQUALITY_JUMP)
         or not branch_tail.is_conditional_jump
         or branch_tail.d is None or branch_tail.d.kind is not OperandKind.BLOCK
         or branch_tail.d.block_ref is None
-        or int(path[path.index(int(arm.branch_block)) + 1])
+        or int(branch_tail.d.block_ref) not in tuple(int(item) for item in branch.succs)
+        or int(path[branch_index + 1])
         not in tuple(int(item) for item in branch.succs)
     ):
         return None
