@@ -96,6 +96,7 @@ class TestModularProductNonzeroNative:
                 if rule.name == "ModularProductNonzeroBlockRule"
             ]
             assert len(state.current_blk_rules) == 1
+            state.manager.configure_external_implementation_bindings({})
             # This test deliberately narrows the live rule collections to the
             # native block rule.  Do the same for the compiled bundle schedule;
             # otherwise manager scope compilation quite correctly rejects the

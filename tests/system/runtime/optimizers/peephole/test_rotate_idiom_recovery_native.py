@@ -546,6 +546,7 @@ class TestRotateIdiomRecoveryNative:
                 if rule.name == "RotateIdiomRecoveryBlockRule"
             ]
             assert len(state.current_blk_rules) == 1
+            state.manager.configure_external_implementation_bindings({})
             # This test deliberately narrows the live rule collections to the
             # native block rule.  Keep the manager's compiled schedule in the
             # same isolated state so unrelated constant stages are not treated
