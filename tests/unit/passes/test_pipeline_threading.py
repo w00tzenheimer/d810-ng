@@ -54,7 +54,7 @@ from d810.passes.unflatten.state_machine import (
     _publish_observation_evidence,
     _recover_folded_constant_equality_dag,
 )
-from d810.transforms.plan import PatchPlan, PatchRedirectGoto
+from d810.transforms.plan import ExecutionPolicy, PatchPlan, PatchRedirectGoto
 from d810.transforms.unflatten_authority.model import UnflattenAuthorityReason
 from d810.transforms.unflatten_authority.proposal import (
     ProposalRejected,
@@ -853,7 +853,11 @@ def _typed_pipeline_plan() -> PatchPlan:
 def test_lower_state_machine_rejects_nonempty_plan_without_typed_proposal(
     monkeypatch,
 ):
-    produced = replace(_typed_pipeline_plan(), unflatten_proposal=None)
+    produced = replace(
+        _typed_pipeline_plan(),
+        unflatten_proposal=None,
+        execution_policy=ExecutionPolicy.NOP_CLEANUP_RELAXED,
+    )
 
     result = _run_lower_state_machine_with_emitted_plan(monkeypatch, produced)
 
@@ -864,6 +868,7 @@ def test_lower_state_machine_rejects_nonempty_plan_without_typed_proposal(
     assert result.rewrite_plan.snapshot_id == produced.snapshot_id
     assert result.rewrite_plan.source_maturity == produced.source_maturity
     assert result.rewrite_plan.source_generation == produced.source_generation
+    assert result.rewrite_plan.execution_policy is produced.execution_policy
     assert result.rewrite_plan.source_coordinates == produced.source_coordinates
     rejection = result.rewrite_plan.metadata_dict()["unflatten_producer_abstention"]
     assert rejection == ProposalRejected(
@@ -907,6 +912,27 @@ def test_lower_state_machine_rejects_malformed_or_multiple_typed_authority(
     assert result.rewrite_plan.steps == ()
     rejection = result.rewrite_plan.metadata_dict()["unflatten_producer_abstention"]
     assert rejection.reason is UnflattenAuthorityReason.MALFORMED_PROPOSAL
+
+
+def test_lower_state_machine_fails_closed_when_proposal_validation_drifts(
+    monkeypatch,
+):
+    produced = _typed_pipeline_plan()
+    monkeypatch.setattr(
+        state_machine_module,
+        "validate_proposal",
+        lambda *_args, **_kwargs: object(),
+    )
+
+    result = _run_lower_state_machine_with_emitted_plan(monkeypatch, produced)
+
+    assert result.rewrite_plan is not None
+    assert result.rewrite_plan.steps == ()
+    rejection = result.rewrite_plan.metadata_dict()["unflatten_producer_abstention"]
+    assert rejection == ProposalRejected(
+        UnflattenAuthorityReason.MALFORMED_PROPOSAL,
+        "proposal_invariants_invalid",
+    )
 
 
 def test_lower_state_machine_merges_manager_retained_predecessor_observations(

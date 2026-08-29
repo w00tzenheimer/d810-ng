@@ -176,8 +176,12 @@ def _typed_or_empty_unflatten_plan(plan: PatchPlan) -> PatchPlan:
         if isinstance(validation, ProposalAccepted):
             return plan
         if not isinstance(validation, ProposalRejected):
-            raise TypeError("unflatten proposal validation returned an unknown result")
-        rejection = validation
+            rejection = ProposalRejected(
+                UnflattenAuthorityReason.MALFORMED_PROPOSAL,
+                "proposal_invariants_invalid",
+            )
+        else:
+            rejection = validation
 
     return PatchPlan(
         plan_id=plan.plan_id,
