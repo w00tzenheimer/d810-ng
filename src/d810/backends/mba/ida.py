@@ -1136,7 +1136,22 @@ class IDAPatternAdapter:
                 getattr(self.rule, "name", "<unnamed>"),
                 exc,
             )
-            raise
+            if getattr(self, "_structural_selection_active", False):
+                raise
+            # Legacy shadow observation is telemetry only.  Keep the raw
+            # AstNode matcher authoritative, and discard every borrowed
+            # structural reference before returning to that matcher.
+            logger.debug(
+                "Legacy shadow observation failed closed for %s at %s; "
+                "continuing with the raw matcher",
+                getattr(self.rule, "name", "<unnamed>"),
+                exc.stage,
+            )
+            self._clear_structural_attempt_state()
+            self._canonical_fallback_comparisons = 0
+            self._canonical_fallback_budget_exhausted = False
+            self._canonical_fallback_stop_reason = None
+            return None
 
     def _matcher_metadata(self) -> MatcherOutcomeMetadata | None:
         raw_receipt = getattr(

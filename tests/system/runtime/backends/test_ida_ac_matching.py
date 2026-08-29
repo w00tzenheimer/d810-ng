@@ -990,6 +990,7 @@ def test_structural_matcher_error_is_terminal_and_typed(monkeypatch) -> None:
         replacement = x
 
     adapter = IDAPatternAdapter(Rule())
+    adapter._structural_selection_active = True
     source = ast_dispatcher.AstNode(ida_hexrays.m_add, _leaf("x", 1), _constant(0))
     lowering = _canonical_probe_lowering(adapter, source)
 
@@ -1014,6 +1015,7 @@ def test_structural_constraint_error_is_terminal_and_typed(monkeypatch) -> None:
         replacement = x
 
     adapter = IDAPatternAdapter(Rule())
+    adapter._structural_selection_active = True
     source = ast_dispatcher.AstNode(ida_hexrays.m_add, _leaf("x", 1), _constant(0))
     lowering = _canonical_probe_lowering(adapter, source)
     template = adapter._shadow_canonical_templates[32]
@@ -1042,6 +1044,7 @@ def test_structural_provenance_error_is_terminal_and_typed(monkeypatch) -> None:
         replacement = x
 
     adapter = IDAPatternAdapter(Rule())
+    adapter._structural_selection_active = True
     source = ast_dispatcher.AstNode(ida_hexrays.m_add, _leaf("x", 1), _constant(0))
     lowering = _canonical_probe_lowering(adapter, source)
     native_x = object()
@@ -1421,6 +1424,102 @@ def test_legacy_dispatch_does_not_shadow_or_collect_outcomes_by_default(
         )
         is not None
     )
+
+
+@pytest.mark.parametrize("stage", ("matcher", "constraint", "provenance"))
+def test_legacy_shadow_observation_failure_does_not_block_raw_hit(
+    monkeypatch, caplog, stage: str
+) -> None:
+    """Shadow failures are inert while the legacy matcher remains authoritative."""
+
+    from d810.mba import ac_matching, canonical_pattern
+
+    monkeypatch.setenv("D810_SHADOW_DSL_MATCHING", "1")
+    x = Var("x")
+
+    class Rule:
+        name = f"legacy-shadow-{stage}"
+        maturities = (7,)
+        pattern = x + Const("zero", 0)
+        replacement = x
+
+    adapter = IDAPatternAdapter(Rule())
+    source = ast_dispatcher.AstNode(ida_hexrays.m_add, _leaf("x", 1), _constant(0))
+    source.dest_size = 4
+    source.ea = 0x401000
+    lowering = _canonical_probe_lowering(adapter, source)
+    if stage == "provenance":
+        native_x = object()
+        native_zero = object()
+        lowering.native_nodes_by_path = {(0,): native_x, (1,): native_zero}
+        lowering.raw_native_nodes_by_path = {(0,): native_x, (1,): native_zero}
+    monkeypatch.setattr(adapter, "prepare_structural_candidate", lambda *_args, **_kwargs: lowering)
+
+    def fail(*_args, **_kwargs):
+        raise RuntimeError(f"{stage} observation defect")
+
+    if stage == "matcher":
+        monkeypatch.setattr(ac_matching, "match_canonical_term_pattern", fail)
+    elif stage == "constraint":
+        monkeypatch.setattr(canonical_pattern, "evaluate_frozen_constraints", fail)
+    else:
+        monkeypatch.setattr(canonical_pattern, "resolve_canonical_match_paths", fail)
+
+    class Instruction:
+        ea = 0x401000
+
+        class d:
+            size = 4
+
+        @staticmethod
+        def _print():
+            return "legacy-shadow-failure"
+
+    instruction = Instruction()
+    raw_replacement = instruction
+    monkeypatch.setattr(ida_backend, "minsn_to_ast", lambda _value: source)
+    monkeypatch.setattr(adapter, "_raw_native_fingerprint", lambda: ("raw:test", {}))
+
+    def raw_hit(_pattern, _candidate):
+        adapter._raw_match_selected = True
+        adapter._record_catalogue_success(source, source, raw_native=True)
+        return raw_replacement
+
+    monkeypatch.setattr(adapter, "check_pattern_and_replace", raw_hit)
+    optimizer = object.__new__(PatternOptimizer)
+    optimizer.stats = None
+    optimizer.cur_maturity = 7
+    optimizer._use_nomut_matching = False
+    optimizer._use_legacy_storage = False
+    optimizer._run_later_callback = None
+    optimizer._pending_replacement_rule = None
+    optimizer._get_candidates = lambda _candidate: [
+        RulePatternInfo(adapter, adapter.pattern_candidates[0])
+    ]
+    adapter.begin_provider_outcome_capture()
+
+    assert (
+        optimizer._try_matches(
+            None,
+            instruction,
+            source,
+            allowed_rule_names=None,
+            scheduled_rule_names=None,
+            source_label=f"legacy-shadow-{stage}",
+        )
+        is raw_replacement
+    )
+    assert any(stage in record.message for record in caplog.records)
+    outcome = adapter.provider_outcomes()[-1]
+    assert outcome.status is ProviderOutcomeStatus.IMPROVED
+    assert outcome.fingerprint == "raw:test"
+    assert outcome.matcher is not None
+    assert outcome.matcher.selection is MatcherSelection.RAW
+    assert outcome.matcher.terminal_stop_reason == "matched"
+    assert outcome.metadata["shadow"]["structural_match"] is False
+    assert adapter._shadow_lowering is None
+    assert adapter._shadow_match_report is None
+    assert adapter._shadow_structural_native_paths is None
 
 
 def test_pattern_optimizer_publishes_typed_raw_work_receipt(monkeypatch) -> None:
