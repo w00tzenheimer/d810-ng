@@ -1148,8 +1148,6 @@ def validate_canonical_roundtrip(value: object, expected_type: type[object]) -> 
     decoded = canonical_decode(encoded)
     if type(decoded) is not expected_type or decoded != value:
         raise ValueError("canonical roundtrip changed the authority value")
-    if canonical_bytes(decoded) != encoded:
-        raise ValueError("canonical roundtrip is not stable")
     return decoded
 
 

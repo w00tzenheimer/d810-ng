@@ -6,6 +6,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, replace
 import json
 from types import MappingProxyType
+from unittest.mock import patch
 
 import pytest
 
@@ -736,6 +737,27 @@ def test_state_proof_evidence_proposal_and_source_authority_round_trip(proof_kin
         decoded = canonical_decode(canonical_bytes(value))
         assert type(decoded) is type(value)
         assert canonical_bytes(decoded) == canonical_bytes(value)
+
+
+def test_validate_canonical_roundtrip_reencodes_deep_authority_only_in_decode() -> None:
+    """The outer helper must not repeat canonical_decode's root validation."""
+    from d810.analyses.control_flow import semantic_route_evidence as route
+    from d810.transforms.unflatten_authority import ids
+    from tests.unit.transforms.unflatten_authority.test_bind import (
+        _compiler_corridor_unsupported_case,
+    )
+
+    authority, *_rest = _compiler_corridor_unsupported_case(
+        proof_kind=route.SemanticRouteProofKind.STATE_TRANSFORM,
+    )
+    with patch.object(ids, "canonical_bytes", wraps=ids.canonical_bytes) as encode:
+        decoded = ids.validate_canonical_roundtrip(authority, type(authority))
+
+    assert decoded == authority
+    assert type(decoded) is type(authority)
+    assert sum(
+        type(call.args[0]) is type(authority) for call in encode.call_args_list
+    ) == 2
 
 
 def test_claim_and_evidence_factories_recompute_ids_and_reject_forgery() -> None:
