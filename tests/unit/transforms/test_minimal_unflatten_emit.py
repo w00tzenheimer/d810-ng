@@ -2454,6 +2454,119 @@ def test_supplied_canonical_evidence_mints_exact_current_native_entry_proof(
     ) == augmented
 
 
+def test_local_authority_mints_unique_native_entry_without_scalar_consensus(
+    monkeypatch, _seam,
+):
+    """One source-keyed operation can rebind one native entry receipt."""
+    graph, _state, _entry_route, kwargs = _typed_entry_native_route_fixture(monkeypatch)
+    forecast_inputs = []
+    original_forecast = minimal_unflatten_emit_module.ConcreteEntryRouteForecast
+
+    def capture_forecast(*args, **forecast_kwargs):
+        forecast_inputs.append(forecast_kwargs)
+        return original_forecast(*args, **forecast_kwargs)
+
+    monkeypatch.setattr(
+        minimal_unflatten_emit_module,
+        "ConcreteEntryRouteForecast",
+        capture_forecast,
+    )
+    monkeypatch.setattr(
+        minimal_unflatten_emit_module,
+        "_recover_initial_state",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        minimal_unflatten_emit_module,
+        "_resolve_entry_state_route_resolution",
+        lambda *_args, **_kwargs: pytest.fail("scalar consensus must not run"),
+    )
+
+    plan = emit_minimal_unflatten(graph, native_key=NATIVE_KEY, **kwargs)
+
+    assert plan.unflatten_proposal is not None
+    assert {
+        proof.state_write.instruction_ea
+        for proof in plan.unflatten_proposal.route_evidence.route_proofs
+        if proof.state_write is not None
+    } == {0x1001, 0x2000}
+    assert [inputs["source_kinds"] for inputs in forecast_inputs] == [
+        (minimal_unflatten_emit_module.NATIVE_BOUND_ENTRY_ROUTE_SOURCE_KIND,)
+    ]
+
+
+def test_local_authority_abstains_on_ambiguous_native_entry_correlation(
+    monkeypatch, _seam,
+):
+    """Two receipts for one source-keyed redirect never choose an owner."""
+    graph, _state, entry_route, kwargs = _typed_entry_native_route_fixture(monkeypatch)
+    monkeypatch.setattr(
+        minimal_unflatten_emit_module,
+        "_recover_initial_state",
+        lambda *_args, **_kwargs: None,
+    )
+
+    plan = emit_minimal_unflatten(
+        graph,
+        native_key=NATIVE_KEY,
+        native_bound_transition_routes=(
+            entry_route,
+            replace(entry_route, fact_id="ambiguous-entry"),
+            *kwargs["native_bound_transition_routes"][1:],
+        ),
+        **{key: value for key, value in kwargs.items() if key != "native_bound_transition_routes"},
+    )
+
+    assert graph_modifications(plan) == []
+    assert plan.unflatten_proposal is None
+
+
+def test_local_authority_abstains_on_unmatched_native_entry_redirect(
+    monkeypatch, _seam,
+):
+    """A source-keyed redirect cannot borrow an unrelated route receipt."""
+    graph, _state, _entry_route, kwargs = _typed_entry_native_route_fixture(monkeypatch)
+    monkeypatch.setattr(
+        minimal_unflatten_emit_module,
+        "_recover_initial_state",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        minimal_unflatten_emit_module,
+        "build_native_bound_state_entry_bridges",
+        lambda *_args, **_kwargs: [RedirectGoto(0, 2, 99)],
+    )
+
+    plan = emit_minimal_unflatten(graph, native_key=NATIVE_KEY, **kwargs)
+
+    assert graph_modifications(plan) == []
+    assert plan.unflatten_proposal is None
+
+
+def test_local_authority_requires_scalar_consensus_when_initial_state_exists(
+    monkeypatch, _seam,
+):
+    """A missing scalar consensus cannot fall back to operation correlation."""
+    graph, state, _entry_route, kwargs = _typed_entry_native_route_fixture(monkeypatch)
+    monkeypatch.setattr(
+        minimal_unflatten_emit_module,
+        "_recover_initial_state",
+        lambda *_args, **_kwargs: state,
+    )
+    monkeypatch.setattr(
+        minimal_unflatten_emit_module,
+        "_resolve_entry_state_route_resolution",
+        lambda *_args, **_kwargs: minimal_unflatten_emit_module._EntryStateRouteResolution(
+            None,
+        ),
+    )
+
+    plan = emit_minimal_unflatten(graph, native_key=NATIVE_KEY, **kwargs)
+
+    assert graph_modifications(plan) == []
+    assert plan.unflatten_proposal is None
+
+
 def test_supplied_canonical_evidence_abstains_on_refined_entry_write_collision(
     monkeypatch, _seam,
 ):

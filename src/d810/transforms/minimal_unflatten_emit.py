@@ -3039,6 +3039,37 @@ def _native_bound_routes_for_entry_state(
     return tuple(matching)
 
 
+def _resolve_unique_native_entry_route_from_modifications(
+    routes: tuple[NativeBoundTransitionRoute, ...],
+    modifications: tuple[object, ...] | list[object],
+) -> NativeBoundTransitionRoute | None:
+    """Return the one native receipt implemented by one entry redirect.
+
+    The rebound native receipt is the authority; the source-keyed redirect
+    only correlates its planned operation to that receipt's physical edge.
+    This avoids inferring abstract dispatcher consensus.  Any competing
+    receipt, multiple operations, or shape mismatch is ambiguous and
+    therefore abstains.
+    """
+    if len(modifications) != 1:
+        return None
+    modification = modifications[0]
+    if not isinstance(modification, RedirectGoto):
+        return None
+    try:
+        source = int(modification.from_serial)
+        target = int(modification.new_target)
+    except _PROVIDER_SHAPE_ERRORS:
+        return None
+    matching = tuple(
+        route
+        for route in routes
+        if int(route.source_block_serial) == source
+        and int(route.target_handler_serial) == target
+    )
+    return matching[0] if len(matching) == 1 else None
+
+
 def _resolve_concrete_route_resolution(
     dispatcher: object,
     state: int,
@@ -9806,6 +9837,7 @@ def emit_minimal_unflatten(
     held_entry_fact: SemanticRouteFact | None = None
     concrete_entry_route_forecasts: tuple[ConcreteEntryRouteForecast, ...] = ()
     concrete_entry_native_routes: tuple[NativeBoundTransitionRoute, ...] = ()
+    entry_route_source_kinds: tuple[str, ...] = ()
     exact_state_effect_exclusions: tuple[
         ExactStateBranchEffectExclusion, ...
     ] = ()
@@ -10721,6 +10753,17 @@ def emit_minimal_unflatten(
                     )
                 )
                 concrete_entry_native_routes = exact_native_entry_routes
+                entry_route_source_kinds = entry_route.source_kinds
+            elif initial_state is None and native_bound_entry_route_mods:
+                native_route = _resolve_unique_native_entry_route_from_modifications(
+                    entry_native_bound_routes,
+                    native_bound_entry_route_mods,
+                )
+                if native_route is not None:
+                    concrete_entry_native_routes = (native_route,)
+                    entry_route_source_kinds = (
+                        NATIVE_BOUND_ENTRY_ROUTE_SOURCE_KIND,
+                    )
             if concrete_entry_native_routes:
                 if len(concrete_entry_native_routes) != 1:
                     return compile_with_dispatcher_coverage(())
@@ -10835,7 +10878,7 @@ def emit_minimal_unflatten(
                                 ConcreteEntryRouteForecast(
                                     normalized_state=native_route.state_constant,
                                     target_handler=native_route.target_handler_serial,
-                                    source_kinds=entry_route.source_kinds,
+                                    source_kinds=entry_route_source_kinds,
                                     physical_fact_id=native_route.fact_id,
                                     canonical_proof_id=proof.proof_id,
                                     source_identity=source_ref.identity,
@@ -11600,7 +11643,7 @@ def emit_minimal_unflatten(
                     return compile_with_dispatcher_coverage(())
                 entry_route = entry_route_resolution.route
                 native_route = concrete_entry_native_routes[0]
-                if entry_route is None or held_entry_fact is None:
+                if not entry_route_source_kinds or held_entry_fact is None:
                     return compile_with_dispatcher_coverage(())
                 try:
                     entry_catalog = build_source_identity_catalog(
@@ -11628,7 +11671,7 @@ def emit_minimal_unflatten(
                         ConcreteEntryRouteForecast(
                             normalized_state=native_route.state_constant,
                             target_handler=native_route.target_handler_serial,
-                            source_kinds=entry_route.source_kinds,
+                            source_kinds=entry_route_source_kinds,
                             physical_fact_id=native_route.fact_id,
                             canonical_proof_id=proof.proof_id,
                             source_identity=source_ref.identity,
