@@ -14,6 +14,7 @@ from tests.system.e2e.unflattening_effect_safety_oracle import (
     parse_authority_phase_payloads,
     reachable_call_eas,
     session_scoped_rows,
+    select_committed_authority_phase_payloads,
 )
 
 WORKTREE = Path(__file__).parents[2]
@@ -365,6 +366,89 @@ def test_authority_payload_aggregation_returns_valid_projected_observed_rows() -
     assert evidence.observed.case_id == "case-o"
     assert evidence.parity["authority_id"] == "authority-1"
     assert evidence.session_id == "session-1"
+
+
+def test_authority_payload_selection_ignores_rejected_groups_after_committed_provenance() -> None:
+    rejected = _authority_phase(
+        "projected_preflight", plan_id="rejected-plan", attempt_id="rejected-attempt"
+    )
+    selected = select_committed_authority_phase_payloads(
+        [rejected, *_authority_payloads()],
+        clean_committed_correlations={
+            ("plan-1", "attempt-1", "session-1"),
+        },
+        expected_session_id="session-1",
+    )
+    assert selected == tuple(_authority_payloads())
+
+
+@pytest.mark.parametrize(
+    "clean_committed_correlations, message",
+    [
+        (set(), "exactly one committed authority correlation"),
+        (
+            {
+                ("plan-1", "attempt-1", "session-1"),
+                ("plan-2", "attempt-2", "session-1"),
+            },
+            "exactly one committed authority correlation",
+        ),
+    ],
+)
+def test_authority_payload_selection_rejects_zero_or_multiple_matching_committed_groups(
+    clean_committed_correlations: set[tuple[str, str, str]], message: str
+) -> None:
+    payloads = _authority_payloads()
+    if len(clean_committed_correlations) > 1:
+        other = _authority_payloads()
+        for payload in other:
+            payload.update(plan_id="plan-2", attempt_id="attempt-2")
+        payloads.extend(other)
+    with pytest.raises(ValueError, match=message):
+        select_committed_authority_phase_payloads(
+            payloads,
+            clean_committed_correlations=clean_committed_correlations,
+            expected_session_id="session-1",
+        )
+
+
+@pytest.mark.parametrize(
+    "payloads, message",
+    [
+        (_authority_payloads()[:1], "exactly one projected and observed"),
+        (_authority_payloads() + [_authority_payloads()[0]], "duplicate authority phase"),
+    ],
+)
+def test_authority_payload_selection_preserves_strict_selected_pair_validation(
+    payloads: list[dict], message: str
+) -> None:
+    selected = select_committed_authority_phase_payloads(
+        payloads,
+        clean_committed_correlations={("plan-1", "attempt-1", "session-1")},
+        expected_session_id="session-1",
+    )
+    with pytest.raises(ValueError, match=message):
+        parse_authority_phase_payloads(selected, expected_session_id="session-1")
+
+
+@pytest.mark.parametrize(
+    "field, value, message",
+    [
+        ("session_id", "foreign-session", "cross-session"),
+        ("plan_id", None, "correlation"),
+    ],
+)
+def test_authority_payload_selection_rejects_cross_session_or_malformed_correlation(
+    field: str, value: object, message: str
+) -> None:
+    payloads = _authority_payloads()
+    payloads[0][field] = value
+    with pytest.raises(ValueError, match=message):
+        select_committed_authority_phase_payloads(
+            payloads,
+            clean_committed_correlations={("plan-1", "attempt-1", "session-1")},
+            expected_session_id="session-1",
+        )
 
 
 def test_production_authority_marker_preserves_plan_and_attempt_for_artifact_oracle(

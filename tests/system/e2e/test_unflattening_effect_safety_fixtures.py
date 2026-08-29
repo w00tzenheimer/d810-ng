@@ -36,6 +36,7 @@ from tests.system.e2e.unflattening_effect_safety_oracle import (
     reachable_call_eas,
     require_distinct_native_eas,
     session_scoped_rows,
+    select_committed_authority_phase_payloads,
     transaction_bound_dispatcher_removal_proofs,
 )
 
@@ -210,22 +211,25 @@ def _authority_phase_payloads(
         assert isinstance(payload, dict), type(payload).__name__
         if payload.get("phase") in {"projected_preflight", "observed_post_apply"}:
             payloads.append(payload)
-    try:
-        evidence = parse_authority_phase_payloads(payloads, expected_session_id=session_id)
-    except ValueError as exc:
-        pytest.fail(str(exc))
-    committed_attempts = {
-        (str(plan_id), str(attempt_id))
+    committed_correlations = {
+        (str(plan_id), str(attempt_id), str(attempt_session))
         for plan_id, attempt_id, phase, mutation_started, poisoned, attempt_session in attempt_rows
         if str(attempt_session) == str(session_id)
         and str(phase) == "committed"
         and int(mutation_started) == 1
         and int(poisoned) == 0
     }
-    assert (evidence.plan_id, evidence.attempt_id) in committed_attempts, (
-        "authority phase provenance is not a committed clean attempt: "
-        f"session={session_id!r} plan={evidence.plan_id!r} attempt={evidence.attempt_id!r}"
-    )
+    try:
+        selected = select_committed_authority_phase_payloads(
+            payloads,
+            clean_committed_correlations=committed_correlations,
+            expected_session_id=str(session_id),
+        )
+        evidence = parse_authority_phase_payloads(
+            selected, expected_session_id=session_id
+        )
+    except ValueError as exc:
+        pytest.fail(str(exc))
     return evidence
 
 

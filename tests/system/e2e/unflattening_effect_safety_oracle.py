@@ -390,6 +390,34 @@ def parse_authority_phase_payloads(
     )
 
 
+def select_committed_authority_phase_payloads(
+    payloads: Iterable[Mapping[str, object]],
+    *,
+    clean_committed_correlations: set[tuple[str, str, str]],
+    expected_session_id: str,
+) -> tuple[Mapping[str, object], ...]:
+    """Select the one committed authority correlation before strict parsing."""
+    grouped: dict[tuple[str, str, str], list[Mapping[str, object]]] = {}
+    for payload in payloads:
+        if not isinstance(payload, Mapping):
+            raise ValueError("authority phase payload is not an object")
+        if payload.get("phase") not in {"projected_preflight", "observed_post_apply"}:
+            continue
+        correlation = tuple(
+            payload.get(field) for field in ("plan_id", "attempt_id", "session_id")
+        )
+        if any(not isinstance(value, str) or not value for value in correlation):
+            raise ValueError("authority phase payload correlation is malformed")
+        plan_id, attempt_id, session_id = correlation
+        if session_id != expected_session_id:
+            raise ValueError("authority phase payload is cross-session")
+        grouped.setdefault((plan_id, attempt_id, session_id), []).append(payload)
+    matching = set(grouped).intersection(clean_committed_correlations)
+    if len(matching) != 1:
+        raise ValueError("require exactly one committed authority correlation")
+    return tuple(grouped[next(iter(matching))])
+
+
 def session_scoped_rows(
     rows: Iterable[tuple[object, ...]],
     session_id: str,
