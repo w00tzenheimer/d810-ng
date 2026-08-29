@@ -34,10 +34,10 @@ from tests.system.e2e.unflattening_effect_safety_oracle import (
     AuthorityOracleEvidence,
     parse_authority_phase_payloads,
     reachable_call_eas,
+    require_target_authority_policy,
     require_distinct_native_eas,
     session_scoped_rows,
     select_committed_authority_phase_payloads,
-    transaction_bound_dispatcher_removal_proofs,
 )
 
 
@@ -134,54 +134,6 @@ def _resolve_fixture_ea(function: str) -> int:
         f"expected 0x{int(ea):x}-0x{int(ea) + TARGET_SIZES[function]:x}"
     )
     return int(ea)
-
-
-def _diagnostic_rows(
-    function_ea: int,
-    *,
-    path: Path | None = None,
-    session_id: str | None = None,
-) -> tuple[Path, list[tuple[str, dict]]]:
-    """Return the latest typed D810 diagnostic payloads for *function_ea*."""
-    from d810.core.diag import find_latest_diag_db_path
-
-    path = path or find_latest_diag_db_path(int(function_ea))
-    if path is None:
-        pytest.fail(
-            "D810 diagnostic snapshot missing; run this gate with "
-            "--enable-diag-snapshot"
-        )
-    with sqlite3.connect(path) as conn:
-        if session_id is None:
-            session = conn.execute(
-                "SELECT session_id,started_at,finished_at FROM diagnostic_sessions "
-                "WHERE func_ea_i64=? ORDER BY started_at DESC LIMIT 1",
-                (int(function_ea),),
-            ).fetchone()
-            assert session is not None, (
-                f"diagnostic session missing for 0x{function_ea:x}"
-            )
-            session_id = str(session[0])
-        started_at, finished_at = _session_window(
-            conn, function_ea, str(session_id)
-        )
-        rows = conn.execute(
-            "SELECT f.kind,f.payload FROM fact_observations f "
-            "JOIN snapshots s ON s.id=f.snapshot_id "
-            "WHERE f.func_ea_i64=? AND s.func_ea_i64=? "
-            "AND s.timestamp>=? AND s.timestamp<=? "
-            "AND f.kind IN ("
-            "'UnflattenDispatcherCorridorCoverageSummary',"
-            "'UnflattenDispatcherRemovalPreflightProof') "
-            "ORDER BY f.rowid",
-            (int(function_ea), int(function_ea), started_at, finished_at),
-        ).fetchall()
-    decoded: list[tuple[str, dict]] = []
-    for kind, raw_payload in rows:
-        payload = json.loads(raw_payload)
-        assert isinstance(payload, dict), (kind, type(payload).__name__)
-        decoded.append((str(kind), payload))
-    return path, decoded
 
 
 def _authority_phase_payloads(
@@ -317,7 +269,9 @@ def _assert_committed_transaction(
         for batch_id, planned, applied, outcome, reason, _session_id in receipts
         if str(outcome) == "committed"
     ]
-    assert committed, f"no committed mutation receipt for 0x{function_ea:x}: {receipts!r}"
+    assert committed, (
+        f"no committed mutation receipt for 0x{function_ea:x}: {receipts!r}"
+    )
     assert any(
         phase == "committed" and int(started) == 1 and int(poisoned) == 0
         for phase, started, poisoned, _session_id in attempts
@@ -332,183 +286,6 @@ def _assert_committed_transaction(
             f"started_at={session[1]} test_started_after={started_after}"
         )
     return path, committed, session_id
-
-
-def _assert_corridor_acceptance(
-    function_ea: int,
-    path: Path,
-    session_id: str,
-) -> None:
-    """Require accepted, transaction-owned corridor coverage after commit.
-
-    The removal preflight can conservatively reject a *projected* comparison
-    corridor while the transaction still accepts the observed corridor
-    coverage and commits a complete redirect batch.  The latter is the stable
-    acceptance contract for this exact fixture: it is tied to the applied
-    plan/attempt, enumerates every corridor, and leaves no residual corridor.
-    """
-    deadline = time.monotonic() + 10.0
-    last_rows: list[tuple[str, str]] = []
-    while True:
-        with sqlite3.connect(path) as conn:
-            started_at, finished_at = _session_window(
-                conn, function_ea, str(session_id)
-            )
-            rows = conn.execute(
-                "SELECT f.kind,f.payload FROM fact_observations f "
-                "JOIN snapshots s ON s.id=f.snapshot_id "
-                "WHERE f.func_ea_i64=? AND s.func_ea_i64=? "
-                "AND s.timestamp>=? AND s.timestamp<=? "
-                "AND f.kind='UnflattenDispatcherCorridorCoverageSummary' "
-                "ORDER BY f.rowid",
-                (int(function_ea), int(function_ea), started_at, finished_at),
-            ).fetchall()
-            attempts = conn.execute(
-                "SELECT plan_id,attempt_id,current_phase,mutation_started,poisoned "
-                "FROM cfg_transaction_attempts WHERE func_ea_i64=? "
-                "AND session_id=?",
-                (int(function_ea), str(session_id)),
-            ).fetchall()
-            receipts = conn.execute(
-                "SELECT r.mutation_batch_id,r.outcome,e.session_id "
-                "FROM mutation_receipts r JOIN lifecycle_events e "
-                "ON e.event_id=r.event_id WHERE e.func_ea_i64=? "
-                "AND e.session_id=?",
-                (int(function_ea), str(session_id)),
-            ).fetchall()
-        last_rows = rows
-        committed_attempts = {
-            (str(plan_id), str(attempt_id))
-            for plan_id, attempt_id, phase, started, poisoned in attempts
-            if phase == "committed" and int(started) == 1 and int(poisoned) == 0
-        }
-        committed_batches = {
-            str(batch_id)
-            for batch_id, outcome, _session_id in receipts
-            if str(outcome) == "committed"
-        }
-        accepted = []
-        for _kind, raw_payload in rows:
-            payload = json.loads(raw_payload)
-            plan_id = str(payload.get("plan_id"))
-            attempt_id = payload.get("attempt_id")
-            identity = (plan_id, str(attempt_id))
-            if payload.get("application_status") != "applied":
-                continue
-            if identity not in committed_attempts or str(attempt_id) not in committed_batches:
-                continue
-            validation = payload.get("observed_coverage_validation") or {}
-            observed = validation.get("observed_coverage") or {}
-            if (
-                validation.get("validation_status") == "accepted"
-                and validation.get("reason")
-                == "dispatcher_corridor_coverage_matches_observed"
-                and payload.get("enumeration_complete") is True
-                and payload.get("residual_corridors") == []
-                and observed.get("enumeration_complete") is True
-                and observed.get("residual_corridors") == []
-            ):
-                accepted.append(
-                    {
-                        "plan_id": plan_id,
-                        "attempt_id": str(attempt_id),
-                        "reason": validation["reason"],
-                    }
-                )
-        if accepted:
-            return
-        if time.monotonic() >= deadline:
-            break
-        # Fact observations are flushed by the transaction finalizer. Poll
-        # with a bounded backoff rather than baking in a fixed sleep/race.
-        elapsed = max(0.0, 10.0 - (deadline - time.monotonic()))
-        time.sleep(min(0.05 + elapsed * 0.05, 0.25))
-    assert False, (
-        f"transaction-owned corridor coverage acceptance missing for "
-        f"0x{function_ea:x}; committed_attempts={committed_attempts!r} "
-        f"committed_batches={committed_batches!r} rows={last_rows!r}"
-    )
-
-
-def _assert_dispatcher_removal_proof_accepted(
-    function_ea: int,
-    path: Path,
-    session_id: str,
-) -> None:
-    """Require the applied dispatcher-removal proof to be accepted.
-
-    A clean mutation receipt can coexist with a rejected projected proof when
-    unrelated cleanup edits commit in the same D810 session.  That is not a
-    complete unflattening result: the proof must certify the applied removal
-    itself, with stable EA anchors for any loss it reports.
-    """
-    with sqlite3.connect(path) as conn:
-        started_at, finished_at = _session_window(
-            conn,
-            function_ea,
-            session_id,
-        )
-        rows = conn.execute(
-            "SELECT f.kind,f.payload FROM fact_observations f "
-            "JOIN snapshots s ON s.id=f.snapshot_id "
-            "WHERE f.func_ea_i64=? AND s.func_ea_i64=? "
-            "AND s.timestamp>=? AND s.timestamp<=? "
-            "AND f.kind='UnflattenDispatcherRemovalPreflightProof' "
-            "ORDER BY f.rowid",
-            (int(function_ea), int(function_ea), started_at, finished_at),
-        ).fetchall()
-        attempts = conn.execute(
-            "SELECT plan_id,attempt_id,current_phase,mutation_started,poisoned,"
-            "session_id FROM cfg_transaction_attempts WHERE func_ea_i64=? "
-            "AND session_id=?",
-            (int(function_ea), str(session_id)),
-        ).fetchall()
-        receipts = conn.execute(
-            "SELECT r.mutation_batch_id,r.outcome,e.session_id "
-            "FROM mutation_receipts r JOIN lifecycle_events e "
-            "ON e.event_id=r.event_id WHERE e.func_ea_i64=? "
-            "AND e.session_id=?",
-            (int(function_ea), str(session_id)),
-        ).fetchall()
-    proofs = [json.loads(str(raw_payload)) for _kind, raw_payload in rows]
-    attempts = session_scoped_rows(attempts, session_id)
-    receipts = session_scoped_rows(receipts, session_id)
-    committed_attempts = {
-        (str(plan_id), str(attempt_id))
-        for plan_id, attempt_id, phase, started, poisoned, _session_id in attempts
-        if str(phase) == "committed"
-        and int(started) == 1
-        and int(poisoned) == 0
-    }
-    committed_batches = {
-        str(batch_id)
-        for batch_id, outcome, _session_id in receipts
-        if str(outcome) == "committed"
-    }
-    applied = transaction_bound_dispatcher_removal_proofs(
-        proofs,
-        committed_attempts=committed_attempts,
-        committed_batches=committed_batches,
-    )
-    assert applied, (
-        f"transaction-bound applied dispatcher-removal proof missing for "
-        f"0x{function_ea:x}; session={session_id} "
-        f"committed_attempts={committed_attempts!r} "
-        f"committed_batches={committed_batches!r} proofs={proofs!r}"
-    )
-    rejected = [
-        {
-            "proof_status": payload.get("proof_status"),
-            "reason": payload.get("reason"),
-            "lost": payload.get("lost_blocks"),
-        }
-        for payload in applied
-        if payload.get("proof_status") != "accepted"
-    ]
-    assert not rejected, (
-        f"applied dispatcher-removal proof rejected for 0x{function_ea:x}; "
-        f"session={session_id} rejected={rejected!r}"
-    )
 
 
 def _loaded_call_eas(
@@ -565,9 +342,7 @@ def _assert_exact_call_reachable(
     call_eas = require_distinct_native_eas(call_eas)
     assert call_eas, "exact-call oracle requires at least one bound call EA"
     with sqlite3.connect(path) as conn:
-        started_at, finished_at = _session_window(
-            conn, function_ea, str(session_id)
-        )
+        started_at, finished_at = _session_window(conn, function_ea, str(session_id))
         snapshot = conn.execute(
             "SELECT s.id,s.label FROM snapshots s "
             "WHERE s.func_ea_i64=? AND s.phase='post_d810' "
@@ -576,8 +351,7 @@ def _assert_exact_call_reachable(
             (int(function_ea), started_at, finished_at),
         ).fetchone()
         assert snapshot is not None, (
-            f"post-D810 snapshot missing for exact-call oracle at "
-            f"0x{function_ea:x}"
+            f"post-D810 snapshot missing for exact-call oracle at 0x{function_ea:x}"
         )
         snapshot_id, label = int(snapshot[0]), str(snapshot[1])
         block_rows = conn.execute(
@@ -594,7 +368,9 @@ def _assert_exact_call_reachable(
         )
         call_rows = conn.execute(
             "SELECT block_serial,ea_i64 FROM instructions "
-            "WHERE snapshot_id=? AND ea_i64 IN (" + ",".join("?" for _ in call_eas) + ")",
+            "WHERE snapshot_id=? AND ea_i64 IN ("
+            + ",".join("?" for _ in call_eas)
+            + ")",
             (snapshot_id, *[int(ea) for ea in call_eas]),
         ).fetchall()
 
@@ -779,13 +555,18 @@ class TestUnflatteningEffectSafetyDecompilation:
             started_after=started_after,
         )
         authority_rows = _assert_authority_accepted(
-            function_ea, path, session_id,
+            function_ea,
+            path,
+            session_id,
         )
         _emit_authority_oracle(
-            "sub_7FF8569F0540", function_ea, path, session_id, authority_rows,
+            "sub_7FF8569F0540",
+            function_ea,
+            path,
+            session_id,
+            authority_rows,
         )
-        _assert_corridor_acceptance(function_ea, path, session_id)
-        _assert_dispatcher_removal_proof_accepted(function_ea, path, session_id)
+        require_target_authority_policy(authority_rows, "A")
         _assert_exact_call_reachable(
             function_ea,
             path,
@@ -796,6 +577,7 @@ class TestUnflatteningEffectSafetyDecompilation:
             f"[EFFECT-SAFETY A] ea=0x{function_ea:x} "
             f"committed={committed} pseudocode_bytes={len(code_after)}"
         )
+
     def test_target_b_after_preserves_srw_lock_effect_and_commits(
         self,
         ida_database,
@@ -850,13 +632,18 @@ class TestUnflatteningEffectSafetyDecompilation:
             started_after=started_after,
         )
         authority_rows = _assert_authority_accepted(
-            function_ea, path, session_id,
+            function_ea,
+            path,
+            session_id,
         )
         _emit_authority_oracle(
-            "sub_7FF8568132D0", function_ea, path, session_id, authority_rows,
+            "sub_7FF8568132D0",
+            function_ea,
+            path,
+            session_id,
+            authority_rows,
         )
-        _assert_corridor_acceptance(function_ea, path, session_id)
-        _assert_dispatcher_removal_proof_accepted(function_ea, path, session_id)
+        require_target_authority_policy(authority_rows, "B")
         _assert_exact_call_reachable(
             function_ea,
             path,
@@ -909,8 +696,7 @@ class TestUnflatteningEffectSafetyDecompilation:
         code_after = pseudocode_to_string(decompiled.get_pseudocode())
         normalized = code_after.lower()
         hex_constants = {
-            int(token, 16)
-            for token in re.findall(r"0x[0-9a-f]+", normalized)
+            int(token, 16) for token in re.findall(r"0x[0-9a-f]+", normalized)
         }
         for dispatcher_state in (
             "0x16aa65e9",
@@ -930,12 +716,18 @@ class TestUnflatteningEffectSafetyDecompilation:
             started_after=started_after,
         )
         authority_rows = _assert_authority_accepted(
-            function_ea, path, session_id,
+            function_ea,
+            path,
+            session_id,
         )
         _emit_authority_oracle(
-            "sub_7FF855576B50", function_ea, path, session_id, authority_rows,
+            "sub_7FF855576B50",
+            function_ea,
+            path,
+            session_id,
+            authority_rows,
         )
-        _assert_dispatcher_removal_proof_accepted(function_ea, path, session_id)
+        require_target_authority_policy(authority_rows, "C")
         _assert_exact_call_reachable(
             function_ea,
             path,

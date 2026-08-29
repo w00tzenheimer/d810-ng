@@ -13,6 +13,7 @@ from tests.system.e2e.unflattening_effect_safety_oracle import (
     authority_oracle_marker_payload,
     parse_authority_phase_payloads,
     reachable_call_eas,
+    require_target_authority_policy,
     session_scoped_rows,
     select_committed_authority_phase_payloads,
 )
@@ -48,7 +49,16 @@ def _authority_phase(
         "generation": 1,
         "bindings": [{"generation": 1}],
         "obligation_states": [{"state": "satisfied"}],
+        "coverage": [],
         "loss_ledger": [],
+        "observed_only_loss": [],
+        "loss_summary": {
+            "structurally_lost": [],
+            "allowed": [],
+            "forbidden": [],
+            "conflicting": [],
+            "observed_only": [],
+        },
         "metrics": {
             "source_inventory_builds": 1,
             "candidate_inventory_builds": 1,
@@ -107,9 +117,7 @@ def _parse_callsite_markers(source: str) -> dict[str, tuple[str, str]]:
     marker_names = {
         match.group(1)
         for line in const_lines
-        if (match := re.match(
-            r"^\s*PUBLIC\s+(d810_callsite_[A-Za-z0-9_]+)\s*$", line
-        ))
+        if (match := re.match(r"^\s*PUBLIC\s+(d810_callsite_[A-Za-z0-9_]+)\s*$", line))
     }
     bindings: dict[str, tuple[str, str]] = {}
     for marker in marker_names:
@@ -166,9 +174,11 @@ def test_exact_target_a_fixture_preserves_materialized_effectful_corridor():
     assert "CONST SEGMENT" in source
     assert "jmp loc_7FF8569F0600" in source
     marker_bindings = _parse_callsite_markers(source)
-    assert marker_bindings[
-        "d810_callsite_sub_7FF8569F0540_memcpy"
-    ][1].lower().startswith("call ")
+    assert (
+        marker_bindings["d810_callsite_sub_7FF8569F0540_memcpy"][1]
+        .lower()
+        .startswith("call ")
+    )
 
 
 def test_exact_target_b_fixture_preserves_dispatcher_trap_and_lock_effect():
@@ -184,9 +194,11 @@ def test_exact_target_b_fixture_preserves_dispatcher_trap_and_lock_effect():
     assert "int 3" in source
     assert "CONST SEGMENT" in source
     marker_bindings = _parse_callsite_markers(source)
-    assert marker_bindings[
-        "d810_callsite_sub_7FF8568132D0_srw_lock"
-    ][1].lower().startswith("call ")
+    assert (
+        marker_bindings["d810_callsite_sub_7FF8568132D0_srw_lock"][1]
+        .lower()
+        .startswith("call ")
+    )
 
 
 def test_exact_target_c_fixture_preserves_termination_effects_and_markers():
@@ -312,11 +324,14 @@ def test_dispatcher_removal_proof_requires_the_committed_attempt_and_batch() -> 
         **proofs[1],
         "proof_status": "accepted",
     }
-    assert matcher(
-        (batch_mismatch,),
-        committed_attempts={("current-plan", "current-attempt")},
-        committed_batches={"different-batch"},
-    ) == ()
+    assert (
+        matcher(
+            (batch_mismatch,),
+            committed_attempts={("current-plan", "current-attempt")},
+            committed_batches={"different-batch"},
+        )
+        == ()
+    )
 
 
 def test_exact_call_oracle_rejects_duplicate_native_marker_eas() -> None:
@@ -343,7 +358,165 @@ def test_authority_payload_aggregation_returns_valid_projected_observed_rows() -
     assert evidence.session_id == "session-1"
 
 
-def test_authority_payload_selection_ignores_rejected_groups_after_committed_provenance() -> None:
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda payload: payload.update(
+            coverage=[
+                {
+                    "subject": "blk1@0x1000",
+                    "dimension": "corridor_coverage",
+                    "state": "satisfied",
+                }
+            ]
+        ),
+        lambda payload: payload.update(
+            loss_ledger=[
+                {
+                    "anchor": "blk1@0x1000",
+                    "classification": "retired_dispatcher_infrastructure",
+                }
+            ],
+            loss_summary={
+                "structurally_lost": ["blk1@0x1000"],
+                "allowed": ["blk1@0x1000"],
+                "forbidden": [],
+                "conflicting": [],
+                "observed_only": [],
+            },
+        ),
+    ],
+)
+def test_authority_target_a_requires_a_retained_dispatcher_empty_loss_ledger(
+    mutation,
+) -> None:
+    evidence = parse_authority_phase_payloads(_authority_payloads())
+
+    require_target_authority_policy(evidence, "A")
+
+    payloads = _authority_payloads()
+    mutation(payloads[0])
+    with pytest.raises(ValueError, match="target A"):
+        require_target_authority_policy(parse_authority_phase_payloads(payloads), "A")
+
+
+@pytest.mark.parametrize("target", ["B", "C"])
+def test_authority_removal_targets_require_observed_coverage_and_retired_loss(
+    target: str,
+) -> None:
+    payloads = _authority_payloads()
+    observed = payloads[1]
+    observed["coverage"] = [
+        {
+            "subject": "blk1@0x1000",
+            "dimension": "corridor_coverage",
+            "state": "satisfied",
+        }
+    ]
+    observed["loss_ledger"] = [
+        {
+            "anchor": "blk1@0x1000",
+            "classification": "retired_dispatcher_infrastructure",
+        }
+    ]
+    observed["loss_summary"] = {
+        "structurally_lost": ["blk1@0x1000"],
+        "allowed": ["blk1@0x1000"],
+        "forbidden": [],
+        "conflicting": [],
+        "observed_only": [],
+    }
+    evidence = parse_authority_phase_payloads(payloads)
+
+    require_target_authority_policy(evidence, target)
+
+    missing_coverage = _authority_payloads()
+    missing_coverage[1]["loss_ledger"] = observed["loss_ledger"]
+    missing_coverage[1]["loss_summary"] = observed["loss_summary"]
+    with pytest.raises(ValueError, match="coverage"):
+        require_target_authority_policy(
+            parse_authority_phase_payloads(missing_coverage), target
+        )
+
+    missing_retirement = _authority_payloads()
+    missing_retirement[1]["coverage"] = observed["coverage"]
+    with pytest.raises(ValueError, match="retired"):
+        require_target_authority_policy(
+            parse_authority_phase_payloads(missing_retirement), target
+        )
+
+
+def test_authority_parser_preserves_a_typed_observed_only_loss() -> None:
+    payloads = _authority_payloads()
+    payloads[1]["observed_only_loss"] = [
+        {
+            "anchor": "blk2@0x2000",
+            "classification": "exact_infeasible_effect",
+        }
+    ]
+    payloads[1]["loss_summary"]["observed_only"] = ["blk2@0x2000"]
+
+    evidence = parse_authority_phase_payloads(payloads)
+
+    assert evidence.observed.loss_summary.observed_only == ("blk2@0x2000",)
+    assert evidence.observed.observed_only_loss_rows[0].classification == (
+        "exact_infeasible_effect"
+    )
+
+
+@pytest.mark.parametrize(
+    "mutation, message",
+    [
+        (
+            lambda payload: payload["loss_summary"].update(allowed=["blk1@0x1000"]),
+            "loss summary",
+        ),
+        (
+            lambda payload: payload.update(
+                loss_ledger=[
+                    {"anchor": "blk1@0x1000", "classification": "unclassified"}
+                ],
+                loss_summary={
+                    "structurally_lost": ["blk1@0x1000"],
+                    "allowed": [],
+                    "forbidden": ["blk1@0x1000"],
+                    "conflicting": [],
+                    "observed_only": [],
+                },
+            ),
+            "forbidden",
+        ),
+        (
+            lambda payload: payload.update(
+                loss_ledger=[
+                    {"anchor": "blk1@0x1000", "classification": "conflicting"}
+                ],
+                loss_summary={
+                    "structurally_lost": ["blk1@0x1000"],
+                    "allowed": [],
+                    "forbidden": [],
+                    "conflicting": ["blk1@0x1000"],
+                    "observed_only": [],
+                },
+            ),
+            "conflicting",
+        ),
+    ],
+)
+def test_authority_payload_aggregation_rejects_noncanonical_loss_summary(
+    mutation,
+    message: str,
+) -> None:
+    payloads = _authority_payloads()
+    mutation(payloads[1])
+
+    with pytest.raises(ValueError, match=message):
+        parse_authority_phase_payloads(payloads)
+
+
+def test_authority_payload_selection_ignores_rejected_groups_after_committed_provenance() -> (
+    None
+):
     rejected = _authority_phase(
         "projected_preflight", plan_id="rejected-plan", attempt_id="rejected-attempt"
     )
@@ -391,7 +564,10 @@ def test_authority_payload_selection_rejects_zero_or_multiple_matching_committed
     "payloads, message",
     [
         (_authority_payloads()[:1], "exactly one projected and observed"),
-        (_authority_payloads() + [_authority_payloads()[0]], "duplicate authority phase"),
+        (
+            _authority_payloads() + [_authority_payloads()[0]],
+            "duplicate authority phase",
+        ),
     ],
 )
 def test_authority_payload_selection_preserves_strict_selected_pair_validation(
@@ -440,8 +616,9 @@ def test_authority_payload_selection_rejects_unknown_or_missing_phase_before_cor
         )
 
 
-def test_production_authority_marker_preserves_plan_and_attempt_for_artifact_oracle(
-) -> None:
+def test_production_authority_marker_preserves_plan_and_attempt_for_artifact_oracle() -> (
+    None
+):
     """The pure production marker payload satisfies the artifact contract."""
     import tools.scripts.unflatten_authority_artifacts as artifacts
 
@@ -505,14 +682,17 @@ def test_production_authority_marker_rejects_session_relabeling() -> None:
     ],
 )
 def test_authority_payload_aggregation_rejects_missing_or_duplicate_phase(
-    payloads: list[dict], message: str,
+    payloads: list[dict],
+    message: str,
 ) -> None:
     with pytest.raises(ValueError, match=message):
         parse_authority_phase_payloads(payloads)
 
 
 @pytest.mark.parametrize("field", ["plan_id", "attempt_id", "session_id"])
-def test_authority_payload_aggregation_rejects_cross_phase_provenance_mismatch(field: str) -> None:
+def test_authority_payload_aggregation_rejects_cross_phase_provenance_mismatch(
+    field: str,
+) -> None:
     payloads = _authority_payloads()
     payloads[1][field] = f"foreign-{field}"
     with pytest.raises(ValueError, match=field):
@@ -521,7 +701,9 @@ def test_authority_payload_aggregation_rejects_cross_phase_provenance_mismatch(f
 
 def test_authority_payload_aggregation_rejects_wrong_expected_session() -> None:
     with pytest.raises(ValueError, match="session|exactly one"):
-        parse_authority_phase_payloads(_authority_payloads(), expected_session_id="stale-session")
+        parse_authority_phase_payloads(
+            _authority_payloads(), expected_session_id="stale-session"
+        )
     payloads = _authority_payloads()
     payloads[0]["session_id"] = "foreign-session"
     with pytest.raises(ValueError, match="session|exactly one"):
@@ -542,7 +724,9 @@ def test_authority_payload_aggregation_rejects_unanchored_loss() -> None:
         parse_authority_phase_payloads(payloads)
 
 
-def test_authority_payload_aggregation_requires_explicit_generation_matching_bindings() -> None:
+def test_authority_payload_aggregation_requires_explicit_generation_matching_bindings() -> (
+    None
+):
     payloads = _authority_payloads()
     payloads[0]["generation"] = 2
     with pytest.raises(ValueError, match="generation"):
@@ -553,8 +737,17 @@ def test_authority_payload_aggregation_requires_explicit_generation_matching_bin
         parse_authority_phase_payloads(payloads)
 
 
-@pytest.mark.parametrize("field, value", [("inventory_ms", float("nan")), ("views_ms", float("inf")), ("total_authority_ms", 99.0)])
-def test_authority_payload_aggregation_rejects_nonfinite_or_inconsistent_timings(field: str, value: float) -> None:
+@pytest.mark.parametrize(
+    "field, value",
+    [
+        ("inventory_ms", float("nan")),
+        ("views_ms", float("inf")),
+        ("total_authority_ms", 99.0),
+    ],
+)
+def test_authority_payload_aggregation_rejects_nonfinite_or_inconsistent_timings(
+    field: str, value: float
+) -> None:
     payloads = _authority_payloads()
     payloads[0]["timings"][field] = value
     with pytest.raises(ValueError, match="timing"):

@@ -18,6 +18,48 @@ AUTHORITY_COUNTERS = (
 )
 AUTHORITY_IMAGE = "idapro-9.4-speedups:latest"
 _OBLIGATION_STATES = frozenset({"satisfied", "unproven", "violated", "inconsistent"})
+_LOSS_KINDS = frozenset(
+    {
+        "retired_dispatcher_infrastructure",
+        "equivalent_semantic_route",
+        "exact_infeasible_effect",
+        "terminal_cycle_break",
+        "local_alias_scalarization",
+        "detached_dead_handler_component",
+        "unclassified",
+        "conflicting",
+    }
+)
+_LOSS_SUMMARY_BUCKETS = (
+    "structurally_lost",
+    "allowed",
+    "forbidden",
+    "conflicting",
+    "observed_only",
+)
+_UNACCEPTED_LOSS_KINDS = frozenset({"unclassified", "conflicting"})
+
+
+@dataclass(frozen=True, slots=True)
+class AuthorityCoverageOracleRow:
+    subject: str
+    dimension: str
+    state: str
+
+
+@dataclass(frozen=True, slots=True)
+class AuthorityLossOracleRow:
+    anchor: str
+    classification: str
+
+
+@dataclass(frozen=True, slots=True)
+class AuthorityLossSummary:
+    structurally_lost: tuple[str, ...]
+    allowed: tuple[str, ...]
+    forbidden: tuple[str, ...]
+    conflicting: tuple[str, ...]
+    observed_only: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -32,6 +74,10 @@ class AuthorityPhaseOracleRow:
     candidate_fingerprint: str
     generation: int
     anchored_loss_labels: tuple[str, ...]
+    coverage_rows: tuple[AuthorityCoverageOracleRow, ...]
+    loss_rows: tuple[AuthorityLossOracleRow, ...]
+    observed_only_loss_rows: tuple[AuthorityLossOracleRow, ...]
+    loss_summary: AuthorityLossSummary
     unproven: int
     violated: int
     inconsistent: int
@@ -44,6 +90,14 @@ class AuthorityPhaseOracleRow:
     evaluation_ms: float
     views_ms: float
     total_authority_ms: float
+
+    @property
+    def coverage_count(self) -> int:
+        return len(self.coverage_rows)
+
+    @property
+    def loss_count(self) -> int:
+        return len(self.loss_rows)
 
 
 @dataclass(frozen=True, slots=True)
@@ -116,7 +170,108 @@ def _authority_finite_nonnegative(value: object, field: str) -> float:
     return result
 
 
-def _authority_phase_row(payload: Mapping[str, object], phase: str) -> AuthorityPhaseOracleRow:
+def _authority_loss_rows(
+    value: object, field: str
+) -> tuple[AuthorityLossOracleRow, ...]:
+    if not isinstance(value, (list, tuple)):
+        raise ValueError(f"authority {field} is missing")
+    rows: list[AuthorityLossOracleRow] = []
+    for loss in value:
+        if not isinstance(loss, Mapping):
+            raise ValueError(f"authority {field} row is invalid")
+        label = loss.get("anchor")
+        if not isinstance(label, str) or not re.fullmatch(
+            r"(?:blk[0-9]+|subject:sha256:[0-9a-f]{64})@0x[0-9a-f]+", label
+        ):
+            raise ValueError("authority loss anchor is invalid")
+        classification = loss.get("classification")
+        if not isinstance(classification, str) or classification not in _LOSS_KINDS:
+            raise ValueError("authority loss classification is invalid")
+        rows.append(AuthorityLossOracleRow(label, classification))
+    if len({row.anchor for row in rows}) != len(rows):
+        raise ValueError(f"authority {field} anchors are not unique")
+    return tuple(rows)
+
+
+def _authority_loss_summary(
+    value: object,
+    *,
+    loss_rows: tuple[AuthorityLossOracleRow, ...],
+    observed_only_loss_rows: tuple[AuthorityLossOracleRow, ...],
+) -> AuthorityLossSummary:
+    if not isinstance(value, Mapping) or set(value) != set(_LOSS_SUMMARY_BUCKETS):
+        raise ValueError("authority loss summary schema is invalid")
+    buckets: dict[str, tuple[str, ...]] = {}
+    for name in _LOSS_SUMMARY_BUCKETS:
+        raw = value.get(name)
+        if not isinstance(raw, (list, tuple)) or any(
+            not isinstance(item, str) for item in raw
+        ):
+            raise ValueError(f"authority loss summary {name} is invalid")
+        rows = tuple(raw)
+        if len(set(rows)) != len(rows):
+            raise ValueError(f"authority loss summary {name} is not unique")
+        if any(
+            not re.fullmatch(
+                r"(?:blk[0-9]+|subject:sha256:[0-9a-f]{64})@0x[0-9a-f]+", item
+            )
+            for item in rows
+        ):
+            raise ValueError(f"authority loss summary {name} anchor is invalid")
+        buckets[name] = rows
+    expected = {
+        "structurally_lost": tuple(row.anchor for row in loss_rows),
+        "allowed": tuple(
+            row.anchor
+            for row in loss_rows
+            if row.classification not in _UNACCEPTED_LOSS_KINDS
+        ),
+        "forbidden": tuple(
+            row.anchor for row in loss_rows if row.classification == "unclassified"
+        ),
+        "conflicting": tuple(
+            row.anchor for row in loss_rows if row.classification == "conflicting"
+        ),
+        "observed_only": tuple(row.anchor for row in observed_only_loss_rows),
+    }
+    if buckets != expected:
+        raise ValueError("authority loss summary disagrees with ledger")
+    if buckets["forbidden"]:
+        raise ValueError("authority loss summary contains forbidden loss")
+    if buckets["conflicting"]:
+        raise ValueError("authority loss summary contains conflicting loss")
+    if any(
+        row.classification in _UNACCEPTED_LOSS_KINDS for row in observed_only_loss_rows
+    ):
+        raise ValueError("authority observed-only loss is not canonically classified")
+    return AuthorityLossSummary(**buckets)
+
+
+def _authority_coverage_rows(value: object) -> tuple[AuthorityCoverageOracleRow, ...]:
+    if not isinstance(value, (list, tuple)):
+        raise ValueError("authority coverage is missing")
+    rows: list[AuthorityCoverageOracleRow] = []
+    for item in value:
+        if not isinstance(item, Mapping) or set(item) != {
+            "subject",
+            "dimension",
+            "state",
+        }:
+            raise ValueError("authority coverage row is invalid")
+        subject, dimension, state = (
+            item.get(name) for name in ("subject", "dimension", "state")
+        )
+        if not isinstance(subject, str) or not subject:
+            raise ValueError("authority coverage subject is invalid")
+        if dimension != "corridor_coverage" or state not in _OBLIGATION_STATES:
+            raise ValueError("authority coverage row is invalid")
+        rows.append(AuthorityCoverageOracleRow(subject, dimension, state))
+    return tuple(rows)
+
+
+def _authority_phase_row(
+    payload: Mapping[str, object], phase: str
+) -> AuthorityPhaseOracleRow:
     if payload.get("schema") != "unflatten_authority_phase.v1":
         raise ValueError("authority phase schema is invalid")
     if payload.get("phase") != phase:
@@ -148,7 +303,11 @@ def _authority_phase_row(payload: Mapping[str, object], phase: str) -> Authority
     if not isinstance(candidate_fingerprint, str) or not candidate_fingerprint:
         raise ValueError("candidate_fingerprint is invalid")
     generation = payload.get("generation")
-    if isinstance(generation, bool) or not isinstance(generation, int) or generation < 0:
+    if (
+        isinstance(generation, bool)
+        or not isinstance(generation, int)
+        or generation < 0
+    ):
         raise ValueError("authority generation is invalid")
     bindings = payload.get("bindings")
     if not isinstance(bindings, (list, tuple)):
@@ -157,32 +316,40 @@ def _authority_phase_row(payload: Mapping[str, object], phase: str) -> Authority
         if not isinstance(item, Mapping):
             raise ValueError("authority binding is invalid")
         binding_generation = item.get("generation")
-        if isinstance(binding_generation, bool) or not isinstance(binding_generation, int) or binding_generation < 0:
+        if (
+            isinstance(binding_generation, bool)
+            or not isinstance(binding_generation, int)
+            or binding_generation < 0
+        ):
             raise ValueError("authority binding generation is invalid")
         if generation != binding_generation:
-            raise ValueError("authority binding generation differs from phase generation")
+            raise ValueError(
+                "authority binding generation differs from phase generation"
+            )
     if not bindings:
         raise ValueError("authority bindings are missing")
-    loss_ledger = payload.get("loss_ledger")
-    if not isinstance(loss_ledger, (list, tuple)):
-        raise ValueError("authority loss ledger is missing")
-    labels: list[str] = []
-    for loss in loss_ledger:
-        if not isinstance(loss, Mapping):
-            raise ValueError("authority loss row is invalid")
-        label = loss.get("anchor")
-        if not isinstance(label, str) or not re.fullmatch(
-            r"(?:blk[0-9]+|subject:sha256:[0-9a-f]{64})@0x[0-9a-f]+", label
-        ):
-            raise ValueError("authority loss anchor is invalid")
-        labels.append(label)
+    coverage_rows = _authority_coverage_rows(payload.get("coverage"))
+    loss_rows = _authority_loss_rows(payload.get("loss_ledger"), "loss ledger")
+    observed_only_loss_rows = _authority_loss_rows(
+        payload.get("observed_only_loss"),
+        "observed-only loss",
+    )
+    loss_summary = _authority_loss_summary(
+        payload.get("loss_summary"),
+        loss_rows=loss_rows,
+        observed_only_loss_rows=observed_only_loss_rows,
+    )
     states = payload.get("obligation_states")
     if not isinstance(states, (list, tuple)):
+        raise ValueError("authority obligation states are missing")
+    if not states:
         raise ValueError("authority obligation states are missing")
     counts = {state: 0 for state in ("unproven", "violated", "inconsistent")}
     for item in states:
         if not isinstance(item, Mapping) or item.get("state") not in _OBLIGATION_STATES:
             raise ValueError("authority obligation state is invalid")
+        if item["state"] != "satisfied":
+            raise ValueError("authority obligation state is not satisfied")
         if item["state"] in counts:
             counts[item["state"]] += 1
     metrics = payload.get("metrics")
@@ -203,7 +370,10 @@ def _authority_phase_row(payload: Mapping[str, object], phase: str) -> Authority
         key: _authority_finite_nonnegative(timings.get(key), f"timing {key}")
         for key in (*AUTHORITY_PHASES, "total_authority_ms")
     }
-    if abs(timing["total_authority_ms"] - sum(timing[key] for key in AUTHORITY_PHASES)) > 1.0:
+    if (
+        abs(timing["total_authority_ms"] - sum(timing[key] for key in AUTHORITY_PHASES))
+        > 1.0
+    ):
         raise ValueError("authority timing total is inconsistent")
     return AuthorityPhaseOracleRow(
         authority_id=authority_id,
@@ -215,7 +385,11 @@ def _authority_phase_row(payload: Mapping[str, object], phase: str) -> Authority
         source_fingerprint=source_fingerprint,
         candidate_fingerprint=candidate_fingerprint,
         generation=generation,
-        anchored_loss_labels=tuple(labels),
+        anchored_loss_labels=tuple(row.anchor for row in loss_rows),
+        coverage_rows=coverage_rows,
+        loss_rows=loss_rows,
+        observed_only_loss_rows=observed_only_loss_rows,
+        loss_summary=loss_summary,
         unproven=counts["unproven"],
         violated=counts["violated"],
         inconsistent=counts["inconsistent"],
@@ -246,15 +420,25 @@ def parse_authority_phase_payloads(
             continue
         if expected_session_id is not None:
             payload_session = payload.get("session_id")
-            if isinstance(payload_session, str) and payload_session and payload_session != expected_session_id:
+            if (
+                isinstance(payload_session, str)
+                and payload_session
+                and payload_session != expected_session_id
+            ):
                 continue
         if phase in selected:
             raise ValueError(f"duplicate authority phase payload: {phase}")
         selected[phase] = payload
     if set(selected) != {"projected_preflight", "observed_post_apply"}:
-        raise ValueError("authority phase payloads require exactly one projected and observed row")
-    projected = _authority_phase_row(selected["projected_preflight"], "projected_preflight")
-    observed = _authority_phase_row(selected["observed_post_apply"], "observed_post_apply")
+        raise ValueError(
+            "authority phase payloads require exactly one projected and observed row"
+        )
+    projected = _authority_phase_row(
+        selected["projected_preflight"], "projected_preflight"
+    )
+    observed = _authority_phase_row(
+        selected["observed_post_apply"], "observed_post_apply"
+    )
     if projected.authority_id != observed.authority_id:
         raise ValueError("authority IDs differ between phase rows")
     provenance = {
@@ -264,13 +448,19 @@ def parse_authority_phase_payloads(
     for key, value in provenance.items():
         if selected["observed_post_apply"][key] != value:
             raise ValueError(f"{key} differs between phase rows")
-    if expected_session_id is not None and provenance["session_id"] != expected_session_id:
+    if (
+        expected_session_id is not None
+        and provenance["session_id"] != expected_session_id
+    ):
         raise ValueError("session_id does not match selected diagnostic session")
     if projected.case_id == observed.case_id:
         raise ValueError("projected and observed case IDs must be distinct")
     if projected.source_fingerprint != observed.source_fingerprint:
         raise ValueError("source fingerprints differ between phase rows")
-    if any(row.unproven or row.violated or row.inconsistent for row in (projected, observed)):
+    if any(
+        row.unproven or row.violated or row.inconsistent
+        for row in (projected, observed)
+    ):
         raise ValueError("authority obligation states are not accepted")
     return AuthorityOracleEvidence(
         projected,
@@ -279,6 +469,45 @@ def parse_authority_phase_payloads(
         provenance["attempt_id"],
         provenance["session_id"],
     )
+
+
+def require_target_authority_policy(
+    evidence: AuthorityOracleEvidence,
+    target: str,
+) -> None:
+    """Apply exact fixture policy to an already-validated canonical pair.
+
+    A makes a deliberately partial redirect and retains its dispatcher; B/C
+    are full dispatcher-retirement outcomes.  This only inspects typed rows
+    emitted by the authority verdict and never reconstructs CFG coverage.
+    """
+    if type(evidence) is not AuthorityOracleEvidence:
+        raise TypeError("evidence must be AuthorityOracleEvidence")
+    if target not in {"A", "B", "C"}:
+        raise ValueError("unknown authority target")
+    if target == "A":
+        for phase in (evidence.projected, evidence.observed):
+            if phase.coverage_rows or phase.loss_rows or phase.observed_only_loss_rows:
+                raise ValueError(
+                    "target A must retain an empty coverage and loss ledger"
+                )
+            summary = phase.loss_summary
+            if any(getattr(summary, name) for name in _LOSS_SUMMARY_BUCKETS):
+                raise ValueError("target A must retain an empty loss summary")
+        return
+    observed = evidence.observed
+    if not any(
+        row.dimension == "corridor_coverage" and row.state == "satisfied"
+        for row in observed.coverage_rows
+    ):
+        raise ValueError(
+            "dispatcher-removal target requires observed corridor coverage"
+        )
+    if not any(
+        row.classification == "retired_dispatcher_infrastructure"
+        for row in observed.loss_rows
+    ):
+        raise ValueError("dispatcher-removal target requires retired dispatcher loss")
 
 
 def select_committed_authority_phase_payloads(
