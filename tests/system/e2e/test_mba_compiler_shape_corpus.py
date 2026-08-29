@@ -877,7 +877,7 @@ class TestCompilerShapeCatalogueNative:
 
         monkeypatch.delenv("D810_LEGACY_DSL_PERMUTATIONS", raising=False)
         monkeypatch.delenv("D810_SHADOW_DSL_MATCHING", raising=False)
-        monkeypatch.setenv("D810_STRUCTURAL_DSL_MATCHING", "1")
+        monkeypatch.setenv("D810_CANONICAL_MATCH_FALLBACK", "1")
         activation_configuration_started = time.monotonic()
         with d810_state() as state:
             state.add_project(runtime_project)

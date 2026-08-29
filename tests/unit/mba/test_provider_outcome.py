@@ -9,6 +9,7 @@ import pytest
 
 from d810.mba.provider_outcome import (
     MatcherOutcomeMetadata,
+    MatcherSelection,
     MbaProviderKind,
     MbaProviderOutcome,
     ProviderOutcomeStatus,
@@ -41,10 +42,20 @@ def test_outcome_serializes_stably_with_cost_proof_provenance_and_matcher_metada
         "fingerprint": "fixed-width-fingerprint",
         "input_cost": [7, 12],
         "matcher": {
+            "backend": "unknown",
             "comparisons": 7,
+            "fallback_comparisons": 0,
+            "fallback_flattened_arity": 0,
             "flattened_arity": 2,
             "lazy_swaps": 1,
+            "mutation_outcome": None,
+            "native_equivalence_verdict": None,
+            "provenance_rejection_count": 0,
+            "raw_comparisons": 0,
+            "raw_lazy_swaps": 0,
+            "selection": "none",
             "stop_reason": "matched",
+            "terminal_stop_reason": "matched",
         },
         "metadata": {"degree": 1, "rule_family": "ADD"},
         "output_cost": [2, 3],
@@ -169,3 +180,47 @@ def test_matcher_metadata_requires_nonnegative_counts_and_a_stable_stop_reason()
             flattened_arity=2,
             stop_reason="",
         )
+
+
+def test_matcher_metadata_serializes_fallback_selection_and_proof_telemetry() -> None:
+    matcher = MatcherOutcomeMetadata(
+        comparisons=7,
+        lazy_swaps=1,
+        flattened_arity=2,
+        stop_reason="matched",
+        selection=MatcherSelection.CANONICAL_FALLBACK,
+        raw_comparisons=3,
+        raw_lazy_swaps=1,
+        backend="python",
+        fallback_comparisons=7,
+        fallback_flattened_arity=2,
+        terminal_stop_reason="matched",
+        provenance_rejection_count=0,
+        native_equivalence_verdict=True,
+        mutation_outcome="accepted",
+    )
+
+    assert matcher.to_dict() == {
+        "comparisons": 7,
+        "lazy_swaps": 1,
+        "flattened_arity": 2,
+        "stop_reason": "matched",
+        "selection": "canonical_fallback",
+        "raw_comparisons": 3,
+        "raw_lazy_swaps": 1,
+        "backend": "python",
+        "fallback_comparisons": 7,
+        "fallback_flattened_arity": 2,
+        "terminal_stop_reason": "matched",
+        "provenance_rejection_count": 0,
+        "native_equivalence_verdict": True,
+        "mutation_outcome": "accepted",
+    }
+    assert json.loads(
+        MbaProviderOutcome(
+            provider=MbaProviderKind.CATALOGUE,
+            status=ProviderOutcomeStatus.APPLIED,
+            fingerprint="fingerprint",
+            matcher=matcher,
+        ).to_json()
+    )["matcher"] == matcher.to_dict()

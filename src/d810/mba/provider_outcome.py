@@ -27,6 +27,14 @@ class ProviderOutcomeStatus(enum.StrEnum):
     ERROR = "error"
 
 
+class MatcherSelection(enum.StrEnum):
+    """The matcher route selected for one provider attempt."""
+
+    RAW = "raw"
+    CANONICAL_FALLBACK = "canonical_fallback"
+    NONE = "none"
+
+
 JsonValue: TypeAlias = (
     None
     | bool
@@ -86,21 +94,68 @@ class MatcherOutcomeMetadata:
     lazy_swaps: int
     flattened_arity: int
     stop_reason: str
+    selection: MatcherSelection = MatcherSelection.NONE
+    raw_comparisons: int = 0
+    raw_lazy_swaps: int = 0
+    backend: str = "unknown"
+    fallback_comparisons: int = 0
+    fallback_flattened_arity: int = 0
+    terminal_stop_reason: str | None = None
+    provenance_rejection_count: int = 0
+    native_equivalence_verdict: bool | None = None
+    mutation_outcome: str | None = None
 
     def __post_init__(self) -> None:
         for field_name in ("comparisons", "lazy_swaps", "flattened_arity"):
             value = getattr(self, field_name)
             if type(value) is not int or value < 0:
                 raise ValueError(f"{field_name} must be a non-negative integer")
+        for field_name in (
+            "raw_comparisons",
+            "raw_lazy_swaps",
+            "fallback_comparisons",
+            "fallback_flattened_arity",
+            "provenance_rejection_count",
+        ):
+            value = getattr(self, field_name)
+            if type(value) is not int or value < 0:
+                raise ValueError(f"{field_name} must be a non-negative integer")
+        if not isinstance(self.selection, MatcherSelection):
+            raise ValueError("selection must be a MatcherSelection")
+        if type(self.backend) is not str or not self.backend:
+            raise ValueError("backend must be a non-empty string")
         if type(self.stop_reason) is not str or not self.stop_reason:
             raise ValueError("stop_reason must be a non-empty string")
+        if self.terminal_stop_reason is None:
+            object.__setattr__(self, "terminal_stop_reason", self.stop_reason)
+        elif type(self.terminal_stop_reason) is not str or not self.terminal_stop_reason:
+            raise ValueError("terminal_stop_reason must be a non-empty string or None")
+        if self.native_equivalence_verdict is not None and type(
+            self.native_equivalence_verdict
+        ) is not bool:
+            raise ValueError("native_equivalence_verdict must be a boolean or None")
+        if self.mutation_outcome is not None and self.mutation_outcome not in {
+            "accepted",
+            "rejected",
+        }:
+            raise ValueError("mutation_outcome must be accepted, rejected, or None")
 
-    def to_dict(self) -> dict[str, int | str]:
+    def to_dict(self) -> dict[str, object]:
         return {
             "comparisons": self.comparisons,
             "lazy_swaps": self.lazy_swaps,
             "flattened_arity": self.flattened_arity,
             "stop_reason": self.stop_reason,
+            "selection": self.selection.value,
+            "raw_comparisons": self.raw_comparisons,
+            "raw_lazy_swaps": self.raw_lazy_swaps,
+            "backend": self.backend,
+            "fallback_comparisons": self.fallback_comparisons,
+            "fallback_flattened_arity": self.fallback_flattened_arity,
+            "terminal_stop_reason": self.terminal_stop_reason,
+            "provenance_rejection_count": self.provenance_rejection_count,
+            "native_equivalence_verdict": self.native_equivalence_verdict,
+            "mutation_outcome": self.mutation_outcome,
         }
 
 
@@ -185,6 +240,7 @@ class MbaProviderOutcome:
 
 __all__ = [
     "MatcherOutcomeMetadata",
+    "MatcherSelection",
     "MbaProviderKind",
     "MbaProviderOutcome",
     "ProviderOutcomeStatus",

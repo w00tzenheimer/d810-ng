@@ -22,6 +22,7 @@ from d810.mba.island_profile import (
 )
 from d810.mba.provider_outcome import (
     MatcherOutcomeMetadata,
+    MatcherSelection,
     MbaProviderKind,
     MbaProviderOutcome,
     ProviderOutcomeStatus,
@@ -179,6 +180,32 @@ def outcome_from_dict(data: Mapping[str, object]) -> MbaProviderOutcome:
                 lazy_swaps=int(raw_matcher["lazy_swaps"]),  # type: ignore[index]
                 flattened_arity=int(raw_matcher["flattened_arity"]),  # type: ignore[index]
                 stop_reason=str(raw_matcher["stop_reason"]),  # type: ignore[index]
+                selection=MatcherSelection(
+                    str(raw_matcher.get("selection", MatcherSelection.NONE))
+                ),
+                raw_comparisons=int(raw_matcher.get("raw_comparisons", 0)),
+                raw_lazy_swaps=int(raw_matcher.get("raw_lazy_swaps", 0)),
+                backend=str(raw_matcher.get("backend", "unknown")),
+                fallback_comparisons=int(raw_matcher.get("fallback_comparisons", 0)),
+                fallback_flattened_arity=int(
+                    raw_matcher.get("fallback_flattened_arity", 0)
+                ),
+                terminal_stop_reason=(
+                    None
+                    if raw_matcher.get("terminal_stop_reason") is None
+                    else str(raw_matcher["terminal_stop_reason"])
+                ),
+                provenance_rejection_count=int(
+                    raw_matcher.get("provenance_rejection_count", 0)
+                ),
+                native_equivalence_verdict=raw_matcher.get(
+                    "native_equivalence_verdict"
+                ),
+                mutation_outcome=(
+                    None
+                    if raw_matcher.get("mutation_outcome") is None
+                    else str(raw_matcher["mutation_outcome"])
+                ),
             )
         )
         raw_input_cost = data.get("input_cost")

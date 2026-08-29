@@ -413,6 +413,21 @@ def test_authorization_rejects_boolean_schema_and_count_dataclass_inputs(
         replace(case.snapshot, canonicalizer_schema_version=True)
 
 
+@pytest.mark.parametrize(
+    "field",
+    ("snapshot_fingerprint", "corpus_digest", "toolchain_digest"),
+)
+def test_authorization_rejects_non_digest_direct_certificate_fields(
+    tmp_path: Path, field: str
+) -> None:
+    case = _generated_authorization_case(tmp_path)
+    assert not replace(case.certificate, **{field: "stale"}).authorizes(
+        case.snapshot,
+        case.runtime_mode,
+        case.expectation,
+    )
+
+
 def test_snapshot_is_memoized_immutable_and_preserves_declaration_order() -> None:
     x, y = Var("x"), Var("y")
     first = _Rule("later_alphabetically", x + y)

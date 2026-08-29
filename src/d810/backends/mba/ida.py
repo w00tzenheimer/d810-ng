@@ -24,7 +24,10 @@ from d810.core.typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 import ida_hexrays
 
-from d810.backends.mba.native_pod_matcher import active_runtime_identity
+from d810.backends.mba.native_pod_matcher import (
+    active_runtime_identity,
+    matcher_backend as _native_matcher_backend,
+)
 from d810.backends.mba.runtime_semantics import (
     runtime_semantics_digest as _compute_runtime_semantics_digest,
 )
@@ -47,6 +50,7 @@ from d810.mba.constraints import (
 )
 from d810.mba.provider_outcome import (
     MatcherOutcomeMetadata,
+    MatcherSelection,
     MbaProviderKind,
     MbaProviderOutcome,
     ProviderOutcomeStatus,
@@ -56,6 +60,32 @@ from d810.hexrays.ir.number_operand import safe_make_number
 from d810.backends.mba.native_z3 import prove_native_ast_equivalence
 
 logger = getLogger(__name__)
+
+_LEGACY_ALIAS_WARNING_EMITTED = False
+
+
+def canonical_fallback_rollout_requested() -> bool:
+    """Resolve the release rollout flag with one explicit rollback switch.
+
+    ``D810_STRUCTURAL_DSL_MATCHING`` remains a one-release compatibility alias
+    for operators that have not migrated their launch environment yet.  It is
+    intentionally warning-only and never overrides the rollback flag.
+    """
+
+    if os.environ.get("D810_LEGACY_DSL_PERMUTATIONS", "0") == "1":
+        return False
+    if os.environ.get("D810_CANONICAL_MATCH_FALLBACK", "0") == "1":
+        return True
+    if os.environ.get("D810_STRUCTURAL_DSL_MATCHING", "0") == "1":
+        global _LEGACY_ALIAS_WARNING_EMITTED
+        if not _LEGACY_ALIAS_WARNING_EMITTED:
+            logger.warning(
+                "D810_STRUCTURAL_DSL_MATCHING is deprecated; use "
+                "D810_CANONICAL_MATCH_FALLBACK=1"
+            )
+            _LEGACY_ALIAS_WARNING_EMITTED = True
+        return True
+    return False
 
 _REPLACEMENT_BOUNDARY_EXCEPTIONS = (
     AstEvaluationException,
@@ -512,6 +542,11 @@ class IDAPatternAdapter:
         self._shadow_source_ast = None
         self._shadow_structural_native_paths: dict[str, tuple[int, ...]] | None = None
         self._shadow_native_path_unavailable = False
+        self._provenance_rejection_count = 0
+        self._shadow_native_equivalence_verdict: bool | None = None
+        self._raw_match_selected = False
+        self._raw_match_attempted = False
+        self._raw_match_backend = "unknown"
         self._legacy_binding_paths: (
             dict[str, frozenset[tuple[int, ...]]] | None
         ) = None
@@ -539,6 +574,8 @@ class IDAPatternAdapter:
         self._shadow_source_ast = None
         self._shadow_structural_native_paths = None
         self._shadow_native_path_unavailable = False
+        self._provenance_rejection_count = 0
+        self._shadow_native_equivalence_verdict = None
         self._shadow_structural_refused = False
         self._structural_selection_active = False
         self._structural_dispatch_bucket_size = 0
@@ -576,6 +613,9 @@ class IDAPatternAdapter:
         self._legacy_binding_paths = None
         self._legacy_match_observed = False
         self._shadow_parity_recorded = False
+        self._raw_match_selected = False
+        self._raw_match_attempted = False
+        self._raw_match_backend = "unknown"
         self._structural_selection_active = False
         self._structural_dispatch_bucket_size = 0
         self._structural_dispatch_attempt_count = 0
@@ -722,8 +762,7 @@ class IDAPatternAdapter:
                 self._certified_catalogue_rule_id,
                 self.rule,
             )
-            and os.environ.get("D810_STRUCTURAL_DSL_MATCHING", "0") == "1"
-            and os.environ.get("D810_LEGACY_DSL_PERMUTATIONS", "0") != "1"
+            and canonical_fallback_rollout_requested()
             and self._structural_parity_authorized
         )
         if self._canonical_fallback_enabled != canonical_fallback_enabled:
@@ -828,11 +867,16 @@ class IDAPatternAdapter:
             replacement_ast = minsn_to_ast(replacement)
         except Exception:
             return self._structural_failure()
-        if replacement_ast is None or not prove_native_ast_equivalence(
-            test_ast,
-            replacement_ast,
-            width=destination_size * 8,
-        ):
+        if replacement_ast is None:
+            return self._structural_failure()
+        self._shadow_native_equivalence_verdict = bool(
+            prove_native_ast_equivalence(
+                test_ast,
+                replacement_ast,
+                width=destination_size * 8,
+            )
+        )
+        if not self._shadow_native_equivalence_verdict:
             return self._structural_failure()
         self._record_catalogue_success(
             test_ast,
@@ -986,6 +1030,7 @@ class IDAPatternAdapter:
                 )
                 if not resolved_matches:
                     native_path_unavailable = True
+                    self._provenance_rejection_count += 1
                     report = replace(
                         report,
                         matches=(),
@@ -1013,16 +1058,66 @@ class IDAPatternAdapter:
 
     def _matcher_metadata(self) -> MatcherOutcomeMetadata | None:
         report = getattr(self, "_shadow_match_report", None)
-        if report is None:
+        structural_selection = bool(
+            getattr(self, "_structural_selection_active", False)
+        )
+        if (
+            report is None
+            and not getattr(self, "_raw_match_attempted", False)
+            and not structural_selection
+        ):
             return None
+        if report is None:
+            stop_reason = (
+                "fallback_unavailable"
+                if structural_selection
+                else (
+                    "matched"
+                    if getattr(self, "_raw_match_selected", False)
+                    else "clean_miss"
+                )
+            )
+            return MatcherOutcomeMetadata(
+                comparisons=0,
+                lazy_swaps=0,
+                flattened_arity=0,
+                stop_reason=stop_reason,
+                selection=(
+                    MatcherSelection.CANONICAL_FALLBACK
+                    if structural_selection
+                    else MatcherSelection.RAW
+                    if getattr(self, "_raw_match_selected", False)
+                    else MatcherSelection.NONE
+                ),
+                backend="python" if structural_selection else getattr(
+                    self, "_raw_match_backend", "unknown"
+                ),
+                terminal_stop_reason=stop_reason,
+            )
+        terminal_stop_reason = (
+            "native_path_unavailable"
+            if getattr(self, "_shadow_native_path_unavailable", False)
+            else report.stop_reason.value
+        )
         return MatcherOutcomeMetadata(
             comparisons=report.comparisons,
             lazy_swaps=report.commuted_branches,
             flattened_arity=report.flattened_nodes,
-            stop_reason=(
-                "native_path_unavailable"
-                if getattr(self, "_shadow_native_path_unavailable", False)
-                else report.stop_reason.value
+            stop_reason=terminal_stop_reason,
+            selection=(
+                MatcherSelection.CANONICAL_FALLBACK
+                if structural_selection and report.bindings is not None
+                else MatcherSelection.NONE
+            ),
+            backend="python",
+            fallback_comparisons=report.comparisons,
+            fallback_flattened_arity=report.flattened_nodes,
+            terminal_stop_reason=terminal_stop_reason,
+            provenance_rejection_count=getattr(
+                self, "_provenance_rejection_count", 0
+            ),
+            native_equivalence_verdict=getattr(
+                self, "_shadow_native_equivalence_verdict", None
             ),
         )
 
@@ -1213,6 +1308,7 @@ class IDAPatternAdapter:
             return False
         if not proven:
             self._shadow_structural_refused = True
+        self._shadow_native_equivalence_verdict = bool(proven)
         return proven
 
     def _get_shadow_replacement(self, candidate: _ShadowBindingCandidate) -> Any | None:
@@ -1384,6 +1480,13 @@ class IDAPatternAdapter:
         structural_selection = bool(
             getattr(self, "_structural_selection_active", False)
         )
+        if raw_native:
+            self._raw_match_attempted = True
+            self._raw_match_selected = True
+            try:
+                self._raw_match_backend = str(_native_matcher_backend())
+            except Exception:
+                self._raw_match_backend = "unknown"
         raw_identity = None
         if raw_native and getattr(self, "_attempt_instruction", None) is not None:
             profile = None
@@ -1473,6 +1576,14 @@ class IDAPatternAdapter:
                 ),
                 refusal_reason=None if accepted else reason,
                 metadata=metadata,
+                matcher=(
+                    None
+                    if outcome.matcher is None
+                    else replace(
+                        outcome.matcher,
+                        mutation_outcome=("accepted" if accepted else "rejected"),
+                    )
+                ),
             )
         )
 
@@ -1505,6 +1616,12 @@ class IDAPatternAdapter:
         structural_selection = bool(
             getattr(self, "_structural_selection_active", False)
         )
+        if not structural_selection:
+            self._raw_match_attempted = True
+            try:
+                self._raw_match_backend = str(_native_matcher_backend())
+            except Exception:
+                self._raw_match_backend = "unknown"
         lowering = getattr(self, "_shadow_lowering", None)
         profile = (
             getattr(lowering, "profile", None)
@@ -2264,5 +2381,6 @@ __all__ = [
     "IDAPatternAdapter",
     "adapt_rules",
     "attach_selected_certified_catalogue_snapshot",
+    "canonical_fallback_rollout_requested",
     "runtime_semantics_digest",
 ]

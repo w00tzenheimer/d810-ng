@@ -12,6 +12,7 @@ import d810.backends.mba.ida as ida_backend  # noqa: E402
 from d810.backends.mba.ida import (  # noqa: E402
     IDAPatternAdapter,
     attach_selected_certified_catalogue_snapshot,
+    canonical_fallback_rollout_requested,
 )
 from d810.backends.mba.native_z3 import prove_native_ast_equivalence  # noqa: E402
 from d810.hexrays.expr import ast as ast_dispatcher  # noqa: E402
@@ -654,6 +655,24 @@ def test_certified_registration_rejects_bare_structural_opt_in(
 
     assert rollback.uses_structural_matching is False
     assert len(rollback.pattern_candidates) == 2
+
+
+def test_rollout_flag_precedence_and_deprecated_alias_warning(monkeypatch) -> None:
+    warnings: list[tuple[object, ...]] = []
+    monkeypatch.setattr(ida_backend.logger, "warning", lambda *args: warnings.append(args))
+    monkeypatch.delenv("D810_CANONICAL_MATCH_FALLBACK", raising=False)
+    monkeypatch.delenv("D810_LEGACY_DSL_PERMUTATIONS", raising=False)
+    monkeypatch.setenv("D810_STRUCTURAL_DSL_MATCHING", "1")
+
+    assert canonical_fallback_rollout_requested() is True
+    assert canonical_fallback_rollout_requested() is True
+    assert len(warnings) == 1
+    assert "deprecated" in str(warnings[0]).lower()
+
+    monkeypatch.setenv("D810_CANONICAL_MATCH_FALLBACK", "1")
+    assert canonical_fallback_rollout_requested() is True
+    monkeypatch.setenv("D810_LEGACY_DSL_PERMUTATIONS", "1")
+    assert canonical_fallback_rollout_requested() is False
 
 
 def test_portfolio_can_disable_legacy_fuzzy_permutations_without_structural_opt_in():
