@@ -1267,6 +1267,12 @@ class TestCompilerShapeCatalogueNative:
                     assert outcome.metadata.get("rule_name")
                     matcher = outcome.matcher
                     assert matcher is not None
+                    # Raw and fallback work are separate budgets.  A raw hit
+                    # must not pay semantic comparison work, while any
+                    # fallback callback remains bounded by the shared cap.
+                    assert matcher.raw_comparisons >= 0
+                    assert matcher.fallback_comparisons >= 0
+                    assert matcher.fallback_comparisons <= 64
                     assert matcher.selection in {
                         MatcherSelection.RAW,
                         MatcherSelection.CANONICAL_FALLBACK,
@@ -1279,6 +1285,7 @@ class TestCompilerShapeCatalogueNative:
                         assert outcome.proof_verdict is None
                         assert outcome.metadata.get("raw_native_identity")
                     elif matcher.selection is MatcherSelection.CANONICAL_FALLBACK:
+                        assert matcher.raw_comparisons > 0
                         assert matcher.fallback_comparisons > 0
                         if outcome.status is ProviderOutcomeStatus.APPLIED:
                             assert matcher.native_equivalence_verdict is True
@@ -1293,6 +1300,19 @@ class TestCompilerShapeCatalogueNative:
                         assert outcome.status is not ProviderOutcomeStatus.APPLIED
                         assert outcome.proof_verdict in {None, False}
                 _assert_exact_catalogue_contract(function, outcomes)
+                # Callback-local canonical candidate/binding state is cleared
+                # before the next instruction.  Registration candidates are
+                # intentionally long-lived; these borrowed objects are not.
+                for adapter in adapters:
+                    assert getattr(adapter, "_shadow_lowering", None) is None
+                    assert getattr(adapter, "_shadow_structural_lowering", None) is None
+                    assert getattr(adapter, "_shadow_source_ast", None) is None
+                    assert getattr(adapter, "_shadow_match_report", None) is None
+                    assert getattr(adapter, "_shadow_structural_native_paths", None) is None
+                    assert getattr(adapter, "_legacy_binding_paths", None) is None
+                    assert getattr(adapter, "_shadow_native_equivalence_verdict", None) is None
+                    assert getattr(adapter, "_shadow_native_path_unavailable", False) is False
+                    assert getattr(adapter, "_structural_selection_active", False) is False
             applied_catalogue_outcomes = tuple(
                 outcome
                 for function_outcomes in accepted_catalogue_by_function.values()
@@ -1370,6 +1390,9 @@ class TestCompilerShapeCatalogueNative:
                                     "attempted_rule_count": outcome.metadata[
                                         "structural_dispatch"
                                     ]["attempted_rule_count"],
+                                    "raw_comparisons": outcome.matcher.raw_comparisons,
+                                    "fallback_comparisons": outcome.matcher.fallback_comparisons,
+                                    "fallback_comparison_budget": 64,
                                     "comparisons": outcome.matcher.comparisons,
                                     "lazy_swaps": outcome.matcher.lazy_swaps,
                                     "flattened_arity": outcome.matcher.flattened_arity,

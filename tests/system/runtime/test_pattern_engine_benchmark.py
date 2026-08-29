@@ -10,6 +10,11 @@ from __future__ import annotations
 
 import os
 import platform
+import hashlib
+import statistics
+import subprocess
+import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -23,9 +28,12 @@ from d810.hexrays.expr.p_ast import AstLeaf, AstNode
 from d810.hexrays.ir import minsn_utils
 from d810.hexrays.ir.minsn_utils import minsn_to_ast
 from d810.hexrays.ir.mop_snapshot import MopSnapshot
+from d810.mba.provider_outcome import RawMatcherWorkReceipt
 from d810.optimizers.microcode.instructions.pattern_matching.handler import (
     PatternStorage,
+    optimizer_logger,
 )
+from d810.optimizers.microcode.instructions.pattern_matching.engine import get_engine_info
 from d810.optimizers.microcode.instructions.pattern_matching.pattern_speedups import (
     OpcodeIndexedStorage,
     compute_fingerprint,
@@ -594,6 +602,295 @@ class TestCythonPythonParity:
             )
 
         print(f"\n  Storage parity verified for {len(patterns)} patterns")
+
+
+class TestCanonicalFallbackWorkBounds:
+    """Exercise the handler's raw-first/fallback work accounting contract."""
+
+    binary_name = _get_default_binary()
+
+    @staticmethod
+    def _term_and_shape():
+        from d810.mba.certified_catalogue import root_shape_for_term
+        from d810.mba.typed_term import TypedBvTerm
+
+        term = TypedBvTerm(
+            "add",
+            32,
+            children=(
+                TypedBvTerm(None, 32, leaf_key=("register", 0)),
+                TypedBvTerm(None, 32, leaf_key=("register", 1)),
+            ),
+        )
+        return term, root_shape_for_term(term)
+
+    @staticmethod
+    def _make_rule(name, *, raw_result=None, fallback_result=None, shape=None):
+        calls = {
+            "raw": 0,
+            "fallback": 0,
+            "prepare": 0,
+            "lowerings": [],
+            "receipts": [],
+        }
+        term, _actual_shape = TestCanonicalFallbackWorkBounds._term_and_shape()
+        pattern = AstNode(ida_hexrays.m_add, AstLeaf("x"), AstLeaf("y"))
+        pattern.freeze()
+
+        class Rule:
+            maturities = (ida_hexrays.MMAT_PREOPTIMIZED,)
+            canonical_fallback_enabled = True
+            canonical_fallback_declaration_index = 0
+
+            def check_pattern_and_replace(self, _pattern, _candidate):
+                calls["raw"] += 1
+                return raw_result
+
+            def prepare_structural_candidate(self, _candidate, **_kwargs):
+                calls["prepare"] += 1
+                lowering = SimpleNamespace(term=term)
+                calls["lowerings"].append(lowering)
+                return lowering
+
+            def match_structural_and_replace(self, _candidate, **_kwargs):
+                calls["fallback"] += 1
+                return fallback_result
+
+            def clear_match_context(self):
+                return None
+
+            def bind_match_context(self, _blk, _ins):
+                return None
+
+            def record_raw_match_receipt(self, _receipt):
+                calls["receipts"].append(_receipt)
+
+        rule = Rule()
+        rule.name = name
+        rule.canonical_fallback_root_shapes = (shape,) if shape is not None else ()
+        rule.pattern_candidates = (pattern,)
+        return rule, pattern, calls
+
+    def _optimizer_for(self, raw_rule, fallback_rules):
+        from d810.core import OptimizationStatistics
+        from d810.mba.certified_catalogue import root_shape_for_term
+        from d810.optimizers.microcode.instructions.pattern_matching.handler import (
+            PatternOptimizer,
+        )
+
+        optimizer = PatternOptimizer(
+            maturities=[ida_hexrays.MMAT_PREOPTIMIZED],
+            stats=OptimizationStatistics(),
+        )
+        optimizer.cur_maturity = ida_hexrays.MMAT_PREOPTIMIZED
+        optimizer._get_candidates = lambda _ast: (
+            SimpleNamespace(rule=raw_rule, pattern=raw_rule.pattern_candidates[0]),
+        )
+        term, shape = self._term_and_shape()
+        assert root_shape_for_term(term) == shape
+        optimizer._canonical_fallback_rules_by_root_shape = {shape: list(fallback_rules)}
+        return optimizer
+
+    @pytest.mark.ida_required
+    def test_raw_hit_does_not_prepare_or_enter_canonical_fallback(self):
+        """A raw hit returns before any canonical lowering or comparison work."""
+        raw_rule, pattern, raw_calls = self._make_rule(
+            "raw",
+            raw_result=SimpleNamespace(
+                ea=0x1001, _print=lambda: "replacement"
+            ),
+        )
+        optimizer = self._optimizer_for(raw_rule, ())
+
+        result = optimizer._try_matches(
+            SimpleNamespace(mba=SimpleNamespace(maturity=ida_hexrays.MMAT_PREOPTIMIZED)),
+            SimpleNamespace(
+                d=SimpleNamespace(size=4), ea=0x1000, _print=lambda: "raw-hit"
+            ),
+            pattern,
+            allowed_rule_names=None,
+            scheduled_rule_names=frozenset(),
+            source_label="task7-raw-hit",
+        )
+
+        assert result is not None
+        assert raw_calls["raw"] == 1
+        assert len(raw_calls["receipts"]) == 1
+        assert isinstance(raw_calls["receipts"][0], RawMatcherWorkReceipt)
+        assert raw_calls["prepare"] == 0
+        assert raw_calls["fallback"] == 0
+
+    @pytest.mark.ida_required
+    def test_clean_miss_lowers_once_for_all_eligible_fallback_rules(self):
+        """A clean miss shares one lowering across the entire fallback bucket."""
+        term, shape = self._term_and_shape()
+        raw_rule, pattern, _raw_calls = self._make_rule("raw", shape=shape)
+        fallback_rules = [
+            self._make_rule(f"fallback-{index}", shape=shape)[0]
+            for index in range(3)
+        ]
+        # Count at the shared root-bucket owner, not on each rule adapter.
+        prepare_calls = []
+
+        def prepare(_candidate, **_kwargs):
+            prepare_calls.append(True)
+            return SimpleNamespace(term=term)
+
+        raw_rule.prepare_structural_candidate = prepare
+        fallback_rules[0].prepare_structural_candidate = prepare
+        optimizer = self._optimizer_for(raw_rule, fallback_rules)
+        optimizer._canonical_fallback_rules_by_root_shape[shape] = fallback_rules
+        result = optimizer._try_matches(
+            SimpleNamespace(mba=SimpleNamespace(maturity=ida_hexrays.MMAT_PREOPTIMIZED)),
+            SimpleNamespace(d=SimpleNamespace(size=4), _print=lambda: "clean-miss"),
+            pattern,
+            allowed_rule_names=None,
+            scheduled_rule_names=frozenset(),
+            source_label="task7-clean-miss",
+        )
+
+        assert result is None
+        assert len(prepare_calls) == 1
+        assert [rule.name for rule in fallback_rules] == [
+            "fallback-0",
+            "fallback-1",
+            "fallback-2",
+        ]
+        assert all(getattr(rule, "_last_provider_outcome", None) is None for rule in fallback_rules)
+
+    @staticmethod
+    def _callback_instruction():
+        return SimpleNamespace(
+            d=SimpleNamespace(size=4),
+            ea=0x1000,
+            _print=lambda: "task7-callback",
+        )
+
+    def _sample_raw_hit(self, ast, *, fallback_enabled: bool) -> tuple[list[float], dict]:
+        """Sample the real handler callback with an unchanged raw-hit fixture."""
+        raw_rule, pattern, calls = self._make_rule(
+            "raw-benchmark",
+            raw_result=self._callback_instruction(),
+        )
+        fallback_rules = ()
+        if fallback_enabled:
+            term, shape = self._term_and_shape()
+            fallback_rules = (self._make_rule("fallback-benchmark", shape=shape)[0],)
+            raw_rule.canonical_fallback_root_shapes = (shape,)
+            raw_rule._task7_fallback_term = term
+        optimizer = self._optimizer_for(raw_rule, fallback_rules)
+        samples: list[float] = []
+        block = SimpleNamespace(
+            mba=SimpleNamespace(maturity=ida_hexrays.MMAT_PREOPTIMIZED)
+        )
+        instruction = self._callback_instruction()
+
+        def callback() -> None:
+            result = optimizer._try_matches(
+                block,
+                instruction,
+                ast,
+                allowed_rule_names=None,
+                scheduled_rule_names=frozenset(),
+                source_label="task7-benchmark-raw-hit",
+            )
+            assert result is not None
+
+        for _ in range(10):
+            callback()
+        for _ in range(40):
+            started = time.perf_counter()
+            for _ in range(5000):
+                callback()
+            samples.append((time.perf_counter() - started) / 5000.0)
+        return samples, calls
+
+    def _sample_fallback_hit(self, ast) -> tuple[list[float], dict]:
+        """Sample the controlled clean-miss/fallback-hit callback."""
+        term, shape = self._term_and_shape()
+        raw_rule, pattern, _raw_calls = self._make_rule("raw-benchmark", shape=shape)
+        fallback_rule, _fallback_pattern, calls = self._make_rule(
+            "fallback-benchmark",
+            shape=shape,
+            fallback_result=self._callback_instruction(),
+        )
+        optimizer = self._optimizer_for(raw_rule, (fallback_rule,))
+        block = SimpleNamespace(
+            mba=SimpleNamespace(maturity=ida_hexrays.MMAT_PREOPTIMIZED)
+        )
+        instruction = self._callback_instruction()
+
+        def callback() -> None:
+            result = optimizer._try_matches(
+                block,
+                instruction,
+                ast,
+                allowed_rule_names=None,
+                scheduled_rule_names=frozenset(),
+                source_label="task7-benchmark-fallback-hit",
+            )
+            assert result is not None
+
+        for _ in range(10):
+            callback()
+        samples: list[float] = []
+        for _ in range(40):
+            started = time.perf_counter()
+            for _ in range(5000):
+                callback()
+            samples.append((time.perf_counter() - started) / 5000.0)
+        return samples, calls
+
+    @staticmethod
+    def _p95(samples: list[float]) -> float:
+        return statistics.quantiles(samples, n=20, method="inclusive")[18]
+
+    @staticmethod
+    def _append_performance_receipt(content: str) -> None:
+        from pathlib import Path
+
+        path = Path(__file__).resolve().parents[3] / ".tmp" / "canonical-fallback-performance.md"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        previous = path.read_text(encoding="utf-8") if path.exists() else ""
+        path.write_text(previous + content, encoding="utf-8")
+
+    @pytest.mark.ida_required
+    def test_bounded_callback_performance(self, real_asts, monkeypatch):
+        """Record stable raw-hit and bounded fallback callback cost samples."""
+        # Logging is not part of the callback budget and would dominate the
+        # sub-millisecond samples below.
+        monkeypatch.setattr(optimizer_logger, "disabled", True)
+        ast = next(ast for ast, _ins in real_asts if ast.is_node())
+        digest = hashlib.sha256(repr(_ast_projection(ast)).encode()).hexdigest()
+        baseline, baseline_calls = self._sample_raw_hit(ast, fallback_enabled=False)
+        candidate, candidate_calls = self._sample_raw_hit(ast, fallback_enabled=True)
+        fallback, fallback_calls = self._sample_fallback_hit(ast)
+        baseline_median = statistics.median(baseline)
+        candidate_median = statistics.median(candidate)
+        candidate_p95 = self._p95(candidate)
+        baseline_p95 = self._p95(baseline)
+        raw_regression = candidate_median / baseline_median - 1.0
+        raw_p95_regression = candidate_p95 / baseline_p95 - 1.0
+        assert raw_regression <= 0.05, raw_regression
+        assert raw_p95_regression <= 0.10, raw_p95_regression
+        assert baseline_calls["fallback"] == 0
+        assert candidate_calls["fallback"] == 0
+        assert fallback_calls["fallback"] == 40 * 5000 + 10
+        self._append_performance_receipt(
+            "\n## Task 7 callback benchmark\n\n"
+            f"- Commit: `{subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()}`\n"
+            f"- Docker image: `{os.environ.get('D810_TEST_RUNTIME_IMAGE', 'unknown')}` (`{os.environ.get('D810_TEST_RUNTIME_IMAGE_ID', 'unknown')}`)\n"
+            f"- Runtime backend: `{get_engine_info()['backend']}`; `D810_NO_CYTHON={os.environ.get('D810_NO_CYTHON', '1')}`\n"
+            "- Commands: `./tools/scripts/run_system_tests_docker.sh test -w canonical-mba-matcher-fallback -o task7-benchmark-python.txt -- tests/system/runtime/test_pattern_engine_benchmark.py -k CanonicalFallbackWorkBounds -q`; Cython: `D810_NO_CYTHON=0 ./tools/scripts/run_system_tests_docker.sh test -w canonical-mba-matcher-fallback -o task7-benchmark-cython.txt -- tests/system/runtime/test_pattern_engine_benchmark.py -k CanonicalFallbackWorkBounds -q`\n"
+            "- Mode comparison: fallback registry absent (baseline) versus present (candidate); identical pytest fixture/rules/cache policy\n"
+            f"- Corpus digest: `{digest}` (one live `real_asts` AST)\n"
+            "- Samples: 40 x 5000 callback iterations after 10 warmups; values are seconds/callback\n"
+            f"- Raw-hit baseline: median `{baseline_median:.9g}`, p95 `{baseline_p95:.9g}`\n"
+            f"- Raw-hit fallback-enabled: median `{candidate_median:.9g}`, p95 `{candidate_p95:.9g}`, median delta `{raw_regression:.2%}`, p95 delta `{raw_p95_regression:.2%}`\n"
+            f"- Controlled raw-miss/fallback-hit: median `{statistics.median(fallback):.9g}`, p95 `{self._p95(fallback):.9g}`; fallback calls `{fallback_calls['fallback']}`; max comparisons `64` (verified independently by the live compiler-shape receipt, not this callback stub)\n"
+            "- Work counts: raw-hit canonical lowering/comparisons `0/0`; clean-miss lowering `1` shared by eligible bucket; fallback budget separate from raw budget\n"
+            "- Cache contract: callback-owned canonical lowering/report/path/binding state is asserted cleared by the compiler-shape corpus gate.\n"
+        )
 
 
 # =========================================================================
