@@ -91,6 +91,7 @@ from d810.analyses.control_flow.semantic_route_evidence import (
     CanonicalSemanticEvidence,
     CanonicalSemanticEvidenceProductionContext,
     build_canonical_semantic_evidence,
+    canonical_semantic_evidence_from_proofs,
     SemanticRouteFact,
     SemanticRouteFactKind,
     SemanticRouteProof,
@@ -3561,6 +3562,47 @@ def _native_bound_route_fact(
         path_serials=(source,),
         path_edges=(),
         fact_id=route.fact_id,
+    )
+
+
+def _augment_supplied_canonical_evidence_with_native_entry_fact(
+    evidence: CanonicalSemanticEvidence,
+    entry_fact: SemanticRouteFact,
+    context: CanonicalSemanticEvidenceProductionContext,
+) -> CanonicalSemanticEvidence | None:
+    """Mint one missing exact entry proof into the same canonical bundle.
+
+    A native-bound entry receipt has already been rebound against the current
+    source graph before the emitter reaches this point.  A supplied bundle may
+    legitimately cover other route families without carrying that stack or
+    register entry write.  Rebuild the receipt as a canonical proof once, then
+    remint the complete immutable bundle.  A pre-existing physical write at
+    the same source coordinate is a contradiction rather than an invitation to
+    pick a different proof, so it remains a fail-closed abstention.
+    """
+    if (
+        evidence.native_key != context.native_key
+        or int(evidence.generation) != int(context.generation)
+    ):
+        return None
+    produced = build_canonical_semantic_evidence((entry_fact,), context)
+    if produced.evidence is None:
+        return None
+    entry_proofs = tuple(produced.evidence.route_proofs)
+    if len(entry_proofs) != 1 or entry_proofs[0].state_write is None:
+        return None
+    entry_write = entry_proofs[0].state_write
+    if any(
+        proof.state_write is not None
+        and int(proof.state_write.instruction_ea)
+        == int(entry_write.instruction_ea)
+        for proof in evidence.route_proofs
+    ):
+        return None
+    return canonical_semantic_evidence_from_proofs(
+        native_key=evidence.native_key,
+        generation=evidence.generation,
+        proofs=(*evidence.route_proofs, *entry_proofs),
     )
 
 
@@ -10742,12 +10784,49 @@ def emit_minimal_unflatten(
                                 ),
                                 canonical_route_evidence=canonical_route_evidence,
                             )
-                            proof = adapt_native_bound_transition_route(
-                                native_route, source=flow_graph,
-                                source_catalog=entry_catalog,
-                                block_refs_by_serial=block_refs_by_serial,
-                                canonical_evidence=canonical_route_evidence,
-                            )
+                            try:
+                                proof = adapt_native_bound_transition_route(
+                                    native_route, source=flow_graph,
+                                    source_catalog=entry_catalog,
+                                    block_refs_by_serial=block_refs_by_serial,
+                                    canonical_evidence=canonical_route_evidence,
+                                )
+                            except ValueError:
+                                group_token = snapshot_id or f"{int(flow_graph.func_ea):X}"
+                                augmentation_context = CanonicalSemanticEvidenceProductionContext(
+                                    native_key=canonical_route_evidence.native_key,
+                                    generation=int(canonical_route_evidence.generation),
+                                    atomic_group_id=f"minimal-state-routes:{group_token}",
+                                    state_identity=entry_state_identity,
+                                    blocks=tuple(flow_graph.blocks.values()),
+                                    identities_by_serial=tuple(
+                                        (int(serial), ref.identity)
+                                        for serial, ref in block_refs_by_serial.items()
+                                        if isinstance(ref, NativeBlockRef)
+                                    ),
+                                    entry_serial=int(flow_graph.entry_serial),
+                                )
+                                augmented_evidence = (
+                                    _augment_supplied_canonical_evidence_with_native_entry_fact(
+                                        canonical_route_evidence,
+                                        entry_fact,
+                                        augmentation_context,
+                                    )
+                                )
+                                if augmented_evidence is None:
+                                    raise
+                                canonical_route_evidence = augmented_evidence
+                                entry_catalog = build_source_identity_catalog(
+                                    flow_graph, block_refs_by_serial,
+                                    source_generation=int(canonical_route_evidence.generation),
+                                    canonical_route_evidence=canonical_route_evidence,
+                                )
+                                proof = adapt_native_bound_transition_route(
+                                    native_route, source=flow_graph,
+                                    source_catalog=entry_catalog,
+                                    block_refs_by_serial=block_refs_by_serial,
+                                    canonical_evidence=canonical_route_evidence,
+                                )
                             source_ref = block_refs_by_serial.get(int(native_route.source_block_serial))
                             target_ref = block_refs_by_serial.get(int(native_route.target_handler_serial))
                             if type(source_ref) is not NativeBlockRef or type(target_ref) is not NativeBlockRef:

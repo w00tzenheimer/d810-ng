@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import inspect
 import logging
-from dataclasses import replace
+from dataclasses import fields, replace
 from types import SimpleNamespace
 
 import pytest
@@ -84,6 +84,7 @@ from d810.ir.flowgraph import (
     PredicateKind,
 )
 from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
+from d810.ir.storage_identity import StorageIdentity, StorageIdentityKind
 from d810.transforms.graph_modification import (
     ConvertToGoto,
     EdgeRedirectViaPredSplit,
@@ -136,6 +137,7 @@ from d810.transforms.unflatten_authority.producer_api import (
     ConditionalEntryBridgeForecast,
 )
 from d810.analyses.control_flow.semantic_route_evidence import (
+    CanonicalSemanticEvidenceProductionContext,
     SemanticRouteFact,
     SemanticRouteFactKind,
 )
@@ -2394,7 +2396,10 @@ def test_supplied_canonical_entry_evidence_is_consumed_without_remint(monkeypatc
     assert supplied.unflatten_proposal.route_evidence.generation == evidence.generation
 
 
-def test_supplied_canonical_evidence_missing_entry_proof_abstains(monkeypatch, _seam):
+def test_supplied_canonical_evidence_mints_exact_current_native_entry_proof(
+    monkeypatch, _seam,
+):
+    """A rebound native entry receipt extends incomplete supplied evidence once."""
     graph, _state, _entry_route, kwargs = _typed_entry_native_route_fixture(monkeypatch)
     produced = emit_minimal_unflatten(graph, native_key=NATIVE_KEY, **kwargs)
     evidence = produced.unflatten_proposal.route_evidence
@@ -2411,6 +2416,233 @@ def test_supplied_canonical_evidence_missing_entry_proof_abstains(monkeypatch, _
         native_key=None,
         canonical_route_evidence=missing_entry_evidence,
         **kwargs,
+    )
+
+    assert plan.unflatten_proposal is not None
+    augmented = plan.unflatten_proposal.route_evidence
+    assert augmented.native_key == missing_entry_evidence.native_key
+    assert augmented.generation == missing_entry_evidence.generation
+    proof_eas = {
+        proof.state_write.instruction_ea
+        for proof in augmented.route_proofs
+        if proof.state_write is not None
+    }
+    assert proof_eas == {0x1001, 0x2000}
+    reminted_prior = next(
+        proof for proof in augmented.route_proofs
+        if proof.state_write is not None and proof.state_write.instruction_ea == 0x2000
+    )
+    supplied_prior = missing_entry_evidence.route_proofs[0]
+    stable_fields = tuple(
+        field.name for field in fields(supplied_prior)
+        if field.name not in {"proof_id", "atomic_group_id"}
+    )
+    assert tuple(getattr(reminted_prior, field) for field in stable_fields) == tuple(
+        getattr(supplied_prior, field) for field in stable_fields
+    )
+    assert reminted_prior.proof_id != supplied_prior.proof_id
+    assert reminted_prior.atomic_group_id != supplied_prior.atomic_group_id
+    assert canonical_semantic_evidence_from_proofs(
+        missing_entry_evidence.native_key,
+        missing_entry_evidence.generation,
+        missing_entry_evidence.route_proofs,
+    ) == missing_entry_evidence
+    assert canonical_semantic_evidence_from_proofs(
+        augmented.native_key,
+        augmented.generation,
+        augmented.route_proofs,
+    ) == augmented
+
+
+def test_supplied_canonical_evidence_abstains_on_refined_entry_write_collision(
+    monkeypatch, _seam,
+):
+    """A different stable range cannot reopen an occupied native write EA."""
+    graph, _state, entry_route, kwargs = _typed_entry_native_route_fixture(monkeypatch)
+    produced = emit_minimal_unflatten(graph, native_key=NATIVE_KEY, **kwargs)
+    evidence = produced.unflatten_proposal.route_evidence
+    entry_proof = next(
+        proof for proof in evidence.route_proofs
+        if proof.state_write is not None and proof.state_write.instruction_ea == 0x1001
+    )
+    refined_identity = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x1001, 0x1002),),
+        native_key=NATIVE_KEY,
+        exact_instruction_eas=(0x1001,),
+    )
+    refined_entry_proof = replace(
+        entry_proof,
+        state_write=replace(entry_proof.state_write, identity=refined_identity),
+    )
+    supplied = canonical_semantic_evidence_from_proofs(
+        NATIVE_KEY,
+        evidence.generation,
+        (refined_entry_proof,),
+    )
+    context = CanonicalSemanticEvidenceProductionContext(
+        native_key=NATIVE_KEY,
+        generation=supplied.generation,
+        atomic_group_id="refined-entry-collision",
+        state_identity=StorageIdentity(StorageIdentityKind.STACK, _STATE),
+        blocks=tuple(graph.blocks.values()),
+        identities_by_serial=tuple(
+            (int(serial), ref.identity)
+            for serial, ref in kwargs["block_refs_by_serial"].items()
+        ),
+        entry_serial=graph.entry_serial,
+    )
+
+    assert minimal_unflatten_emit_module._augment_supplied_canonical_evidence_with_native_entry_fact(
+        supplied,
+        _native_bound_route_fact(graph, entry_route),
+        context,
+    ) is None
+
+    plan = emit_minimal_unflatten(
+        graph, native_key=None, canonical_route_evidence=supplied, **kwargs,
+    )
+
+    assert graph_modifications(plan) == []
+    assert plan.unflatten_proposal is None
+
+
+def test_supplied_canonical_evidence_abstains_on_divergent_entry_write_route(
+    monkeypatch, _seam,
+):
+    """One native write EA cannot support a second state/target claim."""
+    graph, _state, entry_route, kwargs = _typed_entry_native_route_fixture(monkeypatch)
+    produced = emit_minimal_unflatten(graph, native_key=NATIVE_KEY, **kwargs)
+    entry_proof = next(
+        proof for proof in produced.unflatten_proposal.route_evidence.route_proofs
+        if proof.state_write is not None and proof.state_write.instruction_ea == 0x1001
+    )
+    divergent_state = 0x0BADF00D
+    divergent = replace(
+        entry_proof,
+        state_write=replace(entry_proof.state_write, state_constant=divergent_state),
+        destinations=(replace(
+            entry_proof.destinations[0],
+            state_constant=divergent_state,
+            target_identity=kwargs["block_refs_by_serial"][99].identity,
+            target_anchor_ea=graph.get_block(99).start_ea,
+        ),),
+    )
+    supplied = canonical_semantic_evidence_from_proofs(
+        NATIVE_KEY,
+        produced.unflatten_proposal.route_evidence.generation,
+        (divergent,),
+    )
+    context = CanonicalSemanticEvidenceProductionContext(
+        native_key=NATIVE_KEY,
+        generation=supplied.generation,
+        atomic_group_id="divergent-entry-collision",
+        state_identity=StorageIdentity(StorageIdentityKind.STACK, _STATE),
+        blocks=tuple(graph.blocks.values()),
+        identities_by_serial=tuple(
+            (int(serial), ref.identity)
+            for serial, ref in kwargs["block_refs_by_serial"].items()
+        ),
+        entry_serial=graph.entry_serial,
+    )
+
+    assert minimal_unflatten_emit_module._augment_supplied_canonical_evidence_with_native_entry_fact(
+        supplied,
+        _native_bound_route_fact(graph, entry_route),
+        context,
+    ) is None
+
+
+def test_supplied_canonical_evidence_abstains_on_generation_mismatch(
+    monkeypatch, _seam,
+):
+    """The source receipt cannot cross into another canonical generation."""
+    graph, _state, entry_route, kwargs = _typed_entry_native_route_fixture(monkeypatch)
+    produced = emit_minimal_unflatten(graph, native_key=NATIVE_KEY, **kwargs)
+    evidence = produced.unflatten_proposal.route_evidence
+    non_entry_proof = next(
+        proof for proof in evidence.route_proofs
+        if proof.state_write is not None and proof.state_write.instruction_ea == 0x2000
+    )
+    supplied = canonical_semantic_evidence_from_proofs(
+        NATIVE_KEY, evidence.generation, (non_entry_proof,),
+    )
+    wrong_generation_context = CanonicalSemanticEvidenceProductionContext(
+        native_key=NATIVE_KEY,
+        generation=supplied.generation + 1,
+        atomic_group_id="generation-mismatch",
+        state_identity=StorageIdentity(StorageIdentityKind.STACK, _STATE),
+        blocks=tuple(graph.blocks.values()),
+        identities_by_serial=tuple(
+            (int(serial), ref.identity)
+            for serial, ref in kwargs["block_refs_by_serial"].items()
+        ),
+        entry_serial=graph.entry_serial,
+    )
+
+    assert minimal_unflatten_emit_module._augment_supplied_canonical_evidence_with_native_entry_fact(
+        supplied,
+        _native_bound_route_fact(graph, entry_route),
+        wrong_generation_context,
+    ) is None
+
+
+def test_emitter_abstains_before_native_entry_augmentation_on_source_generation_drift(
+    monkeypatch, _seam,
+):
+    """A caller cannot join a current native receipt to another source generation."""
+    graph, _state, _entry_route, kwargs = _typed_entry_native_route_fixture(monkeypatch)
+    produced = emit_minimal_unflatten(graph, native_key=NATIVE_KEY, **kwargs)
+    evidence = produced.unflatten_proposal.route_evidence
+    non_entry_proof = next(
+        proof for proof in evidence.route_proofs
+        if proof.state_write is not None and proof.state_write.instruction_ea == 0x2000
+    )
+    supplied = canonical_semantic_evidence_from_proofs(
+        NATIVE_KEY, evidence.generation, (non_entry_proof,),
+    )
+
+    plan = emit_minimal_unflatten(
+        graph,
+        native_key=None,
+        canonical_route_evidence=supplied,
+        source_generation=supplied.generation + 1,
+        **kwargs,
+    )
+
+    assert graph_modifications(plan) == []
+    assert plan.unflatten_proposal is None
+
+
+def test_emitter_abstains_before_native_entry_augmentation_on_block_key_drift(
+    monkeypatch, _seam,
+):
+    """A foreign block-reference namespace cannot mint an entry proof."""
+    graph, _state, _entry_route, kwargs = _typed_entry_native_route_fixture(monkeypatch)
+    produced = emit_minimal_unflatten(graph, native_key=NATIVE_KEY, **kwargs)
+    evidence = produced.unflatten_proposal.route_evidence
+    non_entry_proof = next(
+        proof for proof in evidence.route_proofs
+        if proof.state_write is not None and proof.state_write.instruction_ea == 0x2000
+    )
+    supplied = canonical_semantic_evidence_from_proofs(
+        NATIVE_KEY, evidence.generation, (non_entry_proof,),
+    )
+    foreign_key = make_native_key(input_identity="sha256:foreign-entry-identity")
+    foreign_refs = {
+        serial: NativeBlockRef(StableBlockIdentity.from_intervals(
+            ref.identity.native_ranges.intervals,
+            native_key=foreign_key,
+            exact_instruction_eas=ref.identity.exact_instruction_eas,
+        ))
+        for serial, ref in kwargs["block_refs_by_serial"].items()
+    }
+
+    plan = emit_minimal_unflatten(
+        graph,
+        native_key=None,
+        canonical_route_evidence=supplied,
+        block_refs_by_serial=foreign_refs,
+        **{key: value for key, value in kwargs.items() if key != "block_refs_by_serial"},
     )
 
     assert graph_modifications(plan) == []
