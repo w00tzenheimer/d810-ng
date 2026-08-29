@@ -22,6 +22,141 @@ from d810.hexrays.ir.number_operand import safe_make_number
 logger = getLogger(__name__)
 
 
+_RAW_IDENTITY_MAX_DEPTH = 64
+
+
+def raw_instruction_identity(instruction, *, depth: int = 0) -> dict[str, object]:
+    """Serialize a live instruction into complete deterministic POD fields.
+
+    This is deliberately independent of canonical AST lowering and display
+    formatting.  Unsupported or incomplete native objects raise so callers
+    can fail closed instead of hashing an incomplete projection.
+    """
+
+    if instruction is None or depth > _RAW_IDENTITY_MAX_DEPTH:
+        raise ValueError("raw identity instruction is missing or too deeply nested")
+    opcode = getattr(instruction, "opcode", None)
+    ea = getattr(instruction, "ea", None)
+    if type(opcode) is not int or type(ea) is not int:
+        raise ValueError("raw identity instruction scalar fields are unavailable")
+    identity: dict[str, object] = {"opcode": opcode, "ea": ea}
+    for operand_field in ("l", "r", "d"):
+        identity[operand_field] = raw_mop_identity(
+            getattr(instruction, operand_field, None), depth=depth + 1
+        )
+    return identity
+
+
+def raw_mop_identity(mop, *, depth: int = 0) -> dict[str, object] | None:
+    """Serialize every supported live operand field without canonicalization."""
+
+    if mop is None:
+        return None
+    if depth > _RAW_IDENTITY_MAX_DEPTH:
+        raise ValueError("raw identity operand is too deeply nested")
+    operand_type = getattr(mop, "t", None)
+    size = getattr(mop, "size", None)
+    valnum = getattr(mop, "valnum", None)
+    if type(operand_type) is not int or type(size) is not int or type(valnum) is not int:
+        raise ValueError("raw identity operand scalar fields are unavailable")
+    identity: dict[str, object] = {
+        "type": operand_type,
+        "size": size,
+        "valnum": valnum,
+    }
+    supported_names = (
+        "mop_z",
+        "mop_n",
+        "mop_r",
+        "mop_S",
+        "mop_v",
+        "mop_b",
+        "mop_h",
+        "mop_str",
+        "mop_d",
+        "mop_a",
+        "mop_l",
+        "mop_p",
+    )
+    supported_types = {
+        getattr(ida_hexrays, name)
+        for name in supported_names
+        if hasattr(ida_hexrays, name)
+    }
+    if operand_type not in supported_types:
+        raise ValueError(f"unsupported raw identity operand type: {operand_type}")
+
+    if operand_type == ida_hexrays.mop_n:
+        nnn = getattr(mop, "nnn", None)
+        value = getattr(nnn, "value", None)
+        if type(value) is not int:
+            raise ValueError("raw identity number value is unavailable")
+        identity["value"] = value
+        identity["value_width"] = size
+    elif operand_type == ida_hexrays.mop_r:
+        register = getattr(mop, "r", None)
+        if type(register) is not int:
+            raise ValueError("raw identity register is unavailable")
+        identity["register"] = register
+    elif operand_type == ida_hexrays.mop_S:
+        stack = getattr(mop, "s", None)
+        offset = getattr(stack, "off", None)
+        if type(offset) is not int:
+            raise ValueError("raw identity stack offset is unavailable")
+        identity["stack_offset"] = offset
+    elif operand_type == ida_hexrays.mop_v:
+        address = getattr(mop, "g", None)
+        if type(address) is not int:
+            raise ValueError("raw identity global address is unavailable")
+        identity["global_address"] = address
+    elif operand_type == ida_hexrays.mop_b:
+        block_num = getattr(mop, "b", None)
+        if type(block_num) is not int:
+            raise ValueError("raw identity block number is unavailable")
+        identity["block_num"] = block_num
+    elif operand_type == ida_hexrays.mop_h:
+        helper = getattr(mop, "helper", None)
+        if type(helper) is not str:
+            raise ValueError("raw identity helper is unavailable")
+        identity["helper"] = helper
+    elif operand_type == ida_hexrays.mop_str:
+        string_value = getattr(mop, "cstr", None)
+        if type(string_value) is not str:
+            raise ValueError("raw identity string is unavailable")
+        identity["string"] = string_value
+    elif operand_type == ida_hexrays.mop_l:
+        local = getattr(mop, "l", None)
+        index = getattr(local, "idx", None)
+        offset = getattr(local, "off", None)
+        if type(index) is not int or type(offset) is not int:
+            raise ValueError("raw identity local reference is unavailable")
+        identity["local_index"] = index
+        identity["local_offset"] = offset
+    elif operand_type == ida_hexrays.mop_d:
+        nested = getattr(mop, "d", None)
+        if nested is None:
+            raise ValueError("raw identity nested instruction is unavailable")
+        identity["instruction"] = raw_instruction_identity(nested, depth=depth + 1)
+    elif operand_type == ida_hexrays.mop_a:
+        address_operand = getattr(mop, "a", None)
+        insize = getattr(address_operand, "insize", None)
+        outsize = getattr(address_operand, "outsize", None)
+        if type(insize) is not int or type(outsize) is not int:
+            raise ValueError("raw identity address sizes are unavailable")
+        identity["address"] = raw_mop_identity(
+            address_operand, depth=depth + 1
+        )
+        identity["address_insize"] = insize
+        identity["address_outsize"] = outsize
+    elif operand_type == ida_hexrays.mop_p:
+        pair = getattr(mop, "pair", None)
+        if pair is None:
+            raise ValueError("raw identity operand pair is unavailable")
+        identity["low"] = raw_mop_identity(pair.lop, depth=depth + 1)
+        identity["high"] = raw_mop_identity(pair.hop, depth=depth + 1)
+    return identity
+
+
 # Proxy classes for sub-object access (duck-typing layer)
 class _NnnProxy:
     """Mimics mnumber_t for .nnn.value access."""

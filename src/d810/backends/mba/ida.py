@@ -1323,38 +1323,46 @@ class IDAPatternAdapter:
         return None if profile is None else profile.fingerprint
 
     @staticmethod
-    def _raw_mop_identity(mop: Any) -> dict[str, object] | None:
-        """Describe a raw operand without materializing a canonical island."""
+    def _raw_instruction_identity(instruction: Any, *, depth: int = 0) -> dict[str, object]:
+        """Delegate exact raw identity serialization to the shared IR helper."""
 
-        if mop is None:
-            return None
-        identity: dict[str, object] = {}
-        for name in ("t", "size", "valnum", "r", "reg", "value", "n"):
-            value = getattr(mop, name, None)
-            if type(value) in (bool, int, str) or value is None:
-                identity[name] = value
-        nested = getattr(mop, "d", None)
-        if nested is not None:
-            identity["d"] = {
-                "opcode": getattr(nested, "opcode", None),
-                "size": getattr(nested, "size", None),
-            }
-        return identity
+        from d810.hexrays.ir.mop_snapshot import raw_instruction_identity
 
-    def _raw_native_fingerprint(self) -> tuple[str, dict[str, object]]:
-        """Build stable raw identity telemetry without invoking Hex-Rays lowering."""
+        return raw_instruction_identity(instruction, depth=depth)
+
+    @staticmethod
+    def _raw_mop_identity(mop: Any, *, depth: int = 0) -> dict[str, object] | None:
+        """Delegate exact raw operand serialization to the shared IR helper."""
+
+        from d810.hexrays.ir.mop_snapshot import raw_mop_identity
+
+        return raw_mop_identity(mop, depth=depth)
+
+    def _raw_native_fingerprint(self) -> tuple[str | None, dict[str, object] | None]:
+        """Build exact raw identity telemetry without invoking Hex-Rays lowering."""
 
         instruction = getattr(self, "_attempt_instruction", None)
-        payload = {
-            "ea": getattr(instruction, "ea", None),
-            "opcode": getattr(instruction, "opcode", None),
-            "size": getattr(getattr(instruction, "d", None), "size", None),
-            "left": self._raw_mop_identity(getattr(instruction, "l", None)),
-            "right": self._raw_mop_identity(getattr(instruction, "r", None)),
-            "destination": self._raw_mop_identity(getattr(instruction, "d", None)),
-        }
-        encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+        try:
+            payload = self._raw_instruction_identity(instruction)
+            # Preserve the historical telemetry names while retaining the
+            # complete recursive serializer under the instruction's native
+            # ``l/r/d`` fields.
+            payload["left"] = payload["l"]
+            payload["right"] = payload["r"]
+            payload["destination"] = payload["d"]
+            destination = payload["d"]
+            payload["size"] = None if destination is None else destination.get("size")
+            encoded = json.dumps(
+                payload,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            )
+        except Exception:
+            logger.debug("Raw native identity unavailable; failing closed", exc_info=True)
+            return None, None
         return f"raw:{hashlib.sha256(encoded.encode('utf-8')).hexdigest()}", payload
+
 
     @staticmethod
     def _native_profile_metadata(profile) -> dict[str, object]:

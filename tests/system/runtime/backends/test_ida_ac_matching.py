@@ -16,6 +16,7 @@ from d810.backends.mba.ida import (  # noqa: E402
 from d810.backends.mba.native_z3 import prove_native_ast_equivalence  # noqa: E402
 from d810.hexrays.expr import ast as ast_dispatcher  # noqa: E402
 from d810.hexrays.ir.mop_snapshot import MopSnapshot  # noqa: E402
+from d810.hexrays.ir.number_operand import safe_make_number  # noqa: E402
 from d810.mba.ac_matching import (  # noqa: E402
     AcMatchBindings,
     AcMatchReport,
@@ -58,6 +59,102 @@ def _constant(value: int):
     constant.mop = MopSnapshot(t=ida_hexrays.mop_n, size=4, value=value)
     constant.dest_size = 4
     return constant
+
+
+def _raw_number(value: int, size: int = 4):
+    mop = ida_hexrays.mop_t()
+    assert safe_make_number(mop, value, size, 0x401000)
+    return mop
+
+
+def _raw_register(register: int = 1, size: int = 4):
+    mop = ida_hexrays.mop_t()
+    mop.make_reg(register, size)
+    return mop
+
+
+def _raw_instruction(*, opcode: int, left=None, right=None, destination=None):
+    instruction = ida_hexrays.minsn_t(0x401000)
+    instruction.opcode = opcode
+    if left is not None:
+        instruction.l = left
+    if right is not None:
+        instruction.r = right
+    if destination is not None:
+        instruction.d = destination
+    return instruction
+
+
+def _raw_nested_instruction(value: int):
+    nested = _raw_instruction(
+        opcode=ida_hexrays.m_add,
+        left=_raw_register(2),
+        right=_raw_number(value),
+        destination=_raw_register(2),
+    )
+    mop = ida_hexrays.mop_t()
+    mop.create_from_insn(nested)
+    mop.size = 4
+    return mop
+
+
+def _raw_adapter(instruction):
+    class Rule:
+        name = "raw_identity"
+
+    adapter = IDAPatternAdapter(Rule())
+    adapter._attempt_instruction = instruction
+    return adapter
+
+
+@pytest.mark.usefixtures("ida_database")
+class TestRawNativeFingerprint:
+    binary_name = "libobfuscated.dll"
+
+    def test_distinguishes_real_constants_and_is_stable(self):
+        one = _raw_instruction(
+            opcode=ida_hexrays.m_mov,
+            left=_raw_number(1),
+            destination=_raw_register(),
+        )
+        two = _raw_instruction(
+            opcode=ida_hexrays.m_mov,
+            left=_raw_number(2),
+            destination=_raw_register(),
+        )
+
+        one_adapter = _raw_adapter(one)
+        one_fingerprint, one_identity = one_adapter._raw_native_fingerprint()
+        repeat_fingerprint, repeat_identity = one_adapter._raw_native_fingerprint()
+        two_fingerprint, two_identity = _raw_adapter(two)._raw_native_fingerprint()
+
+        assert one_fingerprint is not None
+        assert one_fingerprint == repeat_fingerprint
+        assert one_identity == repeat_identity
+        assert one_fingerprint != two_fingerprint
+        assert one_identity["left"]["value"] == 1
+        assert two_identity["left"]["value"] == 2
+
+    def test_distinguishes_full_nested_mop_d_leaf(self):
+        first = _raw_instruction(
+            opcode=ida_hexrays.m_xdu,
+            left=_raw_nested_instruction(1),
+            destination=_raw_register(),
+        )
+        second = _raw_instruction(
+            opcode=ida_hexrays.m_xdu,
+            left=_raw_nested_instruction(2),
+            destination=_raw_register(),
+        )
+
+        first_fingerprint, first_identity = _raw_adapter(first)._raw_native_fingerprint()
+        second_fingerprint, second_identity = _raw_adapter(second)._raw_native_fingerprint()
+
+        assert first_fingerprint is not None
+        assert first_fingerprint != second_fingerprint
+        assert "instruction" in first_identity["left"], first_identity
+        assert first_identity["left"]["instruction"]["r"]["value"] == 1
+        assert second_identity["left"]["instruction"]["r"]["value"] == 2, second_identity
 
 
 def test_shadow_matcher_resolves_only_original_native_binding_paths() -> None:
@@ -1085,54 +1182,62 @@ def test_adapter_clears_structural_attempt_state_on_context_reset() -> None:
     assert adapter._shadow_structural_refused is False
 
 
-@pytest.mark.parametrize("nomut", (False, True))
-def test_real_adapter_raw_success_telemetry_does_not_lower(monkeypatch, nomut) -> None:
-    """Raw adapter success telemetry uses native identity without canonical lowering."""
+@pytest.mark.usefixtures("ida_database")
+class TestRawSuccessTelemetry:
+    binary_name = "libobfuscated.dll"
 
-    class Rule:
-        name = "raw-success"
-        CANONICAL_NAME = "raw-success"
-        ALIASES = ()
-        replacement = None
+    @pytest.mark.parametrize("nomut", (False, True))
+    def test_real_adapter_does_not_lower(self, monkeypatch, nomut) -> None:
+        """Raw adapter success telemetry uses native identity without canonical lowering."""
 
-    adapter = IDAPatternAdapter(Rule())
-    adapter.begin_provider_outcome_capture()
-    instruction = SimpleNamespace(
-        ea=0x401010,
-        opcode=ida_hexrays.m_add,
-        d=SimpleNamespace(size=4),
-        _print=lambda: "raw-success",
-    )
-    monkeypatch.setattr(
-        "d810.backends.mba.ida.minsn_to_ast",
-        lambda _instruction: SimpleNamespace(is_node=lambda: False),
-    )
-    adapter.bind_match_context(None, instruction)
+        class Rule:
+            name = "raw-success"
+            CANONICAL_NAME = "raw-success"
+            ALIASES = ()
+            replacement = None
 
-    def forbidden_lowering(*_args, **_kwargs):
-        raise AssertionError("raw success telemetry must not lower canonical island")
-
-    monkeypatch.setattr(
-        "d810.backends.mba.hexrays_island.lower_hexrays_island",
-        forbidden_lowering,
-    )
-    if nomut:
-        adapter.record_bound_replacement_outcome(SimpleNamespace(is_node=lambda: False))
-    else:
-        candidate = SimpleNamespace(
-            check_pattern_and_copy_mops=lambda _ast: True,
-            ea=instruction.ea,
-            dst_mop=None,
+        adapter = IDAPatternAdapter(Rule())
+        adapter.begin_provider_outcome_capture()
+        instruction = _raw_instruction(
+            opcode=ida_hexrays.m_add,
+            left=_raw_register(1),
+            right=_raw_register(2),
+            destination=_raw_register(3),
         )
-        adapter._check_candidate = lambda _candidate: True
-        adapter.get_replacement = lambda _candidate: SimpleNamespace(
-            is_node=lambda: False
+        monkeypatch.setattr(
+            "d810.backends.mba.ida.minsn_to_ast",
+            lambda _instruction: SimpleNamespace(is_node=lambda: False),
         )
-        adapter.check_pattern_and_replace(candidate, SimpleNamespace(is_node=lambda: False))
+        adapter.bind_match_context(None, instruction)
 
-    outcome = adapter.provider_outcomes()[0]
-    assert outcome.status is ProviderOutcomeStatus.IMPROVED
-    assert outcome.fingerprint.startswith("raw:")
+        def forbidden_lowering(*_args, **_kwargs):
+            raise AssertionError("raw success telemetry must not lower canonical island")
+
+        monkeypatch.setattr(
+            "d810.backends.mba.hexrays_island.lower_hexrays_island",
+            forbidden_lowering,
+        )
+        if nomut:
+            adapter.record_bound_replacement_outcome(
+                SimpleNamespace(is_node=lambda: False)
+            )
+        else:
+            candidate = SimpleNamespace(
+                check_pattern_and_copy_mops=lambda _ast: True,
+                ea=instruction.ea,
+                dst_mop=None,
+            )
+            adapter._check_candidate = lambda _candidate: True
+            adapter.get_replacement = lambda _candidate: SimpleNamespace(
+                is_node=lambda: False
+            )
+            adapter.check_pattern_and_replace(
+                candidate, SimpleNamespace(is_node=lambda: False)
+            )
+
+        outcome = adapter.provider_outcomes()[0]
+        assert outcome.status is ProviderOutcomeStatus.IMPROVED
+        assert outcome.fingerprint.startswith("raw:")
 
 
 def test_fallback_miss_publishes_dispatch_telemetry_before_clearing_refs() -> None:
