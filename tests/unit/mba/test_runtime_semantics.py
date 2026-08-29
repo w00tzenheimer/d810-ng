@@ -96,6 +96,106 @@ def test_runtime_digest_and_activation_work_from_installed_package_layout(
     assert certificate.authorizes(snapshot, "python", expectation) is True
 
 
+def test_runtime_digest_is_independent_of_manifest_source_order(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    site_packages = tmp_path / "site-packages"
+    package_root = site_packages / "installed_d810_ordered"
+    mba_root = package_root / "backends" / "mba"
+    mba_root.mkdir(parents=True)
+    (package_root / "__init__.py").write_text("", encoding="utf-8")
+    (package_root / "backends" / "__init__.py").write_text("", encoding="utf-8")
+    (mba_root / "__init__.py").write_text("", encoding="utf-8")
+    sources = [
+        "backends/mba/runtime_semantics.py",
+        "backends/mba/native_pod_matcher.py",
+        "mba/canonical_pattern.py",
+    ]
+    for index, source_name in enumerate(sources):
+        source_path = package_root.joinpath(*Path(source_name).parts)
+        source_path.parent.mkdir(parents=True, exist_ok=True)
+        source_path.write_text(f"# runtime source {index}\n", encoding="utf-8")
+    manifest_path = package_root / "runtime_semantics_manifest.json"
+    manifest_path.write_text(
+        json.dumps({"schema_version": 1, "runtime_sources": list(reversed(sources))}),
+        encoding="utf-8",
+    )
+    monkeypatch.syspath_prepend(str(site_packages))
+    importlib.invalidate_caches()
+    importlib.import_module("installed_d810_ordered")
+    identity = native_pod_matcher.NativeMatcherRuntimeIdentity(
+        pod_backend="python",
+        implementation="installed_d810_ordered.backends.mba.native_pod_matcher",
+        artifact_identity="python-fallback",
+    )
+
+    reversed_digest = native_pod_matcher.runtime_semantics_digest(
+        identity=identity,
+        package_name="installed_d810_ordered",
+    )
+    manifest_path.write_text(
+        json.dumps({"schema_version": 1, "runtime_sources": sources}),
+        encoding="utf-8",
+    )
+    ordered_digest = native_pod_matcher.runtime_semantics_digest(
+        identity=identity,
+        package_name="installed_d810_ordered",
+    )
+
+    assert reversed_digest == ordered_digest
+
+
+def test_runtime_digest_tracks_matcher_and_provenance_sources(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    site_packages = tmp_path / "site-packages"
+    package_root = site_packages / "installed_d810_semantics"
+    package_root.mkdir(parents=True)
+    (package_root / "__init__.py").write_text("", encoding="utf-8")
+    sources = (
+        "backends/mba/compiled_pattern_catalogue.py",
+        "backends/mba/native_mba_term_view.py",
+        "mba/canonical_pattern.py",
+        "mba/semantic_canonicalization.py",
+    )
+    for index, source_name in enumerate(sources):
+        source_path = package_root.joinpath(*Path(source_name).parts)
+        source_path.parent.mkdir(parents=True, exist_ok=True)
+        source_path.write_text(f"# executable semantics {index}\n", encoding="utf-8")
+    (package_root / "runtime_semantics_manifest.json").write_text(
+        json.dumps({"schema_version": 1, "runtime_sources": list(sources)}),
+        encoding="utf-8",
+    )
+    monkeypatch.syspath_prepend(str(site_packages))
+    importlib.invalidate_caches()
+    importlib.import_module("installed_d810_semantics")
+    identity = native_pod_matcher.NativeMatcherRuntimeIdentity(
+        pod_backend="python",
+        implementation="installed_d810_semantics.backends.mba.native_pod_matcher",
+        artifact_identity="python-fallback",
+    )
+
+    before = native_pod_matcher.runtime_semantics_digest(
+        identity=identity,
+        package_name="installed_d810_semantics",
+    )
+    changed = package_root / "backends" / "mba" / "compiled_pattern_catalogue.py"
+    changed.write_text("# changed fallback selection\n", encoding="utf-8")
+    after_selection_change = native_pod_matcher.runtime_semantics_digest(
+        identity=identity,
+        package_name="installed_d810_semantics",
+    )
+    changed = package_root / "backends" / "mba" / "native_mba_term_view.py"
+    changed.write_text("# changed provenance projection\n", encoding="utf-8")
+    after_projection_change = native_pod_matcher.runtime_semantics_digest(
+        identity=identity,
+        package_name="installed_d810_semantics",
+    )
+
+    assert before != after_selection_change
+    assert after_selection_change != after_projection_change
+
+
 def test_runtime_digest_rejects_missing_active_artifact() -> None:
     identity = native_pod_matcher.NativeMatcherRuntimeIdentity(
         pod_backend="cython",

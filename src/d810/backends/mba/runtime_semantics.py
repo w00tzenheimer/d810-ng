@@ -103,7 +103,11 @@ def _manifest(package_name: str) -> tuple[str, ...]:
                 "runtime semantics manifest contains an unsafe resource path"
             )
         validated.append(source_name)
-    return tuple(validated)
+    if len(set(validated)) != len(validated):
+        raise RuntimeSemanticsUnavailable(
+            "runtime semantics manifest contains duplicate source resources"
+        )
+    return tuple(sorted(validated))
 
 
 def runtime_semantics_digest(

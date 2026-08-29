@@ -6,6 +6,53 @@ import pytest
 
 from d810.backends.mba.native_pod_matcher import matcher_backend
 from d810.core.cymode import CythonMode
+from d810.mba.typed_term import term_fingerprint
+
+
+def _match_semantics(result):
+    """Return backend-neutral match and resource semantics for parity checks."""
+
+    matches = tuple(
+        (
+            (match.rule.source_name, *match.rule.aliases),
+            tuple(
+                sorted(
+                    (name, term_fingerprint(view.to_typed_term()))
+                    for name, view in match.bindings.native.items()
+                )
+            ),
+            tuple(
+                sorted(
+                    (name, term_fingerprint(term))
+                    for name, term in match.bindings.terms.items()
+                )
+            ),
+            term_fingerprint(match.bindings.materialize_replacement(match.rule)),
+        )
+        for match in result.matches
+    )
+    return (
+        matches,
+        result.comparisons,
+        result.lazy_swaps,
+        result.fallback_comparisons,
+        result.fallback_commuted_branches,
+        result.fallback_flattened_nodes,
+        result.comparison_budget_exceeded,
+        result.canonical_budget_exceeded,
+        result.selection,
+        result.stop_reason,
+    )
+
+
+def _active_and_python_results(monkeypatch, catalogue, candidate, *, budget=64):
+    from d810.backends.mba import native_pod_matcher
+
+    active = catalogue.match_root(candidate, comparison_budget=budget)
+    with monkeypatch.context() as patch:
+        patch.setattr(native_pod_matcher, "_match_pod_catalogue", None)
+        python = catalogue.match_root(candidate, comparison_budget=budget)
+    return active, python
 
 
 @pytest.mark.skipif(
@@ -14,6 +61,74 @@ from d810.core.cymode import CythonMode
 def test_active_cython_pod_matcher_is_selected_when_cython_is_enabled() -> None:
     assert CythonMode().is_enabled()
     assert matcher_backend() == "cython"
+
+
+def test_public_catalogue_preserves_python_cython_semantics_for_terminal_states(
+    monkeypatch,
+) -> None:
+    from d810.backends.mba.compiled_pattern_catalogue import CompiledPatternCatalogue
+    from d810.mba.certified_rule_compiler import (
+        compile_add_rule_catalogue,
+        compile_mba_rule_catalogue,
+    )
+    from d810.backends.mba.native_mba_term_view import NativeMbaTermView
+
+    add_catalogue = CompiledPatternCatalogue.from_rules(
+        compile_add_rule_catalogue().compiled_rules
+    )
+    xor_rule = (
+        compile_mba_rule_catalogue()
+        .receipt_for("xor", "Xor_HackersDelightRule_3")
+        .compiled_rule
+    )
+    assert xor_rule is not None
+    xor_catalogue = CompiledPatternCatalogue.from_rules((xor_rule,))
+    x = NativeMbaTermView(None, 32, leaf_key=("mop", "r", "x"))
+    y = NativeMbaTermView(None, 32, leaf_key=("mop", "r", "y"))
+    z = NativeMbaTermView(None, 32, leaf_key=("mop", "r", "z"))
+    two = NativeMbaTermView(None, 32, constant_value=2)
+    raw_candidate = NativeMbaTermView(
+        "add",
+        32,
+        children=(
+            NativeMbaTermView("xor", 32, children=(y, x)),
+            NativeMbaTermView(
+                "mul", 32, children=(two, NativeMbaTermView("and", 32, children=(y, x)))
+            ),
+        ),
+    )
+    fallback_candidate = NativeMbaTermView(
+        "add",
+        32,
+        children=(
+            NativeMbaTermView("add", 32, children=(x, y)),
+            NativeMbaTermView("mul", 32, children=(
+                NativeMbaTermView(None, 32, constant_value=-2),
+                NativeMbaTermView("and", 32, children=(x, y)),
+            )),
+        ),
+    )
+    miss_candidate = NativeMbaTermView(
+        "add", 32, children=(NativeMbaTermView("add", 32, children=(x, y)), z)
+    )
+    no_match_candidate = NativeMbaTermView("xor", 32, children=(x, y))
+    unsupported_candidate = NativeMbaTermView(
+        "unsupported_op", 32, children=(x, y)
+    )
+
+    cases = (
+        (add_catalogue, raw_candidate, 64),
+        (xor_catalogue, fallback_candidate, 64),
+        (add_catalogue, miss_candidate, 64),
+        (add_catalogue, raw_candidate, 1),
+        (add_catalogue, no_match_candidate, 64),
+        (add_catalogue, unsupported_candidate, 64),
+    )
+    for catalogue, candidate, budget in cases:
+        active, python = _active_and_python_results(
+            monkeypatch, catalogue, candidate, budget=budget
+        )
+        assert _match_semantics(active) == _match_semantics(python)
 
 
 @pytest.mark.skipif(
@@ -242,9 +357,10 @@ def test_public_catalogue_keeps_associative_chain_matching_in_cython(
 
     monkeypatch.setattr(native_pod_matcher, "_match_pod_catalogue", observed)
 
-    assert catalogue.match_root(candidate, comparison_budget=64) == (
-        catalogue._match_root_portable(candidate, comparison_budget=64)
+    active, python = _active_and_python_results(
+        monkeypatch, catalogue, candidate, budget=64
     )
+    assert _match_semantics(active) == _match_semantics(python)
     # The shared feasibility filter rejects this undersized chain before either
     # matcher spends comparison budget. The Cython adapter still owns the
     # empty-root result, while a separately sized candidate covers the native
@@ -285,7 +401,9 @@ def test_cython_pod_catalogue_adapter_matches_portable_catalogue() -> None:
 @pytest.mark.skipif(
     not CythonMode().is_enabled(), reason="requires the Cython POD matcher"
 )
-def test_cython_catalogue_returns_clean_no_match_for_unselected_root_family() -> None:
+def test_cython_catalogue_returns_clean_no_match_for_unselected_root_family(
+    monkeypatch,
+) -> None:
     """A missing root/width bucket is a no-match, never a Cython exception."""
 
     from d810.backends.mba.compiled_pattern_catalogue import CompiledPatternCatalogue
@@ -304,9 +422,11 @@ def test_cython_catalogue_returns_clean_no_match_for_unselected_root_family() ->
         ),
     )
 
-    native = catalogue.match_root(candidate, comparison_budget=64)
+    native, python = _active_and_python_results(
+        monkeypatch, catalogue, candidate, budget=64
+    )
 
-    assert native == catalogue._match_root_portable(candidate, comparison_budget=64)
+    assert _match_semantics(native) == _match_semantics(python)
     assert native.matches == ()
     assert native.comparison_budget_exceeded is False
 
