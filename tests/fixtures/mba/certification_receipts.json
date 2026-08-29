@@ -927,6 +927,14 @@
       "status": "compiled"
     },
     {
+      "canonical_name": "MbaResidualRule_2aa7de9f2ef4",
+      "family": "or",
+      "reason": null,
+      "semantic_fingerprint": "ff2fb4cef4817d1f16b584c4881e92fda565f510b0d311642848943c111c8aac",
+      "source_name": "MbaResidualRule_2aa7de9f2ef4",
+      "status": "compiled"
+    },
+    {
       "canonical_name": "Or_FactorRule_1",
       "family": "or",
       "reason": null,
