@@ -79,6 +79,7 @@ class AuthorityExplanationOracleRow:
     rule: str
     premise_ids: tuple[str, ...]
     conclusion_subject: str
+    conclusion_subject_id: str
     conclusion_dimension: str
     polarity: str
     claim_id: str | None
@@ -268,9 +269,13 @@ def _authority_explanations(
             or not isinstance(rule, str)
             or not rule
             or not isinstance(conclusion, Mapping)
-            or set(conclusion) != {"subject", "dimension"}
+            or set(conclusion) != {"subject", "subject_id", "dimension"}
             or not isinstance(conclusion.get("subject"), str)
             or not conclusion["subject"]
+            or not re.fullmatch(
+                r"sha256:[0-9a-f]{64}",
+                conclusion.get("subject_id", ""),
+            )
             or not isinstance(conclusion.get("dimension"), str)
             or not conclusion["dimension"]
             or polarity not in {"supports", "refutes"}
@@ -285,9 +290,10 @@ def _authority_explanations(
             AuthorityExplanationOracleRow(
                 justification_id,
                 rule,
-                premise_ids,
-                conclusion["subject"],
-                conclusion["dimension"],
+            premise_ids,
+            conclusion["subject"],
+            conclusion["subject_id"],
+            conclusion["dimension"],
                 polarity,
                 claim_id,
             )
@@ -573,6 +579,10 @@ def _authority_phase_row(
 ) -> AuthorityPhaseOracleRow:
     if payload.get("schema") != "unflatten_authority_phase.v2":
         raise ValueError("authority phase schema is invalid")
+    if payload.get("schema_version") != 2:
+        raise ValueError("authority phase schema_version is invalid")
+    if payload.get("rule_set_version") != 1:
+        raise ValueError("authority phase rule_set_version is invalid")
     if payload.get("phase") != phase:
         raise ValueError(f"authority phase must be {phase}")
     authority_id = payload.get("authority_id")
@@ -641,9 +651,9 @@ def _authority_phase_row(
         payload.get("obligation_states"),
         justification_ids=justification_ids,
     )
-    obligation_keys = {(row.subject, row.dimension) for row in state_rows}
+    obligation_keys = {(row.subject_id, row.dimension) for row in state_rows}
     if any(
-        (row.conclusion_subject, row.conclusion_dimension) not in obligation_keys
+        (row.conclusion_subject_id, row.conclusion_dimension) not in obligation_keys
         for row in explanations
     ):
         raise ValueError(
@@ -856,6 +866,8 @@ def require_target_authority_policy(
             explanation.polarity == "supports"
             and explanation.rule == "retired_infrastructure_proven"
             and explanation.claim_id in row.claim_ids
+            and explanation.conclusion_subject_id == row.subject_id
+            and explanation.conclusion_dimension == "structural_accounting"
             and bool(explanation.premise_ids)
             and set(explanation.premise_ids).issubset(row.evidence_ids)
             for explanation in support

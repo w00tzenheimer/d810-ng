@@ -58,6 +58,7 @@ def _explanation(
         "premise_ids": ["evidence-1"] if premise_ids is None else premise_ids,
         "conclusion": {
             "subject": "blk1@0x1000",
+            "subject_id": _subject_id("blk1@0x1000"),
             "dimension": "structural_accounting",
         },
         "polarity": polarity,
@@ -78,6 +79,8 @@ def _authority_phase(
     case_id = case_id or ("case-p" if projected else "case-o")
     return {
         "schema": "unflatten_authority_phase.v2",
+        "schema_version": 2,
+        "rule_set_version": 1,
         "phase": phase,
         "authority_id": authority_id,
         "plan_id": plan_id,
@@ -653,6 +656,46 @@ def test_authority_coverage_uses_subject_id_when_labels_collide() -> None:
         "blk1@0x1000",
     )
     assert len({row.subject_id for row in evidence.observed.coverage_rows}) == 2
+
+
+@pytest.mark.parametrize(
+    "field, value",
+    [
+        ("schema_version", None),
+        ("schema_version", 1),
+        ("schema_version", 3),
+        ("rule_set_version", None),
+        ("rule_set_version", 0),
+        ("rule_set_version", 2),
+    ],
+)
+def test_authority_parser_requires_exact_v2_versions(field: str, value: object) -> None:
+    payloads = _authority_payloads()
+    payloads[0][field] = value
+
+    with pytest.raises(ValueError, match=field):
+        parse_authority_phase_payloads(payloads)
+
+
+@pytest.mark.parametrize(
+    "subject, subject_id",
+    [
+        ("blk1@0x1000", _subject_id("swapped-canonical-subject-at-same-block")),
+        ("blk2@0x2000", _subject_id("swapped-canonical-subject-at-other-block")),
+    ],
+)
+def test_authority_parser_rejects_explanation_conclusion_identity_swap(
+    subject: str,
+    subject_id: str,
+) -> None:
+    payloads = _authority_payloads()
+    payloads[0]["explanations"][0]["conclusion"].update(
+        subject=subject,
+        subject_id=subject_id,
+    )
+
+    with pytest.raises(ValueError, match="conclusion"):
+        parse_authority_phase_payloads(payloads)
 
 
 @pytest.mark.parametrize("failure", ["absent", "projected", "classification"])

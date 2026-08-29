@@ -418,3 +418,9 @@ def test_one_anchored_fact_observation_per_case_phase_has_exact_ids_and_labels()
         for row in rows
         for item in row.payload["loss_ledger"]
     )
+    assert all(
+        set(item["conclusion"]) == {"subject", "subject_id", "dimension"}
+        and re.fullmatch(r"sha256:[0-9a-f]{64}", item["conclusion"]["subject_id"])
+        for row in rows
+        for item in row.payload["explanations"]
+    )

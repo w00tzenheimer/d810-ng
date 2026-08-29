@@ -176,6 +176,7 @@ def _justification_payload(
         "premise_ids": item.premise_ids,
         "conclusion": {
             "subject": _case_subject_label(case, item.conclusion.subject),
+            "subject_id": item.conclusion.subject.subject_id,
             "dimension": item.conclusion.dimension.value,
         },
         "polarity": item.polarity.value,
