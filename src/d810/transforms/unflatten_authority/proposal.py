@@ -1276,15 +1276,7 @@ def attach_typed_proposal(
     metadata_items = tuple(normalized_metadata_items(plan.metadata))
     if any(key in LEGACY_UNFLATTEN_KEYS for key, _value in metadata_items):
         raise ValueError("typed producer plans cannot carry reserved legacy metadata")
-    if corridor_coverage is not None:
-        proposal = replace(
-            proposal,
-            corridor_coverage_forecast=corridor_coverage_forecast_from_analysis(
-                corridor_coverage,
-                proposal=proposal,
-                block_refs_by_serial=source_refs_by_serial,
-            ),
-        )
+    full_dispatcher_retirement = False
     if dispatcher_removal_forecast is not None:
         candidate_catalog = retirement_candidate_catalog_from_forecast(
             dispatcher_removal_forecast,
@@ -1308,15 +1300,37 @@ def attach_typed_proposal(
                 type(claim) is RetiredDispatcherInfrastructureClaim
                 for claim in claims
             )
+            full_dispatcher_retirement = (
+                retirement_claim and candidate_refs == dispatcher_refs
+            )
+            attached_claims = (
+                claims if full_dispatcher_retirement else tuple(
+                    claim for claim in claims
+                    if type(claim) is not RetiredDispatcherInfrastructureClaim
+                )
+            )
+            if full_dispatcher_retirement and corridor_coverage is None:
+                raise ValueError("retirement proposal requires coverage metadata")
             proposal = replace(
                 proposal,
-                claims=tuple(sorted((*proposal.claims, *claims), key=lambda item: item.claim_id)),
-                retirement_candidate_catalog=(candidate_catalog if retirement_claim else None),
+                claims=tuple(sorted(
+                    (*proposal.claims, *attached_claims), key=lambda item: item.claim_id,
+                )),
+                retirement_candidate_catalog=(
+                    candidate_catalog if full_dispatcher_retirement else None
+                ),
                 plan_inputs=replace(
                     proposal.plan_inputs,
                     shape=UnflattenPlanShape.FULL_DISPATCHER_RETIREMENT
-                    if candidate_refs == dispatcher_refs
+                    if full_dispatcher_retirement
                     else UnflattenPlanShape.PARTIAL_REWRITE,
+                ),
+                corridor_coverage_forecast=(
+                    corridor_coverage_forecast_from_analysis(
+                        corridor_coverage,
+                        proposal=proposal,
+                        block_refs_by_serial=source_refs_by_serial,
+                    ) if full_dispatcher_retirement else None
                 ),
             )
     if (

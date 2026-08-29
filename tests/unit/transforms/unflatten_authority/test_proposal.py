@@ -523,6 +523,94 @@ def test_incomplete_dispatcher_forecast_mints_no_authority_claims() -> None:
     ) == ()
 
 
+def test_partial_route_attachment_does_not_mint_a_dispatcher_coverage_forecast() -> None:
+    """A residual route plan is not an aggregate dispatcher-retirement plan."""
+
+    from d810.transforms.dispatcher_corridor_coverage import (
+        DispatcherBlockAnchor,
+        DispatcherCorridor,
+        DispatcherCorridorCoverage,
+    )
+    from d810.transforms.plan import PatchRedirectGoto
+    from d810.transforms.unflatten_authority.proposal import (
+        attach_typed_proposal,
+        canonical_redirect_manifest,
+    )
+    from d810.transforms.unflatten_authority import model
+    from .helpers import exact_fixture
+
+    source, proposal, exclusion, refs = exact_fixture()
+    template = PatchPlan(
+        plan_id=proposal.plan_id,
+        snapshot_id="partial-corridor-attachment",
+        source_generation=proposal.source_identity_catalog.generation,
+        steps=(PatchRedirectGoto(refs[0], refs[1], refs[2]),),
+    )
+    manifest = canonical_redirect_manifest(template)
+    witness = replace(
+        proposal.use_def_witness,
+        redirect_owner_refs=manifest.owner_refs,
+        redirect_digest=manifest.digest,
+    )
+    dispatcher = DispatcherBlockAnchor(1, source.blocks[1].start_ea)
+    coverage = DispatcherCorridorCoverage(
+        function_ea=source.func_ea,
+        dispatcher=dispatcher,
+        covered_corridors=(DispatcherCorridor((
+            DispatcherBlockAnchor(0, source.blocks[0].start_ea), dispatcher,
+        )),),
+        residual_corridors=(DispatcherCorridor((
+            DispatcherBlockAnchor(2, source.blocks[2].start_ea), dispatcher,
+        )),),
+        enumeration_complete=True,
+    )
+
+    attached = attach_typed_proposal(
+        template,
+        source=source,
+        block_refs_by_serial=refs,
+        canonical_route_evidence=proposal.route_evidence,
+        exact_state_effect_exclusions=(exclusion,),
+        dispatcher_entry_serial=1,
+        dispatcher_member_serials=(0, 1),
+        authoritative_handler_serials=(2,),
+        state_identity=proposal.plan_inputs.state_identity,
+        use_def_witness=witness,
+        corridor_coverage=coverage,
+        dispatcher_removal_forecast=coverage,
+    )
+
+    assert attached.unflatten_proposal is not None
+    partial = attached.unflatten_proposal
+    assert partial.corridor_coverage_forecast is None
+    assert partial.retirement_candidate_catalog is None
+    assert not any(
+        type(claim) is model.RetiredDispatcherInfrastructureClaim
+        for claim in partial.claims
+    )
+
+
+def test_full_dispatcher_retirement_attachment_keeps_the_coverage_forecast_fail_closed() -> None:
+    """A complete retirement retains the aggregate forecast and its invariant."""
+
+    from d810.transforms.unflatten_authority import model
+    from .test_transaction_api import _full_corridor_fixture
+
+    _source, plan, _projected, _gates = _full_corridor_fixture()
+    proposal = plan.unflatten_proposal
+
+    assert proposal is not None
+    assert proposal.plan_inputs.shape is model.UnflattenPlanShape.FULL_DISPATCHER_RETIREMENT
+    assert proposal.corridor_coverage_forecast is not None
+    assert proposal.retirement_candidate_catalog is not None
+    assert any(
+        type(claim) is model.RetiredDispatcherInfrastructureClaim
+        for claim in proposal.claims
+    )
+    with pytest.raises(ValueError, match="coverage forecast"):
+        replace(proposal, corridor_coverage_forecast=None)
+
+
 def test_detached_component_analysis_mints_only_catalog_bound_claim() -> None:
     """Detached producer anchors cannot cross the proposal boundary by serial alone."""
 
