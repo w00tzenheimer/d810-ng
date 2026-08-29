@@ -1794,8 +1794,13 @@ def _matches_complete_decision_dag_route(
         or len(raw.comparisons) != len(dag.witness.comparisons)
         or (require_direct_owner and (
             int(fact.owner_serial) != int(fact.source_serial)
-            or fact.owner_anchor_ea != fact.source_instruction_ea
             or owner_identity != source_identity
+            or fact.owner_anchor_ea != _witness_for_serial(
+                source, source_catalog, block_refs_by_serial, fact.owner_serial,
+            ).anchor_ea
+            or fact.source_instruction_ea not in _witness_for_serial(
+                source, source_catalog, block_refs_by_serial, fact.source_serial,
+            ).native_instruction_eas
         ))
     ):
         return False
@@ -1865,7 +1870,6 @@ def adapt_conditional_arm_route(
     if (
         int(fact.owner_serial) != int(fact.source_serial)
         or int(fact.owner_serial) != int(modification.from_serial)
-        or fact.owner_anchor_ea != fact.source_instruction_ea
         or int(modification.new_target) != int(forecast.target_serial)
     ):
         raise ValueError("conditional arm forecast owner/source or redirect drifted")

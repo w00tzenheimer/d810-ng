@@ -144,7 +144,7 @@ def test_conditional_arm_forecast_mints_complete_decision_dag_fact() -> None:
     """A direct arm carries its exact writer and complete DAG route witness."""
 
     state = 0x12345678
-    write = _mov_state(0x1040, state)
+    write = _mov_state(0x1044, state)
     branch = InsnSnapshot(
         opcode=_OP_MOV, ea=0x1080, operands=(),
         l=MopSnapshot(kind=OperandKind.STACK, size=4, stkoff=_STATE),
@@ -174,7 +174,8 @@ def test_conditional_arm_forecast_mints_complete_decision_dag_fact() -> None:
     )
     assert forecast is not None
     assert forecast.route_fact.kind is SemanticRouteFactKind.DECISION_DAG
-    assert forecast.route_fact.source_instruction_ea == 0x1040
+    assert forecast.route_fact.owner_anchor_ea == 0x1040
+    assert forecast.route_fact.source_instruction_ea == 0x1044
     witness = forecast.route_fact.decision_dag_witness
     assert witness is not None
     assert witness.path_serials == (2,)
@@ -187,6 +188,16 @@ def test_conditional_arm_forecast_mints_complete_decision_dag_fact() -> None:
     )
     assert _conditional_arm_route_forecast(
         RedirectGoto(1, 2, 3), arm, duplicate_write_graph,
+        DecisionDag(32, {2: RouteComparison(2, "jz", state, 3, 4)}, root=2),
+        state_var_stkoff=_STATE, state_var_reg=None,
+    ) is None
+    wrong_value = _mov_state(0x1048, state + 1)
+    wrong_write_graph = FlowGraph(
+        {**graph.blocks, 1: replace(graph.blocks[1], insn_snapshots=(write, wrong_value))},
+        entry_serial=0, func_ea=0x1000,
+    )
+    assert _conditional_arm_route_forecast(
+        RedirectGoto(1, 2, 3), arm, wrong_write_graph,
         DecisionDag(32, {2: RouteComparison(2, "jz", state, 3, 4)}, root=2),
         state_var_stkoff=_STATE, state_var_reg=None,
     ) is None

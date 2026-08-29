@@ -28,7 +28,6 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, replace
-from types import SimpleNamespace
 import re
 import hashlib
 
@@ -8423,19 +8422,34 @@ def _conditional_arm_route_forecast(
         state_identity = StorageIdentity(StorageIdentityKind.REGISTER, int(state_var_reg))
     else:
         return None
-    writes = tuple(
+    all_writes = tuple(
         snapshot for snapshot in source.insn_snapshots
-        if snapshot.kind is InsnKind.MOV
-        and snapshot.l is not None and snapshot.d is not None
-        and snapshot.l.kind is OperandKind.NUMBER and snapshot.l.value is not None
-        and int(snapshot.l.size) == 4 and int(snapshot.d.size) == 4
+        if snapshot.d is not None
         and storage_identity_from_mop_snapshot(snapshot.d) == state_identity
-        and (int(snapshot.l.value) & 0xFFFFFFFF) == int(arm.next_state)
     )
-    if len(writes) != 1:
+    if len(all_writes) != 1:
+        return None
+    write = all_writes[0]
+    if (
+        write.kind is not InsnKind.MOV or write.l is None
+        or write.l.kind is not OperandKind.NUMBER or write.l.value is None
+        or int(write.l.size) != 4 or int(write.d.size) != 4
+        or not 0 <= int(write.l.value) <= 0xFFFFFFFF
+        or int(write.l.value) != int(arm.next_state)
+    ):
+        return None
+    if (
+        len(set(path)) != len(path)
+        or path[-1] != int(arm.exit_block) or path[-1] != int(arm.write_block)
+        or path.index(int(arm.branch_block)) > path.index(int(arm.write_block))
+        or any(
+            right not in tuple(int(item) for item in flow_graph.get_block(left).succs)
+            for left, right in zip(path, path[1:]) if flow_graph.get_block(left) is not None
+        )
+    ):
         return None
     route = _route_state_through_decision_dag(
-        SimpleNamespace(next_state=int(arm.next_state)), flow_graph, decision_dag,
+        arm, flow_graph, decision_dag,
         state_var_stkoff=state_var_stkoff, state_var_reg=state_var_reg,
     )
     if (
@@ -8449,7 +8463,7 @@ def _conditional_arm_route_forecast(
         return None
     source_anchor = int(source.native_start_ea or source.start_ea)
     target_anchor = int(target.native_start_ea or target.start_ea)
-    write_ea = int(writes[0].native_ea or writes[0].ea)
+    write_ea = int(write.native_ea or write.ea)
     fact = SemanticRouteFact(
         kind=SemanticRouteFactKind.DECISION_DAG,
         owner_serial=int(arm.write_block), source_serial=int(arm.write_block),
