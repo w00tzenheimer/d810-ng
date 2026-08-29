@@ -178,7 +178,7 @@ def test_match_root_uses_canonical_bucket_when_raw_root_bucket_is_empty() -> Non
         NativeMatchSelection,
     )
 
-    left, right = Var("left"), Var("right")
+    left, right = Var("x"), Var("y")
     rule = _admitted_probe_rule("CanonicalSubProbe", left + -right)
     catalogue = CompiledPatternCatalogue.from_rules((rule,))
     candidate = _node("sub", _leaf("x"), _leaf("y"))
@@ -206,7 +206,7 @@ def test_match_root_rejects_flattened_ac_wildcard_capture() -> None:
 
     assert result.matches == ()
     assert result.selection is NativeMatchSelection.NONE
-    assert result.stop_reason is NativeMatchStopReason.CANONICAL_MISS
+    assert result.stop_reason is NativeMatchStopReason.CLEAN_MISS
 
 
 def test_match_root_canonical_budget_is_a_bounded_noop(monkeypatch) -> None:
@@ -235,8 +235,169 @@ def test_match_root_canonical_budget_is_a_bounded_noop(monkeypatch) -> None:
 
     assert budgets == [64]
     assert result.matches == ()
-    assert result.comparison_budget_exceeded is True
+    assert result.comparison_budget_exceeded is False
     assert result.stop_reason is NativeMatchStopReason.CANONICAL_BUDGET
+
+
+def test_match_root_keeps_raw_resources_separate_from_fallback_resources(monkeypatch) -> None:
+    from d810.backends.mba import native_pod_matcher
+    from d810.backends.mba.compiled_pattern_catalogue import (
+        CompiledPatternCatalogue,
+        NativeMatchSelection,
+        NativeMatchStopReason,
+        NativePatternMatchResult,
+    )
+
+    rule = _xor_rule("Xor_HackersDelightRule_3")
+    assert rule is not None
+    catalogue = CompiledPatternCatalogue.from_rules((rule,))
+    x, y = _leaf("x"), _leaf("y")
+    candidate = _node(
+        "add",
+        _node("add", x, y),
+        _node("mul", _constant(-2), _node("and", x, y)),
+    )
+    raw = NativePatternMatchResult(
+        (), 5, 2, candidate_term=None, stop_reason=NativeMatchStopReason.CLEAN_MISS
+    )
+
+    monkeypatch.setattr(native_pod_matcher, "match_root_pod", lambda *_args, **_kwargs: raw)
+    original = CompiledPatternCatalogue.match_canonical_root
+
+    def fallback(_self, _candidate, *, comparison_budget):
+        report = original(_self, _candidate, comparison_budget=comparison_budget)
+        return type(report)(
+            report.matches,
+            7,
+            3,
+            4,
+            report.stop_reason,
+            report.compatibility_bindings,
+        )
+
+    monkeypatch.setattr(CompiledPatternCatalogue, "match_canonical_root", fallback)
+    result = catalogue.match_root(candidate)
+
+    assert result.selection is NativeMatchSelection.CANONICAL_FALLBACK
+    assert result.stop_reason is NativeMatchStopReason.MATCHED
+    assert result.comparisons == 5
+    assert result.lazy_swaps == 2
+    assert result.fallback_comparisons == 7
+    assert result.fallback_commuted_branches == 3
+    assert result.fallback_flattened_nodes == 4
+    assert result.comparison_budget_exceeded is False
+
+
+def test_match_root_groups_canonical_alternatives_before_path_resolution(monkeypatch) -> None:
+    from d810.backends.mba import compiled_pattern_catalogue as module
+    from d810.backends.mba.compiled_pattern_catalogue import (
+        CompiledPatternCatalogue,
+        NativeMatchSelection,
+    )
+    from d810.mba.canonical_pattern import (
+        CanonicalFixedBindings,
+        CanonicalPatternMatch,
+        CanonicalPatternMatchReport,
+    )
+    from d810.mba.ac_matching import AcMatchStopReason
+
+    rule = _xor_rule("Xor_HackersDelightRule_3")
+    assert rule is not None
+    catalogue = CompiledPatternCatalogue.from_rules((rule,))
+    x, y = _leaf("x"), _leaf("y")
+    candidate = _node("add", x, _node("neg", y))
+    compiled = catalogue.rules[0].canonical_by_width[32]
+    tx, ty = x.to_typed_term(), y.to_typed_term()
+    alternatives = tuple(
+        CanonicalPatternMatch(
+            compiled,
+            CanonicalFixedBindings(
+                {"x_0": first, "x_1": second},
+                {"x_0": first_path, "x_1": second_path},
+                32,
+            ),
+        )
+        for first, second, first_path, second_path in (
+            (tx, ty, (1,), (0,)),
+            (ty, tx, (0,), (1,)),
+        )
+    )
+    calls = []
+    original_resolver = module.resolve_canonical_match_paths
+
+    def observed(matches, **kwargs):
+        calls.append(tuple(matches))
+        return original_resolver(matches, **kwargs)
+
+    monkeypatch.setattr(module, "resolve_canonical_match_paths", observed)
+    monkeypatch.setattr(
+        CompiledPatternCatalogue,
+        "match_canonical_root",
+        lambda *_args, **_kwargs: CanonicalPatternMatchReport(
+            alternatives, 11, 2, 3, AcMatchStopReason.MATCHED
+        ),
+    )
+    result = catalogue.match_root(candidate)
+
+    assert result.selection is NativeMatchSelection.CANONICAL_FALLBACK
+    assert len(calls) == 1
+    assert len(calls[0]) == 2
+    assert result.matches[0].bindings.native["x_0"] is x
+    assert result.matches[0].bindings.native["x_1"] is y
+
+
+def test_match_root_merges_compatibility_constant_without_native_path(monkeypatch) -> None:
+    from d810.backends.mba.compiled_pattern_catalogue import (
+        CompiledPatternCatalogue,
+        NativeMatchSelection,
+    )
+
+    rule = _xor_rule("Xor_HackersDelightRule_3")
+    assert rule is not None
+    catalogue = CompiledPatternCatalogue.from_rules((rule,))
+    x, y = _leaf("x"), _leaf("y")
+    candidate = _node(
+        "add",
+        _node("add", x, y),
+        _node("mul", _constant(-2), _node("and", x, y)),
+    )
+    result = catalogue.match_root(candidate)
+
+    assert result.selection is NativeMatchSelection.CANONICAL_FALLBACK
+    assert result.matches
+    assert result.matches[0].bindings.terms["2"].value == 2
+    assert "2" not in result.matches[0].bindings.native
+
+
+def test_match_root_propagates_raw_runtime_errors(monkeypatch) -> None:
+    from d810.backends.mba import native_pod_matcher
+    from d810.backends.mba.compiled_pattern_catalogue import CompiledPatternCatalogue
+
+    rule = _rule("Add_HackersDelightRule_2")
+    assert rule is not None
+    catalogue = CompiledPatternCatalogue.from_rules((rule,))
+
+    def fail(*_args, **_kwargs):
+        raise RuntimeError("raw matcher failed")
+
+    monkeypatch.setattr(native_pod_matcher, "match_root_pod", fail)
+    with pytest.raises(RuntimeError, match="raw matcher failed"):
+        catalogue.match_root(_node("sub", _leaf("x"), _leaf("y")))
+
+
+def test_match_root_propagates_canonical_runtime_errors(monkeypatch) -> None:
+    from d810.backends.mba.compiled_pattern_catalogue import CompiledPatternCatalogue
+
+    rule = _xor_rule("Xor_HackersDelightRule_3")
+    assert rule is not None
+    catalogue = CompiledPatternCatalogue.from_rules((rule,))
+
+    def fail(*_args, **_kwargs):
+        raise RuntimeError("canonical matcher failed")
+
+    monkeypatch.setattr(CompiledPatternCatalogue, "match_canonical_root", fail)
+    with pytest.raises(RuntimeError, match="canonical matcher failed"):
+        catalogue.match_root(_node("add", _leaf("x"), _node("neg", _leaf("y"))))
 
 
 def test_compiled_catalogue_enforces_equal_constant_guard_and_materializes_terms() -> (
