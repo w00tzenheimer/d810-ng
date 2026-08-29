@@ -10276,13 +10276,59 @@ def emit_minimal_unflatten(
                     if int(getattr(modification, "new_target", target)) == target
                 ]
             if entry_route is not None:
-                concrete_entry_route_forecasts = (
-                    ConcreteEntryRouteForecast(
-                        normalized_state=entry_route.normalized_state,
-                        target_handler=entry_route.target_block,
-                        source_kinds=entry_route.source_kinds,
-                    ),
+                entry_state_identity = (
+                    StorageIdentity(StorageIdentityKind.STACK, int(_soff))
+                    if _soff is not None
+                    else StorageIdentity(StorageIdentityKind.REGISTER, int(state_var_reg))
+                    if state_var_reg is not None
+                    else None
                 )
+                native_entry_sources = {
+                    int(modification.from_serial)
+                    for modification in native_bound_entry_route_mods
+                    if int(getattr(modification, "new_target", -1))
+                    == int(entry_route.target_block)
+                }
+                exact_native_entry_routes = tuple(
+                    route
+                    for route in entry_native_bound_routes
+                    if (
+                        int(route.state_constant) & 0xFFFFFFFF
+                        == int(entry_route.normalized_state) & 0xFFFFFFFF
+                        and int(route.target_handler_serial)
+                        == int(entry_route.target_block)
+                        and int(route.source_block_serial) in native_entry_sources
+                    )
+                )
+                if len(exact_native_entry_routes) == 1 and entry_state_identity is not None:
+                    native_route = exact_native_entry_routes[0]
+                    source_ref = block_refs_by_serial.get(
+                        int(native_route.source_block_serial)
+                    )
+                    target_ref = block_refs_by_serial.get(
+                        int(native_route.target_handler_serial)
+                    )
+                    if (
+                        type(source_ref) is NativeBlockRef
+                        and type(target_ref) is NativeBlockRef
+                    ):
+                        concrete_entry_route_forecasts = (
+                            ConcreteEntryRouteForecast(
+                                normalized_state=entry_route.normalized_state,
+                                target_handler=entry_route.target_block,
+                                source_kinds=entry_route.source_kinds,
+                                physical_fact_id=native_route.fact_id,
+                                source_identity=source_ref.identity,
+                                source_anchor_ea=native_route.source_instruction_ea,
+                                target_identity=target_ref.identity,
+                                state_identity=entry_state_identity,
+                                proof_owner_identity=(
+                                    "concrete-entry:"
+                                    f"fact_id={native_route.fact_id}:"
+                                    f"source_ea=0x{int(native_route.source_instruction_ea):X}"
+                                ),
+                            ),
+                        )
             bridged = bool(dynamic_entry_bridge_edges) or (
                 entry_route is not None
             )
@@ -11045,6 +11091,8 @@ def emit_minimal_unflatten(
                 ),
                 canonical_route_evidence=canonical_route_evidence,
             )
+            if native_bound_entry_route_mods and not concrete_entry_route_forecasts:
+                raise ValueError("native-bound concrete entry route lacks one exact proof")
             selected_route_proof_ids: list[str] = []
             route_owner_by_proof_id: dict[str, str] = {}
             selected_transition_proofs: list[SemanticRouteProof] = []
@@ -11086,13 +11134,16 @@ def emit_minimal_unflatten(
             )
 
             for route in concrete_entry_route_forecasts:
-                resolve_concrete_entry_route(
+                proof = resolve_concrete_entry_route(
                     route,
                     source=flow_graph,
                     source_catalog=route_catalog,
                     block_refs_by_serial=block_refs_by_serial,
+                    canonical_evidence=canonical_route_evidence,
                     selected_transitions=selected_transition_index,
+                    proof_owners=route_owner_by_proof_id,
                 )
+                selected_route_proof_ids.append(proof.proof_id)
             for route in bootstrap_entry_routes:
                 resolve_bootstrap_entry_route(
                     route, source=flow_graph, source_catalog=route_catalog,

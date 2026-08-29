@@ -9,7 +9,7 @@ proposal, or invoke transaction code.
 from __future__ import annotations
 
 from collections import deque
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, MutableMapping
 from dataclasses import dataclass
 
 from d810.analyses.control_flow.semantic_route_evidence import (
@@ -83,6 +83,35 @@ class ConcreteEntryRouteForecast:
     normalized_state: int
     target_handler: int
     source_kinds: tuple[str, ...]
+    physical_fact_id: str
+    source_identity: StableBlockIdentity
+    source_anchor_ea: int
+    target_identity: StableBlockIdentity
+    state_identity: StorageIdentity
+    proof_owner_identity: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.source_identity, StableBlockIdentity):
+            raise TypeError("concrete entry route requires a stable source identity")
+        if not isinstance(self.target_identity, StableBlockIdentity):
+            raise TypeError("concrete entry route requires a stable target identity")
+        if not isinstance(self.state_identity, StorageIdentity):
+            raise TypeError("concrete entry route requires a typed state identity")
+        fact_id = str(self.physical_fact_id).strip()
+        owner = str(self.proof_owner_identity).strip()
+        if not fact_id or not owner:
+            raise ValueError("concrete entry route requires physical fact and owner identities")
+        source_anchor_ea = int(self.source_anchor_ea)
+        if not 0 <= source_anchor_ea < _BADADDR:
+            raise ValueError("concrete entry source anchor must be a valid native EA")
+        if not self.source_identity.native_ranges.contains(source_anchor_ea):
+            raise ValueError("concrete entry source anchor is outside its stable identity")
+        object.__setattr__(self, "normalized_state", int(self.normalized_state) & 0xFFFFFFFF)
+        object.__setattr__(self, "target_handler", int(self.target_handler))
+        object.__setattr__(self, "source_kinds", tuple(str(kind) for kind in self.source_kinds))
+        object.__setattr__(self, "physical_fact_id", fact_id)
+        object.__setattr__(self, "source_anchor_ea", source_anchor_ea)
+        object.__setattr__(self, "proof_owner_identity", owner)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1451,27 +1480,59 @@ def resolve_concrete_entry_route(
     source: FlowGraph,
     source_catalog: SourceIdentityCatalog,
     block_refs_by_serial: Mapping[int, AuthorityBlockRef],
+    canonical_evidence: CanonicalSemanticEvidence,
     selected_transitions: TransitionRouteSelectionIndex,
+    proof_owners: MutableMapping[str, str],
 ) -> SemanticRouteProof:
-    """Resolve entry consensus against one typed selected-transition index."""
+    """Select and own the exact canonical proof for one entry-prefix route."""
 
+    if type(route) is not ConcreteEntryRouteForecast:
+        raise TypeError("concrete entry resolution requires ConcreteEntryRouteForecast")
+    if type(canonical_evidence) is not CanonicalSemanticEvidence:
+        raise TypeError("concrete entry resolution requires canonical evidence")
     if type(selected_transitions) is not TransitionRouteSelectionIndex:
         raise TypeError("concrete entry resolution requires selected transition index")
-    key_values = concrete_entry_route_key(
-        route,
-        source=source,
-        source_catalog=source_catalog,
-        block_refs_by_serial=block_refs_by_serial,
+    if not isinstance(proof_owners, MutableMapping):
+        raise TypeError("concrete entry resolution requires mutable proof ownership")
+
+    expected_target = _target_identity(
+        source, source_catalog, block_refs_by_serial, route.target_handler,
     )
-    key = TransitionRouteSelectionKey(*key_values)
-    matches = selected_transitions.candidates(key)
+    if expected_target != route.target_identity:
+        raise ValueError("concrete entry target stable identity mismatch")
+    matches = tuple(
+        proof
+        for proof in canonical_evidence.route_proofs
+        if ("fact_id", route.physical_fact_id) in proof.diagnostic_provenance
+    )
     if len(matches) != 1:
         raise ValueError(
-            "concrete entry route has zero or multiple selected transition "
-            f"proofs key={key!r} "
+            "concrete entry route has zero or multiple physical-fact proofs "
+            f"fact_id={route.physical_fact_id!r} "
             f"candidate_ids={tuple(proof.proof_id for proof in matches)!r}"
         )
-    return matches[0]
+    proof = matches[0]
+    if proof.state_write is None or (
+        proof.state_write.identity != route.source_identity
+        or proof.state_write.state_variable != route.state_identity
+        or int(proof.state_write.state_constant) != int(route.normalized_state)
+        or int(proof.state_write.instruction_ea) != int(route.source_anchor_ea)
+    ):
+        raise ValueError("concrete entry source/state identity mismatch")
+    destinations = tuple(
+        destination
+        for destination in proof.destinations
+        if (
+            int(destination.state_constant) == int(route.normalized_state)
+            and destination.target_identity == route.target_identity
+        )
+    )
+    if len(destinations) != 1:
+        raise ValueError("concrete entry target/state proof mismatch")
+    if proof.proof_id in proof_owners:
+        raise ValueError("concrete entry proof is already owned")
+    proof_owners[proof.proof_id] = route.proof_owner_identity
+    return proof
 
 
 def bootstrap_entry_route_key(

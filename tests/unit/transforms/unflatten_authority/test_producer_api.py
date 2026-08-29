@@ -49,6 +49,137 @@ def _block(*instructions: InsnSnapshot, kind: BlockKind = BlockKind.UNKNOWN, suc
     )
 
 
+def test_concrete_entry_route_owns_its_exact_rebound_predecessor_proof() -> None:
+    """Entry-prefix authority is selected by its physical fact, not a back edge."""
+
+    from dataclasses import replace
+
+    from d810.analyses.control_flow.semantic_route_evidence import (
+        canonical_semantic_evidence_from_proofs,
+    )
+    from d810.transforms.minimal_unflatten_emit import ConcreteEntryRouteForecast
+    from d810.transforms.unflatten_authority import producer_api
+    from tests.unit.transforms.unflatten_authority.helpers import exact_fixture
+
+    source, proposal, _exclusion, refs = exact_fixture()
+    proof = proposal.route_evidence.route_proofs[0]
+    entry_proof = replace(
+        proof,
+        diagnostic_provenance=(("fact_id", "entry-prefix-fact"),),
+    )
+    evidence = canonical_semantic_evidence_from_proofs(
+        native_key=proposal.route_evidence.native_key,
+        generation=proposal.route_evidence.generation,
+        proofs=(entry_proof,),
+    )
+    assert proof.state_write is not None
+    entry = ConcreteEntryRouteForecast(
+        normalized_state=7,
+        target_handler=2,
+        source_kinds=("native_bound",),
+        physical_fact_id="entry-prefix-fact",
+        source_identity=refs[0].identity,
+        source_anchor_ea=0x1000,
+        target_identity=refs[2].identity,
+        state_identity=proof.state_write.state_variable,
+        proof_owner_identity="entry-prefix:blk0@0x1000",
+    )
+
+    # The unrelated selected-backedge index is intentionally empty.  A concrete
+    # entry owns the exact canonical proof named by its rebound physical fact.
+    owners: dict[str, str] = {}
+    resolved = producer_api.resolve_concrete_entry_route(
+        entry,
+        source=source,
+        source_catalog=proposal.source_identity_catalog,
+        block_refs_by_serial=refs,
+        canonical_evidence=evidence,
+        selected_transitions=producer_api.TransitionRouteSelectionIndex(()),
+        proof_owners=owners,
+    )
+    assert resolved.proof_id == entry_proof.proof_id
+    assert owners == {resolved.proof_id: "entry-prefix:blk0@0x1000"}
+
+
+def test_concrete_entry_route_rejects_missing_ambiguous_drifted_or_duplicate_owners() -> None:
+    """Concrete-entry proof selection has no state/target fallback or shared owner."""
+
+    from dataclasses import replace
+
+    from d810.analyses.control_flow.semantic_route_evidence import (
+        canonical_semantic_evidence_from_proofs,
+    )
+    from d810.transforms.unflatten_authority import producer_api
+    from tests.unit.transforms.unflatten_authority.helpers import exact_fixture
+
+    source, proposal, _exclusion, refs = exact_fixture()
+    proof = proposal.route_evidence.route_proofs[0]
+    entry_proof = replace(
+        proof,
+        diagnostic_provenance=(("fact_id", "entry-prefix-fact"),),
+    )
+    evidence = canonical_semantic_evidence_from_proofs(
+        native_key=proposal.route_evidence.native_key,
+        generation=proposal.route_evidence.generation,
+        proofs=(entry_proof,),
+    )
+    assert proof.state_write is not None
+    route = ConcreteEntryRouteForecast(
+        7, 2, ("native_bound",), "entry-prefix-fact", refs[0].identity,
+        0x1000, refs[2].identity, proof.state_write.state_variable,
+        "entry-prefix:blk0@0x1000",
+    )
+    kwargs = dict(
+        source=source,
+        source_catalog=proposal.source_identity_catalog,
+        block_refs_by_serial=refs,
+        canonical_evidence=evidence,
+        selected_transitions=producer_api.TransitionRouteSelectionIndex(()),
+    )
+
+    with pytest.raises(ValueError, match="physical-fact"):
+        producer_api.resolve_concrete_entry_route(
+            replace(route, physical_fact_id="missing"), proof_owners={}, **kwargs,
+        )
+    original_proofs = evidence.route_proofs
+    object.__setattr__(evidence, "route_proofs", (entry_proof, entry_proof))
+    try:
+        with pytest.raises(ValueError, match="physical-fact"):
+            producer_api.resolve_concrete_entry_route(route, proof_owners={}, **kwargs)
+    finally:
+        object.__setattr__(evidence, "route_proofs", original_proofs)
+    with pytest.raises(ValueError, match="state"):
+        producer_api.resolve_concrete_entry_route(
+            replace(route, normalized_state=8), proof_owners={}, **kwargs,
+        )
+    with pytest.raises(ValueError, match="target/state"):
+        producer_api.resolve_concrete_entry_route(
+            replace(route, target_handler=3, target_identity=refs[3].identity),
+            proof_owners={}, **kwargs,
+        )
+    state_write = entry_proof.state_write
+    assert state_write is not None
+    original_identity = state_write.identity
+    object.__setattr__(state_write, "identity", refs[1].identity)
+    try:
+        with pytest.raises(ValueError, match="source/state"):
+            producer_api.resolve_concrete_entry_route(route, proof_owners={}, **kwargs)
+    finally:
+        object.__setattr__(state_write, "identity", original_identity)
+    with pytest.raises(ValueError, match="already owned"):
+        producer_api.resolve_concrete_entry_route(
+            route, proof_owners={entry_proof.proof_id: "backedge"}, **kwargs,
+        )
+    owners: dict[str, str] = {}
+    producer_api.resolve_concrete_entry_route(route, proof_owners=owners, **kwargs)
+    with pytest.raises(ValueError, match="already owned"):
+        producer_api.resolve_concrete_entry_route(
+            replace(route, proof_owner_identity="second-entry"),
+            proof_owners=owners,
+            **kwargs,
+        )
+
+
 @pytest.mark.parametrize(
     ("insn_kind", "effect_kind", "terminal_kind"),
     [
@@ -640,54 +771,10 @@ def test_route_adapters_select_one_canonical_proof_and_reject_ambiguity() -> Non
         block_refs_by_serial=refs,
         canonical_evidence=proposal.route_evidence,
     )
-    concrete = ConcreteEntryRouteForecast(7, 2, ("concrete",))
     selected_index = producer_api.TransitionRouteSelectionIndex.from_proofs(
         proposal.route_evidence.route_proofs,
     )
-    assert producer_api.resolve_concrete_entry_route(
-        concrete,
-        source=source,
-        source_catalog=proposal.source_identity_catalog,
-        block_refs_by_serial=refs,
-        selected_transitions=selected_index,
-    ) is proposal.route_evidence.route_proofs[0]
-    with pytest.raises(ValueError, match="zero"):
-        producer_api.resolve_concrete_entry_route(
-            replace(concrete, target_handler=3),
-            source=source,
-            source_catalog=proposal.source_identity_catalog,
-            block_refs_by_serial=refs,
-            selected_transitions=selected_index,
-        )
-    duplicate = replace(
-        proposal.route_evidence.route_proofs[0],
-        proof_id="sha256:" + "2" * 64,
-    )
-    duplicate_index = producer_api.TransitionRouteSelectionIndex.from_proofs(
-        (proposal.route_evidence.route_proofs[0], duplicate),
-    )
-    reverse_index = producer_api.TransitionRouteSelectionIndex.from_proofs(
-        (duplicate, proposal.route_evidence.route_proofs[0]),
-    )
-    key = producer_module.TransitionRouteSelectionKey(
-        *producer_module.concrete_entry_route_key(
-            concrete,
-            source=source,
-            source_catalog=proposal.source_identity_catalog,
-            block_refs_by_serial=refs,
-        )
-    )
-    assert tuple(
-        proof.proof_id for proof in duplicate_index.candidates(key)
-    ) == tuple(proof.proof_id for proof in reverse_index.candidates(key))
-    with pytest.raises(ValueError, match="multiple"):
-        producer_api.resolve_concrete_entry_route(
-            concrete,
-            source=source,
-            source_catalog=proposal.source_identity_catalog,
-            block_refs_by_serial=refs,
-            selected_transitions=duplicate_index,
-        )
+
 
     with pytest.raises(ValueError, match="outside"):
         BootstrapRouteEvidence(
