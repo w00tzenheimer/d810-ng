@@ -159,6 +159,41 @@ def test_match_root_clean_raw_miss_uses_one_canonical_fallback(monkeypatch) -> N
     assert result.matches[0].bindings.native["x_1"] is y
 
 
+def test_match_root_abstains_on_unsupported_native_operation_before_fallback(
+    monkeypatch,
+) -> None:
+    from d810.backends.mba import compiled_pattern_catalogue as module
+    from d810.backends.mba import native_pod_matcher
+    from d810.backends.mba.compiled_pattern_catalogue import (
+        CompiledPatternCatalogue,
+        NativeMatchSelection,
+        NativeMatchStopReason,
+    )
+
+    rule = _rule("Add_HackersDelightRule_2")
+    assert rule is not None
+    catalogue = CompiledPatternCatalogue.from_rules((rule,))
+    candidate = _node("unsupported_op", _leaf("x"), _leaf("y"))
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("unsupported native operation must not canonicalize")
+
+    monkeypatch.setattr(module, "project_canonical_native_paths", forbidden)
+
+    result = catalogue.match_root(candidate)
+
+    assert result.matches == ()
+    assert result.selection is NativeMatchSelection.NONE
+    assert result.stop_reason is NativeMatchStopReason.RAW_UNSUPPORTED
+    assert result.matcher_backend == native_pod_matcher.matcher_backend()
+    assert result.comparisons == 0
+    assert result.lazy_swaps == 0
+    assert result.candidate_term is None
+    assert result.fallback_comparisons == 0
+    assert result.fallback_commuted_branches == 0
+    assert result.fallback_flattened_nodes == 0
+
+
 def test_match_root_raw_budget_abstains_without_canonical_fallback(monkeypatch) -> None:
     from d810.backends.mba import compiled_pattern_catalogue as module
     from d810.backends.mba.compiled_pattern_catalogue import (
