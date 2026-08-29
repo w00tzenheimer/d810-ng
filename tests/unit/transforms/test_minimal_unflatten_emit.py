@@ -228,7 +228,12 @@ def _direct_conditional_arm_fixture(
         branch_predicate=PredicateKind.EQ,
         is_conditional_jump=True,
     )
-    route_branch = replace(selector, ea=0x1080, d=MopSnapshot(kind=OperandKind.BLOCK, block_ref=3))
+    route_branch = replace(
+        selector,
+        ea=0x1080,
+        d=MopSnapshot(kind=OperandKind.BLOCK, block_ref=3),
+        kind=InsnKind.COND_JUMP,
+    )
     graph = FlowGraph(
         {
             0: replace(
@@ -288,6 +293,8 @@ def test_conditional_arm_forecast_rejects_disconnected_path_edge() -> None:
         {
             **graph.blocks,
             0: replace(graph.blocks[0], succs=(6, 5)),
+            1: replace(graph.blocks[1], preds=()),
+            5: replace(graph.blocks[5], preds=(0, 6)),
             6: detached,
         },
         entry_serial=graph.entry_serial,
@@ -301,7 +308,27 @@ def test_conditional_arm_forecast_rejects_disconnected_path_edge() -> None:
 
 
 def test_conditional_arm_forecast_rejects_selector_equal_to_writer() -> None:
-    _state, graph, arm, dag = _direct_conditional_arm_fixture()
+    state, graph, arm, dag = _direct_conditional_arm_fixture()
+    selector = replace(
+        graph.blocks[0].tail,
+        ea=0x1048,
+        d=MopSnapshot(kind=OperandKind.BLOCK, block_ref=2),
+    )
+    graph = FlowGraph(
+        {
+            **graph.blocks,
+            1: replace(
+                graph.blocks[1],
+                kind=BlockKind.TWO_WAY,
+                succs=(2, 5),
+                insn_snapshots=(_mov_state(0x1044, state), selector),
+                tail_kind=InsnKind.COND_JUMP,
+            ),
+            5: replace(graph.blocks[5], preds=(0, 1)),
+        },
+        entry_serial=graph.entry_serial,
+        func_ea=graph.func_ea,
+    )
     same_block = replace(
         arm,
         branch_block=1,
@@ -309,7 +336,14 @@ def test_conditional_arm_forecast_rejects_selector_equal_to_writer() -> None:
         exit_block=1,
         ordered_path=(1,),
     )
-    assert _forecast_direct_arm(graph, same_block, dag) is None
+    assert _conditional_arm_route_forecast(
+        RedirectBranch(1, 2, 3),
+        same_block,
+        graph,
+        dag,
+        state_var_stkoff=_STATE,
+        state_var_reg=None,
+    ) is None
 
 
 def test_conditional_arm_forecast_rejects_one_way_nonselector() -> None:
@@ -318,6 +352,7 @@ def test_conditional_arm_forecast_rejects_one_way_nonselector() -> None:
         {
             **graph.blocks,
             0: replace(graph.blocks[0], kind=BlockKind.ONE_WAY, succs=(1,)),
+            5: replace(graph.blocks[5], preds=()),
         },
         entry_serial=graph.entry_serial,
         func_ea=graph.func_ea,
