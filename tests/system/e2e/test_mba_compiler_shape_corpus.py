@@ -8,15 +8,21 @@ the e-graph provider, or coefficient routing.
 from __future__ import annotations
 
 import ctypes
+import cProfile
 import contextlib
+import gc
 import hashlib
+import io
 import json
 import os
+import pstats
 import random
 import shutil
+import statistics
 import subprocess
 import sys
 import time
+import tracemalloc
 from collections.abc import Mapping
 from dataclasses import replace
 from pathlib import Path
@@ -220,6 +226,29 @@ def _assert_row04_invariant_contract(
             assert outcome.metadata.get("mutation_outcome") != "accepted"
 
 
+def _assert_adapter_callback_context_cleared(adapter) -> None:
+    """Require all borrowed adapter and rule callback state to be released."""
+
+    for field in (
+        "_attempt_input_ast",
+        "_attempt_instruction",
+        "_shadow_lowering",
+        "_shadow_structural_lowering",
+        "_shadow_source_ast",
+        "_shadow_match_report",
+        "_shadow_structural_native_paths",
+        "_legacy_binding_paths",
+        "_shadow_native_equivalence_verdict",
+    ):
+        assert getattr(adapter, field, None) is None
+    assert getattr(adapter, "_shadow_native_path_unavailable", False) is False
+    assert getattr(adapter, "_structural_selection_active", False) is False
+    rule = adapter.rule
+    assert getattr(rule, "_current_blk", None) is None
+    assert getattr(rule, "_current_ins", None) is None
+    assert getattr(rule, "_runtime_constant_evaluator", None) is None
+
+
 
 
 def _assert_exact_catalogue_contract(function: str, outcomes: tuple[object, ...]) -> None:
@@ -417,6 +446,10 @@ def _canonical_json_digest(value: object) -> str:
             sort_keys=True,
         ).encode("utf-8")
     ).hexdigest()
+
+
+def _p95_seconds(values: list[float]) -> float:
+    return statistics.quantiles(values, n=20, method="inclusive")[18]
 
 
 def _parity_artifact_dir(tmp_path: Path) -> Path:
@@ -1127,11 +1160,19 @@ class TestCompilerShapeCatalogueNative:
                 )
                 assert before is not None
             native_proof_results: list[bool] = []
+            real_fallback_callback_active = False
+            real_bound_proof_count = 0
             original_native_proof = ida_backend.prove_native_ast_equivalence
 
             def record_native_proof(*args, **kwargs):
+                nonlocal real_profiled_proof_count
+                nonlocal real_bound_proof_count
                 result = original_native_proof(*args, **kwargs)
                 native_proof_results.append(result)
+                if real_fallback_callback_active:
+                    real_bound_proof_count += 1
+                if real_profile_active:
+                    real_profiled_proof_count += 1
                 return result
 
             monkeypatch.setattr(
@@ -1153,6 +1194,136 @@ class TestCompilerShapeCatalogueNative:
                 "check_pattern_and_replace",
                 lambda _pattern, _candidate: None,
             )
+            real_lowering_count = 0
+            real_fallback_callback_count = 0
+            real_profile = cProfile.Profile()
+            real_profile_stream = io.StringIO()
+            real_first_current = None
+            real_second_current = None
+            real_first_peak = 0
+            real_second_peak = 0
+            real_allocation_before = 0
+            real_profile_active = False
+            real_profile_completed = False
+            real_profiled_proof_count = 0
+            real_replacement_count = 0
+            real_success_callback_count = 0
+            real_callback_allocation_count = 0
+            original_prepare = forced_fallback_rule.prepare_structural_candidate
+            original_match = forced_fallback_rule.match_structural_and_replace
+            original_clear = forced_fallback_rule.clear_match_context
+            from d810.backends.mba import hexrays_island
+            from d810.mba import ac_matching
+
+            real_island_lowering_count = 0
+            real_canonical_match_count = 0
+            original_island_lowering = hexrays_island.lower_hexrays_island
+            original_canonical_match = ac_matching.match_canonical_term_pattern
+
+            def record_island_lowering(*args, **kwargs):
+                nonlocal real_island_lowering_count
+                real_island_lowering_count += 1
+                return original_island_lowering(*args, **kwargs)
+
+            def record_canonical_match(*args, **kwargs):
+                nonlocal real_canonical_match_count
+                real_canonical_match_count += 1
+                return original_canonical_match(*args, **kwargs)
+
+            monkeypatch.setattr(
+                hexrays_island,
+                "lower_hexrays_island",
+                record_island_lowering,
+            )
+            monkeypatch.setattr(
+                ac_matching,
+                "match_canonical_term_pattern",
+                record_canonical_match,
+            )
+
+            def record_real_lowering(*args, **kwargs):
+                nonlocal real_lowering_count, real_profile_active
+                nonlocal real_profile_completed, real_allocation_before
+                if not real_profile_active and not real_profile_completed:
+                    gc.collect()
+                    real_profile.enable()
+                    real_profile_active = True
+                real_lowering_count += 1
+                return original_prepare(*args, **kwargs)
+
+            def record_real_fallback(*args, **kwargs):
+                nonlocal real_fallback_callback_count
+                nonlocal real_first_current, real_second_current
+                nonlocal real_first_peak, real_second_peak, real_allocation_before
+                nonlocal real_profile_active, real_profile_completed
+                nonlocal real_replacement_count
+                nonlocal real_fallback_callback_active, real_success_callback_count
+                nonlocal real_callback_allocation_count
+                real_fallback_callback_count += 1
+                real_fallback_callback_active = True
+                gc.collect()
+                tracemalloc.start()
+                allocation_before = tracemalloc.get_traced_memory()[0]
+                result = original_match(*args, **kwargs)
+                gc.collect()
+                allocation_after, allocation_peak = tracemalloc.get_traced_memory()
+                tracemalloc.stop()
+                retained = allocation_after - allocation_before
+                real_callback_allocation_count += 1
+                if real_callback_allocation_count == 1:
+                    real_allocation_before = allocation_before
+                    real_first_current = retained
+                    real_first_peak = allocation_peak
+                elif real_callback_allocation_count == 2:
+                    real_second_current = retained
+                    real_second_peak = allocation_peak
+                real_replacement_count += result is not None
+                if result is not None:
+                    real_success_callback_count += 1
+                if result is not None and not real_profile_completed:
+                    real_profile.disable()
+                    real_profile_active = False
+                    real_profile_completed = True
+                return result
+
+            def clear_real_fallback_context(*args, **kwargs):
+                nonlocal real_fallback_callback_active
+                try:
+                    return original_clear(*args, **kwargs)
+                finally:
+                    real_fallback_callback_active = False
+
+            monkeypatch.setattr(
+                forced_fallback_rule,
+                "prepare_structural_candidate",
+                record_real_lowering,
+            )
+            monkeypatch.setattr(
+                forced_fallback_rule,
+                "match_structural_and_replace",
+                record_real_fallback,
+            )
+            monkeypatch.setattr(
+                forced_fallback_rule,
+                "clear_match_context",
+                clear_real_fallback_context,
+            )
+            from d810.mba import canonical_pattern
+
+            catalogue_compile_count = 0
+            original_catalogue_compile = canonical_pattern.compile_canonical_pattern
+
+            def record_catalogue_compile(*args, **kwargs):
+                nonlocal catalogue_compile_count
+                catalogue_compile_count += 1
+                return original_catalogue_compile(*args, **kwargs)
+
+            monkeypatch.setattr(
+                canonical_pattern,
+                "compile_canonical_pattern",
+                record_catalogue_compile,
+            )
+            compile_count_before_callbacks = catalogue_compile_count
             accepted_catalogue_by_function: dict[str, tuple[object, ...]] = {}
             observed_catalogue_by_function: dict[str, tuple[object, ...]] = {}
             fallback_capture_outcomes: list[object] = []
@@ -1174,7 +1345,6 @@ class TestCompilerShapeCatalogueNative:
                         )
                         for adapter in adapters
                     )
-                    proof_start = len(native_proof_results)
                     after = idaapi.decompile(
                         function_eas[function], flags=idaapi.DECOMP_NO_CACHE
                     )
@@ -1213,8 +1383,69 @@ class TestCompilerShapeCatalogueNative:
                         and outcome.matcher.selection is MatcherSelection.CANONICAL_FALLBACK
                         for outcome in accepted
                     )
-                    assert sum(native_proof_results[proof_start:]) >= fallback_count
                 state.stop_d810()
+            assert real_fallback_callback_count >= 2
+            # The handler lowers every eligible root once, then dispatches the
+            # selected root bucket.  Only roots in this forced rule's bucket
+            # invoke its fallback callback, so unrelated-root lowerings are
+            # expected and must remain visible in the production receipt.
+            assert real_lowering_count >= real_fallback_callback_count
+            assert real_island_lowering_count >= real_lowering_count
+            assert real_canonical_match_count >= real_fallback_callback_count
+            assert real_bound_proof_count >= real_success_callback_count
+            assert real_profiled_proof_count >= 1
+            assert real_replacement_count >= 2
+            assert real_profile_active is False
+            assert real_first_current is not None
+            assert real_second_current is not None
+            assert abs(real_second_current - real_first_current) < 128 * 1024
+            assert max(real_first_peak, real_second_peak) < 10 * 1024 * 1024
+            assert catalogue_compile_count == compile_count_before_callbacks
+            real_profile_stats = pstats.Stats(
+                real_profile, stream=real_profile_stream
+            ).strip_dirs().sort_stats("cumulative")
+            # Keep enough of the bounded real-callback profile to retain the
+            # complete lowerer -> matcher -> proof -> emitter path.  The
+            # callback deliberately performs collection around its allocation
+            # probes, so a top-12 report can hide these short-lived functions
+            # behind ``gc.collect``.
+            real_profile_stats.print_stats()
+            real_profile_text = real_profile_stream.getvalue()
+            assert "lower_hexrays_island" in real_profile_text
+            assert "match_canonical_term_pattern" in real_profile_text
+            assert "prove_native_ast_equivalence" in real_profile_text
+            assert "_create_replacement_from_candidate" in real_profile_text
+            real_profile_path = _ROOT / ".tmp" / (
+                f"canonical-fallback-production-profile-{runtime_mode}.json"
+            )
+            real_profile_path.parent.mkdir(parents=True, exist_ok=True)
+            real_profile_path.write_text(
+                json.dumps(
+                    {
+                        "runtime_mode": runtime_mode,
+                        "function": "mba_shape_catalogue_01",
+                        "fallback_callbacks": real_fallback_callback_count,
+                        "lowerings": real_lowering_count,
+                        "island_lowerings": real_island_lowering_count,
+                        "canonical_match_calls": real_canonical_match_count,
+                        "replacement_count": real_replacement_count,
+                        "catalogue_compilations_during_callbacks": 0,
+                        "allocation_before": real_allocation_before,
+                        "allocation_first_current": real_first_current,
+                        "allocation_second_current": real_second_current,
+                        "allocation_first_peak": real_first_peak,
+                        "allocation_second_peak": real_second_peak,
+                        "allocation_window_growth": real_second_current - real_first_current,
+                        "profile": real_profile_text,
+                    },
+                    allow_nan=False,
+                    ensure_ascii=True,
+                    indent=2,
+                    sort_keys=True,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
             assert fallback_capture_outcomes
             fallback_capture_outcome = fallback_capture_outcomes[-1]
             fallback_profile = native_profile_from_outcome(fallback_capture_outcome)
@@ -1304,15 +1535,7 @@ class TestCompilerShapeCatalogueNative:
                 # before the next instruction.  Registration candidates are
                 # intentionally long-lived; these borrowed objects are not.
                 for adapter in adapters:
-                    assert getattr(adapter, "_shadow_lowering", None) is None
-                    assert getattr(adapter, "_shadow_structural_lowering", None) is None
-                    assert getattr(adapter, "_shadow_source_ast", None) is None
-                    assert getattr(adapter, "_shadow_match_report", None) is None
-                    assert getattr(adapter, "_shadow_structural_native_paths", None) is None
-                    assert getattr(adapter, "_legacy_binding_paths", None) is None
-                    assert getattr(adapter, "_shadow_native_equivalence_verdict", None) is None
-                    assert getattr(adapter, "_shadow_native_path_unavailable", False) is False
-                    assert getattr(adapter, "_structural_selection_active", False) is False
+                    _assert_adapter_callback_context_cleared(adapter)
             applied_catalogue_outcomes = tuple(
                 outcome
                 for function_outcomes in accepted_catalogue_by_function.values()
