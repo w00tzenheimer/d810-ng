@@ -655,8 +655,9 @@ class TestCanonicalFallbackWorkBounds:
             "raw": 0,
             "fallback": 0,
             "prepare": 0,
-            "lowerings": [],
-            "receipts": [],
+            "last_lowering": None,
+            "receipt_count": 0,
+            "last_receipt": None,
         }
         term, _actual_shape = TestCanonicalFallbackWorkBounds._term_and_shape()
         pattern = AstNode(ida_hexrays.m_add, AstLeaf("x"), AstLeaf("y"))
@@ -674,7 +675,7 @@ class TestCanonicalFallbackWorkBounds:
             def prepare_structural_candidate(self, _candidate, **_kwargs):
                 calls["prepare"] += 1
                 lowering = SimpleNamespace(term=term)
-                calls["lowerings"].append(lowering)
+                calls["last_lowering"] = lowering
                 return lowering
 
             def match_structural_and_replace(self, _candidate, **_kwargs):
@@ -688,7 +689,8 @@ class TestCanonicalFallbackWorkBounds:
                 return None
 
             def record_raw_match_receipt(self, _receipt):
-                calls["receipts"].append(_receipt)
+                calls["receipt_count"] += 1
+                calls["last_receipt"] = _receipt
 
         rule = Rule()
         rule.name = name
@@ -740,8 +742,8 @@ class TestCanonicalFallbackWorkBounds:
 
         assert result is not None
         assert raw_calls["raw"] == 1
-        assert len(raw_calls["receipts"]) == 1
-        assert isinstance(raw_calls["receipts"][0], RawMatcherWorkReceipt)
+        assert raw_calls["receipt_count"] == 1
+        assert isinstance(raw_calls["last_receipt"], RawMatcherWorkReceipt)
         assert raw_calls["prepare"] == 0
         assert raw_calls["fallback"] == 0
 
@@ -876,12 +878,20 @@ class TestCanonicalFallbackWorkBounds:
             callback()
         gc.collect()
         allocation_current, allocation_peak = tracemalloc.get_traced_memory()
+        for _ in range(profile_iterations):
+            callback()
+        gc.collect()
+        allocation_second_current, allocation_second_peak = (
+            tracemalloc.get_traced_memory()
+        )
         tracemalloc.stop()
         calls["profile_iterations"] = profile_iterations
         calls["profile"] = profile_stream.getvalue()
         calls["allocation_before_bytes"] = allocation_before
         calls["allocation_current_bytes"] = allocation_current
         calls["allocation_peak_bytes"] = allocation_peak
+        calls["allocation_second_current_bytes"] = allocation_second_current
+        calls["allocation_second_peak_bytes"] = allocation_second_peak
         samples: list[float] = []
         for _ in range(40):
             started = time.perf_counter()
@@ -927,25 +937,67 @@ class TestCanonicalFallbackWorkBounds:
         ast = next(ast for ast, _ins in real_asts if ast.is_node())
         digest = hashlib.sha256(repr(_benchmark_ast_shape(ast)).encode()).hexdigest()
         benchmark_commit = os.environ.get("D810_BENCHMARK_COMMIT", "not supplied")
-        baseline, baseline_calls = self._sample_raw_hit(ast, fallback_enabled=False)
-        candidate, candidate_calls = self._sample_raw_hit(ast, fallback_enabled=True)
+        rounds = []
+        for round_index in range(5):
+            if round_index % 2 == 0:
+                baseline, baseline_calls = self._sample_raw_hit(
+                    ast, fallback_enabled=False
+                )
+                candidate, candidate_calls = self._sample_raw_hit(
+                    ast, fallback_enabled=True
+                )
+            else:
+                candidate, candidate_calls = self._sample_raw_hit(
+                    ast, fallback_enabled=True
+                )
+                baseline, baseline_calls = self._sample_raw_hit(
+                    ast, fallback_enabled=False
+                )
+            rounds.append(
+                {
+                    "baseline_median": statistics.median(baseline),
+                    "candidate_median": statistics.median(candidate),
+                    "baseline_p95": self._p95(baseline),
+                    "candidate_p95": self._p95(candidate),
+                    "median_delta": statistics.median(candidate)
+                    / statistics.median(baseline)
+                    - 1.0,
+                    "p95_delta": self._p95(candidate) / self._p95(baseline) - 1.0,
+                }
+            )
         fallback, fallback_calls = self._sample_fallback_hit(ast)
-        baseline_median = statistics.median(baseline)
-        candidate_median = statistics.median(candidate)
-        candidate_p95 = self._p95(candidate)
-        baseline_p95 = self._p95(baseline)
+        baseline_median = statistics.median(
+            [round_result["baseline_median"] for round_result in rounds]
+        )
+        candidate_median = statistics.median(
+            [round_result["candidate_median"] for round_result in rounds]
+        )
+        candidate_p95 = statistics.median(
+            [round_result["candidate_p95"] for round_result in rounds]
+        )
+        baseline_p95 = statistics.median(
+            [round_result["baseline_p95"] for round_result in rounds]
+        )
         raw_regression = candidate_median / baseline_median - 1.0
         raw_p95_regression = candidate_p95 / baseline_p95 - 1.0
         assert raw_regression <= 0.05, raw_regression
         assert raw_p95_regression <= 0.10, raw_p95_regression
         assert baseline_calls["fallback"] == 0
         assert candidate_calls["fallback"] == 0
-        callback_count = 10 + fallback_calls["profile_iterations"] * 2 + 40 * 5000
+        callback_count = 10 + fallback_calls["profile_iterations"] * 3 + 40 * 5000
         assert fallback_calls["fallback"] == callback_count
         assert fallback_calls["prepare"] == (
             callback_count
         )
-        assert fallback_calls["allocation_peak_bytes"] < 10 * 1024 * 1024
+        assert max(
+            fallback_calls["allocation_peak_bytes"],
+            fallback_calls["allocation_second_peak_bytes"],
+        ) < 10 * 1024 * 1024
+        allocation_window_growth = (
+            fallback_calls["allocation_second_current_bytes"]
+            - fallback_calls["allocation_current_bytes"]
+        )
+        assert abs(allocation_window_growth) < 128 * 1024
         assert catalogue_compilations == 0
         self._append_performance_receipt(
             "\n## Task 7 callback benchmark\n\n"
@@ -955,12 +1007,18 @@ class TestCanonicalFallbackWorkBounds:
             "- Commands: `D810_BENCHMARK_COMMIT=$(git -C .worktrees/canonical-mba-matcher-fallback rev-parse HEAD) ./tools/scripts/run_system_tests_docker.sh test -w canonical-mba-matcher-fallback -o task7-benchmark-python5.txt -- tests/system/runtime/test_pattern_engine_benchmark.py -k CanonicalFallbackWorkBounds -q`; Cython: `D810_BENCHMARK_COMMIT=$(git -C .worktrees/canonical-mba-matcher-fallback rev-parse HEAD) D810_NO_CYTHON=0 ./tools/scripts/run_system_tests_docker.sh test -w canonical-mba-matcher-fallback -o task7-benchmark-cython3.txt -- tests/system/runtime/test_pattern_engine_benchmark.py -k CanonicalFallbackWorkBounds -q`\n"
             "- Mode comparison: fallback registry absent (baseline) versus present (candidate); identical pytest fixture/rules/cache policy. This isolates callback cost in one process; it is not presented as an environment-flag timing comparison.\n"
             f"- Corpus digest: `{digest}` (one live `real_asts` AST)\n"
-            "- Samples: 40 x 5000 callback iterations after 10 warmups; values are seconds/callback\n"
+            "- Samples: 5 paired rounds, each 40 x 5000 callback iterations after 10 warmups; aggregate values are medians of per-round medians/p95s in seconds/callback\n"
             f"- Raw-hit baseline: median `{baseline_median:.9g}`, p95 `{baseline_p95:.9g}`\n"
             f"- Raw-hit fallback-enabled: median `{candidate_median:.9g}`, p95 `{candidate_p95:.9g}`, median delta `{raw_regression:.2%}`, p95 delta `{raw_p95_regression:.2%}`\n"
+            + "- Per-round deltas (baseline/candidate order alternated): "
+            + "; ".join(
+                f"r{index + 1} median {round_result['median_delta']:.2%}, p95 {round_result['p95_delta']:.2%}"
+                for index, round_result in enumerate(rounds)
+            )
+            + "\n"
             f"- Controlled raw-miss/fallback-hit: median `{statistics.median(fallback):.9g}`, p95 `{self._p95(fallback):.9g}`; fallback calls `{fallback_calls['fallback']}`; max comparisons `64` (verified independently by the live compiler-shape receipt, not this callback stub)\n"
             f"- Callback counts: canonical catalogue compilation `{catalogue_compilations}`; shared structural lowerings `{fallback_calls['prepare']}` for `{fallback_calls['fallback']}` fallback callbacks; additional per-rule lowering `0`\n"
-            f"- Allocation observation: `{fallback_calls['profile_iterations'] * 2}` un-timed callbacks, peak traced allocation `{fallback_calls['allocation_peak_bytes']}` bytes, retained current `{fallback_calls['allocation_current_bytes']}` bytes after GC (growth `{fallback_calls['allocation_current_bytes'] - fallback_calls['allocation_before_bytes']}` bytes)\n"
+            f"- Allocation observation: `{fallback_calls['profile_iterations'] * 3}` un-timed callbacks in two equal windows, peak traced allocation `{max(fallback_calls['allocation_peak_bytes'], fallback_calls['allocation_second_peak_bytes'])}` bytes, retained current `{fallback_calls['allocation_current_bytes']}` -> `{fallback_calls['allocation_second_current_bytes']}` bytes after GC (window growth `{allocation_window_growth}` bytes; bound 131072)\n"
             "- Work counts: raw-hit canonical lowering/comparisons `0/0`; clean-miss lowering `1` shared by eligible bucket; fallback budget separate from raw budget\n"
             "- Dominant callback paths (cProfile, cumulative):\n"
             + "\n".join(f"  {line}" for line in fallback_calls["profile"].strip().splitlines())
