@@ -96,7 +96,7 @@ from d810.transforms.graph_modification import (
 )
 from d810.transforms.edit_simulator import project_patch_plan
 from d810.transforms.plan import compile_patch_plan
-from d810.transforms.cfg_transaction import LogicalBlockRef
+from d810.transforms.cfg_transaction import LogicalBlockRef, NativeBlockRef
 from d810.transforms.minimal_unflatten_emit import (
     _applied_conditional_boundary_edge_keys,
     _applied_direct_boundary_edge_keys,
@@ -1657,6 +1657,50 @@ def test_native_bound_route_recovers_initial_state_and_entry_bridge(monkeypatch)
         if isinstance(mod, RedirectGoto)
     }
     assert (0, 2, 20) in gotos
+
+
+def test_typed_entry_native_route_registers_its_canonical_proof(monkeypatch, _seam):
+    """An entry-only native receipt owns proposal evidence without a back edge."""
+
+    class _CleanUseDefSafety:
+        def redirect_use_def_violations(self, *_args, **_kwargs):
+            return ()
+
+    source_write = InsnSnapshot(0, 0x1001, (), kind=InsnKind.MOV, raw_opcode=0)
+    target_insn = InsnSnapshot(0, 0x2000, (), kind=InsnKind.NOP, raw_opcode=0)
+    fg = FlowGraph(
+        blocks={
+            0: BlockSnapshot(0, 0, (2,), (), 0, 0x1000, (source_write,)),
+            2: _b(2, (20,), (0, 20)),
+            20: BlockSnapshot(20, 0, (2,), (2,), 0, 0x2000, (target_insn,)),
+            99: _b(99, (), ()),
+        }, entry_serial=0, func_ea=0x1000,
+    )
+    state = 0x16AA65E9
+    monkeypatch.setattr(
+        minimal_unflatten_emit_module,
+        "recover_state_write_transitions_via_partitioned_fixpoint",
+        lambda *_args, **_kwargs: (StateWriteTransition(0, None, None, True, None),),
+    )
+    plan = emit_minimal_unflatten(
+        fg, _disp({state: 20}, exit_block=99), state_var_stkoff=_STATE,
+        dispatcher_entry_serial=2,
+        native_key=NATIVE_KEY,
+        block_refs_by_serial={
+            serial: NativeBlockRef(StableBlockIdentity.from_intervals(
+                (NativeEaInterval(block.start_ea, block.start_ea + 0x20),),
+                native_key=NATIVE_KEY,
+                exact_instruction_eas=tuple(insn.ea for insn in block.insn_snapshots),
+            )) for serial, block in fg.blocks.items()
+        },
+        native_bound_transition_routes=(NativeBoundTransitionRoute("entry", 0x1001, 0, state, 20),),
+        dispatcher_region_serials=frozenset({2}),
+        authoritative_handler_serials=frozenset({20}),
+        use_def_safety=_CleanUseDefSafety(),
+        live_function=object(),
+    )
+    assert plan.unflatten_proposal is not None
+    assert sum(bool(getattr(claim, "route_proof_ids", ())) for claim in plan.unflatten_proposal.claims) == 1
 
 
 def test_native_bound_routes_seed_missing_current_backedge_transition(

@@ -10340,15 +10340,24 @@ def emit_minimal_unflatten(
                     pass
                 else:
                     entry_fact = _native_bound_route_fact(flow_graph, native_route)
-                    if entry_fact is None or any(
-                        fact is not None and fact.fact_id == native_route.fact_id
-                        for fact in route_facts
-                    ) or any(fact is None for fact in route_facts):
+                    same_fact = tuple(
+                        fact for fact in route_facts
+                        if fact is not None and fact.fact_id == native_route.fact_id
+                    )
+                    if entry_fact is None or any(fact is None for fact in route_facts):
+                        return compile_with_dispatcher_coverage(())
+                    if same_fact and (
+                        len(same_fact) != 1
+                        or same_fact[0].source_serial != entry_fact.source_serial
+                        or same_fact[0].source_instruction_ea != entry_fact.source_instruction_ea
+                        or same_fact[0].state_constant != entry_fact.state_constant
+                        or same_fact[0].target_serial != entry_fact.target_serial
+                    ):
                         return compile_with_dispatcher_coverage(())
                     generation = 0 if source_generation is None else int(source_generation)
                     group_token = snapshot_id or f"{int(flow_graph.func_ea):X}"
                     production_result = build_canonical_semantic_evidence(
-                        tuple((*route_facts, entry_fact)),
+                        route_facts if same_fact else tuple((*route_facts, entry_fact)),
                         CanonicalSemanticEvidenceProductionContext(
                             native_key=native_key,
                             generation=generation,
@@ -11169,6 +11178,9 @@ def emit_minimal_unflatten(
             selected_route_proof_ids: list[str] = []
             route_owner_by_proof_id: dict[str, str] = {}
             selected_transition_proofs: list[SemanticRouteProof] = []
+            concrete_entry_proof_ids = frozenset(
+                route.canonical_proof_id for route in concrete_entry_route_forecasts
+            )
 
             def select_route(owner: str, proof) -> None:
                 prior_owner = route_owner_by_proof_id.get(proof.proof_id)
@@ -11198,6 +11210,8 @@ def emit_minimal_unflatten(
                     canonical_evidence=canonical_route_evidence,
                     state_identity=state_identity,
                 )
+                if proof.proof_id in concrete_entry_proof_ids:
+                    continue
                 if proof.proof_id not in route_owner_by_proof_id:
                     selected_transition_proofs.append(proof)
                 select_route("state_write_transition", proof)
