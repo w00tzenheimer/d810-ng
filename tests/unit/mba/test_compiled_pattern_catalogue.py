@@ -56,6 +56,21 @@ def _admitted_probe_rule(name: str, pattern: SymbolicExpression):
     return _enroll_admitted_rule(CompiledMbaRule(name, (), rule_type, (32,), False))
 
 
+def _admitted_probe_rule_with_replacement(
+    name: str, pattern: SymbolicExpression, replacement: SymbolicExpression
+):
+    rule_type = type(
+        name,
+        (VerifiableRule,),
+        {
+            "pattern": pattern,
+            "replacement": replacement,
+            "CONSTRAINTS": (),
+        },
+    )
+    return _enroll_admitted_rule(CompiledMbaRule(name, (), rule_type, (32,), False))
+
+
 def test_compiled_catalogue_matches_ac_operands_without_variant_rules() -> None:
     from d810.backends.mba.compiled_pattern_catalogue import CompiledPatternCatalogue
 
@@ -206,7 +221,7 @@ def test_match_root_rejects_flattened_ac_wildcard_capture() -> None:
 
     assert result.matches == ()
     assert result.selection is NativeMatchSelection.NONE
-    assert result.stop_reason is NativeMatchStopReason.CLEAN_MISS
+    assert result.stop_reason is NativeMatchStopReason.CANONICAL_MISS
 
 
 def test_match_root_canonical_budget_is_a_bounded_noop(monkeypatch) -> None:
@@ -286,6 +301,7 @@ def test_match_root_keeps_raw_resources_separate_from_fallback_resources(monkeyp
     assert result.fallback_commuted_branches == 3
     assert result.fallback_flattened_nodes == 4
     assert result.comparison_budget_exceeded is False
+    assert result.candidate_term == candidate.to_typed_term()
 
 
 def test_match_root_groups_canonical_alternatives_before_path_resolution(monkeypatch) -> None:
@@ -367,6 +383,55 @@ def test_match_root_merges_compatibility_constant_without_native_path(monkeypatc
     assert result.matches
     assert result.matches[0].bindings.terms["2"].value == 2
     assert "2" not in result.matches[0].bindings.native
+
+
+def test_match_root_rejects_canonical_pattern_constant_without_raw_provenance() -> None:
+    from d810.backends.mba.compiled_pattern_catalogue import (
+        CompiledPatternCatalogue,
+        NativeMatchStopReason,
+    )
+
+    captured = Const("captured")
+    value = Var("value")
+    rule = _admitted_probe_rule_with_replacement(
+        "CapturedCanonicalConstant",
+        value + captured,
+        captured,
+    )
+    catalogue = CompiledPatternCatalogue.from_rules((rule,))
+    candidate = _node("add", _leaf("x"), _node("neg", _constant(-5)))
+
+    result = catalogue.match_root(candidate)
+
+    assert result.matches == ()
+    assert result.stop_reason is NativeMatchStopReason.PROVENANCE_REJECTED
+
+
+def test_match_root_scopes_compatibility_bindings_to_each_template() -> None:
+    from d810.backends.mba.compiled_pattern_catalogue import CompiledPatternCatalogue
+
+    value = Var("value")
+    first_constant = Const("first", 2)
+    second_constant = Const("second", 2)
+    first = _admitted_probe_rule_with_replacement(
+        "FirstCompatibilityRule",
+        value + first_constant,
+        first_constant,
+    )
+    second = _admitted_probe_rule_with_replacement(
+        "SecondCompatibilityRule",
+        value + second_constant,
+        second_constant,
+    )
+    catalogue = CompiledPatternCatalogue.from_rules((first, second))
+    candidate = _node("add", _leaf("x"), _node("neg", _constant(-2)))
+
+    result = catalogue.match_root(candidate)
+
+    assert len(result.matches) == 2
+    assert tuple(match.rule for match in result.matches) == (first, second)
+    assert set(result.matches[0].bindings.terms) == {"value", "first"}
+    assert set(result.matches[1].bindings.terms) == {"value", "second"}
 
 
 def test_match_root_propagates_raw_runtime_errors(monkeypatch) -> None:

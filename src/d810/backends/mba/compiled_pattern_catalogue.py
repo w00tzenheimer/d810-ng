@@ -293,7 +293,18 @@ class CompiledPatternCatalogue:
                 canonical_budget_exceeded=True,
             )
         if not canonical.matches:
-            return raw
+            return NativePatternMatchResult(
+                (),
+                raw.comparisons,
+                raw.lazy_swaps,
+                candidate_term=raw.candidate_term,
+                matcher_backend=raw.matcher_backend,
+                selection=NativeMatchSelection.NONE,
+                stop_reason=NativeMatchStopReason.CANONICAL_MISS,
+                fallback_comparisons=canonical.comparisons,
+                fallback_commuted_branches=canonical.commuted_branches,
+                fallback_flattened_nodes=canonical.flattened_nodes,
+            )
 
         resolved: list[NativePatternMatch] = []
         rejected = False
@@ -307,18 +318,23 @@ class CompiledPatternCatalogue:
         for key in sorted(grouped, key=lambda item: templates[item].declaration_index):
             template = templates[key]
             valid_canonical_matches = []
+            compatibility = _fixed_constant_bindings(
+                template,
+                projection.canonical_view.canonical_term,
+            )
             for canonical_match in grouped[key]:
                 try:
                     merged = merge_canonical_bindings(
                         canonical_match.bindings,
-                        canonical.compatibility_bindings,
+                        compatibility,
                     )
                 except ValueError:
                     rejected = True
                     continue
                 terms = dict(merged.terms)
-                required_native_names = _replacement_variable_names(
-                    template.replacement_template
+                required_native_names = _replacement_placeholder_names(
+                    template.replacement_template,
+                    fixed_constant_values=template.fixed_constant_values,
                 )
                 candidate_paths = {
                     name: path
@@ -348,7 +364,7 @@ class CompiledPatternCatalogue:
                 valid_canonical_matches,
                 canonical_to_raw_paths=projection.canonical_to_raw_paths,
                 placeholder_order=(name for _kind, name in template.terminal_kinds),
-                required_names=_replacement_variable_names(template.replacement_template),
+                required_names=required_native_names,
             )
             if not resolved_matches:
                 rejected = True
@@ -402,7 +418,7 @@ class CompiledPatternCatalogue:
             tuple(resolved),
             raw.comparisons,
             raw.lazy_swaps,
-            candidate_term=raw.candidate_term,
+            candidate_term=projection.canonical_view.raw_term,
             matcher_backend=raw.matcher_backend,
             selection=NativeMatchSelection.CANONICAL_FALLBACK,
             stop_reason=NativeMatchStopReason.MATCHED,
@@ -448,7 +464,6 @@ class CompiledPatternCatalogue:
         flattened_nodes = 0
         saw_cardinality = False
         stop_reason = AcMatchStopReason.MISS
-        compatibility_bindings: CanonicalFixedBindings | None = None
         for compiled in bucket:
             remaining = comparison_budget - comparisons
             if remaining <= 0:
@@ -465,8 +480,6 @@ class CompiledPatternCatalogue:
             comparisons += report.comparisons
             commuted_branches += report.commuted_branches
             flattened_nodes += report.flattened_nodes
-            if compatibility_bindings is None and report.compatibility_bindings is not None:
-                compatibility_bindings = report.compatibility_bindings
             if report.stop_reason is AcMatchStopReason.COMPARISON_BUDGET:
                 stop_reason = report.stop_reason
                 break
@@ -506,7 +519,6 @@ class CompiledPatternCatalogue:
             commuted_branches,
             flattened_nodes,
             reason,
-            compatibility_bindings,
         )
 
     def canonical_applications(
@@ -795,7 +807,47 @@ def _view_key(candidate: NativeMbaTermView) -> tuple[Any, ...]:
     )
 
 
-def _replacement_variable_names(term: TypedBvTerm) -> frozenset[str]:
+def _fixed_constant_bindings(
+    template: CanonicalCompiledPattern,
+    candidate: TypedBvTerm,
+) -> CanonicalFixedBindings | None:
+    """Locate uniquely occurring fixed constants for one template.
+
+    Canonical matching reports alternatives without compatibility-only names.
+    Reconstructing this small, immutable association per compiled template
+    keeps those names from leaking between rules in one aggregate report.
+    """
+
+    if not template.fixed_constant_values:
+        return None
+    occurrences: dict[str, list[tuple[TypedBvTerm, tuple[int, ...]]]] = {
+        name: [] for name in template.fixed_constant_values
+    }
+
+    def visit(current: TypedBvTerm, path: tuple[int, ...]) -> None:
+        if current.operation is None:
+            if current.value is not None:
+                for name, expected in template.fixed_constant_values.items():
+                    if current.value == (expected & ((1 << current.width) - 1)):
+                        occurrences[name].append((current, path))
+            return
+        for index, child in enumerate(current.children):
+            visit(child, path + (index,))
+
+    visit(candidate, ())
+    terms: dict[str, TypedBvTerm] = {}
+    paths: dict[str, tuple[int, ...]] = {}
+    for name, matches in occurrences.items():
+        if len(matches) == 1:
+            terms[name], paths[name] = matches[0]
+    if not terms:
+        return None
+    return CanonicalFixedBindings(terms, paths, candidate.width)
+
+
+def _replacement_placeholder_names(
+    term: TypedBvTerm, *, fixed_constant_values: Mapping[str, int]
+) -> frozenset[str]:
     names: set[str] = set()
 
     def visit(current: TypedBvTerm) -> None:
@@ -804,8 +856,9 @@ def _replacement_variable_names(term: TypedBvTerm) -> frozenset[str]:
             if (
                 type(key) is tuple
                 and len(key) == 2
-                and key[0] == "pattern_var"
+                and key[0] in {"pattern_var", "pattern_const"}
                 and type(key[1]) is str
+                and key[1] not in fixed_constant_values
             ):
                 names.add(key[1])
             return
