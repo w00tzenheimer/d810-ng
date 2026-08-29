@@ -129,6 +129,14 @@ class _Closeable:
         self._calls.record(self._name)
 
 
+class _BackendRegistry:
+    def __init__(self, calls: _CallLog) -> None:
+        self._calls = calls
+
+    def close_activations(self) -> None:
+        self._calls.record("plugin activations.close")
+
+
 class _LogHandler(logging.Handler):
     def __init__(self) -> None:
         super().__init__(level=logging.INFO)
@@ -177,6 +185,7 @@ def _manager(calls: _CallLog, *, started: bool = False):
         calls,
         "native.exec.close",
     )
+    manager.backend_registry = _BackendRegistry(calls)
     manager._native_patch_gateway = None
     manager._dead_edge_normalizer = None
     manager.event_emitter = _EventEmitter(calls)
@@ -633,6 +642,7 @@ def test_started_stop_attempts_every_cleanup_step(
         "native.exec.close",
         "storage.close",
         "analysis.bundle.close",
+        "plugin activations.close",
         "execution_scope.detach",
     }
     for name in expected:
