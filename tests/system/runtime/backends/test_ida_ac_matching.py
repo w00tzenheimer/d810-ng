@@ -16,6 +16,7 @@ from d810.backends.mba.ida import (  # noqa: E402
 from d810.backends.mba.native_z3 import prove_native_ast_equivalence  # noqa: E402
 from d810.hexrays.expr import ast as ast_dispatcher  # noqa: E402
 from d810.hexrays.ir.mop_snapshot import MopSnapshot  # noqa: E402
+from d810.hexrays.ir.mop_snapshot import raw_mop_identity  # noqa: E402
 from d810.hexrays.ir.number_operand import safe_make_number  # noqa: E402
 from d810.mba.ac_matching import (  # noqa: E402
     AcMatchBindings,
@@ -107,6 +108,53 @@ def _raw_adapter(instruction):
     return adapter
 
 
+def _matrix_operand(operand_type: int):
+    base = {"t": operand_type, "size": 4, "valnum": 0, "oprops": 0}
+    if operand_type == ida_hexrays.mop_n:
+        base["nnn"] = SimpleNamespace(value=1, org_value=1)
+    elif operand_type == ida_hexrays.mop_r:
+        base["r"] = 1
+    elif operand_type == ida_hexrays.mop_S:
+        base["s"] = SimpleNamespace(off=0x20)
+    elif operand_type == ida_hexrays.mop_v:
+        base["g"] = 0x401000
+    elif operand_type == ida_hexrays.mop_b:
+        base["b"] = 2
+    elif operand_type == ida_hexrays.mop_h:
+        base["helper"] = "__ROL4__"
+    elif operand_type == ida_hexrays.mop_str:
+        base["cstr"] = "literal"
+    elif operand_type == ida_hexrays.mop_d:
+        base["d"] = SimpleNamespace(
+            opcode=ida_hexrays.m_add,
+            ea=0x401000,
+            iprops=0,
+            l=_matrix_operand(ida_hexrays.mop_r),
+            r=_matrix_operand(ida_hexrays.mop_n),
+            d=_matrix_operand(ida_hexrays.mop_r),
+        )
+    elif operand_type == ida_hexrays.mop_a:
+        base["a"] = SimpleNamespace(
+            t=ida_hexrays.mop_r,
+            size=4,
+            valnum=0,
+            oprops=0,
+            r=1,
+            insize=4,
+            outsize=0,
+        )
+        base["a_insize"] = 4
+        base["a_outsize"] = 0
+    elif operand_type == ida_hexrays.mop_l:
+        base["l"] = SimpleNamespace(idx=3, off=0x10)
+    elif operand_type == ida_hexrays.mop_p:
+        base["pair"] = SimpleNamespace(
+            lop=_matrix_operand(ida_hexrays.mop_r),
+            hop=_matrix_operand(ida_hexrays.mop_r),
+        )
+    return SimpleNamespace(**base)
+
+
 @pytest.mark.usefixtures("ida_database")
 class TestRawNativeFingerprint:
     binary_name = "libobfuscated.dll"
@@ -155,6 +203,68 @@ class TestRawNativeFingerprint:
         assert "instruction" in first_identity["left"], first_identity
         assert first_identity["left"]["instruction"]["r"]["value"] == 1
         assert second_identity["left"]["instruction"]["r"]["value"] == 2, second_identity
+
+    @pytest.mark.parametrize(
+        "operand_type",
+        (
+            ida_hexrays.mop_z,
+            ida_hexrays.mop_n,
+            ida_hexrays.mop_r,
+            ida_hexrays.mop_S,
+            ida_hexrays.mop_v,
+            ida_hexrays.mop_b,
+            ida_hexrays.mop_h,
+            ida_hexrays.mop_str,
+            ida_hexrays.mop_d,
+            ida_hexrays.mop_a,
+            ida_hexrays.mop_l,
+            ida_hexrays.mop_p,
+        ),
+    )
+    def test_supported_operand_matrix_is_json_pod(self, operand_type):
+        import json
+
+        identity = raw_mop_identity(_matrix_operand(operand_type))
+        json.dumps(identity, sort_keys=True, allow_nan=False)
+        assert isinstance(identity, dict)
+        assert identity["type"] == operand_type
+        assert identity["oprops"] == 0
+
+    @pytest.mark.parametrize("operand_name", ("mop_c", "mop_f", "mop_fn", "mop_sc"))
+    def test_unsupported_operand_forms_fail_closed(self, operand_name):
+        operand_type = getattr(ida_hexrays, operand_name)
+        with pytest.raises(ValueError):
+            raw_mop_identity(_matrix_operand(operand_type))
+
+    def test_instruction_and_operand_properties_are_identity_fields(self):
+        first = _raw_instruction(
+            opcode=ida_hexrays.m_mov,
+            left=_raw_number(1),
+            destination=_raw_register(),
+        )
+        second = ida_hexrays.minsn_t(first)
+        first.iprops = 0
+        second.iprops = 1
+        first.l.oprops = 0
+        second.l.oprops = 1
+
+        first_fingerprint, first_identity = _raw_adapter(first)._raw_native_fingerprint()
+        second_fingerprint, second_identity = _raw_adapter(second)._raw_native_fingerprint()
+
+        assert first_fingerprint != second_fingerprint
+        assert first_identity["iprops"] == 0
+        assert second_identity["iprops"] == 1
+        assert first_identity["left"]["oprops"] == 0
+        assert second_identity["left"]["oprops"] == 1
+
+    def test_incomplete_instruction_identity_fails_closed(self):
+        instruction = SimpleNamespace(
+            opcode=ida_hexrays.m_add,
+            ea=0x401000,
+            iprops=0,
+        )
+
+        assert _raw_adapter(instruction)._raw_native_fingerprint() == (None, None)
 
 
 def test_shadow_matcher_resolves_only_original_native_binding_paths() -> None:

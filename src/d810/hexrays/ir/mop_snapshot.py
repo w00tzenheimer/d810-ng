@@ -28,6 +28,13 @@ _RAW_IDENTITY_MAX_DEPTH = 64
 def raw_instruction_identity(instruction, *, depth: int = 0) -> dict[str, object]:
     """Serialize a live instruction into complete deterministic POD fields.
 
+    Schema: ``{opcode, ea, iprops, l, r, d}``, where each operand contains
+    ``{type, oprops, valnum, size}`` plus its type-specific scalar payload.
+    Nested ``mop_d`` and ``mop_a`` values recurse into this same schema;
+    ``mop_p`` recurses into ``low``/``high``.  ``mop_c``, ``mop_f``, ``mop_fn``
+    and ``mop_sc`` are intentionally outside this supported subset because
+    their SDK payloads are opaque here and therefore fail closed.
+
     This is deliberately independent of canonical AST lowering and display
     formatting.  Unsupported or incomplete native objects raise so callers
     can fail closed instead of hashing an incomplete projection.
@@ -37,13 +44,17 @@ def raw_instruction_identity(instruction, *, depth: int = 0) -> dict[str, object
         raise ValueError("raw identity instruction is missing or too deeply nested")
     opcode = getattr(instruction, "opcode", None)
     ea = getattr(instruction, "ea", None)
-    if type(opcode) is not int or type(ea) is not int:
+    iprops = getattr(instruction, "iprops", None)
+    if type(opcode) is not int or type(ea) is not int or type(iprops) is not int:
         raise ValueError("raw identity instruction scalar fields are unavailable")
-    identity: dict[str, object] = {"opcode": opcode, "ea": ea}
+    identity: dict[str, object] = {"opcode": opcode, "ea": ea, "iprops": iprops}
     for operand_field in ("l", "r", "d"):
-        identity[operand_field] = raw_mop_identity(
-            getattr(instruction, operand_field, None), depth=depth + 1
-        )
+        if not hasattr(instruction, operand_field):
+            raise ValueError(f"raw identity instruction {operand_field} is unavailable")
+        operand = getattr(instruction, operand_field)
+        if operand is None:
+            raise ValueError(f"raw identity instruction {operand_field} is unavailable")
+        identity[operand_field] = raw_mop_identity(operand, depth=depth + 1)
     return identity
 
 
@@ -55,12 +66,19 @@ def raw_mop_identity(mop, *, depth: int = 0) -> dict[str, object] | None:
     if depth > _RAW_IDENTITY_MAX_DEPTH:
         raise ValueError("raw identity operand is too deeply nested")
     operand_type = getattr(mop, "t", None)
+    oprops = getattr(mop, "oprops", None)
     size = getattr(mop, "size", None)
     valnum = getattr(mop, "valnum", None)
-    if type(operand_type) is not int or type(size) is not int or type(valnum) is not int:
+    if (
+        type(operand_type) is not int
+        or type(oprops) is not int
+        or type(size) is not int
+        or type(valnum) is not int
+    ):
         raise ValueError("raw identity operand scalar fields are unavailable")
     identity: dict[str, object] = {
         "type": operand_type,
+        "oprops": oprops,
         "size": size,
         "valnum": valnum,
     }
@@ -89,9 +107,11 @@ def raw_mop_identity(mop, *, depth: int = 0) -> dict[str, object] | None:
     if operand_type == ida_hexrays.mop_n:
         nnn = getattr(mop, "nnn", None)
         value = getattr(nnn, "value", None)
-        if type(value) is not int:
+        original_value = getattr(nnn, "org_value", None)
+        if type(value) is not int or type(original_value) is not int:
             raise ValueError("raw identity number value is unavailable")
         identity["value"] = value
+        identity["original_value"] = original_value
         identity["value_width"] = size
     elif operand_type == ida_hexrays.mop_r:
         register = getattr(mop, "r", None)
