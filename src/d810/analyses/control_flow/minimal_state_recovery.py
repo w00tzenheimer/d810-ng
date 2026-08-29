@@ -589,12 +589,31 @@ def _unique_native_bound_receipt(
     return routes[0]
 
 
+def _is_completed_semantic_route_fact(fact: SemanticRouteFact) -> bool:
+    """Whether a typed fact is final producer evidence, not a native receipt."""
+    if fact.kind is SemanticRouteFactKind.DECISION_DAG:
+        return isinstance(fact.decision_dag_witness, DecisionDagRouteWitness)
+    if fact.kind is SemanticRouteFactKind.STATE_TRANSFORM:
+        return isinstance(fact.transform_witness, ExactStateTransformFeeder)
+    if fact.kind is SemanticRouteFactKind.STATE_CARRIER:
+        return isinstance(fact.carrier_witness, ExactCarrierStateWrite)
+    if fact.kind is SemanticRouteFactKind.STATE_PARTITION:
+        return isinstance(fact.partition_witness, StatePartitionGroupWitness) and isinstance(
+            fact.decision_dag_witness, DecisionDagRouteWitness
+        )
+    if fact.kind is SemanticRouteFactKind.BOOTSTRAP:
+        return isinstance(fact.bootstrap_witness, SemanticBootstrapRouteWitness) and isinstance(
+            fact.decision_dag_witness, DecisionDagRouteWitness
+        )
+    return False
+
+
 def _completed_route_fact_matches_transition(
     fact: SemanticRouteFact,
     transition: StateWriteTransition,
 ) -> bool:
     """Whether a completed fact still belongs to its reconciled transition."""
-    if fact.kind is SemanticRouteFactKind.NATIVE_BOUND:
+    if not _is_completed_semantic_route_fact(fact):
         return False
     if transition.next_state is None or transition.target_handler is None:
         return False

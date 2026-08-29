@@ -728,6 +728,46 @@ def _native_bound_route(
     return NativeBoundTransitionRoute(**values)
 
 
+def _completed_decision_dag_transition(*, exact_target: int = 30) -> StateWriteTransition:
+    graph = FlowGraph(
+        {
+            4: _b(4, (exact_target,), (), ()),
+            10: _b(10, (11,), (), ()),
+            11: _b(11, (), (10,), (_mov_state(0x12C0, 0x10),)),
+            exact_target: _b(exact_target, (), (4,), ()),
+        },
+        entry_serial=10,
+        func_ea=0x1000,
+    )
+    transition = StateWriteTransition(
+        10,
+        0x10,
+        exact_target,
+        False,
+        None,
+        via_block=11,
+    )
+    route = minimal_state_recovery_module._DecisionDagStateRoute(
+        target=exact_target,
+        certified_targets=frozenset({exact_target}),
+        entry_serial=4,
+        path_serials=(4,),
+        path_anchors=(0x1100,),
+    )
+    fact = minimal_state_recovery_module._semantic_route_fact_for_transition(
+        transition,
+        route,
+        graph,
+        state_var_stkoff=_STATE,
+        state_var_reg=None,
+    )
+    assert fact is not None
+    assert fact.kind is SemanticRouteFactKind.DECISION_DAG
+    assert fact.decision_dag_witness is not None
+    assert fact.decision_dag_witness.path_serials == (4,)
+    return replace(transition, semantic_route_fact=fact)
+
+
 def test_native_bound_routes_enrich_direct_and_via_with_typed_fact_ids() -> None:
     direct = StateWriteTransition(10, 0x10, 20, False, None)
     through_via = StateWriteTransition(11, 0x20, 30, False, None, via_block=12)
@@ -931,30 +971,17 @@ def test_native_bound_route_corroborates_matching_resolved_transition() -> None:
 
 
 def test_native_bound_normalization_preserves_richer_matching_fact() -> None:
-    route = _native_bound_route(source=10, state=0x10, target=20, fact_id="native")
-    transition = StateWriteTransition(10, 0x10, 20, False, None)
+    transition = _completed_decision_dag_transition()
+    route = _native_bound_route(source=11, state=0x10, target=30, fact_id="native")
     unrelated = _native_bound_route(
-        source=10, state=0x99, target=30, fact_id="other-phase"
+        source=11, state=0x99, target=20, fact_id="other-phase"
     )
-    (native,) = enrich_native_bound_transition_routes(
-        (transition,),
-        (
-            route,
-            unrelated,
-        ),
-    )
-    rich = replace(
-        native.semantic_route_fact,
-        kind=SemanticRouteFactKind.DECISION_DAG,
-        fact_id=None,
-    )
-    transition = replace(native, semantic_route_fact=rich)
 
     (normalized,) = enrich_native_bound_transition_routes(
         (transition,), (route, unrelated)
     )
 
-    assert normalized.semantic_route_fact is rich
+    assert normalized.semantic_route_fact is transition.semantic_route_fact
     assert normalized.semantic_route_fact.kind is SemanticRouteFactKind.DECISION_DAG
 
 
@@ -972,26 +999,9 @@ def test_native_bound_normalization_revokes_stale_existing_fact() -> None:
 
 def test_native_bound_normalization_preserves_completed_decision_dag_fact_at_coarse_replay(
 ) -> None:
-    exact_target = 30
-    matching = _native_bound_route(
-        source=10,
-        state=0x10,
-        target=exact_target,
-        fact_id="native:exact-route",
-    )
-    (native,) = enrich_native_bound_transition_routes(
-        (StateWriteTransition(10, 0x10, exact_target, False, None),), (matching,)
-    )
-    rich = replace(
-        native.semantic_route_fact,
-        kind=SemanticRouteFactKind.DECISION_DAG,
-        fact_id="decision-dag:exact-route",
-        owner_anchor_ea=0x7FF855576B10,
-        target_anchor_ea=0x7FF855576C20,
-    )
-    transition = replace(native, semantic_route_fact=rich)
+    transition = _completed_decision_dag_transition()
     coarse_dispatcher_receipt = _native_bound_route(
-        source=10,
+        source=11,
         state=0x10,
         target=20,
         fact_id="native:coarse-dispatcher",
@@ -1001,9 +1011,28 @@ def test_native_bound_normalization_preserves_completed_decision_dag_fact_at_coa
         (transition,), (coarse_dispatcher_receipt,)
     )
 
-    assert normalized.semantic_route_fact is rich
-    assert normalized.semantic_route_fact.fact_id == "decision-dag:exact-route"
-    assert normalized.semantic_route_fact.target_serial == exact_target
+    assert normalized.semantic_route_fact is transition.semantic_route_fact
+    assert normalized.semantic_route_fact.decision_dag_witness is not None
+    assert normalized.semantic_route_fact.target_serial == 30
+
+
+def test_native_bound_normalization_abstains_on_witnessless_decision_dag_fact() -> None:
+    completed = _completed_decision_dag_transition()
+    provisional = replace(
+        completed,
+        semantic_route_fact=replace(
+            completed.semantic_route_fact,
+            decision_dag_witness=None,
+        ),
+    )
+
+    (normalized,) = enrich_native_bound_transition_routes(
+        (provisional,),
+        (_native_bound_route(source=11, state=0x10, target=20),),
+    )
+
+    assert normalized.semantic_route_fact is None
+    assert normalized.proof is None
 
 
 def test_native_bound_normalization_rejects_same_id_with_unequal_content() -> None:
