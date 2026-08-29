@@ -11,6 +11,7 @@ from d810.core.config import ProjectConfiguration
 from d810.hexrays.hooks.optblock_adapter import BlockOptimizerManager
 from d810.hexrays.hooks.optinsn_adapter import InstructionOptimizerManager
 from d810.hexrays.utils.hexrays_formatters import string_to_maturity
+from d810.manager.state import RuntimeActivationRollbackError
 from d810.optimizers.microcode.flow.constant_prop.forward_const_prop import (
     ForwardConstantPropagationRule,
 )
@@ -90,6 +91,18 @@ def _live_rule_names(state) -> set[str]:
     names = {rule.name for rule in state.manager.instruction_optimizer.rules}
     names.update(rule.name for rule in state.manager.block_optimizer.rules)
     return names
+
+
+def _rollback_error(error: BaseExceptionGroup) -> RuntimeActivationRollbackError:
+    """Return the detailed rollback error from a grouped activation failure."""
+
+    rollback_errors = [
+        nested
+        for nested in error.exceptions
+        if isinstance(nested, RuntimeActivationRollbackError)
+    ]
+    assert len(rollback_errors) == 1
+    return rollback_errors[0]
 
 
 def _prepare_started_manager(state) -> None:
@@ -225,6 +238,7 @@ def _prepare_actual_started_manager(state) -> None:
     instruction._active_optimizers = []
     instruction._decompilation_lifecycle = None
     instruction._fact_consumer_callback = None
+    instruction._validated_fact_view_provider = None
 
     block = BlockOptimizerManager.__new__(BlockOptimizerManager)
     block.cfg_rules = []
@@ -829,15 +843,15 @@ def test_started_activation_lane_restore_failure_attempts_remaining_lanes_and_in
 
         monkeypatch.setattr(manager, "_compile_execution_scope", fail_after_lane_drift)
         try:
-            with pytest.raises(RuntimeError, match="rollback") as failure:
+            with pytest.raises(BaseExceptionGroup, match="rollback") as failure:
                 state._activate_project(
                     project_index=9005,
                     project=_project_with_constant_stages(enabled=False),
                 )
-            assert type(failure.value).__name__ == "RuntimeActivationRollbackError"
-            assert f"forced {failed_lane} restore failure" in str(failure.value)
-            assert failure.value.__cause__ is not None
-            assert "late scope compilation failure" in str(failure.value.__cause__)
+            rollback_error = _rollback_error(failure.value)
+            assert f"forced {failed_lane} restore failure" in str(rollback_error)
+            assert rollback_error.__cause__ is not None
+            assert "late scope compilation failure" in str(rollback_error.__cause__)
             assert restore_calls == ["controller", "observer"]
             assert adapter_restore_calls == ["instruction", "block"]
             assert invalidation_calls == 1
@@ -884,13 +898,13 @@ def test_started_activation_marks_runtime_invalid_when_adapter_rollback_fails(
             ),
         )
         try:
-            with pytest.raises(RuntimeError, match="rollback") as failure:
+            with pytest.raises(BaseExceptionGroup, match="rollback") as failure:
                 state._activate_project(
                     project_index=9005,
                     project=_project_with_constant_stages(enabled=False),
                 )
-            assert "instruction" in str(failure.value)
-            assert "adapter restore failed" in str(failure.value)
+            assert "instruction" in str(_rollback_error(failure.value))
+            assert "adapter restore failed" in str(_rollback_error(failure.value))
             assert manager.started is False
             assert getattr(manager, "runtime_invalidated", False) is True
         finally:
@@ -1041,12 +1055,12 @@ def test_actual_adapter_restore_failure_runs_full_manager_cleanup(
             ),
         )
         try:
-            with pytest.raises(RuntimeError, match="rollback") as failure:
+            with pytest.raises(BaseExceptionGroup, match="rollback") as failure:
                 state._activate_project(
                     project_index=9006,
                     project=_project_with_constant_stages(enabled=False),
                 )
-            failure_message = str(failure.value)
+            failure_message = str(_rollback_error(failure.value))
             assert "forced instruction restore failure" in failure_message
             assert "block.remove" in failure_message
             assert {
