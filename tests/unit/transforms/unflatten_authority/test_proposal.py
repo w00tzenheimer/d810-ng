@@ -611,18 +611,25 @@ def test_full_dispatcher_retirement_attachment_keeps_the_coverage_forecast_fail_
         replace(proposal, corridor_coverage_forecast=None)
 
 
-def test_detached_component_analysis_mints_only_catalog_bound_claim() -> None:
-    """Detached producer anchors cannot cross the proposal boundary by serial alone."""
+def test_detached_component_attachment_carries_sealed_corridor_into_transaction() -> None:
+    """A detached claim reaches the transaction binder with sealed coverage."""
 
     from d810.transforms.dispatcher_corridor_coverage import (
         DetachedDeadHandlerComponentAnalysis,
         DispatcherBlockAnchor,
+        DispatcherCorridor,
         DispatcherCorridorCoverage,
     )
-    from d810.transforms.unflatten_authority import proposal as proposal_api
+    from d810.analyses.control_flow.semantic_route_evidence import (
+        CanonicalRouteAssessmentPhase,
+        CanonicalRouteMaterialization,
+    )
+    from d810.transforms.unflatten_authority import model, proposal as proposal_api
+    from d810.transforms.unflatten_authority import transaction_api
+    from d810.transforms.edit_simulator import project_post_state
     from .helpers import exact_fixture
 
-    source, proposal, _exclusion, refs = exact_fixture()
+    source, proposal, exclusion, refs = exact_fixture()
     from d810.transforms.unflatten_authority.model import AuthoritativeHandlerInput
     proposal = replace(
         proposal,
@@ -637,7 +644,7 @@ def test_detached_component_analysis_mints_only_catalog_bound_claim() -> None:
     )
     anchors = {
         serial: DispatcherBlockAnchor(serial, source.blocks[serial].start_ea)
-        for serial in (1, 2, 3)
+        for serial in (0, 1, 2, 3)
     }
     analysis = DetachedDeadHandlerComponentAnalysis(
         dispatcher=anchors[1], dead_handlers=(anchors[2],),
@@ -646,19 +653,84 @@ def test_detached_component_analysis_mints_only_catalog_bound_claim() -> None:
     coverage = DispatcherCorridorCoverage(
         function_ea=source.func_ea,
         dispatcher=anchors[1],
-        covered_corridors=(),
+        covered_corridors=(DispatcherCorridor((anchors[0], anchors[1])),),
         residual_corridors=(),
         enumeration_complete=True,
         detached_dead_handler_component=analysis,
     )
 
-    claims = proposal_api.claims_from_dispatcher_removal_forecast(
-        coverage, proposal=proposal, block_refs_by_serial=refs,
+    from d810.transforms.plan import PatchRedirectGoto
+
+    template = PatchPlan(
+        plan_id=proposal.plan_id,
+        snapshot_id=authority_id("detached-corridor-snapshot"),
+        source_generation=1,
+        steps=(PatchRedirectGoto(refs[0], refs[1], refs[3]),),
+        source_coordinates=tuple((ref, serial) for serial, ref in refs.items()),
+    )
+    manifest = proposal_api.canonical_redirect_manifest(template)
+    attached = proposal_api.attach_typed_proposal(
+        template,
+        source=source,
+        block_refs_by_serial=refs,
+        canonical_route_evidence=proposal.route_evidence,
+        exact_state_effect_exclusions=(exclusion,),
+        dispatcher_entry_serial=1,
+        dispatcher_member_serials=(0, 1),
+        authoritative_handler_serials=(2, 3),
+        state_identity=proposal.plan_inputs.state_identity,
+        use_def_witness=replace(
+            proposal.use_def_witness,
+            redirect_owner_refs=manifest.owner_refs,
+            redirect_digest=manifest.digest,
+        ),
+        corridor_coverage=coverage,
+        dispatcher_removal_forecast=coverage,
     )
 
+    attached_proposal = attached.unflatten_proposal
+    assert attached_proposal is not None
+    claims = tuple(
+        claim for claim in attached_proposal.claims
+        if type(claim) is model.DetachedDeadHandlerComponentClaim
+    )
     assert len(claims) == 1
-    assert claims[0].kind.value == "detached_dead_handler_component"
     assert claims[0].dead_handler_subjects[0].block_ref == refs[2]
+    assert attached_proposal.corridor_coverage_forecast is not None
+
+    materialization = CanonicalRouteMaterialization.capture(
+        source, generation=1, phase=CanonicalRouteAssessmentPhase.SOURCE,
+    )
+    source_inventory = transaction_api._build_semantic_graph_inventory(
+        source, attached_proposal, attached, source=True,
+        phase=model.UnflattenAuthorityPhase.PRODUCER_FORECAST,
+        materialization=materialization,
+    )
+    projected = project_post_state(source, attached)
+    projected_inventory = transaction_api._build_semantic_graph_inventory(
+        projected, attached_proposal, attached, source=False,
+        phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        source_subjects=source_inventory.subjects,
+        materialization=CanonicalRouteMaterialization.capture(
+            projected, generation=1, phase=CanonicalRouteAssessmentPhase.PROJECTED,
+        ),
+    )
+    corridor = transaction_api.authority_bind.bind_corridor_coverage_forecast(
+        proposal=attached_proposal,
+        source_inventory=source_inventory,
+        candidate_inventory=projected_inventory,
+        phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+    )
+    _sources, phase_results = transaction_api._bind_detached_authority_results(
+        claims=claims,
+        source_inventory=source_inventory,
+        candidate_inventory=projected_inventory,
+        corridor_result=corridor,
+        phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+    )
+    assert len(phase_results) == 1
+
+
 def test_proposal_module_has_no_local_removal_verdict_api() -> None:
     from d810.transforms import dispatcher_corridor_coverage as coverage_api
     from d810.transforms.unflatten_authority import proposal as proposal_api
