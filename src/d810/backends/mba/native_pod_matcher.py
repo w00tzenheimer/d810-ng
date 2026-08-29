@@ -385,6 +385,8 @@ def _match_cython_catalogue(
 
     from d810.backends.mba.compiled_pattern_catalogue import (
         FixedBindings,
+        NativeMatchSelection,
+        NativeMatchStopReason,
         NativePatternMatch,
         NativePatternMatchResult,
     )
@@ -399,7 +401,13 @@ def _match_cython_catalogue(
     full_bucket = catalogue.root_width_buckets.get(root_width, ())
     bucket = catalogue.feasible_root_patterns(root)
     if not bucket:
-        return NativePatternMatchResult((), 0, 0, matcher_backend="cython")
+        return NativePatternMatchResult(
+            (),
+            0,
+            0,
+            matcher_backend="cython",
+            stop_reason=NativeMatchStopReason.CLEAN_MISS,
+        )
     if _match_pod_catalogue is None:
         return None
     if any(pattern.pod_pattern is None for pattern in bucket):
@@ -423,7 +431,12 @@ def _match_cython_catalogue(
     )
     if exceeded:
         return NativePatternMatchResult(
-            (), comparisons, lazy_swaps, True, matcher_backend="cython"
+            (),
+            comparisons,
+            lazy_swaps,
+            True,
+            matcher_backend="cython",
+            stop_reason=NativeMatchStopReason.RAW_BUDGET,
         )
     matches: list[Any] = []
     for compiled, bindings_rows in zip(bucket, results_by_pattern, strict=True):
@@ -469,6 +482,16 @@ def _match_cython_catalogue(
         lazy_swaps,
         candidate_term=packed.typed_term() if matches else None,
         matcher_backend="cython",
+        selection=(
+            NativeMatchSelection.RAW_POD
+            if matches
+            else NativeMatchSelection.NONE
+        ),
+        stop_reason=(
+            NativeMatchStopReason.MATCHED
+            if matches
+            else NativeMatchStopReason.CLEAN_MISS
+        ),
     )
 
 

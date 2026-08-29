@@ -7,7 +7,11 @@ from dataclasses import replace
 import pytest
 
 from d810.backends.mba import native_pod_matcher
-from d810.backends.mba.compiled_pattern_catalogue import CompiledPatternCatalogue
+from d810.backends.mba.compiled_pattern_catalogue import (
+    CompiledPatternCatalogue,
+    NativeMatchSelection,
+    NativeMatchStopReason,
+)
 from d810.backends.mba.native_mba_term_view import NativeMbaTermView
 from d810.backends.mba.native_pod_matcher import (
     OP_ADD,
@@ -283,9 +287,15 @@ def test_pod_adapter_matches_portable_catalogue_exactly() -> None:
         _node("mul", _constant(2), _node("and", y, x)),
     )
 
-    assert match_root_pod(catalogue, candidate, comparison_budget=64) == (
+    pod = match_root_pod(catalogue, candidate, comparison_budget=64)
+    portable = catalogue._match_root_portable(candidate, comparison_budget=64)
+
+    assert pod == (
         catalogue.match_root(candidate, comparison_budget=64)
     )
+    assert pod == portable
+    assert pod.selection is NativeMatchSelection.RAW_POD
+    assert pod.stop_reason is NativeMatchStopReason.MATCHED
 
 
 def test_pod_adapter_preserves_asymmetric_subtraction_bindings() -> None:
