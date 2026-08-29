@@ -42,7 +42,7 @@ from d810.passes.analysis_manager import AnalysisManager
 from d810.passes.pass_pipeline import FunctionPipelineContext
 from d810.passes.driver import PassContractError, run_pipeline
 from d810.families.state_machine_cff.pipeline import standard_state_machine_passes
-from d810.ir.maturity import IRMaturity
+from d810.ir.maturity import IRMaturity, MaturityEnvelope
 from d810.passes.unflatten.state_machine import (
     CleanupResidualDispatcher,
     LowerStateMachine,
@@ -53,6 +53,13 @@ from d810.passes.unflatten.state_machine import (
     _effective_state_identity,
     _publish_observation_evidence,
     _recover_folded_constant_equality_dag,
+)
+from d810.transforms.plan import PatchPlan, PatchRedirectGoto
+from d810.transforms.unflatten_authority.model import UnflattenAuthorityReason
+from d810.transforms.unflatten_authority.proposal import (
+    ProposalRejected,
+    attach_typed_proposal,
+    canonical_redirect_manifest,
 )
 from d810.passes.state_machine_spine import LOWER_ANALYSES
 from d810.analyses.control_flow.dispatcher_recovery import DispatcherRecovery
@@ -81,6 +88,7 @@ from d810.capabilities.dispatcher import RouterKind
 from d810.passes.unflatten import state_machine as state_machine_module
 from tests.native_preanalysis import make_native_key
 from tests.typed_patch_authority import block_refs_by_serial
+from tests.unit.transforms.unflatten_authority.helpers import exact_fixture
 
 C1 = 0x10000001
 STATE_OFF = 0x3C
@@ -783,6 +791,122 @@ def test_lower_state_machine_emits_with_dispatch_map_default_target():
     result = LowerStateMachine().run(ctx)
 
     assert result.rewrite_plan is not None
+
+
+def _run_lower_state_machine_with_emitted_plan(monkeypatch, plan):
+    """Run the production pass boundary with one controlled emitter result."""
+    am = AnalysisManager(_chain_graph(), input_facts=_input_facts())
+    _install_current_identity_index(am)
+    ctx = _ctx(am.graph, am.view())
+
+    RecoverDispatcher().run(ctx)
+    recovery = am.get_analysis("recover_dispatcher")
+    am.put_analysis(
+        "recover_dispatcher",
+        replace(recovery, dispatch_map=replace(recovery.dispatch_map, default_target_block=2)),
+    )
+    RecoverStateTransitions().run(ctx)
+    PlanSemanticRegions().run(ctx)
+    monkeypatch.setattr(
+        state_machine_module,
+        "emit_minimal_unflatten",
+        lambda *_args, **_kwargs: plan,
+    )
+
+    return LowerStateMachine().run(ctx)
+
+
+def _typed_pipeline_plan() -> PatchPlan:
+    source, proposal, _exclusion, refs = exact_fixture()
+    template = PatchPlan(
+        plan_id=proposal.plan_id,
+        snapshot_id="publication-boundary-snapshot",
+        source_maturity=MaturityEnvelope(
+            IRMaturity.GLOBAL_ANALYZED,
+            provider="test",
+            provider_id=4,
+        ),
+        source_generation=1,
+        steps=(PatchRedirectGoto(refs[0], refs[1], refs[2]),),
+        source_coordinates=((refs[0], 0),),
+    )
+    manifest = canonical_redirect_manifest(template)
+    witness = replace(
+        proposal.use_def_witness,
+        redirect_owner_refs=manifest.owner_refs,
+        redirect_digest=manifest.digest,
+    )
+    return attach_typed_proposal(
+        template,
+        source=source,
+        block_refs_by_serial=refs,
+        canonical_route_evidence=proposal.route_evidence,
+        exact_state_effect_exclusions=(_exclusion,),
+        dispatcher_entry_serial=1,
+        dispatcher_member_serials=(0, 1),
+        authoritative_handler_serials=(2,),
+        state_identity=proposal.plan_inputs.state_identity,
+        use_def_witness=witness,
+    )
+
+
+def test_lower_state_machine_rejects_nonempty_plan_without_typed_proposal(
+    monkeypatch,
+):
+    produced = replace(_typed_pipeline_plan(), unflatten_proposal=None)
+
+    result = _run_lower_state_machine_with_emitted_plan(monkeypatch, produced)
+
+    assert result.rewrite_plan is not None
+    assert result.rewrite_plan.steps == ()
+    assert result.rewrite_plan.new_blocks == ()
+    assert result.rewrite_plan.plan_id == produced.plan_id
+    assert result.rewrite_plan.snapshot_id == produced.snapshot_id
+    assert result.rewrite_plan.source_maturity == produced.source_maturity
+    assert result.rewrite_plan.source_generation == produced.source_generation
+    assert result.rewrite_plan.source_coordinates == produced.source_coordinates
+    rejection = result.rewrite_plan.metadata_dict()["unflatten_producer_abstention"]
+    assert rejection == ProposalRejected(
+        UnflattenAuthorityReason.MALFORMED_PROPOSAL,
+        "unflatten_proposal_missing",
+    )
+
+
+def test_lower_state_machine_preserves_empty_and_valid_typed_plans(monkeypatch):
+    typed = _typed_pipeline_plan()
+    empty = replace(typed, steps=(), unflatten_proposal=None)
+
+    empty_result = _run_lower_state_machine_with_emitted_plan(monkeypatch, empty)
+    typed_result = _run_lower_state_machine_with_emitted_plan(monkeypatch, typed)
+
+    assert empty_result.rewrite_plan is empty
+    assert typed_result.rewrite_plan is typed
+
+
+@pytest.mark.parametrize(
+    "malformed_authority",
+    [object(), lambda proposal: (proposal, proposal)],
+    ids=("malformed", "multiple"),
+)
+def test_lower_state_machine_rejects_malformed_or_multiple_typed_authority(
+    monkeypatch,
+    malformed_authority,
+):
+    typed = _typed_pipeline_plan()
+    produced = replace(typed, unflatten_proposal=None)
+    malformed = (
+        malformed_authority(typed.unflatten_proposal)
+        if callable(malformed_authority)
+        else malformed_authority
+    )
+    object.__setattr__(produced, "unflatten_proposal", malformed)
+
+    result = _run_lower_state_machine_with_emitted_plan(monkeypatch, produced)
+
+    assert result.rewrite_plan is not None
+    assert result.rewrite_plan.steps == ()
+    rejection = result.rewrite_plan.metadata_dict()["unflatten_producer_abstention"]
+    assert rejection.reason is UnflattenAuthorityReason.MALFORMED_PROPOSAL
 
 
 def test_lower_state_machine_merges_manager_retained_predecessor_observations(

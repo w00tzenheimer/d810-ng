@@ -146,12 +146,48 @@ from d810.transforms.plan import (
     PatchRedirectBranch,
     PatchRedirectGoto,
 )
+from d810.transforms.unflatten_authority.model import UnflattenAuthorityReason
+from d810.transforms.unflatten_authority.proposal import (
+    ProposalAccepted,
+    ProposalRejected,
+    validate_proposal,
+)
 
 logger = logging.getLogger("d810.passes.unflatten.state_machine")
 
 LOWER_STATE_MACHINE_PLAN_METADATA = "lower_state_machine_plan_metadata"
 CANONICAL_SEMANTIC_EVIDENCE = "canonical_semantic_evidence"
 BOUND_CANONICAL_SEMANTIC_EVIDENCE = "bound_canonical_semantic_evidence"
+
+
+def _typed_or_empty_unflatten_plan(plan: PatchPlan) -> PatchPlan:
+    """Prevent an untyped minimal-unflatten edit from crossing publication."""
+    if not plan.steps and not plan.new_blocks:
+        return plan
+
+    proposal = plan.unflatten_proposal
+    if proposal is None:
+        rejection = ProposalRejected(
+            UnflattenAuthorityReason.MALFORMED_PROPOSAL,
+            "unflatten_proposal_missing",
+        )
+    else:
+        validation = validate_proposal(plan, proposal)
+        if isinstance(validation, ProposalAccepted):
+            return plan
+        if not isinstance(validation, ProposalRejected):
+            raise TypeError("unflatten proposal validation returned an unknown result")
+        rejection = validation
+
+    return PatchPlan(
+        plan_id=plan.plan_id,
+        snapshot_id=plan.snapshot_id,
+        source_maturity=plan.source_maturity,
+        source_generation=plan.source_generation,
+        execution_policy=plan.execution_policy,
+        metadata=(*plan.metadata, ("unflatten_producer_abstention", rejection)),
+        source_coordinates=plan.source_coordinates,
+    )
 
 
 def native_cfg_edge_contracts_for_plan(
@@ -3189,6 +3225,7 @@ class LowerStateMachine(PipelinePass):
                     context, CANONICAL_SEMANTIC_EVIDENCE
                 ),
             )
+            plan = _typed_or_empty_unflatten_plan(plan)
             plan_metadata = plan.metadata_dict()
             _publish(context, LOWER_STATE_MACHINE_PLAN_METADATA, plan_metadata)
             return PassResult(
