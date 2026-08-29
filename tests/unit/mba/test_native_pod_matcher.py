@@ -148,6 +148,86 @@ def test_packed_view_separates_numeric_nodes_from_live_identity_sidecar() -> Non
     assert packed.sidecar[root.right_index] is y
 
 
+def test_canonical_native_projection_preserves_terminal_provenance() -> None:
+    from d810.backends.mba.native_mba_term_view import (
+        CanonicalNativeProjection,
+        project_canonical_native_paths,
+    )
+
+    x, y = _leaf("x"), _leaf("y")
+    projection = project_canonical_native_paths(_node("add", y, x))
+
+    assert isinstance(projection, CanonicalNativeProjection)
+    assert projection.canonical_view.canonical_term.operation == "add"
+    assert projection.raw_views_by_path[()].operation == "add"
+    assert projection.canonical_to_raw_paths == {
+        (0,): (1,),
+        (1,): (0,),
+    }
+    assert projection.raw_views_by_path[(0,)] is y
+    assert projection.raw_views_by_path[(1,)] is x
+
+
+def test_canonical_native_projection_maps_unchanged_terminal_root() -> None:
+    from d810.backends.mba.native_mba_term_view import project_canonical_native_paths
+
+    x = _leaf("x")
+    projection = project_canonical_native_paths(x)
+
+    assert projection.canonical_to_raw_paths == {(): ()}
+    assert projection.raw_views_by_path[()] is x
+
+
+def test_canonical_native_projection_rejects_synthetic_grouping_but_maps_leaves() -> None:
+    from d810.backends.mba.native_mba_term_view import project_canonical_native_paths
+
+    x, y, z = _leaf("x"), _leaf("y"), _leaf("z")
+    raw = _node("add", _node("add", z, x), y)
+    projection = project_canonical_native_paths(raw)
+
+    assert () not in projection.canonical_to_raw_paths
+    assert (0,) not in projection.canonical_to_raw_paths
+    assert projection.canonical_to_raw_paths[(0, 0)] == (0, 1)
+    assert projection.canonical_to_raw_paths[(0, 1)] == (1,)
+    assert projection.canonical_to_raw_paths[(1,)] == (0, 0)
+
+
+def test_canonical_native_projection_consumes_duplicate_occurrences_by_source_path() -> None:
+    from d810.backends.mba.native_mba_term_view import project_canonical_native_paths
+
+    first = _node("xor", _leaf("x"), _leaf("y"))
+    second = _node("xor", _leaf("x"), _leaf("y"))
+    projection = project_canonical_native_paths(_node("add", second, first))
+
+    assert projection.canonical_to_raw_paths[(0,)] == (0,)
+    assert projection.canonical_to_raw_paths[(1,)] == (1,)
+    assert projection.raw_views_by_path[(0,)] is second
+    assert projection.raw_views_by_path[(1,)] is first
+    assert projection.canonical_to_raw_paths[(0, 0)] == (0, 0)
+    assert projection.canonical_to_raw_paths[(0, 1)] == (0, 1)
+    assert projection.canonical_to_raw_paths[(1, 0)] == (1, 0)
+    assert projection.canonical_to_raw_paths[(1, 1)] == (1, 1)
+
+
+def test_canonical_native_projection_hides_synthetic_negation_root_and_freezes_maps() -> None:
+    from types import MappingProxyType
+
+    from d810.backends.mba.native_mba_term_view import project_canonical_native_paths
+
+    x, y = _leaf("x"), _leaf("y")
+    projection = project_canonical_native_paths(_node("add", x, _node("neg", y)))
+
+    assert projection.canonical_view.canonical_term.operation == "sub"
+    assert () not in projection.canonical_to_raw_paths
+    assert projection.canonical_to_raw_paths == {(0,): (0,), (1,): (1, 0)}
+    assert isinstance(projection.raw_views_by_path, MappingProxyType)
+    assert isinstance(projection.canonical_to_raw_paths, MappingProxyType)
+    with pytest.raises(TypeError):
+        projection.raw_views_by_path[(9,)] = x  # type: ignore[index]
+    with pytest.raises(TypeError):
+        projection.canonical_to_raw_paths[(9,)] = (9,)  # type: ignore[index]
+
+
 def test_packed_view_retains_associative_binary_structure_for_numeric_matching() -> (
     None
 ):
