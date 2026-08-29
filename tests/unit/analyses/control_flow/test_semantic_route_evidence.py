@@ -38,6 +38,8 @@ from d810.analyses.control_flow.semantic_route_evidence import (
     SemanticBootstrapRouteWitness,
     DecisionDagRouteWitness,
     SemanticDagComparison,
+    SemanticDagEndpointKind,
+    SemanticLogicalDagEndpoint,
     SemanticDecisionDagWitness,
     SemanticCarrierProof,
     SemanticCorridorPoint,
@@ -75,7 +77,7 @@ from d810.transforms.unflatten_authority.ids import canonical_bytes, semantic_gr
 from d810.capabilities.semantic_routes import CanonicalSemanticEvidenceCapability
 from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
 from d810.ir.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot
-from d810.ir.flowgraph import InsnKind, MopSnapshot, OperandKind, PredicateKind
+from d810.ir.flowgraph import BlockKind, InsnKind, MopSnapshot, OperandKind, PredicateKind
 from d810.ir.semantics import CallKind, ControlTransferKind
 from d810.ir.insn_projection import project_instruction_effect_sites
 from d810.ir.instructions import InstructionEffectKind, InstructionEffectSite
@@ -1930,6 +1932,228 @@ def test_ordinary_decision_dag_builds_assignment_and_dag_proofs() -> None:
 def test_ordinary_decision_dag_binds_assignment_and_dag_proofs() -> None:
     graph, evidence = _ordinary_decision_dag_evidence()
     assert bind_canonical_semantic_evidence(graph, evidence) is not None
+
+
+def _logical_exit_decision_dag_evidence() -> tuple[FlowGraph, CanonicalSemanticEvidence]:
+    graph, _ordinary = _ordinary_decision_dag_evidence()
+    logical_exit = BlockSnapshot(
+        serial=7,
+        block_type=1,
+        succs=(),
+        preds=(5,),
+        flags=0,
+        start_ea=0xFFFFFFFFFFFFFFFF,
+        insn_snapshots=(),
+        kind=BlockKind.ZERO_WAY,
+    )
+    graph = FlowGraph(
+        {
+            **graph.blocks,
+            2: replace(
+                graph.blocks[2],
+                insn_snapshots=(
+                    replace(
+                        graph.blocks[2].insn_snapshots[0],
+                        l=MopSnapshot(kind=OperandKind.NUMBER, size=4, value=8),
+                    ),
+                ),
+            ),
+            5: replace(
+                graph.blocks[5],
+                succs=(7, 6),
+                insn_snapshots=(
+                    replace(
+                        graph.blocks[5].insn_snapshots[0],
+                        d=replace(graph.blocks[5].insn_snapshots[0].d, block_ref=7),
+                    ),
+                ),
+            ),
+            6: replace(graph.blocks[6], preds=(5,)),
+            7: logical_exit,
+        },
+        graph.entry_serial,
+        graph.func_ea,
+    )
+    identities = {
+        serial: _identity(int(block.start_ea))
+        for serial, block in graph.blocks.items()
+        if serial != 7
+    }
+    state_identity = StorageIdentity(StorageIdentityKind.STACK, 0x40)
+    fact = SemanticRouteFact(
+        SemanticRouteFactKind.DECISION_DAG,
+        2,
+        2,
+        0x1200,
+        8,
+        6,
+        0x1200,
+        0x1600,
+        (2,),
+        (),
+        decision_dag_witness=DecisionDagRouteWitness(
+            state_identity,
+            8,
+            5,
+            0x1500,
+            (5,),
+            (0x1500,),
+            ((5, RouteComparison(5, "jz", 7, 7, 6)),),
+            (),
+        ),
+    )
+    logical_endpoint = SemanticLogicalDagEndpoint(
+        kind=SemanticDagEndpointKind.FUNCTION_EXIT,
+        serial=7,
+        session_id="semantic-route-test",
+        proxy_token="logical-function-exit",
+        version=0,
+    )
+    context = CanonicalSemanticEvidenceProductionContext(
+        NATIVE_KEY,
+        0,
+        "canonical-semantic:logical-exit-dag",
+        state_identity,
+        tuple(graph.blocks.values()),
+        tuple(identities.items()),
+        logical_endpoints_by_serial=((7, logical_endpoint),),
+    )
+    return graph, _accepted(build_canonical_semantic_evidence((fact,), context))
+
+
+def test_decision_dag_binds_exact_logical_function_exit_sibling() -> None:
+    graph, evidence = _logical_exit_decision_dag_evidence()
+    comparison = evidence.route_proofs[0].state_dag.witness.comparisons[0]
+    assert comparison.true_target == SemanticLogicalDagEndpoint(
+        kind=SemanticDagEndpointKind.FUNCTION_EXIT,
+        serial=7,
+        session_id="semantic-route-test",
+        proxy_token="logical-function-exit",
+        version=0,
+    )
+    assert bind_canonical_semantic_evidence(graph, evidence) is not None
+
+
+def test_production_context_rejects_native_identity_for_logical_exit_serial() -> None:
+    logical_exit = BlockSnapshot(
+        serial=7,
+        block_type=1,
+        succs=(),
+        preds=(),
+        flags=0,
+        start_ea=0xFFFFFFFFFFFFFFFF,
+        insn_snapshots=(),
+        kind=BlockKind.ZERO_WAY,
+    )
+    endpoint = SemanticLogicalDagEndpoint(
+        kind=SemanticDagEndpointKind.FUNCTION_EXIT,
+        serial=7,
+        session_id="semantic-route-test",
+        proxy_token="logical-function-exit",
+        version=0,
+    )
+    with pytest.raises(SemanticRouteEvidenceRejected, match="overlaps native"):
+        CanonicalSemanticEvidenceProductionContext(
+            native_key=NATIVE_KEY,
+            generation=0,
+            atomic_group_id="canonical-semantic:logical-overlap",
+            state_identity=StorageIdentity(StorageIdentityKind.STACK, 0x40),
+            blocks=(logical_exit,),
+            identities_by_serial=((7, _identity(0x1700)),),
+            logical_endpoints_by_serial=((7, endpoint),),
+        )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "wrong_serial",
+        "session",
+        "token",
+        "version",
+        "successor",
+        "wrong_kind",
+        "instruction",
+        "native_looking",
+        "changed_edge",
+    ),
+)
+def test_logical_function_exit_endpoint_rejects_topology_or_edge_drift(mutation: str) -> None:
+    graph, evidence = _logical_exit_decision_dag_evidence()
+    if mutation in {"wrong_serial", "session", "token", "version"}:
+        comparison = evidence.route_proofs[0].state_dag.witness.comparisons[0]
+        forged_endpoint = replace(
+            comparison.true_target,
+            **{
+                "wrong_serial": {"serial": 8},
+                "session": {"session_id": "drifted-session"},
+                "token": {"proxy_token": "drifted-token"},
+                "version": {"version": 1},
+            }[mutation],
+        )
+        forged_witness = replace(
+            evidence.route_proofs[0].state_dag.witness,
+            comparisons=(replace(comparison, true_target=forged_endpoint),),
+        )
+        forged_dag = replace(evidence.route_proofs[0].state_dag, witness=forged_witness)
+        forged = _unsafe_evidence(
+            evidence,
+            (replace(evidence.route_proofs[0], state_dag=forged_dag),),
+        )
+        assert bind_canonical_semantic_evidence(graph, forged) is None
+        return
+    if mutation == "successor":
+        graph = FlowGraph(
+            {**graph.blocks, 7: replace(graph.blocks[7], succs=(6,))},
+            graph.entry_serial,
+            graph.func_ea,
+        )
+    elif mutation == "wrong_kind":
+        graph = FlowGraph(
+            {**graph.blocks, 7: replace(graph.blocks[7], kind=BlockKind.STOP)},
+            graph.entry_serial,
+            graph.func_ea,
+        )
+    elif mutation == "instruction":
+        graph = FlowGraph(
+            {
+                **graph.blocks,
+                7: replace(
+                    graph.blocks[7],
+                    insn_snapshots=(InsnSnapshot(opcode=0, ea=0x1601, operands=()),),
+                ),
+            },
+            graph.entry_serial,
+            graph.func_ea,
+        )
+    elif mutation == "native_looking":
+        graph = FlowGraph(
+            {**graph.blocks, 7: replace(graph.blocks[7], start_ea=0x1700)},
+            graph.entry_serial,
+            graph.func_ea,
+        )
+    else:
+        graph = FlowGraph(
+            {
+                **graph.blocks,
+                5: replace(
+                    graph.blocks[5],
+                    succs=(6, 7),
+                    insn_snapshots=(
+                        replace(
+                            graph.blocks[5].insn_snapshots[0],
+                            d=replace(
+                                graph.blocks[5].insn_snapshots[0].d,
+                                block_ref=6,
+                            ),
+                        ),
+                    ),
+                ),
+            },
+            graph.entry_serial,
+            graph.func_ea,
+        )
+    assert bind_canonical_semantic_evidence(graph, evidence) is None
 
 
 def test_address_form_store_survives_production_and_canonical_binding() -> None:

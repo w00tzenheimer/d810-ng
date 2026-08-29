@@ -103,6 +103,7 @@ from d810.transforms.minimal_unflatten_emit import (
     _applied_conditional_boundary_edge_keys,
     _applied_direct_boundary_edge_keys,
     _exact_live_state_edge_keys,
+    _logical_function_exit_endpoints,
     _prefer_exact_terminal_route_fragments,
     _preserve_deferred_materialized_handler_exit_paths,
     _recover_initial_state,
@@ -145,6 +146,37 @@ from tests.native_preanalysis import make_native_key
 from tests.typed_patch_authority import emit_minimal_unflatten, graph_modifications
 
 NATIVE_KEY = make_native_key()
+
+
+def test_logical_function_exit_endpoint_export_requires_exact_logical_ref_and_sink() -> None:
+    logical_ref = LogicalBlockRef("logical-endpoint-test", "function-exit", 0)
+    exact_exit = BlockSnapshot(
+        serial=7,
+        block_type=1,
+        succs=(),
+        preds=(),
+        flags=0,
+        start_ea=0xFFFFFFFFFFFFFFFF,
+        insn_snapshots=(),
+        kind=BlockKind.ZERO_WAY,
+    )
+    graph = FlowGraph({7: exact_exit}, 7, 0x1000)
+    assert _logical_function_exit_endpoints(graph, {7: logical_ref}) == (
+        (
+            7,
+            minimal_unflatten_emit_module.SemanticLogicalDagEndpoint(
+                kind=minimal_unflatten_emit_module.SemanticDagEndpointKind.FUNCTION_EXIT,
+                serial=7,
+                session_id="logical-endpoint-test",
+                proxy_token="function-exit",
+                version=0,
+            ),
+        ),
+    )
+    native_looking = FlowGraph(
+        {7: replace(exact_exit, start_ea=0x1700)}, 7, 0x1000,
+    )
+    assert _logical_function_exit_endpoints(native_looking, {7: logical_ref}) == ()
 
 
 def _assert_no_legacy_plan_metadata(plan) -> None:

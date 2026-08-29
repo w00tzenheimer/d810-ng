@@ -96,6 +96,8 @@ from d810.analyses.control_flow.semantic_route_evidence import (
     SemanticRouteFactKind,
     SemanticRouteProof,
     DecisionDagRouteWitness,
+    SemanticDagEndpointKind,
+    SemanticLogicalDagEndpoint,
 )
 from d810.analyses.control_flow.materialized_indirect_transfer import (
     MaterializedIndirectTransfer,
@@ -9745,6 +9747,39 @@ def _must_reject_fragment_for_use_def_audit(
     )
 
 
+def _logical_function_exit_endpoints(
+    flow_graph: FlowGraph,
+    block_refs_by_serial: Mapping[int, NativeBlockRef | LogicalBlockRef],
+) -> tuple[tuple[int, SemanticLogicalDagEndpoint], ...]:
+    """Export only exact logical function-exit references into canonical evidence."""
+    endpoints: list[tuple[int, SemanticLogicalDagEndpoint]] = []
+    for serial, ref in block_refs_by_serial.items():
+        block = flow_graph.get_block(int(serial))
+        if (
+            type(ref) is not LogicalBlockRef
+            or block is None
+            or int(block.start_ea) != 0xFFFFFFFFFFFFFFFF
+            or block.native_start_ea is not None
+            or block.kind is not BlockKind.ZERO_WAY
+            or block.succs
+            or block.insn_snapshots
+        ):
+            continue
+        endpoints.append(
+            (
+                int(serial),
+                SemanticLogicalDagEndpoint(
+                    kind=SemanticDagEndpointKind.FUNCTION_EXIT,
+                    serial=int(serial),
+                    session_id=ref.session_id,
+                    proxy_token=ref.proxy_token,
+                    version=ref.version,
+                ),
+            )
+        )
+    return tuple(sorted(endpoints, key=lambda item: item[0]))
+
+
 def emit_minimal_unflatten(
     flow_graph,
     dispatcher,
@@ -10271,6 +10306,9 @@ def emit_minimal_unflatten(
                 (int(serial), ref.identity)
                 for serial, ref in block_refs_by_serial.items()
                 if isinstance(ref, NativeBlockRef)
+            ),
+            logical_endpoints_by_serial=_logical_function_exit_endpoints(
+                flow_graph, block_refs_by_serial,
             ),
             entry_serial=int(flow_graph.entry_serial),
         )
@@ -10815,6 +10853,9 @@ def emit_minimal_unflatten(
                                     for serial, ref in block_refs_by_serial.items()
                                     if isinstance(ref, NativeBlockRef)
                                 ),
+                                logical_endpoints_by_serial=_logical_function_exit_endpoints(
+                                    flow_graph, block_refs_by_serial,
+                                ),
                                 entry_serial=int(flow_graph.entry_serial),
                             )
                         held_entry_fact = entry_fact
@@ -10847,6 +10888,9 @@ def emit_minimal_unflatten(
                                         (int(serial), ref.identity)
                                         for serial, ref in block_refs_by_serial.items()
                                         if isinstance(ref, NativeBlockRef)
+                                    ),
+                                    logical_endpoints_by_serial=_logical_function_exit_endpoints(
+                                        flow_graph, block_refs_by_serial,
                                     ),
                                     entry_serial=int(flow_graph.entry_serial),
                                 )
@@ -11603,6 +11647,9 @@ def emit_minimal_unflatten(
                     (int(serial), ref.identity)
                     for serial, ref in block_refs_by_serial.items()
                     if isinstance(ref, NativeBlockRef)
+                ),
+                logical_endpoints_by_serial=_logical_function_exit_endpoints(
+                    flow_graph, block_refs_by_serial,
                 ),
                 entry_serial=int(flow_graph.entry_serial),
             )

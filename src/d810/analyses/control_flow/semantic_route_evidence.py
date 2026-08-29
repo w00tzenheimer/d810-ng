@@ -18,7 +18,7 @@ from d810.ir.block_identity import (
     stable_block_identities_refine_at_anchor,
     stable_block_identity_from_snapshot,
 )
-from d810.ir.flowgraph import BlockSnapshot, FlowGraph, OperandKind
+from d810.ir.flowgraph import BlockKind, BlockSnapshot, FlowGraph, OperandKind
 from d810.ir.graph_fingerprint import (
     portable_graph_fingerprint,
     portable_graph_fingerprint_values,
@@ -420,6 +420,7 @@ class CanonicalSemanticEvidenceProductionContext:
     blocks: tuple[BlockSnapshot, ...]
     identities_by_serial: tuple[tuple[int, StableBlockIdentity], ...]
     entry_serial: int | None = None
+    logical_endpoints_by_serial: tuple[tuple[int, "SemanticLogicalDagEndpoint"], ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.native_key, NativePreanalysisKey):
@@ -428,12 +429,37 @@ class CanonicalSemanticEvidenceProductionContext:
             raise TypeError("canonical production context requires state identity")
         blocks = tuple(self.blocks)
         identities = tuple((int(serial), identity) for serial, identity in self.identities_by_serial)
+        logical_endpoints = tuple(
+            (int(serial), endpoint)
+            for serial, endpoint in self.logical_endpoints_by_serial
+        )
         if any(not isinstance(block, BlockSnapshot) for block in blocks):
             raise TypeError("canonical production context requires block snapshots")
         if len({block.serial for block in blocks}) != len(blocks) or len({serial for serial, _ in identities}) != len(identities):
             raise SemanticRouteEvidenceRejected("canonical production context has duplicate serials")
         if any(identity.native_key != self.native_key for _, identity in identities):
             raise SemanticRouteEvidenceRejected("canonical production identity key mismatch")
+        if {serial for serial, _ in identities} & {
+            serial for serial, _ in logical_endpoints
+        }:
+            raise SemanticRouteEvidenceRejected(
+                "canonical production logical endpoint overlaps native identity"
+            )
+        if len({serial for serial, _ in logical_endpoints}) != len(logical_endpoints):
+            raise SemanticRouteEvidenceRejected(
+                "canonical production context has duplicate logical endpoints"
+            )
+        blocks_by_serial = {int(block.serial): block for block in blocks}
+        for serial, endpoint in logical_endpoints:
+            block = blocks_by_serial.get(serial)
+            if (
+                type(endpoint) is not SemanticLogicalDagEndpoint
+                or int(endpoint.serial) != serial
+                or not _is_exact_logical_function_exit(block)
+            ):
+                raise SemanticRouteEvidenceRejected(
+                    "canonical production logical endpoint is not an exact function exit"
+                )
         entry_serial = (
             int(blocks[0].serial)
             if self.entry_serial is None and blocks
@@ -448,12 +474,16 @@ class CanonicalSemanticEvidenceProductionContext:
         object.__setattr__(self, "blocks", blocks)
         object.__setattr__(self, "identities_by_serial", identities)
         object.__setattr__(self, "entry_serial", entry_serial)
+        object.__setattr__(self, "logical_endpoints_by_serial", logical_endpoints)
 
     def identity(self, serial: int) -> StableBlockIdentity | None:
         return dict(self.identities_by_serial).get(int(serial))
 
     def block(self, serial: int) -> BlockSnapshot | None:
         return next((block for block in self.blocks if block.serial == int(serial)), None)
+
+    def logical_endpoint(self, serial: int) -> "SemanticLogicalDagEndpoint | None":
+        return dict(self.logical_endpoints_by_serial).get(int(serial))
 
 
 class CanonicalRouteAssessmentPhase(str, Enum):
@@ -529,6 +559,54 @@ class SemanticCorridorPoint:
     @property
     def native_key(self) -> NativePreanalysisKey:
         return self.identity.native_key
+
+
+class SemanticDagEndpointKind(str, Enum):
+    """The only non-native endpoint a canonical decision DAG may carry."""
+
+    FUNCTION_EXIT = "function_exit"
+
+
+@dataclass(frozen=True, slots=True)
+class SemanticLogicalDagEndpoint:
+    """Exact logical function-exit identity for one decision-DAG sibling."""
+
+    kind: SemanticDagEndpointKind
+    serial: int
+    session_id: str
+    proxy_token: str
+    version: int
+
+    def __post_init__(self) -> None:
+        if type(self.kind) is not SemanticDagEndpointKind or self.kind is not SemanticDagEndpointKind.FUNCTION_EXIT:
+            raise SemanticRouteEvidenceRejected(
+                "semantic logical DAG endpoint must be a function exit"
+            )
+        serial = int(self.serial)
+        version = int(self.version)
+        if serial < 0 or version < 0:
+            raise SemanticRouteEvidenceRejected(
+                "semantic logical DAG endpoint coordinates must be non-negative"
+            )
+        object.__setattr__(self, "serial", serial)
+        object.__setattr__(self, "version", version)
+        object.__setattr__(self, "session_id", _identifier(self.session_id, "semantic logical endpoint session"))
+        object.__setattr__(self, "proxy_token", _identifier(self.proxy_token, "semantic logical endpoint token"))
+
+
+SemanticDagEndpoint = SemanticCorridorPoint | SemanticLogicalDagEndpoint
+
+
+def _is_exact_logical_function_exit(block: BlockSnapshot | None) -> bool:
+    """Whether one snapshot block is the sole admitted logical DAG leaf."""
+    return bool(
+        block is not None
+        and int(block.start_ea) == _BADADDR
+        and block.native_start_ea is None
+        and block.kind is BlockKind.ZERO_WAY
+        and not block.succs
+        and not block.insn_snapshots
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -905,15 +983,15 @@ class SemanticDagComparison:
     node: SemanticCorridorPoint
     operation: str
     constant: int
-    true_target: SemanticCorridorPoint
-    false_target: SemanticCorridorPoint
+    true_target: SemanticDagEndpoint
+    false_target: SemanticDagEndpoint
 
     def __post_init__(self) -> None:
-        if not all(
-            isinstance(point, SemanticCorridorPoint)
-            for point in (self.node, self.true_target, self.false_target)
+        if type(self.node) is not SemanticCorridorPoint or not all(
+            type(point) in (SemanticCorridorPoint, SemanticLogicalDagEndpoint)
+            for point in (self.true_target, self.false_target)
         ):
-            raise TypeError("DAG comparison requires stable corridor points")
+            raise TypeError("DAG comparison requires typed stable endpoints")
         if type(self.operation) is not str or not self.operation:
             raise SemanticRouteEvidenceRejected("DAG comparison requires an operation")
         object.__setattr__(self, "constant", int(self.constant) & 0xFFFFFFFF)
@@ -2026,6 +2104,7 @@ class _CanonicalSemanticEvidenceProductionSignal(Exception):
 def _stable_dag_witness_from_raw(
     raw: DecisionDagRouteWitness,
     identities: Mapping[int, StableBlockIdentity],
+    logical_endpoints: Mapping[int, SemanticLogicalDagEndpoint],
     abstain,
 ) -> SemanticDecisionDagWitness:
     """Canonicalize a typed DAG proposal without evaluating its route.
@@ -2071,6 +2150,18 @@ def _stable_dag_witness_from_raw(
     entry_identity = identities.get(int(raw.entry_serial))
     if entry_identity is None or not entry_identity.native_ranges.contains(int(raw.entry_anchor_ea)):
         abstain(CanonicalSemanticEvidenceProductionReason.DECISION_DAG_ENTRY_ANCHOR)
+    def endpoint(serial: int) -> SemanticDagEndpoint | None:
+        identity = identities.get(int(serial))
+        if identity is not None:
+            return SemanticCorridorPoint(
+                identity,
+                stable_block_identity_semantic_anchor(identity),
+            )
+        logical = logical_endpoints.get(int(serial))
+        if logical is not None and int(logical.serial) == int(serial):
+            return logical
+        return None
+
     comparisons: list[SemanticDagComparison] = []
     path_anchor_by_serial = {
         int(serial): int(anchor)
@@ -2078,29 +2169,23 @@ def _stable_dag_witness_from_raw(
     }
     for serial, comparison in raw.comparisons:
         node_identity = identities.get(int(serial))
-        true_identity = identities.get(int(comparison.true_target))
-        false_identity = identities.get(int(comparison.false_target))
+        true_target = endpoint(int(comparison.true_target))
+        false_target = endpoint(int(comparison.false_target))
         node_anchor = path_anchor_by_serial.get(
             int(serial),
             stable_block_identity_semantic_anchor(node_identity)
             if node_identity is not None
             else None,
         )
-        if node_identity is None or true_identity is None or false_identity is None or node_anchor is None:
+        if node_identity is None or true_target is None or false_target is None or node_anchor is None:
             abstain(CanonicalSemanticEvidenceProductionReason.DECISION_DAG_COMPARISON_IDENTITY)
         comparisons.append(
             SemanticDagComparison(
                 node=SemanticCorridorPoint(node_identity, int(node_anchor)),
                 operation=str(comparison.op),
                 constant=int(comparison.const),
-                true_target=SemanticCorridorPoint(
-                    true_identity,
-                    stable_block_identity_semantic_anchor(true_identity),
-                ),
-                false_target=SemanticCorridorPoint(
-                    false_identity,
-                    stable_block_identity_semantic_anchor(false_identity),
-                ),
+                true_target=true_target,
+                false_target=false_target,
             )
         )
     aliases: list[tuple[SemanticCorridorPoint, SemanticCorridorPoint]] = []
@@ -2195,6 +2280,7 @@ def build_canonical_semantic_evidence(
             CanonicalSemanticEvidenceProductionStage.CONTEXT,
         )
     identities = dict(context.identities_by_serial)
+    logical_endpoints = dict(context.logical_endpoints_by_serial)
     blocks = {block.serial: block for block in context.blocks}
     proofs: list[SemanticRouteProof] = []
     proof_facts: list[SemanticRouteFact] = []
@@ -2318,7 +2404,10 @@ def build_canonical_semantic_evidence(
 
                 try:
                     stable_dag_witness = _stable_dag_witness_from_raw(
-                        witness.decision_dag_witness, identities, bootstrap_dag_abstain
+                        witness.decision_dag_witness,
+                        identities,
+                        logical_endpoints,
+                        bootstrap_dag_abstain,
                     )
                 except (TypeError, ValueError, AttributeError, IndexError, OverflowError):
                     abstain(CanonicalSemanticEvidenceProductionReason.BOOTSTRAP_DAG_INVALID)
@@ -2438,7 +2527,7 @@ def build_canonical_semantic_evidence(
                 if raw_dag.state_identity != context.state_identity:
                     abstain(CanonicalSemanticEvidenceProductionReason.DECISION_DAG_STATE_IDENTITY_MISMATCH)
                 stable_partition_dag = _stable_dag_witness_from_raw(
-                    raw_dag, identities, abstain
+                    raw_dag, identities, logical_endpoints, abstain
                 )
                 if (
                     len(raw_dag.path_serials) != len(raw_dag.path_anchors)
@@ -2460,27 +2549,42 @@ def build_canonical_semantic_evidence(
                     node_identity = identities.get(int(serial))
                     true_identity = identities.get(int(comparison.true_target))
                     false_identity = identities.get(int(comparison.false_target))
+                    true_target: SemanticDagEndpoint | None = (
+                        SemanticCorridorPoint(
+                            true_identity,
+                            stable_block_identity_semantic_anchor(true_identity),
+                        )
+                        if true_identity is not None
+                        else logical_endpoints.get(int(comparison.true_target))
+                    )
+                    false_target: SemanticDagEndpoint | None = (
+                        SemanticCorridorPoint(
+                            false_identity,
+                            stable_block_identity_semantic_anchor(false_identity),
+                        )
+                        if false_identity is not None
+                        else logical_endpoints.get(int(comparison.false_target))
+                    )
                     node_anchor = next(
                         (int(anchor) for path_serial, anchor in zip(raw_dag.path_serials, raw_dag.path_anchors)
                          if int(path_serial) == int(serial)),
                         stable_block_identity_semantic_anchor(node_identity)
                         if node_identity is not None else None,
                     )
-                    if node_identity is None or true_identity is None or false_identity is None or node_anchor is None:
+                    if (
+                        node_identity is None
+                        or true_target is None
+                        or false_target is None
+                        or node_anchor is None
+                    ):
                         abstain(CanonicalSemanticEvidenceProductionReason.PARTITION_DAG_COMPARISON_IDENTITY)
                     comparisons.append(
                         SemanticDagComparison(
                             node=SemanticCorridorPoint(node_identity, int(node_anchor)),
                             operation=str(comparison.op),
                             constant=int(comparison.const),
-                            true_target=SemanticCorridorPoint(
-                                true_identity,
-                                stable_block_identity_semantic_anchor(true_identity),
-                            ),
-                            false_target=SemanticCorridorPoint(
-                                false_identity,
-                                stable_block_identity_semantic_anchor(false_identity),
-                            ),
+                            true_target=true_target,
+                            false_target=false_target,
                         )
                     )
                 aliases: list[tuple[SemanticCorridorPoint, SemanticCorridorPoint]] = []
@@ -2656,7 +2760,7 @@ def build_canonical_semantic_evidence(
                 if witness.state_identity != context.state_identity:
                     abstain(CanonicalSemanticEvidenceProductionReason.DECISION_DAG_STATE_IDENTITY_MISMATCH)
                 stable_witness = _stable_dag_witness_from_raw(
-                    witness, identities, abstain
+                    witness, identities, logical_endpoints, abstain
                 )
                 entry = stable_witness.entry.identity
                 path_points = stable_witness.path
@@ -4036,6 +4140,20 @@ def _validate_state_carrier(
     )
 
 
+def _bound_dag_endpoint_serial(
+    graph: FlowGraph,
+    endpoint: SemanticDagEndpoint,
+) -> int | None:
+    """Resolve one canonical DAG endpoint without treating a logical exit as native."""
+    if type(endpoint) is SemanticCorridorPoint:
+        block = _unique_bound_block(graph, endpoint.identity, endpoint.anchor_ea)
+        return None if block is None else int(block.serial)
+    if type(endpoint) is SemanticLogicalDagEndpoint:
+        block = graph.get_block(int(endpoint.serial))
+        return int(endpoint.serial) if _is_exact_logical_function_exit(block) else None
+    return None
+
+
 def _validate_state_dag(
     graph: FlowGraph,
     proof: SemanticRouteProof,
@@ -4121,9 +4239,9 @@ def _validate_state_dag(
     node_serials: dict[StableBlockIdentity, int] = {}
     for comparison in witness.comparisons:
         node = _unique_bound_block(graph, comparison.node.identity, comparison.node.anchor_ea)
-        true_target = _unique_bound_block(graph, comparison.true_target.identity, comparison.true_target.anchor_ea)
-        false_target = _unique_bound_block(graph, comparison.false_target.identity, comparison.false_target.anchor_ea)
-        if node is None or true_target is None or false_target is None:
+        true_target_serial = _bound_dag_endpoint_serial(graph, comparison.true_target)
+        false_target_serial = _bound_dag_endpoint_serial(graph, comparison.false_target)
+        if node is None or true_target_serial is None or false_target_serial is None:
             return False
         current = current_u32_route_comparison(
             graph,
@@ -4137,24 +4255,24 @@ def _validate_state_dag(
             current_state_identity != witness.state_identity
             or current_comparison.op != comparison.operation
             or int(current_comparison.const) != int(comparison.constant)
-            or int(current_comparison.true_target) != int(true_target.serial)
-            or int(current_comparison.false_target) != int(false_target.serial)
+            or int(current_comparison.true_target) != true_target_serial
+            or int(current_comparison.false_target) != false_target_serial
         ):
             return False
         node_serials[comparison.node.identity] = int(node.serial)
     nodes: dict[int, RouteComparison] = {}
     for comparison in witness.comparisons:
         node = _unique_bound_block(graph, comparison.node.identity, comparison.node.anchor_ea)
-        true_target = _unique_bound_block(graph, comparison.true_target.identity, comparison.true_target.anchor_ea)
-        false_target = _unique_bound_block(graph, comparison.false_target.identity, comparison.false_target.anchor_ea)
-        if node is None or true_target is None or false_target is None:
+        true_target_serial = _bound_dag_endpoint_serial(graph, comparison.true_target)
+        false_target_serial = _bound_dag_endpoint_serial(graph, comparison.false_target)
+        if node is None or true_target_serial is None or false_target_serial is None:
             return False
         nodes[int(node.serial)] = RouteComparison(
             serial=int(node.serial),
             op=comparison.operation,
             const=int(comparison.constant),
-            true_target=int(true_target.serial),
-            false_target=int(false_target.serial),
+            true_target=true_target_serial,
+            false_target=false_target_serial,
         )
     aliases: dict[int, int] = {}
     for source_point, target_point in witness.aliases:
@@ -5406,6 +5524,8 @@ __all__ = [
     "SemanticCarrierProof",
     "SemanticBootstrapProof",
     "SemanticCorridorPoint",
+    "SemanticDagEndpointKind",
+    "SemanticLogicalDagEndpoint",
     "SemanticPredicateKind",
     "SemanticPredicateProof",
     "SemanticRouteDestination",
