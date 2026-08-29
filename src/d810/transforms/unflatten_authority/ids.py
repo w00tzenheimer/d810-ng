@@ -5,9 +5,11 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import MISSING, dataclass, fields, is_dataclass
 from enum import Enum
+import gc
 import hashlib
 import json
 import math
+from types import MappingProxyType
 
 from d810.ir.flowgraph import (
     BlockKind,
@@ -118,6 +120,25 @@ def _exact_enum(value: object, enum_type: type[Enum], label: str) -> None:
         raise TypeError(f"{label} must be {enum_type.__name__}")
 
 
+def _exact_mappingproxy_backing(value: MappingProxyType) -> dict[str, object]:
+    """Return an exact dict proxy backing without invoking mapping callbacks."""
+    if type(value) is not MappingProxyType:
+        raise TypeError("canonical immutable mapping must be an exact mappingproxy")
+    referents = gc.get_referents(value)
+    if len(referents) != 1 or type(referents[0]) is not dict:
+        raise TypeError("canonical mappingproxy must have an exact dict backing")
+    return referents[0]
+
+
+def _exact_canonical_mapping(value: object) -> dict[str, object]:
+    """Accept only exact dicts or exact-dict mapping proxies, callback-free."""
+    if type(value) is dict:
+        return value
+    if type(value) is MappingProxyType:
+        return _exact_mappingproxy_backing(value)
+    raise TypeError("canonical mappings require an exact dict or mappingproxy")
+
+
 def _validate_portable_instruction_record(value: object) -> None:
     """Validate the closed portable values reachable from transform proofs."""
     from d810.ir.expressions import Add, And, Const, Load, Move, Mul, Store, Sub
@@ -205,9 +226,8 @@ def _validate_portable_instruction_record(value: object) -> None:
             if type(value.memory) is not InstructionMemoryAccess:
                 raise TypeError("Instruction.memory must be InstructionMemoryAccess or None")
             _validate_portable_instruction_record(value.memory)
-        if not isinstance(value.attrs, Mapping):
-            raise TypeError("Instruction.attrs must be a mapping")
-        for key, item in value.attrs.items():
+        attrs = _exact_canonical_mapping(value.attrs)
+        for key, item in dict.items(attrs):
             if type(key) is not str:
                 raise TypeError("Instruction.attrs keys must be exact str")
             _validate_canonical_value(item)
@@ -271,19 +291,22 @@ def _validate_canonical_value(value: object, seen: set[int] | None = None) -> No
         if type(value) not in _ENUM_TYPES:
             raise TypeError(f"unregistered enum type: {type(value).__name__}")
         return
-    if isinstance(value, Mapping):
+    if type(value) is dict or type(value) is MappingProxyType:
+        mapping = _exact_canonical_mapping(value)
         marker = id(value)
         if marker in seen:
             raise ValueError("cyclic canonical mapping")
         seen.add(marker)
         try:
-            for key, item in value.items():
+            for key, item in dict.items(mapping):
                 if type(key) is not str:
                     raise TypeError("canonical mappings require string keys")
                 _validate_canonical_value(item, seen)
         finally:
             seen.remove(marker)
         return
+    if isinstance(value, Mapping):
+        raise TypeError("canonical mappings require an exact dict or mappingproxy")
     if type(value) in (list, tuple, frozenset):
         marker = id(value)
         if marker in seen:
@@ -840,12 +863,15 @@ def _wire(value: object) -> object:
         if type(value) not in _ENUM_TYPES:
             raise TypeError(f"unregistered enum type: {type(value).__name__}")
         return {"t": "enum", "n": type(value).__name__, "v": _wire(value.value)}
-    if isinstance(value, Mapping):
-        if any(type(key) is not str for key in value):
+    if type(value) is dict or type(value) is MappingProxyType:
+        mapping = _exact_canonical_mapping(value)
+        if any(type(key) is not str for key in dict.__iter__(mapping)):
             raise TypeError("canonical mappings require string keys")
-        pairs = [(_wire(key), _wire(item)) for key, item in value.items()]
+        pairs = [(_wire(key), _wire(item)) for key, item in dict.items(mapping)]
         pairs.sort(key=lambda pair: _json_bytes(pair[0]))
         return {"t": "map", "v": [[key, item] for key, item in pairs]}
+    if isinstance(value, Mapping):
+        raise TypeError("canonical mappings require an exact dict or mappingproxy")
     if type(value) is list:
         return {"t": "list", "v": [_wire(item) for item in value]}
     if type(value) is tuple:

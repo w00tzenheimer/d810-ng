@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, fields as dataclass_fields, is_dataclass
-import gc
 import hashlib
 import re
 import threading
@@ -2393,7 +2392,7 @@ def _registry_structural_snapshot(value: object) -> tuple[object, ...]:
         if item_type is MappingProxyType:
             def mapping_content() -> tuple[object, ...]:
                 pairs: list[tuple[str, tuple[object, ...]]] = []
-                backing = _exact_mappingproxy_backing(item)
+                backing = authority_ids._exact_mappingproxy_backing(item)
                 for key, member in dict.items(backing):
                     if type(key) is not str:
                         raise TypeError(
@@ -2418,24 +2417,6 @@ def _registry_structural_snapshot(value: object) -> tuple[object, ...]:
         raise TypeError("registered authority state has an unsupported exact type")
 
     return visit(value)
-
-
-def _exact_mappingproxy_backing(value: MappingProxyType) -> dict[str, object]:
-    """Return the exact built-in backing dict without mapping callbacks.
-
-    Portable ``Instruction`` records normalize attrs with
-    ``MappingProxyType(dict(attrs))``.  A mapping proxy can also wrap an
-    arbitrary ``Mapping`` whose iteration executes producer code, so the
-    registry must inspect the proxy referent and fail closed before reading
-    any items.  IDAPython is CPython; ``gc.get_referents`` exposes that one
-    backing object without invoking its mapping protocol.
-    """
-    if type(value) is not MappingProxyType:
-        raise TypeError("registered immutable mapping must be an exact mappingproxy")
-    referents = gc.get_referents(value)
-    if len(referents) != 1 or type(referents[0]) is not dict:
-        raise TypeError("registered mappingproxy must have an exact dict backing")
-    return referents[0]
 
 
 def _detached_canonical_copy(value: object, memo: dict[int, object]) -> object:
@@ -2475,7 +2456,7 @@ def _detached_canonical_copy(value: object, memo: dict[int, object]) -> object:
         detached: dict[str, object] = {}
         clone = MappingProxyType(detached)
         memo[id(value)] = clone
-        backing = _exact_mappingproxy_backing(value)
+        backing = authority_ids._exact_mappingproxy_backing(value)
         detached.update({
             key: _detached_canonical_copy(member, memo)
             for key, member in dict.items(backing)

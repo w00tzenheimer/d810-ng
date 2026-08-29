@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 import json
+from types import MappingProxyType
 
 import pytest
 
@@ -557,6 +559,47 @@ def test_canonical_mapping_order_and_object_identity_do_not_change_digest() -> N
         canonical_bytes({"unknown": Unknown(3)})
 
 
+def test_canonical_mapping_reader_accepts_only_exact_dict_or_exact_dict_proxy() -> None:
+    """Canonical encoding never invokes a producer-owned mapping protocol."""
+    exact = {"nested": {"value": 1}, "phase": "observed"}
+    proxy = MappingProxyType(exact)
+    assert canonical_bytes(exact) == canonical_bytes(proxy)
+    assert canonical_decode(canonical_bytes(proxy)) == exact
+
+    callbacks: list[str] = []
+
+    class CallbackDict(dict):
+        def items(self):
+            callbacks.append("items")
+            return super().items()
+
+        def __iter__(self):
+            callbacks.append("iter")
+            return super().__iter__()
+
+    class CallbackMapping(Mapping):
+        def __getitem__(self, key):
+            callbacks.append(f"get:{key}")
+            return 1
+
+        def __iter__(self):
+            callbacks.append("iter")
+            return iter(("foreign",))
+
+        def __len__(self):
+            callbacks.append("len")
+            return 1
+
+    for value in (
+        CallbackDict({"bad": 1}),
+        CallbackMapping(),
+        MappingProxyType(CallbackMapping()),
+    ):
+        with pytest.raises(TypeError):
+            canonical_bytes(value)
+        assert callbacks == []
+
+
 def test_subject_id_uses_only_exact_kind_role_locator_preimage() -> None:
     locator = model.BlockSubjectLocator(block_ref("subject"), 0x1000)
     expected = content_id(SUBJECT_SCHEMA, (
@@ -650,7 +693,7 @@ def test_closed_portable_instruction_encoding_is_stable_distinct_and_exact() -> 
         result=result,
         effects=(InstructionEffect(InstructionEffectKind.STORE, target=result),),
         control=InstructionControl(transfer=ControlTransferKind.GOTO, target=9),
-        attrs={"raw_opcode": 0},
+        attrs=MappingProxyType({"raw_opcode": 0}),
         input_exprs=(Const(7),),
     )
     encoded = canonical_bytes(instruction)
@@ -659,6 +702,7 @@ def test_closed_portable_instruction_encoding_is_stable_distinct_and_exact() -> 
     decoded = canonical_decode(encoded)
     assert type(decoded) is type(instruction)
     assert decoded == instruction
+    assert type(decoded.attrs) is MappingProxyType
 
     class VarnodeChild(Varnode):
         pass
