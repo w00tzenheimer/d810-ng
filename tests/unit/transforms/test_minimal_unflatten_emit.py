@@ -154,14 +154,14 @@ def test_conditional_arm_forecast_mints_complete_decision_dag_fact() -> None:
         is_conditional_jump=True,
     )
     graph = FlowGraph({
-        0: _b(0, (5,), (), ()),
-        1: replace(_b(1, (2,), (), (write,)), kind=BlockKind.ONE_WAY, tail_kind=InsnKind.MOV),
+        0: _b(0, (1,), (), ()),
+        1: replace(_b(1, (2,), (0,), (write,)), kind=BlockKind.ONE_WAY, tail_kind=InsnKind.MOV),
         2: replace(_b(2, (3, 4), (1,), (branch,)), kind=BlockKind.TWO_WAY, tail_kind=InsnKind.COND_JUMP),
         3: _b(3, (), (2,), ()),
         4: _b(4, (), (2,), ()),
         5: _b(5, (), (0,), ()),
     }, entry_serial=0, func_ea=0x1000)
-    arm = TransitionArm(state, 3, False, 1, 1, 1, (1,))
+    arm = TransitionArm(state, 3, False, 0, 1, 1, (0, 1))
     assert minimal_state_recovery_module._route_state_through_decision_dag(
         StateWriteTransition(1, state, 3, False, None), graph,
         DecisionDag(32, {2: RouteComparison(2, "jz", state, 3, 4)}, root=2),

@@ -1813,6 +1813,12 @@ def _matches_complete_decision_dag_route(
         raw_comparisons = tuple(
             (
                 _target_identity(source, source_catalog, block_refs_by_serial, serial),
+                dict(zip(raw.path_serials, raw.path_anchors)).get(
+                    int(serial),
+                    stable_block_identity_semantic_anchor(
+                        _target_identity(source, source_catalog, block_refs_by_serial, serial)
+                    ),
+                ),
                 comparison.op,
                 int(comparison.const) & 0xFFFFFFFF,
                 _target_identity(source, source_catalog, block_refs_by_serial, comparison.true_target),
@@ -1825,6 +1831,7 @@ def _matches_complete_decision_dag_route(
         canonical_comparisons = tuple(
             (
                 comparison.node.identity,
+                comparison.node.anchor_ea,
                 comparison.operation,
                 comparison.constant,
                 comparison.true_target.identity,

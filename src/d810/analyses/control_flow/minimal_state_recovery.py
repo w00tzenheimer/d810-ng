@@ -2489,21 +2489,22 @@ def _exact_state_normalizer_step(
     )
 
 
-def _route_state_through_decision_dag(
-    transition: StateWriteTransition,
+def _route_u32_state_through_decision_dag(
+    state: int,
     flow_graph: FlowGraph,
     decision_dag: DecisionDag,
     *,
     state_var_stkoff: int | None,
     state_var_reg: int | None,
+    via_block: int | None,
     entry_serial: int | None = None,
     semantic_transition_sources: frozenset[int] = frozenset(),
 ) -> _DecisionDagStateRoute | None:
     """Route one transition state from its exact comparison entry."""
 
-    if transition.next_state is None or int(decision_dag.width) != 32:
+    if not 0 <= int(state) <= 0xFFFFFFFF or int(decision_dag.width) != 32:
         return None
-    state = int(transition.next_state) & 0xFFFFFFFF
+    state = int(state)
     root = int(decision_dag.root if entry_serial is None else entry_serial)
     if root not in {
         int(serial) for serial in (*decision_dag.nodes, *decision_dag.aliases)
@@ -2578,8 +2579,8 @@ def _route_state_through_decision_dag(
             or step.state is None
             or step.feeder_serial is None
             or step.dag_entry_serial is None
-            or transition.via_block is None
-            or int(transition.via_block) != int(step.feeder_serial)
+            or via_block is None
+            or int(via_block) != int(step.feeder_serial)
         ):
             return None
         key = (target, int(step.state))
@@ -2589,6 +2590,27 @@ def _route_state_through_decision_dag(
         state = int(step.state)
         root = int(step.dag_entry_serial)
     return None
+
+
+def _route_state_through_decision_dag(
+    transition: StateWriteTransition,
+    flow_graph: FlowGraph,
+    decision_dag: DecisionDag,
+    *,
+    state_var_stkoff: int | None,
+    state_var_reg: int | None,
+    entry_serial: int | None = None,
+    semantic_transition_sources: frozenset[int] = frozenset(),
+) -> _DecisionDagStateRoute | None:
+    """Route one typed transition through the current decision DAG."""
+    if transition.next_state is None:
+        return None
+    return _route_u32_state_through_decision_dag(
+        int(transition.next_state), flow_graph, decision_dag,
+        state_var_stkoff=state_var_stkoff, state_var_reg=state_var_reg,
+        via_block=transition.via_block, entry_serial=entry_serial,
+        semantic_transition_sources=semantic_transition_sources,
+    )
 
 
 def _transition_has_exact_route_authority(transition: StateWriteTransition) -> bool:

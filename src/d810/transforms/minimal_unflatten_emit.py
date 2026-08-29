@@ -65,7 +65,7 @@ from d810.analyses.control_flow.minimal_state_recovery import (
     HandlerTransition,
     StateWriteTransition,
     TransitionArm,
-    _route_state_through_decision_dag,
+    _route_u32_state_through_decision_dag,
     TransitionProof,
     _source_local_constant_register_write,
     _is_goto_insn,
@@ -8409,9 +8409,10 @@ def _conditional_arm_route_forecast(
     branch = flow_graph.get_block(int(arm.branch_block)) if arm.branch_block is not None else None
     exit_block = flow_graph.get_block(int(arm.exit_block)) if arm.exit_block is not None else None
     path = tuple(int(serial) for serial in arm.ordered_path)
+    path_blocks = tuple(flow_graph.get_block(serial) for serial in path)
     if (
         source is None or branch is None or exit_block is None
-        or not path or int(arm.branch_block) not in path
+        or not path or any(block is None for block in path_blocks) or int(arm.branch_block) not in path
         or int(arm.write_block) not in path or int(arm.exit_block) not in path
         or int(modification.old_target) not in tuple(int(item) for item in source.succs)
     ):
@@ -8441,16 +8442,17 @@ def _conditional_arm_route_forecast(
     if (
         len(set(path)) != len(path)
         or path[-1] != int(arm.exit_block) or path[-1] != int(arm.write_block)
-        or path.index(int(arm.branch_block)) > path.index(int(arm.write_block))
+        or path.index(int(arm.branch_block)) >= path.index(int(arm.write_block))
         or any(
             right not in tuple(int(item) for item in flow_graph.get_block(left).succs)
-            for left, right in zip(path, path[1:]) if flow_graph.get_block(left) is not None
+            for left, right in zip(path, path[1:])
         )
     ):
         return None
-    route = _route_state_through_decision_dag(
-        arm, flow_graph, decision_dag,
+    route = _route_u32_state_through_decision_dag(
+        int(arm.next_state), flow_graph, decision_dag,
         state_var_stkoff=state_var_stkoff, state_var_reg=state_var_reg,
+        via_block=None,
     )
     if (
         route is None or int(route.target) != int(arm.target_handler)
