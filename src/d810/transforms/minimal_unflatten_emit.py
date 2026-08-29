@@ -8515,9 +8515,14 @@ def _correlate_surviving_conditional_arm_forecasts(
 ) -> tuple[ConditionalArmRouteForecast, ...] | None:
     """Retain only exact arm operations surviving every later rewrite pass."""
 
-    arm_keys = tuple(key for mod in arm_modifications if (key := _redirect_identity(mod)) is not None)
-    final_keys = {key for mod in final_modifications if (key := _redirect_identity(mod)) is not None}
-    surviving_keys = tuple(key for key in arm_keys if key in final_keys)
+    arm_keys = tuple(
+        key for mod in arm_modifications if (key := _redirect_identity(mod)) is not None
+    )
+    final_keys = tuple(
+        key for mod in final_modifications if (key := _redirect_identity(mod)) is not None
+    )
+    arm_counts = {key: arm_keys.count(key) for key in arm_keys}
+    final_counts = {key: final_keys.count(key) for key in final_keys}
     # A final operation at the same source but a different typed identity is a
     # normalization/replacement drift, not a suppressed arm.
     final_sources = {
@@ -8525,22 +8530,31 @@ def _correlate_surviving_conditional_arm_forecasts(
         for mod in final_modifications
         if type(mod) is ConvertToGoto or type(mod) in (RedirectGoto, RedirectBranch)
     }
-    for key in arm_keys:
-        if key not in final_keys and key[1] in final_sources:
-            return None
     by_key: dict[tuple[type, int, int, int], list[ConditionalArmRouteForecast]] = {}
     for forecast in forecasts:
         key = _redirect_identity(forecast.modification)
-        if key is not None:
-            by_key.setdefault(key, []).append(forecast)
+        if key is None:
+            return None
+        by_key.setdefault(key, []).append(forecast)
+    if any(len(candidates) != 1 for candidates in by_key.values()):
+        return None
+    if any(key not in arm_counts for key in by_key):
+        return None
     selected: list[ConditionalArmRouteForecast] = []
-    for key in surviving_keys:
+    for key, arm_count in arm_counts.items():
+        if arm_count != 1:
+            return None
+        final_count = final_counts.get(key, 0)
+        if final_count == 0:
+            if key[1] in final_sources:
+                return None
+            continue
+        if final_count != 1:
+            return None
         candidates = by_key.get(key, [])
         if len(candidates) != 1:
             return None
         selected.append(candidates[0])
-    if len({_redirect_identity(item.modification) for item in selected}) != len(selected):
-        return None
     return tuple(selected)
 
 
@@ -8566,6 +8580,20 @@ def _complete_local_semantic_route_facts(
         by_id[fact.fact_id] = fact
         ordered.append(fact)
     return tuple(ordered)
+
+
+def _final_local_semantic_route_facts(
+    local_route_facts: tuple[SemanticRouteFact, ...],
+    held_entry_fact: SemanticRouteFact | None,
+    surviving_arm_forecasts: tuple[ConditionalArmRouteForecast, ...],
+) -> tuple[SemanticRouteFact, ...] | None:
+    """The sole final emitter join before local canonical production."""
+
+    return _complete_local_semantic_route_facts(
+        local_route_facts,
+        held_entry_fact,
+        tuple(forecast.route_fact for forecast in surviving_arm_forecasts),
+    )
 
 
 def _build_conditional_arm_redirects_with_forecasts(
@@ -8851,11 +8879,29 @@ def build_conditional_arm_redirects(
     flow_graph,
     dispatcher,
     handler_transitions: tuple[HandlerTransition, ...],
-    **kwargs,
+    *,
+    dispatcher_entry_serial: int | None,
+    existing: set[tuple[int, int]],
+    existing_sources: set[int] | None = None,
+    is_indirect: bool = False,
+    carrier_via_blocks: set[int] | None = None,
+    infer_unmatched_returns: bool = True,
+    state_var_stkoff: int | None = None,
+    state_var_reg: int | None = None,
 ) -> list[object]:
     """Compatibility projection of conditional-arm modifications only."""
     modifications, _forecasts = _build_conditional_arm_redirects_with_forecasts(
-        flow_graph, dispatcher, handler_transitions, **kwargs,
+        flow_graph,
+        dispatcher,
+        handler_transitions,
+        dispatcher_entry_serial=dispatcher_entry_serial,
+        existing=existing,
+        existing_sources=existing_sources,
+        is_indirect=is_indirect,
+        carrier_via_blocks=carrier_via_blocks,
+        infer_unmatched_returns=infer_unmatched_returns,
+        state_var_stkoff=state_var_stkoff,
+        state_var_reg=state_var_reg,
     )
     return modifications
 
@@ -10577,6 +10623,17 @@ def emit_minimal_unflatten(
                                 ),
                                 entry_serial=int(flow_graph.entry_serial),
                             )
+                        # The entry-prefix route is not a backedge.  It can be
+                        # present in the recovered transition inventory before
+                        # entry consensus; retain the entry's authoritative fact
+                        # separately so the final join receives each route role
+                        # exactly once.
+                        local_route_facts = tuple(
+                            fact
+                            for fact in local_route_facts
+                            if int(fact.source_serial)
+                            != int(native_route.source_block_serial)
+                        )
                         held_entry_fact = entry_fact
                     else:
                         try:
@@ -11325,14 +11382,10 @@ def emit_minimal_unflatten(
                 entry_serial=int(flow_graph.entry_serial),
             )
         if local_production_context is not None:
-            final_facts = _complete_local_semantic_route_facts(
-                tuple(
-                    fact
-                    for fact in local_route_facts
-                    if held_entry_fact is None or fact.fact_id != held_entry_fact.fact_id
-                ),
+            final_facts = _final_local_semantic_route_facts(
+                local_route_facts,
                 held_entry_fact,
-                tuple(forecast.route_fact for forecast in surviving_arm_forecasts),
+                surviving_arm_forecasts,
             )
             if final_facts is None or not final_facts:
                 return compile_with_dispatcher_coverage(())

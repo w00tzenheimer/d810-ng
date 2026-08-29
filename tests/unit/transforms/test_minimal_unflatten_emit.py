@@ -126,6 +126,7 @@ from d810.transforms.minimal_unflatten_emit import (
     _conditional_arm_route_forecast,
     _correlate_surviving_conditional_arm_forecasts,
     _complete_local_semantic_route_facts,
+    _final_local_semantic_route_facts,
 )
 from d810.transforms.unflatten_authority.producer_api import (
     ConditionalEntryBridgeForecast,
@@ -310,6 +311,70 @@ def test_conditional_arm_correlation_selects_only_unsuppressed_exact_operation()
     ) == (forecast,)
 
 
+@pytest.mark.parametrize(
+    ("arm_modifications", "forecasts", "final_modifications"),
+    (
+        pytest.param(
+            lambda mod, forecast: (mod,),
+            lambda mod, forecast: (forecast,),
+            lambda mod, forecast: (mod, mod),
+            id="duplicate-final-operation",
+        ),
+        pytest.param(
+            lambda mod, forecast: (mod, mod),
+            lambda mod, forecast: (forecast,),
+            lambda mod, forecast: (mod,),
+            id="duplicate-arm-operation",
+        ),
+        pytest.param(
+            lambda mod, forecast: (mod,),
+            lambda mod, forecast: (forecast, forecast),
+            lambda mod, forecast: (mod,),
+            id="duplicate-forecast",
+        ),
+        pytest.param(
+            lambda mod, forecast: (mod,),
+            lambda mod, forecast: (forecast,),
+            lambda mod, forecast: (ConvertToGoto(1, 7),),
+            id="convert-replacement-drift",
+        ),
+    ),
+)
+def test_conditional_arm_correlation_rejects_nonunique_or_drifted_occurrences(
+    arm_modifications, forecasts, final_modifications,
+) -> None:
+    _state, graph, arm, dag = _direct_conditional_arm_fixture()
+    modification = RedirectGoto(1, 2, 3)
+    forecast = _conditional_arm_route_forecast(
+        modification, arm, graph, dag, state_var_stkoff=_STATE, state_var_reg=None,
+    )
+    assert forecast is not None
+
+    assert _correlate_surviving_conditional_arm_forecasts(
+        arm_modifications(modification, forecast),
+        forecasts(modification, forecast),
+        final_modifications(modification, forecast),
+    ) is None
+
+
+def test_conditional_arm_redirect_builder_preserves_public_signature() -> None:
+    parameters = inspect.signature(build_conditional_arm_redirects).parameters
+
+    assert tuple(parameters) == (
+        "flow_graph", "dispatcher", "handler_transitions",
+        "dispatcher_entry_serial", "existing", "existing_sources", "is_indirect",
+        "carrier_via_blocks", "infer_unmatched_returns", "state_var_stkoff",
+        "state_var_reg",
+    )
+    assert parameters["dispatcher_entry_serial"].kind is inspect.Parameter.KEYWORD_ONLY
+    assert parameters["existing_sources"].default is None
+    assert parameters["is_indirect"].default is False
+    assert parameters["carrier_via_blocks"].default is None
+    assert parameters["infer_unmatched_returns"].default is True
+    assert parameters["state_var_stkoff"].default is None
+    assert parameters["state_var_reg"].default is None
+
+
 def test_final_local_fact_join_rejects_divergent_same_id() -> None:
     backedge = SemanticRouteFact(
         SemanticRouteFactKind.NATIVE_BOUND, 1, 1, 0x1000, 0x10, 2,
@@ -340,6 +405,20 @@ def test_final_local_fact_join_keeps_distinct_none_id_arm_facts() -> None:
     assert _complete_local_semantic_route_facts(
         (), None, (first, second, first),
     ) == (first, second)
+
+
+def test_final_emitter_fact_join_does_not_bypass_divergent_entry_comparison() -> None:
+    _state, graph, arm, dag = _direct_conditional_arm_fixture()
+    forecast = _forecast_direct_arm(graph, arm, dag)
+    backedge = replace(forecast.route_fact, fact_id="shared-route")
+    divergent_entry = replace(
+        backedge,
+        source_instruction_ea=backedge.source_instruction_ea + 4,
+    )
+
+    assert _final_local_semantic_route_facts(
+        (backedge,), divergent_entry, (),
+    ) is None
 
 
 def test_conditional_arm_forecast_rejects_absent_intermediate_path_block() -> None:
