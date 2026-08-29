@@ -407,6 +407,27 @@ def test_match_root_rejects_canonical_pattern_constant_without_raw_provenance() 
     assert result.stop_reason is NativeMatchStopReason.PROVENANCE_REJECTED
 
 
+def test_match_root_allows_constraint_derived_replacement_constant_without_path() -> None:
+    from d810.backends.mba.compiled_pattern_catalogue import CompiledPatternCatalogue
+
+    rule = _rule("Add_SpecialConstantRule_3")
+    assert rule is not None
+    catalogue = CompiledPatternCatalogue.from_rules((rule,))
+    x = _leaf("x")
+    candidate = _node(
+        "sub",
+        _node("xor", x, _constant(-2)),
+        _node("neg", _node("mul", _constant(2), _node("or", x, _constant(1)))),
+    )
+
+    result = catalogue.match_root(candidate)
+
+    assert result.matches
+    assert result.fallback_comparisons == 13
+    assert result.matches[0].bindings.terms["val_res"].value == 0
+    assert "val_res" not in result.matches[0].bindings.native
+
+
 def test_match_root_scopes_compatibility_bindings_to_each_template() -> None:
     from d810.backends.mba.compiled_pattern_catalogue import CompiledPatternCatalogue
 
@@ -462,6 +483,22 @@ def test_match_root_propagates_canonical_runtime_errors(monkeypatch) -> None:
 
     monkeypatch.setattr(CompiledPatternCatalogue, "match_canonical_root", fail)
     with pytest.raises(RuntimeError, match="canonical matcher failed"):
+        catalogue.match_root(_node("add", _leaf("x"), _node("neg", _leaf("y"))))
+
+
+@pytest.mark.parametrize("error", (TypeError, ValueError))
+def test_match_root_propagates_canonical_type_and_value_errors(monkeypatch, error) -> None:
+    from d810.backends.mba.compiled_pattern_catalogue import CompiledPatternCatalogue
+
+    rule = _xor_rule("Xor_HackersDelightRule_3")
+    assert rule is not None
+    catalogue = CompiledPatternCatalogue.from_rules((rule,))
+
+    def fail(*_args, **_kwargs):
+        raise error("canonical matcher failed")
+
+    monkeypatch.setattr(CompiledPatternCatalogue, "match_canonical_root", fail)
+    with pytest.raises(error, match="canonical matcher failed"):
         catalogue.match_root(_node("add", _leaf("x"), _node("neg", _leaf("y"))))
 
 

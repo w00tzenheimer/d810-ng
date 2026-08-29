@@ -250,6 +250,8 @@ class CompiledPatternCatalogue:
 
         from d810.backends.mba.native_pod_matcher import match_root_pod
 
+        if not isinstance(candidate, NativeMbaTermView):
+            raise TypeError("candidate must be a NativeMbaTermView")
         if type(comparison_budget) is not int or comparison_budget <= 0:
             raise ValueError("comparison_budget must be a positive integer")
         raw = match_root_pod(
@@ -264,21 +266,11 @@ class CompiledPatternCatalogue:
         if raw.stop_reason is NativeMatchStopReason.RAW_UNSUPPORTED:
             return raw
 
-        try:
-            projection = project_canonical_native_paths(candidate)
-            canonical = self.match_canonical_root(
-                projection.canonical_view,
-                comparison_budget=64,
-            )
-        except (TypeError, ValueError):
-            return NativePatternMatchResult(
-                (),
-                raw.comparisons,
-                raw.lazy_swaps,
-                candidate_term=raw.candidate_term,
-                matcher_backend=raw.matcher_backend,
-                stop_reason=NativeMatchStopReason.CANONICAL_MISS,
-            )
+        projection = project_canonical_native_paths(candidate)
+        canonical = self.match_canonical_root(
+            projection.canonical_view,
+            comparison_budget=64,
+        )
         if canonical.stop_reason is AcMatchStopReason.COMPARISON_BUDGET:
             return NativePatternMatchResult(
                 (),
@@ -322,7 +314,17 @@ class CompiledPatternCatalogue:
                 template,
                 projection.canonical_view.canonical_term,
             )
-            for canonical_match in grouped[key]:
+            required_native_names_by_match = [
+                _replacement_placeholder_names(
+                    template.replacement_template,
+                    candidate_paths=canonical_match.bindings.candidate_paths,
+                )
+                for canonical_match in grouped[key]
+            ]
+            required_native_names = frozenset().union(*required_native_names_by_match)
+            for canonical_match, required_names in zip(
+                grouped[key], required_native_names_by_match, strict=True
+            ):
                 try:
                     merged = merge_canonical_bindings(
                         canonical_match.bindings,
@@ -332,15 +334,11 @@ class CompiledPatternCatalogue:
                     rejected = True
                     continue
                 terms = dict(merged.terms)
-                required_native_names = _replacement_placeholder_names(
-                    template.replacement_template,
-                    fixed_constant_values=template.fixed_constant_values,
-                )
                 candidate_paths = {
                     name: path
                     for name, path in merged.candidate_paths.items()
                     if tuple(path) in projection.canonical_to_raw_paths
-                    or name in required_native_names
+                    or name in required_names
                 }
                 if not evaluate_frozen_constraints(
                     template.constraints,
@@ -846,7 +844,7 @@ def _fixed_constant_bindings(
 
 
 def _replacement_placeholder_names(
-    term: TypedBvTerm, *, fixed_constant_values: Mapping[str, int]
+    term: TypedBvTerm, *, candidate_paths: Mapping[str, tuple[int, ...]]
 ) -> frozenset[str]:
     names: set[str] = set()
 
@@ -856,9 +854,16 @@ def _replacement_placeholder_names(
             if (
                 type(key) is tuple
                 and len(key) == 2
-                and key[0] in {"pattern_var", "pattern_const"}
+                and key[0] == "pattern_var"
                 and type(key[1]) is str
-                and key[1] not in fixed_constant_values
+            ):
+                names.add(key[1])
+            elif (
+                type(key) is tuple
+                and len(key) == 2
+                and key[0] == "pattern_const"
+                and type(key[1]) is str
+                and key[1] in candidate_paths
             ):
                 names.add(key[1])
             return
