@@ -24,6 +24,7 @@ from d810.core.observability_events import (
     FactConflictsObserved as FactConflictsObserved,
     FactConsumersObserved as FactConsumersObserved,
     FactMappingsObserved as FactMappingsObserved,
+    FactObservationsForLatestSnapshot as FactObservationsForLatestSnapshot,
     FactObservationsObserved as FactObservationsObserved,
     ModificationsObserved as ModificationsObserved,
     ReachabilityObserved as ReachabilityObserved,
@@ -211,6 +212,21 @@ def observe_fact_observation(
     )
 
 
+def observe_fact_observations_for_latest_snapshot(
+    func_ea: int,
+    observations,
+) -> None:
+    """Publish fact observations for the function's latest snapshot."""
+    if not _has_subscribers(FactObservationsForLatestSnapshot):
+        return
+    _emit(
+        FactObservationsForLatestSnapshot(
+            func_ea=int(func_ea),
+            observations=tuple(observations),
+        )
+    )
+
+
 def observe_fact_mapping(
     snapshot: SnapshotRef,
     func_ea: int,
@@ -334,6 +350,7 @@ __all__ = [
     "FactConflictsObserved",
     "FactConsumersObserved",
     "FactMappingsObserved",
+    "FactObservationsForLatestSnapshot",
     "FactObservationsObserved",
     "ModificationsObserved",
     "ReachabilityObserved",
@@ -362,6 +379,7 @@ __all__ = [
     "observe_fact_consumer",
     "observe_fact_mapping",
     "observe_fact_observation",
+    "observe_fact_observations_for_latest_snapshot",
     "observe_modifications",
     "observe_reachability",
     "observe_rendered_program",

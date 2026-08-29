@@ -101,6 +101,7 @@ from d810.core.observability_events import (
     FactConsumersForLatestSnapshot,
     FactConsumersObserved,
     FactMappingsObserved,
+    FactObservationsForLatestSnapshot,
     FactObservationsObserved,
     ModificationsObserved,
     LifecycleEventObserved,
@@ -800,6 +801,20 @@ def _handle_fact_observation(ev: FactObservationsObserved) -> None:
     snapshot_fact_observations(conn, snap_id, ev.func_ea, ev.observations)
 
 
+def _handle_fact_observations_latest(ev: FactObservationsForLatestSnapshot) -> None:
+    """Persist observations against the active function's latest snapshot."""
+    try:
+        conn = get_diag_conn(int(ev.func_ea))
+        if conn is None or not ev.observations:
+            return
+        snap_id = _latest_snapshot_id_for_func(ev.func_ea)
+        if snap_id is None:
+            return
+        snapshot_fact_observations(conn, snap_id, ev.func_ea, ev.observations)
+    except Exception:
+        _report_diag_persistence_failure("latest fact observations")
+
+
 def _handle_fact_mapping(ev: FactMappingsObserved) -> None:
     conn = _conn_for(ev.snapshot)
     snap_id = _resolve_snapshot_id(ev.snapshot)
@@ -1180,6 +1195,7 @@ _HANDLERS: tuple[tuple[type, object], ...] = (
     ),
     (DagLocalFactsObserved, _handle_dag_local_facts),
     (FactObservationsObserved, _handle_fact_observation),
+    (FactObservationsForLatestSnapshot, _handle_fact_observations_latest),
     (FactMappingsObserved, _handle_fact_mapping),
     (FactConsumersObserved, _handle_fact_consumer),
     (FactConsumersForLatestSnapshot, _handle_fact_consumers_latest),

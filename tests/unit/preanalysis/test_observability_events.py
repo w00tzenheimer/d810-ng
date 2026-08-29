@@ -17,6 +17,7 @@ from d810.core.observability_preanalysis import (
     FactConflictsObserved,
     FactConsumersObserved,
     FactMappingsObserved,
+    FactObservationsForLatestSnapshot,
     FactObservationsObserved,
     ModificationsObserved,
     ReachabilityObserved,
@@ -29,6 +30,7 @@ from d810.core.observability_preanalysis import (
     observe_fact_consumer,
     observe_fact_mapping,
     observe_fact_observation,
+    observe_fact_observations_for_latest_snapshot,
     observe_modifications,
     observe_reachability,
     observe_rendered_program,
@@ -92,6 +94,17 @@ def test_observe_fact_observation_carries_func_ea_and_tuple():
     snap = _make_snap()
     observations = [{"k": "v"}]
     observe_fact_observation(snap, 0x401000, observations)
+
+    assert len(seen) == 1
+    assert seen[0].func_ea == 0x401000
+    assert seen[0].observations == ({"k": "v"},)
+
+
+def test_observe_fact_observations_for_latest_snapshot_carries_func_ea_and_tuple():
+    seen: list[FactObservationsForLatestSnapshot] = []
+    subscribe(FactObservationsForLatestSnapshot, seen.append)
+
+    observe_fact_observations_for_latest_snapshot(0x401000, [{"k": "v"}])
 
     assert len(seen) == 1
     assert seen[0].func_ea == 0x401000

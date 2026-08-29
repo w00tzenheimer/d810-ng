@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import json
+import sqlite3
 import sys
 from types import ModuleType, SimpleNamespace
 
@@ -2854,13 +2856,6 @@ def test_canonical_phase_observer_contains_subscriber_failure(
         source_ea=0x401000,
     )
 
-    monkeypatch.setattr(authority_observability, "diagnostics_enabled", lambda: True)
-    monkeypatch.setattr(authority_observability, "mba_to_block_snapshots", lambda _mba: ())
-    monkeypatch.setattr(
-        authority_observability,
-        "request_capture_mba_snapshot",
-        lambda **_kwargs: object(),
-    )
     subscriber_calls = []
 
     def fail_subscriber(*args, **kwargs):
@@ -2869,7 +2864,7 @@ def test_canonical_phase_observer_contains_subscriber_failure(
 
     monkeypatch.setattr(
         observability_preanalysis,
-        "observe_fact_observation",
+        "observe_fact_observations_for_latest_snapshot",
         fail_subscriber,
     )
 
@@ -2881,16 +2876,202 @@ def test_canonical_phase_observer_contains_subscriber_failure(
     assert len(subscriber_calls) == 1
 
 
-def test_canonical_phase_observer_contains_registry_probe_failure(
-    monkeypatch,
+def test_canonical_phase_observer_persists_attempt_occurrences_to_its_function_latest_snapshot(
+    monkeypatch, tmp_path
 ) -> None:
+    """The public observer writes each authority attempt without a new MBA capture."""
+
+    import d810.hexrays.observability as authority_observability
+    from d810.analyses.value_flow.observation import FactObservation
+    from d810.core.diag import create_diag_database, diag_models_on, event_handlers
+    from d810.core.diag.models import Snapshot
+
+    path = tmp_path / "authority-observer.sqlite"
+    db = create_diag_database(str(path))
+    conn = db.connection()
+    func_ea = 0x401000
+    other_func_ea = 0x402000
+    verdict = authority_model.UnflattenAuthorityVerdict(
+        False,
+        authority_model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        authority_model.UnflattenAuthorityReason.PROJECTED_BINDING_FAILED,
+        authority_id("observer-authority"),
+        None,
+        None,
+        authority_id("observer-candidate"),
+        None,
+        (),
+    )
+
+    def observation(attempt_id: str) -> FactObservation:
+        return FactObservation(
+            fact_id="canonical-case",
+            kind="unflatten_authority_phase",
+            semantic_key="authority-phase",
+            maturity="MMAT_GLBOPT1",
+            phase="projected_preflight",
+            confidence=1.0,
+            source_ea=func_ea,
+            payload={
+                "case_id": "canonical-case",
+                "attempt_id": attempt_id,
+                "session_id": "session-1",
+            },
+        )
+
+    event_handlers.uninstall_diag_event_handlers()
+    try:
+        with diag_models_on(db):
+            Snapshot.insert_many(
+                (
+                    {
+                        "id": 71,
+                        "label": "authority",
+                        "func_ea_hex": f"0x{func_ea:016x}",
+                        "func_ea_i64": func_ea,
+                        "maturity": "MMAT_GLBOPT1",
+                        "phase": "post_d810",
+                        "block_count": 1,
+                        "timestamp": 0.0,
+                    },
+                    {
+                        "id": 72,
+                        "label": "other",
+                        "func_ea_hex": f"0x{other_func_ea:016x}",
+                        "func_ea_i64": other_func_ea,
+                        "maturity": "MMAT_GLBOPT1",
+                        "phase": "post_d810",
+                        "block_count": 1,
+                        "timestamp": 1.0,
+                    },
+                )
+            ).execute()
+        event_handlers.install_diag_event_handlers()
+        monkeypatch.setattr(
+            authority_observability,
+            "mba_to_block_snapshots",
+            lambda _mba: (_ for _ in ()).throw(AssertionError("must not serialize MBA")),
+        )
+        monkeypatch.setattr(
+            authority_observability,
+            "request_capture_mba_snapshot",
+            lambda **_kwargs: (_ for _ in ()).throw(AssertionError("must not capture MBA")),
+        )
+        monkeypatch.setattr(event_handlers, "get_diag_conn", lambda _func_ea: conn)
+        authority_observability.observe_unflatten_authority_phase(
+            mba=SimpleNamespace(func_ea=func_ea),
+            verdict=verdict,
+            observations=(observation("attempt-1"),),
+        )
+        authority_observability.observe_unflatten_authority_phase(
+            mba=SimpleNamespace(func_ea=func_ea),
+            verdict=verdict,
+            observations=(observation("attempt-2"),),
+        )
+
+        rows = conn.execute(
+            "SELECT snapshot_id, fact_id, payload FROM fact_observations ORDER BY fact_id"
+        ).fetchall()
+        assert [row[0] for row in rows] == [71, 71]
+        assert [row[1] for row in rows] == [
+            "canonical-case:attempt:attempt-1",
+            "canonical-case:attempt:attempt-2",
+        ]
+        assert [json.loads(row[2])["canonical_fact_id"] for row in rows] == [
+            "canonical-case",
+            "canonical-case",
+        ]
+        assert conn.execute(
+            "SELECT COUNT(*) FROM fact_observations WHERE snapshot_id = 72"
+        ).fetchone()[0] == 0
+    finally:
+        event_handlers.uninstall_diag_event_handlers()
+        db.close()
+
+    reopened = sqlite3.connect(path)
+    try:
+        assert reopened.execute("SELECT COUNT(*) FROM fact_observations").fetchone()[0] == 2
+    finally:
+        reopened.close()
+
+
+def test_canonical_phase_observer_attaches_to_snapshot_captured_before_authority_phase(
+    monkeypatch, tmp_path
+) -> None:
+    """A real capture event establishes the snapshot before the authority row emits."""
+
+    import d810.hexrays.observability as authority_observability
+    from d810.analyses.value_flow.observation import FactObservation
+    from d810.core.diag import create_diag_database, event_handlers
+
+    db = create_diag_database(str(tmp_path / "authority-ordering.sqlite"))
+    conn = db.connection()
+    func_ea = 0x401000
+    verdict = authority_model.UnflattenAuthorityVerdict(
+        False,
+        authority_model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        authority_model.UnflattenAuthorityReason.PROJECTED_BINDING_FAILED,
+        authority_id("ordering-authority"),
+        None,
+        None,
+        authority_id("ordering-candidate"),
+        None,
+        (),
+    )
+    observation = FactObservation(
+        fact_id="ordering-case",
+        kind="unflatten_authority_phase",
+        semantic_key="authority-phase",
+        maturity="MMAT_GLBOPT1",
+        phase="projected_preflight",
+        confidence=1.0,
+        source_ea=func_ea,
+        payload={"attempt_id": "attempt-1", "session_id": "session-1"},
+    )
+
+    event_handlers.uninstall_diag_event_handlers()
+    try:
+        event_handlers.install_diag_event_handlers()
+        monkeypatch.setattr(event_handlers, "get_diag_conn", lambda _func_ea: conn)
+        snapshot = authority_observability.request_capture_mba_snapshot(
+            blocks=(),
+            label="before-authority",
+            func_ea=func_ea,
+            maturity="MMAT_GLBOPT1",
+            phase="post_d810",
+        )
+        assert snapshot is not None
+        monkeypatch.setattr(
+            authority_observability,
+            "request_capture_mba_snapshot",
+            lambda **_kwargs: (_ for _ in ()).throw(AssertionError("must not capture MBA")),
+        )
+        monkeypatch.setattr(
+            authority_observability,
+            "mba_to_block_snapshots",
+            lambda _mba: (_ for _ in ()).throw(AssertionError("must not serialize MBA")),
+        )
+
+        authority_observability.observe_unflatten_authority_phase(
+            mba=SimpleNamespace(func_ea=func_ea),
+            verdict=verdict,
+            observations=(observation,),
+        )
+
+        snapshot_id = conn.execute(
+            "SELECT id FROM snapshots WHERE label = ?", ("before-authority",)
+        ).fetchone()[0]
+        assert conn.execute(
+            "SELECT snapshot_id FROM fact_observations"
+        ).fetchone()[0] == snapshot_id
+    finally:
+        event_handlers.uninstall_diag_event_handlers()
+        db.close()
+
+
+def test_canonical_phase_observer_contains_invalid_verdict() -> None:
     import d810.hexrays.observability as authority_observability
 
-    monkeypatch.setattr(
-        authority_observability,
-        "diagnostics_enabled",
-        lambda: (_ for _ in ()).throw(RuntimeError("registry failed")),
-    )
     authority_observability.observe_unflatten_authority_phase(
         mba=SimpleNamespace(func_ea=0x401000, maturity=0),
         verdict=object(),
@@ -2913,12 +3094,11 @@ def test_canonical_phase_observer_rejects_non_singleton_rows(
         None,
         (),
     )
-    captures = []
-    monkeypatch.setattr(authority_observability, "diagnostics_enabled", lambda: True)
+    published = []
     monkeypatch.setattr(
-        authority_observability,
-        "request_capture_mba_snapshot",
-        lambda **kwargs: captures.append(kwargs),
+        observability_preanalysis,
+        "observe_fact_observations_for_latest_snapshot",
+        lambda *_args: published.append(_args),
     )
     for observations in ((), (object(),), (object(), object())):
         authority_observability.observe_unflatten_authority_phase(
@@ -2926,7 +3106,7 @@ def test_canonical_phase_observer_rejects_non_singleton_rows(
             verdict=verdict,
             observations=observations,
         )
-    assert captures == []
+    assert published == []
 
 
 def test_typed_canonical_acceptance_does_not_reapply_failed_generic_gate(monkeypatch) -> None:

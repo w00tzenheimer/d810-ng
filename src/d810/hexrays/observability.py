@@ -141,8 +141,6 @@ def observe_unflatten_authority_phase(
 ) -> None:
     """Publish one canonical authority-phase observation when subscribed."""
     try:
-        if not diagnostics_enabled():
-            return
         from d810.analyses.value_flow.observation import FactObservation
         from d810.transforms.unflatten_authority.model import (
             UnflattenAuthorityVerdict,
@@ -160,26 +158,28 @@ def observe_unflatten_authority_phase(
             raise TypeError(
                 "authority phase observer requires exactly one FactObservation"
             )
-        phase = getattr(getattr(verdict, "phase", None), "value", "unknown")
-        phase_label = "post_apply" if phase == "observed_post_apply" else "unknown"
-        blocks = mba_to_block_snapshots(mba)
-        maturity = getattr(mba, "maturity", getattr(mba, "maturity_id", "UNKNOWN"))
-        snapshot = request_capture_mba_snapshot(
-            blocks=blocks,
-            label=f"unflatten_authority_{phase}",
-            func_ea=int(getattr(mba, "func_ea", 0)),
-            maturity=str(maturity),
-            maturity_id=(int(maturity) if isinstance(maturity, int) else None),
-            phase=phase_label,
-        )
-        if snapshot is None:
-            return
-        from d810.core.observability_preanalysis import observe_fact_observation
+        observation = observations[0]
+        payload = dict(observation.payload)
+        payload.setdefault("canonical_fact_id", observation.fact_id)
+        attempt_id = payload.get("attempt_id")
+        if attempt_id is not None:
+            from dataclasses import replace
 
-        observe_fact_observation(
-            snapshot,
-            int(getattr(mba, "func_ea", 0)),
-            observations,
+            observation = replace(
+                observation,
+                fact_id=f"{observation.fact_id}:attempt:{attempt_id}",
+                payload=payload,
+            )
+        elif payload != observation.payload:
+            from dataclasses import replace
+
+            observation = replace(observation, payload=payload)
+        from d810.core.observability_preanalysis import (
+            observe_fact_observations_for_latest_snapshot,
+        )
+
+        observe_fact_observations_for_latest_snapshot(
+            int(getattr(mba, "func_ea", 0)), (observation,)
         )
     except Exception:
         _LOGGER.exception("unflatten authority diagnostics failed")

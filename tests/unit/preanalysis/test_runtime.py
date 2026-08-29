@@ -359,17 +359,14 @@ def test_fact_lifecycle_capture_persists_to_diag_snapshot() -> None:
         uninstall_diag_event_handlers()
 
     assert summary.observation_count == 1
-    from d810.core.diag.models import FactObservation as FactObservationModel
-
-    row = (
-        FactObservationModel.select(
-            FactObservationModel.kind, FactObservationModel.source_block
-        )
-        .where(FactObservationModel.fact_id == "induction:runtime")
-        .tuples()
-        .first()
-    )
-    assert row == ("InductionCarrierFact", 42)
+    row = conn.execute(
+        "SELECT snapshot_id, fact_id, kind, source_block, payload, evidence "
+        "FROM fact_observations WHERE fact_id = ?",
+        ("induction:runtime",),
+    ).fetchone()
+    # The generic SnapshotRef event remains byte/row-equivalent: its original
+    # identity and JSON serializations are unchanged by the late-binding path.
+    assert row == (1, "induction:runtime", "InductionCarrierFact", 42, "{}", "[]")
 
 
 def test_validated_fact_view_is_exposed_from_runtime() -> None:
@@ -555,6 +552,99 @@ def _latest_fact_consumer_event(*records):
     from d810.core.observability_events import FactConsumersForLatestSnapshot
 
     return FactConsumersForLatestSnapshot(_FUNC_EA, tuple(records))
+
+
+def _authority_phase_observation(phase: str) -> FactObservation:
+    return FactObservation(
+        fact_id=f"authority:{phase}",
+        kind="UnflattenAuthorityPhase",
+        semantic_key=f"authority-phase:{phase}",
+        maturity="MMAT_GLBOPT1",
+        phase=phase,
+        confidence=1.0,
+        source_block=7,
+        source_ea=_FUNC_EA,
+        block_fingerprint="graph-fingerprint",
+        payload={
+            "authority_id": "authority-1",
+            "plan_id": "plan-1",
+            "attempt_id": "attempt-1",
+            "session_id": "session-1",
+        },
+        evidence=("authority-phase",),
+    )
+
+
+def test_latest_fact_observation_handler_persists_authority_phases_before_return_and_after_close(
+    tmp_path,
+) -> None:
+    from d810.core.diag import create_diag_database, diag_models_on, event_handlers
+    from d810.core.observability_preanalysis import (
+        observe_fact_observations_for_latest_snapshot,
+    )
+
+    path = tmp_path / "authority-phases.sqlite"
+    db = create_diag_database(str(path))
+    conn = db.connection()
+    event_handlers.install_diag_event_handlers()
+    try:
+        with diag_models_on(db):
+            Snapshot.insert(
+                id=71,
+                label="authority",
+                func_ea_hex=f"0x{_FUNC_EA:016x}",
+                func_ea_i64=_FUNC_EA,
+                maturity="MMAT_GLBOPT1",
+                phase="post_d810",
+                block_count=1,
+                timestamp=0.0,
+            ).execute()
+        with patch("d810.core.diag.event_handlers.get_diag_conn", return_value=conn):
+            observe_fact_observations_for_latest_snapshot(
+                _FUNC_EA,
+                (
+                    _authority_phase_observation("projected_preflight"),
+                    _authority_phase_observation("observed_post_apply"),
+                ),
+            )
+
+        rows = conn.execute(
+            "SELECT snapshot_id, phase, payload FROM fact_observations ORDER BY fact_id"
+        ).fetchall()
+        assert {(row[0], row[1]) for row in rows} == {
+            (71, "projected_preflight"),
+            (71, "observed_post_apply"),
+        }
+        assert all(json.loads(row[2])["authority_id"] == "authority-1" for row in rows)
+    finally:
+        db.close()
+        event_handlers.uninstall_diag_event_handlers()
+
+    reopened = sqlite3.connect(path)
+    try:
+        assert reopened.execute("SELECT COUNT(*) FROM fact_observations").fetchone()[0] == 2
+    finally:
+        reopened.close()
+
+
+def test_latest_fact_observation_handler_without_active_snapshot_is_noop() -> None:
+    from d810.core.diag import event_handlers
+    from d810.core.observability_preanalysis import (
+        observe_fact_observations_for_latest_snapshot,
+    )
+
+    db = make_bound_diag_db()
+    conn = db.connection()
+    event_handlers.install_diag_event_handlers()
+    try:
+        with patch("d810.core.diag.event_handlers.get_diag_conn", return_value=conn):
+            observe_fact_observations_for_latest_snapshot(
+                _FUNC_EA,
+                (_authority_phase_observation("projected_preflight"),),
+            )
+        assert conn.execute("SELECT COUNT(*) FROM fact_observations").fetchone()[0] == 0
+    finally:
+        event_handlers.uninstall_diag_event_handlers()
 
 
 def _recovery_gate_record(**changes) -> FactConsumerRecord:

@@ -1243,6 +1243,19 @@ class FactObservationsObserved:
 
 
 @dataclass(frozen=True)
+class FactObservationsForLatestSnapshot:
+    """Preanalysis observed fact observations to attach to the latest snapshot.
+
+    Late-binding variant for post-hoc observations that must attach to the
+    active function's latest existing snapshot rather than request another MBA
+    capture.
+    """
+
+    func_ea: int
+    observations: tuple[Any, ...]
+
+
+@dataclass(frozen=True)
 class FactMappingsObserved:
     "Preanalysis observed a batch of fact mappings."
 
@@ -1403,6 +1416,7 @@ __all__ = [
     "FactConsumersForLatestSnapshot",
     "FactConsumersObserved",
     "FactMappingsObserved",
+    "FactObservationsForLatestSnapshot",
     "FactObservationsObserved",
     "ModificationsObserved",
     "ReachabilityObserved",
