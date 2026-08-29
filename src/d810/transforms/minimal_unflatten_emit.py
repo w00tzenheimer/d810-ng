@@ -10354,63 +10354,72 @@ def emit_minimal_unflatten(
                         or same_fact[0].target_serial != entry_fact.target_serial
                     ):
                         return compile_with_dispatcher_coverage(())
-                    generation = 0 if source_generation is None else int(source_generation)
-                    group_token = snapshot_id or f"{int(flow_graph.func_ea):X}"
-                    production_result = build_canonical_semantic_evidence(
-                        route_facts if same_fact else tuple((*route_facts, entry_fact)),
-                        CanonicalSemanticEvidenceProductionContext(
-                            native_key=native_key,
-                            generation=generation,
-                            atomic_group_id=f"minimal-state-routes:{group_token}",
-                            state_identity=entry_state_identity,
-                            blocks=tuple(flow_graph.blocks.values()),
-                            identities_by_serial=tuple(
-                                (int(serial), ref.identity)
-                                for serial, ref in block_refs_by_serial.items()
-                                if isinstance(ref, NativeBlockRef)
+                    if canonical_route_evidence is None:
+                        generation = 0 if source_generation is None else int(source_generation)
+                        group_token = snapshot_id or f"{int(flow_graph.func_ea):X}"
+                        production_result = build_canonical_semantic_evidence(
+                            route_facts if same_fact else tuple((*route_facts, entry_fact)),
+                            CanonicalSemanticEvidenceProductionContext(
+                                native_key=native_key,
+                                generation=generation,
+                                atomic_group_id=f"minimal-state-routes:{group_token}",
+                                state_identity=entry_state_identity,
+                                blocks=tuple(flow_graph.blocks.values()),
+                                identities_by_serial=tuple(
+                                    (int(serial), ref.identity)
+                                    for serial, ref in block_refs_by_serial.items()
+                                    if isinstance(ref, NativeBlockRef)
+                                ),
+                                entry_serial=int(flow_graph.entry_serial),
                             ),
-                            entry_serial=int(flow_graph.entry_serial),
-                        ),
-                    )
-                    if production_result.evidence is None:
-                        return compile_with_dispatcher_coverage(())
-                    canonical_route_evidence = production_result.evidence
-                    entry_catalog = build_source_identity_catalog(
-                        flow_graph, block_refs_by_serial,
-                        source_generation=(
-                            int(source_generation) if source_generation is not None
-                            else int(canonical_route_evidence.generation)
-                        ),
-                        canonical_route_evidence=canonical_route_evidence,
-                    )
-                    proof = adapt_native_bound_transition_route(
-                        native_route, source=flow_graph,
-                        source_catalog=entry_catalog,
-                        block_refs_by_serial=block_refs_by_serial,
-                        canonical_evidence=canonical_route_evidence,
-                    )
-                    source_ref = block_refs_by_serial.get(int(native_route.source_block_serial))
-                    target_ref = block_refs_by_serial.get(int(native_route.target_handler_serial))
-                    if type(source_ref) is not NativeBlockRef or type(target_ref) is not NativeBlockRef:
-                        return compile_with_dispatcher_coverage(())
-                    concrete_entry_route_forecasts = (
-                        ConcreteEntryRouteForecast(
-                            normalized_state=native_route.state_constant,
-                            target_handler=native_route.target_handler_serial,
-                            source_kinds=entry_route.source_kinds,
-                            physical_fact_id=native_route.fact_id,
-                            canonical_proof_id=proof.proof_id,
-                            source_identity=source_ref.identity,
-                            source_anchor_ea=native_route.source_instruction_ea,
-                            target_identity=target_ref.identity,
-                            state_identity=entry_state_identity,
-                            proof_owner_identity=(
-                                "concrete-entry:"
-                                f"fact_id={native_route.fact_id}:"
-                                f"source_ea=0x{int(native_route.source_instruction_ea):X}"
+                        )
+                        if production_result.evidence is None:
+                            return compile_with_dispatcher_coverage(())
+                        canonical_route_evidence = production_result.evidence
+                    try:
+                        entry_catalog = build_source_identity_catalog(
+                            flow_graph, block_refs_by_serial,
+                            source_generation=(
+                                int(source_generation) if source_generation is not None
+                                else int(canonical_route_evidence.generation)
                             ),
-                        ),
-                    )
+                            canonical_route_evidence=canonical_route_evidence,
+                        )
+                        proof = adapt_native_bound_transition_route(
+                            native_route, source=flow_graph,
+                            source_catalog=entry_catalog,
+                            block_refs_by_serial=block_refs_by_serial,
+                            canonical_evidence=canonical_route_evidence,
+                        )
+                        source_ref = block_refs_by_serial.get(int(native_route.source_block_serial))
+                        target_ref = block_refs_by_serial.get(int(native_route.target_handler_serial))
+                        if type(source_ref) is not NativeBlockRef or type(target_ref) is not NativeBlockRef:
+                            return compile_with_dispatcher_coverage(())
+                        concrete_entry_route_forecasts = (
+                            ConcreteEntryRouteForecast(
+                                normalized_state=native_route.state_constant,
+                                target_handler=native_route.target_handler_serial,
+                                source_kinds=entry_route.source_kinds,
+                                physical_fact_id=native_route.fact_id,
+                                canonical_proof_id=proof.proof_id,
+                                source_identity=source_ref.identity,
+                                source_anchor_ea=native_route.source_instruction_ea,
+                                target_identity=target_ref.identity,
+                                state_identity=entry_state_identity,
+                                proof_owner_identity=(
+                                    "concrete-entry:"
+                                    f"fact_id={native_route.fact_id}:"
+                                    f"source_ea=0x{int(native_route.source_instruction_ea):X}"
+                                ),
+                            ),
+                        )
+                    except (TypeError, ValueError) as exc:
+                        if logger.info_on:
+                            logger.info(
+                                "unflat typed entry authority abstained: reason=%s",
+                                type(exc).__name__ + ":" + str(exc),
+                            )
+                        return compile_with_dispatcher_coverage(())
             bridged = bool(dynamic_entry_bridge_edges) or (
                 entry_route is not None
             )
@@ -11178,8 +11187,11 @@ def emit_minimal_unflatten(
             selected_route_proof_ids: list[str] = []
             route_owner_by_proof_id: dict[str, str] = {}
             selected_transition_proofs: list[SemanticRouteProof] = []
-            concrete_entry_proof_ids = frozenset(
-                route.canonical_proof_id for route in concrete_entry_route_forecasts
+            concrete_entry_sources = frozenset(
+                int(route.source_block_serial) for route in concrete_entry_native_routes
+            )
+            entry_prefix_sources = _entry_prefix_blocks(
+                flow_graph, int(dispatcher_entry_serial)
             )
 
             def select_route(owner: str, proof) -> None:
@@ -11203,6 +11215,15 @@ def emit_minimal_unflatten(
                     or transition.target_handler is None
                 ):
                     continue
+                # The exact source-keyed entry operation owns a prefix route;
+                # it is not a back-edge operation.  Do not suppress any
+                # non-prefix transition: a competing emitted route must reach
+                # the normal proof-owner collision and reject atomically.
+                if (
+                    int(transition.write_block) in concrete_entry_sources
+                    and int(transition.write_block) in entry_prefix_sources
+                ):
+                    continue
                 proof = adapt_state_transition_route(
                     transition, source=flow_graph,
                     source_catalog=route_catalog,
@@ -11210,8 +11231,6 @@ def emit_minimal_unflatten(
                     canonical_evidence=canonical_route_evidence,
                     state_identity=state_identity,
                 )
-                if proof.proof_id in concrete_entry_proof_ids:
-                    continue
                 if proof.proof_id not in route_owner_by_proof_id:
                     selected_transition_proofs.append(proof)
                 select_route("state_write_transition", proof)

@@ -46,6 +46,7 @@ from d810.analyses.control_flow.semantic_route_evidence import (
     CanonicalSemanticEvidenceProductionResult,
     CanonicalSemanticEvidenceProductionStage,
     SemanticRouteFactKind,
+    canonical_semantic_evidence_from_proofs,
 )
 from d810.analyses.control_flow.materialized_indirect_transfer import (
     MaterializedIndirectTransfer,
@@ -1707,6 +1708,124 @@ def test_typed_entry_native_route_registers_its_canonical_proof(monkeypatch, _se
     else:
         assert plan.unflatten_proposal is not None
         assert sum(bool(getattr(claim, "route_proof_ids", ())) for claim in plan.unflatten_proposal.claims) == 1
+
+
+def _typed_entry_native_route_fixture(monkeypatch):
+    class _CleanUseDefSafety:
+        def redirect_use_def_violations(self, *_args, **_kwargs):
+            return ()
+
+    state = 0x16AA65E9
+    source_write = InsnSnapshot(0, 0x1001, (), kind=InsnKind.MOV, raw_opcode=0)
+    target_insn = InsnSnapshot(0, 0x2000, (), kind=InsnKind.NOP, raw_opcode=0)
+    graph = FlowGraph(
+        blocks={
+            0: BlockSnapshot(0, 0, (2,), (), 0, 0x1000, (source_write,)),
+            2: _b(2, (20,), (0, 20)),
+            20: BlockSnapshot(20, 0, (2,), (2,), 0, 0x2000, (target_insn,)),
+            99: _b(99, (), ()),
+        }, entry_serial=0, func_ea=0x1000,
+    )
+    entry_route = NativeBoundTransitionRoute("entry", 0x1001, 0, state, 20)
+    non_entry_route = NativeBoundTransitionRoute(
+        "non-entry", 0x2000, 20, 0x0BADF00D, 20,
+    )
+    monkeypatch.setattr(
+        minimal_unflatten_emit_module,
+        "recover_state_write_transitions_via_partitioned_fixpoint",
+        lambda *_args, **_kwargs: (StateWriteTransition(0, None, None, True, None),),
+    )
+    return graph, state, entry_route, dict(
+        dispatcher=_disp({state: 20, 0x0BADF00D: 20}, exit_block=99),
+        state_var_stkoff=_STATE,
+        dispatcher_entry_serial=2,
+        block_refs_by_serial={
+            serial: NativeBlockRef(StableBlockIdentity.from_intervals(
+                (NativeEaInterval(block.start_ea, block.start_ea + 0x20),),
+                native_key=NATIVE_KEY,
+                exact_instruction_eas=tuple(insn.ea for insn in block.insn_snapshots),
+            )) for serial, block in graph.blocks.items()
+        },
+        native_bound_transition_routes=(entry_route, non_entry_route),
+        dispatcher_region_serials=frozenset({2}),
+        authoritative_handler_serials=frozenset({20}),
+        use_def_safety=_CleanUseDefSafety(),
+        live_function=object(),
+    )
+
+
+def test_supplied_canonical_entry_evidence_is_consumed_without_remint(monkeypatch, _seam):
+    graph, _state, _entry_route, kwargs = _typed_entry_native_route_fixture(monkeypatch)
+    produced = emit_minimal_unflatten(graph, native_key=NATIVE_KEY, **kwargs)
+    evidence = produced.unflatten_proposal.route_evidence
+
+    supplied = emit_minimal_unflatten(
+        graph, native_key=None, canonical_route_evidence=evidence, **kwargs,
+    )
+
+    assert supplied.unflatten_proposal is not None
+    assert supplied.unflatten_proposal.route_evidence is evidence
+    assert tuple(proof.proof_id for proof in supplied.unflatten_proposal.route_evidence.route_proofs) == tuple(
+        proof.proof_id for proof in evidence.route_proofs
+    )
+    assert len(supplied.unflatten_proposal.route_evidence.route_proofs) == len(evidence.route_proofs)
+    assert supplied.unflatten_proposal.route_evidence.generation == evidence.generation
+
+
+def test_supplied_canonical_evidence_missing_entry_proof_abstains(monkeypatch, _seam):
+    graph, _state, _entry_route, kwargs = _typed_entry_native_route_fixture(monkeypatch)
+    produced = emit_minimal_unflatten(graph, native_key=NATIVE_KEY, **kwargs)
+    evidence = produced.unflatten_proposal.route_evidence
+    non_entry_proof = next(
+        proof for proof in evidence.route_proofs
+        if proof.state_write is not None and proof.state_write.instruction_ea == 0x2000
+    )
+    missing_entry_evidence = canonical_semantic_evidence_from_proofs(
+        NATIVE_KEY, evidence.generation, (non_entry_proof,),
+    )
+
+    plan = emit_minimal_unflatten(
+        graph,
+        native_key=None,
+        canonical_route_evidence=missing_entry_evidence,
+        **kwargs,
+    )
+
+    assert graph_modifications(plan) == []
+    assert plan.unflatten_proposal is None
+
+
+def test_non_prefix_transition_competing_for_entry_proof_rejects_atomically(
+    monkeypatch, _seam,
+):
+    graph, state, entry_route, kwargs = _typed_entry_native_route_fixture(monkeypatch)
+    produced = emit_minimal_unflatten(graph, native_key=NATIVE_KEY, **kwargs)
+    evidence = produced.unflatten_proposal.route_evidence
+    entry_fact = minimal_unflatten_emit_module._native_bound_route_fact(graph, entry_route)
+    assert entry_fact is not None
+    monkeypatch.setattr(
+        minimal_unflatten_emit_module,
+        "recover_state_write_transitions_via_partitioned_fixpoint",
+        lambda *_args, **_kwargs: (
+            StateWriteTransition(20, state, 20, False, None, semantic_route_fact=entry_fact),
+        ),
+    )
+    monkeypatch.setattr(
+        minimal_unflatten_emit_module,
+        "_recover_initial_state",
+        lambda *_args, **_kwargs: state,
+    )
+
+    plan = emit_minimal_unflatten(
+        graph,
+        native_key=None,
+        canonical_route_evidence=evidence,
+        initial_state=state,
+        **kwargs,
+    )
+
+    assert graph_modifications(plan) == []
+    assert plan.unflatten_proposal is None
 
 
 def test_native_bound_routes_seed_missing_current_backedge_transition(
