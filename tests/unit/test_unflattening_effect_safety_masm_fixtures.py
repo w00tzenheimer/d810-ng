@@ -451,6 +451,20 @@ def test_authority_payload_selection_rejects_cross_session_or_malformed_correlat
         )
 
 
+@pytest.mark.parametrize("phase", ["bogus_phase", None])
+def test_authority_payload_selection_rejects_unknown_or_missing_phase_before_correlation(
+    phase: str | None,
+) -> None:
+    payloads = _authority_payloads()
+    payloads[0].update(phase=phase, session_id="foreign-session")
+    with pytest.raises(ValueError, match="phase"):
+        select_committed_authority_phase_payloads(
+            payloads,
+            clean_committed_correlations={("plan-1", "attempt-1", "session-1")},
+            expected_session_id="session-1",
+        )
+
+
 def test_production_authority_marker_preserves_plan_and_attempt_for_artifact_oracle(
 ) -> None:
     """The pure production marker payload satisfies the artifact contract."""

@@ -402,7 +402,7 @@ def select_committed_authority_phase_payloads(
         if not isinstance(payload, Mapping):
             raise ValueError("authority phase payload is not an object")
         if payload.get("phase") not in {"projected_preflight", "observed_post_apply"}:
-            continue
+            raise ValueError("authority phase payload phase is invalid")
         correlation = tuple(
             payload.get(field) for field in ("plan_id", "attempt_id", "session_id")
         )

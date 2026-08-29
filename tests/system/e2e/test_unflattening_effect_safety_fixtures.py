@@ -209,8 +209,7 @@ def _authority_phase_payloads(
     for (raw_payload,) in rows:
         payload = json.loads(raw_payload)
         assert isinstance(payload, dict), type(payload).__name__
-        if payload.get("phase") in {"projected_preflight", "observed_post_apply"}:
-            payloads.append(payload)
+        payloads.append(payload)
     committed_correlations = {
         (str(plan_id), str(attempt_id), str(attempt_session))
         for plan_id, attempt_id, phase, mutation_started, poisoned, attempt_session in attempt_rows
