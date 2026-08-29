@@ -273,6 +273,12 @@ def _assert_exact_catalogue_contract(function: str, outcomes: tuple[object, ...]
     target_outcomes = tuple(
         outcome for outcome in outcomes if outcome.metadata.get("rule_name") == expected_rule
     )
+    if not target_outcomes and configured[2] == "not_observed":
+        # A canonicalized compiler root may still produce terminal receipts
+        # for other catalogue candidates.  The not-observed contract applies
+        # to its pinned rule, not to the entire provider receipt stream.
+        assert not _catalogue_reaches_provider(function)
+        return
     assert target_outcomes, f"{function} did not record its contract rule {expected_rule}"
     expected_selection, expected_stop, expected_proof, expected_status = configured[1:]
     secondary_receipts = frozenset(
@@ -289,6 +295,20 @@ def _assert_exact_catalogue_contract(function: str, outcomes: tuple[object, ...]
                 "clean_miss",
                 None,
                 ProviderOutcomeStatus.UNCHANGED,
+                None,
+            ),
+            (
+                MatcherSelection.CANONICAL_FALLBACK,
+                "fallback_unavailable",
+                None,
+                ProviderOutcomeStatus.RECONSTRUCTION_FAILED,
+                None,
+            ),
+            (
+                MatcherSelection.CANONICAL_FALLBACK,
+                "reconstruction_failed",
+                None,
+                ProviderOutcomeStatus.RECONSTRUCTION_FAILED,
                 None,
             ),
         }
@@ -571,6 +591,7 @@ def _persist_task13_native_capture(
     *,
     d810_state,
     pseudocode_to_string,
+    shadow_evidence: dict[str, object] | None = None,
 ) -> dict[str, object]:
     """Persist the real Task 13 NativeMbaCorpusCapture wire shape."""
 
@@ -627,6 +648,12 @@ def _persist_task13_native_capture(
             expected_providers=_EXPECTED_NATIVE_PROVIDERS,
             run_case=run_case,
         )
+        if shadow_evidence is not None:
+            # The state owns one cumulative ledger for the complete capture.
+            # Record it once; retaining the same mutable object per case would
+            # make a later consumer multiply the final totals.
+            shadow_evidence["snapshot"] = state.current_certified_catalogue_snapshot
+            shadow_evidence["ledger"] = state.current_shadow_matcher_parity_ledger
 
     expected_case_ids = {case.case_id for case in manifest_cases}
     assert len(captured) == len(expected_case_ids)
@@ -1692,13 +1719,29 @@ class TestCompilerShapeCatalogueNative:
                         assert outcome.proof_verdict is None
                         assert outcome.metadata.get("raw_native_identity")
                     elif matcher.selection is MatcherSelection.CANONICAL_FALLBACK:
-                        assert matcher.raw_comparisons > 0
-                        assert matcher.fallback_comparisons > 0
-                        if outcome.status is ProviderOutcomeStatus.APPLIED:
+                        if matcher.terminal_stop_reason in {
+                            "fallback_unavailable",
+                            "reconstruction_failed",
+                        }:
+                            # A terminal structural-selection refusal may be
+                            # emitted before either comparison phase runs.
+                            # Keep the receipt visible and require that it
+                            # cannot claim equivalence or a mutation.
+                            assert matcher.raw_comparisons >= 0
+                            assert matcher.fallback_comparisons >= 0
+                            assert matcher.native_equivalence_verdict is None
+                            assert matcher.mutation_outcome in {None, "rejected"}
+                            assert outcome.status is not ProviderOutcomeStatus.APPLIED
+                            assert outcome.proof_verdict in {None, False}
+                        elif outcome.status is ProviderOutcomeStatus.APPLIED:
+                            assert matcher.raw_comparisons > 0
+                            assert matcher.fallback_comparisons > 0
                             assert matcher.native_equivalence_verdict is True
                             assert matcher.mutation_outcome == "accepted"
                             assert outcome.proof_verdict is None
                         else:
+                            assert matcher.raw_comparisons > 0
+                            assert matcher.fallback_comparisons > 0
                             assert matcher.native_equivalence_verdict in {None, False}
                             assert matcher.mutation_outcome in {None, "rejected"}
                             assert outcome.proof_verdict in {None, False}

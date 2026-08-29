@@ -1432,6 +1432,211 @@ def test_adapter_clears_structural_attempt_state_on_context_reset() -> None:
     assert adapter._shadow_structural_refused is False
 
 
+def test_clear_match_context_clears_every_field_when_telemetry_raises(
+    monkeypatch,
+) -> None:
+    """Telemetry failure cannot retain borrowed adapter or rule state."""
+
+    rule = SimpleNamespace(name="cleanup-raises", maturities=[7])
+    adapter = IDAPatternAdapter(rule)
+    stale = object()
+    adapter._attempt_started = 1.0
+    adapter._attempt_destination_size = 4
+    adapter._attempt_input_ast = stale
+    adapter._attempt_instruction = stale
+    adapter._legacy_binding_paths = {"x": frozenset({(0,)})}
+    adapter._shadow_lowering = stale
+    adapter._shadow_structural_lowering = stale
+    adapter._shadow_source_ast = stale
+    adapter._shadow_match_report = stale
+    adapter._shadow_structural_native_paths = {"x": (0,)}
+    rule._current_blk = stale
+    rule._current_ins = stale
+    rule._runtime_constant_evaluator = lambda *_args, **_kwargs: 1
+
+    def raise_telemetry() -> None:
+        raise RuntimeError("telemetry failure")
+
+    monkeypatch.setattr(adapter, "_record_catalogue_nonmatch", raise_telemetry)
+    with pytest.raises(RuntimeError, match="telemetry failure"):
+        adapter.clear_match_context()
+
+    assert adapter._attempt_started is None
+    assert adapter._attempt_destination_size is None
+    assert adapter._attempt_input_ast is None
+    assert adapter._attempt_instruction is None
+    assert adapter._legacy_binding_paths is None
+    assert adapter._shadow_lowering is None
+    assert adapter._shadow_structural_lowering is None
+    assert adapter._shadow_source_ast is None
+    assert adapter._shadow_match_report is None
+    assert adapter._shadow_structural_native_paths is None
+    assert rule._current_blk is None
+    assert rule._current_ins is None
+    assert rule._runtime_constant_evaluator is None
+
+
+def test_handler_clears_raw_rule_context_when_later_callback_raises() -> None:
+    """The raw handler finally path clears a rule before propagating later errors."""
+
+    class Instruction:
+        ea = 0x401000
+
+        class d:
+            size = 4
+
+        @staticmethod
+        def _print():
+            return "raw-later-error"
+
+    class Rule:
+        name = "raw-later-error"
+        maturities = [7]
+        uses_structural_matching = False
+
+        def __init__(self) -> None:
+            self.bound = False
+            self.cleared = False
+
+        def bind_match_context(self, _blk, _ins):
+            self.bound = True
+
+        def clear_match_context(self):
+            self.cleared = True
+
+        def check_pattern_and_replace(self, _pattern, _candidate):
+            return None
+
+    rule = Rule()
+    optimizer = object.__new__(PatternOptimizer)
+    optimizer.stats = None
+    optimizer.cur_maturity = 7
+    optimizer._use_nomut_matching = False
+    optimizer._use_legacy_storage = False
+    optimizer._run_later_callback = lambda *_args: (_ for _ in ()).throw(
+        RuntimeError("later callback failure")
+    )
+    optimizer._pending_replacement_rule = None
+    optimizer._get_candidates = lambda _candidate: [RulePatternInfo(rule, object())]
+
+    with pytest.raises(RuntimeError, match="later callback failure"):
+        optimizer._try_matches(
+            None,
+            Instruction(),
+            object(),
+            allowed_rule_names=None,
+            scheduled_rule_names=None,
+            source_label="raw-later-error",
+        )
+    assert rule.bound is True
+    assert rule.cleared is True
+
+
+def test_handler_clears_fallback_rule_context_when_later_callback_raises(
+    monkeypatch,
+) -> None:
+    """The structural fallback finally path also clears before propagation."""
+
+    class Instruction:
+        ea = 0x401000
+
+        class d:
+            size = 4
+
+        @staticmethod
+        def _print():
+            return "fallback-later-error"
+
+    class Rule:
+        name = "fallback-later-error"
+        maturities = [7]
+        uses_structural_matching = True
+        canonical_fallback_enabled = True
+
+        def __init__(self) -> None:
+            self.bound = False
+            self.cleared = False
+
+        def bind_match_context(self, _blk, _ins):
+            self.bound = True
+
+        def clear_match_context(self):
+            self.cleared = True
+
+        def match_structural_and_replace(self, *_args, **_kwargs):
+            return None
+
+    rule = Rule()
+    optimizer = object.__new__(PatternOptimizer)
+    optimizer.stats = None
+    optimizer.cur_maturity = 7
+    optimizer._use_nomut_matching = False
+    optimizer._use_legacy_storage = False
+    optimizer._run_later_callback = lambda *_args: (_ for _ in ()).throw(
+        RuntimeError("fallback later callback failure")
+    )
+    optimizer._pending_replacement_rule = None
+    optimizer._get_candidates = lambda _candidate: []
+    monkeypatch.setattr(
+        optimizer,
+        "_prepare_canonical_fallback",
+        lambda *_args, **_kwargs: (SimpleNamespace(term=object()), (rule,)),
+    )
+
+    with pytest.raises(RuntimeError, match="fallback later callback failure"):
+        optimizer._try_matches(
+            None,
+            Instruction(),
+            object(),
+            allowed_rule_names=None,
+            scheduled_rule_names=None,
+            source_label="fallback-later-error",
+        )
+    assert rule.bound is True
+    assert rule.cleared is True
+
+
+def test_structural_selection_failure_publishes_terminal_receipt() -> None:
+    """Unavailable fallback matching remains observable as a terminal refusal."""
+
+    x = Var("x")
+    rule = SimpleNamespace(
+        name="terminal-fallback",
+        description="terminal-fallback",
+        pattern=x + Const("one", 1),
+        replacement=x,
+        maturities=[7],
+    )
+    adapter = IDAPatternAdapter(rule)
+    adapter._canonical_fallback_enabled = True
+    adapter._structural_matching_enabled = True
+    adapter._provider_outcome_capture_depth = 1
+    source = ast_dispatcher.AstNode(ida_hexrays.m_add, _leaf("x", 1), _constant(1))
+    source.dest_size = 4
+    source.ea = 0x401000
+    adapter._attempt_input_ast = source
+    adapter._attempt_destination_size = 4
+
+    adapter.observe_structural_match = lambda *_args, **_kwargs: None
+    assert (
+        adapter.match_structural_and_replace(
+            source,
+            bucket_size=1,
+            attempted_rule_count=1,
+            lowering=None,
+            lowering_provided=True,
+        )
+        is None
+    )
+    outcomes = adapter.provider_outcomes()
+    assert outcomes
+    terminal = outcomes[-1]
+    assert terminal.status is ProviderOutcomeStatus.RECONSTRUCTION_FAILED
+    assert terminal.refusal_reason == "profile_unavailable"
+    assert terminal.matcher is not None
+    assert terminal.matcher.terminal_stop_reason == "fallback_unavailable"
+
+
 def test_profile_for_ast_reuses_exact_structural_lowering(monkeypatch) -> None:
     """Telemetry must not lower a structural fallback root a second time."""
 

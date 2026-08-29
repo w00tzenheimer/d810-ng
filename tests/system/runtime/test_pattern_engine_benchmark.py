@@ -12,9 +12,9 @@ import os
 import platform
 import hashlib
 import cProfile
-import contextlib
 import gc
 import io
+import json
 import pstats
 import statistics
 import time
@@ -40,8 +40,6 @@ from d810.optimizers.microcode.instructions.pattern_matching.handler import (
     optimizer_logger,
 )
 from d810.optimizers.microcode.instructions.pattern_matching.engine import get_engine_info
-from d810.testing.cases import DeobfuscationCase
-from d810.testing.runner import run_deobfuscation_test
 from d810.optimizers.microcode.instructions.pattern_matching.pattern_speedups import (
     OpcodeIndexedStorage,
     compute_fingerprint,
@@ -192,36 +190,43 @@ def compiler_shape_real_asts(ida_database, configure_hexrays):
 
 def _collect_real_shadow_evidence(
     d810_state, pseudocode_to_string, monkeypatch
-) -> tuple[object, object]:
-    """Collect actual legacy-shadow evidence for benchmark authorization."""
+) -> tuple[object, object, dict[str, object]]:
+    """Collect complete-manifest legacy-shadow evidence for authorization."""
+
+    from tests.system.e2e.test_mba_compiler_shape_corpus import (
+        _CATALOGUE_CASES,
+        _MANIFEST,
+        _persist_task13_native_capture,
+    )
 
     observed: dict[str, object] = {}
     monkeypatch.setenv("D810_LEGACY_DSL_PERMUTATIONS", "1")
     monkeypatch.setenv("D810_SHADOW_DSL_MATCHING", "1")
     monkeypatch.delenv("D810_CANONICAL_MATCH_FALLBACK", raising=False)
 
-    @contextlib.contextmanager
-    def recording_state():
-        with d810_state() as state:
-            assert state.load_project(
-                state.project_manager.index("mba_compiler_shape_catalogue.json")
-            ) is not None
-            yield state
-            observed["snapshot"] = state.current_certified_catalogue_snapshot
-            observed["ledger"] = state.current_shadow_matcher_parity_ledger
-
-    run_deobfuscation_test(
-        DeobfuscationCase(
-            function="mba_shape_catalogue_08",
-            description="Task 7 native shadow certificate evidence",
-            project="",
-            must_change=False,
-            required_rules=["Add_HackersDelightRule_4"],
-            forbidden_rules=[],
-        ),
-        d810_state=recording_state,
-        pseudocode_to_string=pseudocode_to_string,
+    runtime_mode = "cython" if get_engine_info()["backend"] == "cython" else "python"
+    capture_path = (
+        Path(__file__).resolve().parents[3]
+        / ".tmp"
+        / f"task7-production-shadow-capture-{runtime_mode}.json"
     )
+    capture = _persist_task13_native_capture(
+        capture_path,
+        d810_state=d810_state,
+        pseudocode_to_string=pseudocode_to_string,
+        shadow_evidence=observed,
+    )
+    manifest = json.loads(_MANIFEST.read_text(encoding="utf-8"))
+    manifest_ids = {case["case_id"] for case in manifest["cases"]}
+    captured_cases = capture.get("cases", [])
+    assert isinstance(captured_cases, list)
+    assert {case["case_id"] for case in captured_cases} == manifest_ids
+    assert len(captured_cases) == len(manifest_ids)
+    capture_metadata = capture.get("capture_metadata", {})
+    assert capture_metadata["corpus_digest"] == hashlib.sha256(
+        _MANIFEST.read_bytes()
+    ).hexdigest()
+
     snapshot = observed.get("snapshot")
     ledger = observed.get("ledger")
     assert snapshot is not None
@@ -230,7 +235,13 @@ def _collect_real_shadow_evidence(
     assert ledger.legacy_rule_mismatches == 0
     assert ledger.legacy_binding_mismatches == 0
     assert ledger.legacy_binding_unknown == 0
-    return snapshot, ledger
+    assert ledger.new_safe_coverage_pending == 0
+    return snapshot, ledger, {
+        "capture_path": capture_path,
+        "manifest_case_count": len(manifest_ids),
+        "catalogue_case_count": len(_CATALOGUE_CASES),
+        "manifest_digest": capture_metadata["corpus_digest"],
+    }
 
 
 def _mop_projection(mop) -> tuple[object, ...] | None:
@@ -985,7 +996,7 @@ class TestCanonicalFallbackWorkBounds:
         sample,
         d810_state,
         monkeypatch,
-        pseudocode_to_string,
+        activation_path,
         *,
         fallback_enabled: bool,
         fallback_probe: bool = False,
@@ -1011,23 +1022,7 @@ class TestCanonicalFallbackWorkBounds:
         monkeypatch.setenv(
             "D810_CANONICAL_MATCH_FALLBACK", "1" if fallback_enabled else "0"
         )
-        mode = "cython" if get_engine_info()["backend"] == "cython" else "python"
         calls = {"fallback_enabled": fallback_enabled}
-
-        # Both A/B arms use the same real certificate and production project
-        # configuration.  The only experimental dimension is the explicit
-        # rollout environment flag; this prevents the baseline from silently
-        # switching to an unrelated un-authorized adapter set.
-        evidence = _collect_real_shadow_evidence(
-            d810_state,
-            pseudocode_to_string,
-            monkeypatch,
-        )
-        monkeypatch.delenv("D810_LEGACY_DSL_PERMUTATIONS", raising=False)
-        monkeypatch.setenv("D810_SHADOW_DSL_MATCHING", "1")
-        monkeypatch.setenv(
-            "D810_CANONICAL_MATCH_FALLBACK", "1" if fallback_enabled else "0"
-        )
 
         with d810_state() as state:
             project_index = state.project_manager.index(
@@ -1037,25 +1032,6 @@ class TestCanonicalFallbackWorkBounds:
             adapters = tuple(state.current_ins_rules)
             assert adapters
 
-            # Build authorization from a real legacy-shadow decompilation; no
-            # literal digest or invented ledger count can enable this
-            # benchmark.  The E2E corpus test independently validates the
-            # complete multi-case certificate path.
-            from tests.system.e2e.test_mba_compiler_shape_corpus import (
-                build_real_shadow_activation,
-            )
-            evidence_snapshot, evidence_ledger = evidence
-            certificate_path = (
-                Path(__file__).resolve().parents[3]
-                / ".tmp"
-                / f"task7-production-benchmark-{mode}.certificate.json"
-            )
-            activation_path, expectation = build_real_shadow_activation(
-                snapshot=evidence_snapshot,
-                ledger=evidence_ledger,
-                runtime_mode=mode,
-                output_path=certificate_path,
-            )
             # Activate through the same D810State project/configuration path
             # used by production, rather than attaching a snapshot directly.
             state.add_project(ProjectConfiguration.from_file(activation_path))
@@ -1133,11 +1109,55 @@ class TestCanonicalFallbackWorkBounds:
                 verifiable_rules=list(adapters),
             )
             allowed = frozenset({adapter.name})
+            scheduled = frozenset()
             candidate_ast = sample.ast
             candidate_ins = sample.instruction
             block = sample.block
             assert sample.mba.entry_ea == block.mba.entry_ea
             assert block.mba.maturity == ida_hexrays.MMAT_CALLS
+
+            ordered_schedule = tuple(rule.name for rule in adapters)
+            project_document = state.current_project.to_document()
+            authorization = {
+                "snapshot_fingerprint": state.current_certified_catalogue_snapshot.fingerprint,
+                "expectation": project_document["additional_configuration"][
+                    "structural_matcher_parity_expectation"
+                ],
+                "ledger": {
+                    field: getattr(state.current_shadow_matcher_parity_ledger, field)
+                    for field in (
+                        "observation_count",
+                        "legacy_match_count",
+                        "legacy_rule_mismatches",
+                        "legacy_binding_mismatches",
+                        "legacy_binding_unknown",
+                    )
+                },
+            }
+            runtime_settings = {
+                "canonical_fallback_env": "1" if fallback_enabled else "0",
+                "shadow_matching_env": os.environ.get("D810_SHADOW_DSL_MATCHING"),
+                "legacy_dsl_permutations_env": os.environ.get(
+                    "D810_LEGACY_DSL_PERMUTATIONS"
+                ),
+                "legacy_storage_env": os.environ.get("D810_LEGACY_STORAGE", "0"),
+                "indexed_legacy_fallback_env": os.environ.get(
+                    "D810_INDEXED_LEGACY_FALLBACK", "1"
+                ),
+            }
+            cache_policy = {
+                "use_legacy_storage": optimizer._use_legacy_storage,
+                "use_indexed_legacy_fallback": optimizer._use_indexed_legacy_fallback,
+                "use_nomut_matching": optimizer._use_nomut_matching,
+                "generation": optimizer._generation,
+                "compiled_generation": getattr(
+                    getattr(optimizer, "_compiled_view", None), "generation", None
+                ),
+                "indexed_pattern_count": optimizer._indexed_storage.total_patterns,
+                "adapter_replacement_cached": tuple(
+                    rule._replacement_pattern_cache is not None for rule in adapters
+                ),
+            }
 
             def callback() -> None:
                 nonlocal active_record
@@ -1153,7 +1173,7 @@ class TestCanonicalFallbackWorkBounds:
                     candidate_ins,
                     candidate_ast,
                     allowed_rule_names=allowed,
-                    scheduled_rule_names=frozenset(),
+                    scheduled_rule_names=scheduled,
                     source_label="task7-production-benchmark-raw-hit",
                 )
                 if fallback_probe:
@@ -1276,6 +1296,13 @@ class TestCanonicalFallbackWorkBounds:
                     ),
                     "sample_batches": sample_batches,
                     "batch_iterations": batch_iterations,
+                    "ordered_rule_schedule": ordered_schedule,
+                    "allowed_rule_names": tuple(sorted(allowed)),
+                    "scheduled_rule_names": tuple(sorted(scheduled)),
+                    "project_document": project_document,
+                    "authorization": authorization,
+                    "runtime_settings": runtime_settings,
+                    "cache_policy": cache_policy,
                 }
             )
             return samples, calls
@@ -1321,6 +1348,34 @@ class TestCanonicalFallbackWorkBounds:
             "compile_canonical_pattern",
             count_catalogue_compile,
         )
+        evidence = _collect_real_shadow_evidence(
+            d810_state,
+            pseudocode_to_string,
+            monkeypatch,
+        )
+        evidence_snapshot, evidence_ledger, evidence_receipt = evidence
+        runtime_mode = "cython" if get_engine_info()["backend"] == "cython" else "python"
+        from tests.system.e2e.test_mba_compiler_shape_corpus import (
+            build_real_shadow_activation,
+        )
+
+        certificate_path = (
+            Path(__file__).resolve().parents[3]
+            / ".tmp"
+            / f"task7-production-benchmark-{runtime_mode}.certificate.json"
+        )
+        activation_path, expectation = build_real_shadow_activation(
+            snapshot=evidence_snapshot,
+            ledger=evidence_ledger,
+            runtime_mode=runtime_mode,
+            output_path=certificate_path,
+        )
+        assert expectation.observation_count == evidence_ledger.observation_count
+        assert expectation.legacy_observation_count == evidence_ledger.legacy_match_count
+        assert evidence_receipt["manifest_case_count"] == 76
+        # Select the one native callback object only after evidence collection;
+        # the complete capture may cause Hex-Rays to retire earlier temporary
+        # MBA snapshots.  This object is then shared by every fresh A/B state.
         pinned_sample = self._discover_production_sample(
             compiler_shape_real_asts, d810_state, monkeypatch
         )
@@ -1332,14 +1387,14 @@ class TestCanonicalFallbackWorkBounds:
                     pinned_sample,
                     d810_state,
                     monkeypatch,
-                    pseudocode_to_string,
+                    activation_path,
                     fallback_enabled=False,
                 )
                 candidate, candidate_calls = self._sample_production_raw_hit(
                     pinned_sample,
                     d810_state,
                     monkeypatch,
-                    pseudocode_to_string,
+                    activation_path,
                     fallback_enabled=True,
                 )
             else:
@@ -1347,14 +1402,14 @@ class TestCanonicalFallbackWorkBounds:
                     pinned_sample,
                     d810_state,
                     monkeypatch,
-                    pseudocode_to_string,
+                    activation_path,
                     fallback_enabled=True,
                 )
                 baseline, baseline_calls = self._sample_production_raw_hit(
                     pinned_sample,
                     d810_state,
                     monkeypatch,
-                    pseudocode_to_string,
+                    activation_path,
                     fallback_enabled=False,
                 )
             assert baseline_calls["adapter"] == "Add_HackersDelightRule_4"
@@ -1371,14 +1426,24 @@ class TestCanonicalFallbackWorkBounds:
             # The ordered certified rule set and runtime configuration are
             # identical; only the candidate representation/rollout bit is
             # intentionally different (legacy permutations vs one canonical
-            # candidate).
+            # candidate). ``uses_structural_matching`` is a derived view of
+            # that same rollout bit, so assert it explicitly below rather
+            # than treating it as an independent configuration difference.
             assert tuple(
                 (row[0], row[1], row[4]) for row in candidate_receipt
-            ) == tuple((row[0], row[1], row[4]) for row in baseline_receipt)
+            ) == tuple(
+                (row[0], row[1], row[4]) for row in baseline_receipt
+            )
             assert tuple(row[3] for row in baseline_receipt) == tuple(
                 False for _ in baseline_receipt
             )
             assert tuple(row[3] for row in candidate_receipt) == tuple(
+                True for _ in candidate_receipt
+            )
+            assert tuple(row[5] for row in baseline_receipt) == tuple(
+                False for _ in baseline_receipt
+            )
+            assert tuple(row[5] for row in candidate_receipt) == tuple(
                 True for _ in candidate_receipt
             )
             assert set(id(rule) for rule in baseline_calls["_adapter_objects"]).isdisjoint(
@@ -1387,6 +1452,31 @@ class TestCanonicalFallbackWorkBounds:
             assert baseline_calls["sample_identity"] == candidate_calls[
                 "sample_identity"
             ]
+            assert baseline_calls["ordered_rule_schedule"] == candidate_calls[
+                "ordered_rule_schedule"
+            ]
+            assert baseline_calls["allowed_rule_names"] == candidate_calls[
+                "allowed_rule_names"
+            ]
+            assert baseline_calls["scheduled_rule_names"] == candidate_calls[
+                "scheduled_rule_names"
+            ]
+            assert baseline_calls["project_document"] == candidate_calls[
+                "project_document"
+            ]
+            assert baseline_calls["authorization"] == candidate_calls[
+                "authorization"
+            ]
+            baseline_runtime = dict(baseline_calls["runtime_settings"])
+            candidate_runtime = dict(candidate_calls["runtime_settings"])
+            baseline_runtime.pop("canonical_fallback_env")
+            candidate_runtime.pop("canonical_fallback_env")
+            assert baseline_runtime == candidate_runtime
+            baseline_cache = dict(baseline_calls["cache_policy"])
+            candidate_cache = dict(candidate_calls["cache_policy"])
+            baseline_cache.pop("indexed_pattern_count")
+            candidate_cache.pop("indexed_pattern_count")
+            assert baseline_cache == candidate_cache
             rounds.append(
                 {
                     "baseline_median": statistics.median(baseline),
@@ -1403,7 +1493,7 @@ class TestCanonicalFallbackWorkBounds:
             pinned_sample,
             d810_state,
             monkeypatch,
-            pseudocode_to_string,
+            activation_path,
             fallback_enabled=True,
             fallback_probe=True,
         )
@@ -1452,7 +1542,7 @@ class TestCanonicalFallbackWorkBounds:
             f"- Runtime backend: `{get_engine_info()['backend']}`; `D810_NO_CYTHON={os.environ.get('D810_NO_CYTHON', '1')}`\n"
             "- Commands: Python `D810_BENCHMARK_COMMIT=$(git -C .worktrees/canonical-mba-matcher-fallback rev-parse HEAD) ./tools/scripts/run_system_tests_docker.sh test -w canonical-mba-matcher-fallback -o task7-production-benchmark-real-python-final.txt -- tests/system/runtime/test_pattern_engine_benchmark.py::TestCanonicalFallbackWorkBounds::test_bounded_callback_performance -q -s -rs`; Cython `D810_BENCHMARK_COMMIT=$(git -C .worktrees/canonical-mba-matcher-fallback rev-parse HEAD) D810_NO_CYTHON=0 ./tools/scripts/run_system_tests_docker.sh test -w canonical-mba-matcher-fallback -o task7-production-benchmark-real-cython-final.txt -- tests/system/runtime/test_pattern_engine_benchmark.py::TestCanonicalFallbackWorkBounds::test_bounded_callback_performance -q -s -rs`\n"
             "- Mode comparison: fresh production `Add_HackersDelightRule_4` adapter set with `D810_CANONICAL_MATCH_FALLBACK=0` (baseline) versus `=1` (candidate); identical full catalogue rules, cache policy, pinned compiler-shape function, candidate EA, and AST digest.\n"
-            f"- Corpus digest: `{digest}` (live row-08 compiler-shape AST; candidate EA `{baseline_calls['candidate_ea']}`, owner EA `{baseline_calls['owner_ea']}`, path `{baseline_calls['candidate_path']}`, function EA `{baseline_calls['function_ea']}`)\n"
+            f"- Evidence: complete `{evidence_receipt['manifest_case_count']}`-case native shadow capture, manifest digest `{evidence_receipt['manifest_digest']}`; pinned AST digest `{digest}` (candidate EA `{baseline_calls['candidate_ea']}`, owner EA `{baseline_calls['owner_ea']}`, path `{baseline_calls['candidate_path']}`, function EA `{baseline_calls['function_ea']}`)\n"
             "- Production samples: 5 paired fresh-state rounds, each 20 x 1000 callback iterations after 10 warmups; aggregate values are medians of per-round medians/p95s in seconds/callback\n"
             f"- Raw-hit baseline: median `{baseline_median:.9g}`, p95 `{baseline_p95:.9g}`\n"
             f"- Raw-hit fallback-enabled: median `{candidate_median:.9g}`, p95 `{candidate_p95:.9g}`, median delta `{raw_regression:.2%}`, p95 delta `{raw_p95_regression:.2%}`\n"

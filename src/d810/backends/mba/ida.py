@@ -1637,7 +1637,11 @@ class IDAPatternAdapter:
         # have cleanly missed.  Do not manufacture a second native lowering
         # merely to publish an intermediate raw-miss telemetry row; the shared
         # fallback attempt owns the authoritative receipt for this root.
-        if self.canonical_fallback_enabled and getattr(self, "_shadow_lowering", None) is None:
+        if (
+            self.canonical_fallback_enabled
+            and not getattr(self, "_structural_selection_active", False)
+            and getattr(self, "_shadow_lowering", None) is None
+        ):
             return
         capture_enabled = self._provider_outcome_capture_enabled()
         shadow_enabled = self._shadow_observation_enabled()
@@ -2156,15 +2160,20 @@ class IDAPatternAdapter:
 
     def clear_match_context(self) -> None:
         """Clear live match-site state after a pattern-storage rule attempt."""
-        self._record_catalogue_nonmatch()
-        setattr(self.rule, "_current_blk", None)
-        setattr(self.rule, "_current_ins", None)
-        setattr(self.rule, "_runtime_constant_evaluator", None)
-        self._attempt_started = None
-        self._attempt_destination_size = None
-        self._attempt_input_ast = None
-        self._attempt_instruction = None
-        self._clear_structural_attempt_state()
+        try:
+            self._record_catalogue_nonmatch()
+        finally:
+            try:
+                setattr(self.rule, "_current_blk", None)
+                setattr(self.rule, "_current_ins", None)
+                setattr(self.rule, "_runtime_constant_evaluator", None)
+            finally:
+                self._attempt_started = None
+                self._attempt_destination_size = None
+                self._attempt_input_ast = None
+                self._attempt_instruction = None
+                self._legacy_binding_paths = None
+                self._clear_structural_attempt_state()
 
     @staticmethod
     def _eval_runtime_constant(mop, bits: int, blk, instruction) -> int | None:

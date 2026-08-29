@@ -945,12 +945,15 @@ class PatternOptimizer(InstructionOptimizer):
             return None, ()
         prepare = getattr(rules[0], "prepare_structural_candidate", None)
         if prepare is None:
-            return None, ()
+            return None, (rules[0],)
         destination_size = getattr(getattr(ins, "d", None), "size", None)
-        lowering = prepare(test_ast, destination_size=destination_size)
+        try:
+            lowering = prepare(test_ast, destination_size=destination_size)
+        except Exception:
+            return None, (rules[0],)
         term = getattr(lowering, "term", None)
         if term is None:
-            return lowering, ()
+            return lowering, (rules[0],)
         from d810.mba.certified_catalogue import root_shape_for_term
 
         selected = tuple(
@@ -1127,13 +1130,15 @@ class PatternOptimizer(InstructionOptimizer):
                 )
                 return None
             finally:
-                if self._run_later_callback is not None:
-                    self._run_later_callback(
-                        rule_pattern_info.rule,
-                        self.cur_maturity,
-                    )
-                if clear_match_context is not None:
-                    clear_match_context()
+                try:
+                    if self._run_later_callback is not None:
+                        self._run_later_callback(
+                            rule_pattern_info.rule,
+                            self.cur_maturity,
+                        )
+                finally:
+                    if clear_match_context is not None:
+                        clear_match_context()
 
         # Canonical matching is a fallback only: prepare the native island
         # after all eligible raw candidates have cleanly missed.
@@ -1200,10 +1205,12 @@ class PatternOptimizer(InstructionOptimizer):
                 )
                 return None
             finally:
-                if self._run_later_callback is not None:
-                    self._run_later_callback(rule, self.cur_maturity)
-                if clear_match_context is not None:
-                    clear_match_context()
+                try:
+                    if self._run_later_callback is not None:
+                        self._run_later_callback(rule, self.cur_maturity)
+                finally:
+                    if clear_match_context is not None:
+                        clear_match_context()
         return None
 
 
