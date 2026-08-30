@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 import ida_hexrays
@@ -24,7 +23,11 @@ from tests.system.runtime.conftest import gen_microcode_at_maturity
 
 
 class TestCallResultPredicateRegression:
-    binary_name = os.getenv("D810_TEST_BINARY", "libobfuscated_fixturetest.dll")
+    # This regression requires the dedicated fixture's writable later-load
+    # witness.  The Docker runner exports D810_TEST_BINARY for the shared
+    # corpus, so honoring that process-wide default here silently selects the
+    # wrong artifact and lets Hex-Rays fold the load to an immediate.
+    binary_name = "libobfuscated_fixturetest.dll"
 
     @staticmethod
     def _project_index(state):
