@@ -40,9 +40,12 @@ def test_fixture_add_parses_core_flags():
             "sub_1",
             "--project",
             "default_unflattening_ollvm.json",
+            "--binary-name",
+            "throwaway_fixture_output.dll",
             "--yes",
         ]
     )
     assert ns.fixture_cmd == "add"
     assert ns.yes is True
     assert ns.project == "default_unflattening_ollvm.json"
+    assert ns.binary_name == "throwaway_fixture_output.dll"
