@@ -214,9 +214,10 @@ class _Dialog(_Widget):
 
 
 def _load_widget(monkeypatch: pytest.MonkeyPatch):
+    signal_factory = lambda *args, **kwargs: _Signal()  # noqa: E731
     qtcore = types.SimpleNamespace(
         Qt=types.SimpleNamespace(UserRole=32),
-        pyqtSignal=lambda *args, **kwargs: _Signal(),
+        pyqtSignal=signal_factory,
     )
     widgets = types.SimpleNamespace(
         QWidget=_Widget,
@@ -235,6 +236,7 @@ def _load_widget(monkeypatch: pytest.MonkeyPatch):
             QT_GRAPHICS_AVAILABLE=True,
             QtCore=qtcore,
             QtWidgets=widgets,
+            Signal=signal_factory,
         ),
     )
     module_name = "d810.ui._filterable_catalog_widget_contract"

@@ -62,6 +62,91 @@ def _is_ida_gui_available() -> bool:
 _QT_AVAILABLE = _is_ida_gui_available()
 QT_GRAPHICS_AVAILABLE = False
 
+# --- Signal/Slot spelling compatibility --------------------------------------
+#
+# PyQt5 spells these ``pyqtSignal``/``pyqtSlot``; PySide6 spells them
+# ``Signal``/``Slot``. Neither binding carries the other's names, so code
+# written against one spelling raises a bare AttributeError under the other --
+# exactly what this shim exists to hide. Resolve both spellings once and export
+# them from the shim.
+#
+# The resolver must never import anything: importing a Qt binding inside a
+# headless IDA can take the interpreter down with it. It only reads attributes
+# off a module it was handed, and never writes to that module -- mutating a
+# binding is process-global and would be seen by every other plugin loaded
+# alongside us (and would corrupt ``hasattr(QtCore, "pyqtSignal")`` as a
+# binding-detection idiom).
+
+_SIGNAL_SLOT_SPELLINGS = (("Signal", "pyqtSignal"), ("Slot", "pyqtSlot"))
+
+
+class _StubSignal:
+    """No-op signal, so class-level signal definitions work headlessly."""
+
+    def emit(self, *args, **kwargs) -> None:
+        pass
+
+    def connect(self, *args, **kwargs) -> None:
+        pass
+
+    def disconnect(self, *args, **kwargs) -> None:
+        pass
+
+
+def _stub_signal(*args, **kwargs) -> _StubSignal:
+    """Stub signal factory for non-GUI environments."""
+    return _StubSignal()
+
+
+def _stub_slot(*args, **kwargs):
+    """Stub slot decorator for non-GUI environments."""
+
+    def decorate(func):
+        return func
+
+    return decorate
+
+
+def _loaded_qtcore() -> Any | None:
+    """Return an already-imported QtCore, or None.
+
+    Reads ``sys.modules`` only. It must never import a binding, and never
+    probe with ``importlib.util.find_spec`` either: importing Qt inside a
+    headless IDA can take the interpreter down. A binding that is *already*
+    loaded is safe to read -- headless IDA 9.1 ships with PyQt5 imported, and
+    QtCore works fine there even though QtWidgets does not.
+    """
+    for module_name in ("PySide6.QtCore", "PyQt5.QtCore"):
+        qtcore = sys.modules.get(module_name)
+        if qtcore is not None:
+            return qtcore
+    return None
+
+
+def _resolve_signal_slot(qtcore: Any | None) -> dict[str, Any]:
+    """Resolve all four Signal/Slot spellings from whichever one ``qtcore`` has.
+
+    Returns a mapping of every spelling to the single underlying factory, so a
+    caller may use either binding's vocabulary. Missing names -- and a
+    ``qtcore`` of None -- fall back to the headless stubs. Imports nothing
+    and mutates nothing.
+
+    >>> import types
+    >>> names = _resolve_signal_slot(types.SimpleNamespace(Signal=int))
+    >>> names["pyqtSignal"] is names["Signal"] is int
+    True
+    """
+    resolved: dict[str, Any] = {}
+    for pyside_name, pyqt_name in _SIGNAL_SLOT_SPELLINGS:
+        factory = getattr(qtcore, pyside_name, None)
+        if factory is None:
+            factory = getattr(qtcore, pyqt_name, None)
+        if factory is None:
+            factory = _stub_signal if pyside_name == "Signal" else _stub_slot
+        resolved[pyside_name] = factory
+        resolved[pyqt_name] = factory
+    return resolved
+
 
 # Version detection constants (similar to six.PY2, six.PY3)
 # Initialize with defaults, will be reassigned based on available Qt binding
@@ -124,29 +209,12 @@ if not _QT_AVAILABLE:
             def mapFromSource(self, sourceIndex: Any) -> Any: ...
             def sort(self, column: int, order: int = ...) -> None: ...
 
-        # Signal/Slot compatibility (will be set up by _setup_compatibility)
-        @staticmethod
-        def pyqtSignal(*args, **kwargs):  # type: ignore[misc]
-            """Stub for pyqtSignal in non-GUI environments.
-
-            Returns a callable that acts as a no-op signal descriptor.
-            This allows class-level signal definitions to work without errors
-            in headless/test environments.
-            """
-
-            class _StubSignal:
-                """Stub signal that can be assigned and called without errors."""
-
-                def emit(self, *args, **kwargs):
-                    pass
-
-                def connect(self, *args, **kwargs):
-                    pass
-
-                def disconnect(self, *args, **kwargs):
-                    pass
-
-            return _StubSignal()
+        # Signal/Slot compatibility: carry BOTH bindings' spellings, so code
+        # written against either vocabulary keeps working headlessly.
+        Signal = staticmethod(_stub_signal)
+        pyqtSignal = staticmethod(_stub_signal)
+        Slot = staticmethod(_stub_slot)
+        pyqtSlot = staticmethod(_stub_slot)
 
     class QtGui(ProxyNamespace):
         class QColor(ProxyClass):
@@ -743,13 +811,6 @@ def _setup_compatibility() -> None:
     if not hasattr(QDialog, "exec_"):
         QDialog.exec_ = QDialog.exec  # type: ignore[method-assign]
 
-    # PySide6 uses Signal/Slot, but PyQt5 uses pyqtSignal/pyqtSlot
-    # Create aliases for backward compatibility
-    if not hasattr(QtCore, "pyqtSignal"):
-        QtCore.pyqtSignal = QtCore.Signal  # type: ignore[attr-defined]
-    if not hasattr(QtCore, "pyqtSlot"):
-        QtCore.pyqtSlot = QtCore.Slot  # type: ignore[attr-defined]
-
     # Ensure keyboard modifier shortcuts work (Qt.CTRL, Qt.ALT, etc.)
     # PySide6 may use different enum access patterns
     if not hasattr(Qt, "CTRL"):
@@ -908,6 +969,27 @@ def wrapinstance(ptr: int, base) -> object:
 # Set up compatibility shims immediately upon import
 _setup_compatibility()
 
+# Both bindings' Signal/Slot spellings, resolved once. Import these from the
+# shim rather than reaching for ``QtCore.pyqtSignal`` / ``QtCore.Signal``:
+# only one of those exists on any given binding, and the shim does not write
+# the missing one back onto the shared binding module.
+# Signals do not need real GUI mode -- only the widget imports do. When the
+# shim is stubbed out but a binding happens to be loaded already (headless IDA
+# 9.1), resolve against the real thing instead of handing back a no-op.
+_SIGNAL_SLOT_SOURCE = QtCore if _QT_AVAILABLE else _loaded_qtcore()
+_SIGNAL_SLOT = _resolve_signal_slot(_SIGNAL_SLOT_SOURCE)
+Signal = _SIGNAL_SLOT["Signal"]
+pyqtSignal = _SIGNAL_SLOT["pyqtSignal"]
+Slot = _SIGNAL_SLOT["Slot"]
+pyqtSlot = _SIGNAL_SLOT["pyqtSlot"]
+
+if not _QT_AVAILABLE:
+    # Keep the stub namespace agreeing with the module-level names, so
+    # ``QtCore.Signal`` and ``qt_shim.Signal`` never disagree.
+    for _name, _factory in _SIGNAL_SLOT.items():
+        setattr(QtCore, _name, staticmethod(_factory))
+    del _name, _factory
+
 # Export all Qt classes and constants for easy importing
 __all__ = [
     # Version constants (similar to six.PY2, six.PY3)
@@ -920,6 +1002,11 @@ __all__ = [
     "QtCore",
     "QtGui",
     "QtWidgets",
+    # Signal/Slot (both bindings' spellings; see _resolve_signal_slot)
+    "Signal",
+    "Slot",
+    "pyqtSignal",
+    "pyqtSlot",
     # Qt Core
     "Qt",
     "QEvent",

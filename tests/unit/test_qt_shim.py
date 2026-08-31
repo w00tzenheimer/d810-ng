@@ -79,3 +79,125 @@ def test_qt_flag_or_preserves_the_pyside_flag_family(monkeypatch) -> None:
 
     assert isinstance(combined, _AlignmentFlag)
     assert combined.value == 0x11
+
+
+# --- d81-vqqy: symmetric Signal/Slot resolution -------------------------------
+
+
+def _fake_pyqt5_qtcore() -> types.SimpleNamespace:
+    """A QtCore that spells signals the PyQt5 way only."""
+    return types.SimpleNamespace(pyqtSignal=lambda *a, **k: ("sig", a), pyqtSlot=lambda *a, **k: (lambda f: f))
+
+
+def _fake_pyside6_qtcore() -> types.SimpleNamespace:
+    """A QtCore that spells signals the PySide6 way only."""
+    return types.SimpleNamespace(Signal=lambda *a, **k: ("sig", a), Slot=lambda *a, **k: (lambda f: f))
+
+
+def test_resolver_fills_pyside6_spellings_from_a_pyqt5_qtcore() -> None:
+    names = qt_shim._resolve_signal_slot(_fake_pyqt5_qtcore())
+
+    assert set(names) == {"Signal", "Slot", "pyqtSignal", "pyqtSlot"}
+    assert names["Signal"] is names["pyqtSignal"]
+    assert names["Slot"] is names["pyqtSlot"]
+
+
+def test_resolver_fills_pyqt5_spellings_from_a_pyside6_qtcore() -> None:
+    names = qt_shim._resolve_signal_slot(_fake_pyside6_qtcore())
+
+    assert set(names) == {"Signal", "Slot", "pyqtSignal", "pyqtSlot"}
+    assert names["pyqtSignal"] is names["Signal"]
+    assert names["pyqtSlot"] is names["Slot"]
+
+
+def test_resolver_does_not_mutate_the_binding_module() -> None:
+    qtcore = _fake_pyside6_qtcore()
+    before = set(vars(qtcore))
+
+    qt_shim._resolve_signal_slot(qtcore)
+
+    assert set(vars(qtcore)) == before
+    assert not hasattr(qtcore, "pyqtSignal")
+
+
+def test_resolver_imports_nothing() -> None:
+    """Importing a Qt binding inside headless IDA kills the interpreter."""
+    before = set(sys.modules)
+
+    qt_shim._resolve_signal_slot(_fake_pyqt5_qtcore())
+
+    assert set(sys.modules) == before
+
+
+def test_shim_exports_all_four_signal_slot_spellings() -> None:
+    for name in ("Signal", "Slot", "pyqtSignal", "pyqtSlot"):
+        assert hasattr(qt_shim, name), f"qt_shim.{name} missing"
+        assert name in qt_shim.__all__, f"{name} missing from __all__"
+
+
+def test_headless_qtcore_exposes_both_signal_spellings() -> None:
+    assert qt_shim._QT_AVAILABLE is False
+    for name in ("Signal", "Slot", "pyqtSignal", "pyqtSlot"):
+        assert hasattr(qt_shim.QtCore, name), f"stub QtCore.{name} missing"
+
+
+def test_headless_signal_is_usable_under_either_spelling() -> None:
+    for factory in (qt_shim.QtCore.Signal, qt_shim.QtCore.pyqtSignal):
+        sig = factory(str)
+        sig.connect(lambda *a: None)
+        sig.emit("x")
+        sig.disconnect()
+
+
+def test_headless_slot_is_usable_as_a_decorator() -> None:
+    for slot in (qt_shim.QtCore.Slot, qt_shim.QtCore.pyqtSlot):
+
+        @slot(str)
+        def handler(value):
+            return value
+
+        assert handler("ok") == "ok"
+
+
+def test_loaded_qtcore_is_none_when_no_binding_is_loaded(monkeypatch) -> None:
+    for name in ("PySide6.QtCore", "PyQt5.QtCore"):
+        monkeypatch.delitem(sys.modules, name, raising=False)
+
+    assert qt_shim._loaded_qtcore() is None
+
+
+def test_loaded_qtcore_finds_an_already_imported_binding(monkeypatch) -> None:
+    fake = types.SimpleNamespace(Signal=lambda *a: None, Slot=lambda *a: None)
+    monkeypatch.setitem(sys.modules, "PySide6.QtCore", fake)
+
+    assert qt_shim._loaded_qtcore() is fake
+
+
+def test_loaded_qtcore_imports_nothing(monkeypatch) -> None:
+    """A binding import inside headless IDA can take the interpreter down."""
+    for name in ("PySide6.QtCore", "PyQt5.QtCore"):
+        monkeypatch.delitem(sys.modules, name, raising=False)
+    before = set(sys.modules)
+
+    qt_shim._loaded_qtcore()
+
+    assert set(sys.modules) == before
+
+
+def test_headless_prefers_a_loaded_binding_over_the_stub(monkeypatch) -> None:
+    """IDA 9.1 headless has PyQt5 loaded; signals there should be real."""
+    import importlib
+
+    sentinel = object()
+    fake = types.SimpleNamespace(pyqtSignal=lambda *a: sentinel)
+    monkeypatch.setitem(sys.modules, "PyQt5.QtCore", fake)
+    monkeypatch.delitem(sys.modules, "PySide6.QtCore", raising=False)
+
+    reloaded = importlib.reload(qt_shim)
+    try:
+        assert reloaded._QT_AVAILABLE is False, "still headless"
+        assert reloaded.Signal("x") is sentinel
+        assert reloaded.pyqtSignal("x") is sentinel
+    finally:
+        monkeypatch.undo()
+        importlib.reload(qt_shim)

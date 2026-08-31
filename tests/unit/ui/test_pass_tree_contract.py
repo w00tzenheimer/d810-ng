@@ -44,6 +44,8 @@ def test_pass_tree_filter_can_be_hidden_without_losing_its_text() -> None:
 
 
 def test_pass_tree_uses_the_cross_binding_signal_name() -> None:
+    """The shim resolves the spelling; reaching into QtCore picks a binding."""
     source = PASS_TREE.read_text(encoding="utf-8")
-    assert "QtCore.pyqtSignal(str)" in source
+    assert "Signal(str)" in source
+    assert "QtCore.pyqtSignal(str)" not in source
     assert "QtCore.Signal(str)" not in source

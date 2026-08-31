@@ -19,18 +19,16 @@ from d810.ui.filterable_catalog_logic import (
 )
 
 try:
-    from d810.qt_shim import QT_GRAPHICS_AVAILABLE, QtCore, QtWidgets
+    from d810.qt_shim import QT_GRAPHICS_AVAILABLE, QtCore, QtWidgets, Signal
 except ImportError:  # Narrow fake-Qt adapters may omit the availability flag.
-    from d810.qt_shim import QtCore, QtWidgets
+    from d810.qt_shim import QtCore, QtWidgets, Signal
 
     QT_GRAPHICS_AVAILABLE = True
 
 
 def _signal_factory() -> typing.Any:
-    factory = getattr(QtCore, "pyqtSignal", None)
-    if factory is None:
-        factory = QtCore.Signal
-    return factory
+    """Signal factory for either binding; the shim resolves the spelling."""
+    return Signal
 
 
 if QT_GRAPHICS_AVAILABLE:

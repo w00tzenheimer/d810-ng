@@ -18,7 +18,13 @@ from d810.core.logging import getLogger
 
 # Import Qt classes through qt_shim for compatibility
 # All compatibility shims are automatically set up by qt_shim
-from d810.qt_shim import QtCore, QtGui, QtWidgets, get_text_margins_as_tuple
+from d810.qt_shim import (
+    QtCore,
+    QtGui,
+    QtWidgets,
+    Signal,
+    get_text_margins_as_tuple,
+)
 
 # Configure a logger for the script
 LOGGER = getLogger(__name__)
@@ -734,7 +740,7 @@ class InlineButtonLineEdit(QtWidgets.QLineEdit):
 
 
 class RootPathEdit(InlineButtonLineEdit):
-    root_path_changed = QtCore.pyqtSignal(str, str)
+    root_path_changed = Signal(str, str)
 
     def __init__(self, parent=None):
         super().__init__(with_clear_button=False, parent=parent)
@@ -839,10 +845,10 @@ class StatusLabel(QtWidgets.QLabel):
 
 
 class UnitTestTreeView(QtWidgets.QTreeWidget):
-    run_all_tests = QtCore.pyqtSignal()
-    run_tests = QtCore.pyqtSignal(tuple)
-    run_setup_only = QtCore.pyqtSignal(str)
-    run_without_tear_down = QtCore.pyqtSignal(str)
+    run_all_tests = Signal()
+    run_tests = Signal(tuple)
+    run_setup_only = Signal(str)
+    run_without_tear_down = Signal(str)
 
     def __init__(self, parent):
         super().__init__(parent)

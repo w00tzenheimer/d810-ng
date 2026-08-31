@@ -2,15 +2,15 @@
 
 from __future__ import annotations
 
-from d810.qt_shim import QHeaderView, QtCore, QtWidgets
+from d810.qt_shim import QHeaderView, QtCore, QtWidgets, Signal
 from d810.ui.config_v2_editing_logic import ConfigV2PipelineOverview
 
 
 class ConfigV2PipelineOverviewWidget(QtWidgets.QWidget):
     """Show only configured active passes, in their configured order."""
 
-    inspect_requested = QtCore.pyqtSignal(int)
-    edit_pipeline_requested = QtCore.pyqtSignal()
+    inspect_requested = Signal(int)
+    edit_pipeline_requested = Signal()
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)

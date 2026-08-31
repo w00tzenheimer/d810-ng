@@ -5,7 +5,14 @@ from __future__ import annotations
 from collections.abc import Iterable, Sequence
 
 from d810.core import getLogger
-from d810.qt_shim import QHeaderView, QPalette, QtCore, QtWidgets, qt_flag_or
+from d810.qt_shim import (
+    QHeaderView,
+    QPalette,
+    QtCore,
+    QtWidgets,
+    Signal,
+    qt_flag_or,
+)
 from d810.ui.pass_tree_logic import PassTreeNodeKind, project_pass_tree
 
 logger = getLogger("d810.ui.pass_tree")
@@ -19,8 +26,8 @@ _DISABLED_MARKER = "[ ] "
 class PassTreeWidget(QtWidgets.QWidget):
     """Display the public execution model without private optimizer objects."""
 
-    pass_selected = QtCore.pyqtSignal(str)
-    edit_requested = QtCore.pyqtSignal(str)
+    pass_selected = Signal(str)
+    edit_requested = Signal(str)
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)

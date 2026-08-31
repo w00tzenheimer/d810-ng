@@ -101,8 +101,8 @@ def test_widget_exposes_indexed_inspection_and_edit_pipeline_signals() -> None:
         if isinstance(target, ast.Name)
     }
 
-    assert assignments["inspect_requested"] == "QtCore.pyqtSignal(int)"
-    assert assignments["edit_pipeline_requested"] == "QtCore.pyqtSignal()"
+    assert assignments["inspect_requested"] == "Signal(int)"
+    assert assignments["edit_pipeline_requested"] == "Signal()"
 
     set_overview = _method("set_overview")
     assert ast.unparse(set_overview.args.args[1].annotation) == (

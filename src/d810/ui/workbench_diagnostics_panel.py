@@ -65,7 +65,13 @@ except ImportError:
 
 
 if IDA_AVAILABLE:
-    from d810.qt_shim import QT_GRAPHICS_AVAILABLE, QtCore, QtGui, QtWidgets
+    from d810.qt_shim import (
+        QT_GRAPHICS_AVAILABLE,
+        QtCore,
+        QtGui,
+        QtWidgets,
+        Signal,
+    )
 
     WOPN_NOT_CLOSED_BY_ESC = getattr(ida_kernwin, "WOPN_NOT_CLOSED_BY_ESC", 0x100)
 
@@ -129,10 +135,9 @@ if IDA_AVAILABLE:
 
 
 if IDA_AVAILABLE and QT_GRAPHICS_AVAILABLE:
-    _Signal = getattr(QtCore, "Signal", getattr(QtCore, "pyqtSignal", None))
 
     class _InventorySignals(QtCore.QObject):
-        completed = _Signal(int, object, object)
+        completed = Signal(int, object, object)
 
     class _InventoryWorker(QtCore.QRunnable):
         def __init__(self, adapter: typing.Any, generation: int) -> None:
