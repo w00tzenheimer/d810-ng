@@ -36,7 +36,11 @@ class TestNativeBoundTransitionRoutes:
 
         receipt_logger = driver_module.logger
         receipt_messages = []
+        planned_receipt_batches = []
         original_info = receipt_logger.info
+        original_receipts_from_plan = (
+            driver_module.native_bound_transition_route_receipts_from_plan
+        )
 
         def capture_info(message, *args, **kwargs):
             if "native-bound transition route receipt:" in str(message):
@@ -45,7 +49,17 @@ class TestNativeBoundTransitionRoutes:
                 )
             return original_info(message, *args, **kwargs)
 
+        def capture_receipts_from_plan(plan):
+            receipts = original_receipts_from_plan(plan)
+            planned_receipt_batches.append(receipts)
+            return receipts
+
         monkeypatch.setattr(receipt_logger, "info", capture_info)
+        monkeypatch.setattr(
+            driver_module,
+            "native_bound_transition_route_receipts_from_plan",
+            capture_receipts_from_plan,
+        )
         run_deobfuscation_test(
             case=_CASE,
             d810_state=d810_state,
@@ -55,6 +69,15 @@ class TestNativeBoundTransitionRoutes:
         # The driver invokes this logger only after the backend reports a
         # committed graph and the route operation key is correlated exactly
         # once; the unit receipt tests cover those inventory gates.
+        planned_receipts = tuple(
+            receipt
+            for batch in planned_receipt_batches
+            for receipt in batch
+        )
+        assert len(planned_receipts) == 3, (
+            "expected exactly three typed native-bound receipts in emitted plans, got: "
+            f"{planned_receipts}"
+        )
         assert len(receipt_messages) == 3, (
             "expected exactly three native-bound receipt calls, got: "
             f"{receipt_messages}"

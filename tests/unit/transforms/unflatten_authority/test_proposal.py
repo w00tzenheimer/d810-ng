@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import replace
+import inspect
 
 import pytest
 
@@ -17,6 +18,557 @@ def test_canonical_patch_step_descriptor_api_is_the_single_identity_owner() -> N
     assert hasattr(proposal, "CanonicalPatchStepDescriptor")
     assert callable(proposal.canonical_patch_step_descriptors)
     assert callable(proposal.canonical_patch_step_descriptor)
+
+
+def test_corridor_forecast_adapter_accepts_prebuilt_default_gap_exclusions() -> None:
+    from d810.transforms.unflatten_authority import proposal
+
+    assert "default_gap_infeasibility_exclusions" in inspect.signature(
+        proposal.corridor_coverage_forecast_from_analysis
+    ).parameters
+
+
+def test_default_gap_producer_derives_only_exact_u32_default_loop() -> None:
+    """The producer may propose the typed gap only from closed route evidence."""
+    from dataclasses import replace
+
+    from d810.analyses.control_flow.route_predicate import DecisionDag, RouteComparison
+    from d810.ir.flowgraph import BlockSnapshot, FlowGraph, InsnKind, InsnSnapshot
+    from d810.transforms.dispatcher_corridor_coverage import (
+        DispatcherBlockAnchor, DispatcherCorridor, DispatcherCorridorCoverage,
+    )
+    from d810.transforms.unflatten_authority import proposal as proposal_api
+    from .helpers import exact_fixture
+
+    source, contract, _effect, refs = exact_fixture()
+    # Residual default block 3 is an exact one-edge control-only loop to the
+    # dispatcher.  The selected canonical proof supplies state 7.
+    blocks = dict(source.blocks)
+    original = blocks[3]
+    blocks[3] = BlockSnapshot(
+        original.serial, original.block_type, (1,), original.preds, original.flags,
+        original.start_ea, (InsnSnapshot(0, original.start_ea, (), kind=InsnKind.GOTO, raw_opcode=0),),
+        tail_opcode=0, kind=original.kind, tail_kind=InsnKind.GOTO,
+    )
+    blocks[1] = replace(blocks[1], preds=tuple(sorted((*blocks[1].preds, 3))))
+    source = FlowGraph(blocks, source.entry_serial, source.func_ea)
+    coverage = DispatcherCorridorCoverage(
+        source.func_ea, DispatcherBlockAnchor(1, 0x2000),
+        (DispatcherCorridor((DispatcherBlockAnchor(0, 0x1000), DispatcherBlockAnchor(1, 0x2000))),),
+        (DispatcherCorridor((DispatcherBlockAnchor(3, 0x4000), DispatcherBlockAnchor(1, 0x2000))),),
+        True,
+    )
+    dag = DecisionDag(32, {1: RouteComparison(1, "jz", 7, 2, 3)}, 1)
+
+    exclusions = proposal_api._derive_default_gap_infeasibility_exclusions(
+        source=source, proposal=contract, block_refs_by_serial=refs,
+        selected_route_proof_ids=(contract.route_evidence.route_proofs[0].proof_id,),
+        corridor_coverage=coverage, condition_chain_dag=dag,
+        default_entry_serial=3,
+    )
+
+    assert len(exclusions) == 1
+    assert exclusions[0].default_entry.block_ref == refs[3]
+    assert exclusions[0].residual.block_ref == refs[3]
+    assert exclusions[0].normalized_reachable_states == (7,)
+
+
+def test_default_gap_producer_derives_connected_two_node_eq_chain() -> None:
+    """A selected non-default state may traverse a closed multi-node EQ chain."""
+    from dataclasses import replace
+
+    from d810.analyses.control_flow.route_predicate import DecisionDag, RouteComparison
+    from d810.ir.flowgraph import BlockKind, BlockSnapshot, FlowGraph, InsnKind, InsnSnapshot, MopSnapshot, OperandKind, PredicateKind
+    from d810.transforms.dispatcher_corridor_coverage import (
+        DispatcherBlockAnchor, DispatcherCorridor, DispatcherCorridorCoverage,
+    )
+    from d810.transforms.unflatten_authority import proposal as proposal_api
+    from .helpers import exact_fixture
+
+    source, contract, _effect, refs = exact_fixture()
+    blocks = dict(source.blocks)
+    state = MopSnapshot(kind=OperandKind.STACK, size=4, stkoff=4, stack_refs=(4,))
+    constant = MopSnapshot(kind=OperandKind.NUMBER, size=4, value=8)
+    target = MopSnapshot(kind=OperandKind.BLOCK, block_ref=2)
+    blocks[3] = BlockSnapshot(
+        3, 0, (4, 2), (1,), 0, 0x4000,
+        (InsnSnapshot(0, 0x4000, (), l=state, r=constant, d=target,
+                      kind=InsnKind.COND_JUMP, branch_predicate=PredicateKind.EQ,
+                      is_conditional_jump=True, raw_opcode=0),),
+        tail_opcode=0, kind=BlockKind.TWO_WAY, tail_kind=InsnKind.COND_JUMP,
+    )
+    blocks[4] = BlockSnapshot(
+        4, 0, (1,), (3,), 0, 0x5000,
+        (InsnSnapshot(0, 0x5000, (), kind=InsnKind.GOTO, raw_opcode=0),),
+        tail_opcode=0, kind=BlockKind.ONE_WAY, tail_kind=InsnKind.GOTO,
+    )
+    blocks[1] = replace(blocks[1], preds=(0, 4))
+    blocks[2] = replace(blocks[2], preds=(1, 3))
+    source = FlowGraph(blocks, source.entry_serial, source.func_ea)
+    coverage = DispatcherCorridorCoverage(
+        source.func_ea, DispatcherBlockAnchor(1, 0x2000),
+        (DispatcherCorridor((DispatcherBlockAnchor(0, 0x1000), DispatcherBlockAnchor(1, 0x2000))),),
+        (DispatcherCorridor((DispatcherBlockAnchor(4, 0x5000), DispatcherBlockAnchor(1, 0x2000))),),
+        True,
+    )
+    dag = DecisionDag(32, {
+        1: RouteComparison(1, "jz", 7, 2, 3),
+        3: RouteComparison(3, "jz", 8, 2, 4),
+    }, 1)
+
+    exclusions = proposal_api._derive_default_gap_infeasibility_exclusions(
+        source=source, proposal=contract, block_refs_by_serial=refs,
+        selected_route_proof_ids=(contract.route_evidence.route_proofs[0].proof_id,),
+        corridor_coverage=coverage, condition_chain_dag=dag,
+        default_entry_serial=4,
+    )
+
+    assert len(exclusions) == 1
+    assert exclusions[0].dispatcher.block_ref == refs[1]
+    assert exclusions[0].default_entry.block_ref == refs[4]
+    assert exclusions[0].residual.block_ref == refs[4]
+
+
+def test_attach_typed_proposal_installs_default_gap_before_retirement_claims() -> None:
+    """Attachment must install the sibling ledger before it asks for retirement."""
+    from dataclasses import replace
+
+    from d810.analyses.control_flow.route_predicate import DecisionDag, RouteComparison
+    from d810.ir.flowgraph import BlockKind, BlockSnapshot, FlowGraph, InsnKind, InsnSnapshot, MopSnapshot, OperandKind, PredicateKind
+    from d810.transforms.dispatcher_corridor_coverage import (
+        DispatcherBlockAnchor, DispatcherCorridor, DispatcherCorridorCoverage,
+        RetiredDispatcherInfrastructure,
+    )
+    from d810.transforms.plan import PatchPlan, PatchRedirectGoto
+    from d810.transforms.unflatten_authority import model, proposal as proposal_api
+    from .helpers import exact_fixture
+
+    source, contract, _effect, refs = exact_fixture()
+    blocks = dict(source.blocks)
+    state = MopSnapshot(kind=OperandKind.STACK, size=4, stkoff=4, stack_refs=(4,))
+    constant = MopSnapshot(kind=OperandKind.NUMBER, size=4, value=8)
+    target = MopSnapshot(kind=OperandKind.BLOCK, block_ref=2)
+    blocks[3] = BlockSnapshot(
+        3, 0, (4, 2), (1,), 0, 0x4000,
+        (InsnSnapshot(0, 0x4000, (), l=state, r=constant, d=target,
+                      kind=InsnKind.COND_JUMP, branch_predicate=PredicateKind.EQ,
+                      is_conditional_jump=True, raw_opcode=0),),
+        tail_opcode=0, kind=BlockKind.TWO_WAY, tail_kind=InsnKind.COND_JUMP,
+    )
+    blocks[4] = BlockSnapshot(
+        4, 0, (1,), (3,), 0, 0x5000,
+        (InsnSnapshot(0, 0x5000, (), kind=InsnKind.GOTO, raw_opcode=0),),
+        tail_opcode=0, kind=BlockKind.ONE_WAY, tail_kind=InsnKind.GOTO,
+    )
+    blocks[1] = replace(blocks[1], preds=(0, 4))
+    blocks[2] = replace(blocks[2], preds=(1, 3))
+    source = FlowGraph(blocks, source.entry_serial, source.func_ea)
+    dispatcher = DispatcherBlockAnchor(1, 0x2000)
+    coverage = DispatcherCorridorCoverage(
+        source.func_ea, dispatcher,
+        (DispatcherCorridor((DispatcherBlockAnchor(0, 0x1000), dispatcher)),),
+        (DispatcherCorridor((DispatcherBlockAnchor(4, 0x5000), dispatcher)),), True,
+        retirement_candidates=(RetiredDispatcherInfrastructure("comparison_dispatcher", dispatcher),),
+    )
+    template = PatchPlan(
+        plan_id=contract.plan_id, snapshot_id="default-gap-attach", source_generation=1,
+        steps=(PatchRedirectGoto(refs[0], refs[1], refs[2]),),
+    )
+    manifest = proposal_api.canonical_redirect_manifest(template)
+    witness = replace(
+        contract.use_def_witness, redirect_owner_refs=manifest.owner_refs,
+        redirect_digest=manifest.digest,
+    )
+    attached = proposal_api.attach_typed_proposal(
+        template, source=source, block_refs_by_serial=refs,
+        canonical_route_evidence=contract.route_evidence,
+        selected_route_proof_ids=(contract.route_evidence.route_proofs[0].proof_id,),
+        exact_state_effect_exclusions=(), dispatcher_entry_serial=1,
+        dispatcher_member_serials=(1,), authoritative_handler_serials=(2,),
+        state_identity=contract.plan_inputs.state_identity, use_def_witness=witness,
+        corridor_coverage=coverage, dispatcher_removal_forecast=coverage,
+        condition_chain_dag=DecisionDag(32, {
+            1: RouteComparison(1, "jz", 7, 2, 3),
+            3: RouteComparison(3, "jz", 8, 2, 4),
+        }, 1),
+        default_entry_serial=4,
+    )
+
+    forecast = attached.unflatten_proposal.corridor_coverage_forecast
+    assert type(forecast) is model.DefaultGapInfeasibilityForecast
+    assert len(forecast.exclusions) == len(forecast.paths) == 1
+    assert forecast.exclusions[0].default_entry.block_ref == refs[4]
+    assert attached.unflatten_proposal.retirement_candidate_catalog is not None
+    assert attached.unflatten_proposal.plan_inputs.shape is model.UnflattenPlanShape.FULL_DISPATCHER_RETIREMENT
+    assert any(type(claim) is model.RetiredDispatcherInfrastructureClaim
+               for claim in attached.unflatten_proposal.claims)
+
+
+@pytest.mark.parametrize("mutation", [
+    "no_dag", "incomplete", "wrong_default", "foreign_default_leaf",
+    "foreign_root", "true_arm_default", "disconnected_node", "wrong_identity",
+    "wrong_constant", "wrong_explicit_target",
+])
+def test_default_gap_producer_fails_closed_for_non_exact_shape(mutation: str) -> None:
+    """No topology shortcut may mint a producer-side semantic allowance."""
+    from dataclasses import replace
+    from d810.analyses.control_flow.route_predicate import DecisionDag, RouteComparison
+    from d810.ir.flowgraph import BlockSnapshot, FlowGraph, InsnKind, InsnSnapshot
+    from d810.transforms.dispatcher_corridor_coverage import (
+        DispatcherBlockAnchor, DispatcherCorridor, DispatcherCorridorCoverage,
+    )
+    from d810.transforms.unflatten_authority import proposal as proposal_api
+    from .helpers import exact_fixture
+
+    source, contract, _effect, refs = exact_fixture()
+    if mutation in {"foreign_default_leaf", "foreign_root", "true_arm_default", "disconnected_node", "wrong_identity", "wrong_constant", "wrong_explicit_target"}:
+        blocks = dict(source.blocks)
+        original = blocks[3]
+        blocks[3] = BlockSnapshot(
+            original.serial, original.block_type, (1,), original.preds, original.flags,
+            original.start_ea, (InsnSnapshot(0, original.start_ea, (), kind=InsnKind.GOTO, raw_opcode=0),),
+            tail_opcode=0, kind=original.kind, tail_kind=InsnKind.GOTO,
+        )
+        blocks[1] = replace(blocks[1], preds=tuple(sorted((*blocks[1].preds, 3))))
+        if mutation in {"wrong_identity", "wrong_constant", "wrong_explicit_target"}:
+            prefix, tail = blocks[1].insn_snapshots
+            if mutation == "wrong_identity":
+                tail = replace(tail, l=replace(tail.l, stkoff=8, stack_refs=(8,)))
+            elif mutation == "wrong_constant":
+                tail = replace(tail, r=replace(tail.r, value=8))
+            else:
+                tail = replace(tail, d=replace(tail.d, block_ref=3))
+            blocks[1] = replace(blocks[1], insn_snapshots=(prefix, tail))
+        source = FlowGraph(blocks, source.entry_serial, source.func_ea)
+    coverage = DispatcherCorridorCoverage(
+        source.func_ea, DispatcherBlockAnchor(1, 0x2000), (),
+        (DispatcherCorridor((DispatcherBlockAnchor(3, 0x4000), DispatcherBlockAnchor(1, 0x2000))),),
+        mutation != "incomplete",
+    )
+    if mutation == "no_dag":
+        dag = None
+    elif mutation == "foreign_root":
+        dag = DecisionDag(32, {99: RouteComparison(99, "jz", 7, 2, 3)}, 99)
+    elif mutation == "true_arm_default":
+        dag = DecisionDag(32, {1: RouteComparison(1, "jz", 7, 3, 2)}, 1)
+    elif mutation == "disconnected_node":
+        dag = DecisionDag(32, {
+            1: RouteComparison(1, "jz", 7, 2, 3),
+            99: RouteComparison(99, "jz", 8, 2, 3),
+        }, 1)
+    else:
+        dag = DecisionDag(
+            32, {1: RouteComparison(1, "jz", 7, 2, 4 if mutation == "foreign_default_leaf" else 3)}, 1,
+        )
+    assert proposal_api._derive_default_gap_infeasibility_exclusions(
+        source=source, proposal=contract, block_refs_by_serial=refs,
+        selected_route_proof_ids=(contract.route_evidence.route_proofs[0].proof_id,),
+        corridor_coverage=coverage, condition_chain_dag=dag,
+        default_entry_serial=2 if mutation == "wrong_default" else 3,
+    ) == ()
+
+
+def _default_gap_exclusion(model, proposal, refs, *, residual_serial: int):
+    """Build one closed producer proposal against the shared canonical fixture."""
+    proof_id = proposal.route_evidence.route_proofs[0].proof_id
+    seed = model.DefaultGapInitialStateSeed(7, proof_id)
+    dispatcher = model.CorridorCoveragePathNode(refs[1], 0x2000)
+    default_entry = model.CorridorCoveragePathNode(refs[0], 0x1000)
+    residual = model.CorridorCoveragePathNode(
+        refs[residual_serial], 0x3000 if residual_serial == 2 else 0x4000,
+    )
+    content = (
+        "unflatten.default-gap-infeasibility-exclusion.v2", 4,
+        proposal.plan_inputs.state_identity, dispatcher, default_entry, residual,
+        (seed,), (proof_id,), (7,),
+    )
+    from d810.transforms.unflatten_authority.ids import authority_id as canonical_id
+
+    return model.DefaultGapInfeasibilityExclusion(
+        canonical_id(content),
+        canonical_id(("unflatten.default-gap-infeasibility-exclusion-digest.v1", content)),
+        4, proposal.plan_inputs.state_identity, dispatcher, default_entry, residual,
+        (seed,), (proof_id,), (7,),
+    )
+
+
+def _default_gap_coverage(source, *, residual_paths, retired=False):
+    from d810.transforms.dispatcher_corridor_coverage import (
+        DispatcherBlockAnchor, DispatcherCorridor, DispatcherCorridorCoverage,
+        RetiredDispatcherInfrastructure,
+    )
+
+    anchors = {
+        serial: DispatcherBlockAnchor(serial, source.blocks[serial].start_ea)
+        for serial in source.blocks
+    }
+    dispatcher = anchors[1]
+    return DispatcherCorridorCoverage(
+        source.func_ea,
+        dispatcher,
+        (DispatcherCorridor((anchors[0], dispatcher)),),
+        tuple(DispatcherCorridor(tuple(anchors[serial] for serial in path)) for path in residual_paths),
+        True,
+        retirement_candidates=(RetiredDispatcherInfrastructure("comparison_dispatcher", dispatcher),)
+        if retired else (),
+    )
+
+
+def test_default_gap_adapter_empty_input_is_exact_legacy_forecast_roundtrip() -> None:
+    from d810.transforms.unflatten_authority import model, proposal as proposal_api
+    from d810.transforms.unflatten_authority.ids import canonical_bytes, validate_canonical_roundtrip
+    from .helpers import exact_fixture
+
+    source, proposal, _effect_exclusion, refs = exact_fixture()
+    coverage = _default_gap_coverage(source, residual_paths=((2, 1),))
+    omitted = proposal_api.corridor_coverage_forecast_from_analysis(
+        coverage, proposal=proposal, block_refs_by_serial=refs,
+    )
+    explicit_empty = proposal_api.corridor_coverage_forecast_from_analysis(
+        coverage, proposal=proposal, block_refs_by_serial=refs,
+        default_gap_infeasibility_exclusions=(),
+    )
+
+    assert type(omitted) is model.CorridorCoverageForecast
+    assert type(explicit_empty) is model.CorridorCoverageForecast
+    assert explicit_empty.forecast_id == omitted.forecast_id
+    assert canonical_bytes(explicit_empty) == canonical_bytes(omitted)
+    assert validate_canonical_roundtrip(explicit_empty, model.CorridorCoverageForecast) == omitted
+
+
+def test_default_gap_adapter_rejects_incomplete_or_ambiguous_residual_linkage() -> None:
+    from d810.transforms.unflatten_authority import model, proposal as proposal_api
+    from .helpers import exact_fixture
+
+    source, proposal, _effect_exclusion, refs = exact_fixture()
+    exclusion = _default_gap_exclusion(model, proposal, refs, residual_serial=2)
+    two_residuals = _default_gap_coverage(source, residual_paths=((2, 1), (3, 1)))
+    with pytest.raises(ValueError, match="cover every exact residual"):
+        proposal_api.corridor_coverage_forecast_from_analysis(
+            two_residuals, proposal=proposal, block_refs_by_serial=refs,
+            default_gap_infeasibility_exclusions=(exclusion,),
+        )
+
+    shared_first = _default_gap_coverage(source, residual_paths=((2, 1), (2, 0, 1)))
+    with pytest.raises(ValueError, match="exact residual path"):
+        proposal_api.corridor_coverage_forecast_from_analysis(
+            shared_first, proposal=proposal, block_refs_by_serial=refs,
+            default_gap_infeasibility_exclusions=(exclusion,),
+        )
+
+
+def test_default_gap_adapter_rejects_covered_residual_coordinate_overlap() -> None:
+    from d810.transforms.dispatcher_corridor_coverage import (
+        DispatcherBlockAnchor, DispatcherCorridor, DispatcherCorridorCoverage,
+    )
+    from d810.transforms.unflatten_authority import model, proposal as proposal_api
+    from .helpers import exact_fixture
+
+    source, proposal, _effect_exclusion, refs = exact_fixture()
+    dispatcher = DispatcherBlockAnchor(1, source.blocks[1].start_ea)
+    duplicate = DispatcherCorridor((DispatcherBlockAnchor(2, source.blocks[2].start_ea), dispatcher))
+    coverage = DispatcherCorridorCoverage(
+        source.func_ea, dispatcher, (duplicate,), (duplicate,), True,
+    )
+    with pytest.raises(ValueError, match="unique and disjoint"):
+        proposal_api.corridor_coverage_forecast_from_analysis(
+            coverage, proposal=proposal, block_refs_by_serial=refs,
+            default_gap_infeasibility_exclusions=(
+                _default_gap_exclusion(model, proposal, refs, residual_serial=2),
+            ),
+        )
+
+
+def test_default_gap_adapter_rejects_mismatched_canonical_proof_source() -> None:
+    from d810.analyses.control_flow.semantic_route_evidence import (
+        SemanticCarrierProof, SemanticCorridorPoint, SemanticPredicateProof,
+        SemanticStateWriteDeliveryKind, SemanticStateWriteProof,
+        canonical_semantic_evidence_from_proofs,
+    )
+    from d810.ir.block_identity import StableBlockIdentity
+    from d810.transforms.unflatten_authority import producer_api
+    from .helpers import exact_fixture
+
+    source, proposal, _effect_exclusion, refs = exact_fixture()
+    original = proposal.route_evidence.route_proofs[0]
+    foreign_identity = StableBlockIdentity.from_instruction_eas(
+        (0x6000,), native_key=refs[0].identity.native_key,
+    )
+    foreign_point = SemanticCorridorPoint(foreign_identity, 0x6000)
+    mismatched_proof = replace(
+        original,
+        source_identity=foreign_identity,
+        source_anchor_ea=0x6000,
+        source_owner_identity=foreign_identity,
+        source_owner_anchor_ea=0x6000,
+        predicate=SemanticPredicateProof(
+            original.predicate.kind, foreign_point, foreign_point, (foreign_point,),
+            original.predicate.storage_identity, original.predicate.width,
+            original.predicate.compare_constant,
+        ),
+        carriers=(SemanticCarrierProof(
+            original.carriers[0].carrier_id, foreign_point, (foreign_point,),
+            (foreign_point,), original.carriers[0].storage_identity,
+            original.carriers[0].width, original.carriers[0].state_values,
+            frozenset((0x6000,)),
+        ),),
+        state_write=SemanticStateWriteProof(
+            foreign_identity, 0x6000, original.state_write.state_variable,
+            original.state_write.width, original.state_write.state_constant,
+            (0x6000,), None, (), SemanticStateWriteDeliveryKind.CONDITIONAL,
+        ),
+    )
+    mismatched_evidence = canonical_semantic_evidence_from_proofs(
+        native_key=proposal.route_evidence.native_key,
+        generation=proposal.route_evidence.generation,
+        proofs=(mismatched_proof,),
+    )
+    with pytest.raises(ValueError, match="canonical route source endpoint"):
+        producer_api.build_proposal(
+            plan_id=proposal.plan_id, source=source, block_refs_by_serial=refs,
+            source_generation=proposal.source_identity_catalog.generation,
+            canonical_route_evidence=mismatched_evidence,
+            selected_route_proof_ids=(mismatched_evidence.route_proofs[0].proof_id,),
+            exact_state_effect_exclusions=(_effect_exclusion,),
+            dispatcher_entry_serial=1, dispatcher_member_serials=(0, 1),
+            authoritative_handler_serials=(2,),
+            state_identity=proposal.plan_inputs.state_identity,
+            use_def_witness=proposal.use_def_witness,
+        )
+
+
+def test_fully_covered_default_gap_forecast_mints_retirement_claim_by_coordinate() -> None:
+    from d810.transforms.unflatten_authority import model, proposal as proposal_api
+    from .helpers import exact_fixture
+
+    source, proposal, _effect_exclusion, refs = exact_fixture()
+    coverage = _default_gap_coverage(source, residual_paths=((2, 1),), retired=True)
+    forecast = proposal_api.corridor_coverage_forecast_from_analysis(
+        coverage, proposal=proposal, block_refs_by_serial=refs,
+        default_gap_infeasibility_exclusions=(
+            _default_gap_exclusion(model, proposal, refs, residual_serial=2),
+        ),
+    )
+    proposal_with_forecast = replace(proposal, corridor_coverage_forecast=forecast)
+    claims = proposal_api.claims_from_dispatcher_removal_forecast(
+        coverage, proposal=proposal_with_forecast, block_refs_by_serial=refs,
+    )
+
+    assert len(claims) == 1
+    assert type(claims[0]) is model.RetiredDispatcherInfrastructureClaim
+    assert {
+        (path.nodes, path.state_merge) for path in forecast.paths
+    } == {
+        (path.nodes, path.state_merge)
+        for path in forecast.base_forecast.paths
+        if path.path_id in forecast.base_forecast.residual_path_ids
+    }
+    assert claims[0].infrastructure_subject.block_ref == refs[1]
+    assert claims[0].corridor_subject.locator.member_refs == tuple(
+        sorted((refs[0], refs[1]), key=proposal_api.canonical_bytes)
+    )
+
+
+def test_corridor_forecast_adapter_mints_default_gap_sibling_only_for_exact_residual() -> None:
+    from d810.transforms.dispatcher_corridor_coverage import (
+        DispatcherBlockAnchor, DispatcherCorridor, DispatcherCorridorCoverage,
+    )
+    from d810.transforms.unflatten_authority import model, proposal as proposal_api
+    from d810.transforms.unflatten_authority.ids import authority_id as canonical_authority_id
+    from .helpers import exact_fixture
+
+    source, proposal, _effect_exclusion, refs = exact_fixture()
+    dispatcher = DispatcherBlockAnchor(1, source.blocks[1].start_ea)
+    coverage = DispatcherCorridorCoverage(
+        function_ea=source.func_ea, dispatcher=dispatcher,
+        covered_corridors=(DispatcherCorridor((DispatcherBlockAnchor(0, source.blocks[0].start_ea), dispatcher)),),
+        residual_corridors=(DispatcherCorridor((DispatcherBlockAnchor(2, source.blocks[2].start_ea), dispatcher)),),
+        enumeration_complete=True,
+    )
+    dispatcher_node = model.CorridorCoveragePathNode(refs[1], source.blocks[1].start_ea)
+    default_entry = model.CorridorCoveragePathNode(refs[0], source.blocks[0].start_ea)
+    residual = model.CorridorCoveragePathNode(refs[2], source.blocks[2].start_ea)
+    proof_id = proposal.route_evidence.route_proofs[0].proof_id
+    seed = model.DefaultGapInitialStateSeed(7, proof_id)
+    content = (
+        "unflatten.default-gap-infeasibility-exclusion.v2", 4,
+        proposal.plan_inputs.state_identity, dispatcher_node, default_entry,
+        residual, (seed,), (proof_id,), (7,),
+    )
+    exclusion = model.DefaultGapInfeasibilityExclusion(
+        canonical_authority_id(content),
+        canonical_authority_id(("unflatten.default-gap-infeasibility-exclusion-digest.v1", content)),
+        4, proposal.plan_inputs.state_identity, dispatcher_node, default_entry,
+        residual, (seed,), (proof_id,), (7,),
+    )
+    forecast = proposal_api.corridor_coverage_forecast_from_analysis(
+        coverage, proposal=proposal, block_refs_by_serial=refs,
+        default_gap_infeasibility_exclusions=(exclusion,),
+    )
+
+    assert type(forecast) is model.DefaultGapInfeasibilityForecast
+    assert forecast.paths[0].nodes[0] == residual
+    assert forecast.paths[0].nodes[-1] == dispatcher_node
+    covered_content = (
+        "unflatten.default-gap-infeasibility-exclusion.v2", 4,
+        proposal.plan_inputs.state_identity, dispatcher_node, residual,
+        default_entry, (seed,), (proof_id,), (7,),
+    )
+    covered_exclusion = model.DefaultGapInfeasibilityExclusion(
+        canonical_authority_id(covered_content),
+        canonical_authority_id(("unflatten.default-gap-infeasibility-exclusion-digest.v1", covered_content)),
+        4, proposal.plan_inputs.state_identity, dispatcher_node, residual,
+        default_entry, (seed,), (proof_id,), (7,),
+    )
+    with pytest.raises(ValueError, match="residual"):
+        proposal_api.corridor_coverage_forecast_from_analysis(
+            coverage, proposal=proposal, block_refs_by_serial=refs,
+            default_gap_infeasibility_exclusions=(covered_exclusion,),
+        )
+    foreign_proof_id = authority_id("proposal-default-gap-foreign-proof")
+    foreign_seed = model.DefaultGapInitialStateSeed(7, foreign_proof_id)
+    foreign_content = (
+        "unflatten.default-gap-infeasibility-exclusion.v2", 4,
+        proposal.plan_inputs.state_identity, dispatcher_node, default_entry,
+        residual, (foreign_seed,), (foreign_proof_id,), (7,),
+    )
+    foreign_proof_exclusion = model.DefaultGapInfeasibilityExclusion(
+        canonical_authority_id(foreign_content),
+        canonical_authority_id(("unflatten.default-gap-infeasibility-exclusion-digest.v1", foreign_content)),
+        4, proposal.plan_inputs.state_identity, dispatcher_node, default_entry,
+        residual, (foreign_seed,), (foreign_proof_id,), (7,),
+    )
+    with pytest.raises(ValueError, match="route proof"):
+        proposal_api.corridor_coverage_forecast_from_analysis(
+            coverage, proposal=proposal, block_refs_by_serial=refs,
+            default_gap_infeasibility_exclusions=(foreign_proof_exclusion,),
+        )
+
+
+@pytest.mark.parametrize("seed_state, message", [(9, "seed state")])
+def test_default_gap_adapter_rejects_canonical_proof_state_mismatch(seed_state, message) -> None:
+    """Producer linkage rejects states that the cited canonical proof never selects."""
+    from d810.transforms.dispatcher_corridor_coverage import DispatcherBlockAnchor, DispatcherCorridor, DispatcherCorridorCoverage
+    from d810.transforms.unflatten_authority import model, proposal as proposal_api
+    from d810.transforms.unflatten_authority.ids import authority_id as canonical_authority_id
+    from .helpers import exact_fixture
+
+    source, proposal, _effect_exclusion, refs = exact_fixture()
+    dispatcher = DispatcherBlockAnchor(1, source.blocks[1].start_ea)
+    coverage = DispatcherCorridorCoverage(source.func_ea, dispatcher,
+        (DispatcherCorridor((DispatcherBlockAnchor(0, source.blocks[0].start_ea), dispatcher)),),
+        (DispatcherCorridor((DispatcherBlockAnchor(2, source.blocks[2].start_ea), dispatcher)),), True)
+    proof_id = proposal.route_evidence.route_proofs[0].proof_id
+    seed = model.DefaultGapInitialStateSeed(seed_state, proof_id)
+    nodes = (
+        model.CorridorCoveragePathNode(refs[1], source.blocks[1].start_ea),
+        model.CorridorCoveragePathNode(refs[0], source.blocks[0].start_ea),
+        model.CorridorCoveragePathNode(refs[2], source.blocks[2].start_ea),
+    )
+    content = ("unflatten.default-gap-infeasibility-exclusion.v2", 4, proposal.plan_inputs.state_identity, nodes[0], nodes[1], nodes[2], (seed,), (proof_id,), (seed_state,))
+    exclusion = model.DefaultGapInfeasibilityExclusion(canonical_authority_id(content), canonical_authority_id(("unflatten.default-gap-infeasibility-exclusion-digest.v1", content)), 4, proposal.plan_inputs.state_identity, nodes[0], nodes[1], nodes[2], (seed,), (proof_id,), (seed_state,))
+    with pytest.raises(ValueError, match=message):
+        proposal_api.corridor_coverage_forecast_from_analysis(coverage, proposal=proposal, block_refs_by_serial=refs, default_gap_infeasibility_exclusions=(exclusion,))
 
 
 def test_canonical_patch_step_descriptor_owns_direct_step_identity() -> None:
@@ -96,6 +648,49 @@ def test_conditional_redirect_descriptor_owns_both_creation_specs() -> None:
     mutated_descriptor = canonical_patch_step_descriptor(mutated, 0)
     assert mutated_descriptor.new_block_spec_digests[0][1] != descriptor.new_block_spec_digests[0][1]
     assert mutated_descriptor.step_digest != descriptor.step_digest
+
+
+def test_lower_conditional_descriptor_encodes_synthetic_counter_bound() -> None:
+    """The typed manifest must seal every field of a synthesized loop guard."""
+    from d810.transforms.graph_modification import SyntheticCounterBoundCondition
+    from d810.transforms.plan import PatchLowerConditionalStateTransition
+    from d810.transforms.unflatten_authority.proposal import (
+        canonical_patch_step_descriptor,
+        canonical_redirect_manifest,
+    )
+
+    proposal, plan_id = _proposal_and_plan_ids()
+    refs = tuple(block.block_ref for block in proposal.source_identity_catalog.blocks)
+
+    def plan_for(bound: int) -> PatchPlan:
+        return PatchPlan(
+            plan_id=plan_id,
+            snapshot_id="snapshot-1",
+            source_generation=proposal.source_identity_catalog.generation,
+            steps=(
+                PatchLowerConditionalStateTransition(
+                    source_serial=refs[0],
+                    old_dispatcher_serial=refs[1],
+                    rewrite_from_ea=0x1000,
+                    condition_operand=SyntheticCounterBoundCondition(
+                        counter_size=4,
+                        bound=bound,
+                        counter_stkoff=0x38,
+                    ),
+                    false_target_serial=refs[1],
+                    true_target_serial=refs[2],
+                ),
+            ),
+        )
+
+    first = plan_for(100)
+    changed = plan_for(101)
+    assert canonical_patch_step_descriptor(first, 0).step_digest != (
+        canonical_patch_step_descriptor(changed, 0).step_digest
+    )
+    assert canonical_redirect_manifest(first).digest != (
+        canonical_redirect_manifest(changed).digest
+    )
 
 
 def _discovery_fixture(block_specs):
@@ -924,6 +1519,11 @@ def test_detached_component_attachment_carries_sealed_corridor_into_transaction(
         phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
     )
     assert len(phase_results) == 1
+    assert phase_results[0].accepted
+    assert (
+        projected_inventory.serial_by_ref[refs[2]]
+        not in projected_inventory.reachable_serials
+    )
 
 
 def test_proposal_module_has_no_local_removal_verdict_api() -> None:

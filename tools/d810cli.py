@@ -46,6 +46,7 @@ else:
 DEFAULT_WORKTREE = _CURRENT_WORKTREE
 DEFAULT_FUNCTION = "sub_7FFD3338C040"
 DEFAULT_PROJECT = "hodur_flag2.json"
+CANONICAL_FIXTURE_BINARY = "libobfuscated"
 DEFAULT_CAPTURE_POST_MATURITY = "8"  # MMAT_GLBOPT1
 DEFAULT_EXTRAS = [
     "-m",
@@ -1303,7 +1304,18 @@ def cmd_fixture(args: argparse.Namespace) -> int:
             return 0
 
     if sub in ("build", "add"):
-        binary = getattr(args, "binary_name", None) or "libobfuscated_fixturetest"
+        binary = getattr(args, "binary_name", None)
+        if not binary:
+            _die(
+                "fixture build/add requires --binary-name for an explicit "
+                "noncanonical output; local compatibility builds must not "
+                "overwrite the reversepc-built libobfuscated corpus"
+            )
+        if binary.casefold() == CANONICAL_FIXTURE_BINARY.casefold():
+            _die(
+                f"reserved canonical binary name: {binary}; choose a distinct "
+                "throwaway output for the local compatibility build"
+            )
         dll = fb.build_fixture_dll(REPO_ROOT, binary, runner=subprocess.run)
         print(f"d810cli: built {dll}", file=sys.stderr)
         if sub == "build":
@@ -1338,7 +1350,9 @@ def cmd_fixture(args: argparse.Namespace) -> int:
             return 0
 
     if sub in ("verify", "add"):
-        binary = getattr(args, "binary_name", None) or "libobfuscated_fixturetest"
+        binary = (
+            getattr(args, "binary_name", None) or CANONICAL_FIXTURE_BINARY
+        )
         ok = fb.verify_fixture_case(
             REPO_ROOT, args.function, binary, runner=subprocess.run
         )
@@ -2167,7 +2181,12 @@ def build_parser() -> argparse.ArgumentParser:
         "build", help="local build_masm.sh -> throwaway DLL"
     )
     _fx_common(fx_build)
-    fx_build.add_argument("--binary-name", dest="binary_name", default=None)
+    fx_build.add_argument(
+        "--binary-name",
+        dest="binary_name",
+        required=True,
+        help="explicit noncanonical output stem for the local compatibility build",
+    )
 
     fx_register = fixture_sub.add_parser(
         "register", help="upsert DSL case into DAC_MASM_CASES"
@@ -2179,14 +2198,24 @@ def build_parser() -> argparse.ArgumentParser:
         "verify", help="run the DSL case (D810_TEST_BINARY)"
     )
     _fx_common(fx_verify)
-    fx_verify.add_argument("--binary-name", dest="binary_name", default=None)
+    fx_verify.add_argument(
+        "--binary-name",
+        dest="binary_name",
+        default=None,
+        help=f"binary stem to verify (default: {CANONICAL_FIXTURE_BINARY})",
+    )
 
     fx_add = fixture_sub.add_parser(
         "add", help="run the whole pipeline (human gate at end)"
     )
     _fx_common(fx_add)
     fx_add.add_argument("--project", required=True)
-    fx_add.add_argument("--binary-name", dest="binary_name", default=None)
+    fx_add.add_argument(
+        "--binary-name",
+        dest="binary_name",
+        required=True,
+        help="explicit noncanonical output stem for the local compatibility build",
+    )
     fx_add.add_argument("--dry-run", action="store_true")
     fx_add.add_argument(
         "--yes",

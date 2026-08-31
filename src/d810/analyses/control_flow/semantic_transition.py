@@ -127,6 +127,31 @@ class StateTransitionResolution:
 
 
 @dataclass(frozen=True, slots=True)
+class NativeBoundRouteBindingEvidence:
+    """Exact current coordinates retained from a strong predecessor binding."""
+
+    target_native_ea: int
+    state_var_stkoff: int | None
+    state_var_reg: int | None
+
+    def __post_init__(self) -> None:
+        target_native_ea = self.target_native_ea
+        if (
+            type(target_native_ea) is not int
+            or not 0 < target_native_ea < 0xFFFFFFFFFFFFFFFF
+        ):
+            raise ValueError("native-bound route evidence requires an exact target EA")
+        stkoff = self.state_var_stkoff
+        state_reg = self.state_var_reg
+        if stkoff is not None and type(stkoff) is not int:
+            raise TypeError("native-bound route evidence stack identity must be exact")
+        if state_reg is not None and type(state_reg) is not int:
+            raise TypeError("native-bound route evidence register identity must be exact")
+        if (stkoff is None) == (state_reg is None):
+            raise ValueError("native-bound route evidence requires exactly one state identity")
+
+
+@dataclass(frozen=True, slots=True)
 class NativeBoundTransitionRoute:
     """Portable route evidence rebound to the current MBA.
 
@@ -144,6 +169,7 @@ class NativeBoundTransitionRoute:
     target_handler_serial: int
     resolver_kind: str | None = None
     row_kind: str | None = None
+    binding_evidence: NativeBoundRouteBindingEvidence | None = None
 
     def __post_init__(self) -> None:
         fact_id = str(self.fact_id).strip()
@@ -176,6 +202,9 @@ class NativeBoundTransitionRoute:
                 )
             resolver_kind = resolver_kind.strip()
             row_kind = row_kind.strip()
+        binding_evidence = self.binding_evidence
+        if binding_evidence is not None and type(binding_evidence) is not NativeBoundRouteBindingEvidence:
+            raise TypeError("native-bound transition route requires typed binding evidence")
         object.__setattr__(self, "fact_id", fact_id)
         object.__setattr__(self, "source_instruction_ea", source_instruction_ea)
         object.__setattr__(self, "source_block_serial", source_block_serial)
@@ -183,6 +212,7 @@ class NativeBoundTransitionRoute:
         object.__setattr__(self, "target_handler_serial", target_handler_serial)
         object.__setattr__(self, "resolver_kind", resolver_kind)
         object.__setattr__(self, "row_kind", row_kind)
+        object.__setattr__(self, "binding_evidence", binding_evidence)
 
     @property
     def state(self) -> int:
@@ -411,6 +441,7 @@ def bind_native_bound_transition_routes(
                 bool,
                 int,
                 int | None,
+                tuple[int | None, int | None],
                 str | None,
                 str | None,
             ]
@@ -539,6 +570,7 @@ def bind_native_bound_transition_routes(
                 typed_fact,
                 source_serial,
                 target_native_ea,
+                resolution_identity,
                 resolver_kind,
                 row_kind,
             )
@@ -550,7 +582,20 @@ def bind_native_bound_transition_routes(
     # only.  Any malformed/conflicting member rejects the complete group.
     grouped: dict[
         tuple[int, int],
-        list[tuple[str, int, int, int, int, bool, str | None, str | None]],
+        list[
+            tuple[
+                str,
+                int,
+                int,
+                int,
+                int,
+                bool,
+                int | None,
+                tuple[int | None, int | None],
+                str | None,
+                str | None,
+            ]
+        ],
     ] = {}
     for source_ea, observations in grouped_observations.items():
         if source_ea in invalid_source_eas:
@@ -561,6 +606,7 @@ def bind_native_bound_transition_routes(
         typed_target_native_eas: set[int] = set()
         typed_missing_target_native_ea = False
         typed_provenances: set[tuple[str, str]] = set()
+        typed_identities: set[tuple[int | None, int | None]] = set()
         for item in observations:
             (
                 _fact_id,
@@ -570,10 +616,12 @@ def bind_native_bound_transition_routes(
                 typed_fact,
                 _serial,
                 target_native_ea,
+                resolution_identity,
                 resolver_kind,
                 row_kind,
             ) = item
             if typed_fact:
+                typed_identities.add(resolution_identity)
                 if target_native_ea is not None:
                     typed_target_native_eas.add(target_native_ea)
                 else:
@@ -595,6 +643,8 @@ def bind_native_bound_transition_routes(
             # row policies.  Preserve the distinction for entry consumers or
             # reject the entire source group.
             continue
+        if len(typed_identities) > 1:
+            continue
         bound_target_serial: int | None = None
         if typed_target_native_eas:
             target_native_ea = next(iter(typed_target_native_eas))
@@ -614,7 +664,18 @@ def bind_native_bound_transition_routes(
             ):
                 continue
         candidates: list[
-            tuple[str, int, int, int, int, bool, str | None, str | None]
+            tuple[
+                str,
+                int,
+                int,
+                int,
+                int,
+                bool,
+                int | None,
+                tuple[int | None, int | None],
+                str | None,
+                str | None,
+            ]
         ] = []
         invalid_group = False
         for (
@@ -624,7 +685,8 @@ def bind_native_bound_transition_routes(
             prior_target_serial,
             typed_fact,
             source_serial,
-            _target_native_ea,
+            candidate_target_native_ea,
+            candidate_identity,
             resolver_kind,
             row_kind,
         ) in observations:
@@ -674,6 +736,8 @@ def bind_native_bound_transition_routes(
                     state_constant,
                     current_target_serial,
                     typed_fact,
+                    candidate_target_native_ea,
+                    candidate_identity,
                     resolver_kind,
                     row_kind,
                 )
@@ -697,6 +761,8 @@ def bind_native_bound_transition_routes(
             state_constant,
             target_serial,
             typed_fact,
+            target_native_ea,
+            state_identity,
             resolver_kind,
             row_kind,
         ) = min(
@@ -716,6 +782,20 @@ def bind_native_bound_transition_routes(
                 target_handler_serial=target_serial,
                 resolver_kind=resolver_kind,
                 row_kind=row_kind,
+                binding_evidence=(
+                    NativeBoundRouteBindingEvidence(
+                        target_native_ea=int(target_native_ea),
+                        state_var_stkoff=state_identity[0],
+                        state_var_reg=state_identity[1],
+                    )
+                    if (
+                        typed_fact
+                        and target_native_ea is not None
+                        and supported_identity == state_identity
+                        and (state_identity[0] is None) != (state_identity[1] is None)
+                    )
+                    else None
+                ),
             )
         )
     return tuple(

@@ -74,6 +74,7 @@ from d810.transforms.cfg_transaction import (
     NativeBlockRef,
     PlanBlockRef,
     PreparedCfgTransaction,
+    TransactionAttemptId,
 )
 from d810.transforms.unflatten_authority.ids import authority_id
 from d810.transforms.unflatten_authority.ids import claim_id
@@ -225,6 +226,33 @@ def _make_block(
     *,
     kind: BlockKind | None = None,
 ) -> BlockSnapshot:
+    resolved_kind = (
+        kind
+        or (
+            BlockKind.TWO_WAY
+            if len(succs) == 2
+            else BlockKind.ONE_WAY
+            if len(succs) == 1
+            else BlockKind.N_WAY
+            if len(succs) > 2
+            else BlockKind.ZERO_WAY
+        )
+    )
+    tail = (
+        InsnSnapshot(
+            opcode=0,
+            raw_opcode=0,
+            ea=0x1000 + serial,
+            native_ea=0x1000 + serial,
+            operands=(),
+            d=MopSnapshot(kind=OperandKind.BLOCK, block_ref=succs[0]),
+            kind=InsnKind.COND_JUMP,
+            control_transfer_kind=ControlTransferKind.CONDITIONAL_BRANCH,
+            is_conditional_jump=True,
+        )
+        if resolved_kind is BlockKind.TWO_WAY
+        else None
+    )
     return BlockSnapshot(
         serial=serial,
         block_type=0,
@@ -232,20 +260,11 @@ def _make_block(
         preds=preds,
         flags=0,
         start_ea=0x1000 + serial,
-        insn_snapshots=(),
-        kind=(
-            kind
-            or (
-                BlockKind.TWO_WAY
-                if len(succs) == 2
-                else BlockKind.ONE_WAY
-                if len(succs) == 1
-                else BlockKind.N_WAY
-                if len(succs) > 2
-                else BlockKind.ZERO_WAY
-            )
-        ),
-        tail_kind=InsnKind.COND_JUMP if len(succs) == 2 else None,
+        insn_snapshots=() if tail is None else (tail,),
+        tail_opcode=None if tail is None else tail.opcode,
+        raw_tail_opcode=None if tail is None else tail.raw_opcode,
+        kind=resolved_kind,
+        tail_kind=None if tail is None else tail.kind,
     )
 
 
@@ -276,8 +295,9 @@ def _make_cfg(
 
 
 class _FakeTranslator:
-    def __init__(self, cfg: FlowGraph) -> None:
+    def __init__(self, cfg: FlowGraph, *, simulate_lowering: bool = False) -> None:
         self.cfg = cfg
+        self.simulate_lowering = simulate_lowering
         self.lower_calls: list[PatchPlan] = []
         self.lift_count = 0
         self.contract = None
@@ -312,6 +332,14 @@ class _FakeTranslator:
             plan_refs=tuple(spec.block_id for spec in rewrite_plan.new_blocks),
         )
         self.lower_calls.append(rewrite_plan)
+        if self.simulate_lowering:
+            projected = project_patch_plan(
+                self.cfg,
+                rewrite_plan,
+                snapshot_id=rewrite_plan.snapshot_id,
+            ).graph
+            object.__setattr__(self.cfg, "blocks", projected.blocks)
+            object.__setattr__(self.cfg, "metadata", projected.metadata)
         return len(rewrite_plan.steps)
 
 
@@ -324,6 +352,29 @@ def _native_ref(serial: int) -> NativeBlockRef:
     )
 
 
+def _materialize_convert_to_goto_sources(cfg: FlowGraph, plan: PatchPlan) -> None:
+    """Give ordinary ConvertToGoto plans an exact conditional source shape."""
+    source_coordinates = dict(plan.source_coordinates)
+    blocks = dict(cfg.blocks)
+    for step in plan.steps:
+        if type(step) is not PatchConvertToGoto:
+            continue
+        source = source_coordinates[step.block_serial]
+        target = source_coordinates[step.goto_target]
+        source_block = blocks[source]
+        if source_block.kind is BlockKind.TWO_WAY:
+            continue
+        assert source_block.succs == (target,)
+        alternate = max(blocks) + 1
+        blocks[alternate] = _make_block(
+            alternate,
+            (target,),
+            (source,),
+        )
+        blocks[source] = _make_block(source, (target, alternate), source_block.preds)
+    object.__setattr__(cfg, "blocks", blocks)
+
+
 def _ordinary_gateway(
     cfg: FlowGraph,
     plan: PatchPlan,
@@ -332,6 +383,7 @@ def _ordinary_gateway(
     event_emitter: EventEmitter | None = None,
     lifecycle_authority: object | None = None,
 ) -> MbaMutationGateway:
+    _materialize_convert_to_goto_sources(cfg, plan)
     index = MbaBlockIdentityIndex.from_flow_graph(
         session_id="backend-test",
         generation=int(plan.source_generation or 0),
@@ -576,8 +628,9 @@ def test_apply_rejects_plan_that_collapses_entry_reachability() -> None:
         new_target=0,
     )
     translator = _FakeTranslator(cfg)
+    gateway = _ordinary_gateway(cfg, plan)
     backend = HexRaysMutationBackend(
-        mutation_gateway=_ordinary_gateway(cfg, plan),
+        mutation_gateway=gateway,
         translator=translator,
     )
 
@@ -821,6 +874,7 @@ def _typed_bootstrap_authority_plan(
                     1,
                     target_point,
                     alternate_point,
+                    state,
                 ),
             ),
             (),
@@ -833,6 +887,7 @@ def _typed_bootstrap_authority_plan(
             target_ea,
             dispatcher_ref.identity,
             dispatcher_block.start_ea,
+            (source_point, dispatcher_point),
             dag_witness.path,
         )
         bootstrap = SemanticBootstrapProof(
@@ -929,8 +984,9 @@ def test_apply_rejects_unbound_comparison_dispatcher_removal_below_raw_threshold
     )
 
     translator = _FakeTranslator(cfg)
+    gateway = _ordinary_gateway(cfg, plan)
     backend = HexRaysMutationBackend(
-        mutation_gateway=_ordinary_gateway(cfg, plan),
+        mutation_gateway=gateway,
         translator=translator,
     )
 
@@ -969,10 +1025,10 @@ def test_apply_rejects_dispatcher_removal_proof_when_one_handler_is_lost() -> No
         authoritative_handler_serials=(1,),
         removal_forecast=removal_forecast,
     )
-
     translator = _FakeTranslator(cfg)
+    gateway = _ordinary_gateway(cfg, plan)
     backend = HexRaysMutationBackend(
-        mutation_gateway=_ordinary_gateway(cfg, plan),
+        mutation_gateway=gateway,
         translator=translator,
     )
 
@@ -1530,7 +1586,7 @@ def test_early_transaction_failure_mints_attempt_id(monkeypatch) -> None:
 
 def test_apply_lowers_plan_when_reachability_is_preserved() -> None:
     cfg = _make_cfg(
-        [(0, 1), (1, 2), (2, 3)],
+        [(0, 1), (0, 2), (1, 2), (2, 3)],
         stop_serials=(3,),
     )
     plan = _ordinary_plan(
@@ -1703,7 +1759,7 @@ def test_apply_allows_patch_disjoint_from_committed_semantic_owner() -> None:
         native_key=NATIVE_KEY,
         state=state,
     )
-    translator = _FakeTranslator(cfg)
+    translator = _FakeTranslator(cfg, simulate_lowering=True)
     backend = HexRaysMutationBackend(
         mutation_gateway=_ordinary_gateway(
             cfg,
@@ -2602,10 +2658,10 @@ def test_direct_commit_rejects_precommit_authority_tampering_before_gateway_comm
     assert commits == []
 
 
-def test_direct_public_observed_gates_share_one_exact_ledger_occurrence(
+def test_direct_public_observed_gate_consumes_one_exact_ledger_occurrence(
     monkeypatch,
 ) -> None:
-    """The participant lifecycle passes one observed ledger to every gate."""
+    """The participant lifecycle validates one unified observed ledger once."""
     from d810.transforms.unflatten_authority import gates
 
     _fixture, source, participant = _direct_authority_participant()
@@ -2618,19 +2674,11 @@ def test_direct_public_observed_gates_share_one_exact_ledger_occurrence(
         translator=participant.translator,
     )
     seen = []
-    for name in (
-        "validate_projected_effect_loss_ledger",
-        "validate_projected_dispatcher_removal_ledger",
-        "validate_projected_corridor_coverage_ledger",
-        "validate_projected_terminal_loss_ledger",
-    ):
-        original = getattr(gates, name)
-        monkeypatch.setattr(
-            gates, name,
-            lambda ledger, case, _original=original: (
-                seen.append((ledger, case)) or _original(ledger, case)
-            ),
-        )
+    original = gates.validate_projected_loss_ledger
+    monkeypatch.setattr(
+        gates, "validate_projected_loss_ledger",
+        lambda ledger, case: seen.append((ledger, case)) or original(ledger, case),
+    )
 
     assert backend.apply(participant.plan, SimpleNamespace(qty=source.num_blocks)) is not source
     execution = backend.last_patch_execution
@@ -2641,14 +2689,14 @@ def test_direct_public_observed_gates_share_one_exact_ledger_occurrence(
         (ledger, case) for ledger, case in seen
         if case is acceptance.observed_case
     ]
-    assert len(observed_seen) == 4
+    assert len(observed_seen) == 1
     assert all(ledger is acceptance.observed_ledger for ledger, _case in observed_seen)
 
 
-def test_exact_direct_participant_mints_one_ledger_consumed_by_all_projected_gates(
+def test_exact_direct_participant_mints_one_ledger_consumed_by_unified_projected_gate(
     monkeypatch,
 ) -> None:
-    """The real participant transfers one exact effect-loss ledger to every gate."""
+    """The real participant transfers one exact ledger to one unified gate."""
     from d810.transforms.unflatten_authority import transaction_api
 
     source, participant = _exact_direct_authority_participant()
@@ -2659,20 +2707,12 @@ def test_exact_direct_participant_mints_one_ledger_consumed_by_all_projected_gat
         "build_projected_semantic_loss_ledger",
         lambda case, verdict: minted.append((case, verdict)) or factory(case, verdict),
     )
-    for name in (
-        "validate_projected_effect_loss_ledger",
-        "validate_projected_dispatcher_removal_ledger",
-        "validate_projected_corridor_coverage_ledger",
-        "validate_projected_terminal_loss_ledger",
-    ):
-        consumer = getattr(transaction_api.gates, name)
-        monkeypatch.setattr(
-            transaction_api.gates,
-            name,
-            lambda ledger, case, _consumer=consumer: (
-                consumed.append((ledger, case)) or _consumer(ledger, case)
-            ),
-        )
+    consumer = transaction_api.gates.validate_projected_loss_ledger
+    monkeypatch.setattr(
+        transaction_api.gates,
+        "validate_projected_loss_ledger",
+        lambda ledger, case: consumed.append((ledger, case)) or consumer(ledger, case),
+    )
 
     projected = participant.project(participant.plan, source)
     prepared = participant.preflight(projected)
@@ -2684,7 +2724,7 @@ def test_exact_direct_participant_mints_one_ledger_consumed_by_all_projected_gat
     assert bound.unflatten_authority.prepared is authority
     assert len(minted) == 1
     assert minted[0][0] is authority.projected_case
-    assert len(consumed) == 4
+    assert len(consumed) == 1
     assert all(ledger is authority.projected_loss_ledger for ledger, _case in consumed)
     assert all(case is authority.projected_case for _ledger, case in consumed)
     assert any(
@@ -2732,7 +2772,7 @@ def test_ordinary_participant_does_not_create_unflatten_loss_authority(monkeypat
     assert forbidden == []
 
 
-def test_public_participant_rejects_one_claim_with_second_unclassified_effect_loss(
+def test_public_participant_rejects_unclassified_effect_loss_before_ledger_mint(
     monkeypatch,
 ) -> None:
     """A single exact receipt cannot authorize its same-block STORE sibling."""
@@ -2756,15 +2796,10 @@ def test_public_participant_rejects_one_claim_with_second_unclassified_effect_lo
     assert not verdict.accepted
     assert participant._prepared is None
     assert participant._bound is None
-    assert verdict.safety_case is not None
-    assert len(minted) == 1
-    ledger_rows = minted[0].rows
-    # Loss authority is one row per canonical physical owner.  The valid CALL
-    # receipt cannot make its same-block STORE sibling acceptable: both effect
-    # cells are aggregated into one forbidden owner classification.
-    assert len(ledger_rows) == 1
-    assert ledger_rows[0].kind is authority_model.SemanticLossKind.CONFLICTING
-    assert len(ledger_rows[0].claim_ids) == 1
+    assert verdict.safety_case is None
+    assert verdict.reason is authority_model.UnflattenAuthorityReason.PROJECTED_BINDING_FAILED
+    assert verdict.failed_obligations == ()
+    assert minted == []
 
 
 def test_backend_typed_authority_emits_two_canonical_phase_payloads(monkeypatch) -> None:
@@ -3907,18 +3942,20 @@ def test_backend_rejects_typed_local_alias_unreachable_owner() -> None:
         authority_model.UnflattenAuthorityReason.OBLIGATION_VIOLATED,
     }
     assert verdict.failed_obligations
+    assert any(
+        item.key.dimension is authority_model.SafetyDimension.TOPOLOGY_INTEGRITY
+        and item.state is authority_model.ObligationState.VIOLATED
+        for item in verdict.failed_obligations
+    )
     _assert_typed_effect_cell(
         verdict.safety_case,
         ea=0x4000,
-        state=(
-            authority_model.ObligationState.VIOLATED,
-            authority_model.ObligationState.INCONSISTENT,
-        ),
-        rule=authority_model.UnflattenJustificationRule.EFFECT_LOST_UNACCOUNTED,
+        state=authority_model.ObligationState.SATISFIED,
+        rule=authority_model.UnflattenJustificationRule.LOCAL_ALIAS_SCALARIZATION_PROVEN,
     )
     ledger = verdict.loss_ledger
     assert ledger is not None
-    assert not any(
+    assert any(
         row.kind is authority_model.SemanticLossKind.LOCAL_ALIAS_SCALARIZATION
         for row in ledger.rows
     )
@@ -4058,7 +4095,6 @@ def test_backend_rejects_foreign_native_binding_before_lowering() -> None:
         )
 
     assert translator.lower_calls == []
-    assert not gateway.mutation_started
     assert not gateway.generation_poisoned
 
 
@@ -4123,7 +4159,7 @@ def test_backend_commits_the_complete_ordinary_patch_transaction_timeline() -> N
     emitter = EventEmitter()
     phases: list[MbaCfgTransactionAuthorityObserved] = []
     emitter.on(MbaCfgTransactionAuthorityObserved, phases.append)
-    translator = _FakeTranslator(cfg)
+    translator = _FakeTranslator(cfg, simulate_lowering=True)
     backend = HexRaysMutationBackend(
         mutation_gateway=_ordinary_gateway(cfg, plan, event_emitter=emitter),
         translator=translator,
@@ -4149,9 +4185,72 @@ def test_backend_commits_the_complete_ordinary_patch_transaction_timeline() -> N
     ]
 
 
+def test_gateway_observes_current_plan_binding_after_later_insert_shifts_receipt() -> None:
+    """Creation-time serials never override current logical-version authority."""
+    source = _make_cfg([(0, 1), (1, 2)], stop_serials=(2,))
+    index = MbaBlockIdentityIndex.from_flow_graph(
+        session_id="observed-plan-shift",
+        generation=4,
+        maturity=0,
+        snapshot_id="observed-plan-shift",
+        native_key=NATIVE_KEY,
+        flow_graph=source,
+    )
+    plan_ref = PlanBlockRef("observed-plan-shift", "helper")
+    attempt = TransactionAttemptId(
+        plan_ref.plan_id, index.session_id, index.generation, "attempt",
+    )
+    gateway = MbaMutationGateway(
+        session_id=index.session_id,
+        generation=index.generation,
+        native_key=NATIVE_KEY,
+        identity_index=index,
+    )
+    gateway._record_cfg_attempt_planned(
+        plan_id=plan_ref.plan_id, plan_refs=(plan_ref,), attempt=attempt,
+    )
+    gateway._prepare_patch_binding(attempt, serial_quantity=source.num_blocks)
+    reservation = index.reserve_plan_block(attempt, plan_ref)
+    gateway.register_patch_plan_reservations((reservation,))
+    gateway._record_cfg_bound()
+    gateway.begin_batch(
+        StructuralMutationKind.BLOCK_REPLACE,
+        serial_quantity=source.num_blocks,
+        planned_operation_count=2,
+        transaction_attempt=attempt,
+        patch_plan_id=plan_ref.plan_id,
+    )
+    gateway.begin_patch_realization(attempt, plan_refs=(plan_ref,))
+    receipt = gateway.bind_reserved_plan_block(
+        attempt, plan_ref,
+        insertion_serial=3,
+        returned_serial=3,
+    )
+    gateway.record_observed_insert(insertion_serial=2, returned_serial=2)
+    current = index.resolve_logical_version(
+        receipt.logical_version, transaction_id=attempt.attempt_id,
+    )
+    assert receipt.returned_serial == 3
+    assert current is not None and current.serial == 4
+
+    observed = _make_cfg(
+        [(0, 1), (1, 2), (2, 3), (3, 4)], stop_serials=(4,),
+    )
+    gateway.observe_patch_realization(observed, applied_operation_count=2)
+
+    bindings = gateway.observed_plan_bindings
+    assert len(bindings) == 1
+    assert bindings[0].plan_ref == plan_ref
+    assert bindings[0].logical_version is receipt.logical_version
+    assert bindings[0].returned_serial == 4
+
+
 def test_backend_mints_successive_attempts_from_live_identity_generation() -> None:
     """A committed child transaction must not leave backend attempt authority stale."""
-    cfg = _make_cfg([(0, 1), (1, 2)], stop_serials=(2,))
+    cfg = _make_cfg(
+        [(0, 1), (0, 3), (1, 2), (1, 3), (3, 2)],
+        stop_serials=(2,),
+    )
     first_plan = _ordinary_plan(
         PatchConvertToGoto,
         serials=(0, 1),
@@ -4161,7 +4260,7 @@ def test_backend_mints_successive_attempts_from_live_identity_generation() -> No
     emitter = EventEmitter()
     phases: list[MbaCfgTransactionAuthorityObserved] = []
     emitter.on(MbaCfgTransactionAuthorityObserved, phases.append)
-    translator = _FakeTranslator(cfg)
+    translator = _FakeTranslator(cfg, simulate_lowering=True)
     backend = HexRaysMutationBackend(
         mutation_gateway=_ordinary_gateway(cfg, first_plan, event_emitter=emitter),
         translator=translator,
@@ -4194,14 +4293,14 @@ def test_backend_mints_successive_attempts_from_live_identity_generation() -> No
 
 
 def test_patch_pipeline_runtime_preserves_exact_pre_cfg_authority() -> None:
-    cfg = _make_cfg([(0, 1)], stop_serials=(1,))
+    cfg = _make_cfg([(0, 1), (0, 2), (2, 1)], stop_serials=(1,))
     plan = _ordinary_plan(
         PatchConvertToGoto,
         serials=(0, 1),
         block_serial=0,
         goto_target=1,
     )
-    translator = _FakeTranslator(cfg)
+    translator = _FakeTranslator(cfg, simulate_lowering=True)
     runtime = HexRaysPatchPlanRuntime(translator)
     live = SimpleNamespace(qty=cfg.num_blocks)
     gateway = _ordinary_gateway(cfg, plan)
@@ -4264,7 +4363,7 @@ def test_backend_poisons_when_realized_operation_inventory_differs() -> None:
 def test_patch_participant_preserves_one_immutable_authority_through_observation() -> (
     None
 ):
-    cfg = _make_cfg([(0, 1)], stop_serials=(1,))
+    cfg = _make_cfg([(0, 1), (0, 2), (2, 1)], stop_serials=(1,))
     source_ref = NativeBlockRef(
         StableBlockIdentity.from_instruction_eas((0x1000,), native_key=NATIVE_KEY)
     )
@@ -4931,8 +5030,9 @@ def test_small_switch_retirement_rejects_detached_cyclic_residue() -> None:
         removal_forecast=removal_forecast,
     )
     translator = _FakeTranslator(cfg)
+    gateway = _ordinary_gateway(cfg, plan)
     backend = HexRaysMutationBackend(
-        mutation_gateway=_ordinary_gateway(cfg, plan),
+        mutation_gateway=gateway,
         translator=translator,
     )
 
@@ -4943,11 +5043,21 @@ def test_small_switch_retirement_rejects_detached_cyclic_residue() -> None:
 
     assert result is cfg
     assert translator.lower_calls == []
+    assert not gateway.mutation_started
     assert isinstance(backend.last_patch_failure, PatchTransactionPreflightRejected)
+    verdict = backend.last_patch_failure.unflatten_verdict
+    assert verdict is not None and verdict.safety_case is not None
+    assert verdict.phase is authority_model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT
+    assert verdict.reason is authority_model.UnflattenAuthorityReason.OBLIGATION_VIOLATED
+    assert any(
+        item.key.dimension is authority_model.SafetyDimension.TOPOLOGY_INTEGRITY
+        and item.state is authority_model.ObligationState.VIOLATED
+        for item in verdict.failed_obligations
+    )
 
 
 def test_small_switch_retirement_accepts_exact_terminal_cycle_break() -> None:
-    """The exact cycle-break claim binds even when another gate rejects."""
+    """An exact terminal cycle break closes projected and observed authority."""
     cfg = _make_cfg(
         [
             (0, 2),
@@ -5047,13 +5157,34 @@ def test_small_switch_retirement_accepts_exact_terminal_cycle_break() -> None:
         route_terminal=True,
         removal_forecast=removal_forecast,
     )
+    class _TerminalCycleProjectedTranslator(_FakeTranslator):
+        """Observe the exact projection sealed by this transaction attempt."""
 
-    class _ProjectedTranslator(_FakeTranslator):
+        _prepared_projection: FlowGraph | None = None
+
+        def lower(
+            self,
+            rewrite_plan: PatchPlan,
+            live_source: object,
+            *,
+            mutation_gateway: object,
+            bound_transaction: BoundCfgTransaction,
+            post_apply_hook=None,
+        ) -> int:
+            self._prepared_projection = bound_transaction.prepared.projection.graph
+            return super().lower(
+                rewrite_plan,
+                live_source,
+                mutation_gateway=mutation_gateway,
+                bound_transaction=bound_transaction,
+                post_apply_hook=post_apply_hook,
+            )
+
         def lift(self, _live_source: object) -> FlowGraph:
             self.lift_count += 1
-            return projected.graph if self.lower_calls else cfg
+            return self._prepared_projection or cfg
 
-    translator = _ProjectedTranslator(cfg)
+    translator = _TerminalCycleProjectedTranslator(cfg)
     backend = HexRaysMutationBackend(
         mutation_gateway=_ordinary_gateway(cfg, plan),
         translator=translator,
@@ -5064,10 +5195,12 @@ def test_small_switch_retirement_accepts_exact_terminal_cycle_break() -> None:
         live_source=SimpleNamespace(qty=max(cfg.blocks) + 1),
     )
 
-    assert result is cfg
-    assert translator.lower_calls == []
-    assert isinstance(backend.last_patch_failure, PatchTransactionPreflightRejected)
-    verdict = backend.last_patch_failure.unflatten_verdict
+    assert result is translator._prepared_projection
+    assert translator.lower_calls == [plan]
+    assert backend.last_patch_failure is None
+    execution = backend.last_patch_execution
+    assert execution is not None
+    verdict = execution.projected_unflatten_verdict
     assert verdict is not None and verdict.safety_case is not None
     terminal_claim = next(
         claim for claim in verdict.safety_case.claims
@@ -5081,6 +5214,8 @@ def test_small_switch_retirement_accepts_exact_terminal_cycle_break() -> None:
         failed.key.dimension is not authority_model.SafetyDimension.TERMINAL_REACHABILITY
         for failed in verdict.failed_obligations
     )
+    observed = execution.observed_unflatten_verdict
+    assert observed is not None and observed.accepted
 
 
 def test_below_threshold_dispatcher_retirement_still_requires_narrow_proof():

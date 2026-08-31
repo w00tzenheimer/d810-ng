@@ -223,7 +223,22 @@ class HexRaysMutationBackend:
             )
         except PatchTransactionPreflightRejected as error:
             self._last_patch_failure = error
-            logger.warning("Rejecting Hex-Rays PatchPlan preflight: %s", error)
+            verdict = getattr(error, "unflatten_verdict", None)
+            failed = tuple(
+                (
+                    item.key.dimension.value,
+                    item.key.subject.role.value,
+                    item.key.subject.anchor_ea,
+                    item.state.value,
+                )
+                for item in (() if verdict is None else verdict.failed_obligations)
+            )
+            logger.warning(
+                "Rejecting Hex-Rays PatchPlan preflight: %s; reason=%s; failed=%r",
+                error,
+                None if verdict is None else verdict.reason.value,
+                failed,
+            )
             return pre_cfg
         except CfgGenerationPoisoned as error:
             self._last_patch_failure = error

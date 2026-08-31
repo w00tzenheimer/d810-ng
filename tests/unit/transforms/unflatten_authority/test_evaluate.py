@@ -6,6 +6,7 @@ import inspect
 import json
 from dataclasses import replace
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 
@@ -21,7 +22,9 @@ from d810.ir.maturity import MaturityEnvelope
 from d810.transforms.unflatten_authority import model
 from d810.transforms.unflatten_authority import gates
 from d810.transforms.unflatten_authority import views
+from d810.transforms.unflatten_authority import evaluate as evaluator
 from d810.transforms.unflatten_authority.evaluate import _classify_effect_site
+from d810.transforms.unflatten_authority.evaluate import _canonical_dispatcher_corridor_subject
 from d810.transforms.unflatten_authority.evaluate import _accepted_detached_component_results
 from d810.transforms.unflatten_authority.evaluate import _dimensions
 from d810.transforms.unflatten_authority.evaluate import _receipt_digest
@@ -30,11 +33,16 @@ from d810.transforms.unflatten_authority.evaluate import build_semantic_loss_led
 from d810.transforms.unflatten_authority.evaluate import derive_corridor_coverage_evidence
 from d810.transforms.unflatten_authority.evaluate import evaluate_case
 from d810.transforms.unflatten_authority.evaluate import REQUIRED_DIMENSIONS
-from d810.transforms.patch_binding import BoundPatchPlan
-from d810.transforms.cfg_transaction import PlanBlockRef
+from d810.transforms.patch_binding import BoundPatchPlan, iter_refs
+from d810.transforms.cfg_transaction import LogicalBlockRef, PlanBlockRef
 from d810.transforms.plan import PatchPlan
 from d810.transforms.unflatten_authority.ids import _case_factory, _claim_factory, _evidence_factory, _justification_factory, _subject_factory, authority_id as canonical_authority_id, bound_unflatten_binding_id, canonical_bytes, canonical_decode, content_id, receipt_id, semantic_graph_inventory_digest
-from .helpers import authority_id, block_ref, state_identity
+from .helpers import (
+    authority_id,
+    block_ref,
+    observed_patch_binding_for_test,
+    state_identity,
+)
 from .test_model import _minimal_corridor_forecast, _retirement_catalog, _valid_proposal
 
 
@@ -100,6 +108,309 @@ def test_equivalent_route_requires_bound_source_authority_and_realization() -> N
     assert inputs.projected_route_realization.source_authority is inputs.source_route_authority
 
 
+def test_projected_entry_obligation_uses_typed_entry_reachability_not_raw_loss_ratio() -> None:
+    """Retired dispatcher rows cannot refute a still-reachable physical entry."""
+    from d810.analyses.control_flow.graph_checks import EntryReachabilityResult
+    from d810.transforms.cfg_transaction import CfgProjection
+    from d810.transforms.unflatten_authority import transaction_api
+    from d810.transforms.unflatten_authority.gates import GenericCfgGateBundle
+    from .test_transaction_api import _c1_direct_preparation_case
+
+    fixture, source, plan, projected, generic_gates = _c1_direct_preparation_case()
+    collapsed_global_count = EntryReachabilityResult(
+        False, 20, 9, 0.45, 20, 0.5, "entry reachability collapsed",
+    )
+    gates = GenericCfgGateBundle(
+        collapsed_global_count,
+        generic_gates.effectful_raw,
+        generic_gates.effectful_effective,
+        generic_gates.terminal,
+    )
+
+    result = transaction_api.prepare_unflatten_authority(
+        source=source,
+        projection=CfgProjection(plan.plan_id, plan.snapshot_id, projected),
+        plan=plan,
+        attempt_id=fixture.attempt_id,
+        generic_gates=gates,
+    )
+
+    assert type(result) is model.UnflattenAuthorityPreparationAccepted
+    entry = next(
+        cell for cell in result.prepared.projected_case.obligation_index.cells
+        if cell.key.subject.role is model.SemanticSubjectRole.SOURCE_ENTRY
+        and cell.key.dimension is model.SafetyDimension.ENTRY_REACHABILITY
+    )
+    assert entry.state is model.ObligationState.SATISFIED
+    assert any(
+        justification.rule is model.UnflattenJustificationRule.SUBJECT_REACHABLE
+        and justification.conclusion == entry.key
+        for justification in result.prepared.projected_case.justifications
+    )
+    raw_entry = next(
+        evidence.payload for evidence in result.prepared.projected_case.evidence
+        if type(evidence.payload) is model.GenericCfgGateEvidencePayload
+        and evidence.payload.gate is model.GenericCfgGateKind.ENTRY_REACHABILITY
+    )
+    assert raw_entry.passed is False
+    assert raw_entry.reason_code == "entry reachability collapsed"
+    assert not any(
+        justification.conclusion == entry.key
+        and justification.rule in {
+            model.UnflattenJustificationRule.GENERIC_CFG_GATE_PASSED,
+            model.UnflattenJustificationRule.GENERIC_CFG_GATE_FAILED,
+        }
+        for justification in result.prepared.projected_case.justifications
+    )
+
+
+def _with_entry_gate_facts(
+    inputs: model.DerivedUnflattenPreparationInputs,
+    *,
+    passed: bool,
+    reason: str,
+) -> model.DerivedUnflattenPreparationInputs:
+    """Attach one exact diagnostic entry row and reseal the test receipt."""
+    from copy import copy
+    from d810.transforms.unflatten_authority.gates import (
+        GenericCfgGateFacts,
+        GenericEffectfulGateFacts,
+        GenericEntryGateFacts,
+        GenericTerminalGateFacts,
+    )
+
+    facts = GenericCfgGateFacts(
+        GenericEntryGateFacts(
+            passed,
+            20,
+            9 if not passed else 20,
+            0.45 if not passed else 1.0,
+            20,
+            0.5,
+            reason,
+        ),
+        GenericEffectfulGateFacts(
+            True, frozenset(), frozenset(), frozenset(), "effect-ok",
+        ),
+        GenericEffectfulGateFacts(
+            True, frozenset(), frozenset(), frozenset(), "effect-ok",
+        ),
+        GenericTerminalGateFacts(
+            True, frozenset(), frozenset(), 0, 0, "terminal-ok",
+        ),
+    )
+    receipt = copy(inputs.preparation_receipt)
+    object.__setattr__(
+        receipt,
+        "generic_gate_facts_digest",
+        _receipt_digest(facts),
+    )
+    object.__setattr__(receipt, "receipt_id", receipt_id(receipt))
+    return replace(
+        inputs,
+        generic_gate_facts=facts,
+        preparation_receipt=receipt,
+    )
+
+
+@pytest.mark.parametrize(
+    "phase",
+    (
+        model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY,
+    ),
+)
+def test_blank_successful_entry_gate_uses_neutral_diagnostic_reason(
+    phase: model.UnflattenAuthorityPhase,
+) -> None:
+    """A native success without prose receives only the neutral reason code."""
+    entry = _role_subject(model.SemanticSubjectRole.SOURCE_ENTRY, f"blank-success-{phase.value}")
+    catalog = tuple(
+        _role_subject(model.SemanticSubjectRole.SOURCE_CATALOG_BLOCK, str(index))
+        for index in range(3)
+    )
+    inputs = _with_entry_gate_facts(
+        _complete_inputs(source_subjects=(entry, *catalog), phase=phase),
+        passed=True,
+        reason="",
+    )
+
+    case = build_semantic_case(
+        authority_id=authority_id(f"blank-success-entry-{phase.value}"),
+        phase=phase,
+        inputs=inputs,
+    )
+    raw_entry = next(
+        evidence.payload for evidence in case.evidence
+        if type(evidence.payload) is model.GenericCfgGateEvidencePayload
+        and evidence.payload.gate is model.GenericCfgGateKind.ENTRY_REACHABILITY
+    )
+
+    assert raw_entry.passed is True
+    assert raw_entry.reason_code == "entry_reachability"
+
+
+@pytest.mark.parametrize(
+    "phase",
+    (
+        model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY,
+    ),
+)
+def test_blank_failed_entry_gate_is_rejected_without_neutral_relabeling(
+    phase: model.UnflattenAuthorityPhase,
+) -> None:
+    """A failed native row must explain itself before entering authority evidence."""
+    entry = _role_subject(model.SemanticSubjectRole.SOURCE_ENTRY, f"blank-failure-{phase.value}")
+    catalog = tuple(
+        _role_subject(model.SemanticSubjectRole.SOURCE_CATALOG_BLOCK, str(index))
+        for index in range(3)
+    )
+    inputs = _with_entry_gate_facts(
+        _complete_inputs(source_subjects=(entry, *catalog), phase=phase),
+        passed=False,
+        reason="",
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="failed entry gate requires a nonblank reason",
+    ):
+        build_semantic_case(
+            authority_id=authority_id(f"blank-failure-entry-{phase.value}"),
+            phase=phase,
+            inputs=inputs,
+        )
+
+
+def test_observed_entry_obligation_uses_typed_entry_reachability_not_raw_loss_ratio() -> None:
+    """Observed validation retains a failed aggregate row without obeying it."""
+    from d810.analyses.control_flow.graph_checks import EntryReachabilityResult
+    from d810.transforms.unflatten_authority import transaction_api
+    from .test_transaction_api import (
+        _observed_gates,
+        _prepared_lowered_conditional_observed_case,
+    )
+
+    source, observed, attempt, authority = _prepared_lowered_conditional_observed_case()
+    generic_gates = _observed_gates(source, observed)
+    gates = transaction_api.GenericCfgGateBundle(
+        EntryReachabilityResult(
+            False, 20, 9, 0.45, 20, 0.5, "observed entry count collapsed",
+        ),
+        generic_gates.effectful_raw,
+        generic_gates.effectful_effective,
+        generic_gates.terminal,
+    )
+
+    verdict = transaction_api.revalidate_observed_unflatten_authority(
+        authority=authority,
+        observed=observed,
+        observed_generation=attempt.generation,
+        generic_gates=gates,
+        observed_patch_binding=observed_patch_binding_for_test(authority),
+    )
+
+    assert verdict.accepted is True
+    case = verdict.safety_case
+    entry = next(
+        cell for cell in case.obligation_index.cells
+        if cell.key.subject.role is model.SemanticSubjectRole.SOURCE_ENTRY
+        and cell.key.dimension is model.SafetyDimension.ENTRY_REACHABILITY
+    )
+    raw_entry = next(
+        evidence.payload for evidence in case.evidence
+        if type(evidence.payload) is model.GenericCfgGateEvidencePayload
+        and evidence.payload.gate is model.GenericCfgGateKind.ENTRY_REACHABILITY
+    )
+    assert raw_entry.passed is False
+    assert raw_entry.reason_code == "observed entry count collapsed"
+    assert entry.state is model.ObligationState.SATISFIED
+    assert any(
+        justification.conclusion == entry.key
+        and justification.rule is model.UnflattenJustificationRule.SUBJECT_REACHABLE
+        for justification in case.justifications
+    )
+    assert not any(
+        justification.conclusion == entry.key
+        and justification.rule in {
+            model.UnflattenJustificationRule.GENERIC_CFG_GATE_PASSED,
+            model.UnflattenJustificationRule.GENERIC_CFG_GATE_FAILED,
+        }
+        for justification in case.justifications
+    )
+
+
+@pytest.mark.parametrize(
+    "phase",
+    (
+        model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY,
+    ),
+)
+def test_entry_gate_success_cannot_rescue_typed_missing_entry(
+    phase: model.UnflattenAuthorityPhase,
+) -> None:
+    """A passing aggregate row cannot authorize a missing exact source entry."""
+    entry = _role_subject(model.SemanticSubjectRole.SOURCE_ENTRY, f"missing-{phase.value}")
+    catalog = tuple(
+        _role_subject(model.SemanticSubjectRole.SOURCE_CATALOG_BLOCK, str(index))
+        for index in range(3)
+    )
+    baseline = _complete_inputs(source_subjects=(entry, *catalog), phase=phase)
+    candidate_bindings = tuple(
+        replace(
+            binding,
+            status=model.SubjectBindingStatus.MISSING,
+            block_ref=None,
+            serial=None,
+            anchor_ea=None,
+            native_instruction_eas=(),
+        ) if binding.subject == entry else binding
+        for binding in baseline.candidate_inventory.bindings
+    )
+    inputs = _with_entry_gate_facts(
+        _complete_inputs(
+            source_subjects=(entry, *catalog),
+            candidate_bindings=candidate_bindings,
+            phase=phase,
+        ),
+        passed=True,
+        reason="raw-entry-count-passed",
+    )
+
+    case = build_semantic_case(
+        authority_id=authority_id(f"missing-entry-{phase.value}"),
+        phase=phase,
+        inputs=inputs,
+    )
+    entry_key = model.ObligationKey(entry, model.SafetyDimension.ENTRY_REACHABILITY)
+    entry_cell = next(cell for cell in case.obligation_index.cells if cell.key == entry_key)
+    raw_entry = next(
+        evidence.payload for evidence in case.evidence
+        if type(evidence.payload) is model.GenericCfgGateEvidencePayload
+        and evidence.payload.gate is model.GenericCfgGateKind.ENTRY_REACHABILITY
+    )
+
+    assert raw_entry.passed is True
+    assert raw_entry.reason_code == "raw-entry-count-passed"
+    assert entry_cell.state is model.ObligationState.VIOLATED
+    assert evaluate_case(case).accepted is False
+    assert any(
+        justification.conclusion == entry_key
+        and justification.rule is model.UnflattenJustificationRule.SUBJECT_UNREACHABLE
+        for justification in case.justifications
+    )
+    assert not any(
+        justification.conclusion == entry_key
+        and justification.rule in {
+            model.UnflattenJustificationRule.GENERIC_CFG_GATE_PASSED,
+            model.UnflattenJustificationRule.GENERIC_CFG_GATE_FAILED,
+        }
+        for justification in case.justifications
+    )
+
+
 def test_equivalent_route_positive_marks_one_stable_subject_route_equivalence() -> None:
     """The real Direct preparation exposes one sealed route equivalence."""
 
@@ -144,6 +455,42 @@ def test_equivalent_route_positive_marks_one_stable_subject_route_equivalence() 
         and cell.supporting_justification_ids
         for cell in route_cells
     )
+
+
+def test_route_realization_rows_validate_the_canonical_pair_once() -> None:
+    """Route cardinality consumes one validated transaction-owned realization."""
+    from d810.transforms.cfg_transaction import CfgProjection
+    from d810.transforms.unflatten_authority import bind, evaluate, transaction_api
+    from .test_transaction_api import _c1_direct_preparation_case
+
+    fixture, source, plan, projected, gates = _c1_direct_preparation_case()
+    preparation = transaction_api.prepare_unflatten_authority(
+        source=source,
+        projection=CfgProjection(plan.plan_id, plan.snapshot_id, projected),
+        plan=plan,
+        attempt_id=fixture.attempt_id,
+        generic_gates=gates,
+    )
+    assert type(preparation) is model.UnflattenAuthorityPreparationAccepted
+    inputs = preparation.prepared.source_inputs
+
+    with (
+        patch.object(
+            bind, "validate_source_route_authority",
+            wraps=bind.validate_source_route_authority,
+        ) as source_validation,
+        patch.object(
+            bind, "validate_projected_route_realization",
+            wraps=bind.validate_projected_route_realization,
+        ) as projected_validation,
+    ):
+        rows = evaluate._validated_route_realization_rows(
+            inputs, model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        )
+
+    assert len(rows) == len(inputs.projected_route_realization.rows)
+    assert source_validation.call_count == 1
+    assert projected_validation.call_count == 1
 
 
 def test_route_payload_uses_selected_claim_source_among_colocated_route_sources() -> None:
@@ -301,6 +648,22 @@ def test_evaluator_rejects_empty_or_incomplete_exclusion_path_correlations() -> 
 
 def _role_subject(role: model.SemanticSubjectRole, token: str) -> model.SemanticSubjectRef:
     if role in {
+        model.SemanticSubjectRole.SOURCE_LOGICAL_EXIT,
+        model.SemanticSubjectRole.SEMANTIC_DAG_ENDPOINT,
+    }:
+        serial = int(token.rsplit("-", 1)[-1]) if token.rsplit("-", 1)[-1].isdigit() else 0
+        ref = LogicalBlockRef("authority-test", f"logical-{token}", 1)
+        kind = model.SemanticSubjectKind.BLOCK
+        locator = model.LogicalFunctionExitSubjectLocator(ref, serial)
+        return _subject_factory(
+            model.SemanticSubjectRef,
+            kind=kind,
+            role=role,
+            block_ref=ref,
+            anchor_ea=None,
+            locator=locator,
+        )
+    if role in {
         model.SemanticSubjectRole.SOURCE_ENTRY,
         model.SemanticSubjectRole.DISPATCHER_ENTRY,
     }:
@@ -321,7 +684,17 @@ def _role_subject(role: model.SemanticSubjectRole, token: str) -> model.Semantic
     elif role is model.SemanticSubjectRole.NON_STATE_VALUE_FLOW:
         kind, locator, owner, anchor = model.SemanticSubjectKind.VALUE_FLOW, model.ValueFlowSubjectLocator(authority_id("fragment"), state_identity(), (block_ref("b0"),)), None, None
     elif role is model.SemanticSubjectRole.DISPATCHER_CORRIDOR:
-        kind, locator, owner, anchor = model.SemanticSubjectKind.CORRIDOR, model.CorridorSubjectLocator(authority_id(token), ref, ref_anchor, (ref,), (ref_anchor,)), ref, ref_anchor
+        member_refs = (block_ref("b0"), block_ref("b1"))
+        member_anchors = (0x1000, 0x1300)
+        kind, locator, owner, anchor = (
+            model.SemanticSubjectKind.CORRIDOR,
+            model.CorridorSubjectLocator(
+                evaluator._content_id_digest("unflatten.corridor.v1", member_refs),
+                block_ref("b0"), 0x1000, member_refs, member_anchors,
+            ),
+            block_ref("b0"),
+            0x1000,
+        )
     elif role is model.SemanticSubjectRole.EFFECT_SITE:
         kind, locator, owner, anchor = model.SemanticSubjectKind.EFFECT, model.EffectSubjectLocator(ref, ref_anchor, ref_anchor + 4, model.EffectSiteKind.STORE), ref, ref_anchor
     else:
@@ -341,8 +714,10 @@ def test_route_payload_projects_destination_ids_in_locator_pair_order() -> None:
     locator = model.RouteSubjectLocator(
         authority_id("route-order-proof"), authority_id("route-order-group"),
         source.block_ref, source.anchor_ea,
-        (second.block_ref, first.block_ref),
-        (second.anchor_ea, first.anchor_ea),
+        (
+            model.BlockSubjectLocator(second.block_ref, second.anchor_ea),
+            model.BlockSubjectLocator(first.block_ref, first.anchor_ea),
+        ),
     )
     route = _subject_factory(
         model.SemanticSubjectRef,
@@ -361,7 +736,11 @@ def test_route_payload_projects_destination_ids_in_locator_pair_order() -> None:
         (locator.proof_id,),
         locator.atomic_group_id,
         source.subject_id,
-        tuple(by_pair[pair] for pair in zip(locator.destination_refs, locator.destination_anchor_eas)),
+        tuple(
+            by_pair[(member.block_ref, member.anchor_ea)]
+            for member in locator.destination_locators
+            if type(member) is model.BlockSubjectLocator
+        ),
         True,
     )
     assert payload.destination_subject_ids != tuple(sorted(by_pair.values()))
@@ -376,7 +755,9 @@ def test_corridor_coverage_uses_plan_catalog_without_graph_rescan() -> None:
     member0 = _role_subject(model.SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE, "0")
     member1 = _role_subject(model.SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE, "1")
     corridor_locator = model.CorridorSubjectLocator(
-        authority_id("catalog-corridor"), entry.block_ref, entry.anchor_ea,
+        evaluator._content_id_digest(
+            "unflatten.corridor.v1", (entry.block_ref, member1.block_ref),
+        ), entry.block_ref, entry.anchor_ea,
         (member0.block_ref, member1.block_ref),
         (member0.anchor_ea, member1.anchor_ea),
     )
@@ -540,12 +921,17 @@ def _binding(subject: model.SemanticSubjectRef, phase: model.UnflattenAuthorityP
         status = model.SubjectBindingStatus.MISSING
     serial_by_proxy = {"b0": 0, "b1": 1, "b2": 2, "b3": 3, "b4": 4}
     serial = serial_by_proxy.get(getattr(subject.block_ref, "proxy_token", ""), 0)
+    is_logical_exit = type(subject.locator) is model.LogicalFunctionExitSubjectLocator
+    if is_logical_exit:
+        serial = subject.locator.serial
     native_instruction_eas = ((subject.anchor_ea,) if subject.anchor_ea is not None else ())
     return model.PhaseSubjectBinding(
         subject=subject, phase=phase, block_ref=subject.block_ref if status is model.SubjectBindingStatus.UNIQUE else None,
         graph_fingerprint=fingerprint or authority_id(f"graph-{phase.value}"), generation=generation, status=status,
         serial=serial if status is model.SubjectBindingStatus.UNIQUE else None,
-        anchor_ea=subject.anchor_ea if status is model.SubjectBindingStatus.UNIQUE else None,
+        anchor_ea=(
+            None if is_logical_exit else subject.anchor_ea
+        ) if status is model.SubjectBindingStatus.UNIQUE else None,
         native_instruction_eas=native_instruction_eas if status is model.SubjectBindingStatus.UNIQUE else (), role=subject.role,
     )
 
@@ -608,6 +994,29 @@ def _complete_inputs(*, source_subjects: tuple[model.SemanticSubjectRef, ...], c
             for subject in subjects
         )
     source_subjects = normalize_value_flow(source_subjects)
+    # The source catalogue is a closed transaction input, not an inferred
+    # evaluator convenience.  Every ordinary fixture therefore starts with
+    # exactly one source-catalog subject for every proposal catalogue row;
+    # adversarial tests can still remove or replace those rows after this
+    # canonical construction when exercising the fail-closed boundary.
+    source_catalog_subjects = tuple(
+        _subject_factory(
+            model.SemanticSubjectRef,
+            kind=model.SemanticSubjectKind.BLOCK,
+            role=model.SemanticSubjectRole.SOURCE_CATALOG_BLOCK,
+            block_ref=witness.block_ref,
+            anchor_ea=witness.anchor_ea,
+            locator=model.BlockSubjectLocator(
+                witness.block_ref,
+                witness.anchor_ea,
+            ),
+        )
+        for witness in proposal.source_identity_catalog.blocks
+    )
+    source_subjects = tuple({
+        item.subject_id: item
+        for item in (*source_subjects, *source_catalog_subjects)
+    }.values())
     terminal_effect_subjects = []
     for subject in source_subjects:
         if (
@@ -672,7 +1081,10 @@ def _complete_inputs(*, source_subjects: tuple[model.SemanticSubjectRef, ...], c
     )
     by_id = {subject.subject_id: subject for subject in (*source_subjects, *required_subjects)}
     source_subjects = tuple(by_id.values())
-    candidate_subjects = source_subjects if candidate_subjects is None else candidate_subjects
+    candidate_subjects = source_subjects if candidate_subjects is None else tuple({
+        item.subject_id: item
+        for item in (*candidate_subjects, *source_catalog_subjects)
+    }.values())
     candidate_subjects = normalize_value_flow(candidate_subjects)
     candidate_terminal_sites = {
         (
@@ -909,7 +1321,9 @@ def _complete_inputs(*, source_subjects: tuple[model.SemanticSubjectRef, ...], c
             if binding.status is not model.SubjectBindingStatus.UNIQUE or binding.block_ref is None:
                 widened_bindings.append(binding)
                 continue
-            eas = {binding.anchor_ea, *binding.native_instruction_eas}
+            eas = {*binding.native_instruction_eas}
+            if binding.anchor_ea is not None:
+                eas.add(binding.anchor_ea)
             eas.update(locator.instruction_ea for locator in effects_by_owner.get(binding.block_ref, ()))
             eas.update(locator.instruction_ea for locator in terminals_by_owner.get(binding.block_ref, ()))
             return_eas = {
@@ -963,6 +1377,27 @@ def _complete_inputs(*, source_subjects: tuple[model.SemanticSubjectRef, ...], c
                 serial: ((serials[index + 1],) if index + 1 < len(serials) else ())
                 for index, serial in enumerate(serials)
             }
+        logical_exit_serials = {
+            binding.serial
+            for binding in unique.values()
+            if type(binding.subject.locator) is model.LogicalFunctionExitSubjectLocator
+        }
+        # A logical function exit is an anchorless zero-way/STOP row.  It is
+        # never an accidental member of this helper's synthetic native chain.
+        for serial in serials:
+            predecessor_by_serial[serial] = (
+                [] if serial in logical_exit_serials else [
+                    predecessor
+                    for predecessor in predecessor_by_serial[serial]
+                    if predecessor not in logical_exit_serials
+                ]
+            )
+            successor_by_serial[serial] = tuple(
+                successor
+                for successor in successor_by_serial[serial]
+                if serial not in logical_exit_serials
+                and successor not in logical_exit_serials
+            )
         blocks = tuple(
             model.InventoryBlockObservation(
                 binding.serial,
@@ -1045,11 +1480,15 @@ def _complete_inputs(*, source_subjects: tuple[model.SemanticSubjectRef, ...], c
                     for ordinal, ea in enumerate(binding.native_instruction_eas)
                 )),
                 model.BlockKind.STOP
-                if any(
+                if binding.serial in logical_exit_serials or any(
                     locator.terminal_kind is model.TerminalKind.STOP
                     for locator in terminals_by_owner.get(binding.block_ref, ())
                 ) else model.BlockKind.UNKNOWN,
-                binding.anchor_ea,
+                (
+                    0xFFFFFFFFFFFFFFFF
+                    if binding.serial in logical_exit_serials
+                    else binding.anchor_ea if binding.anchor_ea is not None else 0
+                ),
                 tail_opcode=rows[-1].opcode if rows else None,
                 raw_tail_opcode=rows[-1].raw_opcode if rows else None,
                 tail_kind=rows[-1].instruction_kind if rows else None,
@@ -1103,8 +1542,34 @@ def _complete_inputs(*, source_subjects: tuple[model.SemanticSubjectRef, ...], c
         terminals = tuple(sorted(terminals, key=lambda item: (item.owner_serial, item.instruction_ordinal is None, item.instruction_ordinal if item.instruction_ordinal is not None else -1, item.instruction_ea, item.terminal_kind.value)))
         topology = tuple(sorted(topology, key=lambda item: (item.kind.value, item.owner_serial, item.peer_serial, -1)))
         closure_set: set[int] = set()
-        pending = [blocks[0].serial] if blocks else []
         blocks_by_serial = {block.serial: block for block in blocks}
+        serial_by_ref = {
+            block.block_ref: block.serial
+            for block in blocks
+            if block.block_ref is not None
+        }
+        semantic_roots = {blocks[0].serial} if blocks else set()
+        semantic_roots.update(
+            serial_by_ref[subject.block_ref]
+            for subject in subjects
+            if (
+                (
+                    subject.role is model.SemanticSubjectRole.AUTHORITATIVE_HANDLER
+                    and type(subject.locator) is model.HandlerSubjectLocator
+                )
+                or (
+                    phase_value is model.UnflattenAuthorityPhase.PRODUCER_FORECAST
+                    and
+                    subject.role in {
+                        model.SemanticSubjectRole.SEMANTIC_ROUTE_SOURCE,
+                        model.SemanticSubjectRole.SEMANTIC_ROUTE_DESTINATION,
+                    }
+                    and type(subject.locator) is model.BlockSubjectLocator
+                )
+            )
+            and subject.block_ref in serial_by_ref
+        )
+        pending = list(semantic_roots)
         while pending:
             serial = pending.pop()
             if serial in closure_set:
@@ -1305,26 +1770,40 @@ def test_prepared_authority_accepts_canonical_bound_route_endpoints() -> None:
         generation=prepared.projected_generation, attempt_id="prepared-attempt",
     )
     live_maturity = MaturityEnvelope(ir=None, provider="test", provider_id=0)
+    source_coordinates = dict(plan.source_coordinates)
+    encountered_refs = tuple(dict.fromkeys(iter_refs(
+        (plan.steps, plan.new_blocks, plan.relocation_map),
+    )))
+    canonical_bindings = tuple(
+        (ref, source_coordinates[ref])
+        for ref in encountered_refs
+        if type(ref) is not PlanBlockRef
+    ) + tuple(
+        (spec.block_id, len(source.blocks) + offset)
+        for offset, spec in enumerate(plan.new_blocks)
+    )
     patch_binding = BoundPatchPlan(
         plan=plan,
         attempt_id=attempt,
         session_id=attempt.session_id,
         generation=attempt.generation,
         maturity=live_maturity,
-        bindings=(),
+        bindings=canonical_bindings,
     )
     with pytest.raises(TypeError, match="live_maturity"):
         model.BoundUnflattenAuthority(
             binding_id=authority_id("prepared-binding"), prepared=prepared,
             attempt_id=attempt, session_id=attempt.session_id,
-            generation=attempt.generation, live_maturity=4, live_bindings=(),
+            generation=attempt.generation, live_maturity=4,
+            live_bindings=canonical_bindings,
             patch_binding=patch_binding,
         )
     bound = model.BoundUnflattenAuthority(
         binding_id=bound_unflatten_binding_id(prepared, patch_binding), prepared=prepared,
         attempt_id=attempt, session_id=attempt.session_id,
         generation=attempt.generation,
-        live_maturity=live_maturity, live_bindings=(), patch_binding=patch_binding,
+        live_maturity=live_maturity, live_bindings=canonical_bindings,
+        patch_binding=patch_binding,
     )
     assert isinstance(bound.live_maturity, MaturityEnvelope)
     with pytest.raises(ValueError, match="binding_id"):
@@ -1512,6 +1991,20 @@ def test_value_flow_owner_resolution_rejects_same_role_ambiguity() -> None:
         match=r"value-flow owner subject is missing or ambiguous: .*count=2",
     ):
         _value_flow_owner_subjects((owner, owner), (owner.block_ref,))
+
+
+def test_value_flow_owner_resolution_accepts_exact_catalog_physical_root() -> None:
+    """A redirect-owned physical root needs no fabricated semantic role."""
+    from d810.transforms.unflatten_authority.evaluate import _value_flow_owner_subjects
+
+    owner = _role_subject(
+        model.SemanticSubjectRole.SOURCE_CATALOG_BLOCK,
+        "physical-entry-root",
+    )
+
+    assert _value_flow_owner_subjects(
+        (owner,), (owner.block_ref,),
+    ) == (owner,)
 
 
 def test_value_flow_identity_is_conjunctive_over_every_owner_binding() -> None:
@@ -2377,7 +2870,14 @@ def test_inventory_topology_mismatches_refute_exact_case_cells() -> None:
         ], "addition"),
     )
     for mutator, token in variants:
-        with pytest.raises(ValueError, match="projected phase must reference"):
+        with pytest.raises(
+            ValueError,
+            match=(
+                "projected phase must match its candidate inventory"
+                "|reachable_serials must equal the semantic-root successor closure"
+                "|topology incidence does not match block topology"
+            ),
+        ):
             candidate_case(mutator, token)
 
 
@@ -2457,6 +2957,7 @@ def test_observed_topology_is_rejected_against_prepared_projected_reference() ->
         observed=source,
         observed_generation=fixture.attempt_id.generation,
         generic_gates=_observed_gates(source, source),
+        observed_patch_binding=observed_patch_binding_for_test(binding.authority),
     )
     assert not observed.accepted
     assert observed.safety_case is not None
@@ -2518,7 +3019,10 @@ def test_missing_source_subject_retains_identity_and_structure_keys() -> None:
         authority_id=authority_id("authority-missing"), phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
         inputs=_complete_inputs(source_subjects=(subject,), candidate_subjects=(), candidate_bindings=()),
     )
-    keys = {key.dimension for key in case.required_obligations}
+    keys = {
+        key.dimension for key in case.required_obligations
+        if key.subject == subject
+    }
     assert model.SafetyDimension.IDENTITY_BINDING in keys
     assert model.SafetyDimension.STRUCTURAL_ACCOUNTING not in keys
     identity = next(
@@ -2538,18 +3042,33 @@ def test_unclaimed_missing_canonical_catalog_block_has_one_physical_loss_row() -
     # catalog identity outside that claim, so its absence must stay forbidden.
     subject = _role_subject(model.SemanticSubjectRole.SOURCE_CATALOG_BLOCK, "2")
     entry = _role_subject(model.SemanticSubjectRole.SOURCE_ENTRY, "missing")
+    baseline = _complete_inputs(
+        source_subjects=(entry, subject), candidate_subjects=(entry,),
+    )
+    missing_b2 = tuple(
+        replace(
+            binding,
+            status=model.SubjectBindingStatus.MISSING,
+            block_ref=None,
+            serial=None,
+            anchor_ea=None,
+            native_instruction_eas=(),
+        ) if binding.subject == subject else binding
+        for binding in baseline.candidate_inventory.bindings
+    )
     case = build_semantic_case(
         authority_id=authority_id("canonical-unclaimed-loss"),
         phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
         inputs=_complete_inputs(
-            source_subjects=(entry, subject), candidate_subjects=(entry,), candidate_bindings=(),
+            source_subjects=(entry, subject), candidate_subjects=(entry,),
+            candidate_bindings=missing_b2,
         ),
     )
     verdict = evaluate_case(case)
     ledger = build_semantic_loss_ledger(case, verdict)
     assert len(ledger.rows) == 1
     row = ledger.rows[0]
-    assert row.source_subject is subject
+    assert row.source_subject == subject
     assert row.kind is model.SemanticLossKind.UNCLASSIFIED
     assert row.structural_obligation.state is model.ObligationState.VIOLATED
 
@@ -2630,6 +3149,118 @@ def test_case_ids_and_private_index_reject_tampering() -> None:
         model.ObligationEvidenceIndex(case.obligation_index.cells)  # type: ignore[call-arg]
     with pytest.raises(ValueError):
         replace(case, case_id=authority_id("forged"))
+
+
+def test_case_id_compacts_every_sealed_occurrence_without_record_replay(
+    monkeypatch,
+) -> None:
+    """The compact case ID remains sensitive to every case occurrence."""
+    from d810.transforms.unflatten_authority import ids as authority_ids
+
+    digest = lambda label: authority_id(f"compact-case:{label}")
+    result_fields = {"retirement_phase_result", "corridor_coverage_phase_result"}
+    result_tuple_fields = {
+        "detached_dead_handler_component_source_results",
+        "detached_dead_handler_component_phase_results",
+        "terminal_cycle_phase_results",
+    }
+    identity_tuple_fields = {
+        "claims": "claim_id", "subjects": "subject_id",
+        "evidence": "evidence_id", "justifications": "justification_id",
+    }
+    values: dict[str, object] = {}
+    for name in model.SemanticSafetyCase.__dataclass_fields__:
+        if name == "case_id":
+            continue
+        if name == "preparation_receipt":
+            values[name] = SimpleNamespace(receipt_id=digest(name))
+        elif name in identity_tuple_fields:
+            values[name] = (SimpleNamespace(**{identity_tuple_fields[name]: digest(name)}),)
+        elif name in {"source_inventory", "candidate_inventory"}:
+            values[name] = SimpleNamespace(inventory_digest=digest(name))
+        elif name == "retirement_candidate_catalog":
+            values[name] = SimpleNamespace(catalog_id=digest(name))
+        elif name in result_fields:
+            values[name] = SimpleNamespace(result_id=digest(name))
+        elif name in result_tuple_fields:
+            values[name] = (SimpleNamespace(result_id=digest(name)),)
+        else:
+            values[name] = digest(name)
+
+    def raw_case(overrides: dict[str, object] | None = None):
+        raw = object.__new__(model.SemanticSafetyCase)
+        for name, value in values.items():
+            object.__setattr__(raw, name, (overrides or {}).get(name, value))
+        object.__setattr__(raw, "case_id", digest("placeholder"))
+        return raw
+
+    original_record_id = authority_ids._record_content_id
+    replayed_case_trees: list[object] = []
+
+    def counted_record_id(schema: str, value: object, id_field: str) -> str:
+        if type(value) is model.SemanticSafetyCase:
+            replayed_case_trees.append(value)
+        return original_record_id(schema, value, id_field)
+
+    monkeypatch.setattr(authority_ids, "_record_content_id", counted_record_id)
+    baseline = authority_ids.case_id(raw_case())
+    assert not replayed_case_trees
+
+    for name in values:
+        if name == "preparation_receipt":
+            changed = SimpleNamespace(receipt_id=digest(f"changed:{name}"))
+        elif name in identity_tuple_fields:
+            changed = (SimpleNamespace(**{identity_tuple_fields[name]: digest(f"changed:{name}")}),)
+        elif name in {"source_inventory", "candidate_inventory"}:
+            changed = SimpleNamespace(inventory_digest=digest(f"changed:{name}"))
+        elif name == "retirement_candidate_catalog":
+            changed = SimpleNamespace(catalog_id=digest(f"changed:{name}"))
+        elif name in result_fields:
+            changed = SimpleNamespace(result_id=digest(f"changed:{name}"))
+        elif name in result_tuple_fields:
+            changed = (SimpleNamespace(result_id=digest(f"changed:{name}")),)
+        else:
+            changed = digest(f"changed:{name}")
+        assert authority_ids.case_id(raw_case({name: changed})) != baseline, name
+
+
+def test_compact_case_projection_preserves_field_order_and_occurrence_multiplicity() -> None:
+    from d810.transforms.unflatten_authority import ids as authority_ids
+
+    digest = authority_id("compact-projection")
+    child = SimpleNamespace(claim_id=digest)
+    raw = object.__new__(model.SemanticSafetyCase)
+    for name in model.SemanticSafetyCase.__dataclass_fields__:
+        if name == "case_id":
+            object.__setattr__(raw, name, digest)
+        elif name == "preparation_receipt":
+            object.__setattr__(raw, name, SimpleNamespace(receipt_id=digest))
+        elif name == "claims":
+            object.__setattr__(raw, name, (child, child))
+        elif name in {"subjects", "evidence", "justifications"}:
+            object.__setattr__(raw, name, ())
+        elif name in {"source_inventory", "candidate_inventory"}:
+            object.__setattr__(raw, name, SimpleNamespace(inventory_digest=digest))
+        elif name in {
+            "retirement_candidate_catalog", "retirement_phase_result",
+            "corridor_coverage_phase_result",
+        }:
+            object.__setattr__(raw, name, None)
+        elif name in {
+            "detached_dead_handler_component_source_results",
+            "detached_dead_handler_component_phase_results",
+            "terminal_cycle_phase_results",
+        }:
+            object.__setattr__(raw, name, ())
+        else:
+            object.__setattr__(raw, name, digest)
+
+    projection = authority_ids._semantic_safety_case_projection(raw)
+    assert tuple(name for name, _value in projection) == tuple(
+        name for name in model.SemanticSafetyCase.__dataclass_fields__
+        if name != "case_id"
+    )
+    assert dict(projection)["claims"] == (digest, digest)
 
 
 def test_justification_foreign_premise_and_cycle_are_rejected() -> None:
@@ -3436,7 +4067,7 @@ def test_local_alias_support_targets_exact_store_effect_relation() -> None:
     route = _subject_factory(
         model.SemanticSubjectRef, kind=model.SemanticSubjectKind.ROUTE,
         role=model.SemanticSubjectRole.SEMANTIC_ROUTE_SOURCE, block_ref=b0, anchor_ea=0x1000,
-            locator=model.RouteSubjectLocator(proof.proof_id, proof.atomic_group_id, b0, 0x1000, (b2,), (0x1100,)),
+            locator=model.RouteSubjectLocator(proof.proof_id, proof.atomic_group_id, b0, 0x1000, (model.BlockSubjectLocator(b2, 0x1100),)),
     )
     destination = _role_subject(model.SemanticSubjectRole.SEMANTIC_ROUTE_DESTINATION, "2")
     alias = _claim_factory(
@@ -3447,6 +4078,17 @@ def test_local_alias_support_targets_exact_store_effect_relation() -> None:
         step_digest=authority_id("alias-step"), source_generation=3,
     )
     proposal = model.ProposedUnflattenContract(**values)
+    canonical_catalog = tuple(
+        _subject_factory(
+            model.SemanticSubjectRef,
+            kind=model.SemanticSubjectKind.BLOCK,
+            role=model.SemanticSubjectRole.SOURCE_CATALOG_BLOCK,
+            block_ref=item.block_ref,
+            anchor_ea=item.anchor_ea,
+            locator=model.BlockSubjectLocator(item.block_ref, item.anchor_ea),
+        )
+        for item in proposal.source_identity_catalog.blocks
+    )
     helper = _role_subject(model.SemanticSubjectRole.PLANNED_HELPER, "0")
     patch_payload = model.PatchStepEvidencePayload(
         proposal.plan_id, 0, "PatchScalarizeLocalAliasAccess", b0,
@@ -3461,8 +4103,8 @@ def test_local_alias_support_targets_exact_store_effect_relation() -> None:
         authority_id("alias-relation"),
     )
     inputs = _complete_inputs(
-        source_subjects=(entry, owner, store, route, destination),
-        candidate_subjects=(entry, owner, store, route, destination, helper),
+        source_subjects=(entry, *canonical_catalog, owner, store, route, destination),
+        candidate_subjects=(entry, *canonical_catalog, owner, store, route, destination, helper),
         claims=(*proposal.claims, alias), proposal=proposal, patch_step_facts=(patch_item.payload,),
     )
     receipt_values = {
@@ -3495,8 +4137,8 @@ def test_local_alias_support_targets_exact_store_effect_relation() -> None:
         authority_id("alias-wrong-owner"),
     )
     wrong_inputs = _complete_inputs(
-        source_subjects=(entry, owner, wrong_store, route, destination),
-        candidate_subjects=(entry, owner, wrong_store, route, destination, helper),
+        source_subjects=(entry, *canonical_catalog, owner, wrong_store, route, destination),
+        candidate_subjects=(entry, *canonical_catalog, owner, wrong_store, route, destination, helper),
         claims=(*proposal.claims, alias), proposal=proposal, patch_step_facts=(patch_item.payload,),
     )
     wrong_receipt_values = {
@@ -3514,6 +4156,52 @@ def test_local_alias_support_targets_exact_store_effect_relation() -> None:
             authority_id=authority_id("alias-wrong-owner-case"),
             phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT, inputs=wrong_inputs,
         )
+
+
+def test_observed_local_alias_scalar_write_shape_is_closed() -> None:
+    from d810.ir.flowgraph import InsnKind
+    from d810.transforms.unflatten_authority import evaluate, model
+
+    observation = model.InventoryInstructionObservation(
+        ordinal=2,
+        instruction_ea=0x1800135A4,
+        opcode=12,
+        width=4,
+        instruction_kind=InsnKind.ADD,
+        control_transfer_kind=None,
+        is_call=False,
+        call_kind=None,
+        display_text="add    %var_398.4{144}, #1.4, %var_398.4{144}",
+        raw_opcode=12,
+    )
+
+    assert evaluate._observed_local_alias_scalar_write_matches(
+        observation, host_ea=0x1800135A4, base_token="%var_398", width=4,
+    )
+    assert not evaluate._observed_local_alias_scalar_write_matches(
+        replace(observation, instruction_ea=0x1800135A5),
+        host_ea=0x1800135A4,
+        base_token="%var_398",
+        width=4,
+    )
+    assert not evaluate._observed_local_alias_scalar_write_matches(
+        replace(observation, display_text="add %var_398.4, #1.4, %var_399.4"),
+        host_ea=0x1800135A4,
+        base_token="%var_398",
+        width=4,
+    )
+    assert not evaluate._observed_local_alias_scalar_write_matches(
+        replace(observation, instruction_kind=InsnKind.STORE),
+        host_ea=0x1800135A4,
+        base_token="%var_398",
+        width=4,
+    )
+    assert not evaluate._observed_local_alias_scalar_write_matches(
+        replace(observation, is_call=True),
+        host_ea=0x1800135A4,
+        base_token="%var_398",
+        width=4,
+    )
 
 
 def test_local_alias_requires_endpoint_bearing_reachability_path() -> None:
@@ -3534,7 +4222,7 @@ def test_local_alias_requires_endpoint_bearing_reachability_path() -> None:
     route = _subject_factory(
         model.SemanticSubjectRef, kind=model.SemanticSubjectKind.ROUTE,
         role=model.SemanticSubjectRole.SEMANTIC_ROUTE_SOURCE, block_ref=b0, anchor_ea=0x1000,
-            locator=model.RouteSubjectLocator(proof.proof_id, proof.atomic_group_id, b0, 0x1000, (b2,), (0x1100,)),
+            locator=model.RouteSubjectLocator(proof.proof_id, proof.atomic_group_id, b0, 0x1000, (model.BlockSubjectLocator(b2, 0x1100),)),
     )
     destination = _role_subject(model.SemanticSubjectRole.SEMANTIC_ROUTE_DESTINATION, "2")
     alias = _claim_factory(
@@ -3545,6 +4233,17 @@ def test_local_alias_requires_endpoint_bearing_reachability_path() -> None:
         step_digest=authority_id("alias-step"), source_generation=3,
     )
     proposal = model.ProposedUnflattenContract(**values)
+    canonical_catalog = tuple(
+        _subject_factory(
+            model.SemanticSubjectRef,
+            kind=model.SemanticSubjectKind.BLOCK,
+            role=model.SemanticSubjectRole.SOURCE_CATALOG_BLOCK,
+            block_ref=item.block_ref,
+            anchor_ea=item.anchor_ea,
+            locator=model.BlockSubjectLocator(item.block_ref, item.anchor_ea),
+        )
+        for item in proposal.source_identity_catalog.blocks
+    )
     helper = _role_subject(model.SemanticSubjectRole.PLANNED_HELPER, "0")
     patch_item = _evidence_factory(
         model.AuthorityEvidence, model.AuthorityEvidenceKind.PATCH_STEP, helper,
@@ -3559,8 +4258,8 @@ def test_local_alias_requires_endpoint_bearing_reachability_path() -> None:
         authority_id("alias-relation-path"),
     )
     inputs = _complete_inputs(
-        source_subjects=(entry, owner, store, route, destination),
-        candidate_subjects=(entry, owner, store, route, destination, helper),
+        source_subjects=(entry, *canonical_catalog, owner, store, route, destination),
+        candidate_subjects=(entry, *canonical_catalog, owner, store, route, destination, helper),
             claims=(*proposal.claims, alias), proposal=proposal, patch_step_facts=(patch_item.payload,),
     )
     receipt_values = {
@@ -3627,6 +4326,256 @@ def test_route_destination_reachability_correlates_handler_and_terminal_locators
         ).state is model.ObligationState.SATISFIED
 
 
+def test_projected_retirement_cycle_requires_the_exact_minted_retirement_result() -> None:
+    """Only the sealed, fully-retired plan cycle may satisfy SCC topology."""
+
+    entry = _role_subject(model.SemanticSubjectRole.SOURCE_ENTRY, "retirement-cycle-entry")
+    member0 = _role_subject(model.SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE, "0")
+    member1 = _role_subject(model.SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE, "1")
+    catalog0 = _role_subject(model.SemanticSubjectRole.SOURCE_CATALOG_BLOCK, "0")
+    catalog1 = _role_subject(model.SemanticSubjectRole.SOURCE_CATALOG_BLOCK, "1")
+    corridor = _subject_factory(
+        model.SemanticSubjectRef,
+        kind=model.SemanticSubjectKind.CORRIDOR,
+        role=model.SemanticSubjectRole.DISPATCHER_CORRIDOR,
+        block_ref=member0.block_ref,
+        anchor_ea=member0.anchor_ea,
+        locator=model.CorridorSubjectLocator(
+            authority_id("retirement-cycle-corridor"),
+            member0.block_ref,
+            member0.anchor_ea,
+            (member0.block_ref, member1.block_ref),
+            (member0.anchor_ea, member1.anchor_ea),
+        ),
+    )
+    candidate_catalog = _retirement_catalog(
+        model,
+        (member0.block_ref, member1.block_ref),
+        (member0.anchor_ea, member1.anchor_ea),
+        3,
+    )
+    retirement = _claim_factory(
+        model.RetiredDispatcherInfrastructureClaim,
+        kind=model.UnflattenClaimKind.RETIRED_DISPATCHER_INFRASTRUCTURE,
+        infrastructure_subject=member0,
+        corridor_subject=corridor,
+        member_subjects=(member0, member1),
+        candidate_evidence_ids=tuple(sorted({
+            evidence_id
+            for item in candidate_catalog.candidates
+            for evidence_id in item.evidence_ids
+        })),
+        source_generation=3,
+        candidate_catalog=candidate_catalog,
+    )
+    proposal_values = _valid_proposal(model)
+    proposal_values["plan_inputs"] = replace(
+        proposal_values["plan_inputs"],
+        shape=model.UnflattenPlanShape.FULL_DISPATCHER_RETIREMENT,
+    )
+    route_claim = proposal_values["claims"][0]
+    proposal_base = model.ProposedUnflattenContract(**_valid_proposal(model))
+    proposal_values["corridor_coverage_forecast"] = _minimal_corridor_forecast(
+        model, proposal_base,
+    )
+    proposal = model.ProposedUnflattenContract(
+        **{
+            **proposal_values,
+            "claims": tuple(sorted((retirement, route_claim), key=lambda claim: claim.claim_id)),
+            "retirement_candidate_catalog": candidate_catalog,
+        },
+    )
+    source_subjects = (
+        entry, catalog0, catalog1, member0, member1, corridor,
+        route_claim.retired_route_subject, route_claim.destination_subjects[0],
+    )
+    candidate_bindings = tuple(
+        _binding(
+            subject,
+            model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+            4,
+            status=(
+                model.SubjectBindingStatus.MISSING
+                if (
+                    subject.block_ref == member1.block_ref
+                )
+                else model.SubjectBindingStatus.UNIQUE
+            ),
+            fingerprint=authority_id("candidate-fp"),
+        )
+        for subject in source_subjects
+    )
+    inputs = _complete_inputs(
+        source_subjects=source_subjects,
+        candidate_bindings=candidate_bindings,
+        claims=proposal.claims,
+        proposal=proposal,
+    )
+    result = inputs.retirement_phase_result
+    assert result is not None
+    cycle_refs = frozenset(result.retired_refs)
+    assert cycle_refs == frozenset((member1.block_ref,))
+    assert all(
+        member.classification is model.RetirementPhaseClassification.RETIRED
+        and member.candidate_reachable is None
+        for member in result.members
+        if member.block_ref in cycle_refs
+    )
+
+    # RED: the evaluator did not yet have a consumer for the transaction-bound
+    # retirement result, so merely minting this authoritative result could not
+    # satisfy the projected SCC topology gate.
+    covers = getattr(evaluator, "_retirement_cycle_allowance_covers", None)
+    assert covers is not None
+    assert covers(
+        cycle_refs,
+        inputs=inputs,
+        phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        candidate=inputs.candidate_inventory,
+    )
+    equal_catalog = replace(inputs.proposal.retirement_candidate_catalog)
+    assert equal_catalog == inputs.proposal.retirement_candidate_catalog
+    assert equal_catalog is not inputs.proposal.retirement_candidate_catalog
+    equal_catalog_proposal = replace(
+        inputs.proposal,
+        retirement_candidate_catalog=equal_catalog,
+    )
+    assert covers(
+        cycle_refs,
+        inputs=SimpleNamespace(
+            retirement_phase_result=result,
+            proposal=equal_catalog_proposal,
+            claims=inputs.claims,
+            source_inventory=inputs.source_inventory,
+        ),
+        phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        candidate=inputs.candidate_inventory,
+    )
+    assert not covers(
+        cycle_refs,
+        inputs=SimpleNamespace(
+            retirement_phase_result=result,
+            proposal=SimpleNamespace(
+                retirement_candidate_catalog=SimpleNamespace(
+                    catalog_id=authority_id("foreign-retirement-catalog"),
+                    member_refs=inputs.proposal.retirement_candidate_catalog.member_refs,
+                ),
+            ),
+            claims=inputs.claims,
+            source_inventory=inputs.source_inventory,
+        ),
+        phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        candidate=inputs.candidate_inventory,
+    )
+    assert not covers(
+        frozenset((*cycle_refs, block_ref("unrelated-cycle"))),
+        inputs=inputs,
+        phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        candidate=inputs.candidate_inventory,
+    )
+    assert not covers(
+        frozenset(),
+        inputs=inputs,
+        phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        candidate=inputs.candidate_inventory,
+    )
+    assert not covers(
+        cycle_refs,
+        inputs=inputs,
+        phase=model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY,
+        candidate=inputs.candidate_inventory,
+    )
+    assert not covers(
+        cycle_refs,
+        inputs=inputs,
+        phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        candidate=SimpleNamespace(
+            graph_fingerprint=authority_id("foreign-candidate"),
+            generation=inputs.candidate_inventory.generation,
+        ),
+    )
+    assert not covers(
+        cycle_refs,
+        inputs=inputs,
+        phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        candidate=SimpleNamespace(
+            graph_fingerprint=inputs.candidate_inventory.graph_fingerprint,
+            generation=inputs.candidate_inventory.generation + 1,
+        ),
+    )
+    assert not covers(
+        cycle_refs,
+        inputs=SimpleNamespace(
+            retirement_phase_result=result,
+            proposal=inputs.proposal,
+            claims=tuple(
+                claim for claim in inputs.claims
+                if type(claim) is not model.RetiredDispatcherInfrastructureClaim
+            ),
+            source_inventory=inputs.source_inventory,
+        ),
+        phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        candidate=inputs.candidate_inventory,
+    )
+    assert not covers(
+        cycle_refs,
+        inputs=SimpleNamespace(
+            retirement_phase_result=None,
+            proposal=inputs.proposal,
+            claims=inputs.claims,
+            source_inventory=inputs.source_inventory,
+        ),
+        phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        candidate=inputs.candidate_inventory,
+    )
+
+    reminted = object.__new__(model.RetirementPhaseResult)
+    for field in result.__dataclass_fields__:
+        object.__setattr__(reminted, field, getattr(result, field))
+    assert not covers(
+        cycle_refs,
+        inputs=SimpleNamespace(
+            retirement_phase_result=reminted,
+            proposal=inputs.proposal,
+            claims=inputs.claims,
+            source_inventory=inputs.source_inventory,
+        ),
+        phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        candidate=inputs.candidate_inventory,
+    )
+    unreachable_member = object.__new__(model.RetirementPhaseMember)
+    target_member = next(
+        member for member in result.members if member.block_ref in cycle_refs
+    )
+    for field in target_member.__dataclass_fields__:
+        object.__setattr__(
+            unreachable_member,
+            field,
+            True if field == "candidate_reachable" else getattr(target_member, field),
+        )
+    unreachable_result = object.__new__(model.RetirementPhaseResult)
+    for field in result.__dataclass_fields__:
+        object.__setattr__(
+            unreachable_result,
+            field,
+            tuple(
+                unreachable_member if member is target_member else member
+                for member in result.members
+            ) if field == "members" else getattr(result, field),
+        )
+    assert not covers(
+        cycle_refs,
+        inputs=SimpleNamespace(
+            retirement_phase_result=unreachable_result,
+            proposal=inputs.proposal,
+            claims=inputs.claims,
+            source_inventory=inputs.source_inventory,
+        ),
+        phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        candidate=inputs.candidate_inventory,
+    )
+
+
 def test_retirement_claim_requires_one_authorized_lineage_per_member() -> None:
     entry = _role_subject(model.SemanticSubjectRole.SOURCE_ENTRY, "retirement-entry")
     member0 = _role_subject(model.SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE, "0")
@@ -3634,7 +4583,9 @@ def test_retirement_claim_requires_one_authorized_lineage_per_member() -> None:
     catalog0 = _role_subject(model.SemanticSubjectRole.SOURCE_CATALOG_BLOCK, "0")
     catalog1 = _role_subject(model.SemanticSubjectRole.SOURCE_CATALOG_BLOCK, "1")
     corridor_locator = model.CorridorSubjectLocator(
-        authority_id("retired-corridor"), member0.block_ref, member0.anchor_ea,
+        evaluator._content_id_digest(
+            "unflatten.corridor.v1", (member0.block_ref, member1.block_ref),
+        ), member0.block_ref, member0.anchor_ea,
         (member0.block_ref, member1.block_ref),
         (member0.anchor_ea, member1.anchor_ea),
     )
@@ -3651,7 +4602,7 @@ def test_retirement_claim_requires_one_authorized_lineage_per_member() -> None:
         locator=model.RouteSubjectLocator(
             authority_id("proof"), authority_id("group"),
             member0.block_ref, member0.anchor_ea,
-            (block_ref("b2"),), (0x1100,),
+            (model.BlockSubjectLocator(block_ref("b2"), 0x1100),),
         ),
     )
     destination = _role_subject(model.SemanticSubjectRole.SEMANTIC_ROUTE_DESTINATION, "2")
@@ -4243,6 +5194,68 @@ def test_effect_classifier_requires_exact_candidate_site_and_external_gate_facts
     assert wrong_owner_serial.refuted
 
 
+def test_effect_classifier_consumes_sealed_relation_clone_coordinate() -> None:
+    """A relation clone is checked at its canonical projected owner."""
+
+    from . import test_bind
+    from d810.transforms.unflatten_authority import bind
+
+    family = next(
+        item for item in test_bind._MECHANICAL_FAMILY_CASES
+        if item.family == "CC"
+    )
+    values = family.values_from_case(family.build())
+    result = bind.realize_projected_routes(**values)
+    assert type(result) is model.ProjectedRouteRealizationAccepted
+    realization = result.realization
+    sealed = next(
+        item for item in realization.site_phase_result.effect_results
+        if item.outcome is model.ProjectedEffectSiteOutcome.RELATION_CLONED
+    )
+    subject = next(
+        item for item in values["source_inventory"].subjects
+        if item.subject_id == sealed.source_subject_id
+    )
+    source_binding = next(
+        item for item in values["source_inventory"].bindings
+        if item.subject.subject_id == sealed.source_subject_id
+    )
+    projected_binding = next(
+        item for item in values["projected_inventory"].bindings
+        if item.subject.subject_id == sealed.projected_subject_id
+    )
+    effect = next(
+        item for item in values["source_inventory"].effects
+        if item.owner_ref == sealed.source_site.owner.ref
+        and item.owner_anchor_ea == sealed.source_site.owner.anchor_ea
+        and item.instruction_ea == sealed.source_site.instruction_ea
+        and item.effect_kind is sealed.source_site.effect_kind
+    )
+    projected_effect = next(
+        item for item in values["projected_inventory"].effects
+        if item.owner_ref == sealed.projected_site.owner.ref
+        and item.owner_anchor_ea == sealed.projected_site.owner.anchor_ea
+        and item.instruction_ea == sealed.projected_site.instruction_ea
+        and item.effect_kind is sealed.projected_site.effect_kind
+    )
+
+    classified = _classify_effect_site(
+        effect,
+        subject,
+        source_binding,
+        projected_binding,
+        projected_effect,
+        None,
+        values["source_authority"],
+        realization,
+        None,
+        phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+    )
+
+    assert classified.preserved
+    assert not classified.refuted
+
+
 @pytest.mark.parametrize(
     ("source_kind", "candidate_kind"),
     (
@@ -4313,18 +5326,6 @@ def test_inventory_case_effect_kind_drift_has_no_foreign_topology(
         locator=candidate_locator,
     )
     candidate_subjects = [candidate_effect]
-    if candidate_kind is model.EffectSiteKind.CALL:
-        terminal_locator = model.TerminalSubjectLocator(
-            block_ref("b0"), 0x1000, model.TerminalKind.NORETURN_CALL, 0x1004,
-        )
-        candidate_subjects.append(_subject_factory(
-            model.SemanticSubjectRef,
-            kind=model.SemanticSubjectKind.TERMINAL,
-            role=model.SemanticSubjectRole.TERMINAL_SITE,
-            block_ref=terminal_locator.block_ref,
-            anchor_ea=terminal_locator.anchor_ea,
-            locator=terminal_locator,
-        ))
     case = build_semantic_case(
         authority_id=authority_id(f"inventory-effect-drift-{source_kind.value}"),
         phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
@@ -4604,6 +5605,81 @@ def test_exact_infeasible_effect_authorizes_classified_discarded_loss() -> None:
 
 
 
+def test_terminal_cycle_carrier_does_not_duplicate_corridor_coverage_obligation() -> None:
+    """Only the canonical dispatcher corridor owns coverage completeness."""
+
+    from .test_bind import _terminal_cycle_derived_inputs
+
+    proposal, claim, _inputs, source, _candidate, _residual = (
+        _terminal_cycle_derived_inputs()
+    )
+    cycle = claim.cycle_subject
+    catalog = {item.block_ref: item for item in proposal.source_identity_catalog.blocks}
+    refs = proposal.plan_inputs.dispatcher_member_refs
+    canonical = _subject_factory(
+        model.SemanticSubjectRef,
+        kind=model.SemanticSubjectKind.CORRIDOR,
+        role=model.SemanticSubjectRole.DISPATCHER_CORRIDOR,
+        block_ref=proposal.plan_inputs.dispatcher_entry_ref,
+        anchor_ea=catalog[proposal.plan_inputs.dispatcher_entry_ref].anchor_ea,
+        locator=model.CorridorSubjectLocator(
+            content_id("unflatten.corridor.v1", refs),
+            proposal.plan_inputs.dispatcher_entry_ref,
+            catalog[proposal.plan_inputs.dispatcher_entry_ref].anchor_ea,
+            refs,
+            tuple(catalog[ref].anchor_ea for ref in refs),
+        ),
+    )
+
+    dimensions = _dimensions(
+        (canonical, cycle),
+        (claim,),
+        source.bindings,
+        proposal=proposal,
+    )
+
+    assert model.ObligationKey(
+        canonical, model.SafetyDimension.CORRIDOR_COVERAGE,
+    ) in dimensions
+    assert model.ObligationKey(
+        cycle, model.SafetyDimension.CORRIDOR_COVERAGE,
+    ) not in dimensions
+
+
+def test_terminal_cycle_carrier_cannot_ambiguate_canonical_coverage_corridor() -> None:
+    """Coverage selects the plan-owned corridor, not a claim-local cycle."""
+
+    from .test_bind import _terminal_cycle_derived_inputs
+
+    proposal, claim, _inputs, _source, _candidate, _residual = (
+        _terminal_cycle_derived_inputs()
+    )
+    catalog = {
+        item.block_ref: item for item in proposal.source_identity_catalog.blocks
+    }
+    refs = proposal.plan_inputs.dispatcher_member_refs
+    canonical = _subject_factory(
+        model.SemanticSubjectRef,
+        kind=model.SemanticSubjectKind.CORRIDOR,
+        role=model.SemanticSubjectRole.DISPATCHER_CORRIDOR,
+        block_ref=proposal.plan_inputs.dispatcher_entry_ref,
+        anchor_ea=catalog[proposal.plan_inputs.dispatcher_entry_ref].anchor_ea,
+        locator=model.CorridorSubjectLocator(
+            content_id("unflatten.corridor.v1", refs),
+            proposal.plan_inputs.dispatcher_entry_ref,
+            catalog[proposal.plan_inputs.dispatcher_entry_ref].anchor_ea,
+            refs,
+            tuple(catalog[ref].anchor_ea for ref in refs),
+        ),
+    )
+
+    selected = _canonical_dispatcher_corridor_subject(
+        (canonical, claim.cycle_subject), proposal,
+    )
+
+    assert selected is canonical
+
+
 def test_terminal_cycle_claim_cannot_discharge_effect_or_handler_cells() -> None:
     """A terminal cycle break is structural/terminal authority only."""
 
@@ -4862,7 +5938,13 @@ def test_terminal_cycle_result_replays_exact_inventory_topology_and_path() -> No
         conditional_relations=inputs.conditional_relations,
         patch_step_facts=inputs.patch_step_facts,
     )
-    with pytest.raises(ValueError, match="projected phase must reference|residue topology"):
+    with pytest.raises(
+        ValueError,
+        match=(
+            "projected phase must reference|projected phase must match its candidate inventory"
+            "|residue topology"
+        ),
+    ):
         replace(
             inputs,
             candidate_inventory=residual,

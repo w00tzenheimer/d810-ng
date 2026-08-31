@@ -46,7 +46,10 @@ from d810.transforms.cfg_transaction import PlanBlockRef
 from d810.transforms.graph_modification import PreserveLivePredicateCondition
 from d810.transforms.plan import PatchPlan
 from d810.transforms.plan import PatchLowerConditionalStateTransition
-from d810.transforms.graph_modification import SyntheticStackValueEqualsCondition
+from d810.transforms.graph_modification import (
+    SyntheticCounterBoundCondition,
+    SyntheticStackValueEqualsCondition,
+)
 from tests.typed_patch_authority import compile_patch_plan
 
 
@@ -102,7 +105,7 @@ def test_project_post_state_forecasts_exact_local_alias_scalarization() -> None:
                 serial=0, block_type=0, succs=(), preds=(), flags=0,
                 start_ea=0x1000,
                 insn_snapshots=(InsnSnapshot(
-                    opcode=23, raw_opcode=23, ea=0x1000, native_ea=0x1000,
+                    opcode=23, raw_opcode=23, ea=0x1000, native_ea=0x1010,
                     operands=(), kind=InsnKind.STORE,
                     display_text="%alias = %base",
                     value_op_kind=ValueOpKind.STORE,
@@ -125,9 +128,44 @@ def test_project_post_state_forecasts_exact_local_alias_scalarization() -> None:
     assert host.kind is InsnKind.MOV
     assert host.value_op_kind is ValueOpKind.MOVE
     assert host.display_text == "%alias = %base"
-    assert host.ea == host.native_ea == 0x1000
+    assert host.ea == 0x1000
+    assert host.native_ea == 0x1010
     assert host.opcode == host.raw_opcode == 23
     assert projected.blocks[0].tail_kind is InsnKind.MOV
+
+
+def test_project_post_state_forecasts_local_alias_load_scalarization() -> None:
+    source = FlowGraph(
+        blocks={
+            0: BlockSnapshot(
+                serial=0, block_type=0, succs=(), preds=(), flags=0,
+                start_ea=0x1000,
+                insn_snapshots=(InsnSnapshot(
+                    opcode=22, raw_opcode=22, ea=0x1000, native_ea=0x1010,
+                    operands=(), kind=InsnKind.LOAD,
+                    display_text="%result = *%alias",
+                    value_op_kind=ValueOpKind.LOAD,
+                    r=MopSnapshot(kind=OperandKind.LVAR, size=8),
+                    d=MopSnapshot(kind=OperandKind.LVAR, size=4),
+                ),),
+                tail_opcode=22, tail_kind=InsnKind.LOAD, raw_tail_opcode=22,
+                kind=BlockKind.ZERO_WAY,
+            ),
+        },
+        entry_serial=0, func_ea=0x1000,
+    )
+    plan = compile_patch_plan((ScalarizeLocalAliasAccess(
+        block_serial=0, host_ea=0x1000, host_opcode=22,
+        alias_token="%alias", base_token="%base", value_size=4,
+    ),), source)
+
+    projected = project_post_state(source, plan)
+
+    host = projected.blocks[0].insn_snapshots[0]
+    assert host.kind is InsnKind.MOV
+    assert host.value_op_kind is ValueOpKind.MOVE
+    assert host.ea == 0x1000
+    assert host.native_ea == 0x1010
 
 
 def test_project_post_state_rejects_stale_local_alias_scalarization_host() -> None:
@@ -813,6 +851,152 @@ class TestSimulateEdits:
 
 
 class TestProjectPostState:
+    @staticmethod
+    def _convert_to_goto_cfg() -> FlowGraph:
+        state = MopSnapshot(
+            kind=OperandKind.STACK, size=8, stkoff=0x20,
+            stack_refs=(0x20,),
+        )
+        first_store = InsnSnapshot(
+            opcode=30, raw_opcode=30, ea=0x1000,
+            operands=(),
+            kind=InsnKind.STORE, value_op_kind=ValueOpKind.STORE,
+            l=MopSnapshot(kind=OperandKind.NUMBER, size=8, value=1),
+            d=state,
+        )
+        second_store = replace(
+            first_store, opcode=31, raw_opcode=31, ea=0x1004,
+            l=MopSnapshot(kind=OperandKind.NUMBER, size=8, value=2),
+        )
+        branch = InsnSnapshot(
+            opcode=44, raw_opcode=44, ea=0x1008,
+            operands=(),
+            kind=InsnKind.EQUALITY_JUMP,
+            l=state,
+            r=MopSnapshot(kind=OperandKind.NUMBER, size=8, value=2),
+            d=MopSnapshot(kind=OperandKind.BLOCK, block_ref=2),
+            predicate_kind=PredicateKind.EQ,
+            branch_predicate=PredicateKind.EQ,
+            compare_width=8,
+            control_transfer_kind=ControlTransferKind.CONDITIONAL_BRANCH,
+            is_conditional_jump=True,
+        )
+        return FlowGraph(
+            {
+                0: BlockSnapshot(
+                    0, 0, (1, 2), (), 0, 0x1000,
+                    (first_store, second_store, branch), branch.opcode,
+                    BlockKind.TWO_WAY, branch.kind, None, branch.raw_opcode,
+                ),
+                1: BlockSnapshot(
+                    1, 0, (), (0,), 0, 0x2000, (), None,
+                    BlockKind.STOP, None, None,
+                ),
+                2: BlockSnapshot(
+                    2, 0, (), (0,), 0, 0x3000, (), None,
+                    BlockKind.STOP, None, None,
+                ),
+            },
+            0,
+            0x1000,
+        )
+
+    def test_convert_to_goto_preserves_store_prefix_and_normalizes_tail(self) -> None:
+        from d810.transforms.unflatten_authority import producer_api
+
+        source = self._convert_to_goto_cfg()
+        plan = compile_patch_plan([ConvertToGoto(0, 2)], source)
+
+        projected = project_post_state(source, plan)
+        feeder = projected.blocks[0]
+
+        assert feeder.succs == (2,)
+        assert feeder.insn_snapshots[:-1] == source.blocks[0].insn_snapshots[:-1]
+        assert feeder.insn_snapshots[-1] == _expected_synthetic_goto(
+            ea=0x1008, target=2,
+        )
+        assert feeder.tail_opcode == -1
+        assert feeder.raw_tail_opcode is None
+        assert feeder.tail_kind is InsnKind.GOTO
+        observed = producer_api.observe_inventory_block(
+            feeder, owner_ref=None, owner_anchor_ea=feeder.start_ea,
+        )
+        assert tuple(
+            item.instruction_kind for item in observed.instruction_observations
+        ) == (InsnKind.STORE, InsnKind.STORE, InsnKind.GOTO)
+
+    @pytest.mark.parametrize(
+        "mutation", ("nonconditional", "missing_tail", "target", "reciprocal"),
+    )
+    def test_convert_to_goto_rejects_nonconditional_or_inexact_source(
+        self, mutation: str,
+    ) -> None:
+        source = self._convert_to_goto_cfg()
+        blocks = dict(source.blocks)
+        target = 2
+        if mutation == "nonconditional":
+            tail = replace(
+                blocks[0].insn_snapshots[-1],
+                kind=InsnKind.GOTO,
+                control_transfer_kind=ControlTransferKind.GOTO,
+                is_conditional_jump=False,
+                is_unconditional_jump=True,
+                predicate_kind=None,
+                branch_predicate=None,
+                compare_width=None,
+            )
+            blocks[0] = replace(
+                blocks[0], insn_snapshots=(*blocks[0].insn_snapshots[:-1], tail),
+                tail_kind=InsnKind.GOTO,
+            )
+        elif mutation == "missing_tail":
+            blocks[0] = replace(
+                blocks[0], insn_snapshots=blocks[0].insn_snapshots[:-1],
+                tail_opcode=31, raw_tail_opcode=31,
+                tail_kind=InsnKind.STORE,
+            )
+        elif mutation == "reciprocal":
+            blocks[2] = replace(blocks[2], preds=())
+        else:
+            target = 3
+        source = FlowGraph(blocks, source.entry_serial, source.func_ea)
+        plan = compile_patch_plan([ConvertToGoto(0, target)], source)
+
+        with pytest.raises(ValueError, match="convert-to-goto"):
+            project_post_state(source, plan)
+
+    def test_counter_bound_lowering_projects_exact_typed_predicate(self) -> None:
+        from tests.unit.transforms.unflatten_authority.helpers import exact_fixture
+
+        cfg, _proposal, _exclusion, _refs = exact_fixture()
+        plan = compile_patch_plan(
+            [
+                LowerConditionalStateTransition(
+                    source_serial=0,
+                    old_dispatcher_serial=1,
+                    rewrite_from_ea=0x1001,
+                    condition_operand=SyntheticCounterBoundCondition(
+                        counter_size=4,
+                        bound=100,
+                        counter_stkoff=0x38,
+                        signed=True,
+                    ),
+                    false_target_serial=3,
+                    true_target_serial=2,
+                ),
+            ],
+            cfg,
+        )
+
+        feeder = project_post_state(cfg, plan).blocks[0]
+        assert feeder.succs == (3, 2)
+        assert feeder.tail is not None
+        assert feeder.tail.predicate_kind is PredicateKind.SLT
+        assert feeder.tail.l is not None
+        assert feeder.tail.l.kind is OperandKind.STACK
+        assert feeder.tail.l.stkoff == 0x38
+        assert feeder.tail.r is not None and feeder.tail.r.value == 100
+
     def test_exact_stack_lowering_replaces_feeder_goto_with_coherent_conditional(self) -> None:
         from tests.unit.transforms.unflatten_authority.helpers import exact_fixture
 

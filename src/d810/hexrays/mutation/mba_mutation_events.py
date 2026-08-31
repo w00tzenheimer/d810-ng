@@ -1509,17 +1509,30 @@ class MbaMutationGateway:
             )
         if set(self._cfg_creation_receipts) != set(self._cfg_plan_refs):
             raise RuntimeError("patch observation lacks complete creation receipts")
+        attempt = self._current_transaction_attempt
         for plan_ref, receipt in self._cfg_creation_receipts.items():
+            resolved = self.identity_index.resolve_logical_version(
+                receipt.logical_version, transaction_id=attempt.attempt_id,
+            )
+            if resolved is None:
+                raise RuntimeError("patch observation helper logical version is stale")
             self._cfg_plan_bindings[plan_ref] = MbaCfgPlanBlockBindingObserved(
                 plan_ref=plan_ref,
                 logical_version=receipt.logical_version,
-                returned_serial=int(receipt.returned_serial),
+                returned_serial=int(resolved.serial),
             )
-        attempt = self._current_transaction_attempt
         self.identity_index.refresh_from_flow_graph(live_graph)
         self.identity_index.begin_transaction(attempt, live_graph.num_blocks)
         self._operation_count = applied
         self._emit_cfg_transaction_phase(CfgTransactionPhase.OBSERVED)
+
+    @property
+    def observed_plan_bindings(self) -> tuple[MbaCfgPlanBlockBindingObserved, ...]:
+        """Return the exact current helper coordinates captured before refresh."""
+        self._require_active()
+        if set(self._cfg_plan_bindings) != set(self._cfg_plan_refs):
+            raise RuntimeError("gateway lacks complete observed plan bindings")
+        return tuple(self._cfg_plan_bindings[ref] for ref in self._cfg_plan_refs)
 
     def _emit_observation(
         self,

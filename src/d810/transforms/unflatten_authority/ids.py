@@ -328,9 +328,13 @@ def _validate_canonical_value(value: object, seen: set[int] | None = None) -> No
         type(value).__module__ == "d810.transforms.unflatten_authority.model"
         and type(value).__name__ in {
             "ClonedSemanticInstructionOrigin", "ClonedSemanticPrefix",
+            "FoldedConditionalRouteRealization",
             "TwoArmDirectBranchRouteRealization",
             "BranchFallthroughHelperRouteRealization",
+            "RetainedPrefixRouteRealization",
+            "SharedCarrierSourceBypassRouteRealization",
             "ClonedRouteCorridorRealization",
+            "ClonedCarrierRouteCorridorRealization",
         }
     ):
         value.__post_init__()
@@ -428,8 +432,10 @@ def _validate_pinned_record(value: object, seen: set[int] | None = None) -> None
                     if type(item) is not MopRecord:
                         raise TypeError(f"InsnRecord.{name} must be MopRecord or None")
                     _validate_pinned_record(item, seen)
-            if type(value.opcode_attrs) is not dict:
-                raise TypeError("InsnRecord.opcode_attrs must be an exact dict")
+            if type(value.opcode_attrs) is not MappingProxyType:
+                raise TypeError(
+                    "InsnRecord.opcode_attrs must be an exact mappingproxy"
+                )
             _validate_canonical_value(value.opcode_attrs, seen)
             _sha256_hex(value.display_text_sha256, "InsnRecord.display_text_sha256")
             return
@@ -520,6 +526,7 @@ def _ensure_registries() -> None:
     from d810.transforms.plan import PatchBlockSpec, PatchEdgeRef
     from d810.transforms.graph_modification import (
         PreserveLivePredicateCondition,
+        SyntheticCounterBoundCondition,
         SyntheticRegisterNonzeroCondition,
         SyntheticStackValueEqualsCondition,
     )
@@ -547,18 +554,22 @@ def _ensure_registries() -> None:
         BlockKind, InsnKind, OperandKind,
             StorageIdentityKind, route.SemanticRouteShape, route.SemanticRouteProofKind,
             route.SemanticPredicateKind, route.SemanticStateWriteDeliveryKind,
+            route.SemanticPhysicalWriteByteOrder,
             route.SemanticDagEndpointKind,
         InstructionEffectKind,
         TerminalReturnCarrierSourceKind,
         PatchStepKind,
     })
     model_records = (
-        model.BlockSubjectLocator, model.EdgeSubjectLocator, model.RouteSubjectLocator,
+        model.BlockSubjectLocator, model.LogicalFunctionExitSubjectLocator, model.EdgeSubjectLocator, model.RouteSubjectLocator,
         model.EffectSubjectLocator, model.HandlerSubjectLocator, model.TerminalSubjectLocator,
         model.ValueFlowSubjectLocator, model.CorridorSubjectLocator, model.SemanticSubjectRef,
-        model.CorridorCoveragePathNode, model.CorridorSemanticExclusion, model.CorridorCoveragePath,
-        model.CorridorCoverageForecast, model.CorridorSemanticExclusionCorrelation,
-        model.CorridorCoveragePhaseResult,
+        model.CorridorCoveragePathNode, model.CorridorSemanticExclusion,
+        model.DefaultGapInitialStateSeed, model.DefaultGapInfeasibilityExclusion,
+        model.DefaultGapInfeasibilityPath, model.DefaultGapInfeasibilityForecast,
+        model.CorridorCoveragePath, model.CorridorCoverageForecast,
+        model.CorridorSemanticExclusionCorrelation, model.DefaultGapInfeasibilityCorrelation,
+        model.CorridorCoveragePhaseResult, model.DefaultGapInfeasibilityPhaseResult,
         model.DetachedDeadHandlerComponentPhaseResult,
         model.DetachedDeadHandlerComponentSourceResult,
         model.DetachedComponentEvidencePayload,
@@ -597,10 +608,14 @@ def _ensure_registries() -> None:
         model.ProjectedTerminalSiteResult, model.ProjectedSemanticSitePhaseResult,
         model.ProjectedRouteSitePreservation,
         model.RealizedConditionalArm, model.DirectRouteRealization,
+        model.SharedCarrierSourceBypassRouteRealization,
+        model.RetainedPrefixRouteRealization,
         model.LoweredConditionalRouteRealization, model.ClonedConditionalRouteRealization,
+        model.FoldedConditionalRouteRealization,
         model.ClonedSemanticInstructionOrigin, model.ClonedSemanticPrefix,
         model.TwoArmDirectBranchRouteRealization, model.BranchFallthroughHelperRouteRealization,
         model.ClonedRouteCorridorRealization,
+        model.ClonedCarrierRouteCorridorRealization,
         model.SourceBoundRouteAuthority,
         model.ProjectedRouteRealizationRow, model.ProjectedRouteRealization,
         model.SourceBoundRouteAuthorityAccepted, model.SourceBoundRouteAuthorityRejected,
@@ -625,8 +640,9 @@ def _ensure_registries() -> None:
         BlockRecord: ("serial", "block_type", "raw_block_type", "kind", "flags", "start_ea", "native_start_ea", "succs", "preds", "tail_opcode", "raw_tail_opcode", "tail_kind", "instructions"),
         GraphRecord: ("func_ea", "entry_serial", "blocks"),
         model.BlockSubjectLocator: ("block_ref", "anchor_ea"),
+        model.LogicalFunctionExitSubjectLocator: ("block_ref", "serial"),
         model.EdgeSubjectLocator: ("source_ref", "source_anchor_ea", "target_ref", "target_anchor_ea", "edge_role"),
-        model.RouteSubjectLocator: ("proof_id", "atomic_group_id", "source_ref", "source_anchor_ea", "destination_refs", "destination_anchor_eas"),
+        model.RouteSubjectLocator: ("proof_id", "atomic_group_id", "source_ref", "source_anchor_ea", "destination_locators", "dag_endpoint_locators"),
         model.EffectSubjectLocator: ("owner_ref", "owner_anchor_ea", "instruction_ea", "effect_kind"),
         model.HandlerSubjectLocator: ("block_ref", "anchor_ea", "normalized_states"),
         model.TerminalSubjectLocator: ("block_ref", "anchor_ea", "terminal_kind", "instruction_ea"),
@@ -634,10 +650,16 @@ def _ensure_registries() -> None:
         model.CorridorSubjectLocator: ("corridor_id", "entry_ref", "entry_anchor_ea", "member_refs", "member_anchor_eas"),
         model.CorridorCoveragePathNode: ("block_ref", "anchor_ea"),
         model.CorridorSemanticExclusion: ("exclusion_id", "digest", "normalized_state", "state_identity", "source", "feeder", "prefix", "root"),
+        model.DefaultGapInitialStateSeed: ("normalized_state", "route_proof_id"),
+        model.DefaultGapInfeasibilityExclusion: ("exclusion_id", "digest", "state_width_bytes", "state_identity", "dispatcher", "default_entry", "residual", "initial_state_seeds", "route_proof_ids", "normalized_reachable_states"),
+        model.DefaultGapInfeasibilityPath: ("path_id", "nodes", "state_merge", "exclusion_id"),
+        model.DefaultGapInfeasibilityForecast: ("extension_id", "base_forecast", "paths", "exclusion_digests", "exclusions"),
         model.CorridorCoveragePath: ("path_id", "nodes", "state_merge", "disposition", "semantic_exclusion_ids"),
         model.CorridorCoverageForecast: ("forecast_id", "plan_id", "function_ea", "source_native_key", "source_generation", "dispatcher_ref", "dispatcher_anchor_ea", "paths", "covered_path_ids", "residual_path_ids", "enumeration_complete", "semantic_exclusion_digests", "semantic_exclusions", "semantic_exclusion_path_ids"),
-            model.CorridorSemanticExclusionCorrelation: ("exclusion_id", "exclusion_digest", "path_id", "claim_id", "proof_id", "ordered_prefix", "source_fingerprint", "candidate_fingerprint", "source_generation", "candidate_generation", "phase_result_id"),
+        model.CorridorSemanticExclusionCorrelation: ("exclusion_id", "exclusion_digest", "path_id", "claim_id", "proof_id", "ordered_prefix", "source_fingerprint", "candidate_fingerprint", "source_generation", "candidate_generation", "phase_result_id"),
+        model.DefaultGapInfeasibilityCorrelation: ("exclusion_id", "exclusion_digest", "path_id", "dispatcher", "default_entry", "residual", "initial_state_seeds", "route_proof_ids", "normalized_reachable_states", "source_fingerprint", "candidate_fingerprint", "source_generation", "candidate_generation", "phase_result_id"),
             model.CorridorCoveragePhaseResult: ("result_id", "forecast_id", "phase", "source_fingerprint", "candidate_fingerprint", "source_generation", "candidate_generation", "covered_path_ids", "residual_path_ids", "drifted_path_ids", "enumeration_complete", "matched_semantic_exclusion_ids", "source_dispatcher_reachable", "candidate_dispatcher_reachable", "semantic_exclusion_correlations", "comparison_region_subject_ids", "dispatcher_subject_id"),
+        model.DefaultGapInfeasibilityPhaseResult: ("result_id", "base_result", "forecast", "phase", "source_fingerprint", "candidate_fingerprint", "source_generation", "candidate_generation", "matched_exclusion_ids", "correlations"),
             model.DetachedDeadHandlerComponentSourceResult: ("result_id", "claim_id", "corridor_forecast_id", "corridor_coverage_result_id", "source_fingerprint", "source_generation", "dispatcher_subject_id", "dispatcher_block_ref", "dead_handler_subject_ids", "retained_handler_subject_ids", "component_subject_ids", "comparison_region_subject_ids", "source_reachable_subject_ids", "dead_handler_block_refs", "retained_handler_block_refs", "comparison_region_block_refs", "terminal_digest", "effect_digest", "topology_digest", "source_reachable_block_refs", "component_block_refs", "remainder_block_refs", "terminal_site_keys", "effect_site_keys", "source_blocks"),
             model.DetachedDeadHandlerComponentPhaseResult: ("result_id", "claim_id", "phase", "corridor_coverage_result_id", "source_fingerprint", "candidate_fingerprint", "source_generation", "candidate_generation", "accepted", "source_result_id"),
             model.DetachedComponentEvidencePayload: ("phase_result_id", "claim_id", "corridor_coverage_result_id", "phase", "source_fingerprint", "candidate_fingerprint", "source_generation", "candidate_generation", "accepted", "authorized_subject_ids"),
@@ -648,7 +670,7 @@ def _ensure_registries() -> None:
         model.TopologyEdgeRelation: ("role", "source_subject_id", "target_subject_id", "native_edge_anchor_ea"),
         model.TopologyEvidencePayload: ("subject_id", "predecessor_subject_ids", "successor_subject_ids", "reciprocal_edges", "expected_shape_digest", "candidate_shape_digest", "expected_edge_relations", "candidate_edge_relations"),
         model.StructuralLineageEvidencePayload: ("source_subject_id", "candidate_subject_ids", "disposition", "reciprocal_native_origin_eas", "claim_id", "source_subject_ids"),
-        model.SemanticRouteEvidencePayload: ("route_subject_id", "proof_ids", "atomic_group_id", "source_subject_id", "destination_subject_ids", "matched"),
+        model.SemanticRouteEvidencePayload: ("route_subject_id", "proof_ids", "atomic_group_id", "source_subject_id", "destination_subject_ids", "matched", "dag_endpoint_subject_ids"),
         model.EffectSiteEvidencePayload: ("effect_subject_id", "effect_kind", "instruction_ea", "opcode", "width", "storage_identity", "normalized_state", "provider_mode", "provider_ids", "preserved"),
         model.ReachabilityEvidencePayload: ("root_subject_id", "target_subject_id", "reachable", "path_subject_ids"),
         model.UseDefAuditEvidencePayload: ("fragment_id", "state_identity", "executed", "fragment_atomic", "actionable_non_state_severance_count", "violation_ids"),
@@ -661,7 +683,7 @@ def _ensure_registries() -> None:
         model.ProviderConsensusWitness: ("mode", "provider_ids"),
         model.RetiredDispatcherInfrastructureClaim: ("claim_id", "kind", "infrastructure_subject", "corridor_subject", "member_subjects", "candidate_evidence_ids", "source_generation", "candidate_catalog"),
         model.DetachedDeadHandlerComponentClaim: ("claim_id", "kind", "dispatcher_subject", "dead_handler_subjects", "retained_handler_subjects", "component_subjects", "source_generation"),
-        model.EquivalentSemanticRouteClaim: ("claim_id", "kind", "retired_route_subject", "replacement_route_subject", "source_subject", "destination_subjects", "route_proof_ids", "atomic_group_id", "source_generation"),
+        model.EquivalentSemanticRouteClaim: ("claim_id", "kind", "retired_route_subject", "replacement_route_subject", "source_subject", "destination_subjects", "route_proof_ids", "atomic_group_id", "source_generation", "dag_endpoint_subjects"),
         model.ExactInfeasibleEffectClaim: ("claim_id", "kind", "effect_subject", "source_subject", "predicate_subject", "selected_target_subject", "discarded_effect_subject", "normalized_state", "state_identity", "width", "source_write_ea", "predicate_branch_ea", "discarded_effect_ea", "selected_edge_role", "route_proof_ids", "consensus", "source_generation"),
         model.LocalAliasEffectScalarizationClaim: ("claim_id", "kind", "owner_subject", "step_index", "host_ea", "host_opcode", "alias_token", "base_token", "host_text_sha1", "value_size", "step_digest", "source_generation"),
         model.TerminalCycleBreakClaim: ("claim_id", "kind", "cycle_subject", "cleanup_source_subject", "terminal_subject", "terminal_route_proof_ids", "source_generation"),
@@ -715,13 +737,20 @@ def _ensure_registries() -> None:
         model.SourceBoundRouteAuthority: ("phase", "proposal", "proposal_id", "plan_id", "source_native_key", "source_fingerprint", "source_inventory_digest", "source_generation", "evidence_id", "bound_evidence", "covered_proof_ids", "covered_claim_ids", "source_authority_id"),
         model.RealizedConditionalArm: ("role", "target"),
         model.DirectRouteRealization: ("feeder", "old_target", "new_target", "relation_id"),
+        model.SharedCarrierSourceBypassRouteRealization: (
+            "proof_source", "shared_feeder", "comparison_entry",
+            "semantic_target", "relation_id",
+        ),
+        model.RetainedPrefixRouteRealization: ("proof_source", "delivery_owner", "old_target", "new_target", "relation_id"),
         model.LoweredConditionalRouteRealization: ("feeder", "proof_source", "old_target", "arms", "relation_id"),
         model.ClonedConditionalRouteRealization: ("feeder", "proof_source", "old_target", "replacement_clone", "fallthrough_helper", "arms", "creation_spec_digests", "relation_id"),
+        model.FoldedConditionalRouteRealization: ("feeder", "selected_target", "discarded_target", "relation_id"),
         model.ClonedSemanticInstructionOrigin: ("source_owner", "clone_owner", "source_ordinal", "projected_ordinal", "instruction_ea", "observation_digest", "origin_id"),
         model.ClonedSemanticPrefix: ("ordinal", "source_owner", "clone_owner", "source_start_ordinal", "source_end_ordinal_exclusive", "instruction_origins", "source_trailing_goto_ordinal", "projected_synthetic_goto_ordinal", "projected_successor", "creation_spec_row", "prefix_id"),
         model.TwoArmDirectBranchRouteRealization: ("feeder", "source_rewritten_arm", "projected_replacement_arm", "untouched_arm", "relation_id"),
         model.BranchFallthroughHelperRouteRealization: ("feeder", "source_fallthrough", "untouched_conditional_arm", "helper", "semantic_target", "creation_spec_digests", "relation_id"),
         model.ClonedRouteCorridorRealization: ("predecessor", "proof_source", "descriptor_old_target", "terminal_continuation", "source_corridor", "cloned_corridor", "semantic_target", "semantic_prefixes", "creation_spec_digests", "relation_id"),
+        model.ClonedCarrierRouteCorridorRealization: ("proof_source", "physical_feeder", "comparison_entry", "source_corridor", "cloned_corridor", "semantic_target", "semantic_prefixes", "creation_spec_digests", "relation_id"),
         model.ProjectedRouteRealizationRow: ("claim_id", "proof_id", "route_subject_id", "relation", "site_preservation", "plan_step_index", "plan_step_type", "plan_step_digest", "source_fingerprint", "projected_fingerprint", "source_generation", "projected_generation", "row_id"),
         model.ProjectedRouteRealization: ("source_authority", "attempt_id", "plan_id", "rows", "site_phase_result", "projected_inventory_digest", "projected_fingerprint", "projected_generation", "realization_id"),
         model.SourceBoundRouteAuthorityAccepted: ("authority",),
@@ -734,12 +763,20 @@ def _ensure_registries() -> None:
         InstructionEffectSite,
         StableBlockIdentity, LogicalBlockRef, NativeBlockRef, PlanBlockRef,
         TransactionAttemptId,
-                route.SemanticCorridorPoint, route.SemanticLogicalDagEndpoint,
+                    route.SemanticCorridorPoint, route.SemanticLogicalDagEndpoint,
+                    route.SemanticRecoveredStateWriteWitness,
+                    route.SemanticPhysicalGuardSelectionWitness,
+                    route.SemanticPhysicalStateWriteWitness,
+                    route.SemanticGuardedStateSelection,
+                    route.SemanticPhysicalDeliveryMember,
+                    route.SemanticPhysicalDeliveryProof,
                 route.SemanticPredicateProof, route.SemanticCarrierProof,
                 route.SemanticRouteDestination, route.SemanticStateWriteProof, route.SemanticRouteProof,
                         route.SemanticBootstrapProof,
                         route.SemanticStateTransformProof, route.SemanticStateCarrierProof,
                         route.SemanticDecisionDagWitness, route.SemanticDagComparison,
+                        route.SemanticSwitchTableHandoff,
+                        route.SemanticDagNamespaceBridge,
                         route.SemanticStateDagProof, route.SemanticPartitionMemberProof,
                         route.SemanticStatePartitionProof,
                     route.BoundSemanticStateTransform, route.BoundSemanticStateCarrier,
@@ -753,7 +790,8 @@ def _ensure_registries() -> None:
         gates.GenericEntryGateFacts, gates.GenericEffectfulGateFacts,
         gates.GenericTerminalGateFacts, gates.GenericCfgGateFacts,
         TerminalReturnCarrierSource, TerminalReturnCarrierRequest,
-        PreserveLivePredicateCondition, SyntheticRegisterNonzeroCondition,
+        PreserveLivePredicateCondition, SyntheticCounterBoundCondition,
+        SyntheticRegisterNonzeroCondition,
         SyntheticStackValueEqualsCondition,
         PatchBlockSpec, PatchEdgeRef,
         Varnode, Instruction, InstructionControl, InstructionEffect,
@@ -789,17 +827,49 @@ def _ensure_registries() -> None:
         PlanBlockRef: ("plan_id", "local_block_id"),
         route.SemanticCorridorPoint: ("identity", "anchor_ea"),
         route.SemanticLogicalDagEndpoint: ("kind", "serial", "session_id", "proxy_token", "version"),
+        route.SemanticPhysicalGuardSelectionWitness: (
+            "guard_serial", "comparison_instruction", "state_identity", "width",
+            "constant", "true_target_serial", "false_target_serial",
+            "selected_target_serial",
+        ),
+        route.SemanticGuardedStateSelection: (
+            "guard", "comparison_instruction", "state_identity", "width",
+            "constant", "true_target", "false_target", "selected_target",
+        ),
         route.SemanticPredicateProof: ("kind", "origin", "consumer", "corridor", "storage_identity", "width", "compare_constant", "true_is_taken", "permitted_write_eas"),
         route.SemanticCarrierProof: ("carrier_id", "definition", "consumers", "corridor", "storage_identity", "width", "state_values", "permitted_write_eas"),
         route.SemanticRouteDestination: ("role", "state_constant", "target_identity", "target_anchor_ea", "terminal"),
-            route.SemanticStateWriteProof: ("identity", "instruction_ea", "state_variable", "width", "state_constant", "corridor_instruction_eas", "authority_transfer_ea", "preserved_call_instruction_eas", "delivery_kind"),
+                route.SemanticRecoveredStateWriteWitness: ("source_instruction", "state_identity", "width", "recovered_state"),
+                route.SemanticPhysicalStateWriteWitness: (
+                    "source_instruction",
+                    "state_identity",
+                    "width",
+                    "state_constant",
+                    "source_serial",
+                    "alias_definition_instruction",
+                    "alias_definition_serial",
+                    "physical_width",
+                    "state_lane_offset",
+                    "byte_order",
+                    "guarded_selection",
+                ),
+                route.SemanticPhysicalDeliveryMember: (
+                    "identity", "instruction_ea", "physical_state_write",
+                    "alias_definition",
+                ),
+                route.SemanticPhysicalDeliveryProof: (
+                    "delivery", "delivery_instruction", "target", "members",
+                ),
+                route.SemanticStateWriteProof: ("identity", "instruction_ea", "state_variable", "width", "state_constant", "corridor_instruction_eas", "authority_transfer_ea", "preserved_call_instruction_eas", "delivery_kind", "recovered_state_write", "physical_state_write", "physical_delivery", "guarded_selection"),
                 route.SemanticStateTransformProof: ("operation", "program", "source_bindings", "owner_identity", "owner_anchor_ea", "source_identity", "source_anchor_ea", "feeder_identity", "feeder_anchor_ea", "comparison_entry_identity", "comparison_entry_anchor_ea", "state_feeder_identity", "state_feeder_anchor_ea", "state_identity", "state_constant", "corridor", "corridor_instruction_eas"),
                     route.SemanticStateCarrierProof: ("carrier", "owner_identity", "owner_anchor_ea", "source_identity", "source_anchor_ea", "feeder_identity", "feeder_anchor_ea", "comparison_entry_identity", "comparison_entry_anchor_ea", "state_identity", "state_constant", "requires_feeder_clone", "corridor"),
-                        route.SemanticDagComparison: ("node", "operation", "constant", "true_target", "false_target"),
-                        route.SemanticDecisionDagWitness: ("state_identity", "state_constant", "entry", "path", "comparisons", "aliases"),
+                        route.SemanticDagComparison: ("node", "operation", "constant", "true_target", "false_target", "state_identity"),
+                        route.SemanticDagNamespaceBridge: ("node", "instruction_ea", "source_identity", "result_identity", "source_width", "result_width"),
+                        route.SemanticDecisionDagWitness: ("state_identity", "state_constant", "entry", "path", "comparisons", "aliases", "bridges"),
                         route.SemanticPartitionMemberProof: ("owner_identity", "owner_anchor_ea", "state_constant"),
                         route.SemanticStatePartitionProof: ("group_id", "feeder_identity", "feeder_anchor_ea", "feeder_instruction_ea", "state_identity", "members"),
-                        route.SemanticStateDagProof: ("witness", "source_identity", "source_anchor_ea", "target_identity", "target_anchor_ea", "entry_identity", "entry_anchor_ea", "path"),
+                        route.SemanticSwitchTableHandoff: ("dispatcher", "state_identity", "state_constant"),
+                        route.SemanticStateDagProof: ("witness", "source_identity", "source_anchor_ea", "target_identity", "target_anchor_ea", "entry_identity", "entry_anchor_ea", "source_to_entry_corridor", "path", "switch_handoff"),
                         route.SemanticBootstrapProof: ("entry", "source", "owner", "dispatcher", "corridor", "state_write", "state_dag", "preserved_effect_sites"),
         route.SemanticRouteProof: ("proof_id", "atomic_group_id", "proof_kind", "shape", "source_identity", "source_anchor_ea", "destinations", "delivery_region", "source_owner_identity", "source_owner_anchor_ea", "state_write", "state_transform", "state_carrier", "state_partition", "state_dag", "bootstrap", "predicate", "carriers", "terminal_return_carrier", "diagnostic_provenance"),
             route.CanonicalSemanticEvidence: ("native_key", "generation", "atomic_group_id", "route_proofs"),
@@ -809,7 +879,7 @@ def _ensure_registries() -> None:
                 route.BoundSemanticCarrier: ("evidence", "definition", "consumers", "corridor"),
                     route.BoundSemanticStateTransform: ("evidence", "owner", "source", "feeder", "comparison_entry", "state_feeder"),
                         route.BoundSemanticStateCarrier: ("evidence", "owner", "source", "feeder", "comparison_entry"),
-                        route.BoundSemanticStateDag: ("evidence", "source", "target", "entry", "path"),
+                            route.BoundSemanticStateDag: ("evidence", "source", "target", "entry", "source_to_entry_corridor", "path", "switch_handoff_dispatcher"),
                         route.BoundSemanticStatePartition: ("evidence", "feeder", "owners"),
                         route.BoundSemanticBootstrap: ("evidence", "entry", "source", "owner", "dispatcher", "corridor"),
                         route.BoundSemanticRoute: ("evidence", "source", "destinations", "source_owner", "state_write_block", "state_transform", "state_carrier", "state_partition", "state_dag", "bootstrap", "predicate", "carriers"),
@@ -822,6 +892,9 @@ def _ensure_registries() -> None:
         TerminalReturnCarrierSource: ("kind", "width", "storage_identity", "constant"),
         TerminalReturnCarrierRequest: ("source_handler_ea", "terminal_target_ea", "state_var_reg", "state_constant"),
         PreserveLivePredicateCondition: ("predicate_ea", "true_is_taken", "preserve_live_predicate"),
+        SyntheticCounterBoundCondition: (
+            "counter_size", "bound", "counter_stkoff", "counter_reg", "signed",
+        ),
         SyntheticRegisterNonzeroCondition: ("predicate_reg", "predicate_size"),
         SyntheticStackValueEqualsCondition: ("stack_stkoff", "stack_size", "value"),
         PatchEdgeRef: ("source", "target"),
@@ -1080,10 +1153,13 @@ def _decode_wire(value: object, *, allow_index: bool = False) -> object:
                 raise ValueError("semantic site authority records are encode-only")
             elif record_type.__name__ in {
                 "RouteRealizationFailure",
-                "DirectRouteRealization", "LoweredConditionalRouteRealization", "ClonedConditionalRouteRealization",
+                "DirectRouteRealization", "SharedCarrierSourceBypassRouteRealization",
+                "RetainedPrefixRouteRealization",
+                "LoweredConditionalRouteRealization", "ClonedConditionalRouteRealization",
+                "FoldedConditionalRouteRealization",
                 "ClonedSemanticInstructionOrigin", "ClonedSemanticPrefix",
                 "TwoArmDirectBranchRouteRealization", "BranchFallthroughHelperRouteRealization",
-                "ClonedRouteCorridorRealization",
+                "ClonedRouteCorridorRealization", "ClonedCarrierRouteCorridorRealization",
                 "ProjectedRouteRealizationRow", "ProjectedRouteRealization",
             }:
                 raise ValueError("route realization authority records are encode-only")
@@ -1192,7 +1268,65 @@ def case_id(value: object) -> str:
     _ensure_registries()
     if type(value) not in _RECORD_TYPES:
         raise TypeError("case_id requires a registered safety case record")
-    return _record_content_id(CASE_SCHEMA, value, "case_id")
+    if type(value).__name__ != "SemanticSafetyCase":
+        return _record_content_id(CASE_SCHEMA, value, "case_id")
+    # A safety case is the transaction's immutable aggregate.  Its children
+    # are already sealed by their own content IDs (or inventory/result
+    # digests), so re-encoding the complete object graph here is both
+    # redundant and quadratic in the common observed-validation path.  Keep
+    # the case ID sensitive to every occurrence, but compose it from those
+    # sealed child identities.  SemanticSafetyCase.__post_init__ remains the
+    # canonical-decode boundary that validates the complete nested content.
+    return content_id(CASE_SCHEMA, _semantic_safety_case_projection(value))
+
+
+def _semantic_safety_case_projection(value: object) -> tuple[tuple[str, object], ...]:
+    """Return the compact, complete authority projection of one safety case.
+
+    This helper deliberately has no cache.  The resulting ID is not an
+    authority shortcut: every nested record is represented by its own sealed
+    content ID/digest, and the model validates its exact parent/child
+    relationships before a case is accepted or decoded.
+    """
+
+    def occurrence_ids(items: object, attribute: str) -> tuple[object, ...]:
+        if type(items) is not tuple:
+            return ("invalid-tuple", items)
+        return tuple(getattr(item, attribute, item) for item in items)
+
+    compact: dict[str, object] = {}
+    for name in _RECORD_FIELDS[type(value)]:
+        if name == "case_id":
+            continue
+        item = getattr(value, name)
+        if name == "preparation_receipt":
+            compact[name] = getattr(item, "receipt_id", item)
+        elif name == "claims":
+            compact[name] = occurrence_ids(item, "claim_id")
+        elif name == "subjects":
+            compact[name] = occurrence_ids(item, "subject_id")
+        elif name == "evidence":
+            compact[name] = occurrence_ids(item, "evidence_id")
+        elif name == "justifications":
+            compact[name] = occurrence_ids(item, "justification_id")
+        elif name in {"source_inventory", "candidate_inventory"}:
+            compact[name] = getattr(item, "inventory_digest", item)
+        elif name == "retirement_candidate_catalog":
+            compact[name] = None if item is None else getattr(item, "catalog_id", item)
+        elif name in {"retirement_phase_result", "corridor_coverage_phase_result"}:
+            compact[name] = None if item is None else getattr(item, "result_id", item)
+        elif name in {
+            "detached_dead_handler_component_source_results",
+            "detached_dead_handler_component_phase_results",
+            "terminal_cycle_phase_results",
+        }:
+            compact[name] = occurrence_ids(item, "result_id")
+        else:
+            # These values have no independently minted content identity.
+            # Their field-labelled digest keeps the case sensitive to the
+            # complete canonical value without reserializing sibling trees.
+            compact[name] = authority_id(("unflatten.case-field.v2", name, item))
+    return tuple((name, compact[name]) for name in _RECORD_FIELDS[type(value)] if name != "case_id")
 
 
 def receipt_id(value: object) -> str:
@@ -1531,9 +1665,16 @@ def _claim_factory(cls: type[object], *args: object, **kwargs: object) -> object
         if field.default is not MISSING
     }
     if args:
-        if len(args) != len(payload_names):
+        required_names = tuple(
+            name for name in payload_names if name not in optional_defaults
+        )
+        if not len(required_names) <= len(args) <= len(payload_names):
             raise TypeError("claim factory received the wrong number of fields")
         kwargs = dict(zip(payload_names, args))
+        kwargs.update({
+            name: default for name, default in optional_defaults.items()
+            if name in payload_names and name not in kwargs
+        })
     elif set(kwargs) != set(payload_names):
             missing = set(payload_names) - set(kwargs)
             if missing and missing <= set(optional_defaults):
@@ -1568,12 +1709,28 @@ def _evidence_factory(cls: type[object], *args: object, **kwargs: object) -> obj
     payload_names = tuple(name for name in declared if name != "evidence_id")
     if args and kwargs:
         raise TypeError("evidence factory accepts positional or keyword fields, not both")
+    optional_defaults = {
+        field.name: field.default
+        for field in fields(cls)
+        if field.default is not MISSING
+    }
     if args:
-        if len(args) != len(payload_names):
+        required_names = tuple(
+            name for name in payload_names if name not in optional_defaults
+        )
+        if not len(required_names) <= len(args) <= len(payload_names):
             raise TypeError("evidence factory received the wrong number of fields")
         kwargs = dict(zip(payload_names, args))
+        kwargs.update({
+            name: default for name, default in optional_defaults.items()
+            if name in payload_names and name not in kwargs
+        })
     elif set(kwargs) != set(payload_names):
-        raise TypeError("evidence factory requires every non-ID field exactly once")
+        missing = set(payload_names) - set(kwargs)
+        if missing and missing <= set(optional_defaults):
+            kwargs.update({name: optional_defaults[name] for name in missing})
+        else:
+            raise TypeError("evidence factory requires every non-ID field exactly once")
     raw = object.__new__(cls)
     for name in payload_names:
         object.__setattr__(raw, name, kwargs[name])

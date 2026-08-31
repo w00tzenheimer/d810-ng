@@ -9,6 +9,7 @@ from d810.transforms.unflatten_authority.evaluate import build_semantic_case
 from d810.transforms.unflatten_authority.ids import _subject_factory
 import pytest
 from dataclasses import FrozenInstanceError, replace
+from .helpers import observed_patch_binding_for_test
 
 
 def _bound_direct_authority_cases(*, exact_effect_loss: bool = False):
@@ -55,6 +56,7 @@ def _bound_direct_authority_cases(*, exact_effect_loss: bool = False):
         observed=projected,
         observed_generation=attempt.generation,
         generic_gates=gates,
+        observed_patch_binding=observed_patch_binding_for_test(binding.authority),
     )
     assert observed.accepted and observed.observed_acceptance is not None
     return preparation.prepared, observed.observed_acceptance
@@ -186,6 +188,7 @@ def test_semantic_loss_ledger_and_observed_delta_are_closed_projections() -> Non
         model.SemanticLossKind.TERMINAL_CYCLE_BREAK,
         model.SemanticLossKind.LOCAL_ALIAS_SCALARIZATION,
         model.SemanticLossKind.DETACHED_DEAD_HANDLER_COMPONENT,
+        model.SemanticLossKind.COMPOSITE_ALLOWED,
         model.SemanticLossKind.UNCLASSIFIED,
         model.SemanticLossKind.CONFLICTING,
     )
@@ -206,6 +209,9 @@ def test_compatibility_loss_row_is_not_an_authority_row() -> None:
     assert "case" not in row.__dataclass_fields__
     assert row.source_subject in prepared.projected_case.subjects
     assert row.kind is model.SemanticLossKind.EXACT_INFEASIBLE_EFFECT
+    assert row.classification_kinds == (
+        model.SemanticLossKind.EXACT_INFEASIBLE_EFFECT,
+    )
 
 
 def test_observed_delta_rejects_wrong_phase_before_comparing_rows() -> None:

@@ -66,12 +66,14 @@ def revalidate_bound_patch_plan_against_prepared(prepared, bound_plan):
 
 def revalidate_observed_unflatten_authority_timed(
     *, authority, observed, observed_generation, generic_gates,
+    observed_patch_binding,
 ):
     return _transaction_api.revalidate_observed_unflatten_authority_timed(
         authority=authority,
         observed=observed,
         observed_generation=observed_generation,
         generic_gates=generic_gates,
+        observed_patch_binding=observed_patch_binding,
     )
 
 

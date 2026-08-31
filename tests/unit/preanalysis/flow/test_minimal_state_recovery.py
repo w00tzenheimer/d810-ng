@@ -45,6 +45,10 @@ from d810.analyses.control_flow.semantic_route_evidence import (
     SemanticRouteFactKind,
 )
 from d810.analyses.control_flow.route_predicate import DecisionDag, RouteComparison
+from d810.analyses.control_flow.switch_table_analysis import (
+    SwitchTableResult,
+    build_state_dispatcher_map_from_cases,
+)
 from d810.analyses.control_flow.state_transition_domain import (
     StateValue,
     state_value_fixpoint_result,
@@ -68,6 +72,7 @@ from d810.ir.flowgraph import (
 )
 from d810.ir.expressions import ValueOpKind
 from d810.ir.semantics import CallKind, PredicateKind
+from d810.ir.storage_identity import StorageIdentity, StorageIdentityKind
 from d810.ir.varnode import Space, Varnode
 
 _OP_MOV = 4
@@ -476,6 +481,8 @@ def test_decision_dag_route_fact_carries_its_exact_dag_witness() -> None:
         entry_serial=4,
         path_serials=(4,),
         path_anchors=(0x1400,),
+        handoff_dispatcher_serial=4,
+        handoff_dispatcher_anchor_ea=0x1400,
     )
 
     fact = minimal_state_recovery._semantic_route_fact_for_transition(
@@ -491,6 +498,239 @@ def test_decision_dag_route_fact_carries_its_exact_dag_witness() -> None:
     assert fact.decision_dag_witness is not None
     assert fact.decision_dag_witness.entry_serial == 4
     assert fact.decision_dag_witness.path_serials == (4,)
+    assert fact.decision_dag_witness.handoff_dispatcher_serial == 4
+    assert fact.decision_dag_witness.handoff_dispatcher_anchor_ea == 0x1400
+
+
+def test_partition_route_fact_carries_switch_handoff_from_recovered_route() -> None:
+    """The partition producer forwards the same typed DAG-to-table boundary."""
+    state_identity = StorageIdentity(StorageIdentityKind.STACK, _STATE_OFF)
+    graph = FlowGraph(
+        blocks={
+            1: _blk(1, (2,), (), (_mov(0x1100, _num(7), _reg(8)),), ea=0x1100),
+            2: _blk(2, (5,), (1,), (_mov(0x1200, _reg(8), _stk(_STATE_OFF)),), ea=0x1200),
+            5: _blk(5, (6,), (2,), (), ea=0x1500),
+            6: _blk(6, (7,), (5,), (), ea=0x1600),
+            7: _blk(7, (), (6,), (), ea=0x1700),
+        },
+        entry_serial=1,
+        func_ea=0x1000,
+    )
+    member = minimal_state_recovery.StatePartitionMemberWitness(
+        owner_serial=1,
+        feeder_serial=2,
+        state_identity=state_identity,
+        state_constant=7,
+    )
+    group = minimal_state_recovery.StatePartitionGroupWitness(
+        group_id="partition:switch-handoff",
+        feeder_serial=2,
+        feeder_instruction_ea=0x1200,
+        state_identity=state_identity,
+        members=(member,),
+    )
+    transition = StateWriteTransition(
+        write_block=1,
+        next_state=7,
+        target_handler=7,
+        is_return=False,
+        branch_arm=None,
+        via_block=2,
+        partition_witness=group,
+    )
+    route = minimal_state_recovery._DecisionDagStateRoute(
+        target=7,
+        certified_targets=frozenset({7}),
+        entry_serial=5,
+        path_serials=(5,),
+        path_anchors=(0x1500,),
+        handoff_dispatcher_serial=6,
+        handoff_dispatcher_anchor_ea=0x1600,
+    )
+
+    fact = minimal_state_recovery._semantic_route_fact_for_transition(
+        transition,
+        route,
+        graph,
+        state_var_stkoff=_STATE_OFF,
+        state_var_reg=None,
+    )
+
+    assert fact is not None
+    assert fact.kind is SemanticRouteFactKind.STATE_PARTITION
+    assert fact.decision_dag_witness is not None
+    assert fact.decision_dag_witness.handoff_dispatcher_serial == 6
+    assert fact.decision_dag_witness.handoff_dispatcher_anchor_ea == 0x1600
+
+
+@pytest.mark.parametrize(
+    ("physical_state", "table_state", "provider_target", "source_successor", "outcome"),
+    (
+        (7, 7, 3, 2, "reclassified"),
+        (7, 99, 3, 2, "rejected_no_handoff"),
+        (7, 7, 9, 2, "rejected_provider_disagreement"),
+        (99, 7, 3, 2, "retained_state_write_disagreement"),
+        (7, 7, 3, 6, "retained_disconnected_successor"),
+    ),
+)
+def test_reconciliation_reclassifies_stale_partition_at_exact_switch_handoff(
+    monkeypatch: pytest.MonkeyPatch,
+    physical_state: int,
+    table_state: int,
+    provider_target: int,
+    source_successor: int,
+    outcome: str,
+) -> None:
+    """Only exact current write, handoff, and provider consensus supersede it."""
+    state_identity = StorageIdentity(StorageIdentityKind.STACK, _STATE_OFF)
+    graph = FlowGraph(
+        blocks={
+            0: _blk(0, (5,), (), (), ea=0x1000),
+            5: _blk(5, (1,), (0,), (), ea=0x1050),
+            1: _blk(
+                1,
+                (source_successor,),
+                (5,),
+                (_mov(0x1100, _num(physical_state), _stk(_STATE_OFF)),),
+                ea=0x1100,
+            ),
+            2: _blk(
+                2,
+                (4, 8),
+                (1,),
+                (
+                    InsnSnapshot(
+                        opcode=0, ea=0x1200, operands=(), kind=InsnKind.COND_JUMP,
+                        l=MopSnapshot(kind=OperandKind.STACK, size=4, stkoff=_STATE_OFF),
+                        r=MopSnapshot(kind=OperandKind.NUMBER, size=4, value=7),
+                        d=MopSnapshot(kind=OperandKind.BLOCK, block_ref=4),
+                        branch_predicate=PredicateKind.EQ, is_conditional_jump=True,
+                    ),
+                ),
+                ea=0x1200,
+            ),
+            3: _blk(3, (), (4,), (), ea=0x1300),
+            4: _blk(4, (3,), (2,), (), ea=0x1400),
+            6: _blk(6, (), (1,), (), ea=0x1600),
+            8: _stop(8, (2,)),
+            9: _stop(9, ()),
+        },
+        entry_serial=0,
+        func_ea=0x1000,
+    )
+    stale_partition = minimal_state_recovery.StatePartitionGroupWitness(
+        group_id="partition:former-feeder",
+        feeder_serial=2,
+        feeder_instruction_ea=0x1200,
+        state_identity=state_identity,
+        members=(
+            minimal_state_recovery.StatePartitionMemberWitness(
+                owner_serial=1,
+                feeder_serial=2,
+                state_identity=state_identity,
+                state_constant=7,
+            ),
+        ),
+    )
+    transition = StateWriteTransition(
+        write_block=1,
+        next_state=7,
+        target_handler=3,
+        is_return=False,
+        branch_arm=None,
+        partition_witness=stale_partition,
+        proof=TransitionProof(
+            "region_partitioned_fixpoint", "predecessor_partitioned", True,
+        ),
+    )
+    table = SwitchTableResult(
+        build_state_dispatcher_map_from_cases(
+            [(table_state, 3)], 4, frozenset({4}), _STATE_OFF,
+        ),
+        Varnode(Space.STACK, _STATE_OFF, 4),
+    )
+    monkeypatch.setattr(
+        minimal_state_recovery,
+        "analyze_switch_table_at_dispatcher",
+        lambda _graph, serial: table if serial == 4 else None,
+    )
+
+    resolved = minimal_state_recovery._reconcile_transition_routes_with_decision_dag(
+        (transition,),
+        graph,
+        _DualRouteDispatcher(exact_targets={7: provider_target}, interval_rows=()),
+        DecisionDag(32, {2: RouteComparison(2, "jz", 7, 4, 8)}, root=2),
+        (),
+        condition_chain_handlers=frozenset({3, 9}),
+        state_var_stkoff=_STATE_OFF,
+        state_var_reg=None,
+    )
+
+    if outcome.startswith("rejected"):
+        assert resolved is None
+        return
+    assert resolved is not None and len(resolved) == 1
+    if outcome.startswith("retained_"):
+        assert resolved[0].partition_witness == stale_partition
+        assert resolved[0].semantic_route_fact is None
+        return
+    assert resolved[0].partition_witness is None
+    fact = resolved[0].semantic_route_fact
+    assert fact is not None and fact.kind is SemanticRouteFactKind.DECISION_DAG
+    assert fact.decision_dag_witness is not None
+    assert fact.decision_dag_witness.handoff_dispatcher_serial == 4
+
+
+def test_decision_dag_route_fact_carries_recovered_nonliteral_mov_witness() -> None:
+    """A recovered carrier copy is not misrepresented as a literal assignment."""
+
+    graph = FlowGraph(
+        blocks={
+            1: _blk(1, (2,), (), (), ea=0x1100),
+            2: _blk(
+                2,
+                (4,),
+                (1,),
+                (_mov(0x1200, _stk(_STATE_OFF + 4), _stk(_STATE_OFF)),),
+                ea=0x1200,
+            ),
+            3: _blk(3, (), (), (), ea=0x1300),
+            4: _blk(4, (3,), (2,), (), ea=0x1400),
+        },
+        entry_serial=1,
+        func_ea=0x1000,
+    )
+    transition = StateWriteTransition(
+        write_block=1,
+        next_state=7,
+        target_handler=3,
+        is_return=False,
+        branch_arm=None,
+        via_block=2,
+    )
+    route = minimal_state_recovery._DecisionDagStateRoute(
+        target=3,
+        certified_targets=frozenset({3}),
+        entry_serial=4,
+        path_serials=(4,),
+        path_anchors=(0x1400,),
+    )
+
+    fact = minimal_state_recovery._semantic_route_fact_for_transition(
+        transition,
+        route,
+        graph,
+        state_var_stkoff=_STATE_OFF,
+        state_var_reg=None,
+    )
+
+    assert fact is not None
+    assert fact.recovered_state_write is not None
+    assert fact.recovered_state_write.source_instruction.kind is InsnKind.MOV
+    assert fact.recovered_state_write.recovered_state == 7
+    assert fact.recovered_state_write.state_identity == StorageIdentity(
+        StorageIdentityKind.STACK, _STATE_OFF
+    )
 
 
 def test_decision_dag_route_fact_anchors_address_form_state_store() -> None:
@@ -538,6 +778,163 @@ def test_decision_dag_route_fact_anchors_address_form_state_store() -> None:
     assert fact is not None
     assert fact.source_serial == 1
     assert fact.source_instruction_ea == 0x1108
+
+
+def test_decision_dag_route_fact_binds_unique_predecessor_state_write_to_goto_delivery() -> None:
+    """A split physical write remains distinct from its GOTO delivery site."""
+
+    state = 0x1AEA4348
+    graph = FlowGraph(
+        blocks={
+            70: _blk(
+                70,
+                (71,),
+                (43,),
+                (_mov(0x1704, _num(state), _stk(_STATE_OFF)),),
+                ea=0x1700,
+            ),
+            71: _blk(71, (3,), (70,), (_goto(0x1710, 3),), ea=0x1710),
+            3: _blk(3, (), (71,), (), ea=0x1300),
+            47: _blk(47, (), (), (), ea=0x1470),
+            80: _blk(80, (), (), (), ea=0x1800),
+        },
+        entry_serial=70,
+        func_ea=0x1000,
+    )
+    transition = StateWriteTransition(
+        write_block=71,
+        next_state=state,
+        target_handler=47,
+        is_return=False,
+        branch_arm=None,
+    )
+    route = minimal_state_recovery._DecisionDagStateRoute(
+        target=47,
+        certified_targets=frozenset({47}),
+        entry_serial=80,
+        path_serials=(80,),
+        path_anchors=(0x1800,),
+    )
+
+    fact = minimal_state_recovery._semantic_route_fact_for_transition(
+        transition,
+        route,
+        graph,
+        state_var_stkoff=_STATE_OFF,
+        state_var_reg=None,
+    )
+
+    assert fact is not None
+    assert fact.owner_serial == 71
+    assert fact.source_serial == 71
+    assert fact.source_instruction_ea == 0x1710
+    assert fact.physical_state_write is not None
+    assert fact.physical_state_write.source_serial == 70
+    assert fact.physical_state_write.source_instruction.ea == 0x1704
+
+    published = minimal_state_recovery._attach_current_snapshot_route_fact(
+        transition, fact,
+    )
+    assert published.semantic_route_fact is fact
+    assert published.physical_state_write is fact.physical_state_write
+
+    mismatched = replace(
+        fact.physical_state_write,
+        source_serial=69,
+    )
+    revoked = minimal_state_recovery._attach_current_snapshot_route_fact(
+        replace(
+            transition,
+            semantic_route_fact=fact,
+            physical_state_write=mismatched,
+        ),
+        fact,
+    )
+    assert revoked.semantic_route_fact is None
+    assert revoked.physical_state_write is mismatched
+
+
+@pytest.mark.parametrize("mutation", ("two_predecessors", "nonreciprocal", "wrong_state"))
+def test_predecessor_state_write_requires_unique_reciprocal_exact_assignment(
+    mutation: str,
+) -> None:
+    state = 0x1AEA4348
+    write = _mov(0x1704, _num(state), _stk(_STATE_OFF))
+    pred_succs = (71,) if mutation != "nonreciprocal" else (3,)
+    owner_preds = (70,) if mutation != "two_predecessors" else (69, 70)
+    if mutation == "wrong_state":
+        write = _mov(0x1704, _num(state ^ 1), _stk(_STATE_OFF))
+    graph = FlowGraph(
+        blocks={
+            69: _blk(69, (71,), (), (), ea=0x1690),
+            70: _blk(70, pred_succs, (), (write,), ea=0x1700),
+            71: _blk(71, (3,), owner_preds, (_goto(0x1710, 3),), ea=0x1710),
+            3: _blk(3, (), (71,), (), ea=0x1300),
+            47: _blk(47, (), (), (), ea=0x1470),
+            80: _blk(80, (), (), (), ea=0x1800),
+        },
+        entry_serial=70,
+        func_ea=0x1000,
+    )
+
+    fact = minimal_state_recovery._semantic_route_fact_for_transition(
+        StateWriteTransition(71, state, 47, False, None),
+        minimal_state_recovery._DecisionDagStateRoute(
+            target=47,
+            certified_targets=frozenset({47}),
+            entry_serial=80,
+            path_serials=(80,),
+            path_anchors=(0x1800,),
+        ),
+        graph,
+        state_var_stkoff=_STATE_OFF,
+        state_var_reg=None,
+    )
+
+    assert fact is None
+
+
+def test_partitioned_owner_write_binds_shared_goto_delivery() -> None:
+    state = 0x376CA4DC
+    graph = FlowGraph(
+        blocks={
+            100: _blk(100, (102,), (), (_mov(0x1A04, _num(state), _stk(_STATE_OFF)),), ea=0x1A00),
+            101: _blk(101, (102,), (), (_mov(0x1B04, _num(8), _stk(_STATE_OFF)),), ea=0x1B00),
+            102: _blk(
+                102,
+                (3,),
+                (100, 101),
+                (_mov(0x1BFC, _num(9), _reg(9)), _goto(0x1C00, 3)),
+                ea=0x1BF0,
+            ),
+            3: _blk(3, (), (102,), (), ea=0x1300),
+            89: _blk(89, (), (), (), ea=0x1890),
+            90: _blk(90, (), (), (), ea=0x1900),
+        },
+        entry_serial=100,
+        func_ea=0x1000,
+    )
+
+    fact = minimal_state_recovery._semantic_route_fact_for_transition(
+        StateWriteTransition(100, state, 89, False, None, via_block=102),
+        minimal_state_recovery._DecisionDagStateRoute(
+            target=89,
+            certified_targets=frozenset({89}),
+            entry_serial=90,
+            path_serials=(90,),
+            path_anchors=(0x1900,),
+        ),
+        graph,
+        state_var_stkoff=_STATE_OFF,
+        state_var_reg=None,
+    )
+
+    assert fact is not None
+    assert fact.owner_serial == 100
+    assert fact.source_serial == 102
+    assert fact.source_instruction_ea == 0x1C00
+    assert fact.physical_state_write is not None
+    assert fact.physical_state_write.source_serial == 100
 
 
 @pytest.mark.parametrize("mutation", ("narrow", "wide", "wrong_state", "wrong_identity", "ambiguous"))
@@ -621,6 +1018,8 @@ def test_bootstrap_route_fact_keeps_entry_writer_and_owner_separate() -> None:
         entry_serial=6,
         path_serials=(6,),
         path_anchors=(0x1600,),
+        handoff_dispatcher_serial=6,
+        handoff_dispatcher_anchor_ea=0x1600,
     )
 
     fact = minimal_state_recovery._semantic_route_fact_for_transition(
@@ -637,6 +1036,9 @@ def test_bootstrap_route_fact_keeps_entry_writer_and_owner_separate() -> None:
     assert fact.source_serial == 1
     assert fact.owner_anchor_ea == 0x1500
     assert fact.bootstrap_witness is not None
+    assert fact.decision_dag_witness is not None
+    assert fact.decision_dag_witness.handoff_dispatcher_serial == 6
+    assert fact.decision_dag_witness.handoff_dispatcher_anchor_ea == 0x1600
     assert fact.bootstrap_witness.corridor_serials == (1, 3, 5, 6)
     assert tuple(site.instruction_ea for site in fact.bootstrap_witness.preserved_effect_sites) == (0x1508,)
 
@@ -2381,6 +2783,42 @@ def test_partitioned_fixpoint_multi_entry_recovers_nonpredecessor_writer(
     assert seeded_requests == []
 
 
+def test_exact_table_scope_recovers_only_admitted_physical_writers(_seam) -> None:
+    """Exact table admission cannot unlock an unrelated one-way state writer."""
+
+    fg = FlowGraph(
+        blocks={
+            2: _blk(2, (4,), (9,), ()),
+            3: _blk(3, (9,), (2,), (_mov(0x1030, _num(1), _stk(_STATE_OFF)),)),
+            7: _blk(7, (9,), (2,), (_mov(0x1070, _num(1), _stk(_STATE_OFF)),)),
+            9: _blk(9, (2,), (3, 7), ()),
+            4: _blk(4, (2,), (2,), ()),
+            30: _blk(30, (31,), (), (_mov(0x1300, _num(1), _stk(_STATE_OFF)),)),
+            31: _blk(31, (2,), (30,), ()),
+        },
+        entry_serial=2,
+        func_ea=0x1000,
+    )
+
+    rows = recover_state_write_transitions_via_partitioned_fixpoint(
+        fg,
+        _dispatcher({1: 4}, exit_block=99),
+        _STATE_OFF,
+        dispatcher_entry_serial=2,
+        include_multi_entry_back_edges=True,
+        admitted_multi_entry_source_edges=frozenset({(3, 9), (7, 9)}),
+    )
+
+    scoped = {
+        (row.write_block, row.via_block, row.next_state, row.target_handler)
+        for row in rows
+        if row.proof is not None
+        and row.proof.kind == "exact_table_predecessor_partitioned"
+    }
+    assert scoped == {(3, 9, 1, 4), (7, 9, 1, 4)}
+    assert not any(row.write_block == 30 for row in rows)
+
+
 def test_partitioned_fixpoint_multi_entry_state_reader_never_builds_seeded_map(
     _seam, monkeypatch
 ) -> None:
@@ -2726,13 +3164,26 @@ def test_partitioned_fixpoint_splits_predecessor_sensitive_stack_alias_store(
                 (20, 2),
                 (6, 7),
                 (
-                    _store(0x8000, _num(terminal_state_full), _reg(3)),
+                    _store(
+                        0x8000,
+                        MopSnapshot(
+                            t=_T_NUM,
+                            size=8,
+                            value=terminal_state_full,
+                            kind=OperandKind.NUMBER,
+                        ),
+                        _reg(3),
+                    ),
                     InsnSnapshot(
                         opcode=44,
                         ea=0x8004,
                         operands=(),
-                        l=_stk(_STATE_OFF),
-                        r=_num(terminal_state_full),
+                        l=replace(_stk(_STATE_OFF), size=8),
+                        r=replace(_num(terminal_state_full), size=8),
+                        d=MopSnapshot(
+                            kind=OperandKind.BLOCK,
+                            block_ref=2,
+                        ),
                         kind=InsnKind.EQUALITY_JUMP,
                         branch_predicate=PredicateKind.NE,
                     ),
@@ -2769,7 +3220,49 @@ def test_partitioned_fixpoint_splits_predecessor_sensitive_stack_alias_store(
         edge.proof.reason
         == "predecessor_state_store_through_stack_address_alias_terminal_guard"
     )
+    assert edge.physical_state_write is not None
+    assert edge.physical_state_write.source_instruction.kind is InsnKind.STORE
+    assert edge.physical_state_write.physical_width == 8
+    assert edge.physical_state_write.state_lane_offset == 0
+    assert edge.physical_state_write.state_constant == terminal_state
+    assert edge.physical_state_write.alias_definition_instruction is not None
+    assert edge.physical_state_write.alias_definition_serial == 7
     assert transitions_use_terminal_stack_alias_guard(edges) is True
+
+    # A low-U32 match is not authority for the full-width guard.  If the STORE
+    # and comparison differ only above bit 31, the producer must not publish a
+    # trusted terminal-guard route or attach guarded-selection evidence.
+    guard = fg.get_block(8)
+    assert guard is not None
+    store_snapshot, branch_snapshot = guard.insn_snapshots
+    high_drift_branch = replace(
+        branch_snapshot,
+        r=replace(branch_snapshot.r, value=terminal_state_full ^ (1 << 40)),
+    )
+    high_drift_graph = replace(
+        fg,
+        blocks={
+            **fg.blocks,
+            8: replace(
+                guard,
+                insn_snapshots=(store_snapshot, high_drift_branch),
+            ),
+        },
+    )
+    high_drift_edges = recover_state_write_transitions_via_partitioned_fixpoint(
+        high_drift_graph,
+        disp,
+        _STATE_OFF,
+        dispatcher_entry_serial=2,
+    )
+    assert not any(
+        transition_uses_terminal_stack_alias_guard(item)
+        or (
+            item.physical_state_write is not None
+            and item.physical_state_write.guarded_selection is not None
+        )
+        for item in high_drift_edges
+    )
 
     # The guarded alias block is semantic control that owns source7's edge;
     # it is not an internal dispatcher entry merely because its branch also
@@ -2793,6 +3286,21 @@ def test_partitioned_fixpoint_splits_predecessor_sensitive_stack_alias_store(
         },
         root=2,
     )
+    direct_fact = minimal_state_recovery._semantic_route_fact_for_transition(
+        edge,
+        minimal_state_recovery._DecisionDagStateRoute(
+            target=20,
+            certified_targets=frozenset({4, 20}),
+            entry_serial=2,
+            path_serials=(2,),
+            path_anchors=(0x2000,),
+        ),
+        routed_graph,
+        state_var_stkoff=_STATE_OFF,
+        state_var_reg=None,
+    )
+    assert direct_fact is not None
+    assert direct_fact.physical_state_write == edge.physical_state_write
     sibling = StateWriteTransition(
         7,
         0xD21C9415,
@@ -2820,6 +3328,113 @@ def test_partitioned_fixpoint_splits_predecessor_sensitive_stack_alias_store(
     assert resolved.proof is not None
     assert resolved.proof.trusted is True
     assert transition_uses_terminal_stack_alias_guard(resolved) is True
+    assert resolved.semantic_route_fact is not None
+    assert resolved.semantic_route_fact.physical_state_write is not None
+    assert (
+        resolved.semantic_route_fact.physical_state_write.source_instruction.kind
+        is InsnKind.STORE
+    )
+
+    # In the real 1815 topology the guard-selected terminal is not the state
+    # destination obtained by replaying the same low lane from the dispatcher
+    # root.  The guarded physical delivery must retain and publish its own
+    # exact route authority instead of depending on that unrelated root route.
+    root = routed_graph.get_block(2)
+    target_four = routed_graph.get_block(4)
+    target_twenty = routed_graph.get_block(20)
+    assert root is not None and target_four is not None and target_twenty is not None
+    guarded_graph = FlowGraph(
+        {
+            **routed_graph.blocks,
+            2: replace(root, succs=(4, 30)),
+            4: replace(target_four, preds=(2,)),
+            20: replace(target_twenty, preds=(8,)),
+            30: _stop(30, (2,)),
+        },
+        routed_graph.entry_serial,
+        routed_graph.func_ea,
+    )
+    guarded_dag = DecisionDag(
+        32,
+        {
+            2: RouteComparison(2, "jz", 0xD21C9415, 4, 30),
+            8: RouteComparison(8, "jnz", terminal_state, 2, 20),
+        },
+        root=2,
+    )
+    (guarded_resolved,) = resolve_materialized_indirect_transfer_targets(
+        (sibling, edge),
+        guarded_graph,
+        _dispatcher({0xD21C9415: 4}, exit_block=30),
+        (),
+        condition_chain_dag=guarded_dag,
+        condition_chain_handlers=frozenset({4, 20, 30}),
+        state_var_stkoff=_STATE_OFF,
+    )
+    assert guarded_resolved.target_handler == 20
+    assert guarded_resolved.semantic_route_fact is not None
+    assert guarded_resolved.semantic_route_fact.physical_state_write is not None
+    (guarded_enriched,) = minimal_state_recovery.enrich_native_bound_transition_routes(
+        (guarded_resolved,),
+        (),
+        flow_graph=guarded_graph,
+        state_identity=StorageIdentity(StorageIdentityKind.STACK, _STATE_OFF),
+    )
+    assert guarded_enriched == guarded_resolved
+
+    guarded_fact = guarded_resolved.semantic_route_fact
+    assert guarded_fact is not None
+    guarded_physical = guarded_fact.physical_state_write
+    assert guarded_physical is not None
+    raw_guard = guarded_physical.guarded_selection
+    assert raw_guard is not None
+    foreign_source_physical = replace(
+        guarded_physical,
+        source_serial=18,
+        guarded_selection=replace(raw_guard, guard_serial=18),
+    )
+    wrong_ea_physical = replace(
+        guarded_physical,
+        source_instruction=replace(
+            guarded_physical.source_instruction,
+            ea=0x8001,
+            native_ea=0x8001,
+        ),
+    )
+    wrong_target_physical = replace(
+        guarded_physical,
+        guarded_selection=replace(
+            raw_guard,
+            false_target_serial=21,
+            selected_target_serial=21,
+        ),
+    )
+    mismatched_facts = (
+        replace(guarded_fact, physical_state_write=foreign_source_physical),
+        replace(guarded_fact, physical_state_write=wrong_ea_physical),
+        replace(guarded_fact, physical_state_write=wrong_target_physical),
+        replace(
+            guarded_fact,
+            physical_state_write=replace(
+                guarded_physical,
+                alias_definition_serial=17,
+            ),
+        ),
+    )
+    for mismatched_fact in mismatched_facts:
+        candidate = replace(
+            guarded_resolved,
+            next_state=int(mismatched_fact.state_constant),
+            semantic_route_fact=mismatched_fact,
+        )
+        (revoked,) = minimal_state_recovery.enrich_native_bound_transition_routes(
+            (candidate,),
+            (),
+            flow_graph=guarded_graph,
+            state_identity=StorageIdentity(StorageIdentityKind.STACK, _STATE_OFF),
+        )
+        assert revoked.semantic_route_fact is None
+        assert revoked.proof is None
 
 
 def test_shared_suffix_folds_per_handler(_seam) -> None:
@@ -5141,6 +5756,763 @@ def test_u32_state_router_without_normalizer_feeder_abstains_cleanly() -> None:
     assert routed.target == 19
 
 
+def test_u32_state_router_carries_exact_xdu_namespace_to_child_comparison() -> None:
+    """A child comparison may use only the exact XDU namespace from its parent."""
+    stack = StorageIdentity(StorageIdentityKind.STACK, 52)
+    register = StorageIdentity(StorageIdentityKind.REGISTER, 0)
+    xdu = InsnSnapshot(
+        opcode=0, ea=0x1300, operands=(), kind=InsnKind.XDU,
+        l=MopSnapshot(kind=OperandKind.STACK, size=4, stkoff=52),
+        d=MopSnapshot(kind=OperandKind.REGISTER, size=8, reg=0),
+    )
+    root_branch = InsnSnapshot(
+        opcode=0, ea=0x1304, operands=(), kind=InsnKind.COND_JUMP,
+        l=MopSnapshot(kind=OperandKind.STACK, size=4, stkoff=52),
+        r=MopSnapshot(kind=OperandKind.NUMBER, size=4, value=7),
+        d=MopSnapshot(kind=OperandKind.BLOCK, block_ref=4),
+        branch_predicate=PredicateKind.SLE, is_conditional_jump=True,
+    )
+    child_branch = InsnSnapshot(
+        opcode=0, ea=0x1400, operands=(), kind=InsnKind.COND_JUMP,
+        l=MopSnapshot(kind=OperandKind.REGISTER, size=4, reg=0),
+        r=MopSnapshot(kind=OperandKind.NUMBER, size=4, value=7),
+        d=MopSnapshot(kind=OperandKind.BLOCK, block_ref=7),
+        branch_predicate=PredicateKind.SLE, is_conditional_jump=True,
+    )
+    graph = FlowGraph(
+        {
+            3: _blk(3, (4, 6), (), (xdu, root_branch), ea=0x1300),
+            4: _blk(4, (7, 8), (3,), (child_branch,), ea=0x1400),
+            6: _stop(6, (3,)), 7: _stop(7, (4,)), 8: _stop(8, (4,)),
+        }, entry_serial=3, func_ea=0x1300,
+    )
+    dag = DecisionDag(32, {
+        3: RouteComparison(3, "jle", 7, 4, 6),
+        4: RouteComparison(4, "jle", 7, 7, 8),
+    }, root=3)
+    route = minimal_state_recovery._route_u32_state_through_decision_dag(
+        7, graph, dag, state_var_stkoff=52, state_var_reg=None, via_block=None,
+    )
+    assert route is not None and route.target == 7
+    assert route.certified_targets == frozenset({7})
+    by_serial = {item.serial: item for item in route.comparisons}
+    assert by_serial[3].state_identity == stack
+    assert by_serial[4].state_identity == register
+
+
+def test_u32_state_router_carries_one_exact_xdu_namespace_through_descendants() -> None:
+    """An ancestor bridge remains authoritative for every downstream DAG edge."""
+    stack = StorageIdentity(StorageIdentityKind.STACK, 52)
+    register = StorageIdentity(StorageIdentityKind.REGISTER, 0)
+    xdu = InsnSnapshot(
+        opcode=0, ea=0x1300, operands=(), kind=InsnKind.XDU,
+        l=MopSnapshot(kind=OperandKind.STACK, size=4, stkoff=52),
+        d=MopSnapshot(kind=OperandKind.REGISTER, size=8, reg=0),
+    )
+    root_branch = InsnSnapshot(
+        opcode=0, ea=0x1304, operands=(), kind=InsnKind.COND_JUMP,
+        l=MopSnapshot(kind=OperandKind.STACK, size=4, stkoff=52),
+        r=MopSnapshot(kind=OperandKind.NUMBER, size=4, value=7),
+        d=MopSnapshot(kind=OperandKind.BLOCK, block_ref=4),
+        branch_predicate=PredicateKind.SLE, is_conditional_jump=True,
+    )
+    child_branch = InsnSnapshot(
+        opcode=0, ea=0x1400, operands=(), kind=InsnKind.COND_JUMP,
+        l=MopSnapshot(kind=OperandKind.REGISTER, size=4, reg=0),
+        r=MopSnapshot(kind=OperandKind.NUMBER, size=4, value=7),
+        d=MopSnapshot(kind=OperandKind.BLOCK, block_ref=5),
+        branch_predicate=PredicateKind.SLE, is_conditional_jump=True,
+    )
+    grandchild_branch = replace(child_branch, ea=0x1500, d=MopSnapshot(
+        kind=OperandKind.BLOCK, block_ref=8,
+    ))
+    graph = FlowGraph(
+        {
+            3: _blk(3, (4, 6), (), (xdu, root_branch), ea=0x1300),
+            4: _blk(4, (5, 7), (3,), (child_branch,), ea=0x1400),
+            5: _blk(5, (8, 9), (4,), (grandchild_branch,), ea=0x1500),
+            6: _stop(6, (3,)), 7: _stop(7, (4,)),
+            8: _stop(8, (5,)), 9: _stop(9, (5,)),
+        },
+        entry_serial=3,
+        func_ea=0x1300,
+    )
+    dag = DecisionDag(32, {
+        3: RouteComparison(3, "jle", 7, 4, 6),
+        4: RouteComparison(4, "jle", 7, 5, 7),
+        5: RouteComparison(5, "jle", 7, 8, 9),
+    }, root=3)
+
+    route = minimal_state_recovery._route_u32_state_through_decision_dag(
+        7, graph, dag, state_var_stkoff=52, state_var_reg=None, via_block=None,
+    )
+
+    assert route is not None and route.target == 8
+    assert tuple(item.state_identity for item in route.comparisons) == (
+        stack, register, register,
+    )
+
+
+def test_u32_state_router_abstains_when_structural_fallback_identity_is_not_state() -> None:
+    """A snapshot-poor comparison cannot mint an unbridged foreign namespace."""
+    foreign_branch = InsnSnapshot(
+        opcode=0, ea=0x1300, operands=(), kind=InsnKind.COND_JUMP,
+        l=MopSnapshot(kind=OperandKind.REGISTER, size=4, reg=3),
+        r=MopSnapshot(kind=OperandKind.NUMBER, size=4, value=7),
+        d=MopSnapshot(kind=OperandKind.BLOCK, block_ref=4),
+        branch_predicate=PredicateKind.SLE, is_conditional_jump=True,
+    )
+    graph = FlowGraph(
+        {
+            3: _blk(3, (4, 6), (), (foreign_branch,), ea=0x1300),
+            4: _stop(4, (3,)),
+            6: _stop(6, (3,)),
+        },
+        entry_serial=3,
+        func_ea=0x1300,
+    )
+    dag = DecisionDag(32, {3: RouteComparison(3, "jle", 7, 4, 6)}, root=3)
+
+    assert minimal_state_recovery._route_u32_state_through_decision_dag(
+        7, graph, dag, state_var_stkoff=52, state_var_reg=None, via_block=None,
+    ) is None
+
+
+@pytest.mark.parametrize("bridge_mode", ("missing", "wrong_xdu", "edge_drift"))
+def test_current_u32_decision_forest_extends_only_through_exact_xdu_namespace_bridge(
+    bridge_mode: str,
+) -> None:
+    """A current-only child is admitted only by its parent's exact XDU bridge."""
+    stack = StorageIdentity(StorageIdentityKind.STACK, 52)
+    xdu = InsnSnapshot(
+        opcode=0, ea=0x1300, operands=(), kind=InsnKind.XDU,
+        l=MopSnapshot(kind=OperandKind.STACK, size=4, stkoff=52),
+        d=MopSnapshot(kind=OperandKind.REGISTER, size=8, reg=0 if bridge_mode != "wrong_xdu" else 1),
+    )
+    root_branch = InsnSnapshot(
+        opcode=0, ea=0x1304, operands=(), kind=InsnKind.COND_JUMP,
+        l=MopSnapshot(kind=OperandKind.STACK, size=4, stkoff=52),
+        r=MopSnapshot(kind=OperandKind.NUMBER, size=4, value=7),
+        d=MopSnapshot(kind=OperandKind.BLOCK, block_ref=4),
+        branch_predicate=PredicateKind.SLE, is_conditional_jump=True,
+    )
+    child_branch = InsnSnapshot(
+        opcode=0, ea=0x1400, operands=(), kind=InsnKind.COND_JUMP,
+        l=MopSnapshot(kind=OperandKind.REGISTER, size=4, reg=0),
+        r=MopSnapshot(kind=OperandKind.NUMBER, size=4, value=7),
+        d=MopSnapshot(kind=OperandKind.BLOCK, block_ref=7),
+        branch_predicate=PredicateKind.SLE, is_conditional_jump=True,
+    )
+    root_instructions = (root_branch,) if bridge_mode == "missing" else (xdu, root_branch)
+    child_preds = () if bridge_mode == "edge_drift" else (3,)
+    graph = FlowGraph(
+        {
+            3: _blk(3, (4, 6), (), root_instructions, ea=0x1300),
+            4: _blk(4, (7, 8), child_preds, (child_branch,), ea=0x1400),
+            6: _stop(6, (3,)), 7: _stop(7, (4,)), 8: _stop(8, (4,)),
+        }, entry_serial=3, func_ea=0x1300,
+    )
+    reference = DecisionDag(32, {3: RouteComparison(3, "jle", 7, 4, 6)}, root=3)
+
+    forest = minimal_state_recovery.build_current_u32_decision_forest(
+        graph, 3, expected_identities=frozenset({stack}), reference_dag=reference,
+    )
+
+    if bridge_mode != "missing":
+        # A bridge that cannot establish its expected child namespace, or
+        # whose child edge is not reciprocal, rejects the current forest.
+        assert forest is None
+        return
+    assert forest is not None
+    assert set(forest.nodes) == {3}
+
+
+def test_current_u32_decision_forest_routes_through_exact_xdu_namespace_bridge() -> None:
+    """The reference root extends through the register comparison to its handler."""
+    stack = StorageIdentity(StorageIdentityKind.STACK, 52)
+    xdu = InsnSnapshot(
+        opcode=0, ea=0x1300, operands=(), kind=InsnKind.XDU,
+        l=MopSnapshot(kind=OperandKind.STACK, size=4, stkoff=52),
+        d=MopSnapshot(kind=OperandKind.REGISTER, size=8, reg=0),
+    )
+    root_branch = InsnSnapshot(
+        opcode=0, ea=0x1304, operands=(), kind=InsnKind.COND_JUMP,
+        l=MopSnapshot(kind=OperandKind.STACK, size=4, stkoff=52),
+        r=MopSnapshot(kind=OperandKind.NUMBER, size=4, value=7),
+        d=MopSnapshot(kind=OperandKind.BLOCK, block_ref=4),
+        branch_predicate=PredicateKind.SLE, is_conditional_jump=True,
+    )
+    child_branch = InsnSnapshot(
+        opcode=0, ea=0x1400, operands=(), kind=InsnKind.COND_JUMP,
+        l=MopSnapshot(kind=OperandKind.REGISTER, size=4, reg=0),
+        r=MopSnapshot(kind=OperandKind.NUMBER, size=4, value=7),
+        d=MopSnapshot(kind=OperandKind.BLOCK, block_ref=7),
+        branch_predicate=PredicateKind.SLE, is_conditional_jump=True,
+    )
+    graph = FlowGraph(
+        {
+            3: _blk(3, (4, 6), (), (xdu, root_branch), ea=0x1300),
+            4: _blk(4, (7, 8), (3,), (child_branch,), ea=0x1400),
+            6: _stop(6, (3,)), 7: _stop(7, (4,)), 8: _stop(8, (4,)),
+        }, entry_serial=3, func_ea=0x1300,
+    )
+    reference = DecisionDag(32, {3: RouteComparison(3, "jle", 7, 4, 6)}, root=3)
+
+    forest = minimal_state_recovery.build_current_u32_decision_forest(
+        graph, 3, expected_identities=frozenset({stack}), reference_dag=reference,
+    )
+
+    assert forest is not None
+    assert set(forest.nodes) == {3, 4}
+    routed = minimal_state_recovery.route_current_u32_decision_forest(
+        graph, forest, 7, entry_serial=3,
+    )
+    assert routed == (7, (3, 4))
+
+
+@pytest.mark.parametrize("mode", ("wrong_xdu", "edge_drift", "overlap_drift"))
+def test_reconciliation_rejects_invalid_exact_current_forest_atomically(mode: str) -> None:
+    """An exact root makes bridge and overlap drift fragment-atomic failures."""
+    state = StorageIdentity(StorageIdentityKind.STACK, 52)
+    xdu = InsnSnapshot(
+        opcode=0, ea=0x1300, operands=(), kind=InsnKind.XDU,
+        l=MopSnapshot(kind=OperandKind.STACK, size=4, stkoff=52),
+        d=MopSnapshot(kind=OperandKind.REGISTER, size=8, reg=1 if mode == "wrong_xdu" else 0),
+    )
+    root_branch = InsnSnapshot(
+        opcode=0, ea=0x1304, operands=(), kind=InsnKind.COND_JUMP,
+        l=MopSnapshot(kind=OperandKind.STACK, size=4, stkoff=52),
+        r=MopSnapshot(kind=OperandKind.NUMBER, size=4, value=7),
+        d=MopSnapshot(kind=OperandKind.BLOCK, block_ref=4),
+        branch_predicate=PredicateKind.SLE, is_conditional_jump=True,
+    )
+    child_branch = InsnSnapshot(
+        opcode=0, ea=0x1400, operands=(), kind=InsnKind.COND_JUMP,
+        l=MopSnapshot(kind=OperandKind.REGISTER, size=4, reg=0),
+        r=MopSnapshot(kind=OperandKind.NUMBER, size=4, value=8 if mode == "overlap_drift" else 7),
+        d=MopSnapshot(kind=OperandKind.BLOCK, block_ref=7),
+        branch_predicate=PredicateKind.SLE, is_conditional_jump=True,
+    )
+    graph = FlowGraph(
+        {
+            1: _blk(1, (3,), (), (_mov(0x1200, _num(7), _stk(52)),), ea=0x1200),
+            3: _blk(3, (4, 6), (1,), (xdu, root_branch), ea=0x1300),
+            4: _blk(4, (7, 8), () if mode == "edge_drift" else (3,), (child_branch,), ea=0x1400),
+            6: _stop(6, (3,)), 7: _stop(7, (4,)), 8: _stop(8, (4,)),
+        }, entry_serial=1, func_ea=0x1200,
+    )
+    reference_nodes = {3: RouteComparison(3, "jle", 7, 4, 6)}
+    if mode == "overlap_drift":
+        reference_nodes[4] = RouteComparison(4, "jle", 7, 7, 8)
+    dag = DecisionDag(32, reference_nodes, root=3)
+
+    resolved = resolve_materialized_indirect_transfer_targets(
+        (_coarse_transition(1, 7, 7),), graph, _dispatcher({7: 7}, exit_block=99), (),
+        condition_chain_dag=dag, condition_chain_handlers=frozenset({6, 7, 8}),
+        state_var_stkoff=52,
+    )
+
+    assert resolved == ()
+
+
+def test_reconciliation_keeps_legacy_backend_dag_when_current_root_is_not_applicable() -> None:
+    """A synthetic legacy root without an exact current comparison remains usable."""
+    graph, dag = _typed_state_route_reconciliation_fixture()
+    resolved = resolve_materialized_indirect_transfer_targets(
+        (_coarse_transition(14, 0x1BABC1DC, 19),), graph,
+        _DualRouteDispatcher(exact_targets={0x1BABC1DC: 19}, interval_rows=()), (),
+        condition_chain_dag=dag, condition_chain_handlers=frozenset({2, 10, 13, 15, 19}),
+        state_var_stkoff=_STATE_OFF,
+    )
+    assert tuple(item.target_handler for item in resolved) == (19,)
+
+
+def _reference_owned_non_u32_comparison_fixture(
+    *,
+    width: int = 8,
+    constant: int = 0x8348BA7AD21C9415,
+    prefix_kind: str = "pure",
+) -> tuple[FlowGraph, DecisionDag]:
+    """Model the exact 1815 root without projecting U64 evidence as U32."""
+
+    branch = InsnSnapshot(
+        opcode=0,
+        ea=0x18001AAEF,
+        operands=(),
+        kind=InsnKind.COND_JUMP,
+        l=replace(_stk(32), size=width),
+        r=replace(_num(constant), size=width),
+        d=MopSnapshot(kind=OperandKind.BLOCK, block_ref=3),
+        branch_predicate=PredicateKind.EQ,
+        is_conditional_jump=True,
+    )
+    prefix = {
+        "pure": _mov(
+            0x18001AADD,
+            MopSnapshot(
+                kind=OperandKind.ADDRESS,
+                size=8,
+                sub_l=_global(0x180100000),
+            ),
+            replace(_reg(8), size=8),
+        ),
+        "state_write": _mov(
+            0x18001AADD,
+            replace(_num(0xD21C9415), size=8),
+            replace(_stk(32), size=8),
+        ),
+        "effectful": _store(
+            0x18001AADD,
+            replace(_num(7), size=8),
+            _global(0x180100000),
+        ),
+        "control": InsnSnapshot(
+            opcode=55,
+            ea=0x18001AADD,
+            operands=(),
+            l=MopSnapshot(kind=OperandKind.BLOCK, block_ref=3),
+            kind=InsnKind.GOTO,
+        ),
+    }[prefix_kind]
+    graph = FlowGraph(
+        {
+            1: _blk(
+                1,
+                (2,),
+                (),
+                (_mov(0x18001AAAC, _num(0xD21C9415), _stk(32)),),
+                ea=0x18001AAAC,
+            ),
+            2: _blk(
+                2,
+                (3, 4),
+                (1,),
+                (
+                    prefix,
+                    branch,
+                ),
+                ea=0x18001AACC,
+            ),
+            3: _stop(3, (2,)),
+            4: _stop(4, (2,)),
+        },
+        entry_serial=1,
+        func_ea=0x18001AA80,
+    )
+    reference = DecisionDag(
+        32,
+        {2: RouteComparison(2, "jz", 0xD21C9415, 3, 4)},
+        root=2,
+    )
+    return graph, reference
+
+
+def test_reconciliation_preserves_reference_owned_u64_comparison() -> None:
+    """The U32 replay adapter must defer to exact native U64 DAG authority."""
+
+    graph, reference = _reference_owned_non_u32_comparison_fixture()
+    observed = minimal_state_recovery._observe_current_u32_decision_forest(
+        graph,
+        2,
+        expected_identities=frozenset(
+            {StorageIdentity(StorageIdentityKind.STACK, 32)}
+        ),
+        reference_dag=reference,
+    )
+
+    assert (
+        observed.status
+        is minimal_state_recovery._CurrentU32DecisionForestStatus.NOT_APPLICABLE
+    )
+
+    resolved = resolve_materialized_indirect_transfer_targets(
+        (
+            StateWriteTransition(
+                1,
+                0xD21C9415,
+                3,
+                False,
+                None,
+                proof=TransitionProof(
+                    "region_partitioned_fixpoint",
+                    "global_fold",
+                    True,
+                    route_source_kinds=("decision_dag",),
+                ),
+            ),
+        ),
+        graph,
+        _dispatcher({0xD21C9415: 3}, exit_block=99),
+        (),
+        condition_chain_dag=reference,
+        condition_chain_handlers=frozenset({3, 4}),
+        state_var_stkoff=32,
+    )
+
+    assert tuple(item.target_handler for item in resolved) == (3,)
+
+
+def test_reconciliation_still_rejects_visible_u32_reference_mismatch() -> None:
+    """Deferral is width-scoped; contradictory U32 evidence remains invalid."""
+
+    graph, reference = _reference_owned_non_u32_comparison_fixture(
+        width=4,
+        constant=0xD21C9416,
+    )
+    observed = minimal_state_recovery._observe_current_u32_decision_forest(
+        graph,
+        2,
+        expected_identities=frozenset(
+            {StorageIdentity(StorageIdentityKind.STACK, 32)}
+        ),
+        reference_dag=reference,
+    )
+
+    assert (
+        observed.status
+        is minimal_state_recovery._CurrentU32DecisionForestStatus.INVALID
+    )
+
+
+@pytest.mark.parametrize("prefix_kind", ("state_write", "effectful", "control"))
+def test_reference_owned_non_u32_comparison_rejects_semantic_prefix(
+    prefix_kind: str,
+) -> None:
+    """Only pure setup outside the comparison coordinates permits deferral."""
+
+    graph, reference = _reference_owned_non_u32_comparison_fixture(
+        prefix_kind=prefix_kind,
+    )
+    observed = minimal_state_recovery._observe_current_u32_decision_forest(
+        graph,
+        2,
+        expected_identities=frozenset(
+            {StorageIdentity(StorageIdentityKind.STACK, 32)}
+        ),
+        reference_dag=reference,
+    )
+
+    assert (
+        observed.status
+        is minimal_state_recovery._CurrentU32DecisionForestStatus.INVALID
+    )
+
+
+def test_current_forest_defers_to_live_dag_when_a_claimed_child_lacks_portable_projection() -> None:
+    """A same-snapshot native DAG remains authoritative across projection loss.
+
+    This is the Approov topology: an exact root reaches a second comparison
+    claimed by the live condition-chain analysis, but that child has no
+    state-bearing portable branch projection.  It is not current-graph drift;
+    the replay adapter must defer to the already-live DAG instead of atomically
+    erasing its recovered transition set.
+    """
+    state = StorageIdentity(StorageIdentityKind.STACK, 52)
+    root_branch = InsnSnapshot(
+        opcode=0,
+        ea=0x1300,
+        operands=(),
+        kind=InsnKind.COND_JUMP,
+        l=MopSnapshot(kind=OperandKind.STACK, size=4, stkoff=52),
+        r=MopSnapshot(kind=OperandKind.NUMBER, size=4, value=7),
+        d=MopSnapshot(kind=OperandKind.BLOCK, block_ref=4),
+        branch_predicate=PredicateKind.SLE,
+        is_conditional_jump=True,
+    )
+    graph = FlowGraph(
+        {
+            3: _blk(3, (4, 6), (), (root_branch,), ea=0x1300),
+            4: _blk(4, (7, 8), (3,), (), ea=0x1400),
+            6: _stop(6, (3,)),
+            7: _stop(7, (4,)),
+            8: _stop(8, (4,)),
+        },
+        entry_serial=3,
+        func_ea=0x1300,
+    )
+    reference = DecisionDag(
+        32,
+        {
+            3: RouteComparison(3, "jle", 7, 4, 6),
+            4: RouteComparison(4, "jle", 7, 7, 8),
+        },
+        root=3,
+    )
+
+    observed = minimal_state_recovery._observe_current_u32_decision_forest(
+        graph,
+        3,
+        expected_identities=frozenset({state}),
+        reference_dag=reference,
+    )
+
+    assert (
+        observed.status
+        is minimal_state_recovery._CurrentU32DecisionForestStatus.NOT_APPLICABLE
+    )
+
+
+def test_reconciliation_rejects_conflicting_provider_for_ordinary_multisucc_leaf() -> None:
+    """A non-table leaf cannot be upgraded through a generic provider row."""
+    branch = InsnSnapshot(
+        opcode=0, ea=0x1300, operands=(), kind=InsnKind.COND_JUMP,
+        l=MopSnapshot(kind=OperandKind.STACK, size=4, stkoff=52),
+        r=MopSnapshot(kind=OperandKind.NUMBER, size=4, value=0),
+        d=MopSnapshot(kind=OperandKind.BLOCK, block_ref=3),
+        branch_predicate=PredicateKind.EQ, is_conditional_jump=True,
+    )
+    graph = FlowGraph(
+        {
+            1: _blk(1, (2,), (), (_mov(0x1200, _num(0), _stk(52)),), ea=0x1200),
+            2: _blk(2, (3, 5), (1,), (branch,), ea=0x1300),
+            3: _blk(3, (4, 6), (2,), (), ea=0x1400),
+            4: _blk(4, (), (), (), ea=0x1500),
+            6: _blk(6, (), (3,), (), ea=0x1600),
+            5: _stop(5, (2,)),
+        }, entry_serial=1, func_ea=0x1200,
+    )
+    dispatcher = _DualRouteDispatcher(
+        exact_targets={}, interval_rows=(IntervalRow(0, 1, 4),),
+    )
+    resolved = resolve_materialized_indirect_transfer_targets(
+        (replace(_coarse_transition(1, 0, 4), via_block=2),), graph, dispatcher, (),
+        condition_chain_dag=DecisionDag(32, {2: RouteComparison(2, "jz", 0, 3, 5)}, root=2),
+        condition_chain_handlers=frozenset({4}), state_var_stkoff=52,
+    )
+    assert resolved == ()
+
+
+def test_reconciliation_does_not_mint_switch_handoff_when_provider_target_is_leaf() -> None:
+    """A multi-successor DAG leaf is not a table handoff merely by fan-out."""
+    branch = InsnSnapshot(
+        opcode=0, ea=0x1300, operands=(), kind=InsnKind.COND_JUMP,
+        l=MopSnapshot(kind=OperandKind.STACK, size=4, stkoff=52),
+        r=MopSnapshot(kind=OperandKind.NUMBER, size=4, value=0),
+        d=MopSnapshot(kind=OperandKind.BLOCK, block_ref=3),
+        branch_predicate=PredicateKind.EQ, is_conditional_jump=True,
+    )
+    graph = FlowGraph(
+        {
+            1: _blk(1, (2,), (), (_mov(0x1200, _num(0), _stk(52)),), ea=0x1200),
+            2: _blk(2, (3, 5), (1,), (branch,), ea=0x1300),
+            3: _blk(3, (4, 6), (2,), (), ea=0x1400),
+            4: _blk(4, (), (3,), (), ea=0x1500),
+            6: _blk(6, (), (3,), (), ea=0x1600),
+            5: _stop(5, (2,)),
+        }, entry_serial=1, func_ea=0x1200,
+    )
+    resolved = resolve_materialized_indirect_transfer_targets(
+        (replace(_coarse_transition(1, 0, 3), via_block=2),), graph,
+        _DualRouteDispatcher(exact_targets={0: 3}, interval_rows=()), (),
+        condition_chain_dag=DecisionDag(
+            32, {2: RouteComparison(2, "jz", 0, 3, 5)}, root=2,
+        ),
+        condition_chain_handlers=frozenset({3}), state_var_stkoff=52,
+    )
+    assert len(resolved) == 1
+    fact = resolved[0].semantic_route_fact
+    assert fact is not None and fact.decision_dag_witness is not None
+    assert fact.decision_dag_witness.handoff_dispatcher_serial is None
+
+
+def test_current_forest_observation_classifies_root_drift_and_alias_roots() -> None:
+    """Observed reference roots are invalid on drift; exact aliases seed a forest."""
+    state = StorageIdentity(StorageIdentityKind.STACK, 52)
+    branch = InsnSnapshot(
+        opcode=0, ea=0x1300, operands=(), kind=InsnKind.COND_JUMP,
+        l=MopSnapshot(kind=OperandKind.STACK, size=4, stkoff=52),
+        r=MopSnapshot(kind=OperandKind.NUMBER, size=4, value=7),
+        d=MopSnapshot(kind=OperandKind.BLOCK, block_ref=2),
+        branch_predicate=PredicateKind.SLE, is_conditional_jump=True,
+    )
+    drift_graph = FlowGraph(
+        {1: _blk(1, (2, 3), (), (branch,), ea=0x1300), 2: _stop(2, (1,)), 3: _stop(3, (1,))},
+        entry_serial=1, func_ea=0x1300,
+    )
+    drift = minimal_state_recovery._observe_current_u32_decision_forest(
+        drift_graph, 1, expected_identities=frozenset({state}),
+        reference_dag=DecisionDag(32, {1: RouteComparison(1, "jle", 8, 2, 3)}, root=1),
+    )
+    assert drift.status is minimal_state_recovery._CurrentU32DecisionForestStatus.INVALID
+
+    edge_drift_graph = FlowGraph(
+        {
+            **drift_graph.blocks,
+            2: replace(drift_graph.blocks[2], preds=()),
+        },
+        entry_serial=drift_graph.entry_serial,
+        func_ea=drift_graph.func_ea,
+    )
+    edge_drift = minimal_state_recovery._observe_current_u32_decision_forest(
+        edge_drift_graph,
+        1,
+        expected_identities=frozenset({state}),
+        reference_dag=DecisionDag(
+            32,
+            {1: RouteComparison(1, "jle", 7, 2, 3)},
+            root=1,
+        ),
+    )
+    assert (
+        edge_drift.status
+        is minimal_state_recovery._CurrentU32DecisionForestStatus.INVALID
+    )
+
+    alias_graph = FlowGraph(
+        {
+            1: _blk(1, (2,), (), (_goto(0x1400, 2),), ea=0x1400),
+            2: _blk(2, (3, 4), (1,), (replace(branch, d=MopSnapshot(kind=OperandKind.BLOCK, block_ref=3)),), ea=0x1300),
+            3: _stop(3, (2,)), 4: _stop(4, (2,)),
+        },
+        entry_serial=1, func_ea=0x1400,
+    )
+    valid_alias = minimal_state_recovery._observe_current_u32_decision_forest(
+        alias_graph, 1, expected_identities=frozenset({state}),
+        reference_dag=DecisionDag(32, {2: RouteComparison(2, "jle", 7, 3, 4)}, root=1, aliases={1: 2}),
+    )
+    invalid_alias = minimal_state_recovery._observe_current_u32_decision_forest(
+        alias_graph, 1, expected_identities=frozenset({state}),
+        reference_dag=DecisionDag(32, {2: RouteComparison(2, "jle", 7, 3, 4)}, root=1, aliases={1: 3}),
+    )
+    assert valid_alias.status is minimal_state_recovery._CurrentU32DecisionForestStatus.VALID
+    assert invalid_alias.status is minimal_state_recovery._CurrentU32DecisionForestStatus.INVALID
+
+
+def test_current_forest_accepts_exact_reciprocal_goto_alias_to_stop() -> None:
+    state = StorageIdentity(StorageIdentityKind.STACK, 52)
+    branch = InsnSnapshot(
+        opcode=0,
+        ea=0x1500,
+        operands=(),
+        kind=InsnKind.COND_JUMP,
+        l=MopSnapshot(kind=OperandKind.STACK, size=4, stkoff=52),
+        r=MopSnapshot(kind=OperandKind.NUMBER, size=4, value=7),
+        d=MopSnapshot(kind=OperandKind.BLOCK, block_ref=2),
+        branch_predicate=PredicateKind.SLE,
+        is_conditional_jump=True,
+    )
+    graph = FlowGraph(
+        {
+            1: _blk(1, (2, 4), (), (branch,), ea=0x1500),
+            2: _blk(2, (3,), (1,), (_goto(0x1510, 3),), ea=0x1510),
+            3: replace(_stop(3, (2,)), start_ea=0xFFFFFFFFFFFFFFFF),
+            4: _stop(4, (1,)),
+        },
+        entry_serial=1,
+        func_ea=0x1500,
+    )
+    reference = DecisionDag(
+        32,
+        {1: RouteComparison(1, "jle", 7, 2, 4)},
+        root=1,
+        aliases={2: 3},
+    )
+
+    observed = minimal_state_recovery._observe_current_u32_decision_forest(
+        graph,
+        1,
+        expected_identities=frozenset({state}),
+        reference_dag=reference,
+    )
+
+    assert observed.status is minimal_state_recovery._CurrentU32DecisionForestStatus.VALID
+    assert observed.decision_dag is not None
+    assert observed.decision_dag.aliases == {2: 3}
+
+    one_sided = FlowGraph(
+        {**graph.blocks, 3: replace(graph.blocks[3], preds=())},
+        graph.entry_serial,
+        graph.func_ea,
+    )
+    rejected = minimal_state_recovery._observe_current_u32_decision_forest(
+        one_sided,
+        1,
+        expected_identities=frozenset({state}),
+        reference_dag=reference,
+    )
+    assert rejected.status is minimal_state_recovery._CurrentU32DecisionForestStatus.INVALID
+
+
+def test_current_forest_accepts_exact_reciprocal_goto_alias_back_to_root() -> None:
+    """An exact dispatcher-loop alias closes the current forest, not drift."""
+    state = StorageIdentity(StorageIdentityKind.STACK, 8)
+
+    def _branch(ea: int, constant: int, target: int) -> InsnSnapshot:
+        return InsnSnapshot(
+            opcode=0,
+            ea=ea,
+            operands=(),
+            kind=InsnKind.COND_JUMP,
+            l=MopSnapshot(kind=OperandKind.STACK, size=4, stkoff=8),
+            r=MopSnapshot(kind=OperandKind.NUMBER, size=4, value=constant),
+            d=MopSnapshot(kind=OperandKind.BLOCK, block_ref=target),
+            branch_predicate=PredicateKind.EQ,
+            is_conditional_jump=True,
+        )
+
+    graph = FlowGraph(
+        {
+            2: _blk(2, (6, 3), (5,), (_branch(0x1200, 0xF6A1E, 6),), ea=0x1200),
+            3: _blk(3, (7, 4), (2,), (_branch(0x1210, 0xF6A1F, 7),), ea=0x1210),
+            4: _blk(4, (8, 5), (3,), (_branch(0x1220, 0xF6A20, 8),), ea=0x1220),
+            5: _blk(5, (2,), (4,), (_goto(0x1230, 2),), ea=0x1230),
+            6: _stop(6, (2,)),
+            7: _stop(7, (3,)),
+            8: _stop(8, (4,)),
+        },
+        entry_serial=2,
+        func_ea=0x1200,
+    )
+    reference = DecisionDag(
+        32,
+        {
+            2: RouteComparison(2, "jz", 0xF6A1E, 6, 3),
+            3: RouteComparison(3, "jz", 0xF6A1F, 7, 4),
+            4: RouteComparison(4, "jz", 0xF6A20, 8, 5),
+        },
+        root=2,
+        aliases={5: 2},
+    )
+
+    observed = minimal_state_recovery._observe_current_u32_decision_forest(
+        graph,
+        2,
+        expected_identities=frozenset({state}),
+        reference_dag=reference,
+    )
+
+    assert observed.status is minimal_state_recovery._CurrentU32DecisionForestStatus.VALID
+    assert observed.decision_dag is not None
+    assert observed.decision_dag.nodes == reference.nodes
+    assert observed.decision_dag.aliases == reference.aliases
+
+
+@pytest.mark.parametrize(
+    ("provider_target", "expected"),
+    ((2, (19,)), (19, (19,)), (13, ())),
+)
+def test_reconciliation_accepts_only_provider_stages_in_the_exact_normalizer_chain(
+    provider_target: int,
+    expected: tuple[int, ...],
+) -> None:
+    """Provider consensus accepts only stages of the exact normalizer chain."""
+    graph, dag = _typed_state_route_reconciliation_fixture()
+    state = 0x1BABC1DC
+    resolved = resolve_materialized_indirect_transfer_targets(
+        (_coarse_transition(14, state, 19),),
+        graph,
+        _DualRouteDispatcher(
+            exact_targets={state: provider_target}, interval_rows=(), default_target=99,
+        ),
+        (),
+        condition_chain_dag=dag,
+        condition_chain_handlers=frozenset({2, 10, 13, 15, 19}),
+        state_var_stkoff=_STATE_OFF,
+    )
+
+    assert tuple(int(item.target_handler) for item in resolved) == expected
+
+
 def test_recovered_semantic_handler_is_not_reclassified_as_invalid_normalizer() -> None:
     """A semantic handler may end with the shared next-state carrier shape.
 
@@ -5220,17 +6592,39 @@ def test_outside_interval_routes_through_surviving_effectful_handler() -> None:
     assert graph.get_block(10).insn_snapshots[0].is_call
 
 
-def test_source_carrier_route_accepts_reciprocal_alias_chain_to_stop_sentinel() -> None:
-    """Target C's upper interval ends through pure aliases at Hex-Rays STOP."""
+def _terminal_alias_carrier_fixture() -> tuple[
+    FlowGraph,
+    DecisionDag,
+    minimal_state_recovery._DecisionDagStateRoute,
+]:
     graph, _ = _typed_state_route_reconciliation_fixture()
     blocks = dict(graph.blocks)
     blocks[4] = replace(blocks[4], succs=(5, 9))
     blocks[5] = _blk(5, (6, 12), (4,), (), ea=0x180044988)
     blocks[6] = _blk(6, (7, 2), (5,), (), ea=0x180044993)
-    blocks[7] = _blk(7, (17,), (6,), (), ea=0x18004499A)
-    blocks[17] = _blk(17, (20,), (7,), (), ea=0x180044C2C)
+    blocks[7] = _blk(
+        7,
+        (17,),
+        (6,),
+        (_goto(0x18004499A, 17),),
+        ea=0x18004499A,
+    )
+    blocks[17] = _blk(
+        17,
+        (20,),
+        (7,),
+        (_goto(0x180044C2C, 20),),
+        ea=0x180044C2C,
+    )
+    blocks[18] = _blk(
+        18,
+        (20,),
+        (),
+        (_goto(0x180044C40, 20),),
+        ea=0x180044C40,
+    )
     blocks[20] = replace(
-        _stop(20, (17,)),
+        _stop(20, (17, 18)),
         start_ea=0xFFFFFFFFFFFFFFFF,
     )
     blocks[2] = replace(blocks[2], preds=(6,))
@@ -5249,6 +6643,32 @@ def test_source_carrier_route_accepts_reciprocal_alias_chain_to_stop_sentinel() 
         root=4,
         aliases={7: 17, 17: 20},
     )
+    route = minimal_state_recovery._route_u32_state_through_decision_dag(
+        0x6CF816C1,
+        graph,
+        dag,
+        state_var_stkoff=_STATE_OFF,
+        state_var_reg=None,
+        via_block=3,
+    )
+    assert route is not None
+    assert route.target == 20
+    assert route.path_serials[-2:] == (7, 17)
+    return graph, dag, route
+
+
+def test_source_carrier_route_accepts_reciprocal_alias_chain_to_stop_sentinel() -> None:
+    """A typed carrier closes at STOP but physically targets its native alias root."""
+    graph, dag, raw_route = _terminal_alias_carrier_fixture()
+
+    normalized = minimal_state_recovery._normalize_exact_carrier_terminal_alias_route(
+        graph, raw_route,
+    )
+    assert normalized is not None
+    assert normalized.target == 7
+    assert normalized.certified_targets == frozenset({7, 20})
+    assert normalized.path_serials[-1] == 6
+    assert normalized.aliases == ()
 
     (resolved,) = resolve_materialized_indirect_transfer_targets(
         (_coarse_transition(15, 0x6CF816C1, 20),),
@@ -5260,10 +6680,28 @@ def test_source_carrier_route_accepts_reciprocal_alias_chain_to_stop_sentinel() 
         state_var_stkoff=_STATE_OFF,
     )
 
-    assert resolved.target_handler == 20
-    assert resolved.is_return is True
+    assert resolved.target_handler == 7
+    assert resolved.is_return is False
+    assert resolved.semantic_route_fact is not None
+    assert resolved.semantic_route_fact.kind is SemanticRouteFactKind.STATE_CARRIER
+    assert resolved.semantic_route_fact.target_serial == 7
+    assert resolved.semantic_route_fact.carrier_witness is not None
     assert resolved.proof is not None
     assert resolved.proof.trusted is True
+
+    from d810.transforms.graph_modification import RedirectGoto
+    from d810.transforms.minimal_unflatten_emit import build_state_write_redirects
+
+    modifications = build_state_write_redirects(
+        graph,
+        _dispatcher({}, exit_block=99),
+        (resolved,),
+        dispatcher_entry_serial=3,
+        pre_header_serial=None,
+        initial_state=None,
+        suppress_legacy_endpoint_bridges=True,
+    )
+    assert RedirectGoto(from_serial=15, old_target=3, new_target=7) in modifications
 
     nonterminal_blocks = dict(graph.blocks)
     nonterminal_blocks[20] = replace(
@@ -5281,7 +6719,7 @@ def test_source_carrier_route_accepts_reciprocal_alias_chain_to_stop_sentinel() 
     )
 
     one_sided_blocks = dict(graph.blocks)
-    one_sided_blocks[20] = replace(one_sided_blocks[20], preds=())
+    one_sided_blocks[20] = replace(one_sided_blocks[20], preds=(18,))
     assert (
         minimal_state_recovery.route_current_u32_decision_forest(
             FlowGraph(one_sided_blocks, graph.entry_serial, graph.func_ea),
@@ -5292,6 +6730,70 @@ def test_source_carrier_route_accepts_reciprocal_alias_chain_to_stop_sentinel() 
         is None
     )
 
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "cycle",
+        "multiple_roots",
+        "non_goto",
+        "effectful",
+        "one_sided",
+        "nonlogical_terminal",
+        "wrong_goto_target",
+        "path_drift",
+        "anchor_drift",
+    ),
+)
+def test_carrier_terminal_alias_normalization_rejects_inexact_physical_chain(
+    mutation: str,
+) -> None:
+    graph, _dag, route = _terminal_alias_carrier_fixture()
+    blocks = dict(graph.blocks)
+
+    if mutation == "cycle":
+        route = replace(route, aliases=((7, 17), (17, 7)))
+    elif mutation == "multiple_roots":
+        blocks[8] = _blk(
+            8, (20,), (), (_goto(0x1800449B0, 20),), ea=0x1800449B0,
+        )
+        blocks[20] = replace(blocks[20], preds=(17, 8))
+        route = replace(route, aliases=((7, 17), (17, 20), (8, 20)))
+    elif mutation == "non_goto":
+        blocks[7] = replace(blocks[7], insn_snapshots=())
+    elif mutation == "effectful":
+        blocks[7] = replace(
+            blocks[7],
+            insn_snapshots=(
+                _store(0x180044998, _num(1), _stk(_STATE_OFF + 4)),
+                _goto(0x18004499A, 17),
+            ),
+        )
+    elif mutation == "one_sided":
+        blocks[20] = replace(blocks[20], preds=(18,))
+    elif mutation == "nonlogical_terminal":
+        blocks[20] = replace(
+            blocks[20],
+            start_ea=0x180044D00,
+            native_start_ea=0x180044D00,
+        )
+    elif mutation == "wrong_goto_target":
+        blocks[7] = replace(
+            blocks[7], insn_snapshots=(_goto(0x18004499A, 20),),
+        )
+    elif mutation == "path_drift":
+        route = replace(route, path_serials=(*route.path_serials[:-2], 17, 7))
+    elif mutation == "anchor_drift":
+        route = replace(route, path_anchors=(*route.path_anchors[:-1], 0x180044C2D))
+    else:  # pragma: no cover - parametrization is exhaustive
+        raise AssertionError(mutation)
+
+    assert (
+        minimal_state_recovery._normalize_exact_carrier_terminal_alias_route(
+            FlowGraph(blocks, graph.entry_serial, graph.func_ea), route,
+        )
+        is None
+    )
 
 @pytest.mark.parametrize(
     ("source", "expected_state", "expected_target"),
@@ -5338,6 +6840,57 @@ def test_missing_transition_state_is_recovered_from_exact_source_carrier(
     assert resolved.proof.oracle_kind == "exact_source_carrier_decision_dag_route"
     assert resolved.proof.kind == "source_carrier_decision_dag_reconciled"
     assert resolved.proof.route_source_kinds == ("decision_dag", "source_carrier")
+
+
+def test_unresolved_return_sentinel_is_superseded_by_exact_source_carrier() -> None:
+    """Carrier authority outranks a coarse terminal guess with no state fact."""
+
+    graph, dag = _typed_state_route_reconciliation_fixture()
+    unresolved = replace(
+        _unresolved_carrier_transition(15),
+        is_return=True,
+    )
+
+    (resolved,) = _resolve_carrier_transition(graph, dag, unresolved)
+
+    assert resolved.next_state == 0x6CF816C1
+    assert resolved.target_handler == 10
+    assert resolved.is_return is False
+    assert resolved.via_block == 3
+    assert resolved.semantic_route_fact is not None
+    assert resolved.semantic_route_fact.kind is SemanticRouteFactKind.STATE_CARRIER
+    assert resolved.proof is not None
+    assert resolved.proof.oracle_kind == "exact_source_carrier_decision_dag_route"
+
+
+def test_unresolved_return_with_malformed_observed_carrier_abstains() -> None:
+    """Carrier syntax cannot fall back to a coarse terminal classification."""
+
+    graph, dag = _typed_state_route_reconciliation_fixture()
+    source = graph.get_block(15)
+    assert source is not None
+    clobber = _mov(0x1F01, _stk(_STATE_OFF + 4), _reg(8))
+    graph = FlowGraph(
+        {
+            **graph.blocks,
+            15: replace(
+                source,
+                insn_snapshots=(
+                    source.insn_snapshots[0],
+                    clobber,
+                    *source.insn_snapshots[1:],
+                ),
+            ),
+        },
+        graph.entry_serial,
+        graph.func_ea,
+    )
+    unresolved = replace(
+        _unresolved_carrier_transition(15),
+        is_return=True,
+    )
+
+    assert _resolve_carrier_transition(graph, dag, unresolved) == ()
 
 
 def test_missing_transition_state_is_recovered_from_exact_stack_carrier() -> None:
@@ -8895,7 +10448,7 @@ def _captured_six_transform_fixture() -> tuple[
             (),
             ea=0x180030000 + target,
         )
-    blocks[999] = _stop(999, targets)
+    blocks[999] = _stop(999, (*targets, comparison_serials[-1]))
     graph = FlowGraph(blocks, 349, 0x180015110)
     dag = DecisionDag(32, comparisons, root=15)
     dispatcher = _DualRouteDispatcher(
@@ -9242,6 +10795,10 @@ def test_arithmetic_state_feeder_provenance_binds_native_block_eas(_seam) -> Non
         blocks[15],
         start_ea=0x1300,
         native_start_ea=native_root_ea,
+        insn_snapshots=tuple(
+            replace(instruction, native_ea=native_root_ea + index)
+            for index, instruction in enumerate(blocks[15].insn_snapshots)
+        ),
     )
 
     resolved = _resolve_arithmetic_state_feeder(
@@ -9953,6 +11510,72 @@ def test_exact_low_u32_carrier_proof_carries_selected_source_instruction_ea() ->
     assert proof.source_instruction_ea != 0x1100
 
 
+def test_exact_carrier_proof_publishes_native_not_generated_instruction_ea() -> None:
+    """Canonical carrier authority uses the native coordinate of a live write."""
+
+    live_ea = 0xFF00000000001104
+    native_ea = 0x1104
+    wide_carrier = replace(_reg(8), size=8)
+    narrow_carrier = _reg(8)
+    superseded_write = replace(
+        _mov(live_ea - 4, replace(_num(6), size=8), wide_carrier),
+        native_ea=native_ea,
+    )
+    source_write = replace(
+        _mov(live_ea, replace(_num(7), size=8), wide_carrier),
+        native_ea=native_ea,
+    )
+    graph = FlowGraph(
+        blocks={
+            # Hex-Rays may split/coalesce multiple microcode operations onto
+            # one native instruction. The exact prover still selects the
+            # final carrier definition; canonical publication binds the
+            # shared native coordinate and transaction replay checks content.
+            1: _blk(1, (2,), (), (superseded_write, source_write), ea=0x1100),
+            2: _blk(
+                2,
+                (3,),
+                (1,),
+                (_mov(0x1200, narrow_carrier, _stk(_STATE_OFF)),),
+                ea=0x1200,
+            ),
+            3: _blk(3, (), (2,), (), ea=0x1300),
+            4: _blk(4, (), (), (), ea=0x1400),
+        },
+        entry_serial=1,
+        func_ea=0x1000,
+    )
+
+    proof = state_carrier.prove_exact_u32_carrier_state_write(
+        graph,
+        1,
+        2,
+        state_var_stkoff=_STATE_OFF,
+        state_var_reg=None,
+        required_comparison_serials=frozenset({3}),
+        allow_low_u32_projection=True,
+    )
+
+    assert proof is not None
+    assert proof.source_instruction_ea == native_ea
+    fact = minimal_state_recovery._semantic_route_fact_for_transition(
+        StateWriteTransition(1, 7, 4, False, None, via_block=2),
+        minimal_state_recovery._DecisionDagStateRoute(
+            target=4,
+            certified_targets=frozenset({4}),
+            entry_serial=3,
+            path_serials=(3,),
+            path_anchors=(0x1300,),
+        ),
+        graph,
+        state_var_stkoff=_STATE_OFF,
+        state_var_reg=None,
+        carrier_proof=proof,
+    )
+    assert fact is not None
+    assert fact.source_instruction_ea == native_ea
+
+
 @pytest.mark.parametrize(
     ("mutation", "expected_fact"),
     (
@@ -10046,6 +11669,135 @@ def test_state_carrier_route_fact_uses_proof_source_instruction_coordinate(
     assert fact is not None
     assert fact.kind is SemanticRouteFactKind.STATE_CARRIER
     assert fact.source_instruction_ea == 0x1104
+
+
+def test_current_exact_carrier_supersedes_weaker_native_bound_receipt() -> None:
+    """A receipt coordinate cannot hide a fully replayable carrier assignment."""
+
+    state_identity = StorageIdentity(StorageIdentityKind.STACK, _STATE_OFF)
+    wide_carrier = replace(_reg(8), size=8)
+    graph = FlowGraph(
+        blocks={
+            1: _blk(
+                1,
+                (2,),
+                (),
+                (_mov(0x1104, replace(_num(7), size=8), wide_carrier),),
+                ea=0x1100,
+            ),
+            2: _blk(2, (3,), (1,), (_mov(0x1200, _reg(8), _stk(_STATE_OFF)),), ea=0x1200),
+            3: _blk(3, (), (2,), (), ea=0x1300),
+            4: _blk(4, (), (), (), ea=0x1400),
+        },
+        entry_serial=1,
+        func_ea=0x1000,
+    )
+    carrier = state_carrier.ExactCarrierStateWrite(
+        state=7,
+        source_serial=1,
+        source_instruction_ea=0x1104,
+        feeder_serial=2,
+        comparison_entry_serial=3,
+        carrier=Varnode(Space.REGISTER, 8, 4),
+        state_identity=state_identity,
+    )
+    prior = SemanticRouteFact(
+        kind=SemanticRouteFactKind.NATIVE_BOUND,
+        owner_serial=1,
+        source_serial=1,
+        source_instruction_ea=0x1104,
+        state_constant=7,
+        target_serial=4,
+        owner_anchor_ea=0x1100,
+        target_anchor_ea=0x1400,
+        path_serials=(1,),
+        path_edges=(),
+        fact_id="native:carrier-materialization",
+    )
+
+    fact = minimal_state_recovery._current_snapshot_route_fact_for_transition(
+        StateWriteTransition(
+            1,
+            7,
+            4,
+            False,
+            None,
+            via_block=2,
+            semantic_route_fact=prior,
+        ),
+        minimal_state_recovery._DecisionDagStateRoute(
+            target=4,
+            certified_targets=frozenset({4}),
+            entry_serial=3,
+            path_serials=(3,),
+            path_anchors=(0x1300,),
+        ),
+        graph,
+        state_var_stkoff=_STATE_OFF,
+        state_var_reg=None,
+        carrier_proof=carrier,
+    )
+
+    assert fact is not None
+    assert fact.kind is SemanticRouteFactKind.STATE_CARRIER
+    assert fact.carrier_witness == carrier
+
+
+def test_exact_carrier_fact_supersedes_stale_partition_witness() -> None:
+    """A current carrier proof outranks a partition row from an earlier recovery phase."""
+
+    state_identity = StorageIdentity(StorageIdentityKind.STACK, _STATE_OFF)
+    graph = FlowGraph(
+        blocks={
+            1: _blk(1, (2,), (), (_mov(0x1104, _num(7), _reg(8)),), ea=0x1100),
+            2: _blk(2, (3,), (1,), (_mov(0x1200, _reg(8), _stk(_STATE_OFF)),), ea=0x1200),
+            3: _blk(3, (), (2,), (), ea=0x1300),
+            4: _blk(4, (), (), (), ea=0x1400),
+        },
+        entry_serial=1,
+        func_ea=0x1000,
+    )
+    carrier = state_carrier.ExactCarrierStateWrite(
+        state=7,
+        source_serial=1,
+        source_instruction_ea=0x1104,
+        feeder_serial=2,
+        comparison_entry_serial=3,
+        carrier=Varnode(Space.REGISTER, 8, 4),
+        state_identity=state_identity,
+    )
+    stale_partition = minimal_state_recovery.StatePartitionGroupWitness(
+        group_id="stale:partition",
+        feeder_serial=3,
+        feeder_instruction_ea=0x1300,
+        state_identity=state_identity,
+        members=(minimal_state_recovery.StatePartitionMemberWitness(
+            owner_serial=1,
+            feeder_serial=3,
+            state_identity=state_identity,
+            state_constant=7,
+        ),),
+    )
+    fact = minimal_state_recovery._semantic_route_fact_for_transition(
+        StateWriteTransition(
+            1, 7, 4, False, None, via_block=2,
+            partition_witness=stale_partition,
+        ),
+        minimal_state_recovery._DecisionDagStateRoute(
+            target=4,
+            certified_targets=frozenset({4}),
+            entry_serial=3,
+            path_serials=(3,),
+            path_anchors=(0x1300,),
+        ),
+        graph,
+        state_var_stkoff=_STATE_OFF,
+        state_var_reg=None,
+        carrier_proof=carrier,
+    )
+
+    assert fact is not None
+    assert fact.kind is SemanticRouteFactKind.STATE_CARRIER
 
 
 def test_candidate_prefix_records_exact_alternate_corridor_partition(_seam) -> None:
@@ -10894,6 +12646,88 @@ def test_candidate_prefix_partitioned_feeder_provider_conflict_is_atomic(
         )
         == ()
     )
+
+
+def test_reconciliation_retains_reference_alias_for_carrier_corridor(
+    _seam,
+) -> None:
+    """A validated current forest cannot erase a native route alias.
+
+    The portable replay starts at comparison 6 and therefore does not visit
+    predecessor alias 3.  The source's exact carrier corridor reaches that
+    alias, so the canonical route DAG must retain it for both the carrier
+    receipt and the final route evaluation.
+    """
+
+    state = 0x5F3E61FD
+    graph = FlowGraph(
+        blocks={
+            1: _blk(
+                1,
+                (2,),
+                (),
+                (_mov(0x1100, _num(state), _reg(8)),),
+                ea=0x1100,
+            ),
+            2: _blk(
+                2,
+                (3,),
+                (1,),
+                (
+                    _mov(0x1200, _reg(8), _stk(_STATE_OFF)),
+                    _goto(0x1204, 3),
+                ),
+                ea=0x1200,
+            ),
+            3: _blk(3, (6,), (2,), (_goto(0x1240, 6),), ea=0x1240),
+            6: _blk(
+                6,
+                (10, 11),
+                (3,),
+                (_jz_stack_const(0x1280, _STATE_OFF, state, 10),),
+                ea=0x1280,
+            ),
+            10: _blk(10, (), (6,), (), ea=0x1300),
+            11: _stop(11, (6,)),
+        },
+        entry_serial=1,
+        func_ea=0x1000,
+    )
+    dag = DecisionDag(
+        32,
+        {6: RouteComparison(6, "jz", state, 10, 11)},
+        root=6,
+        aliases={3: 6},
+    )
+    current_forest = minimal_state_recovery._observe_current_u32_decision_forest(
+        graph,
+        6,
+        expected_identities=frozenset(
+            {StorageIdentity(StorageIdentityKind.STACK, _STATE_OFF)}
+        ),
+        reference_dag=dag,
+    )
+    assert (
+        current_forest.status
+        is minimal_state_recovery._CurrentU32DecisionForestStatus.VALID
+    )
+    assert current_forest.decision_dag is not None
+    assert current_forest.decision_dag.aliases == {}
+
+    resolved = resolve_materialized_indirect_transfer_targets(
+        (StateWriteTransition(1, state, 10, False, None, via_block=2),),
+        graph,
+        _dispatcher({state: 10}, exit_block=11),
+        (),
+        condition_chain_dag=dag,
+        condition_chain_handlers=frozenset({10, 11}),
+        state_var_stkoff=_STATE_OFF,
+    )
+
+    assert len(resolved) == 1
+    assert resolved[0].target_handler == 10
+    assert resolved[0].proof is not None
+    assert resolved[0].proof.trusted
 
 
 def test_candidate_prefix_not_applicable_preserves_partitioned_legacy_bytes(

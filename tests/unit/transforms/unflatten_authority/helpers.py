@@ -76,6 +76,7 @@ def realize_projected_routes_for_test(**values):
     from d810.transforms.unflatten_authority import bind
     from d810.transforms.unflatten_authority.gates import GenericEffectfulGateFacts
     from d810.transforms.unflatten_authority.ids import patch_step_fact_id, projected_authority_id
+    from d810.transforms.unflatten_authority.model import RawEffectGatePhaseFact
 
     source_authority = values["source_authority"]
     plan = values["plan"]
@@ -86,15 +87,39 @@ def realize_projected_routes_for_test(**values):
         patch_step_facts = tuple(sorted(patch_step_facts, key=patch_step_fact_id))
     attempt_id = values["attempt_id"]
     claims = values.get("claims", plan.unflatten_proposal.claims)
+    inferred_raw_gate_facts = None
     if "raw_effect_gate_fact" not in values:
-        owners = frozenset(row.owner_serial for row in source_inventory.effects)
+        # The raw transport DTO remains in the source-owner serial namespace.
+        # A projected corridor may retire an effect owner, so only its
+        # retained partition is inferred through stable source-ref
+        # correspondence.
+        owners = frozenset(
+            row.owner_serial
+            for row in source_inventory.effects
+            if row.owner_serial in source_inventory.reachable_serials
+        )
+        source_refs = {
+            row.serial: row.block_ref
+            for row in source_inventory.blocks
+        }
+        projected_serial_by_ref = projected_inventory.serial_by_ref
+        retained = frozenset(
+            serial for serial in owners
+            if (
+                (ref := source_refs.get(serial)) is not None
+                and (projected_serial := projected_serial_by_ref.get(ref)) is not None
+                and projected_serial in projected_inventory.reachable_serials
+            )
+        )
+        inferred_raw_gate_facts = GenericEffectfulGateFacts(
+            not (owners - retained), owners, retained, owners - retained,
+            "inherited-helper",
+        )
         try:
             raw_fact = bind.bind_raw_effect_gate_phase_fact(
                 source_inventory=source_inventory,
                 projected_inventory=projected_inventory,
-                raw_gate_facts=GenericEffectfulGateFacts(
-                    True, owners, owners, frozenset(), "inherited-helper",
-                ),
+                raw_gate_facts=inferred_raw_gate_facts,
             )
         except (TypeError, ValueError):
             # A malformed source/projected pair has no canonical raw fact to
@@ -122,9 +147,33 @@ def realize_projected_routes_for_test(**values):
             # transaction-owned boundary rather than reconstructed here.
             values["authority_id"] = None
     if "legacy_effective_gate_facts" not in values:
-        owners = frozenset(row.owner_serial for row in projected_inventory.effects)
+        # Match transaction_api's optimistic legacy comparison exactly: it is
+        # a source-namespace compatibility shadow.  A raw producer DTO and a
+        # bound phase fact intentionally have disjoint representations: the
+        # former retains source serials, while the latter retains stable
+        # owner coordinates.  Never read DTO fields from the bound fact.
+        if inferred_raw_gate_facts is not None:
+            legacy_source_serials = (
+                inferred_raw_gate_facts.pre_effectful_block_serials
+            )
+            legacy_reason = inferred_raw_gate_facts.reason
+        elif type(raw_fact) is RawEffectGatePhaseFact:
+            legacy_source_serials = frozenset(
+                source_inventory.serial_by_ref[owner.ref]
+                for owner in raw_fact.pre_effectful_source_owners
+            )
+            legacy_reason = "bound-raw-effect-gate-compatibility"
+        else:
+            # Keep malformed explicit envelopes at the public transaction
+            # boundary.  This helper must not forge producer transport data.
+            legacy_source_serials = frozenset()
+            legacy_reason = "bound-raw-effect-gate-compatibility"
         values["legacy_effective_gate_facts"] = GenericEffectfulGateFacts(
-            True, owners, owners, frozenset(), "inherited-helper",
+            True,
+            legacy_source_serials,
+            legacy_source_serials,
+            frozenset(),
+            legacy_reason,
         )
     values["claims"] = claims
     values["patch_step_facts"] = patch_step_facts
@@ -334,3 +383,19 @@ def exact_fixture(
         use_def_witness=witness,
     )
     return source, proposal, exclusions, refs
+
+
+def observed_patch_binding_for_test(authority, *, helper_serials=None):
+    """Mint the exact neutral observed binding used by authority unit tests."""
+    from d810.transforms.cfg_transaction import PlanBlockRef
+    from d810.transforms.patch_binding import observed_patch_binding
+    from d810.transforms.unflatten_authority import model
+
+    if type(authority) is not model.BoundUnflattenAuthority:
+        raise TypeError("test observed binding requires BoundUnflattenAuthority")
+    rows = tuple(
+        (ref, serial if helper_serials is None else helper_serials[ref])
+        for ref, serial in authority.patch_binding.bindings
+        if type(ref) is PlanBlockRef
+    )
+    return observed_patch_binding(authority.patch_binding, rows)

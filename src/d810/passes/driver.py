@@ -57,7 +57,7 @@ from d810.transforms.native_cfg_normalization import (
     ObservedEdgeStateContract,
 )
 from d810.transforms.plan import PatchPlan
-from d810.transforms.unflatten_authority.legacy_codec import (
+from d810.transforms.unflatten_authority.diagnostics import (
     NativeBoundTransitionRouteReceipt,
     native_bound_transition_route_receipts_from_plan,
 )
@@ -88,6 +88,7 @@ class PassContractDiagnostic:
 class _NativeCfgObserverRunState:
     observer: NativeCfgFreezeObserver
     failed: bool = False
+    observed_authoritative_mutation: bool = False
 
 
 class PassContractError(RuntimeError):
@@ -213,6 +214,20 @@ def _log_applied_native_bound_route_receipts(
     committed_operation_keys = _committed_operation_keys(mutation_receipt)
     if committed_operation_keys is None:
         return
+    route_operation_keys = tuple(
+        receipt.operation_key
+        for receipt in route_receipts
+        if type(receipt) is NativeBoundTransitionRouteReceipt
+    )
+    if route_operation_keys and not any(
+        committed_operation_keys.count(operation_key) == 1
+        for operation_key in route_operation_keys
+    ):
+        logger.warning(
+            "native-bound route receipt correlation declined: planned=%s committed=%s",
+            route_operation_keys,
+            committed_operation_keys,
+        )
     logged_operation_keys: set[tuple[str, int, int | None, int | None]] = set()
     for receipt in route_receipts:
         if type(receipt) is not NativeBoundTransitionRouteReceipt:
@@ -877,6 +892,7 @@ def _observe_native_cfg_mutation(
             exc_info=True,
         )
         return
+    state.observed_authoritative_mutation = True
     _safe_advance(
         journal,
         observer_attempt,
@@ -1227,6 +1243,7 @@ def _freeze_native_cfg_observer(
     if (
         state is None
         or state.failed
+        or not state.observed_authoritative_mutation
         or not isinstance(maturity, IRMaturity)
         or not isinstance(baseline_graph, FlowGraph)
         or not isinstance(final_graph, FlowGraph)

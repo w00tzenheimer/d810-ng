@@ -816,6 +816,32 @@ def _run_lower_state_machine_with_emitted_plan(monkeypatch, plan):
     return LowerStateMachine().run(ctx)
 
 
+def test_lower_state_machine_does_not_forward_unbound_canonical_candidate(monkeypatch):
+    """Only a current bind may carry a retained proposal into the emitter."""
+
+    captured = {}
+    am = AnalysisManager(_chain_graph(), input_facts=_input_facts())
+    _install_current_identity_index(am)
+    ctx = _ctx(am.graph, am.view())
+    RecoverDispatcher().run(ctx)
+    RecoverStateTransitions().run(ctx)
+    PlanSemanticRegions().run(ctx)
+    # This models a stale candidate whose corresponding current bind was
+    # invalidated at the maturity boundary.
+    am.put_analysis("canonical_semantic_evidence", object())
+    am.put_analysis("bound_canonical_semantic_evidence", None)
+
+    def capture(*_args, **kwargs):
+        captured["canonical"] = kwargs["canonical_route_evidence"]
+        return PatchPlan()
+
+    monkeypatch.setattr(state_machine_module, "emit_minimal_unflatten", capture)
+
+    LowerStateMachine().run(ctx)
+
+    assert captured["canonical"] is None
+
+
 def _typed_pipeline_plan() -> PatchPlan:
     source, proposal, _exclusion, refs = exact_fixture()
     template = PatchPlan(
@@ -1830,3 +1856,73 @@ def test_recover_state_transitions_binds_portable_semantic_route_group() -> None
     assert bound.routes[0].source.anchor_ea == 0x1001
     assert bound.routes[0].destinations[0].block.serial == 2
     assert bound.routes[0].destinations[0].block.anchor_ea == 0x1002
+
+
+def test_recover_state_transitions_withholds_stale_semantic_route_proposal() -> None:
+    """A CALLS namespace mismatch cannot become a GLBOPT1 authority input."""
+
+    native_key = make_native_key(function_rva=0x1000)
+
+    def identity(ea: int) -> StableBlockIdentity:
+        return StableBlockIdentity.from_intervals(
+            (NativeEaInterval(ea, ea + 1),),
+            native_key=native_key,
+            exact_instruction_eas=(ea,),
+        )
+
+    source_identity = identity(0x1001)
+    stale = canonical_semantic_evidence_from_proofs(
+        native_key=native_key,
+        generation=2,
+        proofs=(
+            SemanticRouteProof(
+                proof_id="stale-state-assignment@0x1001",
+                atomic_group_id="canonical-semantic:g2",
+                proof_kind=SemanticRouteProofKind.STATE_ASSIGNMENT,
+                shape=SemanticRouteShape.DIRECT,
+                source_identity=source_identity,
+                source_anchor_ea=0x1001,
+                delivery_region=NativeEaInterval(0x1001, 0x1002),
+                destinations=(SemanticRouteDestination(
+                    role=SemanticEdgeRole.DIRECT,
+                    state_constant=C1,
+                    target_identity=identity(0x1002),
+                    target_anchor_ea=0x1002,
+                ),),
+                state_write=SemanticStateWriteProof(
+                    identity=source_identity,
+                    instruction_ea=0x1001,
+                    state_variable=StorageIdentity(StorageIdentityKind.REGISTER, 21),
+                    width=4,
+                    state_constant=C1,
+                    corridor_instruction_eas=(0x1001,),
+                    authority_transfer_ea=None,
+                    preserved_call_instruction_eas=(),
+                ),
+            ),
+        ),
+    )
+
+    class _Provider:
+        def evidence_for(self, function_ea: int):
+            return stale if int(function_ea) == 0x1000 else None
+
+    am = AnalysisManager(
+        _chain_graph_with_state_write(), input_facts=_input_facts(),
+    )
+    # Model a reused manager carrying the prior CALLS proposal into GLBOPT1.
+    am.put_analysis("canonical_semantic_evidence", stale)
+    am.put_analysis("bound_canonical_semantic_evidence", object())
+    ctx = _ctx(
+        am.graph,
+        am.view(),
+        CapabilitySet().with_capability(CanonicalSemanticEvidenceCapability, _Provider()),
+    )
+    RecoverDispatcher().run(ctx)
+
+    result = RecoverStateTransitions().run(ctx)
+
+    assert result.analysis_outputs["canonical_semantic_evidence"] is None
+    assert result.analysis_outputs["bound_canonical_semantic_evidence"] is None
+    assert am.view().get_analysis("canonical_semantic_evidence") is None
+    assert am.view().get_analysis("bound_canonical_semantic_evidence") is None

@@ -6,6 +6,7 @@ from d810.errors import AstEvaluationException
 from d810.hexrays.expr.ast import AstConstant, AstNode, AstProxy
 from d810.hexrays.ir.minsn_utils import minsn_to_ast
 from d810.backends.ast.z3 import Z3MopProver
+from d810.core.z3_proof import Z3ProofStatus
 from d810.hexrays.utils.hexrays_formatters import format_minsn_t
 from d810.optimizers.microcode.instructions.z3.handler import Z3Rule
 from d810.hexrays.ir.number_operand import safe_make_number
@@ -15,6 +16,7 @@ logger = getLogger(__name__)
 
 class Z3ConstantOptimization(Z3Rule):
     DESCRIPTION = "Detect and replace obfuscated constants"
+    PROOF_TRANSFORM_ID = "z-3-constant-optimization"
 
     def __init__(self):
         super().__init__()
@@ -97,7 +99,12 @@ class Z3ConstantOptimization(Z3Rule):
             #   return new_instruction
             c_res_mop = ida_hexrays.mop_t()
             safe_make_number(c_res_mop, val_0, tmp.mop.size or 1)
-            if Z3MopProver().are_equal(tmp.mop, c_res_mop):
+            proof_result = self.make_z3_mop_prover(
+                prover_cls=Z3MopProver
+            ).prove_equal(tmp.mop, c_res_mop)
+            if self.observe_z3_proof("prove_equal", proof_result) and (
+                proof_result.status is Z3ProofStatus.PROVED
+            ):
                 if logger.debug_on:
                     logger.debug("  Z3MopProver.are_equal confirmed equality")
 

@@ -9,10 +9,11 @@ not authority data and may be opaque native objects.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass, fields, is_dataclass
+from dataclasses import dataclass, fields, is_dataclass, replace
 from enum import Enum
 import hashlib
 import json
+from types import MappingProxyType
 
 from d810.ir.expressions import ValueOpKind
 from d810.ir.flowgraph import (
@@ -73,6 +74,13 @@ class InsnRecord:
     opcode_attrs: Mapping[str, object]
     display_text_sha256: str
 
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "opcode_attrs",
+            MappingProxyType(dict(self.opcode_attrs)),
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class BlockRecord:
@@ -122,9 +130,40 @@ def _instruction_projection(value: object) -> InsnRecord:
         value.predicate_kind, value.branch_predicate, value.compare_width,
         value.is_conditional_jump, value.is_unconditional_jump, value.is_call,
         _operand_projection(value.l), _operand_projection(value.r), _operand_projection(value.d),
-        dict(value.opcode_attrs), hashlib.sha256(
+        value.opcode_attrs, hashlib.sha256(
             value.display_text.encode("utf-8", errors="replace")
         ).hexdigest(),
+    )
+
+
+def instruction_projection_without_block_references(
+    value: InsnSnapshot,
+) -> InsnRecord:
+    """Project one instruction while separating snapshot-local block targets.
+
+    Stable evidence carries block targets through stable block identities.  This
+    adapter therefore removes only ``block_ref`` coordinates from the otherwise
+    exact portable instruction record; operand position, shape, opcode, native
+    coordinate, and every non-target field remain sealed.
+    """
+
+    def without_block_reference(operand: MopRecord | None) -> MopRecord | None:
+        if operand is None:
+            return None
+        return replace(
+            operand,
+            block_ref=None,
+            sub_l=without_block_reference(operand.sub_l),
+            sub_r=without_block_reference(operand.sub_r),
+            args=tuple(without_block_reference(item) for item in operand.args),
+        )
+
+    projection = _instruction_projection(value)
+    return replace(
+        projection,
+        l=without_block_reference(projection.l),
+        r=without_block_reference(projection.r),
+        d=without_block_reference(projection.d),
     )
 
 
@@ -271,6 +310,7 @@ def portable_graph_fingerprint_values(
 
 __all__ = [
     "BlockRecord", "GraphRecord", "InsnRecord", "MopRecord",
+    "instruction_projection_without_block_references",
     "portable_graph_fingerprint", "portable_graph_fingerprint_values",
     "portable_graph_projection", "portable_graph_projection_values",
     "validate_operand_manifest",

@@ -12,6 +12,8 @@ from unittest.mock import patch
 
 import pytest
 
+from d810.analyses.control_flow.semantic_route_evidence import DecisionDagComparisonWitness
+
 from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
 from d810.core.native_preanalysis_key import NativePreanalysisKey
 from d810.ir.flowgraph import BlockKind, InsnKind, InsnSnapshot, MopSnapshot, OperandKind
@@ -21,7 +23,10 @@ from d810.core.typing import Callable, Literal
 from d810.transforms.unflatten_authority import bind
 from d810.transforms.unflatten_authority import model
 from d810.transforms.unflatten_authority import evaluate, producer_api, transaction_api
-from d810.transforms.cfg_transaction import LogicalBlockRef, NativeBlockRef, PatchStepKind
+from d810.transforms.cfg_transaction import (
+    LogicalBlockRef, NativeBlockRef, PatchStepKind, PlanBlockRef,
+)
+from d810.transforms.plan import PatchRedirectBranch, PatchRedirectGoto
 from d810.transforms.unflatten_authority.ids import (
     authority_id, canonical_bytes, semantic_graph_inventory_digest, route_realization_id,
     projected_route_realization_row_id, projected_route_realization_id,
@@ -38,6 +43,24 @@ from .helpers import (
     state_identity,
 )
 from .test_model import _minimal_corridor_forecast, _valid_proposal
+
+
+def _native_route_destination_anchors(locator: model.RouteSubjectLocator):
+    """Return only destination members with a native EA anchor."""
+    return tuple(
+        model.AnchoredBlockRef(member.block_ref, member.anchor_ea)
+        for member in locator.destination_locators
+        if type(member) is model.BlockSubjectLocator
+    )
+
+
+def _native_route_destination_refs(locator: model.RouteSubjectLocator):
+    """Return native destination references in canonical locator order."""
+    return tuple(
+        member.block_ref
+        for member in locator.destination_locators
+        if type(member) is model.BlockSubjectLocator
+    )
 
 
 def _private_route_registry():
@@ -1357,6 +1380,123 @@ def test_slice_c0_local_alias_shared_draft_core_is_callable() -> None:
     assert draft.patch_step_fact is values["patch_step_fact"]
 
 
+def test_local_alias_projected_binding_uses_unique_native_ea_not_source_ordinal() -> None:
+    """Projected normalization may renumber operations at one native host."""
+    values = _c_local_alias_fixture()
+    projected = values["projected_inventory"]
+    host_ea = values["claim"].host_ea
+    owner_ref = values["claim"].owner_subject.block_ref
+    block = next(row for row in projected.blocks if row.block_ref == owner_ref)
+    host = next(
+        item for item in block.instruction_observations
+        if item.instruction_ea == host_ea
+    )
+
+    prefix = replace(
+        host,
+        ordinal=0,
+        instruction_kind=InsnKind.NOP,
+        display_text="",
+    )
+    shifted_observations = (
+        prefix,
+        *(replace(item, ordinal=item.ordinal + 1)
+          for item in block.instruction_observations),
+    )
+    shifted = next(
+        item for item in shifted_observations
+        if item.instruction_ea == host_ea
+        and item.instruction_kind is InsnKind.MOV
+    )
+    shifted_block = replace(
+        block,
+        instruction_observations=shifted_observations,
+    )
+    shifted_blocks = tuple(
+        shifted_block if item is block else item
+        for item in projected.blocks
+    )
+    shifted_inventory = replace(
+        projected,
+        blocks=shifted_blocks,
+        inventory_digest=semantic_graph_inventory_digest(
+            projected.phase,
+            projected.graph_fingerprint,
+            projected.generation,
+            shifted_blocks,
+            projected.subjects,
+            projected.bindings,
+            projected.effects,
+            projected.terminals,
+            projected.topology,
+            projected.reachable_serials,
+            projected.entry_serial,
+            projected.source_subject_ids,
+            projected.function_ea,
+        ),
+    )
+
+    draft = bind._draft_local_alias_binding(
+        claim=values["claim"],
+        patch_step_fact=values["patch_step_fact"],
+        source_inventory=values["source_inventory"],
+        projected_inventory=shifted_inventory,
+    )
+
+    assert draft.projected_observation is shifted
+
+
+def test_local_alias_accepts_native_pointer_width_mov_for_scalar_access() -> None:
+    """The claim keeps value width while the physical alias MOV keeps pointer width."""
+    values = _c_local_alias_fixture()
+    projected = values["projected_inventory"]
+    claim = values["claim"]
+    block = next(
+        row for row in projected.blocks
+        if row.block_ref == claim.owner_subject.block_ref
+    )
+    host = next(
+        item for item in block.instruction_observations
+        if item.instruction_ea == claim.host_ea
+    )
+    pointer_width = claim.owner_subject.block_ref.identity.native_key.bitness // 8
+    pointer_host = replace(host, width=pointer_width)
+    pointer_block = replace(
+        block,
+        instruction_observations=tuple(
+            pointer_host if item is host else item
+            for item in block.instruction_observations
+        ),
+    )
+    blocks = tuple(
+        pointer_block if item is block else item
+        for item in projected.blocks
+    )
+    pointer_inventory = replace(
+        projected,
+        blocks=blocks,
+        inventory_digest=semantic_graph_inventory_digest(
+            projected.phase, projected.graph_fingerprint,
+            projected.generation, blocks, projected.subjects,
+            projected.bindings, projected.effects, projected.terminals,
+            projected.topology, projected.reachable_serials,
+            projected.entry_serial, projected.source_subject_ids,
+            projected.function_ea,
+        ),
+    )
+
+    draft = bind._draft_local_alias_binding(
+        claim=claim,
+        patch_step_fact=values["patch_step_fact"],
+        source_inventory=values["source_inventory"],
+        projected_inventory=pointer_inventory,
+    )
+
+    assert draft.projected_observation is pointer_host
+    assert draft.source_observation.width == claim.value_size
+    assert pointer_host.width == pointer_width
+
+
 def test_slice_c0_red_two_local_aliases_preserve_indexed_patch_facts() -> None:
     """C0 RED: each local disposition must retain its corresponding fact."""
     values = _c_two_local_alias_draft_inputs()
@@ -1944,8 +2084,8 @@ def test_slice_c0_real_invalid_shadow_has_exact_public_coordinates() -> None:
     values = _c_complete_kwargs(_compiler_redirect_goto_case)
     shadow = values["legacy_effective_gate_facts"]
     values["legacy_effective_gate_facts"] = replace(
-        shadow, pre_effectful_block_serials=frozenset(),
-        post_reachable_effectful_block_serials=frozenset(),
+        shadow, pre_effectful_block_serials=frozenset({999}),
+        post_reachable_effectful_block_serials=frozenset({999}),
         lost_block_serials=frozenset(),
     )
     result = bind.realize_projected_routes(**values)
@@ -2476,6 +2616,7 @@ def test_owner_index_rejects_second_occurrence_of_same_proof_target_key() -> Non
         build(
             drafts=(draft, draft),
             source_authority=kwargs["source_authority"],
+            source_inventory=kwargs["source_inventory"],
             plan=kwargs["plan"],
             patch_step_facts=kwargs["patch_step_facts"],
             selected_context=kwargs["selected_context"],
@@ -2485,6 +2626,7 @@ def test_owner_index_rejects_second_occurrence_of_same_proof_target_key() -> Non
         build(
             drafts=(foreign,),
             source_authority=kwargs["source_authority"],
+            source_inventory=kwargs["source_inventory"],
             plan=kwargs["plan"],
             patch_step_facts=kwargs["patch_step_facts"],
             selected_context=kwargs["selected_context"],
@@ -2503,6 +2645,7 @@ def test_draft_requires_exact_proposal_claim_and_proof_objects() -> None:
         build(
             drafts=(foreign,),
             source_authority=kwargs["source_authority"],
+            source_inventory=kwargs["source_inventory"],
             plan=kwargs["plan"],
             patch_step_facts=kwargs["patch_step_facts"],
             selected_context=kwargs["selected_context"],
@@ -2514,6 +2657,7 @@ def test_draft_requires_exact_proposal_claim_and_proof_objects() -> None:
         build(
             drafts=(foreign_proof,),
             source_authority=kwargs["source_authority"],
+            source_inventory=kwargs["source_inventory"],
             plan=kwargs["plan"],
             patch_step_facts=kwargs["patch_step_facts"],
             selected_context=kwargs["selected_context"],
@@ -2540,6 +2684,7 @@ def test_draft_requires_exact_selected_lineage_entry_and_fact_objects() -> None:
         build(
             drafts=(foreign_entry,),
             source_authority=kwargs["source_authority"],
+            source_inventory=kwargs["source_inventory"],
             plan=kwargs["plan"],
             patch_step_facts=kwargs["patch_step_facts"],
             selected_context=kwargs["selected_context"],
@@ -2554,6 +2699,7 @@ def test_draft_requires_exact_selected_lineage_entry_and_fact_objects() -> None:
         build(
             drafts=(foreign_facts,),
             source_authority=kwargs["source_authority"],
+            source_inventory=kwargs["source_inventory"],
             plan=kwargs["plan"],
             patch_step_facts=kwargs["patch_step_facts"],
             selected_context=kwargs["selected_context"],
@@ -2569,6 +2715,7 @@ def test_projected_owner_index_rejects_registered_wrong_family_relation() -> Non
         build(
             drafts=(substituted,),
             source_authority=branch_kwargs["source_authority"],
+            source_inventory=branch_kwargs["source_inventory"],
             plan=branch_kwargs["plan"],
             patch_step_facts=branch_kwargs["patch_step_facts"],
             selected_context=branch_kwargs["selected_context"],
@@ -2603,6 +2750,7 @@ def test_projected_owner_index_rejects_registered_wrong_relation_for_selected_ta
         build(
             drafts=(malformed,),
             source_authority=kwargs["source_authority"],
+            source_inventory=kwargs["source_inventory"],
             plan=kwargs["plan"],
             patch_step_facts=kwargs["patch_step_facts"],
             selected_context=kwargs["selected_context"],
@@ -2661,6 +2809,7 @@ def test_projected_owner_index_rejects_registered_same_family_role_mutation(
         build(
             drafts=(malformed,),
             source_authority=kwargs["source_authority"],
+            source_inventory=kwargs["source_inventory"],
             plan=kwargs["plan"],
             patch_step_facts=kwargs["patch_step_facts"],
             selected_context=kwargs["selected_context"],
@@ -2725,14 +2874,18 @@ def test_projected_owner_index_rejects_registered_creation_order_mutation(
         build(
             drafts=(malformed,),
             source_authority=kwargs["source_authority"],
+            source_inventory=kwargs["source_inventory"],
             plan=kwargs["plan"],
             patch_step_facts=kwargs["patch_step_facts"],
             selected_context=kwargs["selected_context"],
         )
 
 
-def test_projected_owner_merge_attributes_real_later_draft_conflict() -> None:
-    """Post-validation owner conflicts retain the exact later draft."""
+@pytest.mark.parametrize("reverse", (False, True), ids=("same-then-clone", "clone-then-same"))
+def test_projected_owner_merge_prefers_same_owner_over_clone_occurrence(
+    reverse: bool,
+) -> None:
+    """A primary same-owner mapping remains canonical beside a clone incidence."""
     first, _index, _build, _kwargs = _draft_probe(_lower_conditional_case)
     later, _index, _build, _kwargs = _draft_probe(
         _conditional_redirect_case_for_inventory_mutation,
@@ -2743,40 +2896,136 @@ def test_projected_owner_merge_attributes_real_later_draft_conflict() -> None:
         for cell in build.__closure__ or ()
         if getattr(cell.cell_contents, "__name__", None) == "merge_validated_drafts"
     )
-    with pytest.raises(ValueError, match="conflicting source-owner") as caught:
-        merge((first, later))
-    assert getattr(caught.value, "draft", None) is later
-
-    public_reject = next(
+    merge((later, first) if reverse else (first, later))
+    owner_rows = next(
         cell.cell_contents
-        for cell in bind._realize_projected_routes_from_claim_inventory.__closure__ or ()
-        if getattr(cell.cell_contents, "__name__", None) == "projected_draft_rejection"
+        for cell in merge.__closure__ or ()
+        if isinstance(cell.cell_contents, list)
+        and cell.cell_contents
+        and type(cell.cell_contents[0]).__name__ == "_OwnerMapping"
     )
-    later_authority = _conditional_redirect_case_for_inventory_mutation()[0]
-    rejected = public_reject(caught.value, later_authority)
-    assert type(rejected) is model.ProjectedRouteRealizationRejected
-    failure = rejected.failures[0]
-    assert failure.stage is model.RouteRealizationFailureStage.CLAIM_SELECTION
-    assert failure.scope is model.RouteRealizationFailureScope.STEP
-    assert failure.claim_id == later.claim.claim_id
-    assert failure.proof_id == later.proof_id
-    assert failure.route_subject_id == later.route_subject_id
-    assert failure.step_index == later.descriptor.step_index
-    assert failure.step_digest == later.descriptor.step_digest
-    locator = later.claim.retired_route_subject.locator
-    expected_anchors = tuple(sorted(
-        {
-            model.AnchoredBlockRef(locator.source_ref, locator.source_anchor_ea),
-            *(
-                model.AnchoredBlockRef(ref, anchor)
-                for ref, anchor in zip(
-                    locator.destination_refs, locator.destination_anchor_eas,
-                )
-            ),
-        },
-        key=canonical_bytes,
+    occurrences = next(
+        cell.cell_contents
+        for cell in merge.__closure__ or ()
+        if isinstance(cell.cell_contents, list)
+        and cell.cell_contents
+        and type(cell.cell_contents[0]).__name__ == "_RelationOwnerOccurrence"
+    )
+    shared_owner = first.relation.proof_source
+    mappings = tuple(
+        row for row in owner_rows if row.source_owner == shared_owner
+    )
+    assert len(mappings) == 1
+    assert (
+        mappings[0].source_owner,
+        mappings[0].projected_owner,
+        mappings[0].lineage,
+        mappings[0].relation_id,
+    ) == (
+        shared_owner,
+        shared_owner,
+        model.ProjectedSiteLineageKind.SAME_OWNER,
+        None,
+    )
+    assert {
+        row.relation_id for row in occurrences
+        if row.source_owner == shared_owner
+    } == {first.relation.relation_id, later.relation.relation_id}
+
+
+@pytest.mark.parametrize("reverse", (False, True), ids=("first-clone-first", "second-clone-first"))
+def test_projected_owner_merge_omits_site_free_divergent_clone_occurrences(
+    reverse: bool,
+) -> None:
+    """Two clone corridors retain incidence but have no arbitrary site owner."""
+    draft, _index, build, kwargs = _draft_probe(
+        _conditional_redirect_case_for_inventory_mutation,
+    )
+    relation = draft.relation
+    cells, _draft_kernel, _build = _private_projected_kernel_cells()
+    values = {
+        name: getattr(relation, name)
+        for name in relation.__dataclass_fields__
+    }
+    replacement_clone = model.AnchoredBlockRef(
+        PlanBlockRef(relation.replacement_clone.ref.plan_id, "divergent-clone"),
+        relation.replacement_clone.anchor_ea,
+    )
+    values["replacement_clone"] = replacement_clone
+    values["creation_spec_digests"] = tuple(
+        (
+            replacement_clone.ref
+            if ref == relation.replacement_clone.ref else ref,
+            digest,
+        )
+        for ref, digest in relation.creation_spec_digests
+    )
+    values["relation_id"] = route_realization_id((
+        "cloned_conditional",
+        *(values[name] for name in relation.__dataclass_fields__
+          if name != "relation_id"),
     ))
-    assert failure.anchored_refs == expected_anchors
+    divergent_relation = cells["_route_mint"].cell_contents(
+        model.ClonedConditionalRouteRealization,
+        values,
+        "relation_id",
+    )
+    relation_role_payload = next(
+        cell.cell_contents
+        for cell in build.__closure__ or ()
+        if getattr(cell.cell_contents, "__name__", None)
+        == "relation_role_payload"
+    )
+    divergent = _register_private_draft(
+        replace(
+            draft,
+            relation=divergent_relation,
+            expected_roles=relation_role_payload(divergent_relation),
+        ),
+    )
+    merge = next(
+        cell.cell_contents
+        for cell in build.__closure__ or ()
+        if getattr(cell.cell_contents, "__name__", None)
+        == "merge_validated_drafts"
+    )
+
+    merge((divergent, draft) if reverse else (draft, divergent))
+
+    owner_rows = next(
+        cell.cell_contents
+        for cell in merge.__closure__ or ()
+        if isinstance(cell.cell_contents, list)
+        and cell.cell_contents
+        and type(cell.cell_contents[0]).__name__ == "_OwnerMapping"
+    )
+    occurrences = next(
+        cell.cell_contents
+        for cell in merge.__closure__ or ()
+        if isinstance(cell.cell_contents, list)
+        and cell.cell_contents
+        and type(cell.cell_contents[0]).__name__ == "_RelationOwnerOccurrence"
+    )
+    shared_owner = relation.proof_source
+
+    assert not any(
+        row.owner_ref == shared_owner.ref
+        and row.owner_anchor_ea == shared_owner.anchor_ea
+        for row in (
+            *kwargs["source_inventory"].effects,
+            *kwargs["source_inventory"].terminals,
+        )
+    )
+    assert not any(row.source_owner == shared_owner for row in owner_rows)
+    assert {
+        (row.relation_id, row.projected_owner)
+        for row in occurrences
+        if row.source_owner == shared_owner
+    } == {
+        (relation.relation_id, relation.replacement_clone),
+        (divergent_relation.relation_id, replacement_clone),
+    }
+
 
 
 def test_draft_selected_target_is_family_specific_and_explicit() -> None:
@@ -2789,6 +3038,7 @@ def test_draft_selected_target_is_family_specific_and_explicit() -> None:
         build(
             drafts=(foreign_target,),
             source_authority=kwargs["source_authority"],
+            source_inventory=kwargs["source_inventory"],
             plan=kwargs["plan"],
             patch_step_facts=kwargs["patch_step_facts"],
             selected_context=kwargs["selected_context"],
@@ -2809,8 +3059,8 @@ def test_projected_owner_index_public_boundary_preserves_exact_typed_injection(
     )
     original = build_cell.cell_contents
 
-    def injected(*, drafts, source_authority, plan, patch_step_facts, selected_context):
-        del drafts, source_authority, plan, patch_step_facts, selected_context
+    def injected(*, drafts, source_authority, source_inventory, plan, patch_step_facts, selected_context):
+        del drafts, source_authority, source_inventory, plan, patch_step_facts, selected_context
         raise injected_type("injected owner mapping failure")
 
     build_cell.cell_contents = injected
@@ -2844,8 +3094,8 @@ def test_projected_owner_index_public_boundary_does_not_swallow_runtime_error() 
     )
     original = build_cell.cell_contents
 
-    def injected(*, drafts, source_authority, plan, patch_step_facts, selected_context):
-        del drafts, source_authority, plan, patch_step_facts, selected_context
+    def injected(*, drafts, source_authority, source_inventory, plan, patch_step_facts, selected_context):
+        del drafts, source_authority, source_inventory, plan, patch_step_facts, selected_context
         raise RuntimeError("unexpected owner mapping bug")
 
     build_cell.cell_contents = injected
@@ -3184,8 +3434,8 @@ def test_shared_owner_row_two_canonical_proofs_share_one_target_exactly_once() -
     assert claims[0].claim_id != claims[1].claim_id
     assert proofs[0].proof_id != proofs[1].proof_id
     assert (
-        claims[0].retired_route_subject.locator.destination_refs[-1]
-        == claims[1].retired_route_subject.locator.destination_refs[-1]
+        _native_route_destination_refs(claims[0].retired_route_subject.locator)[-1]
+        == _native_route_destination_refs(claims[1].retired_route_subject.locator)[-1]
     )
     cells, draft, build = _private_projected_kernel_cells()
     kwargs = dict(
@@ -3504,7 +3754,7 @@ def _3b4a_inventory_pair(
     return plan, source_inventory, projected_inventory
 
 
-def test_raw_effect_gate_accepts_full_two_owner_and_rejects_partial_partitions() -> None:
+def test_raw_effect_gate_uses_canonical_partition_and_accepts_legacy_subset() -> None:
     from d810.transforms.unflatten_authority.gates import GenericEffectfulGateFacts
 
     _plan, source_inventory, projected_inventory = _3b4a_inventory_pair(two_effects=True)
@@ -3515,19 +3765,30 @@ def test_raw_effect_gate_accepts_full_two_owner_and_rejects_partial_partitions()
         source_inventory=source_inventory,
         projected_inventory=projected_inventory,
         raw_gate_facts=GenericEffectfulGateFacts(
-            False, full, frozenset({owners[0]}), frozenset(set(owners[1:])), "two-owner-full",
+            True, full, full, frozenset(), "two-owner-full",
         ),
     )
     assert len(fact.pre_effectful_source_owners) == len(owners)
     for pre in (frozenset(), frozenset({owners[0]})):
-        with pytest.raises(ValueError, match="effect-owner"):
-            bind.bind_raw_effect_gate_phase_fact(
-                source_inventory=source_inventory,
-                projected_inventory=projected_inventory,
-                raw_gate_facts=GenericEffectfulGateFacts(
-                    True, pre, pre, frozenset(), "two-owner-partial",
-                ),
-            )
+        subset = bind.bind_raw_effect_gate_phase_fact(
+            source_inventory=source_inventory,
+            projected_inventory=projected_inventory,
+            raw_gate_facts=GenericEffectfulGateFacts(
+                True, pre, pre, frozenset(), "two-owner-partial",
+            ),
+        )
+        assert subset.pre_effectful_source_owners == fact.pre_effectful_source_owners
+        assert subset.raw_retained_source_owners == fact.raw_retained_source_owners
+        assert subset.raw_lost_source_owners == ()
+    with pytest.raises(ValueError, match="contradicts canonical inventory"):
+        bind.bind_raw_effect_gate_phase_fact(
+            source_inventory=source_inventory,
+            projected_inventory=projected_inventory,
+            raw_gate_facts=GenericEffectfulGateFacts(
+                False, frozenset({owners[0]}), frozenset(),
+                frozenset({owners[0]}), "two-owner-contradiction",
+            ),
+        )
 
 
 def test_raw_effect_gate_rejects_phase_correct_foreign_inventory_lineage() -> None:
@@ -3718,20 +3979,28 @@ def test_3b4a_raw_gate_rejects_foreign_and_bool_serials() -> None:
         )
 
 
-def test_raw_effect_gate_fact_rejects_omitted_and_non_effect_reachable_owners() -> None:
+def test_raw_effect_gate_fact_accepts_omission_but_rejects_non_effect_owner() -> None:
     from d810.transforms.unflatten_authority.gates import GenericEffectfulGateFacts
 
     _plan, source_inventory, projected_inventory = _3b4a_inventory_pair(two_effects=True)
     expected = frozenset(row.owner_serial for row in source_inventory.effects)
-    for pre in (frozenset(), expected | {1}):
-        with pytest.raises(ValueError, match="effect-owner"):
-            bind.bind_raw_effect_gate_phase_fact(
-                source_inventory=source_inventory,
-                projected_inventory=projected_inventory,
-                raw_gate_facts=GenericEffectfulGateFacts(
-                    not pre, pre, frozenset(), pre, "raw-partition",
-                ),
-            )
+    omitted = bind.bind_raw_effect_gate_phase_fact(
+        source_inventory=source_inventory,
+        projected_inventory=projected_inventory,
+        raw_gate_facts=GenericEffectfulGateFacts(
+            True, frozenset(), frozenset(), frozenset(), "raw-omitted",
+        ),
+    )
+    assert len(omitted.pre_effectful_source_owners) == len(expected)
+    with pytest.raises(ValueError, match="non-canonical effect owner"):
+        bind.bind_raw_effect_gate_phase_fact(
+            source_inventory=source_inventory,
+            projected_inventory=projected_inventory,
+            raw_gate_facts=GenericEffectfulGateFacts(
+                True, frozenset({1}), frozenset({1}), frozenset(),
+                "raw-non-effect",
+            ),
+        )
 
 
 def test_validate_raw_effect_gate_phase_fact_is_public_registry_validator() -> None:
@@ -3961,8 +4230,7 @@ def test_3b3_state_choice_structural_tier_priority_is_closed(reverse_facts: bool
     locator = authority.proposal.claims[0].retired_route_subject.locator
     expected = {
         model.AnchoredBlockRef(locator.source_ref, locator.source_anchor_ea),
-        *(model.AnchoredBlockRef(ref, ea)
-          for ref, ea in zip(locator.destination_refs, locator.destination_anchor_eas)),
+        *_native_route_destination_anchors(locator),
     }
     assert set(failure.anchored_refs) == expected
 
@@ -4327,15 +4595,15 @@ def test_3b3_candidate_count_stages_are_distinct() -> None:
     locator = claim.retired_route_subject.locator
     claim_anchors = {
         model.AnchoredBlockRef(locator.source_ref, locator.source_anchor_ea),
-        *(model.AnchoredBlockRef(ref, ea)
-          for ref, ea in zip(locator.destination_refs, locator.destination_anchor_eas)),
+        *_native_route_destination_anchors(locator),
     }
     # A real descriptor exists, but its source is unrelated to the claim, so
     # the structural candidate set is empty (not a malformed fact group).
-    unrelated = locator.destination_refs[1]
+    native_destinations = _native_route_destination_refs(locator)
+    unrelated = native_destinations[1]
     zero_plan = replace(plan, new_blocks=(), steps=(PatchRedirectBranch(
         from_serial=unrelated, old_target=locator.source_ref,
-        new_target=locator.destination_refs[0],
+        new_target=native_destinations[0],
     ),))
     zero_facts = transaction_api._derive_patch_lineage_facts(source, zero_plan)
     zero = realize_projected_routes_for_test(
@@ -4709,7 +4977,9 @@ def _assert_exact_canonical_step_anchors(result, authority, plan, source, projec
         # proof fixtures intentionally exercise cases where the compiler step
         # target and the claim destination differ; descriptor coordinates must
         # not silently replace the role anchor.
-        claim_target = authority.proposal.claims[0].retired_route_subject.locator.destination_refs[-1]
+        claim_target = _native_route_destination_refs(
+            authority.proposal.claims[0].retired_route_subject.locator,
+        )[-1]
         expected = [anchored(step.via_pred), *(anchored(ref) for ref in corridor), anchored(terminal), *(anchored(ref) for ref in clones), anchored(claim_target)]
     else:
         raise AssertionError(f"unknown literal anchor family {family!r}")
@@ -6121,7 +6391,7 @@ def test_conditional_exact_descriptor_ambiguity_is_claim_scoped() -> None:
 
 
 def test_conditional_exact_and_fallback_candidates_share_one_union_tier() -> None:
-    authority, plan, _source, _projected, facts, _attempt = (
+    authority, plan, source, _projected, facts, _attempt = (
         _conditional_redirect_case_for_inventory_mutation()
     )
     entry = bind._index_lineage_fact_groups(plan, facts).entries[0]
@@ -6145,6 +6415,7 @@ def test_conditional_exact_and_fallback_candidates_share_one_union_tier() -> Non
     with pytest.raises(bind._LineageFactViolation) as caught:
         bind._select_lineage_fact_group(
             synthetic_index, plan=plan, claim=claim, proof=proof,
+            source_inventory=source,
         )
     assert caught.value.stage is model.RouteRealizationFailureStage.CLAIM_SELECTION
 
@@ -6412,8 +6683,7 @@ def test_conditional_owner_fact_field_matrix_preserves_typed_coordinates(
     locator = claim.retired_route_subject.locator
     expected_anchors = [
         model.AnchoredBlockRef(locator.source_ref, locator.source_anchor_ea),
-        *(model.AnchoredBlockRef(ref, anchor)
-          for ref, anchor in zip(locator.destination_refs, locator.destination_anchor_eas)),
+        *_native_route_destination_anchors(locator),
     ]
     proof = authority.proposal.route_evidence.route_proofs[0]
     from d810.transforms.unflatten_authority.proposal import canonical_patch_step_descriptor
@@ -6439,6 +6709,36 @@ def _replace_projected_block(inventory, block, *, observation_rows, topology=Non
     )
     topology = inventory.topology if topology is None else topology
     blocks_by_serial = {row.serial: row for row in blocks}
+    serial_by_ref = {
+        row.block_ref: row.serial for row in blocks if row.block_ref is not None
+    }
+    dispatcher_serials = {
+        serial_by_ref[subject.block_ref]
+        for subject in inventory.subjects
+        if subject.role is model.SemanticSubjectRole.DISPATCHER_ENTRY
+        and subject.block_ref in serial_by_ref
+    }
+    dispatcher_serial = (
+        next(iter(dispatcher_serials)) if len(dispatcher_serials) == 1 else None
+    )
+    semantic_roots = {
+        serial_by_ref[subject.block_ref]
+        for subject in inventory.subjects
+        if subject.block_ref in serial_by_ref
+        and (
+            (
+                subject.role is model.SemanticSubjectRole.AUTHORITATIVE_HANDLER
+                and type(subject.locator) is model.HandlerSubjectLocator
+            )
+            or (
+                subject.role in {
+                    model.SemanticSubjectRole.SEMANTIC_ROUTE_SOURCE,
+                    model.SemanticSubjectRole.SEMANTIC_ROUTE_DESTINATION,
+                }
+                and type(subject.locator) is model.BlockSubjectLocator
+            )
+        )
+    }
     reachable: set[int] = set()
     pending = [inventory.entry_serial]
     while pending:
@@ -6447,6 +6747,21 @@ def _replace_projected_block(inventory, block, *, observation_rows, topology=Non
             continue
         reachable.add(serial)
         pending.extend(blocks_by_serial[serial].successor_serials)
+    pending = list(sorted(semantic_roots, reverse=True))
+    while pending:
+        serial = pending.pop()
+        barrier_active = (
+            inventory.phase is not model.UnflattenAuthorityPhase.PRODUCER_FORECAST
+            and dispatcher_serial is not None
+        )
+        if (barrier_active and serial == dispatcher_serial) or serial in reachable:
+            continue
+        reachable.add(serial)
+        pending.extend(
+            successor
+            for successor in reversed(blocks_by_serial[serial].successor_serials)
+            if not barrier_active or successor != dispatcher_serial
+        )
     topology_rows = []
     for owner in blocks:
         for peer in owner.predecessor_serials:
@@ -6906,7 +7221,6 @@ def _source_binding_fixture(
     *, proof_source_anchor_ea: int | None = None,
     reverse_proof_destinations: bool = False,
 ):
-    from d810.analyses.control_flow import semantic_route_evidence as route_model
     from d810.transforms.plan import PatchPlan
 
     source, base, _exclusion, refs = exact_fixture()
@@ -7028,8 +7342,10 @@ def _route_claim_with_members(
             locator.atomic_group_id,
             source_ref,
             source_anchor_ea,
-            tuple(ref for ref, _anchor_ea in destination_pairs),
-            tuple(anchor_ea for _ref, anchor_ea in destination_pairs),
+            tuple(
+                model.BlockSubjectLocator(ref, anchor_ea)
+                for ref, anchor_ea in destination_pairs
+            ),
         ),
     )
     return _claim_factory(
@@ -7080,10 +7396,11 @@ def _logical_source_binding_fixture(*, foreign_origins: bool = False):
         original_claim,
         source_ref=logical_source_ref,
         source_anchor_ea=original_witness.anchor_ea,
-        destination_pairs=tuple(zip(
-            locator.destination_refs,
-            locator.destination_anchor_eas,
-        )),
+        destination_pairs=tuple(
+            (item.block_ref, item.anchor_ea)
+            for item in locator.native_destination_members()
+            if type(item) is model.BlockSubjectLocator
+        ),
     )
     substitute = lambda ref: (
         logical_source_ref if ref == original_source_ref else ref
@@ -7156,35 +7473,20 @@ def _logical_source_binding_fixture(*, foreign_origins: bool = False):
     return proposal, inventory, materialization, claim
 
 
-def test_source_kernel_joins_logical_catalog_origins_to_proof_identity() -> None:
-    """Logical refs derive their proof identity from exact catalog origins."""
-    proposal, inventory, materialization, claim = _logical_source_binding_fixture()
-
-    result = bind.bind_source_route_authority(
-        proposal=proposal,
-        source_inventory=inventory,
-        source_materialization=materialization,
-    )
-
-    assert type(result) is model.SourceBoundRouteAuthorityAccepted
-    assert result.authority.covered_claim_ids == (claim.claim_id,)
+def test_source_kernel_rejects_logical_catalog_row_as_physical_proof_source() -> None:
+    """Only anchorless function-exit rows may carry a LogicalBlockRef."""
+    with pytest.raises(
+        ValueError, match="unique binding does not match its block observation",
+    ):
+        _logical_source_binding_fixture()
 
 
-def test_source_kernel_rejects_logical_catalog_origins_foreign_to_proof() -> None:
-    """A logical ref cannot claim a proof identity from different origins."""
-    proposal, inventory, materialization, claim = _logical_source_binding_fixture(
-        foreign_origins=True,
-    )
-
-    result = bind.bind_source_route_authority(
-        proposal=proposal,
-        source_inventory=inventory,
-        source_materialization=materialization,
-    )
-
-    assert type(result) is model.SourceBoundRouteAuthorityRejected
-    assert result.failures[0].stage is model.RouteRealizationFailureStage.CLAIM_COVERAGE
-    assert result.failures[0].claim_id == claim.claim_id
+def test_source_kernel_rejects_foreign_logical_catalog_origins_before_binding() -> None:
+    """A physical source cannot be relabeled as any logical endpoint variant."""
+    with pytest.raises(
+        ValueError, match="unique binding does not match its block observation",
+    ):
+        _logical_source_binding_fixture(foreign_origins=True)
 
 
 def test_source_kernel_joins_destinations_by_identity_not_proof_order() -> None:
@@ -7199,11 +7501,9 @@ def test_source_kernel_joins_destinations_by_identity_not_proof_order() -> None:
         for destination in proof.destinations
     )
     locator_destinations = tuple(
-        (ref.identity, anchor_ea)
-        for ref, anchor_ea in zip(
-            locator.destination_refs,
-            locator.destination_anchor_eas,
-        )
+        (member.block_ref.identity, member.anchor_ea)
+        for member in locator.destination_locators
+        if type(member) is model.BlockSubjectLocator
     )
     assert proof_destinations != locator_destinations
 
@@ -7229,10 +7529,11 @@ def test_source_kernel_rejects_claim_member_with_foreign_proof_identity() -> Non
         claim,
         source_ref=foreign.block_ref,
         source_anchor_ea=foreign.anchor_ea,
-        destination_pairs=tuple(zip(
-            locator.destination_refs,
-            locator.destination_anchor_eas,
-        )),
+        destination_pairs=tuple(
+            (member.block_ref, member.anchor_ea)
+            for member in locator.destination_locators
+            if type(member) is model.BlockSubjectLocator
+        ),
     )
     rebound = replace(proposal, claims=(forged,))
 
@@ -7289,6 +7590,7 @@ def _real_projected_branch_fixture(
     extra_step: bool = False,
     plan_target: int = 3,
     old_target_serial: int | None = None,
+    retained_prefix_sibling_rewrite: bool = False,
 ):
     """Build one public-kernel branch realization around the exact fixture."""
 
@@ -7303,6 +7605,9 @@ def _real_projected_branch_fixture(
     )
     source, base, _exclusion, refs = exact_fixture()
     proof = base.route_evidence.route_proofs[0]
+    if retained_prefix_sibling_rewrite:
+        assert direct_route and step_shape == "goto"
+        assert old_target_serial is None and plan_target == 3
     if direct_route:
         source_blocks = dict(source.blocks)
         direct_old_serial = 1 if old_target_serial is None else old_target_serial
@@ -7373,6 +7678,10 @@ def _real_projected_branch_fixture(
         if extra_source_predecessor:
             source_blocks[4] = _one_way_goto(source_blocks[4], 1, preds=())
             source_blocks[1] = replace(source_blocks[1], preds=(0, 4))
+        if retained_prefix_sibling_rewrite:
+            source_blocks[1] = _one_way_goto(source_blocks[1], 2, preds=(0,))
+            source_blocks[2] = replace(source_blocks[2], preds=(1,))
+            source_blocks[3] = replace(source_blocks[3], preds=())
         source = FlowGraph(source_blocks, source.entry_serial, source.func_ea)
     if direct_route:
         state_write = proof.state_write
@@ -7391,6 +7700,14 @@ def _real_projected_branch_fixture(
                     (0,),
                     (),
                     "native-bound:direct-state-assignment",
+                    physical_state_write=route_model.SemanticPhysicalStateWriteWitness(
+                        route_model._instruction_projection(
+                            source.blocks[0].insn_snapshots[0],
+                        ),
+                        state_write.state_variable,
+                        4,
+                        7,
+                    ),
                 ),
             ),
             route_model.CanonicalSemanticEvidenceProductionContext(
@@ -7429,13 +7746,16 @@ def _real_projected_branch_fixture(
         "goto": PatchRedirectGoto,
         "bypass": PatchBypassDispatcherTrampoline,
     }[step_shape]
-    step_source = 0 if direct_route else 1
+    step_source = 1 if retained_prefix_sibling_rewrite else 0 if direct_route else 1
     step_old = (
-        old_target_serial if old_target_serial is not None
+        2 if retained_prefix_sibling_rewrite else old_target_serial if old_target_serial is not None
         else (1 if direct_route else 2)
     )
     primary_step = step_type(refs[step_source], refs[step_old], refs[plan_target])
-    steps = (primary_step,)
+    steps = (
+        PatchRedirectGoto(refs[0], refs[1], refs[3]),
+        primary_step,
+    ) if retained_prefix_sibling_rewrite else (primary_step,)
     if extra_step:
         steps = (
             PatchRedirectGoto(refs[1], refs[1], refs[3]),
@@ -7477,7 +7797,7 @@ def _real_projected_branch_fixture(
     assert type(authority) is model.SourceBoundRouteAuthorityAccepted
 
     blocks = dict(source.blocks)
-    route_source_serial = 0 if direct_route else 1
+    route_source_serial = 1 if retained_prefix_sibling_rewrite else 0 if direct_route else 1
     route_old_serial = (
         old_target_serial if old_target_serial is not None
         else (1 if direct_route else 2)
@@ -7530,6 +7850,11 @@ def _real_projected_branch_fixture(
                 if projected_reciprocal else ()
             ),
         )
+        if retained_prefix_sibling_rewrite:
+            blocks[0] = _one_way_goto(blocks[0], 3, preds=())
+            blocks[1] = _one_way_goto(blocks[1], 3, preds=())
+            blocks[2] = replace(blocks[2], preds=())
+            blocks[3] = replace(blocks[3], preds=(0, 1))
         if bypass_topology:
             if projected_trampoline_successor is None:
                 blocks[route_old_serial] = replace(
@@ -7644,12 +7969,7 @@ def _claim_anchored_refs(claim):
     return tuple(sorted(
         {
             model.AnchoredBlockRef(locator.source_ref, locator.source_anchor_ea),
-            *(
-                model.AnchoredBlockRef(ref, anchor)
-                for ref, anchor in zip(
-                    locator.destination_refs, locator.destination_anchor_eas,
-                )
-            ),
+            *_native_route_destination_anchors(locator),
         },
         key=bind.canonical_bytes,
     ))
@@ -7712,12 +8032,7 @@ def test_projected_missing_step_fact_reports_exact_claim_coordinates() -> None:
     expected_anchors = tuple(sorted(
         {
             model.AnchoredBlockRef(locator.source_ref, locator.source_anchor_ea),
-            *(
-                model.AnchoredBlockRef(ref, anchor)
-                for ref, anchor in zip(
-                    locator.destination_refs, locator.destination_anchor_eas,
-                )
-            ),
+            *_native_route_destination_anchors(locator),
         },
         key=bind.canonical_bytes,
     ))
@@ -7868,6 +8183,90 @@ def test_projected_goto_accepts_exact_direct_proof_without_rebinding_source(monk
     assert row.new_target_ref is refs[3]
     assert row.proof_id == proof.proof_id
     assert row.claim_id == claim.claim_id
+
+
+def test_projected_goto_prefers_proof_source_rewrite_over_retained_prefix_sibling() -> None:
+    """A plan-closed source rewrite outranks its now-detached prefix delivery."""
+    authority, plan, source_inventory, projected_inventory, facts, attempt, claim, proof, refs = (
+        _real_projected_branch_fixture(
+            step_shape="goto",
+            direct_route=True,
+            retained_prefix_sibling_rewrite=True,
+        )
+    )
+    from d810.transforms.unflatten_authority.proposal import (
+        canonical_patch_step_descriptors,
+    )
+
+    descriptors = canonical_patch_step_descriptors(plan)
+    facts = tuple(
+        model.PatchStepEvidencePayload(
+            plan.plan_id,
+            descriptor.step_index,
+            descriptor.step_type,
+            owner_ref,
+            descriptor.step_digest,
+            descriptor.host_ea,
+            descriptor.host_opcode,
+            None,
+            dict(descriptor.new_block_spec_digests).get(owner_ref),
+        )
+        for descriptor in descriptors
+        for owner_ref in descriptor.owner_refs
+    )
+    selected = bind._select_lineage_fact_group(
+        bind._index_lineage_fact_groups(plan, facts),
+        plan=plan,
+        claim=claim,
+        proof=proof,
+        source_inventory=source_inventory,
+    )
+    assert selected.descriptor.step_index == 0
+    assert selected.descriptor.route_refs == (refs[0], refs[1], refs[3])
+
+
+def test_projected_goto_does_not_prefer_wrong_target_prefix_sibling() -> None:
+    """Only the proof's exact destination may supersede retained-prefix binding."""
+    from d810.transforms.plan import PatchRedirectGoto
+    from d810.transforms.unflatten_authority.proposal import (
+        canonical_patch_step_descriptors,
+    )
+
+    authority, plan, source_inventory, _projected_inventory, _facts, _attempt, claim, proof, refs = (
+        _real_projected_branch_fixture(
+            step_shape="goto",
+            direct_route=True,
+            retained_prefix_sibling_rewrite=True,
+        )
+    )
+    wrong_target_plan = replace(
+        plan,
+        steps=(PatchRedirectGoto(refs[0], refs[1], refs[4]), plan.steps[1]),
+    )
+    descriptors = canonical_patch_step_descriptors(wrong_target_plan)
+    facts = tuple(
+        model.PatchStepEvidencePayload(
+            wrong_target_plan.plan_id,
+            descriptor.step_index,
+            descriptor.step_type,
+            owner_ref,
+            descriptor.step_digest,
+            descriptor.host_ea,
+            descriptor.host_opcode,
+            None,
+            dict(descriptor.new_block_spec_digests).get(owner_ref),
+        )
+        for descriptor in descriptors
+        for owner_ref in descriptor.owner_refs
+    )
+    selected = bind._select_lineage_fact_group(
+        bind._index_lineage_fact_groups(wrong_target_plan, facts),
+        plan=wrong_target_plan,
+        claim=claim,
+        proof=proof,
+        source_inventory=source_inventory,
+    )
+    assert selected.descriptor.step_index == 1
 
 
 def test_projected_bypass_accepts_exact_trampoline_lineage_without_rebinding_source(monkeypatch) -> None:
@@ -8087,12 +8486,7 @@ def test_projected_rejects_ambiguous_owning_descriptor() -> None:
     expected_anchors = tuple(sorted(
         {
             model.AnchoredBlockRef(locator.source_ref, locator.source_anchor_ea),
-            *(
-                model.AnchoredBlockRef(ref, anchor)
-                for ref, anchor in zip(
-                    locator.destination_refs, locator.destination_anchor_eas,
-                )
-            ),
+            *_native_route_destination_anchors(locator),
         },
         key=bind.canonical_bytes,
     ))
@@ -8154,6 +8548,120 @@ def _physical_native_anchor_fixture(
         locator=locator,
     )
     return catalog, ref, subject
+
+
+def test_projected_logical_function_exit_subject_is_missing_without_endpoint() -> None:
+    """Projected absence is MISSING; it is never rebound to another row."""
+    from .test_transaction_api import _logical_dag_source_bind_case
+
+    _source, _plan, proposal, inventory, _materialization, _endpoint = (
+        _logical_dag_source_bind_case()
+    )
+    subject = next(
+        item for item in inventory.subjects
+        if type(item.locator) is model.LogicalFunctionExitSubjectLocator
+    )
+    (binding,) = bind.bind_projected_subjects(
+        (subject,),
+        catalog=proposal.source_identity_catalog,
+        phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        graph_fingerprint=authority_id("missing-logical-project"),
+        generation=proposal.source_identity_catalog.generation,
+        serial_by_ref={},
+        native_instruction_eas_by_ref={},
+    )
+
+    assert binding.status is model.SubjectBindingStatus.MISSING
+    assert binding.block_ref is None
+
+
+def test_projected_logical_function_exit_subject_rejects_serial_drift() -> None:
+    """A retained logical ref must retain the serial sealed by its locator."""
+    from .test_transaction_api import _logical_dag_source_bind_case
+
+    _source, _plan, proposal, inventory, _materialization, _endpoint = (
+        _logical_dag_source_bind_case()
+    )
+    subject = next(
+        item for item in inventory.subjects
+        if type(item.locator) is model.LogicalFunctionExitSubjectLocator
+    )
+    with pytest.raises(ValueError, match="logical function-exit coordinate is not exact"):
+        bind.bind_projected_subjects(
+            (subject,),
+            catalog=proposal.source_identity_catalog,
+            phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+            graph_fingerprint=authority_id("drifted-logical-project"),
+            generation=proposal.source_identity_catalog.generation,
+            serial_by_ref={subject.locator.block_ref: subject.locator.serial + 1},
+            native_instruction_eas_by_ref={subject.locator.block_ref: ()},
+        )
+
+
+def test_route_native_destination_selection_uses_proof_identity_not_logical_member_order() -> None:
+    """A logical DAG leaf closes the claim but cannot become the redirect target."""
+    from .test_transaction_api import _logical_dag_source_bind_case
+
+    _source, _plan, proposal, _inventory, _materialization, _endpoint = (
+        _logical_dag_source_bind_case()
+    )
+    claim = next(
+        item for item in proposal.claims
+        if type(item) is model.EquivalentSemanticRouteClaim
+    )
+    proof = next(
+        item for item in proposal.route_evidence.route_proofs
+        if item.proof_id == claim.route_proof_ids[0]
+    )
+
+    selected = bind._native_route_destination_subject_for_proof_destination(
+        claim=claim,
+        proof_destination=proof.destinations[0],
+        catalog=proposal.source_identity_catalog,
+    )
+
+    assert type(selected.locator) is model.BlockSubjectLocator
+    assert selected.block_ref == next(
+        ref for ref, serial in _plan.source_coordinates if serial == 4
+    )
+    assert selected in claim.destination_subjects
+    assert all(
+        type(subject.locator) is model.BlockSubjectLocator
+        for subject in claim.destination_subjects
+    )
+    assert any(
+        subject.role is model.SemanticSubjectRole.SEMANTIC_DAG_ENDPOINT
+        and type(subject.locator) is model.LogicalFunctionExitSubjectLocator
+        for subject in claim.dag_endpoint_subjects
+    )
+
+
+def test_route_native_destination_selection_rejects_target_identity_not_in_claim() -> None:
+    """A redirect target must be the proof-selected native destination."""
+    from .test_transaction_api import _logical_dag_source_bind_case
+
+    _source, _plan, proposal, _inventory, _materialization, _endpoint = (
+        _logical_dag_source_bind_case()
+    )
+    claim = next(
+        item for item in proposal.claims
+        if type(item) is model.EquivalentSemanticRouteClaim
+    )
+    proof = next(
+        item for item in proposal.route_evidence.route_proofs
+        if item.proof_id == claim.route_proof_ids[0]
+    )
+
+    with pytest.raises(ValueError, match="native destination"):
+        bind._native_route_destination_subject_for_proof_destination(
+            claim=claim,
+            proof_destination=replace(
+                proof.destinations[0],
+                target_identity=proof.source_identity,
+                target_anchor_ea=proof.source_anchor_ea,
+            ),
+            catalog=proposal.source_identity_catalog,
+        )
 
 
 def test_projected_serials_match_shared_anchor_catalog_witnesses_by_native_origins() -> None:
@@ -8413,8 +8921,7 @@ def _terminal_cycle_fixture():
             atomic_group_id,
             route_source_ref,
             0x1400,
-            (block_ref("b2"),),
-            (0x1100,),
+            (model.BlockSubjectLocator(block_ref("b2"), 0x1100),),
         ),
     )
     route_source_subject = _subject_factory(
@@ -8446,6 +8953,39 @@ def _terminal_cycle_fixture():
     )
     values["claims"] = (equivalent_route, claim)
     return model.ProposedUnflattenContract(**values), claim
+
+
+def test_terminal_cycle_subjects_admit_exact_claim_owned_logical_exit() -> None:
+    proposal, native_claim = _terminal_cycle_fixture()
+    logical_ref = LogicalBlockRef("terminal-cycle-test", "logical-exit", 1)
+    terminal_subject = _subject_factory(
+        model.SemanticSubjectRef,
+        kind=model.SemanticSubjectKind.TERMINAL,
+        role=model.SemanticSubjectRole.TERMINAL_SITE,
+        block_ref=logical_ref,
+        anchor_ea=None,
+        locator=model.LogicalFunctionExitSubjectLocator(logical_ref, 9),
+    )
+    logical_claim = _claim_factory(
+        model.TerminalCycleBreakClaim,
+        model.UnflattenClaimKind.TERMINAL_CYCLE_BREAK,
+        native_claim.cycle_subject,
+        native_claim.cleanup_source_subject,
+        terminal_subject,
+        native_claim.terminal_route_proof_ids,
+        native_claim.source_generation,
+    )
+    proposal = replace(
+        proposal,
+        claims=tuple(
+            logical_claim if item is native_claim else item
+            for item in proposal.claims
+        ),
+    )
+
+    subjects = bind.terminal_cycle_binding_subjects(proposal, logical_claim)
+
+    assert terminal_subject in subjects
 
 
 def _rewire_inventory(inventory, successors, *, generation=3, entry_serial=None, phase=None):
@@ -8678,7 +9218,20 @@ def _retirement_inventories(
     from d810.transforms.unflatten_authority import transaction_api
 
     source, plan, projected, _gates = _full_corridor_fixture()
-    proposal = plan.unflatten_proposal
+    proposal = replace(
+        plan.unflatten_proposal,
+        claims=tuple(
+            item for item in plan.unflatten_proposal.claims
+            # The inventory builder now validates a closed proposal before it
+            # derives either phase inventory.  This fixture is specifically a
+            # retirement fixture, so retain the typed retirement claim rather
+            # than constructing an invalid zero-claim intermediate proposal.
+            if type(item) in {
+                model.EquivalentSemanticRouteClaim,
+                model.RetiredDispatcherInfrastructureClaim,
+            }
+        ),
+    )
     source_inventory = transaction_api._build_semantic_graph_inventory(
         source, proposal, plan, source=True,
         phase=model.UnflattenAuthorityPhase.PRODUCER_FORECAST,
@@ -8832,11 +9385,19 @@ def _corridor_inventories(*, candidate_full=False, disposition=None, enumeration
         0x1000, proposal_values["source_identity_catalog"].native_key, 3,
         refs[0], 0x1000, (path,), covered, residual, enumeration_complete, (), (), (),
     ))
-    proposal_values["corridor_coverage_forecast"] = model.CorridorCoverageForecast(
+    forecast = model.CorridorCoverageForecast(
         forecast_id, proposal_values["plan_id"], 0x1000,
         proposal_values["source_identity_catalog"].native_key, 3, refs[0],
         0x1000, (path,), covered, residual, enumeration_complete, (), (), (),
     )
+    # Build the graph inventories before attaching the forecast.  The generic
+    # evaluator helper's old forecast branch represented an unreachable
+    # dispatcher by deleting its physical block, which is no longer a valid
+    # authority inventory.  Modern fixtures keep the dispatcher block and
+    # represent reachability through the exact entry/successor closure.
+    proposal_values["corridor_coverage_forecast"] = None
+    inventory_proposal = model.ProposedUnflattenContract(**proposal_values)
+    proposal_values["corridor_coverage_forecast"] = forecast
     proposal = model.ProposedUnflattenContract(**proposal_values)
     source_subjects = tuple(
         _role_subject(role, token)
@@ -8846,26 +9407,51 @@ def _corridor_inventories(*, candidate_full=False, disposition=None, enumeration
             (model.SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE, "2"),
         )
     )
-    if candidate_full:
-        candidate_subjects = source_subjects
-    elif candidate_subject_tokens is None:
-        candidate_subjects = source_subjects[1:]
-    else:
-        candidate_subjects = tuple(
-            _role_subject(model.SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE, token)
-            for token in candidate_subject_tokens
-        )
     inputs = _complete_inputs(
         source_subjects=source_subjects,
-        candidate_subjects=candidate_subjects,
-        proposal=proposal,
+        candidate_subjects=source_subjects,
+        proposal=inventory_proposal,
     )
     source = inputs.source_inventory
-    candidate = inputs.candidate_inventory
-    if candidate_full:
-        candidate = _inventory_rephase(
-            source, phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
-            fingerprint=authority_id("candidate-full"), generation=4,
+
+    def close_coordinates(inventory, *, entry_serial, reachable, function_ea):
+        digest = semantic_graph_inventory_digest(
+            inventory.phase, inventory.graph_fingerprint, inventory.generation,
+            inventory.blocks, inventory.subjects, inventory.bindings,
+            inventory.effects, inventory.terminals, inventory.topology,
+            reachable, entry_serial, inventory.source_subject_ids, function_ea,
+        )
+        return replace(
+            inventory, entry_serial=entry_serial,
+            reachable_serials=reachable, function_ea=function_ea,
+            inventory_digest=digest,
+        )
+
+    source = close_coordinates(
+        source, entry_serial=0, reachable=(0, 1, 2), function_ea=0x1000,
+    )
+    source = _inventory_with_edges(
+        source,
+        {0: (1,), 1: (2,), 2: (0,)},
+        {0: (2,), 1: (0,), 2: (1,)},
+    )
+    candidate = _inventory_rephase(
+        source, phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        fingerprint=authority_id(
+            "candidate-full" if candidate_full else "candidate-missing"
+        ), generation=4,
+    )
+    if not candidate_full:
+        # Enter at the first non-dispatcher corridor node.  The dispatcher
+        # remains an exact physical coordinate but is outside the candidate
+        # semantic-root closure, which is the condition these tests classify.
+        candidate = _inventory_with_edges(
+            candidate,
+            {0: (1,), 1: (2,), 2: ()},
+            {0: (), 1: (0,), 2: (1,)},
+        )
+        candidate = close_coordinates(
+            candidate, entry_serial=1, reachable=(1, 2), function_ea=0x1000,
         )
     return proposal, source, candidate
 
@@ -8889,14 +9475,17 @@ def _inventory_rephase(inventory, *, phase, fingerprint, generation):
     )
 
 
-def _inventory_with_edges(inventory, successors, predecessors):
+def _inventory_with_edges(
+    inventory, successors, predecessors, *, block_overrides=None,
+):
     """Rebuild a closed inventory after an explicit topology mutation."""
 
     from dataclasses import replace
 
+    overrides = {} if block_overrides is None else block_overrides
     blocks = tuple(
         replace(
-            block,
+            overrides.get(block.serial, block),
             successor_serials=tuple(sorted(successors.get(block.serial, block.successor_serials))),
             predecessor_serials=tuple(sorted(predecessors.get(block.serial, block.predecessor_serials))),
         )
@@ -8930,16 +9519,9 @@ def _inventory_with_edges(inventory, successors, predecessors):
             item.source_transfer_ea if item.source_transfer_ea is not None else -1,
         ),
     ))
-    closure = set()
-    pending = [inventory.entry_serial]
-    by_serial = {block.serial: block for block in blocks}
-    while pending:
-        serial = pending.pop()
-        if serial in closure:
-            continue
-        closure.add(serial)
-        pending.extend(by_serial[serial].successor_serials)
-    reachable_serials = tuple(sorted(closure))
+    reachable_serials = _inventory_reachable_serials(
+        inventory, blocks=blocks, subjects=inventory.subjects,
+    )
     digest = semantic_graph_inventory_digest(
         inventory.phase, inventory.graph_fingerprint, inventory.generation,
         blocks, inventory.subjects, inventory.bindings, inventory.effects,
@@ -8951,6 +9533,81 @@ def _inventory_with_edges(inventory, successors, predecessors):
         inventory, blocks=blocks, topology=topology,
         reachable_serials=reachable_serials, inventory_digest=digest,
     )
+
+
+def _inventory_reachable_serials(inventory, *, blocks, subjects):
+    """Return the authoritative physical plus typed semantic-root closure."""
+
+    by_serial = {block.serial: block for block in blocks}
+    serial_by_ref = {
+        block.block_ref: block.serial for block in blocks
+        if block.block_ref is not None
+    }
+    dispatcher_serials = {
+        serial_by_ref[subject.block_ref]
+        for subject in subjects
+        if subject.role is model.SemanticSubjectRole.DISPATCHER_ENTRY
+        and subject.block_ref in serial_by_ref
+    }
+    dispatcher_serial = (
+        next(iter(dispatcher_serials)) if len(dispatcher_serials) == 1 else None
+    )
+    component_refs = {
+        subject.block_ref for subject in subjects
+        if subject.role is model.SemanticSubjectRole.DETACHED_DEAD_HANDLER_COMPONENT
+    }
+    handler_refs = {
+        subject.block_ref for subject in subjects
+        if subject.role is model.SemanticSubjectRole.AUTHORITATIVE_HANDLER
+    }
+    detached_handler_refs = (
+        component_refs & handler_refs
+        if inventory.phase is not model.UnflattenAuthorityPhase.PRODUCER_FORECAST
+        else set()
+    )
+    semantic_roots = {
+        serial_by_ref[subject.block_ref]
+        for subject in subjects
+        if subject.block_ref in serial_by_ref
+        and subject.block_ref not in detached_handler_refs
+        and (
+            (
+                subject.role is model.SemanticSubjectRole.AUTHORITATIVE_HANDLER
+                and type(subject.locator) is model.HandlerSubjectLocator
+            )
+            or (
+                subject.role in {
+                    model.SemanticSubjectRole.SEMANTIC_ROUTE_SOURCE,
+                    model.SemanticSubjectRole.SEMANTIC_ROUTE_DESTINATION,
+                }
+                and type(subject.locator) is model.BlockSubjectLocator
+            )
+        )
+    }
+    closure = set()
+    pending = [inventory.entry_serial]
+    while pending:
+        serial = pending.pop()
+        if serial in closure:
+            continue
+        closure.add(serial)
+        pending.extend(reversed(by_serial[serial].successor_serials))
+    barrier_active = (
+        inventory.phase is not model.UnflattenAuthorityPhase.PRODUCER_FORECAST
+        and dispatcher_serial is not None
+    )
+    pending = list(sorted(semantic_roots, reverse=True))
+    while pending:
+        serial = pending.pop()
+        if (barrier_active and serial == dispatcher_serial) or serial in closure:
+            continue
+        closure.add(serial)
+        pending.extend(
+            successor
+            for successor in reversed(by_serial[serial].successor_serials)
+            if not barrier_active or successor != dispatcher_serial
+        )
+    return tuple(sorted(closure))
 
 
 def _corridor_forecast_variant(proposal, *, state_merge=None, disposition=None, enumeration_complete=None):
@@ -9136,8 +9793,49 @@ def _detached_inventory(
         ),
         key=lambda item: (item.kind.value, item.owner_serial, item.peer_serial),
     ))
+    canonical_subjects = tuple(sorted(subjects, key=lambda item: item.subject_id))
+    serial_by_ref = {
+        block.block_ref: block.serial
+        for block in blocks
+        if block.block_ref is not None
+    }
+    semantic_roots = {0}
+    detached_candidate_refs = (
+        {
+            subject.block_ref for subject in canonical_subjects
+            if subject.role
+            is model.SemanticSubjectRole.DETACHED_DEAD_HANDLER_COMPONENT
+        }
+        & {
+            subject.block_ref for subject in canonical_subjects
+            if subject.role is model.SemanticSubjectRole.AUTHORITATIVE_HANDLER
+        }
+        if phase is not model.UnflattenAuthorityPhase.PRODUCER_FORECAST
+        else set()
+    )
+    semantic_roots.update(
+        serial_by_ref[subject.block_ref]
+        for subject in canonical_subjects
+        if (
+            (
+                subject.role is model.SemanticSubjectRole.AUTHORITATIVE_HANDLER
+                and type(subject.locator) is model.HandlerSubjectLocator
+            )
+            or (
+                phase is model.UnflattenAuthorityPhase.PRODUCER_FORECAST
+                and
+                subject.role in {
+                    model.SemanticSubjectRole.SEMANTIC_ROUTE_SOURCE,
+                    model.SemanticSubjectRole.SEMANTIC_ROUTE_DESTINATION,
+                }
+                and type(subject.locator) is model.BlockSubjectLocator
+            )
+        )
+        and subject.block_ref in serial_by_ref
+        and subject.block_ref not in detached_candidate_refs
+    )
     reachable = set()
-    pending = [0]
+    pending = list(semantic_roots)
     while pending:
         serial = pending.pop()
         if serial in reachable:
@@ -9145,7 +9843,6 @@ def _detached_inventory(
         reachable.add(serial)
         pending.extend(successors[serial])
     reachable_serials = tuple(sorted(reachable))
-    canonical_subjects = tuple(sorted(subjects, key=lambda item: item.subject_id))
     digest = semantic_graph_inventory_digest(
         phase, fingerprint, generation, blocks, canonical_subjects, bindings,
         effects, terminals, topology, reachable_serials, 0,
@@ -9797,13 +10494,22 @@ def test_observed_native_origin_subset_retains_physical_witness_anchor_only() ->
     )
     assert accepted[0].native_instruction_eas == (0x1010,)
 
+    projected = bind.bind_projected_subjects(
+        (subject,), catalog=catalog,
+        phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        graph_fingerprint=authority_id("physical-anchor-projected-subset"),
+        generation=catalog.generation, serial_by_ref=serials,
+        native_instruction_eas_by_ref={ref: (0x1010,)},
+    )
+    assert projected[0].native_instruction_eas == (0x1010,)
+
     instruction_catalog, instruction_ref, instruction_subject = (
         _physical_native_anchor_fixture(
             anchor_ea=0x1010,
             exact_instruction_eas=(0x1010, 0x1014),
         )
     )
-    with pytest.raises(ValueError, match="native instruction origins"):
+    with pytest.raises(ValueError, match="native identity instruction EAs") as error:
         bind.bind_projected_subjects(
             (instruction_subject,), catalog=instruction_catalog,
             phase=model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY,
@@ -9812,6 +10518,9 @@ def test_observed_native_origin_subset_retains_physical_witness_anchor_only() ->
             serial_by_ref={instruction_ref: 8},
             native_instruction_eas_by_ref={instruction_ref: (0x1014,)},
         )
+    message = str(error.value)
+    assert "blk8@0x1010 supplied=(0x1014) expected=(0x1010, 0x1014)" in message
+    assert "NativeBlockRef(" not in message
 
 
 def test_source_effect_is_unique_but_projected_effect_is_exactly_missing() -> None:
@@ -10850,6 +11559,84 @@ def test_bind_corridor_coverage_forecast_direct_inventory_matrix() -> None:
     assert full.drifted_path_ids == proposal.corridor_coverage_forecast.covered_path_ids
 
 
+def test_bind_corridor_unreachable_dispatcher_covers_isolated_structural_residue() -> None:
+    """A disconnected corridor is covered even if its physical nodes remain."""
+
+    from dataclasses import replace
+
+    proposal, source, candidate = _corridor_inventories(candidate_full=True)
+    entry_ref = block_ref("isolated-entry")
+    entry = replace(
+        candidate.blocks[0],
+        serial=3,
+        block_ref=entry_ref,
+        anchor_ea=0x1400,
+        graph_start_ea=0x1400,
+        successor_serials=(),
+        predecessor_serials=(),
+        native_instruction_eas=(),
+        instruction_observations=(),
+        transfer_ea=None,
+        tail_opcode=None,
+        raw_tail_opcode=None,
+        tail_kind=None,
+    )
+    blocks = tuple(sorted((*candidate.blocks, entry), key=lambda row: row.serial))
+    subjects = tuple(
+        subject for subject in candidate.subjects
+        if subject.role not in {
+            model.SemanticSubjectRole.AUTHORITATIVE_HANDLER,
+            model.SemanticSubjectRole.SEMANTIC_ROUTE_SOURCE,
+            model.SemanticSubjectRole.SEMANTIC_ROUTE_DESTINATION,
+        }
+    )
+    subject_ids = {subject.subject_id for subject in subjects}
+    bindings = tuple(
+        binding for binding in candidate.bindings
+        if binding.subject.subject_id in subject_ids
+    )
+    source_subject_ids = tuple(
+        item for item in candidate.source_subject_ids if item in subject_ids
+    )
+    reachable = (3,)
+    isolated = replace(
+        candidate,
+        blocks=blocks,
+        subjects=subjects,
+        bindings=bindings,
+        reachable_serials=reachable,
+        entry_serial=3,
+        inventory_digest=semantic_graph_inventory_digest(
+            candidate.phase,
+            candidate.graph_fingerprint,
+            candidate.generation,
+            blocks,
+            subjects,
+            bindings,
+            candidate.effects,
+            candidate.terminals,
+            candidate.topology,
+            reachable,
+            3,
+            source_subject_ids,
+            candidate.function_ea,
+        ),
+        source_subject_ids=source_subject_ids,
+    )
+    model.validate_semantic_graph_inventory(isolated)
+
+    result = bind.bind_corridor_coverage_forecast(
+        proposal=proposal,
+        source_inventory=source,
+        candidate_inventory=isolated,
+        phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+    )
+
+    assert result.candidate_dispatcher_reachable is False
+    assert result.covered_path_ids == proposal.corridor_coverage_forecast.covered_path_ids
+    assert result.drifted_path_ids == ()
+
+
 def test_bind_corridor_forecast_requires_reachable_source_and_nonempty_path_domain() -> None:
     from dataclasses import replace
 
@@ -11303,7 +12090,7 @@ def test_bind_corridor_semantic_exclusion_emits_exact_route_correlation() -> Non
     route_locator = model.RouteSubjectLocator(
         proof.proof_id, proof.atomic_group_id,
         base.nodes[0].block_ref, base.nodes[0].anchor_ea,
-        (base.nodes[1].block_ref,), (base.nodes[1].anchor_ea,),
+        (model.BlockSubjectLocator(base.nodes[1].block_ref, base.nodes[1].anchor_ea),),
     )
     route_subject = _subject_factory(
         model.SemanticSubjectRef,
@@ -11385,7 +12172,868 @@ def test_bind_corridor_semantic_exclusion_emits_exact_route_correlation() -> Non
     assert correlation.ordered_prefix == path.nodes
 
 
-def _two_proof_shared_target_case():
+def test_default_gap_projected_binder_is_public() -> None:
+    """The v2 default-gap authority is bound by the transaction binder."""
+    assert callable(bind.bind_default_gap_infeasibility_forecast)
+
+
+def test_default_gap_projected_binder_rejects_legacy_corridor_forecast() -> None:
+    """The v2 binder cannot silently treat an ordinary residual as allowed."""
+    proposal, source, candidate = _corridor_inventories(
+        disposition=model.CorridorPathDisposition.RESIDUAL,
+        candidate_full=True,
+    )
+    with pytest.raises(TypeError, match="DefaultGapInfeasibilityForecast"):
+        bind.bind_default_gap_infeasibility_forecast(
+            proposal=proposal, source_inventory=source,
+            candidate_inventory=candidate,
+            phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+            source_authority=object(),
+        )
+
+
+def _default_gap_bound_projected_case(
+    *, candidate_dispatcher_reachable=True, include_graph: bool = False,
+):
+    """A source-bound route with one unreachable, control-only default loop."""
+    from d810.ir.flowgraph import FlowGraph
+    from d810.transforms.graph_modification import RedirectGoto
+    from tests.typed_patch_authority import compile_patch_plan
+
+    source, evidence, witness, refs = exact_fixture(
+        discarded_effect_kind="store", producer_inputs_only=True,
+    )
+    blocks = dict(source.blocks)
+    blocks[1] = replace(blocks[1], preds=(0, 3))
+    residual_goto = replace(
+        blocks[0].insn_snapshots[1], ea=0x4000,
+        l=MopSnapshot(kind=OperandKind.BLOCK, block_ref=1),
+    )
+    blocks[3] = replace(
+        blocks[3], succs=(1,), preds=(1,), kind=BlockKind.ONE_WAY,
+        tail_kind=InsnKind.GOTO, tail_opcode=residual_goto.opcode,
+        raw_tail_opcode=residual_goto.raw_opcode,
+        insn_snapshots=(residual_goto,),
+    )
+    handler_goto = replace(
+        blocks[0].insn_snapshots[1], ea=0x3000,
+        l=MopSnapshot(kind=OperandKind.BLOCK, block_ref=4),
+    )
+    blocks[2] = replace(
+        blocks[2], succs=(4,), kind=BlockKind.ONE_WAY,
+        tail_kind=InsnKind.GOTO, tail_opcode=handler_goto.opcode,
+        raw_tail_opcode=handler_goto.raw_opcode,
+        insn_snapshots=(handler_goto,),
+    )
+    blocks[4] = replace(blocks[4], preds=(2,))
+    source = FlowGraph(blocks, source.entry_serial, source.func_ea)
+    proposal = producer_api.build_proposal(
+        plan_id=authority_id("default-gap-plan"), source=source,
+        block_refs_by_serial=refs, source_generation=1,
+        canonical_route_evidence=evidence,
+        selected_route_proof_ids=(evidence.route_proofs[0].proof_id,),
+        exact_state_effect_exclusions=(), dispatcher_entry_serial=1,
+        dispatcher_member_serials=(0, 1, 3),
+        authoritative_handler_serials=(2,),
+        state_identity=evidence.route_proofs[0].state_write.state_variable,
+        use_def_witness=witness,
+    )
+    plan = compile_patch_plan(
+        [RedirectGoto(0, 1, 2)], source, plan_id=proposal.plan_id,
+        source_generation=1, block_refs_by_serial=refs,
+    )
+    plan = replace(
+        plan,
+        source_coordinates=tuple((refs[serial], serial) for serial in sorted(refs)),
+        unflatten_proposal=proposal,
+    )
+    dispatcher = model.CorridorCoveragePathNode(refs[1], 0x2000)
+    default_entry = model.CorridorCoveragePathNode(refs[3], 0x4000)
+    residual = default_entry
+    path_nodes = (residual, dispatcher)
+    base_path_id = authority_id((
+        "unflatten.corridor-coverage-path.v1", path_nodes, None,
+        model.CorridorPathDisposition.RESIDUAL, (),
+    ))
+    base_path = model.CorridorCoveragePath(
+        base_path_id, path_nodes, None, model.CorridorPathDisposition.RESIDUAL, (),
+    )
+    base_id = authority_id((
+        "unflatten.corridor-coverage-forecast.v1", proposal.plan_id,
+        source.func_ea, proposal.source_identity_catalog.native_key, 1,
+        refs[1], 0x2000, (base_path,), (), (base_path_id,), True, (), (), (),
+    ))
+    base = model.CorridorCoverageForecast(
+        base_id, proposal.plan_id, source.func_ea,
+        proposal.source_identity_catalog.native_key, 1, refs[1], 0x2000,
+        (base_path,), (), (base_path_id,), True, (), (), (),
+    )
+    proof = proposal.route_evidence.route_proofs[0]
+    seed = model.DefaultGapInitialStateSeed(7, proof.proof_id)
+    exclusion_content = (
+        "unflatten.default-gap-infeasibility-exclusion.v2", 4,
+        proposal.plan_inputs.state_identity, dispatcher, default_entry, residual,
+        (seed,), (proof.proof_id,), (7,),
+    )
+    exclusion = model.DefaultGapInfeasibilityExclusion(
+        authority_id(exclusion_content),
+        authority_id(("unflatten.default-gap-infeasibility-exclusion-digest.v1", exclusion_content)),
+        4, proposal.plan_inputs.state_identity, dispatcher, default_entry,
+        residual, (seed,), (proof.proof_id,), (7,),
+    )
+    path = model.DefaultGapInfeasibilityPath(
+        authority_id(("unflatten.default-gap-infeasibility-path.v1", path_nodes, None, exclusion.exclusion_id)),
+        path_nodes, None, exclusion.exclusion_id,
+    )
+    extension = model.DefaultGapInfeasibilityForecast(
+        authority_id((
+            "unflatten.default-gap-infeasibility-forecast.v1", base, (path,),
+            ((exclusion.exclusion_id, exclusion.digest),), (exclusion,),
+        )),
+        base, (path,), ((exclusion.exclusion_id, exclusion.digest),), (exclusion,),
+    )
+    proposal = replace(proposal, corridor_coverage_forecast=extension)
+    plan = replace(plan, unflatten_proposal=proposal)
+    # Keep this reusable fixture on the same final-plan contract path as the
+    # public transaction facade: the route/default allowance is proposed
+    # before the compiler manifest is sealed, then bound to that exact plan.
+    from d810.transforms.unflatten_authority.proposal import (
+        canonical_redirect_manifest,
+    )
+    manifest = canonical_redirect_manifest(plan)
+    proposal = replace(
+        proposal,
+        use_def_witness=replace(
+            proposal.use_def_witness,
+            redirect_owner_refs=manifest.owner_refs,
+            redirect_digest=manifest.digest,
+        ),
+    )
+    plan = replace(plan, unflatten_proposal=proposal)
+    materialization = route_model.CanonicalRouteMaterialization.capture(
+        source, generation=1, phase=route_model.CanonicalRouteAssessmentPhase.SOURCE,
+    )
+    source_inventory = transaction_api._build_semantic_graph_inventory(
+        source, proposal, plan, source=True,
+        phase=model.UnflattenAuthorityPhase.PRODUCER_FORECAST,
+        materialization=materialization,
+    )
+    authority = bind.bind_source_route_authority(
+        proposal=proposal, source_inventory=source_inventory,
+        source_materialization=materialization,
+    )
+    assert type(authority) is model.SourceBoundRouteAuthorityAccepted
+    candidate_blocks = dict(source.blocks)
+    candidate_blocks.pop(3)
+    if candidate_dispatcher_reachable:
+        selected_goto = replace(
+            candidate_blocks[0].insn_snapshots[1], ea=0x2001,
+            l=MopSnapshot(kind=OperandKind.BLOCK, block_ref=2),
+        )
+        candidate_blocks[1] = replace(
+            candidate_blocks[1], succs=(2,), preds=(0,), kind=BlockKind.ONE_WAY,
+            tail_kind=InsnKind.GOTO, tail_opcode=selected_goto.opcode,
+            raw_tail_opcode=selected_goto.raw_opcode,
+            insn_snapshots=(candidate_blocks[1].insn_snapshots[0], selected_goto),
+        )
+        candidate_blocks[2] = replace(candidate_blocks[2], preds=(1,))
+    else:
+        entry_goto = replace(
+            candidate_blocks[0].insn_snapshots[1],
+            l=MopSnapshot(kind=OperandKind.BLOCK, block_ref=2),
+        )
+        candidate_blocks[0] = replace(
+            candidate_blocks[0], succs=(2,),
+            insn_snapshots=(candidate_blocks[0].insn_snapshots[0], entry_goto),
+        )
+        unreachable_dispatcher_goto = replace(
+            candidate_blocks[0].insn_snapshots[-1],
+            ea=0x2001,
+            l=MopSnapshot(kind=OperandKind.BLOCK, block_ref=2),
+        )
+        candidate_blocks[1] = replace(
+            candidate_blocks[1], succs=(2,), preds=(), kind=BlockKind.ONE_WAY,
+            tail_kind=InsnKind.GOTO,
+            tail_opcode=unreachable_dispatcher_goto.opcode,
+            raw_tail_opcode=unreachable_dispatcher_goto.raw_opcode,
+            insn_snapshots=(
+                candidate_blocks[1].insn_snapshots[0],
+                unreachable_dispatcher_goto,
+            ),
+        )
+        candidate_blocks[2] = replace(candidate_blocks[2], preds=(0, 1))
+    candidate_blocks[4] = replace(candidate_blocks[4], preds=(2,))
+    candidate = transaction_api._build_semantic_graph_inventory(
+        FlowGraph(candidate_blocks, source.entry_serial, source.func_ea), proposal,
+        plan, source=False,
+        phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        materialization=None, source_subjects=source_inventory.subjects,
+    )
+    values = (proposal, source_inventory, candidate, authority.authority)
+    return (*values, source, plan) if include_graph else values
+
+
+def test_bind_default_gap_projected_reclassifies_one_typed_residual() -> None:
+    proposal, source, candidate, authority = _default_gap_bound_projected_case()
+    result = bind.bind_default_gap_infeasibility_forecast(
+        proposal=proposal, source_inventory=source, candidate_inventory=candidate,
+        phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        source_authority=authority,
+    )
+    assert type(result) is model.DefaultGapInfeasibilityPhaseResult
+    assert result.base_result.full is False
+    assert result.base_result.covered_path_ids == (
+        proposal.corridor_coverage_forecast.base_forecast.residual_path_ids[0],
+    )
+    assert len(result.correlations) == 1
+
+
+def test_bind_default_gap_projected_accepts_unreachable_candidate_dispatcher() -> None:
+    proposal, source, candidate, authority = _default_gap_bound_projected_case(
+        candidate_dispatcher_reachable=False,
+    )
+    result = bind.bind_default_gap_infeasibility_forecast(
+        proposal=proposal, source_inventory=source, candidate_inventory=candidate,
+        phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        source_authority=authority,
+    )
+    assert result.base_result.candidate_dispatcher_reachable is False
+    assert result.base_result.residual_path_ids == ()
+    assert result.base_result.drifted_path_ids == ()
+
+
+def test_default_gap_observed_reuses_the_registered_projected_authority() -> None:
+    """Observed closure consumes the one projected result occurrence."""
+    proposal, source, projected_inventory, authority = _default_gap_bound_projected_case()
+    projected = bind.bind_default_gap_infeasibility_forecast(
+        proposal=proposal, source_inventory=source,
+        candidate_inventory=projected_inventory,
+        phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        source_authority=authority,
+    )
+    assert projected is not None
+    observed_inventory = _inventory_rephase(
+        projected_inventory,
+        phase=model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY,
+        fingerprint=authority_id("default-gap-observed"), generation=2,
+    )
+
+    classifier = bind._classify_corridor_coverage_forecast
+    with patch.object(bind, "_classify_corridor_coverage_forecast", wraps=classifier) as replay:
+        observed = bind.revalidate_observed_default_gap_infeasibility(
+            projected_result=projected, proposal=proposal,
+            source_inventory=source, observed_inventory=observed_inventory,
+            source_authority=authority,
+        )
+
+    assert type(observed) is model.DefaultGapInfeasibilityPhaseResult
+    assert observed.phase is model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY
+    assert observed.base_result.residual_path_ids == ()
+    assert observed.correlations[0].route_proof_ids == projected.correlations[0].route_proof_ids
+    assert replay.call_args.kwargs["projected_correlations"] is projected.base_result.semantic_exclusion_correlations
+
+
+def test_default_gap_observed_rejects_reminted_projected_result_and_reachable_residual() -> None:
+    """Equal values and later reachable default arms are not authority."""
+    proposal, source, projected_inventory, authority = _default_gap_bound_projected_case()
+    projected = bind.bind_default_gap_infeasibility_forecast(
+        proposal=proposal, source_inventory=source,
+        candidate_inventory=projected_inventory,
+        phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        source_authority=authority,
+    )
+    assert projected is not None
+    reminted = object.__new__(model.DefaultGapInfeasibilityPhaseResult)
+    for name in model.DefaultGapInfeasibilityPhaseResult.__dataclass_fields__:
+        object.__setattr__(reminted, name, getattr(projected, name))
+    reminted.__post_init__()
+    observed_inventory = _inventory_rephase(
+        projected_inventory,
+        phase=model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY,
+        fingerprint=authority_id("default-gap-observed-remint"), generation=2,
+    )
+    with pytest.raises(ValueError, match="minted by the transaction binder"):
+        bind.revalidate_observed_default_gap_infeasibility(
+            projected_result=reminted, proposal=proposal,
+            source_inventory=source, observed_inventory=observed_inventory,
+            source_authority=authority,
+        )
+
+    reachable_observed = _inventory_rephase(
+        source, phase=model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY,
+        fingerprint=authority_id("default-gap-observed-reachable"), generation=2,
+    )
+    with pytest.raises(ValueError, match="residual remains candidate-reachable"):
+        bind.revalidate_observed_default_gap_infeasibility(
+            projected_result=projected, proposal=proposal,
+            source_inventory=source, observed_inventory=reachable_observed,
+            source_authority=authority,
+        )
+
+
+def test_default_gap_observed_rejects_source_and_projected_correlation_drift() -> None:
+    """The observation phase cannot accept a new source or altered payload."""
+    proposal, source, projected_inventory, authority = _default_gap_bound_projected_case()
+    projected = bind.bind_default_gap_infeasibility_forecast(
+        proposal=proposal, source_inventory=source,
+        candidate_inventory=projected_inventory,
+        phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        source_authority=authority,
+    )
+    assert projected is not None
+    observed_inventory = _inventory_rephase(
+        projected_inventory,
+        phase=model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY,
+        fingerprint=authority_id("default-gap-observed-source-drift"), generation=2,
+    )
+    drifted_source = _inventory_rephase(
+        source, phase=model.UnflattenAuthorityPhase.PRODUCER_FORECAST,
+        fingerprint=authority_id("default-gap-source-drift"), generation=1,
+    )
+    with pytest.raises(ValueError, match="source inventory differs"):
+        bind.revalidate_observed_default_gap_infeasibility(
+            projected_result=projected, proposal=proposal,
+            source_inventory=drifted_source, observed_inventory=observed_inventory,
+            source_authority=authority,
+        )
+
+    object.__setattr__(projected, "correlations", ())
+    with pytest.raises(ValueError, match="correlations"):
+        bind.revalidate_observed_default_gap_infeasibility(
+            projected_result=projected, proposal=proposal,
+            source_inventory=source, observed_inventory=observed_inventory,
+            source_authority=authority,
+        )
+
+
+@pytest.mark.parametrize(
+    ("successors", "predecessors", "match"),
+    (
+        (
+            {0: (1, 3), 1: (3, 2), 2: (4,), 3: (1,), 4: ()},
+            {0: (), 1: (0, 3), 2: (1,), 3: (0, 1), 4: (2,)},
+            "external ingress",
+        ),
+        (
+            {0: (1,), 1: (3, 2), 2: (4,), 3: (4,), 4: ()},
+            {0: (), 1: (0,), 2: (1,), 3: (1,), 4: (2, 3)},
+            "successor escape",
+        ),
+    ),
+    ids=("ingress", "escape"),
+)
+def test_default_gap_observed_rejects_surviving_residual_topology_drift(
+    successors, predecessors, match,
+) -> None:
+    """A surviving default loop must retain its projected closed topology."""
+    proposal, source, projected_inventory, authority = _default_gap_bound_projected_case()
+    projected = bind.bind_default_gap_infeasibility_forecast(
+        proposal=proposal, source_inventory=source,
+        candidate_inventory=projected_inventory,
+        phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        source_authority=authority,
+    )
+    assert projected is not None
+    observed_inventory = _inventory_rephase(
+        _default_gap_source_with_topology(source, successors, predecessors),
+        phase=model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY,
+        fingerprint=authority_id(f"default-gap-observed-{match}"), generation=2,
+    )
+    with pytest.raises(ValueError, match=match):
+        bind.revalidate_observed_default_gap_infeasibility(
+            projected_result=projected, proposal=proposal,
+            source_inventory=source, observed_inventory=observed_inventory,
+            source_authority=authority,
+        )
+
+
+def test_default_gap_observed_rejects_forecast_and_phase_drift() -> None:
+    """The observation consumes the same forecast occurrence and phase."""
+    proposal, source, projected_inventory, authority = _default_gap_bound_projected_case()
+    projected = bind.bind_default_gap_infeasibility_forecast(
+        proposal=proposal, source_inventory=source,
+        candidate_inventory=projected_inventory,
+        phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        source_authority=authority,
+    )
+    assert projected is not None
+    observed_inventory = _inventory_rephase(
+        projected_inventory,
+        phase=model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY,
+        fingerprint=authority_id("default-gap-forecast-drift"), generation=2,
+    )
+    wrong_phase = _inventory_rephase(
+        projected_inventory,
+        phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        fingerprint=authority_id("default-gap-phase-drift"), generation=2,
+    )
+    with pytest.raises(ValueError, match="observed post apply"):
+        bind.revalidate_observed_default_gap_infeasibility(
+            projected_result=projected, proposal=proposal,
+            source_inventory=source, observed_inventory=wrong_phase,
+            source_authority=authority,
+        )
+    object.__setattr__(proposal, "corridor_coverage_forecast", replace(
+        proposal.corridor_coverage_forecast,
+    ))
+    with pytest.raises(ValueError, match="prepared occurrence"):
+        bind.revalidate_observed_default_gap_infeasibility(
+            projected_result=projected, proposal=proposal,
+            source_inventory=source, observed_inventory=observed_inventory,
+            source_authority=authority,
+        )
+
+
+
+
+def test_default_gap_rejects_prior_unsafe_distinct_default_and_residual() -> None:
+    args = _default_gap_extension_args()
+    exclusion = args["exclusion"]
+    source = args["source_inventory"]
+    handler = next(item for item in source.blocks if item.serial == 2)
+    foreign_default = model.CorridorCoveragePathNode(
+        handler.block_ref, handler.anchor_ea,
+    )
+    content = (
+        "unflatten.default-gap-infeasibility-exclusion.v2", 4,
+        exclusion.state_identity, exclusion.dispatcher, foreign_default,
+        exclusion.residual, exclusion.initial_state_seeds,
+        exclusion.route_proof_ids, exclusion.normalized_reachable_states,
+    )
+    changed = model.DefaultGapInfeasibilityExclusion(
+        authority_id(content),
+        authority_id(("unflatten.default-gap-infeasibility-exclusion-digest.v1", content)),
+        4, exclusion.state_identity, exclusion.dispatcher, foreign_default,
+        exclusion.residual, exclusion.initial_state_seeds,
+        exclusion.route_proof_ids, exclusion.normalized_reachable_states,
+    )
+    path = model.DefaultGapInfeasibilityPath(
+        authority_id((
+            "unflatten.default-gap-infeasibility-path.v1", args["path"].nodes,
+            args["path"].state_merge, changed.exclusion_id,
+        )), args["path"].nodes, args["path"].state_merge,
+        changed.exclusion_id,
+    )
+    extension = model.DefaultGapInfeasibilityForecast(
+        authority_id((
+            "unflatten.default-gap-infeasibility-forecast.v1",
+            args["extension"].base_forecast, (path,),
+            ((changed.exclusion_id, changed.digest),), (changed,),
+        )), args["extension"].base_forecast, (path,),
+        ((changed.exclusion_id, changed.digest),), (changed,),
+    )
+    args.update(extension=extension, exclusion=changed, path=path)
+    with pytest.raises(ValueError, match="default entry, residual"):
+        bind._validate_default_gap_extension(**args)
+
+
+def test_default_gap_rejects_extension_that_omits_one_base_residual() -> None:
+    """A typed extension cannot authorize only a convenient residual subset."""
+    args = _default_gap_extension_args()
+    extension = args["extension"]
+    source = args["source_inventory"]
+    handler = next(item for item in source.blocks if item.serial == 2)
+    dispatcher = extension.exclusions[0].dispatcher
+    second_nodes = (
+        model.CorridorCoveragePathNode(handler.block_ref, handler.anchor_ea),
+        dispatcher,
+    )
+    second_path_id = authority_id((
+        "unflatten.corridor-coverage-path.v1", second_nodes, None,
+        model.CorridorPathDisposition.RESIDUAL, (),
+    ))
+    second_path = model.CorridorCoveragePath(
+        second_path_id, second_nodes, None,
+        model.CorridorPathDisposition.RESIDUAL, (),
+    )
+    old_base = extension.base_forecast
+    paths = (*old_base.paths, second_path)
+    residual_ids = (*old_base.residual_path_ids, second_path_id)
+    base_id = authority_id((
+        "unflatten.corridor-coverage-forecast.v1", old_base.plan_id,
+        old_base.function_ea, old_base.source_native_key,
+        old_base.source_generation, old_base.dispatcher_ref,
+        old_base.dispatcher_anchor_ea, paths, old_base.covered_path_ids,
+        residual_ids, old_base.enumeration_complete,
+        old_base.semantic_exclusion_digests, old_base.semantic_exclusions,
+        old_base.semantic_exclusion_path_ids,
+    ))
+    changed_base = model.CorridorCoverageForecast(
+        base_id, old_base.plan_id, old_base.function_ea,
+        old_base.source_native_key, old_base.source_generation,
+        old_base.dispatcher_ref, old_base.dispatcher_anchor_ea, paths,
+        old_base.covered_path_ids, residual_ids,
+        old_base.enumeration_complete, old_base.semantic_exclusion_digests,
+        old_base.semantic_exclusions, old_base.semantic_exclusion_path_ids,
+    )
+    changed_extension = model.DefaultGapInfeasibilityForecast(
+        authority_id((
+            "unflatten.default-gap-infeasibility-forecast.v1", changed_base,
+            extension.paths, extension.exclusion_digests,
+            extension.exclusions,
+        )),
+        changed_base, extension.paths, extension.exclusion_digests,
+        extension.exclusions,
+    )
+    proposal = args["proposal"]
+    base_result = bind._classify_corridor_coverage_forecast(
+        proposal=replace(
+            proposal, corridor_coverage_forecast=old_base,
+        ),
+        source_inventory=source,
+        candidate_inventory=args["candidate_inventory"],
+        phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        default_gap_paths=extension.paths,
+    )
+    assert base_result is not None
+    with pytest.raises(ValueError, match="cover every base residual coordinate"):
+        bind._default_gap_base_phase_result(base_result, changed_extension)
+
+
+def test_bind_default_gap_projected_rejects_candidate_reachable_residual() -> None:
+    proposal, source, _candidate, authority = _default_gap_bound_projected_case()
+    reachable_candidate = _inventory_rephase(
+        source, phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        fingerprint=authority_id("default-gap-reachable-residual"), generation=2,
+    )
+    with pytest.raises(ValueError, match="residual remains candidate-reachable"):
+        bind.bind_default_gap_infeasibility_forecast(
+            proposal=proposal, source_inventory=source,
+            candidate_inventory=reachable_candidate,
+            phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+            source_authority=authority,
+        )
+
+
+def test_default_gap_requires_exact_proposal_and_source_authority_occurrences() -> None:
+    proposal, source, candidate, authority = _default_gap_bound_projected_case()
+    equal_proposal = replace(proposal)
+    assert equal_proposal == proposal and equal_proposal is not proposal
+    with pytest.raises(ValueError, match="proposal is not the source-authority occurrence"):
+        bind.bind_default_gap_infeasibility_forecast(
+            proposal=equal_proposal, source_inventory=source,
+            candidate_inventory=candidate,
+            phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+            source_authority=authority,
+        )
+
+    reminted = object.__new__(model.SourceBoundRouteAuthority)
+    for name in model.SourceBoundRouteAuthority.__dataclass_fields__:
+        object.__setattr__(reminted, name, getattr(authority, name))
+    reminted.__post_init__()
+    with pytest.raises(ValueError, match="not minted|transaction binder"):
+        bind.bind_default_gap_infeasibility_forecast(
+            proposal=proposal, source_inventory=source,
+            candidate_inventory=candidate,
+            phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+            source_authority=reminted,
+        )
+
+
+def test_default_gap_rejects_source_state_write_inventory_drift() -> None:
+    proposal, source, candidate, authority = _default_gap_bound_projected_case()
+    write_owner = next(item for item in source.blocks if item.serial == 0)
+    changed_owner = replace(
+        write_owner,
+        instruction_observations=(
+            replace(write_owner.instruction_observations[0], instruction_kind=InsnKind.NOP),
+            write_owner.instruction_observations[1],
+        ),
+    )
+    drifted = _default_gap_source_with_block_override(source, 0, changed_owner)
+    with pytest.raises(ValueError, match="source inventory digest"):
+        bind.bind_default_gap_infeasibility_forecast(
+            proposal=proposal, source_inventory=drifted,
+            candidate_inventory=candidate,
+            phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+            source_authority=authority,
+        )
+
+
+def _default_gap_extension_args():
+    proposal, source, candidate, authority = _default_gap_bound_projected_case()
+    extension = proposal.corridor_coverage_forecast
+    assert type(extension) is model.DefaultGapInfeasibilityForecast
+    return dict(
+        extension=extension, exclusion=extension.exclusions[0], path=extension.paths[0],
+        proposal=proposal, source_inventory=source, candidate_inventory=candidate,
+        source_authority=authority,
+    )
+
+
+def _default_gap_source_with_block_override(source, serial, block):
+    blocks = tuple(block if item.serial == serial else item for item in source.blocks)
+    digest = semantic_graph_inventory_digest(
+        source.phase, source.graph_fingerprint, source.generation, blocks,
+        source.subjects, source.bindings, source.effects, source.terminals,
+        source.topology, source.reachable_serials, source.entry_serial,
+        source.source_subject_ids, source.function_ea,
+    )
+    return replace(source, blocks=blocks, inventory_digest=digest)
+
+
+def _default_gap_source_with_topology(
+    source, successors, predecessors, *, block_overrides=None,
+):
+    overrides = {} if block_overrides is None else block_overrides
+    blocks = tuple(
+        replace(overrides.get(item.serial, item),
+                successor_serials=successors[item.serial],
+                predecessor_serials=predecessors[item.serial])
+        for item in source.blocks
+    )
+    by_serial = {item.serial: item for item in blocks}
+    topology = tuple(sorted((
+        *(model.InventoryTopologyIncidence(
+            model.TopologyIncidenceKind.SUCCESSOR, item.serial, peer,
+            item.transfer_ea,
+        ) for item in blocks for peer in item.successor_serials),
+        *(model.InventoryTopologyIncidence(
+            model.TopologyIncidenceKind.PREDECESSOR, item.serial, peer,
+            by_serial[peer].transfer_ea,
+        ) for item in blocks for peer in item.predecessor_serials),
+    ), key=lambda item: (
+        item.kind.value, item.owner_serial, item.peer_serial,
+        item.source_transfer_ea if item.source_transfer_ea is not None else -1,
+    )))
+    reachable = _inventory_reachable_serials(
+        source, blocks=blocks, subjects=source.subjects,
+    )
+    digest = semantic_graph_inventory_digest(
+        source.phase, source.graph_fingerprint, source.generation, blocks,
+        source.subjects, source.bindings, source.effects, source.terminals,
+        topology, reachable, source.entry_serial, source.source_subject_ids,
+        source.function_ea,
+    )
+    return replace(source, blocks=blocks, topology=topology,
+                   reachable_serials=reachable, inventory_digest=digest)
+
+
+@pytest.mark.parametrize("kind", (InsnKind.STORE, InsnKind.CALL, InsnKind.RET, InsnKind.UNKNOWN))
+def test_default_gap_residual_grammar_rejects_effect_and_unresolved_kinds(kind) -> None:
+    args = _default_gap_extension_args()
+    source = args["source_inventory"]
+    residual = next(item for item in source.blocks if item.serial == 3)
+    marker = (
+        ControlTransferKind.GOTO if kind is InsnKind.UNKNOWN
+        else ControlTransferKind.RETURN if kind is InsnKind.RET
+        else None
+    )
+    changed_observation = replace(
+        residual.instruction_observations[0], instruction_kind=kind,
+        control_transfer_kind=marker,
+    )
+    if kind in {InsnKind.STORE, InsnKind.CALL, InsnKind.RET}:
+        # Raw-inventory integrity detects new effect/terminal sites before the
+        # default-gap binder sees a forged source snapshot.
+        with pytest.raises(
+            ValueError,
+            match="effects|terminals|control transfer|terminal|transfer_ea",
+        ):
+            changed = replace(
+                residual, instruction_observations=(changed_observation,),
+                tail_kind=kind,
+            )
+            _default_gap_source_with_block_override(source, 3, changed)
+        return
+    changed = replace(
+        residual, instruction_observations=(changed_observation,), tail_kind=kind,
+    )
+    args["source_inventory"] = _default_gap_source_with_block_override(source, 3, changed)
+    with pytest.raises(ValueError, match="effect or terminal"):
+        bind._validate_default_gap_extension(**args)
+
+
+def test_default_gap_replay_rejects_non_u32_predicate() -> None:
+    args = _default_gap_extension_args()
+    source = args["source_inventory"]
+    dispatcher = next(item for item in source.blocks if item.serial == 1)
+    tail = dispatcher.instruction_observations[-1]
+    changed = replace(
+        dispatcher,
+        instruction_observations=(
+            dispatcher.instruction_observations[0],
+            replace(tail, predicate_observation=replace(tail.predicate_observation, width=8)),
+        ),
+    )
+    args["source_inventory"] = _default_gap_source_with_block_override(
+        source, 1, changed,
+    )
+    with pytest.raises(ValueError, match="exact u32 EQ"):
+        bind._validate_default_gap_extension(**args)
+
+
+def test_default_gap_replay_rejects_explicit_target_proof_drift() -> None:
+    args = _default_gap_extension_args()
+    source = args["source_inventory"]
+    dispatcher = next(item for item in source.blocks if item.serial == 1)
+    tail = dispatcher.instruction_observations[-1]
+    changed_dispatcher = replace(
+        dispatcher,
+        successor_serials=(3, 4),
+        instruction_observations=(
+            dispatcher.instruction_observations[0],
+            replace(
+                tail,
+                predicate_observation=replace(
+                    tail.predicate_observation, explicit_target_serial=4,
+                ),
+            ),
+        ),
+    )
+    args["source_inventory"] = _default_gap_source_with_topology(
+        source,
+        {0: (1,), 1: (3, 4), 2: (4,), 3: (1,), 4: ()},
+        {0: (), 1: (0, 3), 2: (), 3: (1,), 4: (1, 2)},
+        block_overrides={1: changed_dispatcher},
+    )
+    with pytest.raises(ValueError, match="canonical proof destination"):
+        bind._validate_default_gap_extension(**args)
+
+
+def test_default_gap_replay_rejects_seed_state_different_from_canonical_write() -> None:
+    args = _default_gap_extension_args()
+    exclusion = args["exclusion"]
+    proof_id = exclusion.route_proof_ids[0]
+    seed = model.DefaultGapInitialStateSeed(8, proof_id)
+    content = (
+        "unflatten.default-gap-infeasibility-exclusion.v2", 4,
+        exclusion.state_identity, exclusion.dispatcher, exclusion.default_entry,
+        exclusion.residual, (seed,), (proof_id,), (8,),
+    )
+    changed_exclusion = model.DefaultGapInfeasibilityExclusion(
+        authority_id(content),
+        authority_id(("unflatten.default-gap-infeasibility-exclusion-digest.v1", content)),
+        4, exclusion.state_identity, exclusion.dispatcher, exclusion.default_entry,
+        exclusion.residual, (seed,), (proof_id,), (8,),
+    )
+    path = model.DefaultGapInfeasibilityPath(
+        authority_id((
+            "unflatten.default-gap-infeasibility-path.v1", args["path"].nodes,
+            args["path"].state_merge, changed_exclusion.exclusion_id,
+        )), args["path"].nodes, args["path"].state_merge,
+        changed_exclusion.exclusion_id,
+    )
+    extension = model.DefaultGapInfeasibilityForecast(
+        authority_id((
+            "unflatten.default-gap-infeasibility-forecast.v1",
+            args["extension"].base_forecast, (path,),
+            ((changed_exclusion.exclusion_id, changed_exclusion.digest),),
+            (changed_exclusion,),
+        )), args["extension"].base_forecast, (path,),
+        ((changed_exclusion.exclusion_id, changed_exclusion.digest),),
+        (changed_exclusion,),
+    )
+    args.update(extension=extension, exclusion=changed_exclusion, path=path)
+    with pytest.raises(ValueError, match="seed state differs from canonical state write"):
+        bind._validate_default_gap_extension(**args)
+
+
+def test_default_gap_replay_rejects_claimed_state_that_selects_default() -> None:
+    args = _default_gap_extension_args()
+    source = args["source_inventory"]
+    dispatcher = next(item for item in source.blocks if item.serial == 1)
+    tail = dispatcher.instruction_observations[-1]
+    changed = replace(
+        dispatcher,
+        instruction_observations=(
+            dispatcher.instruction_observations[0],
+            replace(
+                tail,
+                predicate_observation=replace(
+                    tail.predicate_observation, compare_constant=8,
+                ),
+            ),
+        ),
+    )
+    args["source_inventory"] = _default_gap_source_with_block_override(
+        source, 1, changed,
+    )
+    with pytest.raises(ValueError, match="reaches the default"):
+        bind._validate_default_gap_extension(**args)
+
+
+def test_default_gap_replay_rejects_foreign_seed_proof() -> None:
+    args = _default_gap_extension_args()
+    exclusion = args["exclusion"]
+    foreign_proof_id = authority_id("foreign-default-gap-proof")
+    seed = model.DefaultGapInitialStateSeed(7, foreign_proof_id)
+    content = (
+        "unflatten.default-gap-infeasibility-exclusion.v2", 4,
+        exclusion.state_identity, exclusion.dispatcher, exclusion.default_entry,
+        exclusion.residual, (seed,), (foreign_proof_id,), (7,),
+    )
+    changed_exclusion = model.DefaultGapInfeasibilityExclusion(
+        authority_id(content),
+        authority_id(("unflatten.default-gap-infeasibility-exclusion-digest.v1", content)),
+        4, exclusion.state_identity, exclusion.dispatcher, exclusion.default_entry,
+        exclusion.residual, (seed,), (foreign_proof_id,), (7,),
+    )
+    path = model.DefaultGapInfeasibilityPath(
+        authority_id((
+            "unflatten.default-gap-infeasibility-path.v1", args["path"].nodes,
+            args["path"].state_merge, changed_exclusion.exclusion_id,
+        )), args["path"].nodes, args["path"].state_merge,
+        changed_exclusion.exclusion_id,
+    )
+    extension = model.DefaultGapInfeasibilityForecast(
+        authority_id((
+            "unflatten.default-gap-infeasibility-forecast.v1",
+            args["extension"].base_forecast, (path,),
+            ((changed_exclusion.exclusion_id, changed_exclusion.digest),),
+            (changed_exclusion,),
+        )), args["extension"].base_forecast, (path,),
+        ((changed_exclusion.exclusion_id, changed_exclusion.digest),),
+        (changed_exclusion,),
+    )
+    args.update(extension=extension, exclusion=changed_exclusion, path=path)
+    with pytest.raises(ValueError, match="not covered by source authority"):
+        bind._validate_default_gap_extension(**args)
+
+
+def test_default_gap_replay_rejects_route_source_coordinate_drift() -> None:
+    args = _default_gap_extension_args()
+    source = args["source_inventory"]
+    proof = args["proposal"].route_evidence.route_proofs[0]
+    owner = next(
+        item for item in source.blocks
+        if item.anchor_ea == proof.source_anchor_ea
+    )
+    # The nominal inventory closes this adversary before the extension replay:
+    # its already-bound source subject cannot be moved to a new anchor.
+    with pytest.raises(
+        ValueError, match="unique binding does not match its block observation",
+    ):
+        _default_gap_source_with_block_override(
+            source, owner.serial, replace(owner, anchor_ea=owner.anchor_ea + 1),
+        )
+
+
+def test_default_gap_replay_rejects_external_residual_ingress() -> None:
+    args = _default_gap_extension_args()
+    source = args["source_inventory"]
+    args["source_inventory"] = _default_gap_source_with_topology(
+        source,
+        {0: (1, 3), 1: (3, 2), 2: (4,), 3: (1,), 4: ()},
+        {0: (), 1: (0, 3), 2: (1,), 3: (0, 1), 4: (2,)},
+    )
+    with pytest.raises(ValueError, match="external ingress"):
+        bind._validate_default_gap_extension(**args)
+
+
+def test_default_gap_replay_rejects_changed_default_fallthrough() -> None:
+    args = _default_gap_extension_args()
+    source = args["source_inventory"]
+    args["source_inventory"] = _default_gap_source_with_topology(
+        source,
+        {0: (1,), 1: (4, 2), 2: (4,), 3: (1,), 4: ()},
+        {0: (), 1: (0, 3), 2: (1,), 3: (), 4: (1, 2)},
+    )
+    with pytest.raises(ValueError, match="conditional topology"):
+        bind._validate_default_gap_extension(**args)
+
+
+def _two_proof_shared_target_case(*, selected_proof_count: int = 2):
     """Two producer-owned direct proofs converge on one projected target."""
     from d810.ir.flowgraph import FlowGraph, InsnKind, MopSnapshot, OperandKind, ValueOpKind
     from d810.transforms.graph_modification import RedirectGoto
@@ -11463,11 +13111,17 @@ def _two_proof_shared_target_case():
             route_model.SemanticRouteFactKind.NATIVE_BOUND,
             1, 1, 0x2000, 7, 3, 0x2000, 0x4000, (1,), (),
             authority_id("3b4-shared-target-fact-1"),
+            physical_state_write=route_model.SemanticPhysicalStateWriteWitness(
+                route_model._instruction_projection(feeder_write), state, 4, 7,
+            ),
         ),
         route_model.SemanticRouteFact(
             route_model.SemanticRouteFactKind.NATIVE_BOUND,
             5, 5, 0x6000, 7, 3, 0x6000, 0x4000, (5,), (),
             authority_id("3b4-shared-target-fact-2"),
+            physical_state_write=route_model.SemanticPhysicalStateWriteWitness(
+                route_model._instruction_projection(feeder_two_write), state, 4, 7,
+            ),
         ),
     )
     evidence_result = route_model.build_canonical_semantic_evidence(
@@ -11490,14 +13144,16 @@ def _two_proof_shared_target_case():
         block_refs_by_serial=refs, source_generation=1,
         canonical_route_evidence=evidence,
         selected_route_proof_ids=tuple(
-            proof.proof_id for proof in evidence.route_proofs
+            proof.proof_id
+            for proof in evidence.route_proofs[:selected_proof_count]
         ),
         exact_state_effect_exclusions=(), dispatcher_entry_serial=1,
         dispatcher_member_serials=(0, 1, 2, 4, 5),
         authoritative_handler_serials=(3,), state_identity=state,
         use_def_witness=witness,
     )
-    assert len(proposal.claims) == len(evidence.route_proofs) == 2
+    assert len(proposal.claims) == selected_proof_count
+    assert len(evidence.route_proofs) == 2
     compiled = compile_patch_plan(
         [
             RedirectGoto(1, 2, 3),
@@ -11545,6 +13201,28 @@ def _two_proof_shared_target_case():
 def _task_15_two_relation_shared_site_vertical_case():
     """Build the mechanical matrix's canonical shared-site control."""
     return _two_proof_shared_target_case()
+
+
+def test_source_kernel_binds_unselected_canonical_proofs_without_minting_claims() -> None:
+    """The evidence pool may contain routes that this exact plan does not rewrite."""
+    authority, *_ = _two_proof_shared_target_case(selected_proof_count=1)
+
+    assert len(authority.covered_proof_ids) == 2
+    assert len(authority.covered_claim_ids) == 1
+
+
+def test_portable_instruction_record_is_immutable_registry_state() -> None:
+    """Lifted opcode provenance cannot retain a mutable mapping in authority."""
+    from types import MappingProxyType
+    from d810.ir.graph_fingerprint import portable_graph_projection
+
+    source, _proposal, _exclusion, _refs = exact_fixture()
+    instruction = portable_graph_projection(source).blocks[0].instructions[0]
+
+    assert type(instruction.opcode_attrs) is MappingProxyType
+    bind._registry_structural_snapshot(instruction)
+    with pytest.raises(TypeError):
+        instruction.opcode_attrs["drift"] = True
 
 
 def _compiler_direct_branch_case(*, old_target_serial: int = 2, helper: bool = False,
@@ -11628,7 +13306,7 @@ def _compiler_direct_branch_case(*, old_target_serial: int = 2, helper: bool = F
         state, 7, 1, 0x2000,
         (1, 2) if canonical_proof and not helper else (1,),
         (0x2000, 0x3000) if canonical_proof and not helper else (0x2000,),
-        ((1, RouteComparison(1, "jz", 7, 4 if helper else 2, 2 if helper else 3)),),
+        (route_model.DecisionDagComparisonWitness(1, RouteComparison(1, "jz", 7, 4 if helper else 2, 2 if helper else 3), state),),
         ((2, 4),) if canonical_proof and not helper else (),
     )
     bootstrap = route_model.SemanticBootstrapRouteWitness(
@@ -11639,6 +13317,18 @@ def _compiler_direct_branch_case(*, old_target_serial: int = 2, helper: bool = F
         proof_kind, 1, 1, 0x2000, 7,
             4, 0x2000, 0x5000, (1,), (),
         authority_id("3b3-direct-fact"),
+        physical_state_write=(
+            route_model.SemanticPhysicalStateWriteWitness(
+                route_model._instruction_projection(
+                    source.blocks[1].insn_snapshots[0],
+                ),
+                state,
+                4,
+                7,
+            )
+            if proof_kind is route_model.SemanticRouteFactKind.NATIVE_BOUND
+            else None
+        ),
         decision_dag_witness=(dag if proof_kind is not route_model.SemanticRouteFactKind.NATIVE_BOUND else None),
         bootstrap_witness=(bootstrap if proof_kind is route_model.SemanticRouteFactKind.BOOTSTRAP else None),
     )
@@ -11748,6 +13438,310 @@ def _compiler_helper_branch_case():
 def _compiler_redirect_goto_case():
     """Build the retained 3B1 direct-goto family through the real compiler."""
     return _real_projected_branch_fixture(step_shape="goto", direct_route=True)
+
+
+def _compiler_guarded_convert_to_goto_case(
+    *, goto_target: int = 20, unclaimed_convert: bool = False,
+    include_graphs: bool = False,
+):
+    """Build the exact guarded STORE -> conditional-fold authority vertical."""
+
+    from d810.transforms.cfg_transaction import TransactionAttemptId
+    from d810.transforms.edit_simulator import project_post_state
+    from d810.transforms.graph_modification import ConvertToGoto
+    from d810.ir.flowgraph import FlowGraph
+    from tests.typed_patch_authority import compile_patch_plan
+    from tests.unit.analyses.control_flow.test_semantic_route_evidence import (
+        _guarded_alias_store_inputs,
+    )
+
+    source, fact, context, _branch, _store = _guarded_alias_store_inputs()
+    blocks = dict(source.blocks)
+    for serial in tuple(blocks):
+        block = blocks[serial]
+        instructions = tuple(
+            replace(instruction, raw_opcode=instruction.opcode)
+            if instruction.raw_opcode is None else instruction
+            for instruction in block.insn_snapshots
+        )
+        blocks[serial] = replace(
+            block,
+            insn_snapshots=instructions,
+            tail_opcode=(
+                instructions[-1].opcode if instructions else block.tail_opcode
+            ),
+            tail_kind=(
+                instructions[-1].kind if instructions else block.tail_kind
+            ),
+            raw_tail_opcode=(
+                instructions[-1].raw_opcode if instructions else block.raw_tail_opcode
+            ),
+        )
+    source = FlowGraph(blocks, source.entry_serial, source.func_ea)
+    context = replace(context, blocks=tuple(source.blocks.values()))
+    physical = fact.physical_state_write
+    assert physical is not None and physical.guarded_selection is not None
+    fact = replace(
+        fact,
+        physical_state_write=replace(
+            physical,
+            source_instruction=replace(
+                physical.source_instruction,
+                raw_opcode=physical.source_instruction.opcode,
+            ),
+            alias_definition_instruction=replace(
+                physical.alias_definition_instruction,
+                raw_opcode=physical.alias_definition_instruction.opcode,
+            ),
+            guarded_selection=replace(
+                physical.guarded_selection,
+                comparison_instruction=replace(
+                    physical.guarded_selection.comparison_instruction,
+                    raw_opcode=(
+                        physical.guarded_selection.comparison_instruction.opcode
+                    ),
+                ),
+            ),
+        ),
+    )
+    production = route_model.build_canonical_semantic_evidence((fact,), context)
+    assert production.abstention is None and production.evidence is not None
+    evidence = production.evidence
+    (proof,) = evidence.route_proofs
+    refs = {
+        serial: NativeBlockRef(identity)
+        for serial, identity in context.identities_by_serial
+    }
+    plan_id = authority_id("guarded-convert-to-goto-plan")
+    modifications = [ConvertToGoto(fact.source_serial, goto_target)]
+    if unclaimed_convert:
+        modifications.append(ConvertToGoto(fact.owner_serial, goto_target))
+    compiled = compile_patch_plan(
+        modifications,
+        source,
+        plan_id=plan_id,
+        source_generation=context.generation,
+        block_refs_by_serial=refs,
+    )
+    manifest = __import__(
+        "d810.transforms.unflatten_authority.proposal",
+        fromlist=["canonical_redirect_manifest"],
+    ).canonical_redirect_manifest(compiled)
+    witness = model.UseDefFragmentWitness(
+        authority_id("guarded-convert-fragment"),
+        context.state_identity,
+        manifest.owner_refs,
+        manifest.digest,
+        True,
+        True,
+        0,
+        (),
+    )
+    proposal = producer_api.build_proposal(
+        plan_id=plan_id,
+        source=source,
+        block_refs_by_serial=refs,
+        source_generation=context.generation,
+        canonical_route_evidence=evidence,
+        selected_route_proof_ids=(proof.proof_id,),
+        exact_state_effect_exclusions=(),
+        dispatcher_entry_serial=fact.source_serial,
+        dispatcher_member_serials=(fact.owner_serial, fact.source_serial),
+        authoritative_handler_serials=(fact.target_serial,),
+        state_identity=context.state_identity,
+        use_def_witness=witness,
+    )
+    plan = replace(
+        compiled,
+        source_coordinates=tuple(
+            (refs[serial], serial) for serial in sorted(refs)
+        ),
+        unflatten_proposal=proposal,
+    )
+    materialization = route_model.CanonicalRouteMaterialization.capture(
+        source,
+        generation=context.generation,
+        phase=route_model.CanonicalRouteAssessmentPhase.SOURCE,
+    )
+    source_inventory = transaction_api._build_semantic_graph_inventory(
+        source,
+        proposal,
+        plan,
+        source=True,
+        phase=model.UnflattenAuthorityPhase.PRODUCER_FORECAST,
+        materialization=materialization,
+    )
+    authority = bind.bind_source_route_authority(
+        proposal=proposal,
+        source_inventory=source_inventory,
+        source_materialization=materialization,
+    )
+    assert type(authority) is model.SourceBoundRouteAuthorityAccepted
+    projection_plan = plan
+    if unclaimed_convert:
+        # Keep the projected snapshot coherent while the authoritative plan
+        # still carries an additional unclaimed fold descriptor.  This lets
+        # the binder's exhaustion invariant reject that descriptor instead of
+        # fabricating a conditional fold on the one-way alias-owner block.
+        projection_compiled = compile_patch_plan(
+            modifications[:1],
+            source,
+            plan_id=plan_id,
+            source_generation=context.generation,
+            block_refs_by_serial=refs,
+        )
+        projection_plan = replace(
+            projection_compiled,
+            source_coordinates=tuple(
+                (refs[serial], serial) for serial in sorted(refs)
+            ),
+            unflatten_proposal=proposal,
+        )
+    projected = project_post_state(source, projection_plan)
+    projected_inventory = transaction_api._build_semantic_graph_inventory(
+        projected,
+        proposal,
+        plan,
+        source=False,
+        phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        materialization=None,
+        source_subjects=source_inventory.subjects,
+    )
+    facts = transaction_api._derive_patch_lineage_facts(source_inventory, plan)
+    attempt = TransactionAttemptId(
+        plan.plan_id,
+        authority_id("guarded-convert-session"),
+        context.generation,
+        authority_id((
+            "guarded-convert-attempt", goto_target, unclaimed_convert,
+        )),
+    )
+    values = (
+        authority.authority,
+        plan,
+        source_inventory,
+        projected_inventory,
+        facts,
+        attempt,
+    )
+    return (*values, source, projected) if include_graphs else values
+
+
+def test_guarded_convert_to_goto_has_one_exact_folded_route_owner() -> None:
+    """One guarded conditional fold owns one canonical STATE_ASSIGNMENT."""
+
+    values = _compiler_guarded_convert_to_goto_case()
+    accepted = realize_projected_routes_for_test(
+        source_authority=values[0],
+        plan=values[1],
+        source_inventory=values[2],
+        projected_inventory=values[3],
+        patch_step_facts=values[4],
+        attempt_id=values[5],
+    )
+    assert type(accepted) is model.ProjectedRouteRealizationAccepted
+    (row,) = accepted.realization.rows
+    assert row.plan_step_type is PatchStepKind.CONVERT_TO_GOTO
+    assert row.realization_kind is model.RouteRealizationKind.FOLDED
+    relation = row.relation
+    assert type(relation) is model.FoldedConditionalRouteRealization
+    assert relation.feeder.ref == values[1].steps[0].block_serial
+    assert relation.selected_target.ref == values[1].steps[0].goto_target
+    assert relation.discarded_target.ref != relation.selected_target.ref
+
+
+def test_guarded_convert_to_goto_fact_has_one_typed_evaluation_owner() -> None:
+    """The safety-case vocabulary consumes the same folded-step occurrence."""
+
+    values = _compiler_guarded_convert_to_goto_case()
+    (fact,) = values[4]
+    assert fact.step_type == "PatchConvertToGoto"
+    owners = evaluate._patch_owner_subjects(fact, values[2].subjects)
+    assert len(owners) == 1
+    assert owners[0].block_ref == fact.owner_ref
+    assert owners[0].role is model.SemanticSubjectRole.SEMANTIC_ROUTE_SOURCE
+
+
+def _realize_guarded_convert_case(values):
+    return realize_projected_routes_for_test(
+        source_authority=values[0],
+        plan=values[1],
+        source_inventory=values[2],
+        projected_inventory=values[3],
+        patch_step_facts=values[4],
+        attempt_id=values[5],
+    )
+
+
+def test_guarded_convert_to_goto_rejects_wrong_selected_arm() -> None:
+    """The plan cannot select the guarded proof's discarded arm."""
+
+    with pytest.raises(ValueError, match="outside proposal route subjects"):
+        _compiler_guarded_convert_to_goto_case(goto_target=2)
+
+
+def test_guarded_convert_to_goto_rejects_an_extra_unclaimed_fold() -> None:
+    """One guarded proof cannot authorize two physical fold operations."""
+
+    values = _compiler_guarded_convert_to_goto_case(unclaimed_convert=True)
+    assert len(values[4]) == 2
+    rejected = _realize_guarded_convert_case(values)
+    assert type(rejected) is model.ProjectedRouteRealizationRejected
+    assert rejected.failures[0].stage is (
+        model.RouteRealizationFailureStage.CLAIM_SELECTION
+    )
+    assert rejected.failures[0].step_index == 1
+
+
+def test_guarded_convert_to_goto_rejects_retained_discarded_arm() -> None:
+    """Projected replay requires the discarded arm to be physically absent."""
+
+    values = _compiler_guarded_convert_to_goto_case()
+    projected = values[3]
+    source_feeder = next(
+        row for row in values[2].blocks if row.serial == 8
+    )
+    successors = {
+        row.serial: row.successor_serials for row in projected.blocks
+    }
+    predecessors = {
+        row.serial: row.predecessor_serials for row in projected.blocks
+    }
+    successors[8] = (20, 2)
+    predecessors[2] = tuple(sorted((*predecessors[2], 8)))
+    mutated = _inventory_with_edges(
+        projected,
+        successors,
+        predecessors,
+        block_overrides={8: source_feeder},
+    )
+    rejected = _realize_guarded_convert_case((*values[:3], mutated, *values[4:]))
+    assert type(rejected) is model.ProjectedRouteRealizationRejected
+    assert rejected.failures[0].stage is (
+        model.RouteRealizationFailureStage.OLD_EDGE_REMOVAL
+    )
+
+
+def test_guarded_convert_to_goto_rejects_missing_selected_reciprocal() -> None:
+    """The retained arm must acknowledge the folded feeder predecessor."""
+
+    values = _compiler_guarded_convert_to_goto_case()
+    projected = values[3]
+    successors = {
+        row.serial: row.successor_serials for row in projected.blocks
+    }
+    predecessors = {
+        row.serial: row.predecessor_serials for row in projected.blocks
+    }
+    predecessors[20] = tuple(
+        serial for serial in predecessors[20] if serial != 8
+    )
+    mutated = _inventory_with_edges(projected, successors, predecessors)
+    rejected = _realize_guarded_convert_case((*values[:3], mutated, *values[4:]))
+    assert type(rejected) is model.ProjectedRouteRealizationRejected
+    assert rejected.failures[0].stage is (
+        model.RouteRealizationFailureStage.CONDITIONAL_ROLES
+    )
 
 
 def _task_15_direct_vertical_case(
@@ -11871,6 +13865,9 @@ def _task_15_direct_vertical_case(
             route_model.SemanticRouteFactKind.NATIVE_BOUND,
             0, 0, 0x1000, 7, 3, 0x1000, 0x4000, (0,), (),
             authority_id(("task-15-direct-native-bound", synthesized_stop)),
+            physical_state_write=route_model.SemanticPhysicalStateWriteWitness(
+                route_model._instruction_projection(state_write), state, 4, 7,
+            ),
         ),),
         route_model.CanonicalSemanticEvidenceProductionContext(
             native_key, generation,
@@ -11989,6 +13986,7 @@ def _task_15_direct_vertical_case(
 def _task_15_exact_direct_case(
     effect_kind: str, *, co_located_noreturn: bool = False,
     include_source_context: bool = False,
+    predicate_in_dispatcher: bool = True,
 ):
     """Build one proposal-owned exact CALL/STORE loss on a DIRECT route."""
     from d810.transforms.cfg_transaction import TransactionAttemptId
@@ -12001,6 +13999,25 @@ def _task_15_exact_direct_case(
         discarded_effect_kind=effect_kind,
         shared_terminal=not co_located_noreturn,
     )
+    if not predicate_in_dispatcher:
+        proposal = producer_api.build_proposal(
+            plan_id=proposal.plan_id,
+            source=source,
+            block_refs_by_serial=refs,
+            source_generation=1,
+            canonical_route_evidence=proposal.route_evidence,
+            selected_route_proof_ids=(
+                proposal.route_evidence.route_proofs[0].proof_id,
+            ),
+            exact_state_effect_exclusions=(
+                _exclusion if type(_exclusion) is tuple else (_exclusion,)
+            ),
+            dispatcher_entry_serial=4,
+            dispatcher_member_serials=(4,),
+            authoritative_handler_serials=(2,),
+            state_identity=proposal.plan_inputs.state_identity,
+            use_def_witness=proposal.use_def_witness,
+        )
     route_claims = tuple(
         claim for claim in proposal.claims
         if type(claim) is model.EquivalentSemanticRouteClaim
@@ -12896,16 +14913,22 @@ def _task_15_two_arm_vertical_case(
     native_key = seed_refs[0].identity.native_key
     blocks = dict(source_seed.blocks)
     state = _seed_evidence.route_proofs[0].state_write.state_variable
-    state_number = MopSnapshot(kind=OperandKind.NUMBER, size=4, value=7)
+    state_constant = 8 if helper else 7
+    state_number = MopSnapshot(
+        kind=OperandKind.NUMBER, size=4, value=state_constant,
+    )
     state_stack = MopSnapshot(
         kind=OperandKind.STACK, size=4, stkoff=4, stack_refs=(4,),
     )
     feeder_store = InsnSnapshot(
-        51, 0x2000, (), display_text="state = 7",
-        l=state_number, d=state_stack, kind=InsnKind.STORE,
-        raw_opcode=151, value_op_kind=ValueOpKind.STORE,
+        51, blocks[1].start_ea, (), display_text=f"state = {state_constant}",
+        l=state_number, d=state_stack, kind=InsnKind.MOV,
+        raw_opcode=151, value_op_kind=ValueOpKind.MOVE,
     )
-    feeder_branch = blocks[1].insn_snapshots[-1]
+    feeder_branch = replace(
+        blocks[1].insn_snapshots[-1],
+        control_transfer_kind=ControlTransferKind.CONDITIONAL_BRANCH,
+    )
     if helper:
         feeder_branch = replace(
             feeder_branch,
@@ -12950,12 +14973,17 @@ def _task_15_two_arm_vertical_case(
         for serial, block in source.blocks.items()
     }
     dag = route_model.DecisionDagRouteWitness(
-        state, 7, 2, blocks[2].start_ea, (2,),
-        (blocks[2].start_ea,), (), ((2, 4),),
+        state, state_constant, 1, blocks[1].start_ea, (1, 2),
+        (blocks[1].start_ea, blocks[2].start_ea),
+        (route_model.DecisionDagComparisonWitness(
+            1, RouteComparison(
+                1, "jz", 7, *( (3, 2) if helper else (2, 3) ),
+            ), state,
+        ),), ((2, 4),),
     )
     fact = route_model.SemanticRouteFact(
         route_model.SemanticRouteFactKind.DECISION_DAG,
-        1, 1, feeder_store.ea, 7, 4,
+        1, 1, feeder_store.ea, state_constant, 4,
         blocks[1].start_ea, blocks[4].start_ea, (1,), (),
         authority_id(
             "task-15-rf4-branch-helper-dag-fact"
@@ -13798,11 +15826,15 @@ def _task_15_vertical_inputs(factory):
         row.owner_serial for row in source.effects
         if row.owner_serial in source.reachable_serials
     )
-    projected_owners = frozenset(
-        row.owner_serial for row in projected.effects
-        if row.owner_serial in projected.reachable_serials
+    projected_owner_refs = frozenset(
+        row.block_ref for row in projected.blocks
+        if row.serial in projected.reachable_serials and row.block_ref is not None
     )
-    retained = source_owners & projected_owners
+    retained = frozenset(
+        row.owner_serial for row in source.effects
+        if row.owner_serial in source.reachable_serials
+        and row.owner_ref in projected_owner_refs
+    )
     raw_fact = bind.bind_raw_effect_gate_phase_fact(
         source_inventory=source, projected_inventory=projected,
         raw_gate_facts=GenericEffectfulGateFacts(
@@ -13976,11 +16008,15 @@ def _task_15_vertical_inputs_from_claim_inventory(inventory):
         row.owner_serial for row in source.effects
         if row.owner_serial in source.reachable_serials
     )
-    projected_owners = frozenset(
-        row.owner_serial for row in projected.effects
-        if row.owner_serial in projected.reachable_serials
+    projected_owner_refs = frozenset(
+        row.block_ref for row in projected.blocks
+        if row.serial in projected.reachable_serials and row.block_ref is not None
     )
-    retained = source_owners & projected_owners
+    retained = frozenset(
+        row.owner_serial for row in source.effects
+        if row.owner_serial in source.reachable_serials
+        and row.owner_ref in projected_owner_refs
+    )
     raw_fact = bind.bind_raw_effect_gate_phase_fact(
         source_inventory=source, projected_inventory=projected,
         raw_gate_facts=GenericEffectfulGateFacts(
@@ -14258,6 +16294,14 @@ def _task_15_canonical_helper_inverse_case():
         route_model.SemanticRouteFactKind.NATIVE_BOUND,
         1, 1, 0x2000, 7, 4, 0x2000, 0x5000, (1,), (),
         authority_id("task-15-canonical-helper-fact"),
+        physical_state_write=route_model.SemanticPhysicalStateWriteWitness(
+            route_model._instruction_projection(
+                source_graph.blocks[1].insn_snapshots[0],
+            ),
+            state,
+            4,
+            7,
+        ),
     )
     context = route_model.CanonicalSemanticEvidenceProductionContext(
         seed_evidence.native_key, 1,
@@ -18497,12 +20541,14 @@ def test_task_15_mechanical_registered_phase_validator_visits_exact_children(
     visited_effects = []
     visited_terminals = []
 
-    def validate_effect(value):
-        real_effect_validator(value)
+    def validate_effect(value, **kwargs):
+        assert kwargs == {"_content_sealed": True}
+        real_effect_validator(value, **kwargs)
         visited_effects.append(value)
 
-    def validate_terminal(value):
-        real_terminal_validator(value)
+    def validate_terminal(value, **kwargs):
+        assert kwargs == {"_content_sealed": True}
+        real_terminal_validator(value, **kwargs)
         visited_terminals.append(value)
 
     before = _task_15_publication_type_counts()
@@ -19136,6 +21182,10 @@ def test_task_15_direct_vertical_ordinary_preserves_call_store_and_terminal() ->
 @pytest.mark.parametrize("effect_kind", ("call", "store"))
 def test_task_15_direct_vertical_exact_call_and_store_loss(effect_kind: str) -> None:
     """DIRECT exact closure authorizes only the proposal-owned lost effect."""
+    expected_kind = {
+        "call": model.EffectSiteKind.CALL,
+        "store": model.EffectSiteKind.STORE,
+    }[effect_kind]
     values = _task_15_vertical_inputs(
         lambda: _task_15_exact_direct_case(effect_kind),
     )
@@ -19156,6 +21206,8 @@ def test_task_15_direct_vertical_exact_call_and_store_loss(effect_kind: str) -> 
         claim for claim in values["claims"]
         if type(claim) is model.ExactInfeasibleEffectClaim
     )
+    assert claim.effect_subject.locator.effect_kind is expected_kind
+    assert effect.source_site.effect_kind is expected_kind
     assert binding.claim is claim
     assert effect.supporting_claim_id == claim.claim_id
     assert effect.supporting_binding_result_id == binding.binding_result_id
@@ -19188,6 +21240,181 @@ def test_task_15_direct_vertical_two_exact_sites_share_one_selected_arm_relation
         and row.projected_site is None
         for row in phase.effect_results
     )
+
+
+def test_task_15_exact_selected_arm_predicate_need_not_be_dispatcher_member() -> None:
+    """Closed exact arm authority admits a non-dispatcher predicate target."""
+    values = _task_15_vertical_inputs(
+        lambda: _task_15_exact_direct_case(
+            "call", predicate_in_dispatcher=False,
+        ),
+    )
+
+    accepted = bind.realize_projected_routes(**values)
+
+    assert type(accepted) is model.ProjectedRouteRealizationAccepted
+    assert len(accepted.realization.rows) == 1
+    assert len(accepted.realization.site_phase_result.exact_effect_bindings) == 1
+
+
+def test_state_transform_direct_route_owns_exact_bypassed_feeder_only() -> None:
+    """Canonical transform evidence, not dispatcher membership, owns its feeder."""
+    authority, _plan, source_inventory, *_ = _compiler_corridor_unsupported_case(
+        proof_kind=route_model.SemanticRouteProofKind.STATE_TRANSFORM,
+    )
+    proof = authority.proposal.route_evidence.route_proofs[0]
+    bypassed_feeder_ref = next(
+        row.block_ref for row in source_inventory.blocks
+        if row.block_ref.identity == proof.state_transform.feeder_identity
+    )
+    destination_ref = next(
+        row.block_ref for row in source_inventory.blocks
+        if row.block_ref.identity == proof.destinations[0].target_identity
+    )
+
+    assert bind._state_transform_direct_old_target_is_proof_owned(
+        proof, bypassed_feeder_ref,
+    )
+    assert not bind._state_transform_direct_old_target_is_proof_owned(
+        proof, destination_ref,
+    )
+
+
+@pytest.mark.parametrize("step_type", (PatchRedirectGoto, PatchRedirectBranch))
+def test_owner_bound_direct_route_selects_exact_proof_source_edge(step_type) -> None:
+    """A typed owner/source/destination triple selects one direct edge rewrite."""
+    from d810.transforms.unflatten_authority.proposal import (
+        canonical_patch_step_descriptors,
+    )
+
+    authority, plan, source_inventory, *_ = _compiler_split_case(
+        corridor_length=1, corridor=True, partition=True,
+    )
+    proof = authority.proposal.route_evidence.route_proofs[0]
+
+    def ref_for(identity):
+        return next(
+            row.block_ref for row in source_inventory.blocks
+            if row.block_ref.identity == identity
+        )
+
+    owner_ref = ref_for(proof.source_owner_identity)
+    source_ref = ref_for(proof.source_identity)
+    destination_ref = ref_for(proof.destinations[0].target_identity)
+    competing_direct = PatchRedirectGoto(
+        source_ref,
+        plan.unflatten_proposal.plan_inputs.dispatcher_entry_ref,
+        destination_ref,
+    )
+    direct_plan = replace(
+        plan,
+        steps=(
+            step_type(owner_ref, source_ref, destination_ref),
+            competing_direct,
+        ),
+        new_blocks=(),
+    )
+    descriptor = canonical_patch_step_descriptors(direct_plan)[0]
+
+    assert bind._owner_bound_direct_coordinates_match(
+        direct_plan, proof, descriptor,
+    )
+    lineage_index = bind._index_lineage_fact_groups(
+        direct_plan,
+        transaction_api._derive_patch_lineage_facts(
+            source_inventory, direct_plan,
+        ),
+    )
+    route_claim = next(
+        claim for claim in authority.proposal.claims
+        if type(claim) is model.EquivalentSemanticRouteClaim
+    )
+    selected = bind._select_lineage_fact_group(
+        lineage_index,
+        plan=direct_plan,
+        claim=route_claim,
+        proof=proof,
+        source_inventory=source_inventory,
+    )
+    assert selected.descriptor.step_index == 0
+    drifted_plan = replace(
+        direct_plan,
+        steps=(step_type(owner_ref, destination_ref, destination_ref),),
+    )
+    assert not bind._owner_bound_direct_coordinates_match(
+        drifted_plan, proof,
+        canonical_patch_step_descriptors(drifted_plan)[0],
+    )
+
+
+@pytest.mark.parametrize(
+    ("source_explicit", "old_target", "untouched", "new_target", "expected"),
+    (
+        (2, 2, 3, 4, 4),
+        (3, 2, 3, 4, 3),
+    ),
+    ids=("rewritten-explicit-arm", "rewritten-fallthrough-arm"),
+)
+def test_projected_branch_target_preserves_source_arm_role(
+    source_explicit: int,
+    old_target: int,
+    untouched: int,
+    new_target: int,
+    expected: int,
+) -> None:
+    assert bind._expected_projected_branch_target(
+        source_explicit_target=source_explicit,
+        old_target=old_target,
+        untouched_target=untouched,
+        projected_untouched_target=untouched,
+        new_target=new_target,
+        has_fallthrough_helper=False,
+    ) == expected
+
+
+def test_projected_site_closure_revalidates_inventory_per_batch_not_per_site() -> None:
+    """Site cardinality must not multiply whole-inventory canonical replay."""
+    batches = (
+        _task_15_vertical_inputs(_task_15_direct_vertical_case),
+        _task_15_two_arm_vertical_inputs(_task_15_two_arm_vertical_case()),
+    )
+    site_cardinalities = tuple(
+        len(values["source_inventory"].effects)
+        + len(values["source_inventory"].terminals)
+        for values in batches
+    )
+    # Both typed fixtures carry two effects plus one terminal.  Their different
+    # route shapes must still perform the same batch-scoped inventory replay.
+    assert site_cardinalities == (3, 3)
+
+    validation_counts = []
+    for values in batches:
+        validator = model.validate_semantic_graph_inventory
+        with patch.object(
+            model, "validate_semantic_graph_inventory", wraps=validator,
+        ) as replay:
+            accepted = bind.realize_projected_routes(**values)
+        assert type(accepted) is model.ProjectedRouteRealizationAccepted
+        validation_counts.append(replay.call_count)
+
+    assert validation_counts[0] > 0
+    assert validation_counts[0] == validation_counts[1]
+
+
+def test_projected_route_result_validation_seals_the_authority_graph_once() -> None:
+    """A parent seal covers content; descendants still need occurrence checks."""
+    accepted = bind.realize_projected_routes(
+        **_task_15_vertical_inputs(_task_15_direct_vertical_case)
+    )
+    assert type(accepted) is model.ProjectedRouteRealizationAccepted
+    canonical_seal = bind._canonical_registry_seal
+
+    with patch.object(
+        bind, "_canonical_registry_seal", wraps=canonical_seal,
+    ) as replay:
+        bind.validate_projected_route_realization_result(accepted)
+
+    assert replay.call_count == 1
 
 
 def test_task_15_relation_owner_incidence_preserves_nested_conditional_arm_site_once() -> None:
@@ -19966,8 +22193,26 @@ def test_task_15_two_arm_vertical_preserves_feeder_replacement_and_untouched_arm
     proof = case.source_authority.proposal.route_evidence.route_proofs[0]
     assert proof.proof_kind is route_model.SemanticRouteProofKind.STATE_DAG
     dag_witness = proof.state_dag.witness
-    assert dag_witness.comparisons == ()
+    assert tuple(
+        (
+            comparison.node.identity,
+            comparison.operation,
+            comparison.constant,
+            comparison.true_target.identity,
+            comparison.false_target.identity,
+            comparison.state_identity,
+        )
+        for comparison in dag_witness.comparisons
+    ) == ((
+        step.from_serial.identity,
+        "jz",
+        7,
+        step.old_target.identity,
+        case.refs[3].identity,
+        proof.state_write.state_variable,
+    ),)
     assert tuple(point.identity for point in dag_witness.path) == (
+        step.from_serial.identity,
         step.old_target.identity,
     )
     assert tuple(
@@ -20070,7 +22315,6 @@ def test_task_15_two_arm_vertical_preserves_feeder_replacement_and_untouched_arm
         (result.source_site.owner, result.source_site.effect_kind)
         for result in phase.effect_results
     } == {
-        (relation.feeder, model.EffectSiteKind.STORE),
         (relation.untouched_arm, model.EffectSiteKind.CALL),
         (relation.projected_replacement_arm, model.EffectSiteKind.STORE),
     }
@@ -20292,8 +22536,26 @@ def test_task_15_branch_helper_vertical_preserves_native_sites_and_keeps_helper_
     assert proof.proof_kind is route_model.SemanticRouteProofKind.STATE_DAG
     assert proof.shape is route_model.SemanticRouteShape.DIRECT
     dag_witness = proof.state_dag.witness
-    assert dag_witness.comparisons == ()
+    assert tuple(
+        (
+            comparison.node.identity,
+            comparison.operation,
+            comparison.constant,
+            comparison.true_target.identity,
+            comparison.false_target.identity,
+            comparison.state_identity,
+        )
+        for comparison in dag_witness.comparisons
+    ) == ((
+        step.from_serial.identity,
+        "jz",
+        7,
+        case.refs[3].identity,
+        step.old_target.identity,
+        proof.state_write.state_variable,
+    ),)
     assert tuple(point.identity for point in dag_witness.path) == (
+        step.from_serial.identity,
         step.old_target.identity,
     )
     assert tuple(
@@ -20420,7 +22682,6 @@ def test_task_15_branch_helper_vertical_preserves_native_sites_and_keeps_helper_
         (result.source_site.owner, result.source_site.effect_kind)
         for result in phase.effect_results
     } == {
-        (relation.feeder, model.EffectSiteKind.STORE),
         (relation.untouched_conditional_arm, model.EffectSiteKind.CALL),
         (relation.semantic_target, model.EffectSiteKind.STORE),
     }
@@ -22060,12 +24321,7 @@ def test_task_15_selected_arm_step_coordinate_drift_rejects_end_to_end(
     locator = route_claim.retired_route_subject.locator
     assert failure.anchored_refs == tuple(sorted((
         model.AnchoredBlockRef(locator.source_ref, locator.source_anchor_ea),
-        *tuple(
-            model.AnchoredBlockRef(ref, anchor)
-            for ref, anchor in zip(
-                locator.destination_refs, locator.destination_anchor_eas,
-            )
-        ),
+        *_native_route_destination_anchors(locator),
     ), key=canonical_bytes))
     assert _task_15_publication_type_counts() == before
 
@@ -22624,7 +24880,7 @@ def _compiler_split_case(*, corridor_length: int = 1, corridor: bool = False,
     state = base.route_evidence.route_proofs[0].state_write.state_variable
     dag = route_model.DecisionDagRouteWitness(
         state, 7, 2, 0x3000, (2,), (0x3000,),
-        ((2, RouteComparison(2, "jz", 7, 4, 3)),), (),
+        (route_model.DecisionDagComparisonWitness(2, RouteComparison(2, "jz", 7, 4, 3), state),), (),
     )
     partition_witness = route_model.StatePartitionGroupWitness(
         authority_id("3b3-partition-group"), 1, 0x2000, state,
@@ -22634,6 +24890,20 @@ def _compiler_split_case(*, corridor_length: int = 1, corridor: bool = False,
         route_model.SemanticRouteFactKind.STATE_PARTITION if partition else route_model.SemanticRouteFactKind.NATIVE_BOUND,
         0, 1, 0x2000, 7, 4, 0x1000, 0x5000, (0, 1), ((0, 1),),
         authority_id("3b3-split-fact"),
+        physical_state_write=(
+            route_model.SemanticPhysicalStateWriteWitness(
+                route_model._instruction_projection(next(
+                    instruction
+                    for instruction in source.blocks[1].insn_snapshots
+                    if int(instruction.ea) == 0x2000
+                )),
+                state,
+                4,
+                7,
+            )
+            if not partition
+            else None
+        ),
         partition_witness=(partition_witness if partition else None),
         decision_dag_witness=(dag if partition else None),
     )
@@ -22783,7 +25053,7 @@ def _compiler_empty_split_unsupported_case(*, proof_kind):
     if proof_kind is route_model.SemanticRouteProofKind.BOOTSTRAP:
         dag = DecisionDagRouteWitness(
             state, 7, 3, 0x4000, (3,), (0x4000,),
-            ((3, RouteComparison(3, "jz", 7, 4, 5)),), (),
+            tuple(DecisionDagComparisonWitness(serial, comparison, state) for serial, comparison in ((3, RouteComparison(3, "jz", 7, 4, 5)),)), (),
         )
         witness = SemanticBootstrapRouteWitness(
             0, 1, 0x2000, 2, 3, state, 7, 4,
@@ -23153,7 +25423,7 @@ def _compiler_exact_dag_or_bootstrap_corridor_case(*, proof_kind):
             0x3000, 0x5000, (0,), (), authority_id("3b3-corridor-dag"),
             decision_dag_witness=DecisionDagRouteWitness(
                 state, 7, 1, 0x4000, (1,), (0x4000,),
-                ((1, RouteComparison(1, "jz", 7, 2, 3)),), (),
+                tuple(DecisionDagComparisonWitness(serial, comparison, state) for serial, comparison in ((1, RouteComparison(1, "jz", 7, 2, 3)),)), (),
             ),
         )
         from_serial, old_target, via_pred, clone_until = 0, 1, 5, 0
@@ -23171,7 +25441,7 @@ def _compiler_exact_dag_or_bootstrap_corridor_case(*, proof_kind):
         blocks = {5: entry, 0: p, 6: q0, 1: dispatcher, 2: destination, 3: other}
         dag = DecisionDagRouteWitness(
             state, 7, 1, 0x4000, (1,), (0x4000,),
-            ((1, RouteComparison(1, "jz", 7, 2, 3)),), (),
+            tuple(DecisionDagComparisonWitness(serial, comparison, state) for serial, comparison in ((1, RouteComparison(1, "jz", 7, 2, 3)),)), (),
         )
         witness = SemanticBootstrapRouteWitness(
             5, 0, 0x3000, 6, 1, state, 7, 4,
@@ -24183,7 +26453,8 @@ def _c_two_local_alias_draft_inputs():
         insn_snapshots=(replace(
             second.insn_snapshots[0], kind=InsnKind.STORE,
             value_op_kind=ValueOpKind.STORE, display_text="alias2 = base2",
-            is_call=False,
+            is_call=False, l=first.insn_snapshots[0].l,
+            d=first.insn_snapshots[0].d,
         ), *second.insn_snapshots[1:]),
         tail_kind=InsnKind.STORE,
     )
@@ -24433,6 +26704,55 @@ def test_3b4_c_13_3_corridor_prefix_and_selected_clone_are_exactly_ordered():
     assert result.realization.rows[0].site_preservation.terminal_result_ids == ()
 
 
+def test_site_free_source_with_two_corridor_clones_has_no_single_site_owner_mapping():
+    """A clone-only source stays out of the single-valued site owner domain."""
+    values = _c_complete_kwargs(_three_b3_two_block_corridor_case)
+    accepted = realize_projected_routes_for_test(**values)
+    relation = accepted.realization.rows[0].relation
+    source_owner = relation.source_corridor[0]
+    clone_occurrences = (
+        ("corridor-a", source_owner, relation.cloned_corridor[0]),
+        ("corridor-b", source_owner, relation.cloned_corridor[1]),
+    )
+
+    assert not any(
+        row.owner_ref == source_owner.ref
+        for row in (
+            *values["source_inventory"].effects,
+            *values["source_inventory"].terminals,
+        )
+    )
+    assert bind._canonical_semantic_site_owner_mapping(
+        source_inventory=values["source_inventory"],
+        source_owner=source_owner,
+        clone_occurrences=clone_occurrences,
+    ) is None
+
+
+def test_site_bearing_source_with_two_corridor_clones_still_rejects():
+    """A site-bearing source cannot be reduced to one arbitrary clone."""
+    case = _task_15_corridor_two_block_vertical_case()
+    values = _task_15_corridor_vertical_inputs(case)
+    accepted = bind.realize_projected_routes(**values)
+    relation = accepted.realization.rows[0].relation
+    source_owner = relation.source_corridor[0]
+    clone_occurrences = (
+        ("corridor-a", source_owner, relation.cloned_corridor[0]),
+        ("corridor-b", source_owner, relation.cloned_corridor[1]),
+    )
+
+    assert any(
+        row.owner_ref == source_owner.ref
+        for row in values["source_inventory"].effects
+    )
+    with pytest.raises(ValueError, match="conflicting clone mappings"):
+        bind._canonical_semantic_site_owner_mapping(
+            source_inventory=values["source_inventory"],
+            source_owner=source_owner,
+            clone_occurrences=clone_occurrences,
+        )
+
+
 def test_3b4_c_13_3_synthesized_stop_has_none_ordinal_and_exact_owner():
     """13.3(11): synthesized STOP is identified by owner plus ordinal None."""
     _plan, source, _projected = _3b4a_inventory_pair(synthesized_stop=True)
@@ -24653,72 +26973,6 @@ def test_3b4_c_13_4_exact_effect_coordinate_matrix(field, delta):
         mutated = _clone_record(phase, **{field: delta})
     with pytest.raises((ValueError, TypeError)):
         bind.validate_projected_site_phase_result(_clone_record(phase, effect_results=(mutated,)))
-
-
-@pytest.mark.parametrize(
-    "variant",
-    ("exact_call_loss", "exact_store_loss", "latent_observed_handoff",
-     "wrong_proof", "same_ea_drift", "missing_binding", "foreign_binding",
-     "equal_clone_binding", "raw_retained_without_binding", "co_located_noreturn"),
-)
-def test_3b4_c_13_4_effect_disposition_is_not_authority_by_itself(variant):
-    """13.4: effect disposition requires exact binding and cannot discharge terminal rows."""
-    from d810.transforms.unflatten_authority.gates import GenericEffectfulGateFacts
-
-    values = _c_complete_kwargs(_compiler_redirect_goto_case)
-    if variant in {"exact_call_loss", "raw_retained_without_binding", "co_located_noreturn"}:
-        owners = frozenset(row.owner_serial for row in values["source_inventory"].effects)
-        values["raw_effect_gate_fact"] = bind.bind_raw_effect_gate_phase_fact(
-            source_inventory=values["source_inventory"],
-            projected_inventory=values["projected_inventory"],
-            raw_gate_facts=GenericEffectfulGateFacts(
-                False, owners, frozenset(), owners, "call-loss",
-            ),
-        )
-        result = realize_projected_routes_for_test(**values)
-        _assert_failure(
-            result,
-            model.RouteRealizationFailureStage.ATTEMPT_BINDING,
-            model.RouteRealizationFailureScope.EVIDENCE,
-        )
-        return
-    if variant == "exact_store_loss":
-        authority, _plan, source, projected, _lineage, attempt, derived = (
-            _task_15_direct_vertical_case(local_alias=True, derive_transaction=True)
-        )
-        inventory = bind._bind_transaction_projected_claim_inventory(
-            derived=derived, source_authority=authority, attempt_id=attempt,
-            projected_inventory=projected,
-        )
-        values = _task_15_vertical_inputs_from_claim_inventory(inventory)
-        original = derived.local_alias_occurrences
-        object.__setattr__(derived, "local_alias_occurrences", ())
-        try:
-            with pytest.raises((TypeError, ValueError)):
-                bind._realize_projected_routes_from_claim_inventory(
-                    authority_id=values["authority_id"],
-                    claim_inventory=values["claim_inventory"],
-                    raw_effect_gate_fact=values["raw_effect_gate_fact"],
-                    legacy_effective_gate_facts=values["legacy_effective_gate_facts"],
-                )
-        finally:
-            object.__setattr__(derived, "local_alias_occurrences", original)
-        return
-    result = realize_projected_routes_for_test(**values)
-    if variant == "latent_observed_handoff":
-        assert type(result) is model.ProjectedRouteRealizationAccepted
-        # Preserved effects intentionally have no exact-loss binding in the
-        # transaction-owned closure.
-        assert result.realization.site_phase_result.effect_results[0].latent_exact_binding_result_id is None
-        return
-    # Coordinate mutations are applied to the real minted result, not rerun
-    # through a generic route rejection.
-    assert type(result) is model.ProjectedRouteRealizationAccepted
-    phase = result.realization.site_phase_result
-    effect = phase.effect_results[0]
-    mutated = _clone_record(effect, supporting_claim_id=authority_id("wrong-proof")) if variant == "wrong_proof" else _clone_record(phase, source_inventory_digest=authority_id("wrong-inventory"))
-    with pytest.raises((TypeError, ValueError)):
-        (bind.validate_projected_effect_site_result(mutated) if type(mutated) is model.ProjectedEffectSiteResult else bind.validate_projected_site_phase_result(mutated))
 
 
 def test_3b4_c_13_4_exact_effect_claim_is_carried_by_source_authority() -> None:

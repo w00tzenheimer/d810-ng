@@ -18,8 +18,18 @@ from d810.ir.block_identity import (
     stable_block_identities_refine_at_anchor,
     stable_block_identity_from_snapshot,
 )
-from d810.ir.flowgraph import BlockKind, BlockSnapshot, FlowGraph, OperandKind
+from d810.ir.flowgraph import (
+    BlockKind,
+    BlockSnapshot,
+    FlowGraph,
+    InsnSnapshot,
+    OperandKind,
+)
 from d810.ir.graph_fingerprint import (
+    InsnRecord,
+    MopRecord,
+    _instruction_projection,
+    instruction_projection_without_block_references,
     portable_graph_fingerprint,
     portable_graph_fingerprint_values,
 )
@@ -38,7 +48,11 @@ from d810.analyses.control_flow.state_machine_analysis import (
 )
 from d810.ir.semantic_edge import SemanticEdgeRole
 from d810.ir.semantics import ControlTransferKind, PredicateKind
-from d810.ir.storage_identity import StorageIdentity, StorageIdentityKind
+from d810.ir.storage_identity import (
+    StorageIdentity,
+    StorageIdentityKind,
+    storage_identity_from_mop_snapshot,
+)
 from d810.ir.varnode import Space, varnode_from_mop_snapshot
 from d810.ir.varnode import Varnode
 from d810.ir.instructions import Instruction, InstructionEffectSite
@@ -48,6 +62,11 @@ from d810.analyses.control_flow.route_predicate import DecisionDag, RouteCompari
 from d810.analyses.control_flow.route_comparison import (
     current_u32_route_alias,
     current_u32_route_comparison,
+    exact_u32_xdu_namespace_bridge,
+    ExactU32XduNamespaceBridge,
+)
+from d810.analyses.control_flow.logical_route_endpoint import (
+    is_exact_logical_function_exit_shape,
 )
 from d810.analyses.control_flow.terminal_return_carrier_evidence import (
     TerminalReturnCarrierEvidence,
@@ -59,6 +78,9 @@ from d810.analyses.control_flow.state_carrier import (
     prove_exact_u32_carrier_state_write,
     prove_exact_u32_state_delivery,
     prove_exact_u32_state_transform_feeder,
+)
+from d810.analyses.control_flow.switch_table_analysis import (
+    analyze_switch_table_at_dispatcher,
 )
 
 
@@ -105,15 +127,461 @@ class SemanticStateWriteDeliveryKind(str, Enum):
     CONDITIONAL = "conditional"
 
 
+class SemanticPhysicalWriteByteOrder(str, Enum):
+    """Typed byte order for a physical write projected into dispatcher state."""
+
+    LITTLE = "little"
+
+
 class SemanticRouteFactKind(str, Enum):
     """Typed recovery oracle that can be promoted into one canonical proof."""
 
     DECISION_DAG = "decision_dag"
+    DISPATCHER_MAP = "dispatcher_map"
     NATIVE_BOUND = "native_bound"
     STATE_TRANSFORM = "state_transform"
     STATE_CARRIER = "state_carrier"
     STATE_PARTITION = "state_partition"
     BOOTSTRAP = "bootstrap"
+
+
+@dataclass(frozen=True, slots=True)
+class SemanticRecoveredStateWriteWitness:
+    """Exact source operation plus its independently recovered U32 result.
+
+    Non-literal MOV, VALUE, ADD, and SUB state writes are not self-describing
+    literal assignments.
+    The producer therefore supplies both the exact immutable source operation
+    and the state-recovery result it used for the arm route.  Canonical binding
+    replays the operation identity and requires that recovered result to agree
+    with the route destination; it never infers a replacement value from an
+    arbitrary expression at bind time.
+    """
+
+    source_instruction: InsnRecord
+    state_identity: StorageIdentity
+    width: int
+    recovered_state: int
+
+    def __post_init__(self) -> None:
+        if type(self.source_instruction) is not InsnRecord:
+            raise TypeError("recovered state write requires an exact instruction record")
+        if not isinstance(self.state_identity, StorageIdentity):
+            raise TypeError("recovered state write requires storage identity")
+        if self.source_instruction.kind not in (
+            InsnKind.MOV,
+            InsnKind.VALUE,
+            InsnKind.ADD,
+            InsnKind.SUB,
+        ):
+            raise SemanticRouteEvidenceRejected(
+                "recovered state write requires MOV, VALUE, ADD, or SUB source operation"
+            )
+        destination = self.source_instruction.d
+        if (
+            destination is None
+            or storage_identity_from_mop_snapshot(destination) != self.state_identity
+            or int(destination.size) != 4
+        ):
+            raise SemanticRouteEvidenceRejected(
+                "recovered state write destination must be the exact U32 state slot"
+            )
+        source_ea = int(self.source_instruction.native_ea or self.source_instruction.ea)
+        _native_ea(source_ea, "recovered state-write instruction")
+        if type(self.width) is not int or self.width != 4:
+            raise SemanticRouteEvidenceRejected(
+                "recovered state write width must be exactly 4 bytes"
+            )
+        if type(self.recovered_state) is not int:
+            raise TypeError("recovered state write result must be an exact U32")
+        if not 0 <= self.recovered_state <= 0xFFFFFFFF:
+            raise SemanticRouteEvidenceRejected(
+                "recovered state write result must be exact U32"
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class SemanticPhysicalGuardSelectionWitness:
+    """Source-snapshot proof of one full-width guarded physical delivery."""
+
+    guard_serial: int
+    comparison_instruction: InsnRecord
+    state_identity: StorageIdentity
+    width: int
+    constant: int
+    true_target_serial: int
+    false_target_serial: int
+    selected_target_serial: int
+
+    def __post_init__(self) -> None:
+        if type(self.comparison_instruction) is not InsnRecord:
+            raise TypeError("physical guard selection requires an exact comparison")
+        if not isinstance(self.state_identity, StorageIdentity):
+            raise TypeError("physical guard selection requires typed state identity")
+        coordinates = (
+            self.guard_serial,
+            self.true_target_serial,
+            self.false_target_serial,
+            self.selected_target_serial,
+        )
+        if any(type(item) is not int or item < 0 for item in coordinates):
+            raise SemanticRouteEvidenceRejected(
+                "physical guard selection requires exact non-negative serials"
+            )
+        if (
+            self.true_target_serial == self.false_target_serial
+            or self.selected_target_serial
+            not in {self.true_target_serial, self.false_target_serial}
+        ):
+            raise SemanticRouteEvidenceRejected(
+                "physical guard selection requires one exact selected edge"
+            )
+        width = int(self.width)
+        if type(self.width) is not int or width not in {1, 2, 4, 8}:
+            raise SemanticRouteEvidenceRejected(
+                "physical guard selection requires an exact scalar width"
+            )
+        if type(self.constant) is not int or not 0 <= self.constant < (1 << (8 * width)):
+            raise SemanticRouteEvidenceRejected(
+                "physical guard selection constant is outside its width"
+            )
+        comparison = self.comparison_instruction
+        if (
+            comparison.kind not in {InsnKind.COND_JUMP, InsnKind.EQUALITY_JUMP}
+            or comparison.control_transfer_kind
+            is not ControlTransferKind.CONDITIONAL_BRANCH
+            or comparison.branch_predicate not in {PredicateKind.EQ, PredicateKind.NE}
+            or not comparison.is_conditional_jump
+        ):
+            raise SemanticRouteEvidenceRejected(
+                "physical guard selection requires an equality branch"
+            )
+        state_operand, constant_operand = _guard_state_and_constant_records(
+            comparison,
+            self.state_identity,
+        )
+        if (
+            state_operand is None
+            or constant_operand is None
+            or int(state_operand.size) != width
+            or int(constant_operand.size) != width
+            or constant_operand.value is None
+            or int(constant_operand.value) != int(self.constant)
+        ):
+            raise SemanticRouteEvidenceRejected(
+                "physical guard selection operands do not match its exact value"
+            )
+        expected_selected = (
+            int(self.true_target_serial)
+            if comparison.branch_predicate is PredicateKind.EQ
+            else int(self.false_target_serial)
+        )
+        if int(self.selected_target_serial) != expected_selected:
+            raise SemanticRouteEvidenceRejected(
+                "physical guard selection polarity does not select its target"
+            )
+
+
+def _guard_record_storage_identity(
+    record: MopRecord | None,
+) -> StorageIdentity | None:
+    if record is None:
+        return None
+    kind = record.kind
+    if kind is OperandKind.STACK and record.stkoff is not None:
+        return StorageIdentity(StorageIdentityKind.STACK, int(record.stkoff))
+    if kind is OperandKind.REGISTER and record.reg is not None:
+        return StorageIdentity(StorageIdentityKind.REGISTER, int(record.reg))
+    return None
+
+
+def _guard_state_and_constant_records(
+    comparison: InsnRecord,
+    state_identity: StorageIdentity,
+) -> tuple[MopRecord | None, MopRecord | None]:
+    left, right = comparison.l, comparison.r
+    if (
+        _guard_record_storage_identity(left) == state_identity
+        and right is not None
+        and right.kind is OperandKind.NUMBER
+    ):
+        return left, right
+    if (
+        _guard_record_storage_identity(right) == state_identity
+        and left is not None
+        and left.kind is OperandKind.NUMBER
+    ):
+        return right, left
+    return None, None
+
+
+@dataclass(frozen=True, slots=True)
+class SemanticPhysicalStateWriteWitness:
+    """One exact physical write whose low U32 selects the dispatcher route.
+
+    A native route receipt identifies the producer decision.  It need not be
+    the instruction which stores that decision into the dispatcher state slot:
+    a source block may first materialize the constant in a carrier register and
+    then perform the physical stack write.  Keeping these coordinates separate
+    prevents canonical binding from relabelling receipt provenance as a write.
+    """
+
+    source_instruction: InsnRecord
+    state_identity: StorageIdentity
+    width: int
+    state_constant: int
+    source_serial: int | None = None
+    alias_definition_instruction: InsnRecord | None = None
+    alias_definition_serial: int | None = None
+    physical_width: int = 4
+    state_lane_offset: int = 0
+    byte_order: SemanticPhysicalWriteByteOrder = SemanticPhysicalWriteByteOrder.LITTLE
+    guarded_selection: SemanticPhysicalGuardSelectionWitness | None = None
+
+    def __post_init__(self) -> None:
+        if type(self.source_instruction) is not InsnRecord:
+            raise TypeError("physical state write requires an exact instruction record")
+        if not isinstance(self.state_identity, StorageIdentity):
+            raise TypeError("physical state write requires storage identity")
+        if self.source_instruction.kind not in {InsnKind.MOV, InsnKind.STORE}:
+            raise SemanticRouteEvidenceRejected(
+                "physical state write requires MOV or proven alias STORE operation"
+            )
+        source_ea = int(self.source_instruction.native_ea or self.source_instruction.ea)
+        _native_ea(source_ea, "physical state-write instruction")
+        if type(self.width) is not int or self.width != 4:
+            raise SemanticRouteEvidenceRejected(
+                "physical state write width must be exactly 4 bytes"
+            )
+        if type(self.state_constant) is not int or not 0 <= self.state_constant <= 0xFFFFFFFF:
+            raise SemanticRouteEvidenceRejected(
+                "physical state write requires an exact U32 state constant"
+            )
+        if type(self.physical_width) is not int or type(self.state_lane_offset) is not int:
+            raise TypeError("physical state-write projection requires exact integer coordinates")
+        if not isinstance(self.byte_order, SemanticPhysicalWriteByteOrder):
+            raise TypeError("physical state-write projection requires typed byte order")
+        physical_width = int(self.physical_width)
+        state_lane_offset = int(self.state_lane_offset)
+        source_value = self.source_instruction.l
+        if (
+            physical_width not in {4, 8}
+            or state_lane_offset != 0
+            or self.byte_order is not SemanticPhysicalWriteByteOrder.LITTLE
+            or source_value is None
+            or source_value.kind is not OperandKind.NUMBER
+            or source_value.value is None
+            or int(source_value.size) != physical_width
+            or state_lane_offset + int(self.width) > physical_width
+            or (
+                (int(source_value.value) >> (8 * state_lane_offset))
+                & ((1 << (8 * int(self.width))) - 1)
+            )
+            != int(self.state_constant)
+        ):
+            raise SemanticRouteEvidenceRejected(
+                "physical state write requires an exact little-endian U32 lane"
+            )
+        if self.source_instruction.kind is InsnKind.MOV and physical_width != int(self.width):
+            raise SemanticRouteEvidenceRejected(
+                "direct physical MOV cannot widen the dispatcher state lane"
+            )
+        object.__setattr__(self, "physical_width", physical_width)
+        object.__setattr__(self, "state_lane_offset", state_lane_offset)
+        source_serial = self.source_serial
+        if source_serial is not None:
+            if type(source_serial) is not int or source_serial < 0:
+                raise SemanticRouteEvidenceRejected(
+                    "physical state write source serial must be exact and non-negative"
+                )
+            object.__setattr__(self, "source_serial", int(source_serial))
+        guarded = self.guarded_selection
+        if guarded is not None:
+            if (
+                type(guarded) is not SemanticPhysicalGuardSelectionWitness
+                or self.source_instruction.kind is not InsnKind.STORE
+                or source_serial is None
+                or int(guarded.guard_serial) != int(source_serial)
+                or guarded.state_identity != self.state_identity
+                or int(guarded.width) != physical_width
+                or self.source_instruction.l is None
+                or self.source_instruction.l.value is None
+                or int(self.source_instruction.l.value) != int(guarded.constant)
+                or int(
+                    guarded.comparison_instruction.native_ea
+                    or guarded.comparison_instruction.ea
+                )
+                <= source_ea
+            ):
+                raise SemanticRouteEvidenceRejected(
+                    "physical state write guarded selection does not match its STORE"
+                )
+        alias_definition = self.alias_definition_instruction
+        alias_serial = self.alias_definition_serial
+        if self.source_instruction.kind is InsnKind.MOV:
+            if alias_definition is not None or alias_serial is not None:
+                raise SemanticRouteEvidenceRejected(
+                    "direct physical MOV cannot carry stack-address alias evidence"
+                )
+            return
+        if (
+            type(alias_definition) is not InsnRecord
+            or type(alias_serial) is not int
+            or alias_serial < 0
+            or self.state_identity.kind is not StorageIdentityKind.STACK
+        ):
+            raise SemanticRouteEvidenceRejected(
+                "physical alias STORE requires one exact predecessor alias definition"
+            )
+        alias_ea = int(alias_definition.native_ea or alias_definition.ea)
+        _native_ea(alias_ea, "physical state-write alias definition")
+        store = self.source_instruction
+        if (
+            alias_definition.kind is not InsnKind.MOV
+            or alias_definition.l is None
+            or alias_definition.d is None
+            or alias_definition.d.kind is not OperandKind.REGISTER
+            or tuple(int(item) for item in alias_definition.l.stack_refs)
+            != (int(self.state_identity.offset),)
+            or store.d is None
+            or store.d.kind is not OperandKind.REGISTER
+            or int(store.d.reg) != int(alias_definition.d.reg)
+            or store.l is None
+            or store.l.kind is not OperandKind.NUMBER
+            or int(store.l.size) not in {4, 8}
+            or store.l.value is None
+            or (int(store.l.value) & 0xFFFFFFFF) != int(self.state_constant)
+        ):
+            raise SemanticRouteEvidenceRejected(
+                "physical alias STORE does not match its exact state alias and constant"
+            )
+        object.__setattr__(self, "alias_definition_serial", int(alias_serial))
+
+
+def prove_semantic_physical_guard_selection(
+    flow_graph: FlowGraph,
+    *,
+    guard_serial: int,
+    selected_target_serial: int,
+    physical_state_write: SemanticPhysicalStateWriteWitness,
+) -> SemanticPhysicalGuardSelectionWitness | None:
+    """Replay one exact STORE-then-full-width equality selection from a graph."""
+
+    if not isinstance(physical_state_write, SemanticPhysicalStateWriteWitness):
+        return None
+    if (
+        physical_state_write.source_instruction.kind is not InsnKind.STORE
+        or physical_state_write.source_serial is None
+        or int(physical_state_write.source_serial) != int(guard_serial)
+    ):
+        return None
+    block = flow_graph.get_block(int(guard_serial))
+    if block is None:
+        return None
+    successors = tuple(int(item) for item in block.succs)
+    if len(successors) != 2 or len(set(successors)) != 2:
+        return None
+    for target in successors:
+        target_block = flow_graph.get_block(target)
+        if target_block is None or int(guard_serial) not in {
+            int(item) for item in target_block.preds
+        }:
+            return None
+    snapshots = tuple(block.insn_snapshots)
+    store_indices = tuple(
+        index
+        for index, snapshot in enumerate(snapshots)
+        if _instruction_projection(snapshot)
+        == physical_state_write.source_instruction
+    )
+    branch_indices = tuple(
+        index
+        for index, snapshot in enumerate(snapshots)
+        if snapshot.control_transfer_kind
+        is ControlTransferKind.CONDITIONAL_BRANCH
+    )
+    if (
+        len(store_indices) != 1
+        or len(branch_indices) != 1
+        or store_indices[0] >= branch_indices[0]
+        or branch_indices[0] != len(snapshots) - 1
+    ):
+        return None
+    store_index = store_indices[0]
+    branch_index = branch_indices[0]
+    branch_snapshot = snapshots[branch_index]
+    branch_instruction = project_instruction(branch_snapshot)
+    if (
+        branch_instruction.control is None
+        or branch_instruction.control.transfer
+        is not ControlTransferKind.CONDITIONAL_BRANCH
+        or branch_instruction.control.predicate not in {PredicateKind.EQ, PredicateKind.NE}
+        or branch_instruction.control.target not in successors
+        or len(branch_instruction.inputs) != 2
+        or branch_instruction.effects
+        or branch_instruction.memory is not None
+    ):
+        return None
+    state_operand, constant_operand = branch_instruction.inputs
+    if storage_identity_from_varnode(state_operand) != physical_state_write.state_identity:
+        state_operand, constant_operand = constant_operand, state_operand
+    width = int(physical_state_write.physical_width)
+    full_value_record = physical_state_write.source_instruction.l
+    if (
+        storage_identity_from_varnode(state_operand)
+        != physical_state_write.state_identity
+        or int(state_operand.size) != width
+        or constant_operand.space is not Space.CONST
+        or int(constant_operand.size) != width
+        or full_value_record is None
+        or full_value_record.value is None
+        or int(full_value_record.size) != width
+        or int(constant_operand.offset) != int(full_value_record.value)
+    ):
+        return None
+    for snapshot in snapshots[store_index + 1 : branch_index]:
+        instruction = project_instruction(snapshot)
+        if (
+            instruction.effects
+            or instruction.memory is not None
+            or instruction.control is not None
+            or (
+                instruction.result is not None
+                and (
+                    instruction.result in {state_operand, constant_operand}
+                    or storage_identity_from_varnode(instruction.result)
+                    == physical_state_write.state_identity
+                )
+            )
+        ):
+            return None
+    true_target = int(branch_instruction.control.target)
+    false_targets = tuple(item for item in successors if item != true_target)
+    if len(false_targets) != 1:
+        return None
+    false_target = false_targets[0]
+    selected = (
+        true_target
+        if branch_instruction.control.predicate is PredicateKind.EQ
+        else false_target
+    )
+    if int(selected_target_serial) != selected:
+        return None
+    try:
+        return SemanticPhysicalGuardSelectionWitness(
+            guard_serial=int(guard_serial),
+            comparison_instruction=instruction_projection_without_block_references(
+                branch_snapshot
+            ),
+            state_identity=physical_state_write.state_identity,
+            width=width,
+            constant=int(constant_operand.offset),
+            true_target_serial=true_target,
+            false_target_serial=false_target,
+            selected_target_serial=selected,
+        )
+    except (SemanticRouteEvidenceRejected, TypeError, ValueError):
+        return None
 
 
 @dataclass(frozen=True, slots=True)
@@ -306,6 +774,8 @@ class SemanticRouteFact:
     partition_witness: StatePartitionGroupWitness | None = None
     decision_dag_witness: "DecisionDagRouteWitness | None" = None
     bootstrap_witness: SemanticBootstrapRouteWitness | None = None
+    recovered_state_write: SemanticRecoveredStateWriteWitness | None = None
+    physical_state_write: SemanticPhysicalStateWriteWitness | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.kind, SemanticRouteFactKind):
@@ -401,6 +871,32 @@ class SemanticRouteFact:
                 raise SemanticRouteEvidenceRejected("bootstrap route fact does not match its witness")
         elif self.bootstrap_witness is not None:
             raise TypeError("only a bootstrap route fact may carry a bootstrap witness")
+        if self.recovered_state_write is not None:
+            witness = self.recovered_state_write
+            if (
+                self.kind not in {
+                    SemanticRouteFactKind.DECISION_DAG,
+                    SemanticRouteFactKind.DISPATCHER_MAP,
+                }
+                or int(witness.source_instruction.native_ea or witness.source_instruction.ea)
+                != int(self.source_instruction_ea)
+                or witness.recovered_state != int(self.state_constant)
+            ):
+                raise SemanticRouteEvidenceRejected(
+                    "recovered state write does not match decision-DAG route"
+                )
+        if self.physical_state_write is not None:
+            witness = self.physical_state_write
+            if (
+                self.kind not in {
+                    SemanticRouteFactKind.NATIVE_BOUND,
+                    SemanticRouteFactKind.DECISION_DAG,
+                }
+                or witness.state_constant != int(self.state_constant)
+            ):
+                raise SemanticRouteEvidenceRejected(
+                    "physical state write does not match its exact route"
+                )
         if self.decision_dag_witness is not None and self.kind not in {
             SemanticRouteFactKind.DECISION_DAG,
             SemanticRouteFactKind.STATE_PARTITION,
@@ -582,31 +1078,122 @@ class SemanticLogicalDagEndpoint:
             raise SemanticRouteEvidenceRejected(
                 "semantic logical DAG endpoint must be a function exit"
             )
-        serial = int(self.serial)
-        version = int(self.version)
-        if serial < 0 or version < 0:
+        if type(self.serial) is not int or type(self.version) is not int:
+            raise TypeError("semantic logical DAG endpoint coordinates must be exact ints")
+        if self.serial < 0 or self.version < 0:
             raise SemanticRouteEvidenceRejected(
                 "semantic logical DAG endpoint coordinates must be non-negative"
             )
-        object.__setattr__(self, "serial", serial)
-        object.__setattr__(self, "version", version)
-        object.__setattr__(self, "session_id", _identifier(self.session_id, "semantic logical endpoint session"))
-        object.__setattr__(self, "proxy_token", _identifier(self.proxy_token, "semantic logical endpoint token"))
+        for value, label in (
+            (self.session_id, "semantic logical endpoint session"),
+            (self.proxy_token, "semantic logical endpoint token"),
+        ):
+            if type(value) is not str:
+                raise TypeError(f"{label} must be an exact string")
+            if not value.strip():
+                raise SemanticRouteEvidenceRejected(f"{label} must not be empty")
 
 
 SemanticDagEndpoint = SemanticCorridorPoint | SemanticLogicalDagEndpoint
 
 
-def _is_exact_logical_function_exit(block: BlockSnapshot | None) -> bool:
-    """Whether one snapshot block is the sole admitted logical DAG leaf."""
-    return bool(
-        block is not None
-        and int(block.start_ea) == _BADADDR
-        and block.native_start_ea is None
-        and block.kind is BlockKind.ZERO_WAY
-        and not block.succs
-        and not block.insn_snapshots
-    )
+_is_exact_logical_function_exit = is_exact_logical_function_exit_shape
+
+
+@dataclass(frozen=True, slots=True)
+class SemanticGuardedStateSelection:
+    """Stable full-width equality edge selected by one physical STORE."""
+
+    guard: SemanticCorridorPoint
+    comparison_instruction: InsnRecord
+    state_identity: StorageIdentity
+    width: int
+    constant: int
+    true_target: SemanticDagEndpoint
+    false_target: SemanticDagEndpoint
+    selected_target: SemanticDagEndpoint
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.guard, SemanticCorridorPoint):
+            raise TypeError("guarded state selection requires a stable guard")
+        if type(self.comparison_instruction) is not InsnRecord:
+            raise TypeError("guarded state selection requires an exact comparison")
+        if not isinstance(self.state_identity, StorageIdentity):
+            raise TypeError("guarded state selection requires typed state identity")
+        endpoints = (self.true_target, self.false_target, self.selected_target)
+        if any(
+            type(endpoint) not in {SemanticCorridorPoint, SemanticLogicalDagEndpoint}
+            for endpoint in endpoints
+        ):
+            raise TypeError("guarded state selection requires typed stable endpoints")
+        if self.true_target == self.false_target or self.selected_target not in {
+            self.true_target,
+            self.false_target,
+        }:
+            raise SemanticRouteEvidenceRejected(
+                "guarded state selection requires one exact selected edge"
+            )
+        native_key = self.guard.native_key
+        if any(
+            type(endpoint) is SemanticCorridorPoint
+            and endpoint.native_key != native_key
+            for endpoint in endpoints
+        ):
+            raise SemanticRouteEvidenceRejected(
+                "guarded state selection endpoints require one native key"
+            )
+        comparison_ea = int(
+            self.comparison_instruction.native_ea
+            or self.comparison_instruction.ea
+        )
+        if not self.guard.identity.native_ranges.contains(comparison_ea):
+            raise SemanticRouteEvidenceRejected(
+                "guarded state selection comparison is outside its guard"
+            )
+        width = int(self.width)
+        if type(self.width) is not int or width not in {1, 2, 4, 8}:
+            raise SemanticRouteEvidenceRejected(
+                "guarded state selection requires an exact scalar width"
+            )
+        if type(self.constant) is not int or not 0 <= self.constant < (1 << (8 * width)):
+            raise SemanticRouteEvidenceRejected(
+                "guarded state selection constant is outside its width"
+            )
+        comparison = self.comparison_instruction
+        if (
+            comparison.kind not in {InsnKind.COND_JUMP, InsnKind.EQUALITY_JUMP}
+            or comparison.control_transfer_kind
+            is not ControlTransferKind.CONDITIONAL_BRANCH
+            or comparison.branch_predicate not in {PredicateKind.EQ, PredicateKind.NE}
+            or not comparison.is_conditional_jump
+        ):
+            raise SemanticRouteEvidenceRejected(
+                "guarded state selection requires an equality branch"
+            )
+        state_operand, constant_operand = _guard_state_and_constant_records(
+            comparison,
+            self.state_identity,
+        )
+        if (
+            state_operand is None
+            or constant_operand is None
+            or int(state_operand.size) != width
+            or int(constant_operand.size) != width
+            or constant_operand.value is None
+            or int(constant_operand.value) != int(self.constant)
+        ):
+            raise SemanticRouteEvidenceRejected(
+                "guarded state selection operands do not match its exact value"
+            )
+        expected_selected = (
+            self.true_target
+            if comparison.branch_predicate is PredicateKind.EQ
+            else self.false_target
+        )
+        if self.selected_target != expected_selected:
+            raise SemanticRouteEvidenceRejected(
+                "guarded state selection polarity does not select its target"
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -858,6 +1445,135 @@ class SemanticRouteDestination:
 
 
 @dataclass(frozen=True, slots=True)
+class SemanticPhysicalDeliveryMember:
+    """One stable physical state writer entering a shared delivery GOTO."""
+
+    identity: StableBlockIdentity
+    instruction_ea: int
+    physical_state_write: SemanticPhysicalStateWriteWitness
+    alias_definition: SemanticCorridorPoint | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.identity, StableBlockIdentity):
+            raise TypeError("physical delivery member requires stable identity")
+        instruction_ea = _native_ea(
+            self.instruction_ea,
+            "physical delivery member instruction",
+        )
+        if not self.identity.native_ranges.contains(instruction_ea):
+            raise SemanticRouteEvidenceRejected(
+                "physical delivery member instruction is outside its identity"
+            )
+        physical = self.physical_state_write
+        if not isinstance(physical, SemanticPhysicalStateWriteWitness):
+            raise TypeError("physical delivery member requires a typed state write")
+        if int(physical.width) != 4:
+            raise SemanticRouteEvidenceRejected(
+                "physical delivery member must be an exact U32 write"
+            )
+        if int(
+            physical.source_instruction.native_ea
+            or physical.source_instruction.ea
+        ) != instruction_ea:
+            raise SemanticRouteEvidenceRejected(
+                "physical delivery member projection has a different coordinate"
+            )
+        alias = self.alias_definition
+        if physical.source_instruction.kind is InsnKind.MOV:
+            if alias is not None:
+                raise SemanticRouteEvidenceRejected(
+                    "direct physical delivery cannot carry alias authority"
+                )
+        elif (
+            physical.source_instruction.kind is not InsnKind.STORE
+            or not isinstance(alias, SemanticCorridorPoint)
+            or physical.alias_definition_instruction is None
+            or int(
+                physical.alias_definition_instruction.native_ea
+                or physical.alias_definition_instruction.ea
+            )
+            != int(alias.anchor_ea)
+            or alias.identity.native_key != self.identity.native_key
+        ):
+            raise SemanticRouteEvidenceRejected(
+                "physical STORE delivery requires one exact alias definition"
+            )
+        object.__setattr__(self, "instruction_ea", instruction_ea)
+
+    @property
+    def state_identity(self) -> StorageIdentity:
+        return self.physical_state_write.state_identity
+
+    @property
+    def width(self) -> int:
+        return self.physical_state_write.width
+
+    @property
+    def state_constant(self) -> int:
+        return self.physical_state_write.state_constant
+
+    @property
+    def source_instruction(self) -> InsnRecord:
+        return self.physical_state_write.source_instruction
+
+
+@dataclass(frozen=True, slots=True)
+class SemanticPhysicalDeliveryProof:
+    """Exhaustive stable predecessor set for one physical delivery GOTO."""
+
+    delivery: SemanticCorridorPoint
+    delivery_instruction: InsnRecord
+    target: SemanticCorridorPoint
+    members: tuple[SemanticPhysicalDeliveryMember, ...]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.delivery, SemanticCorridorPoint):
+            raise TypeError("physical delivery proof requires a delivery point")
+        if not isinstance(self.delivery_instruction, InsnRecord):
+            raise TypeError("physical delivery proof requires an instruction projection")
+        if not isinstance(self.target, SemanticCorridorPoint):
+            raise TypeError("physical delivery proof requires a stable target")
+        if (
+            self.delivery_instruction.kind is not InsnKind.GOTO
+            or self.delivery_instruction.control_transfer_kind
+            is not ControlTransferKind.GOTO
+            or int(
+                self.delivery_instruction.native_ea
+                or self.delivery_instruction.ea
+            )
+            != int(self.delivery.anchor_ea)
+            or self.target.identity.native_key != self.delivery.identity.native_key
+        ):
+            raise SemanticRouteEvidenceRejected(
+                "physical delivery proof requires one exact GOTO target"
+            )
+        members = tuple(self.members)
+        if not members or any(
+            not isinstance(member, SemanticPhysicalDeliveryMember)
+            for member in members
+        ):
+            raise SemanticRouteEvidenceRejected(
+                "physical delivery proof requires typed members"
+            )
+        if any(
+            member.identity.native_key != self.delivery.identity.native_key
+            for member in members
+        ):
+            raise SemanticRouteEvidenceRejected(
+                "physical delivery proof identities require one native key"
+            )
+        keys = tuple(
+            (member.identity, int(member.instruction_ea))
+            for member in members
+        )
+        if len(keys) != len(set(keys)):
+            raise SemanticRouteEvidenceRejected(
+                "physical delivery proof contains duplicate members"
+            )
+        object.__setattr__(self, "members", members)
+
+
+@dataclass(frozen=True, slots=True)
 class SemanticStateWriteProof:
     """Exact portable state assignment and its delivery corridor."""
 
@@ -872,6 +1588,10 @@ class SemanticStateWriteProof:
     delivery_kind: SemanticStateWriteDeliveryKind = (
         SemanticStateWriteDeliveryKind.INDIRECT
     )
+    recovered_state_write: SemanticRecoveredStateWriteWitness | None = None
+    physical_state_write: SemanticPhysicalStateWriteWitness | None = None
+    physical_delivery: SemanticPhysicalDeliveryProof | None = None
+    guarded_selection: SemanticGuardedStateSelection | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.identity, StableBlockIdentity):
@@ -888,6 +1608,80 @@ class SemanticStateWriteProof:
             raise TypeError("semantic state write requires storage identity")
         if not isinstance(self.delivery_kind, SemanticStateWriteDeliveryKind):
             raise TypeError("semantic state write requires a typed delivery kind")
+        if self.recovered_state_write is not None:
+            witness = self.recovered_state_write
+            if (
+                int(witness.source_instruction.native_ea or witness.source_instruction.ea)
+                != instruction_ea
+                or witness.state_identity != self.state_variable
+                or int(witness.width) != int(self.width)
+                or int(witness.recovered_state) != (int(self.state_constant) & 0xFFFFFFFF)
+            ):
+                raise SemanticRouteEvidenceRejected(
+                    "recovered state write does not match canonical state assignment"
+                )
+        if self.physical_state_write is not None:
+            witness = self.physical_state_write
+            if (
+                int(witness.source_instruction.native_ea or witness.source_instruction.ea)
+                != instruction_ea
+                or witness.state_identity != self.state_variable
+                or int(witness.width) != int(self.width)
+                or int(witness.state_constant) != (int(self.state_constant) & 0xFFFFFFFF)
+                or witness.guarded_selection is not None
+            ):
+                raise SemanticRouteEvidenceRejected(
+                    "physical state write does not match canonical state assignment"
+                )
+        guarded_selection = self.guarded_selection
+        if guarded_selection is not None:
+            physical = self.physical_state_write
+            if (
+                not isinstance(guarded_selection, SemanticGuardedStateSelection)
+                or physical is None
+                or physical.source_instruction.kind is not InsnKind.STORE
+                or guarded_selection.guard.identity != self.identity
+                or guarded_selection.state_identity != self.state_variable
+                or int(guarded_selection.width) != int(physical.physical_width)
+                or physical.source_instruction.l is None
+                or physical.source_instruction.l.value is None
+                or int(physical.source_instruction.l.value)
+                != int(guarded_selection.constant)
+                or int(
+                    guarded_selection.comparison_instruction.native_ea
+                    or guarded_selection.comparison_instruction.ea
+                )
+                <= instruction_ea
+            ):
+                raise SemanticRouteEvidenceRejected(
+                    "guarded state selection does not match canonical physical STORE"
+                )
+        if self.physical_delivery is not None:
+            delivery = self.physical_delivery
+            if not isinstance(delivery, SemanticPhysicalDeliveryProof):
+                raise TypeError("semantic state write has an invalid physical delivery")
+            if self.physical_state_write is None:
+                raise SemanticRouteEvidenceRejected(
+                    "physical delivery requires an exact physical state write"
+                )
+            matching_members = tuple(
+                member
+                for member in delivery.members
+                if (
+                    member.identity == self.identity
+                    and member.instruction_ea == instruction_ea
+                    and member.state_identity == self.state_variable
+                    and member.width == int(self.width)
+                    and member.state_constant
+                    == (int(self.state_constant) & 0xFFFFFFFF)
+                    and member.physical_state_write
+                    == self.physical_state_write
+                )
+            )
+            if len(matching_members) != 1:
+                raise SemanticRouteEvidenceRejected(
+                    "physical delivery does not contain the selected state writer"
+                )
         width = int(self.width)
         if not 1 <= width <= 8:
             raise SemanticRouteEvidenceRejected(
@@ -946,6 +1740,65 @@ class SemanticStateWriteProof:
         )
 
 
+def _exact_physical_predecessor_owner_matches(
+    state_write: SemanticStateWriteProof | None,
+    *,
+    source_identity: StableBlockIdentity,
+    source_anchor_ea: int,
+    owner_identity: StableBlockIdentity | None,
+    owner_anchor_ea: int | None,
+) -> bool:
+    """Match one delivery writer through its canonical semantic owner."""
+
+    if (
+        state_write is None
+        or state_write.physical_state_write is None
+        or state_write.physical_delivery is None
+        or state_write.identity == source_identity
+        or state_write.physical_delivery.delivery
+        != SemanticCorridorPoint(source_identity, source_anchor_ea)
+        or state_write.corridor_instruction_eas[-1] != source_anchor_ea
+    ):
+        return False
+    members = tuple(
+        member
+        for member in state_write.physical_delivery.members
+        if member.identity == state_write.identity
+        and member.instruction_ea == state_write.instruction_ea
+        and member.physical_state_write == state_write.physical_state_write
+    )
+    if len(members) != 1:
+        return False
+    member = members[0]
+    physical_owner = (
+        member.alias_definition
+        if member.source_instruction.kind is InsnKind.STORE
+        else SemanticCorridorPoint(member.identity, member.instruction_ea)
+    )
+    return bool(
+        physical_owner is not None
+        and owner_identity == physical_owner.identity
+        and owner_anchor_ea == physical_owner.anchor_ea
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class DecisionDagComparisonWitness:
+    """One raw comparison with the namespace used at that exact node."""
+
+    serial: int
+    comparison: RouteComparison
+    state_identity: StorageIdentity
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.comparison, RouteComparison) or not isinstance(
+            self.state_identity, StorageIdentity
+        ):
+            raise TypeError("decision-DAG comparison requires typed state namespace")
+        if type(self.serial) is not int or self.serial < 0 or self.serial != self.comparison.serial:
+            raise ValueError("decision-DAG comparison requires its exact nonnegative serial")
+        object.__setattr__(self, "serial", int(self.serial))
+
 @dataclass(frozen=True, slots=True)
 class DecisionDagRouteWitness:
     """Source-snapshot route witness emitted by the exact DAG resolver."""
@@ -956,8 +1809,11 @@ class DecisionDagRouteWitness:
     entry_anchor_ea: int
     path_serials: tuple[int, ...]
     path_anchors: tuple[int, ...]
-    comparisons: tuple[tuple[int, RouteComparison], ...]
+    comparisons: tuple[DecisionDagComparisonWitness, ...]
     aliases: tuple[tuple[int, int], ...]
+    bridges: tuple[ExactU32XduNamespaceBridge, ...] = ()
+    handoff_dispatcher_serial: int | None = None
+    handoff_dispatcher_anchor_ea: int | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.state_identity, StorageIdentity):
@@ -966,14 +1822,43 @@ class DecisionDagRouteWitness:
         anchors = tuple(int(item) for item in self.path_anchors)
         if not serials or serials[0] != int(self.entry_serial) or len(serials) != len(anchors):
             raise SemanticRouteEvidenceRejected("decision-DAG path must begin at entry")
-        if any(not isinstance(item, RouteComparison) for _, item in self.comparisons):
+        comparisons = self.comparisons
+        if type(comparisons) is not tuple or any(
+            not isinstance(item, DecisionDagComparisonWitness) for item in comparisons
+        ):
             raise TypeError("decision-DAG witness requires typed comparisons")
+        bridges = tuple(self.bridges)
+        if any(not isinstance(item, ExactU32XduNamespaceBridge) for item in bridges):
+            raise TypeError("decision-DAG witness requires exact XDU bridges")
+        if len({item.node_serial for item in bridges}) != len(bridges):
+            raise SemanticRouteEvidenceRejected("decision-DAG bridges have duplicate nodes")
         object.__setattr__(self, "state_constant", int(self.state_constant) & 0xFFFFFFFF)
         object.__setattr__(self, "entry_serial", int(self.entry_serial))
         object.__setattr__(self, "path_serials", serials)
         object.__setattr__(self, "path_anchors", anchors)
-        object.__setattr__(self, "comparisons", tuple(self.comparisons))
+        object.__setattr__(self, "comparisons", comparisons)
         object.__setattr__(self, "aliases", tuple((int(a), int(b)) for a, b in self.aliases))
+        object.__setattr__(self, "bridges", bridges)
+        if (self.handoff_dispatcher_serial is None) != (
+            self.handoff_dispatcher_anchor_ea is None
+        ):
+            raise SemanticRouteEvidenceRejected(
+                "decision-DAG switch handoff requires serial and anchor together"
+            )
+        if self.handoff_dispatcher_serial is not None:
+            if int(self.handoff_dispatcher_serial) < 0:
+                raise SemanticRouteEvidenceRejected(
+                    "decision-DAG switch handoff serial must be non-negative"
+                )
+            object.__setattr__(
+                self, "handoff_dispatcher_serial", int(self.handoff_dispatcher_serial)
+            )
+            object.__setattr__(
+                self, "handoff_dispatcher_anchor_ea", _native_ea(
+                    self.handoff_dispatcher_anchor_ea,
+                    "decision-DAG switch handoff anchor",
+                )
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -985,6 +1870,7 @@ class SemanticDagComparison:
     constant: int
     true_target: SemanticDagEndpoint
     false_target: SemanticDagEndpoint
+    state_identity: StorageIdentity
 
     def __post_init__(self) -> None:
         if type(self.node) is not SemanticCorridorPoint or not all(
@@ -994,7 +1880,36 @@ class SemanticDagComparison:
             raise TypeError("DAG comparison requires typed stable endpoints")
         if type(self.operation) is not str or not self.operation:
             raise SemanticRouteEvidenceRejected("DAG comparison requires an operation")
+        state_identity = self.state_identity
+        if not isinstance(state_identity, StorageIdentity):
+            raise TypeError("DAG comparison requires typed state namespace")
         object.__setattr__(self, "constant", int(self.constant) & 0xFFFFFFFF)
+
+
+@dataclass(frozen=True, slots=True)
+class SemanticDagNamespaceBridge:
+    """Stable coordinates for one raw U32-to-U64 namespace handoff."""
+
+    node: SemanticCorridorPoint
+    instruction_ea: int
+    source_identity: StorageIdentity
+    result_identity: StorageIdentity
+    source_width: int
+    result_width: int
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.node) is not SemanticCorridorPoint
+            or type(self.instruction_ea) is not int
+            or not 0 < self.instruction_ea < _BADADDR
+            or not isinstance(self.source_identity, StorageIdentity)
+            or not isinstance(self.result_identity, StorageIdentity)
+            or self.result_identity.kind is not StorageIdentityKind.REGISTER
+            or self.result_identity == self.source_identity
+            or self.source_width != 4
+            or self.result_width != 8
+        ):
+            raise TypeError("canonical XDU bridge requires exact typed coordinates")
 
 
 @dataclass(frozen=True, slots=True)
@@ -1007,6 +1922,7 @@ class SemanticDecisionDagWitness:
     path: tuple[SemanticCorridorPoint, ...]
     comparisons: tuple[SemanticDagComparison, ...]
     aliases: tuple[tuple[SemanticCorridorPoint, SemanticCorridorPoint], ...]
+    bridges: tuple[SemanticDagNamespaceBridge, ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.state_identity, StorageIdentity):
@@ -1018,6 +1934,11 @@ class SemanticDecisionDagWitness:
             raise SemanticRouteEvidenceRejected("decision-DAG path must begin at entry")
         if any(not isinstance(item, SemanticDagComparison) for item in self.comparisons):
             raise TypeError("decision-DAG witness requires stable comparisons")
+        bridges = tuple(self.bridges)
+        if any(not isinstance(item, SemanticDagNamespaceBridge) for item in bridges):
+            raise TypeError("decision-DAG witness requires stable XDU bridges")
+        if len({item.node.identity for item in bridges}) != len(bridges):
+            raise SemanticRouteEvidenceRejected("decision-DAG bridges have duplicate nodes")
         aliases = tuple(self.aliases)
         if any(
             len(item) != 2
@@ -1049,6 +1970,23 @@ class SemanticDecisionDagWitness:
         object.__setattr__(self, "path", path)
         object.__setattr__(self, "comparisons", tuple(self.comparisons))
         object.__setattr__(self, "aliases", aliases)
+        object.__setattr__(self, "bridges", bridges)
+
+
+@dataclass(frozen=True, slots=True)
+class SemanticSwitchTableHandoff:
+    """Exact table-jump continuation from a DAG leaf to its final handler."""
+
+    dispatcher: SemanticCorridorPoint
+    state_identity: StorageIdentity
+    state_constant: int
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.dispatcher, SemanticCorridorPoint) or not isinstance(
+            self.state_identity, StorageIdentity
+        ):
+            raise TypeError("switch handoff requires exact dispatcher and state identity")
+        object.__setattr__(self, "state_constant", int(self.state_constant) & 0xFFFFFFFF)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1062,7 +2000,9 @@ class SemanticStateDagProof:
     target_anchor_ea: int
     entry_identity: StableBlockIdentity
     entry_anchor_ea: int
+    source_to_entry_corridor: tuple[SemanticCorridorPoint, ...]
     path: tuple[SemanticCorridorPoint, ...]
+    switch_handoff: SemanticSwitchTableHandoff | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.witness, SemanticDecisionDagWitness):
@@ -1079,6 +2019,20 @@ class SemanticStateDagProof:
             raise SemanticRouteEvidenceRejected("state-DAG target anchor is outside identity")
         if not self.entry_identity.native_ranges.contains(int(self.entry_anchor_ea)):
             raise SemanticRouteEvidenceRejected("state-DAG entry anchor is outside identity")
+        source_to_entry = tuple(self.source_to_entry_corridor)
+        if any(not isinstance(point, SemanticCorridorPoint) for point in source_to_entry):
+            raise TypeError("state-DAG source-to-entry corridor requires typed points")
+        if (
+            not source_to_entry
+            or source_to_entry[0].identity != self.source_identity
+            or source_to_entry[0].anchor_ea != int(self.source_anchor_ea)
+            or source_to_entry[-1].identity != self.entry_identity
+            or source_to_entry[-1].anchor_ea != int(self.entry_anchor_ea)
+            or len({point.identity for point in source_to_entry}) != len(source_to_entry)
+            or any(point.native_key != self.source_identity.native_key for point in source_to_entry)
+        ):
+            raise SemanticRouteEvidenceRejected("state-DAG source-to-entry corridor is invalid")
+        object.__setattr__(self, "source_to_entry_corridor", source_to_entry)
         points = tuple(self.path)
         if (
             not points
@@ -1088,6 +2042,16 @@ class SemanticStateDagProof:
             raise SemanticRouteEvidenceRejected("state-DAG path is empty")
         if points != tuple(self.witness.path):
             raise SemanticRouteEvidenceRejected("state-DAG path length drift")
+        if self.switch_handoff is not None:
+            handoff = self.switch_handoff
+            if (
+                not isinstance(handoff, SemanticSwitchTableHandoff)
+                or handoff.state_identity != self.witness.state_identity
+                or handoff.state_constant != self.witness.state_constant
+            ):
+                raise SemanticRouteEvidenceRejected(
+                    "state-DAG switch handoff must match the exact DAG state"
+                )
 
 
 @dataclass(frozen=True, slots=True)
@@ -1755,6 +2719,20 @@ class SemanticRouteProof:
             ):
                 raise SemanticRouteEvidenceRejected("state partition requires its exact group witness")
         elif self.proof_kind is SemanticRouteProofKind.STATE_DAG:
+            state_write_is_route_source = bool(
+                state_write is not None
+                and state_write.identity == self.source_identity
+                and state_write.instruction_ea == self.source_anchor_ea
+            )
+            state_write_is_exact_physical_predecessor = (
+                _exact_physical_predecessor_owner_matches(
+                    state_write,
+                    source_identity=self.source_identity,
+                    source_anchor_ea=self.source_anchor_ea,
+                    owner_identity=self.source_owner_identity,
+                    owner_anchor_ea=self.source_owner_anchor_ea,
+                )
+            )
             if (
                 self.shape is not SemanticRouteShape.DIRECT
                 or state_dag is None
@@ -1764,8 +2742,10 @@ class SemanticRouteProof:
                 or len(destinations) != 1
                 or self.source_identity != state_dag.source_identity
                 or self.source_anchor_ea != state_dag.source_anchor_ea
-                or state_write.identity != self.source_identity
-                or state_write.instruction_ea != self.source_anchor_ea
+                or not (
+                    state_write_is_route_source
+                    or state_write_is_exact_physical_predecessor
+                )
                 or state_write.state_variable != state_dag.witness.state_identity
                 or state_write.state_constant != state_dag.witness.state_constant
                 or state_write.state_constant != destinations[0].state_constant
@@ -1822,6 +2802,23 @@ class SemanticRouteProof:
                 raise SemanticRouteEvidenceRejected(
                     "state assignment destination state constant must match its write"
                 )
+            guarded = state_write.guarded_selection
+            if guarded is not None:
+                selected = guarded.selected_target
+                destination = destinations[0]
+                if (
+                    type(selected) is not SemanticCorridorPoint
+                    or selected.identity != destination.target_identity
+                    or selected.anchor_ea != destination.target_anchor_ea
+                    or guarded.guard.identity != self.source_identity
+                ):
+                    raise SemanticRouteEvidenceRejected(
+                        "guarded state assignment must select its exact destination"
+                    )
+        elif state_write is not None and state_write.guarded_selection is not None:
+            raise SemanticRouteEvidenceRejected(
+                "only a state assignment may carry guarded state selection"
+            )
         if self.proof_kind is SemanticRouteProofKind.TERMINAL_RETURN:
             if (
                 self.shape is not SemanticRouteShape.DIRECT
@@ -2022,6 +3019,9 @@ class CanonicalSemanticEvidenceProductionReason(str, Enum):
     ASSIGNMENT_SOURCE_RANGE_MISSING = "assignment_source_range_missing"
     ASSIGNMENT_SOURCE_ANCHOR_MISSING = "assignment_source_anchor_missing"
     ASSIGNMENT_DELIVERY_RANGE_MISSING = "assignment_delivery_range_missing"
+    NATIVE_BOUND_SOURCE_ASSIGNMENT_INVALID = (
+        "native_bound_source_assignment_invalid"
+    )
     BOOTSTRAP_IDENTITY_MISSING = "bootstrap_identity_missing"
     BOOTSTRAP_CORRIDOR_INVALID = "bootstrap_corridor_invalid"
     BOOTSTRAP_STATE_WRITE_INVALID = "bootstrap_state_write_invalid"
@@ -2117,7 +3117,7 @@ def _stable_dag_witness_from_raw(
     alias_targets_by_source: dict[int, set[int]] = {}
     for source, target in alias_pairs:
         alias_targets_by_source.setdefault(source, set()).add(target)
-    comparison_nodes = tuple(int(serial) for serial, _comparison in raw.comparisons)
+    comparison_nodes = tuple(int(item.serial) for item in raw.comparisons)
     if any(len(targets) > 1 for targets in alias_targets_by_source.values()):
         abstain(CanonicalSemanticEvidenceProductionReason.DECISION_DAG_ALIAS_CONFLICTING_TARGET)
     if len(set(alias_pairs)) != len(alias_pairs):
@@ -2167,7 +3167,9 @@ def _stable_dag_witness_from_raw(
         int(serial): int(anchor)
         for serial, anchor in zip(raw.path_serials, raw.path_anchors)
     }
-    for serial, comparison in raw.comparisons:
+    for raw_comparison in raw.comparisons:
+        serial = raw_comparison.serial
+        comparison = raw_comparison.comparison
         node_identity = identities.get(int(serial))
         true_target = endpoint(int(comparison.true_target))
         false_target = endpoint(int(comparison.false_target))
@@ -2186,6 +3188,7 @@ def _stable_dag_witness_from_raw(
                 constant=int(comparison.const),
                 true_target=true_target,
                 false_target=false_target,
+                state_identity=raw_comparison.state_identity,
             )
         )
     aliases: list[tuple[SemanticCorridorPoint, SemanticCorridorPoint]] = []
@@ -2206,6 +3209,23 @@ def _stable_dag_witness_from_raw(
                 ),
             )
         )
+    bridges: list[SemanticDagNamespaceBridge] = []
+    for raw_bridge in raw.bridges:
+        identity = identities.get(int(raw_bridge.node_serial))
+        if (
+            identity is None
+            or not identity.native_ranges.contains(int(raw_bridge.node_anchor_ea))
+            or not identity.native_ranges.contains(int(raw_bridge.instruction_ea))
+        ):
+            abstain(CanonicalSemanticEvidenceProductionReason.DECISION_DAG_COMPARISON_IDENTITY)
+        bridges.append(SemanticDagNamespaceBridge(
+            node=SemanticCorridorPoint(identity, int(raw_bridge.node_anchor_ea)),
+            instruction_ea=int(raw_bridge.instruction_ea),
+            source_identity=raw_bridge.source_identity,
+            result_identity=raw_bridge.result_identity,
+            source_width=raw_bridge.source_width,
+            result_width=raw_bridge.result_width,
+        ))
     return SemanticDecisionDagWitness(
         state_identity=raw.state_identity,
         state_constant=raw.state_constant,
@@ -2213,7 +3233,425 @@ def _stable_dag_witness_from_raw(
         path=tuple(path_points),
         comparisons=tuple(comparisons),
         aliases=tuple(aliases),
+        bridges=tuple(bridges),
     )
+
+
+def _exact_source_to_dag_entry_corridor(
+    blocks: Mapping[int, BlockSnapshot],
+    identities: Mapping[int, StableBlockIdentity],
+    *,
+    source_serial: int,
+    source_anchor_ea: int,
+    entry_serial: int,
+    entry_anchor_ea: int,
+) -> tuple[SemanticCorridorPoint, ...] | None:
+    """Freeze the single-successor source handoff into a decision DAG.
+
+    This is deliberately narrower than graph reachability: every step is the
+    only outgoing edge of the previous block and must be reciprocal in the
+    immutable producer snapshot.  The transaction binder replays those exact
+    edges after resolving the stable identities to its current graph.
+    """
+    source_serial = int(source_serial)
+    entry_serial = int(entry_serial)
+    source_identity = identities.get(source_serial)
+    entry_identity = identities.get(entry_serial)
+    if source_identity is None or entry_identity is None:
+        return None
+    try:
+        points = [SemanticCorridorPoint(source_identity, int(source_anchor_ea))]
+        current = source_serial
+        seen = {current}
+        while current != entry_serial:
+            block = blocks.get(current)
+            if block is None or len(block.succs) != 1:
+                return None
+            next_serial = int(block.succs[0])
+            next_block = blocks.get(next_serial)
+            next_identity = identities.get(next_serial)
+            if (
+                next_block is None
+                or next_identity is None
+                or current not in next_block.preds
+                or next_serial in seen
+            ):
+                return None
+            next_anchor = (
+                int(entry_anchor_ea)
+                if next_serial == entry_serial
+                else stable_block_identity_semantic_anchor(next_identity)
+            )
+            points.append(SemanticCorridorPoint(next_identity, next_anchor))
+            seen.add(next_serial)
+            current = next_serial
+    except (TypeError, ValueError, SemanticRouteEvidenceRejected):
+        return None
+    return tuple(points)
+
+
+def _stable_guarded_state_selection_from_raw(
+    raw: SemanticPhysicalGuardSelectionWitness,
+    identities: Mapping[int, StableBlockIdentity],
+    logical_endpoints: Mapping[int, SemanticLogicalDagEndpoint],
+    abstain,
+) -> SemanticGuardedStateSelection:
+    """Resolve a guarded physical delivery into stable graph coordinates."""
+
+    def endpoint(serial: int) -> SemanticDagEndpoint | None:
+        identity = identities.get(int(serial))
+        if identity is not None:
+            return SemanticCorridorPoint(
+                identity,
+                stable_block_identity_semantic_anchor(identity),
+            )
+        logical = logical_endpoints.get(int(serial))
+        if logical is not None and int(logical.serial) == int(serial):
+            return logical
+        return None
+
+    guard_identity = identities.get(int(raw.guard_serial))
+    true_target = endpoint(int(raw.true_target_serial))
+    false_target = endpoint(int(raw.false_target_serial))
+    selected_target = endpoint(int(raw.selected_target_serial))
+    comparison_ea = int(
+        raw.comparison_instruction.native_ea or raw.comparison_instruction.ea
+    )
+    if (
+        guard_identity is None
+        or not guard_identity.native_ranges.contains(comparison_ea)
+        or true_target is None
+        or false_target is None
+        or selected_target is None
+    ):
+        abstain(
+            CanonicalSemanticEvidenceProductionReason.NATIVE_BOUND_SOURCE_ASSIGNMENT_INVALID
+        )
+    return SemanticGuardedStateSelection(
+        guard=SemanticCorridorPoint(guard_identity, comparison_ea),
+        comparison_instruction=raw.comparison_instruction,
+        state_identity=raw.state_identity,
+        width=int(raw.width),
+        constant=int(raw.constant),
+        true_target=true_target,
+        false_target=false_target,
+        selected_target=selected_target,
+    )
+
+
+def _stable_switch_handoff_from_raw(
+    raw: DecisionDagRouteWitness,
+    identities: Mapping[int, StableBlockIdentity],
+    abstain,
+) -> SemanticSwitchTableHandoff | None:
+    """Bind an optional two-stage DAG-to-switch handoff to stable source identity."""
+    if raw.handoff_dispatcher_serial is None:
+        return None
+    handoff_identity = identities.get(int(raw.handoff_dispatcher_serial))
+    handoff_anchor = raw.handoff_dispatcher_anchor_ea
+    if (
+        handoff_identity is None
+        or handoff_anchor is None
+        or not handoff_identity.native_ranges.contains(int(handoff_anchor))
+    ):
+        abstain(
+            CanonicalSemanticEvidenceProductionReason.
+            DECISION_DAG_ROUTE_ANCHOR_MISSING
+        )
+    return SemanticSwitchTableHandoff(
+        dispatcher=SemanticCorridorPoint(handoff_identity, int(handoff_anchor)),
+        state_identity=raw.state_identity,
+        state_constant=raw.state_constant,
+    )
+
+
+def _exact_physical_delivery_goto(
+    block: BlockSnapshot,
+    *,
+    instruction_ea: int,
+    state_identity: StorageIdentity,
+) -> bool:
+    """Require one exact terminal GOTO after effect-free, non-state setup."""
+
+    occurrences = _instruction_occurrences(block, int(instruction_ea))
+    if (
+        len(occurrences) != 1
+        or occurrences[0][0].kind is not InsnKind.GOTO
+        or not block.insn_snapshots
+        or block.insn_snapshots[-1] is not occurrences[0][0]
+        or sum(
+            snapshot.kind is InsnKind.GOTO
+            for snapshot in block.insn_snapshots
+        ) != 1
+    ):
+        return False
+    for snapshot in block.insn_snapshots[:-1]:
+        instruction = project_instruction(snapshot)
+        if (
+            instruction.control is not None
+            or instruction.effects
+            or _writes_state_identity(snapshot, instruction, state_identity)
+        ):
+            return False
+    return True
+
+
+def _canonical_physical_state_write_owner(
+    physical: SemanticPhysicalStateWriteWitness,
+    *,
+    physical_source: StableBlockIdentity,
+    identities: Mapping[int, StableBlockIdentity],
+) -> SemanticCorridorPoint | None:
+    """Resolve the semantic owner of one exact physical state write."""
+
+    if not isinstance(physical, SemanticPhysicalStateWriteWitness):
+        return None
+    if physical.source_instruction.kind is InsnKind.MOV:
+        owner_identity = physical_source
+        owner_ea = int(
+            physical.source_instruction.native_ea
+            or physical.source_instruction.ea
+        )
+    elif physical.source_instruction.kind is InsnKind.STORE:
+        alias_serial = physical.alias_definition_serial
+        alias_instruction = physical.alias_definition_instruction
+        if alias_serial is None or alias_instruction is None:
+            return None
+        owner_identity = identities.get(int(alias_serial))
+        owner_ea = int(alias_instruction.native_ea or alias_instruction.ea)
+        if owner_identity is None:
+            return None
+    else:
+        return None
+    if (
+        not owner_identity.native_ranges.contains(owner_ea)
+        or owner_ea not in owner_identity.exact_instruction_eas
+    ):
+        return None
+    return SemanticCorridorPoint(owner_identity, owner_ea)
+
+
+def _canonical_route_source_owner(
+    *,
+    physical: SemanticPhysicalStateWriteWitness | None,
+    physical_owner: SemanticCorridorPoint | None,
+    state_write_identity: StableBlockIdentity,
+    route_source_identity: StableBlockIdentity,
+    proposal_owner: SemanticCorridorPoint | None,
+) -> SemanticCorridorPoint | None:
+    """Normalize proposal ownership to the exact physical semantic owner."""
+
+    if physical is not None:
+        if physical_owner is None:
+            return None
+        if physical.source_instruction.kind is InsnKind.STORE:
+            return physical_owner
+        if state_write_identity != route_source_identity:
+            return physical_owner
+        # A direct MOV needs no separate *physical* owner, but an exact
+        # producer-owned prefix may still be the semantic route owner.
+        return (
+            proposal_owner
+            if proposal_owner is not None
+            and proposal_owner.identity != route_source_identity
+            else None
+        )
+    return (
+        proposal_owner
+        if proposal_owner is not None
+        and proposal_owner.identity != route_source_identity
+        else None
+    )
+
+
+def _physical_delivery_groups(
+    facts: tuple[SemanticRouteFact, ...],
+    *,
+    identities: Mapping[int, StableBlockIdentity],
+    blocks: Mapping[int, BlockSnapshot],
+    state_identity: StorageIdentity,
+) -> dict[int, SemanticPhysicalDeliveryProof] | None:
+    """Canonicalize each complete physical-writer predecessor partition."""
+
+    grouped: dict[int, list[SemanticRouteFact]] = {}
+    for fact in facts:
+        physical = fact.physical_state_write
+        if physical is None or physical.source_serial is None:
+            continue
+        writer_serial = int(physical.source_serial)
+        delivery_serial = int(fact.source_serial)
+        if writer_serial != delivery_serial:
+            grouped.setdefault(delivery_serial, []).append(fact)
+
+    result: dict[int, SemanticPhysicalDeliveryProof] = {}
+    for delivery_serial, delivery_facts in grouped.items():
+        delivery_block = blocks.get(delivery_serial)
+        delivery_identity = identities.get(delivery_serial)
+        source_eas = {int(fact.source_instruction_ea) for fact in delivery_facts}
+        if (
+            delivery_block is None
+            or delivery_identity is None
+            or len(source_eas) != 1
+        ):
+            return None
+        delivery_ea = next(iter(source_eas))
+        if (
+            not delivery_identity.native_ranges.contains(delivery_ea)
+            or delivery_ea not in delivery_identity.exact_instruction_eas
+            or not _exact_physical_delivery_goto(
+                delivery_block,
+                instruction_ea=delivery_ea,
+                state_identity=state_identity,
+            )
+        ):
+            return None
+        delivery_snapshot = _instruction_occurrences(
+            delivery_block, delivery_ea,
+        )[0][0]
+        delivery_instruction = project_instruction(delivery_snapshot)
+        if (
+            delivery_instruction.control is None
+            or delivery_instruction.control.transfer is not ControlTransferKind.GOTO
+            or delivery_instruction.control.target is None
+        ):
+            return None
+        target_serial = int(delivery_instruction.control.target)
+        target_block = blocks.get(target_serial)
+        target_identity = identities.get(target_serial)
+        if (
+            target_block is None
+            or target_identity is None
+            or tuple(int(item) for item in delivery_block.succs)
+            != (target_serial,)
+            or delivery_serial not in tuple(int(item) for item in target_block.preds)
+        ):
+            return None
+        predecessor_serials = tuple(int(item) for item in delivery_block.preds)
+        if len(predecessor_serials) != len(set(predecessor_serials)):
+            return None
+
+        members_by_serial: dict[int, SemanticPhysicalDeliveryMember] = {}
+        for fact in delivery_facts:
+            physical = fact.physical_state_write
+            if physical is None or physical.source_serial is None:
+                return None
+            writer_serial = int(physical.source_serial)
+            expected_owner_serial = (
+                physical.alias_definition_serial
+                if physical.source_instruction.kind is InsnKind.STORE
+                else writer_serial
+            )
+            writer = blocks.get(writer_serial)
+            writer_identity = identities.get(writer_serial)
+            write_ea = int(
+                physical.source_instruction.native_ea
+                or physical.source_instruction.ea
+            )
+            if (
+                writer is None
+                or writer_identity is None
+                or physical.source_instruction.kind
+                not in {InsnKind.MOV, InsnKind.STORE}
+                or physical.state_identity != state_identity
+                or not writer_identity.native_ranges.contains(write_ea)
+                or write_ea not in writer_identity.exact_instruction_eas
+                or tuple(int(item) for item in writer.succs) != (delivery_serial,)
+                or writer_serial not in predecessor_serials
+                or expected_owner_serial is None
+                or (
+                    len(predecessor_serials) > 1
+                    and int(fact.owner_serial) != int(expected_owner_serial)
+                )
+                or (
+                    len(predecessor_serials) == 1
+                    and int(fact.owner_serial)
+                    not in {int(expected_owner_serial), delivery_serial}
+                )
+            ):
+                return None
+            expected = SemanticStateWriteProof(
+                identity=writer_identity,
+                instruction_ea=write_ea,
+                state_variable=physical.state_identity,
+                width=physical.width,
+                state_constant=physical.state_constant,
+                corridor_instruction_eas=(write_ea,),
+                authority_transfer_ea=None,
+                preserved_call_instruction_eas=(),
+                physical_state_write=physical,
+            )
+            exact_writes = tuple(
+                (snapshot, instruction)
+                for snapshot, instruction in _instruction_occurrences(writer)
+                if _canonical_state_write_matches(snapshot, instruction, expected)
+            )
+            claimed = tuple(
+                (snapshot, instruction)
+                for snapshot, instruction in exact_writes
+                if _instruction_projection(snapshot) == physical.source_instruction
+            )
+            if (
+                len(exact_writes) != 1
+                or len(claimed) != 1
+                or not _validate_physical_alias_store_witness(
+                    blocks, writer_serial, physical,
+                )
+            ):
+                return None
+            alias_definition = None
+            if physical.source_instruction.kind is InsnKind.STORE:
+                alias_serial = physical.alias_definition_serial
+                alias_identity = (
+                    None if alias_serial is None
+                    else identities.get(int(alias_serial))
+                )
+                alias_instruction = physical.alias_definition_instruction
+                alias_ea = (
+                    None if alias_instruction is None
+                    else int(
+                        alias_instruction.native_ea or alias_instruction.ea
+                    )
+                )
+                if (
+                    alias_identity is None
+                    or alias_ea is None
+                    or not alias_identity.native_ranges.contains(alias_ea)
+                    or alias_ea not in alias_identity.exact_instruction_eas
+                ):
+                    return None
+                alias_definition = SemanticCorridorPoint(
+                    alias_identity, alias_ea,
+                )
+            member = SemanticPhysicalDeliveryMember(
+                identity=writer_identity,
+                instruction_ea=write_ea,
+                physical_state_write=physical,
+                alias_definition=alias_definition,
+            )
+            previous = members_by_serial.get(writer_serial)
+            if previous is not None and previous != member:
+                return None
+            members_by_serial[writer_serial] = member
+        if set(members_by_serial) != set(predecessor_serials):
+            return None
+        members = tuple(sorted(
+            members_by_serial.values(),
+            key=lambda item: (
+                int(item.instruction_ea), item.identity.diagnostic_label(),
+            ),
+        ))
+        result[delivery_serial] = SemanticPhysicalDeliveryProof(
+            delivery=SemanticCorridorPoint(delivery_identity, delivery_ea),
+            delivery_instruction=(
+                instruction_projection_without_block_references(delivery_snapshot)
+            ),
+            target=SemanticCorridorPoint(
+                target_identity,
+                stable_block_identity_semantic_anchor(target_identity),
+            ),
+            members=members,
+        )
+    return result
 
 
 def build_canonical_semantic_evidence(
@@ -2311,6 +3749,17 @@ def build_canonical_semantic_evidence(
                 CanonicalSemanticEvidenceProductionReason.PARTITION_GROUP_INCOMPLETE,
                 CanonicalSemanticEvidenceProductionStage.GROUP,
             )
+    physical_delivery_groups = _physical_delivery_groups(
+        facts,
+        identities=identities,
+        blocks=blocks,
+        state_identity=context.state_identity,
+    )
+    if physical_delivery_groups is None:
+        return result_abstention(
+            CanonicalSemanticEvidenceProductionReason.NATIVE_BOUND_SOURCE_ASSIGNMENT_INVALID,
+            CanonicalSemanticEvidenceProductionStage.GROUP,
+        )
     try:
         for fact in facts:
             active_fact = fact
@@ -2409,6 +3858,11 @@ def build_canonical_semantic_evidence(
                         logical_endpoints,
                         bootstrap_dag_abstain,
                     )
+                    switch_handoff = _stable_switch_handoff_from_raw(
+                        witness.decision_dag_witness,
+                        identities,
+                        bootstrap_dag_abstain,
+                    )
                 except (TypeError, ValueError, AttributeError, IndexError, OverflowError):
                     abstain(CanonicalSemanticEvidenceProductionReason.BOOTSTRAP_DAG_INVALID)
                 try:
@@ -2423,6 +3877,16 @@ def build_canonical_semantic_evidence(
                         preserved_call_instruction_eas=(),
                         delivery_kind=SemanticStateWriteDeliveryKind.INDIRECT,
                     )
+                    source_to_entry_corridor = _exact_source_to_dag_entry_corridor(
+                        blocks,
+                        identities,
+                        source_serial=int(corridor_serials[-2]),
+                        source_anchor_ea=int(corridor[-2].anchor_ea),
+                        entry_serial=int(witness.decision_dag_witness.entry_serial),
+                        entry_anchor_ea=int(stable_dag_witness.entry.anchor_ea),
+                    )
+                    if source_to_entry_corridor is None:
+                        abstain(CanonicalSemanticEvidenceProductionReason.BOOTSTRAP_DAG_INVALID)
                     state_dag = SemanticStateDagProof(
                         witness=stable_dag_witness,
                         source_identity=owner,
@@ -2431,7 +3895,9 @@ def build_canonical_semantic_evidence(
                         target_anchor_ea=int(fact.target_anchor_ea or stable_block_identity_semantic_anchor(target)),
                         entry_identity=stable_dag_witness.entry.identity,
                         entry_anchor_ea=int(stable_dag_witness.entry.anchor_ea),
+                        source_to_entry_corridor=source_to_entry_corridor,
                         path=stable_dag_witness.path,
+                        switch_handoff=switch_handoff,
                     )
                     bootstrap = SemanticBootstrapProof(
                         entry=SemanticCorridorPoint(entry, stable_block_identity_semantic_anchor(entry)),
@@ -2529,6 +3995,9 @@ def build_canonical_semantic_evidence(
                 stable_partition_dag = _stable_dag_witness_from_raw(
                     raw_dag, identities, logical_endpoints, abstain
                 )
+                switch_handoff = _stable_switch_handoff_from_raw(
+                    raw_dag, identities, abstain
+                )
                 if (
                     len(raw_dag.path_serials) != len(raw_dag.path_anchors)
                     or not raw_dag.path_serials
@@ -2545,7 +4014,9 @@ def build_canonical_semantic_evidence(
                 if entry_identity is None or not entry_identity.native_ranges.contains(int(raw_dag.entry_anchor_ea)):
                     abstain(CanonicalSemanticEvidenceProductionReason.PARTITION_DAG_ENTRY_ANCHOR)
                 comparisons: list[SemanticDagComparison] = []
-                for serial, comparison in raw_dag.comparisons:
+                for raw_comparison in raw_dag.comparisons:
+                    serial = raw_comparison.serial
+                    comparison = raw_comparison.comparison
                     node_identity = identities.get(int(serial))
                     true_identity = identities.get(int(comparison.true_target))
                     false_identity = identities.get(int(comparison.false_target))
@@ -2585,6 +4056,7 @@ def build_canonical_semantic_evidence(
                             constant=int(comparison.const),
                             true_target=true_target,
                             false_target=false_target,
+                            state_identity=raw_comparison.state_identity,
                         )
                     )
                 aliases: list[tuple[SemanticCorridorPoint, SemanticCorridorPoint]] = []
@@ -2599,7 +4071,34 @@ def build_canonical_semantic_evidence(
                             SemanticCorridorPoint(target_identity, stable_block_identity_semantic_anchor(target_identity)),
                         )
                     )
+                bridges: list[SemanticDagNamespaceBridge] = []
+                for raw_bridge in raw_dag.bridges:
+                    identity = identities.get(int(raw_bridge.node_serial))
+                    if (
+                        identity is None
+                        or not identity.native_ranges.contains(int(raw_bridge.node_anchor_ea))
+                        or not identity.native_ranges.contains(int(raw_bridge.instruction_ea))
+                    ):
+                        abstain(CanonicalSemanticEvidenceProductionReason.PARTITION_DAG_COMPARISON_IDENTITY)
+                    bridges.append(SemanticDagNamespaceBridge(
+                        node=SemanticCorridorPoint(identity, int(raw_bridge.node_anchor_ea)),
+                        instruction_ea=int(raw_bridge.instruction_ea),
+                        source_identity=raw_bridge.source_identity,
+                        result_identity=raw_bridge.result_identity,
+                        source_width=raw_bridge.source_width,
+                        result_width=raw_bridge.result_width,
+                    ))
                 dag_witness = stable_partition_dag
+                source_to_entry_corridor = _exact_source_to_dag_entry_corridor(
+                    blocks,
+                    identities,
+                    source_serial=int(fact.source_serial),
+                    source_anchor_ea=int(fact.source_instruction_ea),
+                    entry_serial=int(raw_dag.entry_serial),
+                    entry_anchor_ea=int(raw_dag.entry_anchor_ea),
+                )
+                if source_to_entry_corridor is None:
+                    abstain(CanonicalSemanticEvidenceProductionReason.PARTITION_DAG_PATH_SHAPE)
                 dag_proof = SemanticStateDagProof(
                     witness=dag_witness,
                     source_identity=feeder,
@@ -2608,7 +4107,9 @@ def build_canonical_semantic_evidence(
                     target_anchor_ea=int(target_anchor),
                     entry_identity=entry_identity,
                     entry_anchor_ea=int(raw_dag.entry_anchor_ea),
+                    source_to_entry_corridor=source_to_entry_corridor,
                     path=tuple(path_points),
+                    switch_handoff=switch_handoff,
                 )
                 append_proof(
                     SemanticRouteProof(
@@ -2754,19 +4255,29 @@ def build_canonical_semantic_evidence(
             ):
                 witness = fact.decision_dag_witness
                 source = identities.get(int(fact.source_serial))
+                owner = identities.get(int(fact.owner_serial))
                 target = identities.get(int(fact.target_serial))
-                if source is None or target is None:
+                if source is None or owner is None or target is None:
                     abstain(CanonicalSemanticEvidenceProductionReason.DECISION_DAG_IDENTITY_MISSING)
                 if witness.state_identity != context.state_identity:
                     abstain(CanonicalSemanticEvidenceProductionReason.DECISION_DAG_STATE_IDENTITY_MISMATCH)
                 stable_witness = _stable_dag_witness_from_raw(
                     witness, identities, logical_endpoints, abstain
                 )
+                switch_handoff = _stable_switch_handoff_from_raw(
+                    witness, identities, abstain
+                )
                 entry = stable_witness.entry.identity
                 path_points = stable_witness.path
                 target_anchor = fact.target_anchor_ea or stable_block_identity_semantic_anchor(target)
                 source_anchor = fact.source_instruction_ea
+                owner_anchor = (
+                    fact.owner_anchor_ea
+                    or stable_block_identity_semantic_anchor(owner)
+                )
                 if not source.native_ranges.contains(int(source_anchor)) or not target.native_ranges.contains(int(target_anchor)):
+                    abstain(CanonicalSemanticEvidenceProductionReason.DECISION_DAG_ROUTE_ANCHOR_MISSING)
+                if not owner.native_ranges.contains(int(owner_anchor)):
                     abstain(CanonicalSemanticEvidenceProductionReason.DECISION_DAG_ROUTE_ANCHOR_MISSING)
                 source_interval = next(
                     (
@@ -2777,6 +4288,157 @@ def build_canonical_semantic_evidence(
                 )
                 if source_interval is None:
                     abstain(CanonicalSemanticEvidenceProductionReason.DECISION_DAG_SOURCE_RANGE_MISSING)
+                state_write_identity = source
+                state_write_ea = int(source_anchor)
+                state_write_corridor = (int(source_anchor),)
+                physical = fact.physical_state_write
+                physical_delivery = None
+                physical_owner = None
+                if physical is not None:
+                    physical_source_serial = (
+                        int(fact.source_serial)
+                        if physical.source_serial is None
+                        else int(physical.source_serial)
+                    )
+                    physical_source = identities.get(physical_source_serial)
+                    physical_block = blocks.get(physical_source_serial)
+                    route_source_block = blocks.get(int(fact.source_serial))
+                    if (
+                        physical_source is None
+                        or physical_block is None
+                        or route_source_block is None
+                    ):
+                        abstain(
+                            CanonicalSemanticEvidenceProductionReason.NATIVE_BOUND_SOURCE_ASSIGNMENT_INVALID
+                        )
+                    physical_owner = _canonical_physical_state_write_owner(
+                        physical,
+                        physical_source=physical_source,
+                        identities=identities,
+                    )
+                    state_write_ea = int(
+                        physical.source_instruction.native_ea
+                        or physical.source_instruction.ea
+                    )
+                    if (
+                        physical.state_identity != context.state_identity
+                        or not physical_source.native_ranges.contains(state_write_ea)
+                        or state_write_ea not in physical_source.exact_instruction_eas
+                        or (
+                            physical_source_serial != int(fact.source_serial)
+                            and (
+                                tuple(int(item) for item in physical_block.succs)
+                                != (int(fact.source_serial),)
+                                or physical_source_serial
+                                not in tuple(
+                                    int(item) for item in route_source_block.preds
+                                )
+                            )
+                        )
+                        or physical_owner is None
+                    ):
+                        abstain(
+                            CanonicalSemanticEvidenceProductionReason.NATIVE_BOUND_SOURCE_ASSIGNMENT_INVALID
+                        )
+                    state_write_identity = physical_source
+                    state_write_corridor = (
+                        (state_write_ea,)
+                        if physical_source_serial == int(fact.source_serial)
+                        else (state_write_ea, int(source_anchor))
+                    )
+                    if physical_source_serial != int(fact.source_serial):
+                        physical_delivery = physical_delivery_groups.get(
+                            int(fact.source_serial)
+                        )
+                        if physical_delivery is None:
+                            abstain(
+                                CanonicalSemanticEvidenceProductionReason.NATIVE_BOUND_SOURCE_ASSIGNMENT_INVALID
+                            )
+                    expected_write = SemanticStateWriteProof(
+                        identity=physical_source,
+                        instruction_ea=state_write_ea,
+                        state_variable=physical.state_identity,
+                        width=physical.width,
+                        state_constant=physical.state_constant,
+                        corridor_instruction_eas=state_write_corridor,
+                        authority_transfer_ea=None,
+                        preserved_call_instruction_eas=(),
+                        delivery_kind=SemanticStateWriteDeliveryKind.INDIRECT,
+                        physical_state_write=physical,
+                    )
+                    candidates = tuple(
+                        (snapshot, instruction)
+                        for snapshot, instruction in _instruction_occurrences(
+                            physical_block, state_write_ea,
+                        )
+                        if (
+                            _instruction_projection(snapshot)
+                            == physical.source_instruction
+                            and _canonical_state_write_matches(
+                                snapshot, instruction, expected_write,
+                            )
+                        )
+                    )
+                    if physical.source_instruction.kind is InsnKind.MOV:
+                        physical_writes = tuple(
+                            (snapshot, instruction)
+                            for snapshot, instruction in _instruction_occurrences(
+                                physical_block,
+                            )
+                            if _canonical_state_move_matches(
+                                snapshot, instruction, expected_write,
+                            )
+                        )
+                    else:
+                        physical_writes = candidates
+                    if (
+                        len(candidates) != 1
+                        or len(physical_writes) != 1
+                        or not _validate_physical_alias_store_witness(
+                            blocks,
+                            physical_source_serial,
+                            physical,
+                        )
+                    ):
+                        abstain(
+                            CanonicalSemanticEvidenceProductionReason.NATIVE_BOUND_SOURCE_ASSIGNMENT_INVALID
+                        )
+                else:
+                    source_block = blocks.get(int(fact.source_serial))
+                    expected_write = SemanticStateWriteProof(
+                        identity=source,
+                        instruction_ea=state_write_ea,
+                        state_variable=context.state_identity,
+                        width=4,
+                        state_constant=int(fact.state_constant),
+                        corridor_instruction_eas=(state_write_ea,),
+                        authority_transfer_ea=None,
+                        preserved_call_instruction_eas=(),
+                        recovered_state_write=fact.recovered_state_write,
+                    )
+                    source_writes = () if source_block is None else tuple(
+                        (snapshot, instruction)
+                        for snapshot, instruction in _instruction_occurrences(
+                            source_block, state_write_ea,
+                        )
+                        if _canonical_state_write_matches(
+                            snapshot, instruction, expected_write,
+                        )
+                    )
+                    if len(source_writes) != 1:
+                        abstain(
+                            CanonicalSemanticEvidenceProductionReason.NATIVE_BOUND_SOURCE_ASSIGNMENT_INVALID
+                        )
+                source_to_entry_corridor = _exact_source_to_dag_entry_corridor(
+                    blocks,
+                    identities,
+                    source_serial=int(fact.source_serial),
+                    source_anchor_ea=int(source_anchor),
+                    entry_serial=int(witness.entry_serial),
+                    entry_anchor_ea=int(stable_witness.entry.anchor_ea),
+                )
+                if source_to_entry_corridor is None:
+                    abstain(CanonicalSemanticEvidenceProductionReason.DECISION_DAG_PATH_SHAPE)
                 dag_proof = SemanticStateDagProof(
                     witness=stable_witness,
                     source_identity=source,
@@ -2785,18 +4447,36 @@ def build_canonical_semantic_evidence(
                     target_anchor_ea=int(target_anchor),
                     entry_identity=entry,
                     entry_anchor_ea=int(stable_witness.entry.anchor_ea),
+                    source_to_entry_corridor=source_to_entry_corridor,
                     path=tuple(path_points),
+                    switch_handoff=switch_handoff,
                 )
                 state_write = SemanticStateWriteProof(
-                    identity=source,
-                    instruction_ea=int(source_anchor),
-                    state_variable=context.state_identity,
+                    identity=state_write_identity,
+                    instruction_ea=state_write_ea,
+                    state_variable=(
+                        context.state_identity
+                        if physical is None
+                        else physical.state_identity
+                    ),
                     width=4,
                     state_constant=int(fact.state_constant),
-                    corridor_instruction_eas=(int(source_anchor),),
+                    corridor_instruction_eas=state_write_corridor,
                     authority_transfer_ea=None,
                     preserved_call_instruction_eas=(),
                     delivery_kind=SemanticStateWriteDeliveryKind.INDIRECT,
+                    recovered_state_write=fact.recovered_state_write,
+                    physical_state_write=physical,
+                    physical_delivery=physical_delivery,
+                )
+                canonical_source_owner = _canonical_route_source_owner(
+                    physical=physical,
+                    physical_owner=physical_owner,
+                    state_write_identity=state_write_identity,
+                    route_source_identity=source,
+                    proposal_owner=SemanticCorridorPoint(
+                        owner, int(owner_anchor),
+                    ),
                 )
                 append_proof(
                     SemanticRouteProof(
@@ -2809,6 +4489,16 @@ def build_canonical_semantic_evidence(
                         shape=SemanticRouteShape.DIRECT,
                         source_identity=source,
                         source_anchor_ea=int(source_anchor),
+                        source_owner_identity=(
+                            None
+                            if canonical_source_owner is None
+                            else canonical_source_owner.identity
+                        ),
+                        source_owner_anchor_ea=(
+                            None
+                            if canonical_source_owner is None
+                            else canonical_source_owner.anchor_ea
+                        ),
                         delivery_region=NativeEaInterval(
                             source_interval.start_ea, source_interval.end_ea
                         ),
@@ -2985,9 +4675,176 @@ def build_canonical_semantic_evidence(
             )
             if interval is None:
                 abstain(CanonicalSemanticEvidenceProductionReason.ASSIGNMENT_DELIVERY_RANGE_MISSING)
+            state_variable = context.state_identity
+            state_write_ea = int(fact.source_instruction_ea)
+            state_write_identity = source
+            state_write_corridor = (state_write_ea,)
+            physical = fact.physical_state_write
+            canonical_physical = physical
+            physical_delivery = None
+            physical_owner = None
+            guarded_selection = None
+            if fact.kind is SemanticRouteFactKind.NATIVE_BOUND and physical is None:
+                abstain(
+                    CanonicalSemanticEvidenceProductionReason.NATIVE_BOUND_SOURCE_ASSIGNMENT_INVALID
+                )
+            if physical is not None:
+                physical_source_serial = (
+                    int(fact.source_serial)
+                    if physical.source_serial is None
+                    else int(physical.source_serial)
+                )
+                physical_source = identities.get(physical_source_serial)
+                physical_block = blocks.get(physical_source_serial)
+                route_source_block = blocks.get(int(fact.source_serial))
+                if physical_source is None or physical_block is None or route_source_block is None:
+                    abstain(
+                        CanonicalSemanticEvidenceProductionReason.NATIVE_BOUND_SOURCE_ASSIGNMENT_INVALID
+                    )
+                physical_owner = _canonical_physical_state_write_owner(
+                    physical,
+                    physical_source=physical_source,
+                    identities=identities,
+                )
+                state_write_ea = int(
+                    physical.source_instruction.native_ea
+                    or physical.source_instruction.ea
+                )
+                if (
+                    physical.state_identity != context.state_identity
+                    or physical_owner is None
+                    or not physical_source.native_ranges.contains(state_write_ea)
+                    or state_write_ea not in physical_source.exact_instruction_eas
+                    or (
+                        physical_source_serial != int(fact.source_serial)
+                        and (
+                            tuple(int(item) for item in physical_block.succs)
+                            != (int(fact.source_serial),)
+                            or physical_source_serial
+                            not in tuple(int(item) for item in route_source_block.preds)
+                        )
+                    )
+                ):
+                    abstain(
+                        CanonicalSemanticEvidenceProductionReason.NATIVE_BOUND_SOURCE_ASSIGNMENT_INVALID
+                    )
+                state_write_identity = physical_source
+                state_write_corridor = (
+                    (state_write_ea,)
+                    if physical_source_serial == int(fact.source_serial)
+                    else (state_write_ea, int(fact.source_instruction_ea))
+                )
+                if physical_source_serial != int(fact.source_serial):
+                    physical_delivery = physical_delivery_groups.get(
+                        int(fact.source_serial)
+                    )
+                    if physical_delivery is None:
+                        abstain(
+                            CanonicalSemanticEvidenceProductionReason.NATIVE_BOUND_SOURCE_ASSIGNMENT_INVALID
+                        )
+                raw_guarded = physical.guarded_selection
+                if raw_guarded is not None:
+                    if (
+                        int(raw_guarded.guard_serial) != physical_source_serial
+                        or int(raw_guarded.selected_target_serial)
+                        != int(fact.target_serial)
+                    ):
+                        abstain(
+                            CanonicalSemanticEvidenceProductionReason.NATIVE_BOUND_SOURCE_ASSIGNMENT_INVALID
+                        )
+                    guarded_selection = _stable_guarded_state_selection_from_raw(
+                        raw_guarded,
+                        identities,
+                        logical_endpoints,
+                        abstain,
+                    )
+                    canonical_physical = replace(physical, guarded_selection=None)
+                expected_write = SemanticStateWriteProof(
+                    identity=physical_source,
+                    instruction_ea=state_write_ea,
+                    state_variable=physical.state_identity,
+                    width=physical.width,
+                    state_constant=physical.state_constant,
+                    corridor_instruction_eas=state_write_corridor,
+                    authority_transfer_ea=None,
+                    preserved_call_instruction_eas=(),
+                    delivery_kind=SemanticStateWriteDeliveryKind.INDIRECT,
+                    physical_state_write=canonical_physical,
+                )
+                candidates = tuple(
+                    (snapshot, instruction)
+                    for snapshot, instruction in _instruction_occurrences(
+                        physical_block, state_write_ea,
+                    )
+                    if (
+                        _instruction_projection(snapshot)
+                        == physical.source_instruction
+                        and _canonical_state_write_matches(
+                            snapshot, instruction, expected_write,
+                        )
+                    )
+                )
+                if physical.source_instruction.kind is InsnKind.MOV:
+                    physical_writes = tuple(
+                        (snapshot, instruction)
+                        for snapshot, instruction in _instruction_occurrences(
+                            physical_block,
+                        )
+                        if _canonical_state_move_matches(
+                            snapshot, instruction, expected_write,
+                        )
+                    )
+                else:
+                    physical_writes = candidates
+                if (
+                    len(candidates) != 1
+                    or len(physical_writes) != 1
+                    or not _validate_physical_alias_store_witness(
+                        blocks,
+                        physical_source_serial,
+                        physical,
+                    )
+                ):
+                    abstain(
+                        CanonicalSemanticEvidenceProductionReason.NATIVE_BOUND_SOURCE_ASSIGNMENT_INVALID
+                    )
+                state_variable = physical.state_identity
+            else:
+                source_block = blocks.get(int(fact.source_serial))
+                expected_write = SemanticStateWriteProof(
+                    identity=source,
+                    instruction_ea=state_write_ea,
+                    state_variable=state_variable,
+                    width=4,
+                    state_constant=int(fact.state_constant),
+                    corridor_instruction_eas=(state_write_ea,),
+                    authority_transfer_ea=None,
+                    preserved_call_instruction_eas=(),
+                    recovered_state_write=fact.recovered_state_write,
+                )
+                source_writes = () if source_block is None else tuple(
+                    (snapshot, instruction)
+                    for snapshot, instruction in _instruction_occurrences(
+                        source_block, state_write_ea,
+                    )
+                    if _canonical_state_write_matches(
+                        snapshot, instruction, expected_write,
+                    )
+                )
+                if len(source_writes) != 1:
+                    abstain(
+                        CanonicalSemanticEvidenceProductionReason.NATIVE_BOUND_SOURCE_ASSIGNMENT_INVALID
+                    )
             proof_id = (
                 f"decision-dag-state-assignment@0x{fact.source_instruction_ea:X}:"
                 f"{fact.state_constant:X}"
+            )
+            canonical_source_owner = _canonical_route_source_owner(
+                physical=physical,
+                physical_owner=physical_owner,
+                state_write_identity=state_write_identity,
+                route_source_identity=source,
+                proposal_owner=SemanticCorridorPoint(owner, int(owner_anchor)),
             )
             append_proof(
                 SemanticRouteProof(
@@ -2997,9 +4854,15 @@ def build_canonical_semantic_evidence(
                     shape=SemanticRouteShape.DIRECT,
                     source_identity=source,
                     source_anchor_ea=fact.source_instruction_ea,
-                    source_owner_identity=None if owner == source else owner,
+                    source_owner_identity=(
+                        None
+                        if canonical_source_owner is None
+                        else canonical_source_owner.identity
+                    ),
                     source_owner_anchor_ea=(
-                        None if owner == source else owner_anchor
+                        None
+                        if canonical_source_owner is None
+                        else canonical_source_owner.anchor_ea
                     ),
                     delivery_region=NativeEaInterval(interval.start_ea, interval.end_ea),
                     destinations=(
@@ -3011,15 +4874,19 @@ def build_canonical_semantic_evidence(
                         ),
                     ),
                     state_write=SemanticStateWriteProof(
-                        identity=source,
-                        instruction_ea=fact.source_instruction_ea,
-                        state_variable=context.state_identity,
+                        identity=state_write_identity,
+                        instruction_ea=state_write_ea,
+                        state_variable=state_variable,
                         width=4,
                         state_constant=fact.state_constant,
-                        corridor_instruction_eas=(fact.source_instruction_ea,),
+                        corridor_instruction_eas=state_write_corridor,
                         authority_transfer_ea=None,
                         preserved_call_instruction_eas=(),
                         delivery_kind=SemanticStateWriteDeliveryKind.INDIRECT,
+                        recovered_state_write=fact.recovered_state_write,
+                        physical_state_write=canonical_physical,
+                        physical_delivery=physical_delivery,
+                        guarded_selection=guarded_selection,
                     ),
                     diagnostic_provenance=(
                         ()
@@ -3039,8 +4906,9 @@ def build_canonical_semantic_evidence(
                 provenance = tuple(
                     item
                     for item in proof.diagnostic_provenance
-                    if item[0] != "fact_id"
+                    if item[0] not in {"fact_id", "fact_kind"}
                 )
+                provenance += (("fact_kind", fact.kind.value),)
                 if fact.fact_id is not None:
                     provenance += (("fact_id", fact.fact_id),)
                 diagnostic_proofs.append(
@@ -3051,10 +4919,11 @@ def build_canonical_semantic_evidence(
                 generation=context.generation,
                 proofs=tuple(diagnostic_proofs),
             )
-        except SemanticRouteEvidenceRejected:
+        except SemanticRouteEvidenceRejected as exc:
             return result_abstention(
                 CanonicalSemanticEvidenceProductionReason.CANONICAL_MODEL_REJECTED,
                 CanonicalSemanticEvidenceProductionStage.CANONICAL_MODEL,
+                detail=str(exc),
             )
         return CanonicalSemanticEvidenceProductionResult(evidence=evidence)
     except _CanonicalSemanticEvidenceProductionSignal as signal:
@@ -3106,6 +4975,115 @@ class BoundSemanticBlock:
     serial: int
     identity: StableBlockIdentity
     anchor_ea: int
+
+
+@dataclass(frozen=True, slots=True)
+class _BoundBlockIndex:
+    """One immutable native-keyed block resolver for a binding attempt."""
+
+    native_key: NativePreanalysisKey
+    blocks_by_anchor: Mapping[int, tuple[BlockSnapshot, ...]]
+    identities_by_serial: Mapping[int, StableBlockIdentity]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.native_key, NativePreanalysisKey):
+            raise TypeError("bound block index requires a native key")
+        if type(self.blocks_by_anchor) is not MappingProxyType:
+            raise TypeError("bound block index anchors must be immutable")
+        if type(self.identities_by_serial) is not MappingProxyType:
+            raise TypeError("bound block index identities must be immutable")
+        if any(
+            type(anchor) is not int
+            or type(blocks) is not tuple
+            or any(type(block) is not BlockSnapshot for block in blocks)
+            for anchor, blocks in self.blocks_by_anchor.items()
+        ):
+            raise TypeError("bound block index anchors must contain exact snapshots")
+        if any(
+            type(serial) is not int or type(identity) is not StableBlockIdentity
+            for serial, identity in self.identities_by_serial.items()
+        ):
+            raise TypeError("bound block index identities must be exact and native")
+
+    @classmethod
+    def build(
+        cls,
+        graph: FlowGraph | CanonicalRouteMaterialization,
+        native_key: NativePreanalysisKey,
+    ) -> "_BoundBlockIndex":
+        by_anchor: dict[int, list[BlockSnapshot]] = {}
+        identities: dict[int, StableBlockIdentity] = {}
+        for block in graph.blocks.values():
+            identity = stable_block_identity_from_snapshot(
+                block,
+                native_key=native_key,
+            )
+            if identity is None:
+                continue
+            identities[int(block.serial)] = identity
+            anchors = {
+                int(block.start_ea if block.native_start_ea is None else block.native_start_ea),
+                *(
+                    int(instruction.ea if instruction.native_ea is None else instruction.native_ea)
+                    for instruction in block.insn_snapshots
+                    if 0 <= int(
+                        instruction.ea if instruction.native_ea is None else instruction.native_ea
+                    ) < _BADADDR
+                ),
+            }
+            for anchor in anchors:
+                if not 0 <= anchor < _BADADDR:
+                    continue
+                by_anchor.setdefault(anchor, []).append(block)
+        return cls(
+            native_key=native_key,
+            blocks_by_anchor=MappingProxyType({
+                anchor: tuple(blocks)
+                for anchor, blocks in by_anchor.items()
+            }),
+            identities_by_serial=MappingProxyType(identities),
+        )
+
+    def resolve(
+        self,
+        identity: StableBlockIdentity,
+        anchor_ea: int,
+    ) -> BoundSemanticBlock | None:
+        anchor_ea = int(anchor_ea)
+        if identity.native_key != self.native_key:
+            return None
+        anchor_matches = tuple(
+            block
+            for block in self.blocks_by_anchor.get(anchor_ea, ())
+            if identity.native_ranges.contains(anchor_ea)
+        )
+        exact_identity_matches = tuple(
+            block
+            for block in anchor_matches
+            if self.identities_by_serial[int(block.serial)] == identity
+        )
+        if len(exact_identity_matches) == 1:
+            (matched_block,) = exact_identity_matches
+        elif exact_identity_matches or len(anchor_matches) != 1:
+            return None
+        else:
+            (matched_block,) = anchor_matches
+        return BoundSemanticBlock(
+            serial=int(matched_block.serial),
+            identity=identity,
+            anchor_ea=anchor_ea,
+        )
+
+    def resolve_anchor(self, anchor_ea: int) -> BoundSemanticBlock | None:
+        matches = self.blocks_by_anchor.get(int(anchor_ea), ())
+        if len(matches) != 1:
+            return None
+        block = matches[0]
+        return BoundSemanticBlock(
+            serial=int(block.serial),
+            identity=self.identities_by_serial[int(block.serial)],
+            anchor_ea=int(anchor_ea),
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -3167,7 +5145,9 @@ class BoundSemanticStateDag:
     source: BoundSemanticBlock
     target: BoundSemanticBlock
     entry: BoundSemanticBlock
+    source_to_entry_corridor: tuple[BoundSemanticBlock, ...]
     path: tuple[BoundSemanticBlock, ...]
+    switch_handoff_dispatcher: BoundSemanticBlock | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -3330,6 +5310,7 @@ def _canonical_authoritative_proofs(
     """Merge repeated authoritative route payloads before canonical ID minting."""
     by_payload: dict[str, SemanticRouteProof] = {}
     payload_by_input_id: dict[str, str] = {}
+    proof_by_input_id: dict[str, SemanticRouteProof] = {}
     for proof in proofs:
         payload = json.dumps(
             _stable_route_proof_payload(proof),
@@ -3338,9 +5319,20 @@ def _canonical_authoritative_proofs(
         )
         prior_payload = payload_by_input_id.setdefault(proof.proof_id, payload)
         if prior_payload != payload:
-            raise SemanticRouteEvidenceRejected(
-                "canonical semantic input proof id has divergent authoritative payload"
+            prior_proof = proof_by_input_id[proof.proof_id]
+            divergent_fields = tuple(
+                item.name
+                for item in fields(proof)
+                if item.name
+                not in {"proof_id", "atomic_group_id", "diagnostic_provenance"}
+                and getattr(prior_proof, item.name) != getattr(proof, item.name)
             )
+            raise SemanticRouteEvidenceRejected(
+                "canonical semantic input proof id has divergent authoritative "
+                f"payload: proof_id={proof.proof_id!r} "
+                f"fields={divergent_fields!r}"
+            )
+        proof_by_input_id.setdefault(proof.proof_id, proof)
         prior = by_payload.get(payload)
         if prior is None:
             by_payload[payload] = proof
@@ -3522,82 +5514,29 @@ class CanonicalRouteMaterialization:
 
 
 def _unique_bound_block(
-    graph: FlowGraph,
+    index: _BoundBlockIndex,
     identity: StableBlockIdentity,
     anchor_ea: int,
 ) -> BoundSemanticBlock | None:
-    anchor_ea = int(anchor_ea)
-    anchor_matches = tuple(
-        block
-        for block in graph.blocks.values()
-        if anchor_ea
-        in {
-            int(block.start_ea),
-            *(
-                int(instruction.ea)
-                for instruction in block.insn_snapshots
-                if 0 <= int(instruction.ea) < _BADADDR
-            ),
-        }
-        and identity.native_ranges.contains(anchor_ea)
-    )
-    exact_identity_matches = tuple(
-        block
-        for block in anchor_matches
-        if stable_block_identity_from_snapshot(
-            block,
-            native_key=identity.native_key,
-        )
-        == identity
-    )
-    if len(exact_identity_matches) == 1:
-        (matched_block,) = exact_identity_matches
-    elif exact_identity_matches or len(anchor_matches) != 1:
-        return None
-    else:
-        (matched_block,) = anchor_matches
-    return BoundSemanticBlock(
-        serial=int(matched_block.serial),
-        identity=identity,
-        anchor_ea=anchor_ea,
-    )
+    return index.resolve(identity, anchor_ea)
 
 
 def _bound_corridor_point(
-    graph: FlowGraph,
+    index: _BoundBlockIndex,
     point: SemanticCorridorPoint,
 ) -> BoundSemanticBlock | None:
     return _unique_bound_block(
-        graph,
+        index,
         point.identity,
         point.anchor_ea,
     )
 
 
 def _unique_anchor_block(
-    graph: FlowGraph,
+    index: _BoundBlockIndex,
     anchor_ea: int,
-    *,
-    native_key: NativePreanalysisKey,
 ) -> BoundSemanticBlock | None:
-    matches = tuple(
-        block
-        for block in graph.blocks.values()
-        if int(block.start_ea) == int(anchor_ea)
-        or any(int(instruction.ea) == int(anchor_ea) for instruction in block.insn_snapshots)
-    )
-    if len(matches) != 1:
-        return None
-    block = matches[0]
-    identity = stable_block_identity_from_snapshot(
-        block,
-        native_key=native_key,
-    )
-    return BoundSemanticBlock(
-        serial=int(block.serial),
-        identity=identity,
-        anchor_ea=int(anchor_ea),
-    )
+    return index.resolve_anchor(anchor_ea)
 
 
 def _instruction_at(block, anchor_ea: int):
@@ -3605,7 +5544,11 @@ def _instruction_at(block, anchor_ea: int):
     matches = tuple(
         instruction
         for instruction in InstructionProjection.from_block(block)
-        if int(instruction.attrs.get("ea", -1)) == int(anchor_ea)
+        if int(
+            instruction.attrs.get(
+                "native_ea", instruction.attrs.get("ea", -1),
+            )
+        ) == int(anchor_ea)
     )
     return matches[0] if len(matches) == 1 else None
 
@@ -3614,7 +5557,11 @@ def _snapshot_at(block, anchor_ea: int):
     matches = tuple(
         instruction
         for instruction in block.insn_snapshots
-        if int(instruction.ea) == int(anchor_ea)
+        if int(
+            instruction.ea
+            if instruction.native_ea is None
+            else instruction.native_ea
+        ) == int(anchor_ea)
     )
     return matches[0] if len(matches) == 1 else None
 
@@ -3627,7 +5574,10 @@ def _instruction_occurrences(
     return tuple(
         (snapshot, project_instruction(snapshot))
         for snapshot in block.insn_snapshots
-        if anchor_ea is None or int(snapshot.ea) == int(anchor_ea)
+        if anchor_ea is None
+        or int(
+            snapshot.ea if snapshot.native_ea is None else snapshot.native_ea
+        ) == int(anchor_ea)
     )
 
 
@@ -3665,20 +5615,39 @@ def _canonical_state_move_matches(
     instruction: Instruction,
     state_write: SemanticStateWriteProof,
 ) -> bool:
+    return _canonical_literal_state_move_matches(
+        snapshot,
+        instruction,
+        state_identity=state_write.state_variable,
+        width=state_write.width,
+        state_constant=state_write.state_constant,
+    )
+
+
+def _canonical_literal_state_move_matches(
+    snapshot,
+    instruction: Instruction,
+    *,
+    state_identity: StorageIdentity,
+    width: int,
+    state_constant: int,
+) -> bool:
+    """Replay a literal state MOV exclusively from the live canonical IR."""
+
     return bool(
         snapshot.kind is InsnKind.MOV
         and instruction.operation is ValueOpKind.MOVE
         and instruction.result is not None
-        and storage_identity_from_varnode(instruction.result) == state_write.state_variable
-        and int(instruction.result.size) == int(state_write.width)
+        and storage_identity_from_varnode(instruction.result) == state_identity
+        and int(instruction.result.size) == int(width)
         and len(instruction.inputs) == 1
         and instruction.inputs[0].space is Space.CONST
-        and int(instruction.inputs[0].size) == int(state_write.width)
+        and int(instruction.inputs[0].size) == int(width)
         and (
             int(instruction.inputs[0].offset)
-            & ((1 << (8 * int(state_write.width))) - 1)
+            & ((1 << (8 * int(width))) - 1)
         )
-        == int(state_write.state_constant)
+        == int(state_constant)
     )
 
 
@@ -3687,10 +5656,171 @@ def _canonical_state_write_matches(
     instruction: Instruction,
     state_write: SemanticStateWriteProof,
 ) -> bool:
+    physical = state_write.physical_state_write
+    if physical is not None:
+        if (
+            _instruction_projection(snapshot) != physical.source_instruction
+            or snapshot.kind is not physical.source_instruction.kind
+            or physical.state_identity != state_write.state_variable
+            or int(physical.width) != int(state_write.width)
+            or type(physical.physical_width) is not int
+            or type(physical.state_lane_offset) is not int
+            or physical.byte_order is not SemanticPhysicalWriteByteOrder.LITTLE
+            or physical.state_lane_offset != 0
+        ):
+            return False
+        if snapshot.kind is InsnKind.MOV:
+            return bool(
+                physical.physical_width == int(state_write.width)
+                and _canonical_state_move_matches(
+                    snapshot, instruction, state_write,
+                )
+            )
+        if (
+            snapshot.kind is not InsnKind.STORE
+            or instruction.operation is not ValueOpKind.STORE
+            or instruction.memory is None
+        ):
+            return False
+        source = instruction.memory.value
+        if (
+            source is None
+            or source.space is not Space.CONST
+            or instruction.memory.width is None
+            or int(instruction.memory.width) != int(physical.physical_width)
+            or int(source.size) != int(physical.physical_width)
+            or int(physical.state_lane_offset) + int(state_write.width)
+            > int(physical.physical_width)
+        ):
+            return False
+        lane_value = (
+            int(source.offset) >> (8 * int(physical.state_lane_offset))
+        ) & ((1 << (8 * int(state_write.width))) - 1)
+        return lane_value == int(state_write.state_constant)
+    recovered = state_write.recovered_state_write
+    if recovered is not None:
+        return (
+            _instruction_projection(snapshot) == recovered.source_instruction
+            and storage_identity_from_mop_snapshot(snapshot.d)
+            == recovered.state_identity
+            and int(recovered.width) == int(state_write.width)
+            and int(recovered.recovered_state) == int(state_write.state_constant)
+        )
     return (
         _canonical_state_store_matches(snapshot, instruction, state_write)
         if snapshot.kind is InsnKind.STORE
         else _canonical_state_move_matches(snapshot, instruction, state_write)
+    )
+
+
+def _validate_physical_alias_store_blocks(
+    alias_block: BlockSnapshot,
+    state_block: BlockSnapshot,
+    witness: SemanticPhysicalStateWriteWitness,
+) -> bool:
+    """Replay one alias definition, its liveness, and its exact STORE."""
+
+    alias_definition = witness.alias_definition_instruction
+    if alias_definition is None:
+        return False
+    alias_occurrences = tuple(
+        (ordinal, snapshot, project_instruction(snapshot))
+        for ordinal, snapshot in enumerate(alias_block.insn_snapshots)
+        if _instruction_projection(snapshot) == alias_definition
+    )
+    if len(alias_occurrences) != 1:
+        return False
+    alias_ordinal, alias_snapshot, alias_instruction = alias_occurrences[0]
+    alias_destination = alias_instruction.result
+    if (
+        alias_instruction.operation is not ValueOpKind.MOVE
+        or alias_destination is None
+        or alias_destination.space is not Space.REGISTER
+        or witness.state_identity.kind is not StorageIdentityKind.STACK
+        or operand_stack_offsets(alias_snapshot)[0]
+        != int(witness.state_identity.offset)
+    ):
+        return False
+    alias_register = int(alias_destination.offset)
+    for snapshot in alias_block.insn_snapshots[alias_ordinal + 1:]:
+        destination = project_instruction(snapshot).result
+        if (
+            destination is not None
+            and destination.space is Space.REGISTER
+            and int(destination.offset) == alias_register
+        ):
+            return False
+    store_ea = int(
+        witness.source_instruction.native_ea or witness.source_instruction.ea
+    )
+    for snapshot in state_block.insn_snapshots:
+        snapshot_ea = int(snapshot.native_ea or snapshot.ea)
+        if snapshot_ea == store_ea:
+            instruction = project_instruction(snapshot)
+            return bool(
+                _instruction_projection(snapshot) == witness.source_instruction
+                and instruction.operation is ValueOpKind.STORE
+                and instruction.memory is not None
+                and instruction.memory.target is not None
+                and instruction.memory.target.space is Space.REGISTER
+                and int(instruction.memory.target.offset) == alias_register
+            )
+        instruction = project_instruction(snapshot)
+        destination = instruction.result
+        if (
+            destination is not None
+            and destination.space is Space.REGISTER
+            and int(destination.offset) == int(alias_register)
+        ):
+            return False
+    return False
+
+
+def _validate_physical_alias_store_witness(
+    blocks: Mapping[int, BlockSnapshot],
+    state_write_serial: int,
+    witness: SemanticPhysicalStateWriteWitness,
+) -> bool:
+    """Replay the exact predecessor alias used by one indirect state STORE."""
+
+    if witness.source_instruction.kind is InsnKind.MOV:
+        return True
+    alias_serial = witness.alias_definition_serial
+    state_block = blocks.get(int(state_write_serial))
+    alias_block = None if alias_serial is None else blocks.get(int(alias_serial))
+    if (
+        alias_block is None
+        or state_block is None
+        or tuple(int(item) for item in alias_block.succs)
+        != (int(state_write_serial),)
+        or int(alias_serial) not in tuple(int(item) for item in state_block.preds)
+    ):
+        return False
+    return _validate_physical_alias_store_blocks(
+        alias_block, state_block, witness,
+    )
+
+
+def _validate_bound_physical_alias_store_witness(
+    graph: FlowGraph,
+    source_owner: BoundSemanticBlock,
+    state_write_block: BoundSemanticBlock,
+    witness: SemanticPhysicalStateWriteWitness,
+) -> bool:
+    """Rebind an alias STORE through canonical owner and write identities."""
+
+    owner_block = graph.get_block(int(source_owner.serial))
+    write_block = graph.get_block(int(state_write_block.serial))
+    if (
+        owner_block is None
+        or write_block is None
+        or tuple(int(item) for item in owner_block.succs)
+        != (int(state_write_block.serial),)
+        or int(source_owner.serial) not in tuple(int(item) for item in write_block.preds)
+    ):
+        return False
+    return _validate_physical_alias_store_blocks(
+        owner_block, write_block, witness,
     )
 
 
@@ -3726,10 +5856,137 @@ def _topology_path(graph: FlowGraph, points: tuple[BoundSemanticBlock, ...]) -> 
     return True
 
 
+def _validate_bound_physical_delivery(
+    graph: FlowGraph,
+    index: _BoundBlockIndex,
+    proof: SemanticRouteProof,
+    source: BoundSemanticBlock,
+) -> bool:
+    """Replay one exhaustive physical-writer partition at its delivery GOTO."""
+
+    state_write = proof.state_write
+    if state_write is None or state_write.physical_delivery is None:
+        return True
+    delivery = state_write.physical_delivery
+    bound_delivery = _bound_corridor_point(index, delivery.delivery)
+    bound_target = _bound_corridor_point(index, delivery.target)
+    delivery_block = graph.get_block(source.serial)
+    if (
+        bound_delivery is None
+        or bound_target is None
+        or bound_delivery.serial != source.serial
+        or delivery_block is None
+        or not _exact_physical_delivery_goto(
+            delivery_block,
+            instruction_ea=delivery.delivery.anchor_ea,
+            state_identity=state_write.state_variable,
+        )
+    ):
+        return False
+    target_block = graph.get_block(bound_target.serial)
+    if (
+        tuple(int(item) for item in delivery_block.succs)
+        != (bound_target.serial,)
+        or target_block is None
+        or source.serial not in tuple(int(item) for item in target_block.preds)
+    ):
+        return False
+    live_delivery = _instruction_occurrences(
+        delivery_block, delivery.delivery.anchor_ea,
+    )
+    if (
+        len(live_delivery) != 1
+        or live_delivery[0][1].control is None
+        or live_delivery[0][1].control.transfer is not ControlTransferKind.GOTO
+        or live_delivery[0][1].control.target != bound_target.serial
+        or instruction_projection_without_block_references(live_delivery[0][0])
+        != delivery.delivery_instruction
+    ):
+        return False
+    predecessors = tuple(int(item) for item in delivery_block.preds)
+    if len(predecessors) != len(set(predecessors)):
+        return False
+    bound_members: list[
+        tuple[
+            SemanticPhysicalDeliveryMember,
+            BoundSemanticBlock,
+            BoundSemanticBlock | None,
+        ]
+    ] = []
+    for member in delivery.members:
+        block = _unique_bound_block(index, member.identity, member.instruction_ea)
+        if block is None:
+            return False
+        bound_alias = (
+            None
+            if member.alias_definition is None
+            else _bound_corridor_point(index, member.alias_definition)
+        )
+        if (
+            member.source_instruction.kind is InsnKind.STORE
+            and bound_alias is None
+        ):
+            return False
+        bound_members.append((member, block, bound_alias))
+    member_serials = tuple(
+        block.serial for _member, block, _alias in bound_members
+    )
+    if len(member_serials) != len(set(member_serials)) or set(member_serials) != set(predecessors):
+        return False
+    for member, bound_member, bound_alias in bound_members:
+        writer = graph.get_block(bound_member.serial)
+        if (
+            writer is None
+            or tuple(int(item) for item in writer.succs) != (source.serial,)
+            or bound_member.serial not in predecessors
+        ):
+            return False
+        expected = SemanticStateWriteProof(
+            identity=member.identity,
+            instruction_ea=member.instruction_ea,
+            state_variable=member.state_identity,
+            width=member.width,
+            state_constant=member.state_constant,
+            corridor_instruction_eas=(member.instruction_ea,),
+            authority_transfer_ea=None,
+            preserved_call_instruction_eas=(),
+            physical_state_write=member.physical_state_write,
+        )
+        exact_writes = tuple(
+            (snapshot, instruction)
+            for snapshot, instruction in _instruction_occurrences(writer)
+            if _canonical_state_write_matches(snapshot, instruction, expected)
+        )
+        claimed = tuple(
+            (snapshot, instruction)
+            for snapshot, instruction in exact_writes
+            if _instruction_projection(snapshot) == member.source_instruction
+        )
+        if (
+            len(exact_writes) != 1
+            or len(claimed) != 1
+            or (
+                member.source_instruction.kind is InsnKind.STORE
+                and (
+                    bound_alias is None
+                    or not _validate_bound_physical_alias_store_witness(
+                        graph,
+                        bound_alias,
+                        bound_member,
+                        member.physical_state_write,
+                    )
+                )
+            )
+        ):
+            return False
+    return True
+
+
 def _validate_state_write(
     graph: FlowGraph,
     proof: SemanticRouteProof,
     state_write_block: BoundSemanticBlock,
+    source_owner: BoundSemanticBlock | None = None,
 ) -> bool:
     state_write = proof.state_write
     if state_write is None:
@@ -3740,34 +5997,116 @@ def _validate_state_write(
     claimed_occurrences = _instruction_occurrences(
         block, state_write.instruction_ea
     )
+    recovered = state_write.recovered_state_write
     claimed_writers = tuple(
         (snapshot, instruction)
         for snapshot, instruction in claimed_occurrences
-        if _writes_state_identity(snapshot, instruction, state_write.state_variable)
+        if (
+            _instruction_projection(snapshot)
+            == state_write.physical_state_write.source_instruction
+            if state_write.physical_state_write is not None
+            else storage_identity_from_mop_snapshot(snapshot.d) == recovered.state_identity
+            if recovered is not None
+            else _writes_state_identity(snapshot, instruction, state_write.state_variable)
+        )
     )
     if len(claimed_writers) != 1:
         return False
     selected_snapshot, selected_instruction = claimed_writers[0]
     if selected_snapshot.kind is InsnKind.STORE:
+        physical = state_write.physical_state_write
         store_candidates = tuple(
             (snapshot, instruction)
             for snapshot, instruction in _instruction_occurrences(block)
             if (
                 snapshot.kind is InsnKind.STORE
-                and _writes_state_identity(
-                    snapshot, instruction, state_write.state_variable
+                and (
+                    _instruction_projection(snapshot)
+                    == physical.source_instruction
+                    if physical is not None
+                    else _writes_state_identity(
+                        snapshot, instruction, state_write.state_variable
+                    )
                 )
             )
         )
         if len(store_candidates) != 1:
             return False
-    return _canonical_state_write_matches(
+    matched = _canonical_state_write_matches(
         selected_snapshot, selected_instruction, state_write
+    )
+    physical = state_write.physical_state_write
+    if (
+        matched
+        and physical is not None
+        and physical.source_instruction.kind is InsnKind.STORE
+    ):
+        if source_owner is None:
+            return False
+        matched = _validate_bound_physical_alias_store_witness(
+            graph,
+            source_owner,
+            state_write_block,
+            physical,
+        )
+    return matched
+
+
+def _validate_guarded_state_selection(
+    graph: FlowGraph,
+    index: _BoundBlockIndex,
+    proof: SemanticRouteProof,
+    state_write_block: BoundSemanticBlock,
+    destinations: tuple[BoundSemanticRouteDestination, ...],
+) -> bool:
+    """Replay a stable STORE/guard selection against the immutable graph."""
+
+    state_write = proof.state_write
+    if state_write is None or state_write.guarded_selection is None:
+        return True
+    guarded = state_write.guarded_selection
+    physical = state_write.physical_state_write
+    guard = _bound_corridor_point(index, guarded.guard)
+    true_target = _bound_dag_endpoint_serial(graph, index, guarded.true_target)
+    false_target = _bound_dag_endpoint_serial(graph, index, guarded.false_target)
+    selected_target = _bound_dag_endpoint_serial(
+        graph,
+        index,
+        guarded.selected_target,
+    )
+    if (
+        proof.proof_kind is not SemanticRouteProofKind.STATE_ASSIGNMENT
+        or physical is None
+        or guard is None
+        or guard.serial != state_write_block.serial
+        or true_target is None
+        or false_target is None
+        or selected_target is None
+        or len(destinations) != 1
+        or destinations[0].block.serial != selected_target
+    ):
+        return False
+    replayed = prove_semantic_physical_guard_selection(
+        graph,
+        guard_serial=guard.serial,
+        selected_target_serial=selected_target,
+        physical_state_write=physical,
+    )
+    return bool(
+        replayed is not None
+        and replayed.comparison_instruction == guarded.comparison_instruction
+        and replayed.state_identity == guarded.state_identity
+        and int(replayed.width) == int(guarded.width)
+        and int(replayed.constant) == int(guarded.constant)
+        and int(replayed.true_target_serial) == true_target
+        and int(replayed.false_target_serial) == false_target
+        and int(replayed.selected_target_serial) == selected_target
     )
 
 
 def _validate_carrier(
     graph: FlowGraph,
+    index: _BoundBlockIndex,
     carrier: BoundSemanticCarrier,
 ) -> bool:
     """Replay the carrier's definition and every live corridor writer."""
@@ -3809,9 +6148,8 @@ def _validate_carrier(
 
     for permitted_ea in permitted:
         permitted_block = _unique_anchor_block(
-            graph,
+            index,
             permitted_ea,
-            native_key=evidence.native_key,
         )
         if permitted_block is None:
             return False
@@ -3893,6 +6231,7 @@ def _validate_direct_route(
 
 def _validate_predicate_writes(
     graph: FlowGraph,
+    index: _BoundBlockIndex,
     predicate: BoundSemanticPredicate,
     state_write: SemanticStateWriteProof | None,
 ) -> bool:
@@ -3930,7 +6269,7 @@ def _validate_predicate_writes(
             if snapshot.kind is not InsnKind.MOV or not valid_writer(snapshot.ea, instruction):
                 return False
     for permitted_ea in permitted:
-        block = _unique_anchor_block(graph, permitted_ea, native_key=evidence.native_key)
+        block = _unique_anchor_block(index, permitted_ea)
         if block is None:
             return False
         snapshot = _snapshot_at(graph.get_block(block.serial), permitted_ea)
@@ -3947,6 +6286,7 @@ def _validate_predicate_writes(
 
 def _validate_state_write_corridor(
     graph: FlowGraph,
+    index: _BoundBlockIndex,
     proof: SemanticRouteProof,
     state_write_block: BoundSemanticBlock,
 ) -> bool:
@@ -3959,7 +6299,7 @@ def _validate_state_write_corridor(
         state_write_block
         if state_block is not None
         and any(int(snapshot.ea) == int(ea) for snapshot in state_block.insn_snapshots)
-        else _unique_anchor_block(graph, ea, native_key=proof.native_key)
+        else _unique_anchor_block(index, ea)
         for ea in state_write.corridor_instruction_eas
     )
     if any(point is None for point in points) or not _topology_path(
@@ -3970,7 +6310,7 @@ def _validate_state_write_corridor(
     if points[0] is None or points[0].serial != state_write_block.serial:
         return False
     for call_ea in state_write.preserved_call_instruction_eas:
-        block = _unique_anchor_block(graph, call_ea, native_key=proof.native_key)
+        block = _unique_anchor_block(index, call_ea)
         if block is None:
             return False
         snapshot = _snapshot_at(graph.get_block(block.serial), call_ea)
@@ -3985,9 +6325,8 @@ def _validate_state_write_corridor(
             return False
     if state_write.authority_transfer_ea is not None:
         block = _unique_anchor_block(
-            graph,
+            index,
             state_write.authority_transfer_ea,
-            native_key=proof.native_key,
         )
         if block is None:
             return False
@@ -4142,11 +6481,12 @@ def _validate_state_carrier(
 
 def _bound_dag_endpoint_serial(
     graph: FlowGraph,
+    index: _BoundBlockIndex,
     endpoint: SemanticDagEndpoint,
 ) -> int | None:
     """Resolve one canonical DAG endpoint without treating a logical exit as native."""
     if type(endpoint) is SemanticCorridorPoint:
-        block = _unique_bound_block(graph, endpoint.identity, endpoint.anchor_ea)
+        block = _unique_bound_block(index, endpoint.identity, endpoint.anchor_ea)
         return None if block is None else int(block.serial)
     if type(endpoint) is SemanticLogicalDagEndpoint:
         block = graph.get_block(int(endpoint.serial))
@@ -4156,24 +6496,43 @@ def _bound_dag_endpoint_serial(
 
 def _validate_state_dag(
     graph: FlowGraph,
+    index: _BoundBlockIndex,
     proof: SemanticRouteProof,
     dag: BoundSemanticStateDag,
 ) -> bool:
     """Replay the stable DAG witness after resolving current snapshot serials."""
     evidence = dag.evidence
     witness = evidence.witness
+    def reject(_reason: str) -> bool:
+        return False
     if proof.proof_kind is SemanticRouteProofKind.STATE_DAG:
         state_write = proof.state_write
+        state_write_is_route_source = bool(
+            state_write is not None
+            and state_write.identity == evidence.source_identity
+            and state_write.instruction_ea == evidence.source_anchor_ea
+        )
+        state_write_is_exact_physical_predecessor = (
+            _exact_physical_predecessor_owner_matches(
+                state_write,
+                source_identity=evidence.source_identity,
+                source_anchor_ea=evidence.source_anchor_ea,
+                owner_identity=proof.source_owner_identity,
+                owner_anchor_ea=proof.source_owner_anchor_ea,
+            )
+        )
         if (
             state_write is None
-            or state_write.identity != evidence.source_identity
-            or state_write.instruction_ea != evidence.source_anchor_ea
+            or not (
+                state_write_is_route_source
+                or state_write_is_exact_physical_predecessor
+            )
             or state_write.state_variable != witness.state_identity
             or state_write.state_constant != witness.state_constant
             or state_write.state_constant != proof.destinations[0].state_constant
             or state_write.width != 4
         ):
-            return False
+            return reject("route_state_write")
     elif proof.proof_kind is SemanticRouteProofKind.BOOTSTRAP:
         bootstrap = proof.bootstrap
         state_write = proof.state_write
@@ -4187,7 +6546,7 @@ def _validate_state_dag(
             or state_write.state_constant != proof.destinations[0].state_constant
             or state_write.width != 4
         ):
-            return False
+            return reject("bootstrap_state_write")
     elif proof.proof_kind is SemanticRouteProofKind.STATE_PARTITION:
         partition = proof.state_partition
         member = (
@@ -4209,50 +6568,123 @@ def _validate_state_dag(
             or member.state_constant != witness.state_constant
             or proof.destinations[0].state_constant != witness.state_constant
         ):
-            return False
+            return reject("partition_state_write")
     if dag.source.identity != evidence.source_identity or dag.target.identity != evidence.target_identity:
-        return False
+        return reject("source_or_target_identity")
     if dag.entry.identity != evidence.entry_identity or dag.entry.anchor_ea != evidence.entry_anchor_ea:
-        return False
+        return reject("entry_identity")
     if tuple(point.identity for point in evidence.path) != tuple(block.identity for block in dag.path):
-        return False
+        return reject("path_identity")
     if not dag.path or dag.path[0].serial != dag.entry.serial:
-        return False
+        return reject("path_entry")
     if (
-        proof.proof_kind
-        in {
-            SemanticRouteProofKind.STATE_DAG,
-            SemanticRouteProofKind.STATE_PARTITION,
-            SemanticRouteProofKind.BOOTSTRAP,
-        }
-        and dag.source.serial != dag.entry.serial
+        not dag.source_to_entry_corridor
+        or dag.source_to_entry_corridor[0].serial != dag.source.serial
+        or dag.source_to_entry_corridor[-1].serial != dag.entry.serial
+        or not _topology_path(graph, dag.source_to_entry_corridor)
     ):
-        source_block = graph.get_block(int(dag.source.serial))
-        entry_block = graph.get_block(int(dag.entry.serial))
+        return reject("source_to_entry_corridor")
+    bridges: dict[StableBlockIdentity, tuple[SemanticDagNamespaceBridge, int]] = {}
+    witness_successors: dict[int, tuple[int, ...]] = {}
+    for comparison in witness.comparisons:
+        node = _unique_bound_block(index, comparison.node.identity, comparison.node.anchor_ea)
+        true_target = _bound_dag_endpoint_serial(graph, index, comparison.true_target)
+        false_target = _bound_dag_endpoint_serial(graph, index, comparison.false_target)
+        if node is None or true_target is None or false_target is None:
+            return reject("comparison_endpoint_identity")
+        witness_successors[int(node.serial)] = (int(true_target), int(false_target))
+    for source_point, target_point in witness.aliases:
+        source = _unique_bound_block(index, source_point.identity, source_point.anchor_ea)
+        target = _unique_bound_block(index, target_point.identity, target_point.anchor_ea)
+        if source is None or target is None:
+            return reject("alias_identity")
+        witness_successors[int(source.serial)] = (int(target.serial),)
+    for bridge in witness.bridges:
+        node = _unique_bound_block(index, bridge.node.identity, bridge.node.anchor_ea)
+        bridge_comparisons = tuple(
+            comparison
+            for comparison in witness.comparisons
+            if comparison.node.identity == bridge.node.identity
+        )
         if (
-            source_block is None
-            or entry_block is None
-            or int(dag.entry.serial) not in source_block.succs
-            or int(dag.source.serial) not in entry_block.preds
+            node is None
+            or bridge.node.identity in bridges
+            or len(bridge_comparisons) != 1
+            or bridge_comparisons[0].state_identity != bridge.source_identity
+        ):
+            return reject("namespace_bridge_identity")
+        current = exact_u32_xdu_namespace_bridge(
+            graph, int(node.serial), source_identity=bridge.source_identity,
+        )
+        if (
+            current is None
+            or current.node_anchor_ea != bridge.node.anchor_ea
+            or current.instruction_ea != bridge.instruction_ea
+            or current.result_identity != bridge.result_identity
+            or current.source_width != bridge.source_width
+            or current.result_width != bridge.result_width
+        ):
+            return reject("namespace_bridge_replay")
+        bridges[bridge.node.identity] = (bridge, int(node.serial))
+
+    used_bridges: set[StableBlockIdentity] = set()
+    def bridge_reaches(namespace: StorageIdentity, target_serial: int) -> bool:
+        """Allow one alternate namespace only downstream of its exact bridge."""
+        matches = [
+            (identity, bridge_serial)
+            for identity, (bridge, bridge_serial) in bridges.items()
+            if bridge.result_identity == namespace and bridge.source_identity == witness.state_identity
+        ]
+        if len(matches) != 1:
+            return False
+        identity, bridge_serial = matches[0]
+        if target_serial == bridge_serial:
+            return False
+        bridge_block = graph.get_block(bridge_serial)
+        successor_region = witness_successors.get(bridge_serial)
+        if (
+            bridge_block is None
+            or successor_region is None
+            or set(int(item) for item in bridge_block.succs) != set(successor_region)
         ):
             return False
+        pending = list(successor_region)
+        seen: set[int] = set()
+        while pending:
+            current = pending.pop()
+            if current in seen:
+                continue
+            seen.add(current)
+            if current == target_serial:
+                used_bridges.add(identity)
+                return True
+            pending.extend(witness_successors.get(current, ()))
+        return False
     node_serials: dict[StableBlockIdentity, int] = {}
     for comparison in witness.comparisons:
-        node = _unique_bound_block(graph, comparison.node.identity, comparison.node.anchor_ea)
-        true_target_serial = _bound_dag_endpoint_serial(graph, comparison.true_target)
-        false_target_serial = _bound_dag_endpoint_serial(graph, comparison.false_target)
+        node = _unique_bound_block(index, comparison.node.identity, comparison.node.anchor_ea)
+        true_target_serial = _bound_dag_endpoint_serial(graph, index, comparison.true_target)
+        false_target_serial = _bound_dag_endpoint_serial(graph, index, comparison.false_target)
         if node is None or true_target_serial is None or false_target_serial is None:
+            return False
+        expected_namespace = comparison.state_identity
+        if (
+            expected_namespace != witness.state_identity
+            and not bridge_reaches(expected_namespace, int(node.serial))
+        ):
             return False
         current = current_u32_route_comparison(
             graph,
             int(node.serial),
-            expected_identities=frozenset({witness.state_identity}),
+            expected_identities=frozenset({
+                expected_namespace,
+            }),
         )
         if current is None:
             return False
         current_comparison, current_state_identity, _block_ea, _branch_ea = current
         if (
-            current_state_identity != witness.state_identity
+            current_state_identity != expected_namespace
             or current_comparison.op != comparison.operation
             or int(current_comparison.const) != int(comparison.constant)
             or int(current_comparison.true_target) != true_target_serial
@@ -4260,11 +6692,13 @@ def _validate_state_dag(
         ):
             return False
         node_serials[comparison.node.identity] = int(node.serial)
+    if used_bridges != set(bridges):
+        return False
     nodes: dict[int, RouteComparison] = {}
     for comparison in witness.comparisons:
-        node = _unique_bound_block(graph, comparison.node.identity, comparison.node.anchor_ea)
-        true_target_serial = _bound_dag_endpoint_serial(graph, comparison.true_target)
-        false_target_serial = _bound_dag_endpoint_serial(graph, comparison.false_target)
+        node = _unique_bound_block(index, comparison.node.identity, comparison.node.anchor_ea)
+        true_target_serial = _bound_dag_endpoint_serial(graph, index, comparison.true_target)
+        false_target_serial = _bound_dag_endpoint_serial(graph, index, comparison.false_target)
         if node is None or true_target_serial is None or false_target_serial is None:
             return False
         nodes[int(node.serial)] = RouteComparison(
@@ -4276,8 +6710,8 @@ def _validate_state_dag(
         )
     aliases: dict[int, int] = {}
     for source_point, target_point in witness.aliases:
-        source = _unique_bound_block(graph, source_point.identity, source_point.anchor_ea)
-        target = _unique_bound_block(graph, target_point.identity, target_point.anchor_ea)
+        source = _unique_bound_block(index, source_point.identity, source_point.anchor_ea)
+        target = _unique_bound_block(index, target_point.identity, target_point.anchor_ea)
         if source is None or target is None:
             return False
         if current_u32_route_alias(graph, int(source.serial)) != int(target.serial):
@@ -4290,11 +6724,24 @@ def _validate_state_dag(
             root=int(dag.entry.serial),
             aliases=aliases,
         )
-        if current_dag.route_from(int(dag.entry.serial), int(witness.state_constant)) != int(dag.target.serial):
+        expected_route_target = (
+            int(dag.target.serial)
+            if dag.evidence.switch_handoff is None
+            else int(dag.switch_handoff_dispatcher.serial)
+        )
+        actual_route = current_dag.route_from(
+            int(dag.entry.serial), int(witness.state_constant),
+        )
+        if actual_route != expected_route_target:
             return False
     except (TypeError, ValueError, KeyError, OverflowError):
         return False
-    for left, right in zip(dag.path, (*dag.path[1:], dag.target)):
+    route_leaf = (
+        dag.target
+        if dag.evidence.switch_handoff is None
+        else dag.switch_handoff_dispatcher
+    )
+    for left, right in zip(dag.path, (*dag.path[1:], route_leaf)):
         left_block = graph.get_block(int(left.serial))
         right_block = graph.get_block(int(right.serial))
         if (
@@ -4302,6 +6749,35 @@ def _validate_state_dag(
             or right_block is None
             or int(right.serial) not in left_block.succs
             or int(left.serial) not in right_block.preds
+        ):
+            return False
+    handoff = dag.evidence.switch_handoff
+    if handoff is not None:
+        dispatcher = dag.switch_handoff_dispatcher
+        if dispatcher is None:
+            return False
+        table = analyze_switch_table_at_dispatcher(graph, int(dispatcher.serial))
+        if table is None:
+            return False
+        state_var = table.state_var_operand
+        if (
+            int(table.state_dispatcher_map.dispatcher_entry_block)
+            != int(dispatcher.serial)
+            or handoff.state_identity.kind is not StorageIdentityKind.STACK
+            or int(state_var.offset) != int(handoff.state_identity.offset)
+            or int(state_var.size) != 4
+            or table.state_dispatcher_map.resolve_target(
+                int(handoff.state_constant)
+            ) != int(dag.target.serial)
+        ):
+            return False
+        dispatcher_block = graph.get_block(int(dispatcher.serial))
+        target_block = graph.get_block(int(dag.target.serial))
+        if (
+            dispatcher_block is None
+            or target_block is None
+            or int(dag.target.serial) not in dispatcher_block.succs
+            or int(dispatcher.serial) not in target_block.preds
         ):
             return False
     return True
@@ -4498,6 +6974,7 @@ def _validate_state_partition(
 
 def _validate_terminal_return_carrier(
     graph: FlowGraph,
+    index: _BoundBlockIndex,
     proof: SemanticRouteProof,
     destinations: tuple[BoundSemanticRouteDestination, ...],
 ) -> bool:
@@ -4505,12 +6982,12 @@ def _validate_terminal_return_carrier(
     if carrier is None or len(destinations) != 1:
         return False
     capture = _unique_bound_block(
-        graph,
+        index,
         carrier.capture_identity,
         carrier.request.source_handler_ea,
     )
     terminal = _unique_bound_block(
-        graph,
+        index,
         carrier.terminal_identity,
         carrier.request.terminal_target_ea,
     )
@@ -4556,7 +7033,7 @@ def _validate_terminal_return_carrier(
     return_snapshot = _snapshot_at(terminal_block, carrier.terminal_return_ea)
     return_instruction = _instruction_at(terminal_block, carrier.terminal_return_ea)
     corridor_points = tuple(
-        _unique_anchor_block(graph, ea, native_key=proof.native_key)
+        _unique_anchor_block(index, ea)
         for ea in carrier.corridor_instruction_eas
     )
     if any(point is None for point in corridor_points):
@@ -4576,6 +7053,7 @@ def _validate_terminal_return_carrier(
 
 def _validate_conditional_route(
     graph: FlowGraph,
+    index: _BoundBlockIndex,
     proof: SemanticRouteProof,
     source: BoundSemanticBlock,
     destinations: tuple[BoundSemanticRouteDestination, ...],
@@ -4697,18 +7175,19 @@ def _validate_conditional_route(
         return False
     if not _topology_path(graph, predicate.corridor):
         return False
-    if not _validate_predicate_writes(graph, predicate, proof.state_write):
+    if not _validate_predicate_writes(graph, index, predicate, proof.state_write):
         return False
     if state_write_block is not None and not _validate_state_write(
         graph,
         proof,
         state_write_block,
+        source_owner,
     ):
         return False
     if source_owner is not None and state_write_block is not None and source_owner.serial != state_write_block.serial:
         return False
     if any(
-        not _validate_carrier(graph, carrier)
+        not _validate_carrier(graph, index, carrier)
         or not _topology_path(graph, carrier.corridor)
         for carrier in carriers
     ):
@@ -4716,9 +7195,8 @@ def _validate_conditional_route(
     if state_write_block is not None and proof.state_write is not None:
         state_corridor = tuple(
             _unique_anchor_block(
-                graph,
+                index,
                 ea,
-                native_key=proof.native_key,
             )
             for ea in proof.state_write.corridor_instruction_eas
         )
@@ -4732,13 +7210,14 @@ def _validate_conditional_route(
 
 def _bind_canonical_route(
     graph: FlowGraph | CanonicalRouteMaterialization,
+    index: _BoundBlockIndex,
     proof: SemanticRouteProof,
 ) -> BoundSemanticRoute | CanonicalRouteBindingFailure:
     """Bind one proof once, returning either authority or its typed failure."""
 
     destinations = tuple(proof.destinations)
     destination_anchors = tuple(int(item.target_anchor_ea) for item in destinations)
-    source = _unique_bound_block(graph, proof.source_identity, proof.source_anchor_ea)
+    source = _unique_bound_block(index, proof.source_identity, proof.source_anchor_ea)
     if source is None:
         return CanonicalRouteBindingFailure(
             proof.proof_id, CanonicalRouteBindingStage.SOURCE_IDENTITY,
@@ -4746,7 +7225,7 @@ def _bind_canonical_route(
         )
     bound_destinations = []
     for destination in destinations:
-        block = _unique_bound_block(graph, destination.target_identity, destination.target_anchor_ea)
+        block = _unique_bound_block(index, destination.target_identity, destination.target_anchor_ea)
         if block is None:
             return CanonicalRouteBindingFailure(
                 proof.proof_id, CanonicalRouteBindingStage.DESTINATION_IDENTITY,
@@ -4762,24 +7241,24 @@ def _bind_canonical_route(
     source_owner = None
     if proof.source_owner_identity is not None:
         source_owner = _unique_bound_block(
-            graph, proof.source_owner_identity, int(proof.source_owner_anchor_ea),
+            index, proof.source_owner_identity, int(proof.source_owner_anchor_ea),
         )
         if source_owner is None:
             return failure(CanonicalRouteBindingStage.SUBPROOF_IDENTITY)
     state_write_block = None
     if proof.state_write is not None:
         state_write_block = _unique_bound_block(
-            graph, proof.state_write.identity, proof.state_write.instruction_ea,
+            index, proof.state_write.identity, proof.state_write.instruction_ea,
         )
         if state_write_block is None:
             return failure(CanonicalRouteBindingStage.STATE_WRITE)
 
     bound_predicate = None
     if proof.predicate is not None:
-        predicate_origin = _bound_corridor_point(graph, proof.predicate.origin)
-        predicate_consumer = _bound_corridor_point(graph, proof.predicate.consumer)
+        predicate_origin = _bound_corridor_point(index, proof.predicate.origin)
+        predicate_consumer = _bound_corridor_point(index, proof.predicate.consumer)
         predicate_corridor = tuple(
-            _bound_corridor_point(graph, point)
+            _bound_corridor_point(index, point)
             for point in proof.predicate.corridor
         )
         if (
@@ -4797,13 +7276,13 @@ def _bind_canonical_route(
 
     bound_carriers: list[BoundSemanticCarrier] = []
     for carrier in proof.carriers:
-        carrier_definition = _bound_corridor_point(graph, carrier.definition)
+        carrier_definition = _bound_corridor_point(index, carrier.definition)
         carrier_consumers = tuple(
-            _bound_corridor_point(graph, consumer)
+            _bound_corridor_point(index, consumer)
             for consumer in carrier.consumers
         )
         carrier_corridor = tuple(
-            _bound_corridor_point(graph, point) for point in carrier.corridor
+            _bound_corridor_point(index, point) for point in carrier.corridor
         )
         if (
             carrier_definition is None
@@ -4823,13 +7302,13 @@ def _bind_canonical_route(
     bound_transform = None
     if proof.state_transform is not None:
         transform = proof.state_transform
-        owner = _unique_bound_block(graph, transform.owner_identity, transform.owner_anchor_ea)
-        source_block = _unique_bound_block(graph, transform.source_identity, transform.source_anchor_ea)
-        feeder = _unique_bound_block(graph, transform.feeder_identity, transform.feeder_anchor_ea)
-        comparison = _unique_bound_block(graph, transform.comparison_entry_identity, transform.comparison_entry_anchor_ea)
+        owner = _unique_bound_block(index, transform.owner_identity, transform.owner_anchor_ea)
+        source_block = _unique_bound_block(index, transform.source_identity, transform.source_anchor_ea)
+        feeder = _unique_bound_block(index, transform.feeder_identity, transform.feeder_anchor_ea)
+        comparison = _unique_bound_block(index, transform.comparison_entry_identity, transform.comparison_entry_anchor_ea)
         state_feeder = (
             None if transform.state_feeder_identity is None else _unique_bound_block(
-                graph, transform.state_feeder_identity, int(transform.state_feeder_anchor_ea),
+                index, transform.state_feeder_identity, int(transform.state_feeder_anchor_ea),
             )
         )
         if owner is None or source_block is None or feeder is None or comparison is None or (
@@ -4845,10 +7324,10 @@ def _bind_canonical_route(
     bound_state_carrier = None
     if proof.state_carrier is not None:
         carrier = proof.state_carrier
-        owner = _unique_bound_block(graph, carrier.owner_identity, carrier.owner_anchor_ea)
-        source_block = _unique_bound_block(graph, carrier.source_identity, carrier.source_anchor_ea)
-        feeder = _unique_bound_block(graph, carrier.feeder_identity, carrier.feeder_anchor_ea)
-        comparison = _unique_bound_block(graph, carrier.comparison_entry_identity, carrier.comparison_entry_anchor_ea)
+        owner = _unique_bound_block(index, carrier.owner_identity, carrier.owner_anchor_ea)
+        source_block = _unique_bound_block(index, carrier.source_identity, carrier.source_anchor_ea)
+        feeder = _unique_bound_block(index, carrier.feeder_identity, carrier.feeder_anchor_ea)
+        comparison = _unique_bound_block(index, carrier.comparison_entry_identity, carrier.comparison_entry_anchor_ea)
         if owner is None or source_block is None or feeder is None or comparison is None:
             return failure(CanonicalRouteBindingStage.STATE_CARRIER)
         bound_state_carrier = BoundSemanticStateCarrier(
@@ -4860,9 +7339,9 @@ def _bind_canonical_route(
     bound_state_partition = None
     if proof.state_partition is not None:
         partition = proof.state_partition
-        feeder = _unique_bound_block(graph, partition.feeder_identity, partition.feeder_anchor_ea)
+        feeder = _unique_bound_block(index, partition.feeder_identity, partition.feeder_anchor_ea)
         owners = tuple(
-            _unique_bound_block(graph, member.owner_identity, member.owner_anchor_ea)
+            _unique_bound_block(index, member.owner_identity, member.owner_anchor_ea)
             for member in partition.members
         )
         if feeder is None or any(owner is None for owner in owners):
@@ -4876,27 +7355,47 @@ def _bind_canonical_route(
     bound_state_dag = None
     if proof.state_dag is not None:
         dag = proof.state_dag
-        dag_source = _unique_bound_block(graph, dag.source_identity, dag.source_anchor_ea)
-        dag_target = _unique_bound_block(graph, dag.target_identity, dag.target_anchor_ea)
-        dag_entry = _unique_bound_block(graph, dag.entry_identity, dag.entry_anchor_ea)
-        dag_path = tuple(_bound_corridor_point(graph, point) for point in dag.path)
-        if dag_source is None or dag_target is None or dag_entry is None or any(point is None for point in dag_path):
+        dag_source = _unique_bound_block(index, dag.source_identity, dag.source_anchor_ea)
+        dag_target = _unique_bound_block(index, dag.target_identity, dag.target_anchor_ea)
+        dag_entry = _unique_bound_block(index, dag.entry_identity, dag.entry_anchor_ea)
+        source_to_entry_corridor = tuple(
+            _bound_corridor_point(index, point)
+            for point in dag.source_to_entry_corridor
+        )
+        dag_path = tuple(_bound_corridor_point(index, point) for point in dag.path)
+        handoff_dispatcher = (
+            None
+            if dag.switch_handoff is None
+            else _unique_bound_block(
+                index,
+                dag.switch_handoff.dispatcher.identity,
+                dag.switch_handoff.dispatcher.anchor_ea,
+            )
+        )
+        if (
+            dag_source is None or dag_target is None or dag_entry is None
+            or any(point is None for point in source_to_entry_corridor)
+            or any(point is None for point in dag_path)
+            or (dag.switch_handoff is not None and handoff_dispatcher is None)
+        ):
             return failure(CanonicalRouteBindingStage.STATE_DAG)
         bound_state_dag = BoundSemanticStateDag(
             dag, dag_source, dag_target, dag_entry,
+            tuple(point for point in source_to_entry_corridor if point is not None),
             tuple(point for point in dag_path if point is not None),
+            handoff_dispatcher,
         )
-        if not _validate_state_dag(graph, proof, bound_state_dag):
+        if not _validate_state_dag(graph, index, proof, bound_state_dag):
             return failure(CanonicalRouteBindingStage.STATE_DAG)
 
     bound_bootstrap = None
     if proof.bootstrap is not None:
         bootstrap = proof.bootstrap
-        entry = _unique_bound_block(graph, bootstrap.entry.identity, bootstrap.entry.anchor_ea)
-        bootstrap_source = _unique_bound_block(graph, bootstrap.source.identity, bootstrap.source.anchor_ea)
-        owner = _unique_bound_block(graph, bootstrap.owner.identity, bootstrap.owner.anchor_ea)
-        dispatcher = _unique_bound_block(graph, bootstrap.dispatcher.identity, bootstrap.dispatcher.anchor_ea)
-        corridor = tuple(_bound_corridor_point(graph, point) for point in bootstrap.corridor)
+        entry = _unique_bound_block(index, bootstrap.entry.identity, bootstrap.entry.anchor_ea)
+        bootstrap_source = _unique_bound_block(index, bootstrap.source.identity, bootstrap.source.anchor_ea)
+        owner = _unique_bound_block(index, bootstrap.owner.identity, bootstrap.owner.anchor_ea)
+        dispatcher = _unique_bound_block(index, bootstrap.dispatcher.identity, bootstrap.dispatcher.anchor_ea)
+        corridor = tuple(_bound_corridor_point(index, point) for point in bootstrap.corridor)
         if entry is None or bootstrap_source is None or owner is None or dispatcher is None or any(point is None for point in corridor):
             return failure(CanonicalRouteBindingStage.BOOTSTRAP)
         bound_bootstrap = BoundSemanticBootstrap(
@@ -4920,9 +7419,11 @@ def _bind_canonical_route(
         predicate=bound_predicate,
         carriers=tuple(bound_carriers),
     )
+    if not _validate_bound_physical_delivery(graph, index, proof, source):
+        return failure(CanonicalRouteBindingStage.STATE_WRITE)
     if proof.shape is SemanticRouteShape.CONDITIONAL:
         if bound_predicate is None or not _validate_conditional_route(
-            graph,
+            graph, index,
             proof,
             source,
             tuple(bound_destinations),
@@ -4934,16 +7435,26 @@ def _bind_canonical_route(
             return failure(CanonicalRouteBindingStage.CONDITIONAL_ROUTE)
     else:
         if state_write_block is not None:
-            if not _validate_state_write(graph, proof, state_write_block):
+            if not _validate_state_write(
+                graph, proof, state_write_block, source_owner,
+            ):
                 return failure(CanonicalRouteBindingStage.STATE_WRITE)
-            if not _validate_state_write_corridor(graph, proof, state_write_block):
+            if not _validate_guarded_state_selection(
+                graph,
+                index,
+                proof,
+                state_write_block,
+                tuple(bound_destinations),
+            ):
+                return failure(CanonicalRouteBindingStage.STATE_WRITE)
+            if not _validate_state_write_corridor(graph, index, proof, state_write_block):
                 return failure(CanonicalRouteBindingStage.STATE_WRITE_CORRIDOR)
         if not _validate_direct_route(
             graph, proof, source, tuple(bound_destinations),
         ):
             return failure(CanonicalRouteBindingStage.DIRECT_ROUTE)
     if proof.proof_kind is SemanticRouteProofKind.TERMINAL_RETURN and not _validate_terminal_return_carrier(
-        graph, proof, tuple(bound_destinations),
+        graph, index, proof, tuple(bound_destinations),
     ):
         return failure(CanonicalRouteBindingStage.TERMINAL_RETURN)
     return bound_route
@@ -4980,8 +7491,9 @@ def _bind_canonical_semantic_evidence_result(
         )))
     routes: list[BoundSemanticRoute] = []
     failures: list[CanonicalRouteBindingFailure] = []
+    index = _BoundBlockIndex.build(graph, evidence.native_key)
     for proof in evidence.route_proofs:
-        result = _bind_canonical_route(graph, proof)
+        result = _bind_canonical_route(graph, index, proof)
         if isinstance(result, BoundSemanticRoute):
             routes.append(result)
         else:
@@ -5533,6 +8045,11 @@ __all__ = [
     "SemanticRouteProof",
     "SemanticRouteFact",
     "SemanticRouteFactKind",
+    "SemanticPhysicalDeliveryMember",
+    "SemanticPhysicalDeliveryProof",
+    "SemanticPhysicalWriteByteOrder",
+    "SemanticPhysicalStateWriteWitness",
+    "SemanticRecoveredStateWriteWitness",
     "SemanticBootstrapRouteWitness",
     "SemanticRouteProofKind",
     "SemanticRouteShape",

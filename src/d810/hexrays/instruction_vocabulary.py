@@ -157,6 +157,17 @@ _VOCABULARY_ROWS = (
     ("m_fdiv", _entry(InsnKind.UNKNOWN, OperandShape(True, True, True), value=ValueOpKind.VENDOR)),
 )
 _VOCABULARY = MappingProxyType(dict(_VOCABULARY_ROWS))
+# IDA 9.4 exposes ``m_ijmp`` in two closed maturity-dependent layouts.  The
+# canonical replay form is ``l,*,z``; early live CALLS/LOCOPT capture can carry
+# the indirect selector in ``r`` and its resolved/fictitious destination in
+# ``d`` as ``z,r,d``.  Keep the alternatives explicit rather than weakening
+# every slot to "don't care".
+_OPERAND_SHAPE_VARIANTS = MappingProxyType({
+    "m_ijmp": (
+        OperandShape(True, None, False),
+        OperandShape(False, True, True),
+    ),
+})
 if len(_VOCABULARY) != len(_VOCABULARY_ROWS):
     raise RuntimeError("duplicate opcode in canonical vocabulary")
 if any(not entry.shape for _name, entry in _VOCABULARY_ROWS):
@@ -342,8 +353,22 @@ def validate_operand_shape(name: str, *, l: Any, r: Any, d: Any) -> OperandShape
     if shape is None:
         raise ValueError(f"opcode {name!r} has no closed operand shape")
     actual = tuple(_present(value) for value in (l, r, d))
-    if not all(required is None or required == observed for observed, required in zip(actual, (shape.l, shape.r, shape.d))):
-        raise ValueError(f"opcode {name} operand shape rejects recorded presence")
+    variants = _OPERAND_SHAPE_VARIANTS.get(canonical_opcode_name(name), (shape,))
+    if not any(
+        all(
+            required is None or required == observed
+            for observed, required in zip(
+                actual, (variant.l, variant.r, variant.d),
+            )
+        )
+        for variant in variants
+    ):
+        raise ValueError(
+            f"opcode {name} operand shape rejects recorded presence: "
+            "expected="
+            f"{tuple((item.l, item.r, item.d) for item in variants)!r} "
+            f"actual={actual!r}"
+        )
     if any(
         present and getattr(operand, "kind", None) is OperandKind.UNKNOWN
         for present, operand in zip(actual, (l, r, d))

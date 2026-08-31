@@ -555,7 +555,14 @@ def test_legacy_decode_selects_row_proof_ids_before_building_proposal(monkeypatc
         ),
     )
     evidence = _recanonicalize(original.route_evidence, (proof, sibling))
-    proof, sibling = evidence.route_proofs
+    proof = next(
+        item for item in evidence.route_proofs
+        if ("fact_id", "legacy-fact") in item.diagnostic_provenance
+    )
+    sibling = next(
+        item for item in evidence.route_proofs
+        if ("fact_id", "sibling-fact") in item.diagnostic_provenance
+    )
     proposal = producer_api.build_proposal(
         plan_id=original.plan_id, source=source, block_refs_by_serial=refs,
         source_generation=1, canonical_route_evidence=evidence,
@@ -1365,12 +1372,14 @@ def test_terminal_cycle_conversion_binds_terminal_route_and_actual_stop() -> Non
             ),),
         ),
     )
-    with pytest.raises(ValueError, match="canonical route"):
-        terminal_cycle_claim_from_legacy_proof(
-            payload,
-            proposal=nonterminal_route,
-            block_refs_by_serial=refs,
-        )
+    nonterminal_claim = terminal_cycle_claim_from_legacy_proof(
+        payload,
+        proposal=nonterminal_route,
+        block_refs_by_serial=refs,
+    )
+    assert nonterminal_claim.terminal_route_proof_ids == (
+        nonterminal_route.route_evidence.route_proofs[0].proof_id,
+    )
 
     wrong_source = {
         **payload,

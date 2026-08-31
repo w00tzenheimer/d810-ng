@@ -74,6 +74,7 @@ from d810.transforms.plan import (
 )
 from d810.transforms.graph_modification import (
     PreserveLivePredicateCondition,
+    SyntheticCounterBoundCondition,
     SyntheticRegisterNonzeroCondition,
     SyntheticStackValueEqualsCondition,
 )
@@ -411,7 +412,42 @@ def _project_lower_conditional_instructions(
                 d=replace(old_tail.d, block_ref=taken_serial),
             )
             return (*block.insn_snapshots[:rewrite_index], replacement)
-        if type(condition) is SyntheticStackValueEqualsCondition:
+        if type(condition) is SyntheticCounterBoundCondition:
+            if condition.counter_size <= 0:
+                raise ValueError("lower-conditional counter width must be positive")
+            if (condition.counter_stkoff is None) == (condition.counter_reg is None):
+                raise ValueError(
+                    "lower-conditional counter requires exactly one storage identity"
+                )
+            if type(condition.signed) is not bool:
+                raise ValueError("lower-conditional counter signedness must be typed")
+            if condition.bound < 0 or condition.bound >= (1 << (condition.counter_size * 8)):
+                raise ValueError("lower-conditional counter bound does not fit width")
+            if condition.counter_stkoff is not None:
+                left = MopSnapshot(
+                    kind=OperandKind.STACK,
+                    size=condition.counter_size,
+                    stkoff=condition.counter_stkoff,
+                    stack_refs=(condition.counter_stkoff,),
+                )
+            else:
+                if condition.counter_reg is None or condition.counter_reg < 0:
+                    raise ValueError(
+                        "lower-conditional counter register must be non-negative"
+                    )
+                left = MopSnapshot(
+                    kind=OperandKind.REGISTER,
+                    size=condition.counter_size,
+                    reg=condition.counter_reg,
+                )
+            right = MopSnapshot(
+                kind=OperandKind.NUMBER,
+                size=condition.counter_size,
+                value=condition.bound,
+            )
+            predicate = PredicateKind.SLT if condition.signed else PredicateKind.ULT
+            compare_width = condition.counter_size
+        elif type(condition) is SyntheticStackValueEqualsCondition:
             if condition.stack_size <= 0:
                 raise ValueError("lower-conditional stack width must be positive")
             if condition.value < 0 or condition.value >= (1 << (condition.stack_size * 8)):
@@ -480,14 +516,107 @@ def _project_lower_conditional_instructions(
     return tuple(block.insn_snapshots)
 
 
+def _projection_source_serial(ref: object, patch_plan: PatchPlan) -> int | None:
+    """Resolve an existing block reference in the source snapshot."""
+    if type(ref) is int:
+        return ref
+    if type(ref) not in (NativeBlockRef, LogicalBlockRef):
+        return None
+    serial = dict(patch_plan.source_coordinates).get(ref)
+    return serial if type(serial) is int else None
+
+
 def _convert_to_goto_serials(patch_plan: PatchPlan) -> frozenset[int]:
-    """Return the set of block serials targeted by PatchConvertToGoto steps."""
+    """Return exact source serials targeted by PatchConvertToGoto steps."""
     serials: set[int] = set()
     for step in patch_plan.steps:
-        match step:
-            case PatchConvertToGoto(block_serial=serial):
-                serials.add(serial)
+        if type(step) is not PatchConvertToGoto:
+            continue
+        serial = _projection_source_serial(step.block_serial, patch_plan)
+        if serial is None:
+            raise ValueError("convert-to-goto source lacks an exact source coordinate")
+        if serial in serials:
+            raise ValueError("convert-to-goto source has multiple projection steps")
+        serials.add(serial)
     return frozenset(serials)
+
+
+def _project_convert_to_goto_instructions(
+    block: BlockSnapshot,
+    patch_plan: PatchPlan,
+    *,
+    pre_cfg: FlowGraph,
+    succs: tuple[int, ...],
+    instructions: tuple[InsnSnapshot, ...],
+) -> tuple[InsnSnapshot, ...]:
+    """Project one exact conditional-tail fold as a synthetic GOTO.
+
+    ``PatchConvertToGoto`` retains the source block body and one existing edge;
+    only its terminal conditional control instruction changes.  Keeping the old
+    JCC snapshot beneath one-way/GOTO block metadata creates two competing
+    structural truths, so make the projected instruction record agree with the
+    exact planned fold and reject any stale or ambiguous source shape.
+    """
+
+    matching_steps = tuple(
+        step for step in patch_plan.steps
+        if type(step) is PatchConvertToGoto
+        and _projection_source_serial(step.block_serial, patch_plan) == block.serial
+    )
+    if not matching_steps:
+        return instructions
+    if len(matching_steps) != 1:
+        raise ValueError("convert-to-goto source has multiple projection steps")
+    step = matching_steps[0]
+    target = _projection_source_serial(step.goto_target, patch_plan)
+    if target is None:
+        raise ValueError("convert-to-goto target lacks an exact source coordinate")
+    target_block = pre_cfg.blocks.get(target)
+    if (
+        block.kind is not BlockKind.TWO_WAY
+        or len(block.succs) != 2
+        or len(set(block.succs)) != 2
+        or target not in block.succs
+        or target_block is None
+        or target_block.preds.count(block.serial) != 1
+        or succs != (target,)
+    ):
+        raise ValueError(
+            "convert-to-goto requires one exact retained edge from a two-way source"
+        )
+    if not block.insn_snapshots or instructions != block.insn_snapshots:
+        raise ValueError(
+            "convert-to-goto requires the unchanged source instruction sequence"
+        )
+    tail = block.insn_snapshots[-1]
+    if (
+        tail.kind not in {InsnKind.COND_JUMP, InsnKind.EQUALITY_JUMP}
+        or tail.control_transfer_kind is not ControlTransferKind.CONDITIONAL_BRANCH
+        or not tail.is_conditional_jump
+        or tail.is_unconditional_jump
+        or tail.is_call
+        or tail.d is None
+        or tail.d.kind is not OperandKind.BLOCK
+        or tail.d.block_ref not in block.succs
+        or block.tail_kind is not tail.kind
+        or block.tail_opcode != tail.opcode
+        or block.raw_tail_opcode != tail.raw_opcode
+    ):
+        raise ValueError(
+            "convert-to-goto requires one coherent terminal conditional instruction"
+        )
+    projected_tail = InsnSnapshot(
+        opcode=_PORTABLE_SYNTHETIC_OPCODE,
+        ea=tail.ea,
+        operands=(),
+        d=MopSnapshot(kind=OperandKind.BLOCK, block_ref=target),
+        kind=InsnKind.GOTO,
+        control_transfer_kind=ControlTransferKind.GOTO,
+        is_unconditional_jump=True,
+        is_conditional_jump=False,
+        is_call=False,
+    )
+    return (*instructions[:-1], projected_tail)
 
 
 def _project_existing_blocks(
@@ -507,6 +636,13 @@ def _project_existing_blocks(
         )
         succs = tuple(adj.get(projected_serial, ()))
         instructions = _project_lower_conditional_instructions(block, patch_plan)
+        instructions = _project_convert_to_goto_instructions(
+            block,
+            patch_plan,
+            pre_cfg=pre_cfg,
+            succs=succs,
+            instructions=instructions,
+        )
         # A helper-free conditional redirect changes only the approved target
         # slot.  The adjacency simulator already rewrites F's successor from
         # K to N; carry that same relocation into the portable conditional
@@ -587,13 +723,14 @@ def _project_local_alias_scalarizations(
             raise ValueError("local-alias scalarization owner is absent from source graph")
         host_matches = tuple(
             index for index, instruction in enumerate(source_block.insn_snapshots)
-            if (instruction.native_ea if instruction.native_ea is not None else instruction.ea)
-            == step.host_ea
+            if instruction.ea == step.host_ea
             and instruction.opcode == step.host_opcode
-            and instruction.kind is InsnKind.STORE
+            and instruction.kind in {InsnKind.LOAD, InsnKind.STORE}
         )
         if len(host_matches) != 1:
-            raise ValueError("local-alias scalarization host must be one exact source STORE")
+            raise ValueError(
+                "local-alias scalarization host must be one exact source STORE or LOAD"
+            )
         source_index = host_matches[0]
         projected_serial = (
             stop_after
@@ -606,16 +743,15 @@ def _project_local_alias_scalarizations(
         if source_index >= len(projected_block.insn_snapshots):
             raise ValueError("local-alias scalarization projected host ordinal is absent")
         projected_host = projected_block.insn_snapshots[source_index]
-        projected_host_ea = (
-            projected_host.native_ea
-            if projected_host.native_ea is not None else projected_host.ea
-        )
+        projected_host_ea = projected_host.ea
         if (
             projected_host_ea != step.host_ea
             or projected_host.opcode != step.host_opcode
-            or projected_host.kind is not InsnKind.STORE
+            or projected_host.kind not in {InsnKind.LOAD, InsnKind.STORE}
         ):
-            raise ValueError("local-alias scalarization projected host differs from source STORE")
+            raise ValueError(
+                "local-alias scalarization projected host differs from source STORE or LOAD"
+            )
         instructions = list(projected_block.insn_snapshots)
         instructions[source_index] = replace(
             projected_host,

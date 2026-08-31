@@ -7,14 +7,130 @@ import math
 from time import perf_counter_ns
 from d810.analyses.value_flow.observation import FactObservation
 from d810.transforms.cfg_transaction import TransactionAttemptId
+from d810.transforms.plan import PatchRedirectGoto
 
 from . import model
 from .ids import content_id
+from .legacy_codec import (
+    NativeBoundTransitionRouteReceipt,
+    native_bound_transition_route_receipts_from_plan as _legacy_native_bound_transition_route_receipts_from_plan,
+)
 from .views import (
     ObservedLossReclassification,
     ViewMetrics,
     observed_loss_delta,
 )
+
+
+def native_bound_transition_route_receipts_from_plan(
+    plan: object,
+) -> tuple[NativeBoundTransitionRouteReceipt, ...]:
+    """Project committed-route diagnostics from the plan's canonical authority.
+
+    The projection is intentionally non-authoritative.  It correlates a
+    selected native-bound proof with the one exact planned GOTO operation;
+    the driver still requires that operation to occur exactly once in the
+    backend's committed inventory before logging it.
+    """
+
+    proposal = getattr(plan, "unflatten_proposal", None)
+    if type(proposal) is not model.ProposedUnflattenContract:
+        return _legacy_native_bound_transition_route_receipts_from_plan(plan)
+    source_coordinates = getattr(plan, "source_coordinates", None)
+    steps = getattr(plan, "steps", None)
+    if type(source_coordinates) is not tuple or type(steps) is not tuple:
+        return ()
+    serial_by_ref = dict(source_coordinates)
+    if len(serial_by_ref) != len(source_coordinates):
+        return ()
+    proofs = {
+        proof.proof_id: proof
+        for proof in proposal.route_evidence.route_proofs
+    }
+    receipts: list[NativeBoundTransitionRouteReceipt] = []
+    for claim in proposal.claims:
+        if type(claim) is not model.EquivalentSemanticRouteClaim:
+            continue
+        if len(claim.route_proof_ids) != 1:
+            return ()
+        proof = proofs.get(claim.route_proof_ids[0])
+        if proof is None:
+            return ()
+        fact_kinds = tuple(
+            value
+            for name, value in proof.diagnostic_provenance
+            if name == "fact_kind"
+        )
+        # A native receipt may be upgraded to the stronger exact carrier
+        # proof during canonical production.  Its fact_id remains the sole
+        # receipt provenance; preserve that diagnostic correlation without
+        # downgrading the authoritative proof kind.
+        if fact_kinds not in (("native_bound",), ("state_carrier",)):
+            continue
+        fact_ids = tuple(
+            value
+            for name, value in proof.diagnostic_provenance
+            if name == "fact_id"
+        )
+        # Ordinary carrier proofs are authoritative route evidence but are not
+        # native receipt provenance.  Only a carrier that carries one native
+        # fact ID participates in this diagnostic projection.
+        if fact_kinds == ("state_carrier",) and not fact_ids:
+            continue
+        if len(fact_ids) != 1 or len(proof.destinations) != 1:
+            return ()
+        source_locator = claim.source_subject.locator
+        destination_locator = claim.destination_subjects[0].locator
+        if (
+            type(source_locator) is not model.BlockSubjectLocator
+            or type(destination_locator) is not model.BlockSubjectLocator
+        ):
+            return ()
+        source_serial = serial_by_ref.get(source_locator.block_ref)
+        target_serial = serial_by_ref.get(destination_locator.block_ref)
+        if type(source_serial) is not int or type(target_serial) is not int:
+            return ()
+        matching_steps = tuple(
+            step
+            for step in steps
+            if (
+                type(step) is PatchRedirectGoto
+                and step.from_serial == source_locator.block_ref
+                and step.new_target == destination_locator.block_ref
+            )
+        )
+        if len(matching_steps) != 1:
+            return ()
+        step = matching_steps[0]
+        old_target_serial = serial_by_ref.get(step.old_target)
+        if type(old_target_serial) is not int:
+            return ()
+        destination = proof.destinations[0]
+        try:
+            receipts.append(NativeBoundTransitionRouteReceipt(
+                fact_id=fact_ids[0],
+                native_ea=int(proof.source_anchor_ea),
+                current_block=(
+                    f"blk{source_serial}@0x{int(proof.source_anchor_ea):X}"
+                ),
+                state=int(destination.state_constant),
+                target=target_serial,
+                target_block=(
+                    f"blk{target_serial}@0x{int(destination.target_anchor_ea):X}"
+                ),
+                operation_key=(
+                    "block_goto_change",
+                    source_serial,
+                    old_target_serial,
+                    target_serial,
+                ),
+            ))
+        except (TypeError, ValueError):
+            return ()
+    return tuple(sorted(
+        receipts,
+        key=lambda item: (item.native_ea, item.fact_id, item.operation_key),
+    ))
 
 
 @dataclass(frozen=True, slots=True)
@@ -176,6 +292,9 @@ def _loss_row_payload(
         "subject": _binding_label(row.candidate_binding),
         "subject_id": row.source_subject.subject_id,
         "classification": row.kind.value,
+        "classification_components": tuple(
+            kind.value for kind in row.classification_kinds
+        ),
         "binding_status": row.candidate_binding.status.value,
         "source_binding_status": row.source_binding.status.value,
         "anchor": row.anchored_location,
@@ -206,6 +325,12 @@ def _loss_reclassification_payload(
         "anchor": row.anchored_location,
         "projected_kind": row.projected_kind.value,
         "observed_kind": row.observed_kind.value,
+        "projected_classification_components": tuple(
+            kind.value for kind in row.projected_classification_kinds
+        ),
+        "observed_classification_components": tuple(
+            kind.value for kind in row.observed_classification_kinds
+        ),
         "projected_evidence_ids": row.projected_evidence_ids,
         "observed_evidence_ids": row.observed_evidence_ids,
     }
@@ -529,5 +654,5 @@ def phase_observation(
 
 __all__ = [
     "CanonicalPhaseCounters", "PhaseTimings", "build_phase_payload",
-    "phase_observation",
+    "native_bound_transition_route_receipts_from_plan", "phase_observation",
 ]

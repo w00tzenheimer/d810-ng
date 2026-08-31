@@ -82,6 +82,8 @@ def _instruction_attrs(insn: InsnSnapshot) -> dict[str, object]:
     """Provenance attrs for the canonical instruction projection."""
     attrs = dict(insn.opcode_attrs)
     attrs["ea"] = int(insn.ea)
+    if insn.native_ea is not None:
+        attrs["native_ea"] = int(insn.native_ea)
     if insn.display_text:
         attrs["display_text"] = str(insn.display_text)
     # Portable backend-neutral instruction kind (provenance only).  The

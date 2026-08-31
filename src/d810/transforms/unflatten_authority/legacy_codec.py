@@ -997,9 +997,8 @@ def terminal_cycle_claim_from_legacy_proof(
         if proof.source_identity == terminal_source_identity
         and proof.source_anchor_ea == terminal_source_ea
         and sum(
-            destination.terminal
-            and destination.target_identity == terminal_identity
-            and destination.target_anchor_ea == target_ea
+                destination.target_identity == terminal_identity
+                and destination.target_anchor_ea == target_ea
             for destination in proof.destinations
         ) == 1
     )

@@ -318,6 +318,10 @@ def _validate_projected_ledger(
         model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY,
     ):
         raise ValueError(f"{gate} requires projected or observed safety case")
+    # This is the one semantic boundary for the completed phase.  Child rows
+    # and carrier DTOs retain this exact immutable occurrence and deliberately
+    # do not replay the whole case during construction.
+    model.SemanticSafetyCase.__post_init__(case)
     model.SemanticLossLedger.__post_init__(ledger)
     if ledger.unclassified or ledger.conflicting:
         raise ValueError(f"{gate} rejects unclassified semantic loss")
@@ -325,6 +329,13 @@ def _validate_projected_ledger(
 
 def validate_projected_effect_loss_ledger(ledger: object, case: object) -> None:
     _validate_projected_ledger(ledger, case, gate="projected effect gate")
+
+
+def validate_projected_loss_ledger(ledger: object, case: object) -> None:
+    """Validate the transaction's exhaustive cross-dimension ledger once."""
+    _validate_projected_ledger(
+        ledger, case, gate="unified projected semantic-loss gate",
+    )
 
 
 def validate_projected_dispatcher_removal_ledger(ledger: object, case: object) -> None:
@@ -343,6 +354,7 @@ __all__ = [
     "GenericCfgGateBundle", "GenericCfgGateFacts", "GenericEntryGateFacts",
     "GenericEffectfulGateFacts", "GenericTerminalGateFacts",
     "generic_cfg_gate_facts_from_bundle", "validate_generic_cfg_gate_bundle",
+    "validate_projected_loss_ledger",
     "validate_projected_effect_loss_ledger",
     "validate_projected_dispatcher_removal_ledger",
     "validate_projected_corridor_coverage_ledger",

@@ -335,6 +335,171 @@ def test_native_bound_route_uses_rebound_serial_not_recorded_serial() -> None:
     )
 
 
+def test_native_bound_route_keeps_raw_resolution_without_binding_evidence() -> None:
+    binder = semantic_transition.bind_native_bound_transition_routes
+    resolution = StateTransitionResolution(
+        fact_id="transition:raw",
+        source_block_serial=15,
+        source_state_const_hex="0x0000000016aa65e9",
+        source_instruction_ea=0x7FF855576BA0,
+        resolved_next_block_serial=7,
+        resolved_next_state_const_hex="0x00000000079323f9",
+        resolved_next_state_const_u64=0x079323F9,
+        resolution_kind="state_dispatcher_map",
+        resolution_reason="resolved_exact_state",
+        state_var_stkoff=0x3C,
+    )
+
+    (route,) = binder(
+        (resolution,),
+        block_serial_for_instruction_ea=lambda _ea: 42,
+        current_block_serials=frozenset({7, 42}),
+        dispatcher_block_serials=frozenset({2}),
+        route_target_for_state=lambda _state: 7,
+        state_var_stkoff=0x3C,
+    )
+
+    assert route.binding_evidence is None
+    with pytest.raises(TypeError, match="typed binding evidence"):
+        semantic_transition.NativeBoundTransitionRoute(
+            "forged", 0x1000, 42, 0x16AA65E9, 7, binding_evidence=object()
+        )
+    with pytest.raises(ValueError, match="exactly one state identity"):
+        semantic_transition.NativeBoundRouteBindingEvidence(0x1001, 0x3C, 8)
+
+
+def test_native_bound_route_keeps_rebound_predecessor_binding_evidence() -> None:
+    source_ea = 0x7FF855576BA0
+    target_ea = 0x7FF855576BB1
+    raw = StateTransitionResolution(
+        fact_id="raw",
+        source_block_serial=15,
+        source_state_const_hex="0x0000000016aa65e9",
+        source_instruction_ea=source_ea,
+        resolved_next_block_serial=7,
+        resolved_next_state_const_hex="0x00000000079323f9",
+        resolved_next_state_const_u64=0x16AA65E9,
+        resolution_kind="state_dispatcher_map",
+        resolution_reason="resolved_exact_state",
+        state_var_stkoff=0x3C,
+    )
+    typed = SimpleNamespace(
+        fact_id="typed",
+        predecessor_block_serial=15,
+        dispatcher_entry_serial=2,
+        state_const=0x16AA65E9,
+        target_block_serial=7,
+        target_native_ea=target_ea,
+        resolver_kind="state_dispatcher_map_exact_row",
+        row_kind="exact",
+        source_instruction_ea=source_ea,
+        state_var_stkoff=0x3C,
+        state_var_reg=None,
+    )
+
+    def bind(observations):
+        return semantic_transition.bind_native_bound_transition_routes(
+            observations,
+            block_serial_for_instruction_ea=lambda ea: {source_ea: 42, target_ea: 7}.get(ea),
+            current_block_serials=frozenset({7, 42}),
+            dispatcher_block_serials=frozenset({2}),
+            route_target_for_state=lambda _state: 7,
+            state_var_stkoff=0x3C,
+            supported_state_identity=(0x3C, None),
+        )
+
+    forward, reverse = bind((raw, typed)), bind((typed, raw))
+
+    assert forward == reverse
+    assert forward[0].fact_id == "typed"
+    assert (forward[0].resolver_kind, forward[0].row_kind) == (
+        "state_dispatcher_map_exact_row",
+        "exact",
+    )
+    assert forward[0].binding_evidence == semantic_transition.NativeBoundRouteBindingEvidence(
+        target_native_ea=target_ea,
+        state_var_stkoff=0x3C,
+        state_var_reg=None,
+    )
+
+
+def test_native_bound_route_rejects_conflicting_strong_binding_evidence() -> None:
+    source_ea, first_target_ea, second_target_ea = 0x4000, 0x5000, 0x6000
+
+    def typed(fact_id, target_ea):
+        return SimpleNamespace(
+            fact_id=fact_id,
+            predecessor_block_serial=15,
+            dispatcher_entry_serial=2,
+            state_const=0x10,
+            target_block_serial=7,
+            target_native_ea=target_ea,
+            resolver_kind="state_dispatcher_map_exact_row",
+            row_kind="exact",
+            source_instruction_ea=source_ea,
+            state_var_stkoff=0x3C,
+            state_var_reg=None,
+        )
+
+    assert semantic_transition.bind_native_bound_transition_routes(
+        (typed("first", first_target_ea), typed("second", second_target_ea)),
+        block_serial_for_instruction_ea=lambda ea: {
+            source_ea: 42, first_target_ea: 7, second_target_ea: 7,
+        }.get(ea),
+        current_block_serials=frozenset({7, 42}),
+        dispatcher_block_serials=frozenset({2}),
+        route_target_for_state=lambda _state: 7,
+        state_var_stkoff=0x3C,
+        supported_state_identity=(0x3C, None),
+    ) == ()
+
+
+def test_native_bound_route_rejects_conflicting_typed_provenance_pair() -> None:
+    """One typed source group cannot select between differing row policies."""
+    source_ea, target_ea = 0x4000, 0x5000
+
+    def typed(fact_id: str, *, resolver_kind: str, row_kind: str) -> SimpleNamespace:
+        return SimpleNamespace(
+            fact_id=fact_id,
+            predecessor_block_serial=15,
+            dispatcher_entry_serial=2,
+            state_const=0x10,
+            target_block_serial=7,
+            target_native_ea=target_ea,
+            resolver_kind=resolver_kind,
+            row_kind=row_kind,
+            source_instruction_ea=source_ea,
+            state_var_stkoff=0x3C,
+            state_var_reg=None,
+        )
+
+    routes = semantic_transition.bind_native_bound_transition_routes(
+        (
+            typed(
+                "exact",
+                resolver_kind="state_dispatcher_map_exact_row",
+                row_kind="exact",
+            ),
+            typed(
+                "interval",
+                resolver_kind="interval_dispatcher_row",
+                row_kind="interval_range",
+            ),
+        ),
+        block_serial_for_instruction_ea=lambda ea: {
+            source_ea: 42,
+            target_ea: 7,
+        }.get(ea),
+        current_block_serials=frozenset({7, 42}),
+        dispatcher_block_serials=frozenset({2}),
+        route_target_for_state=lambda _state: 7,
+        state_var_stkoff=0x3C,
+        supported_state_identity=(0x3C, None),
+    )
+
+    assert routes == ()
+
+
 def test_native_bound_route_rejects_valid_sibling_when_target_observation_is_malformed() -> None:
     binder = getattr(semantic_transition, "bind_native_bound_transition_routes", None)
     assert callable(binder)
@@ -410,6 +575,7 @@ def test_native_bound_route_filters_shadow_identity_at_same_native_source() -> N
     assert [(route.fact_id, route.state_constant) for route in routes] == [
         ("dispatcher", 0x16AA65E9)
     ]
+    assert routes[0].binding_evidence is None
 
 
 @pytest.mark.parametrize("fact_id", ("", "   ", None))

@@ -2,10 +2,16 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from d810.analyses.control_flow.route_predicate import RouteComparison
+from d810.analyses.control_flow.logical_route_endpoint import (
+    is_exact_logical_function_exit_shape,
+)
 from d810.analyses.control_flow.state_machine_analysis import _is_stop_block
 from d810.ir.expressions import ValueOpKind
 from d810.ir.flowgraph import (
+    BlockKind,
     BlockSnapshot,
     FlowGraph,
     InsnKind,
@@ -18,7 +24,11 @@ from d810.ir.insn_projection import (
     project_instruction_sequence,
 )
 from d810.ir.semantics import ControlTransferKind, PredicateKind
-from d810.ir.storage_identity import StorageIdentity, storage_identity_from_varnode
+from d810.ir.storage_identity import (
+    StorageIdentity,
+    StorageIdentityKind,
+    storage_identity_from_varnode,
+)
 from d810.ir.varnode import Space
 
 
@@ -36,12 +46,45 @@ _ROUTE_OP_FOR_PREDICATE = {
 }
 
 
+@dataclass(frozen=True, slots=True)
+class ExactU32XduNamespaceBridge:
+    """Immutable U32-to-register-U64 XDU handoff evidence."""
+
+    node_serial: int
+    node_anchor_ea: int
+    instruction_ea: int
+    source_identity: StorageIdentity
+    result_identity: StorageIdentity
+    source_width: int
+    result_width: int
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.node_serial) is not int
+            or self.node_serial < 0
+            or type(self.node_anchor_ea) is not int
+            or not 0 < self.node_anchor_ea < 0xFFFFFFFFFFFFFFFF
+            or type(self.instruction_ea) is not int
+            or not 0 < self.instruction_ea < 0xFFFFFFFFFFFFFFFF
+            or not isinstance(self.source_identity, StorageIdentity)
+            or not isinstance(self.result_identity, StorageIdentity)
+            or self.result_identity.kind is not StorageIdentityKind.REGISTER
+            or self.result_identity == self.source_identity
+            or self.source_width != 4
+            or self.result_width != 8
+        ):
+            raise TypeError("XDU namespace bridge requires exact typed coordinates")
+
+
 def _stable_flow_block(flow_graph: FlowGraph, serial: int) -> BlockSnapshot | None:
     block = flow_graph.get_block(int(serial))
     if block is None:
         return None
     ea = int(block.start_ea)
     return block if 0 < ea < 0xFFFFFFFFFFFFFFFF else None
+
+
+_is_exact_logical_function_exit = is_exact_logical_function_exit_shape
 
 
 def _is_exact_pure_xdu_route_prefix(
@@ -63,8 +106,26 @@ def _is_exact_pure_xdu_route_prefix(
         bool(xdu.is_call)
         or xdu.call_kind is not None
         or tuple(project_instruction_sequence(xdu)) != value_prefix
-        or len(value_prefix) != 2
     ):
+        return False
+    if len(value_prefix) == 1:
+        zext = value_prefix[0]
+        if (
+            xdu.kind is not InsnKind.XDU
+            or zext.operation is not ValueOpKind.ZEXT
+            or zext.effects
+            or zext.memory is not None
+            or zext.control is not None
+            or len(zext.inputs) != 1
+            or storage_identity_from_varnode(zext.inputs[0]) not in expected_identities
+            or int(zext.inputs[0].size) != 4
+            or zext.result is None
+            or zext.result.space is not Space.REGISTER
+            or int(zext.result.size) != 8
+        ):
+            return False
+        return storage_identity_from_varnode(zext.result) not in expected_identities
+    if len(value_prefix) != 2:
         return False
     add, zext = value_prefix
     if (
@@ -123,6 +184,82 @@ def _is_exact_state_write_route_prefix(
     return True
 
 
+def exact_u32_xdu_namespace_bridge(
+    flow_graph: FlowGraph,
+    serial: int,
+    *,
+    source_identity: StorageIdentity,
+) -> ExactU32XduNamespaceBridge | None:
+    """Extract the exact U32-to-register-U64 namespace handoff at ``serial``."""
+    block = _stable_flow_block(flow_graph, int(serial))
+    if block is None:
+        return None
+    raw_instructions = tuple(block.insn_snapshots)
+    raw_branches = tuple(
+        instruction for instruction in raw_instructions
+        if instruction.control_transfer_kind is ControlTransferKind.CONDITIONAL_BRANCH
+    )
+    if len(raw_branches) != 1:
+        return None
+    raw_branch = raw_branches[0]
+    raw_prefix = tuple(
+        instruction for instruction in raw_instructions
+        if instruction is not raw_branch and instruction.kind is not InsnKind.NOP
+    )
+    if len(raw_prefix) != 1:
+        return None
+    xdu = raw_prefix[0]
+    projected = tuple(project_instruction_sequence(xdu))
+    if (
+        xdu.kind is not InsnKind.XDU
+        or bool(xdu.is_call)
+        or xdu.call_kind is not None
+        or len(projected) != 1
+    ):
+        return None
+    zext = projected[0]
+    if (
+        zext.operation is not ValueOpKind.ZEXT
+        or zext.effects
+        or zext.memory is not None
+        or zext.control is not None
+        or len(zext.inputs) != 1
+        or storage_identity_from_varnode(zext.inputs[0]) != source_identity
+        or int(zext.inputs[0].size) != 4
+        or zext.result is None
+        or zext.result.space is not Space.REGISTER
+        or int(zext.result.size) != 8
+    ):
+        return None
+    result = storage_identity_from_varnode(zext.result)
+    if (
+        result is None
+        or result.kind is not StorageIdentityKind.REGISTER
+        or result == source_identity
+    ):
+        return None
+    node_anchor_ea = int(
+        block.native_start_ea
+        if block.native_start_ea is not None
+        else block.start_ea
+    )
+    instruction_ea = int(xdu.native_ea if xdu.native_ea is not None else xdu.ea)
+    if not (
+        0 < node_anchor_ea < 0xFFFFFFFFFFFFFFFF
+        and 0 < instruction_ea < 0xFFFFFFFFFFFFFFFF
+    ):
+        return None
+    return ExactU32XduNamespaceBridge(
+        node_serial=int(serial),
+        node_anchor_ea=node_anchor_ea,
+        instruction_ea=instruction_ea,
+        source_identity=source_identity,
+        result_identity=result,
+        source_width=4,
+        result_width=8,
+    )
+
+
 def current_u32_route_comparison(
     flow_graph: FlowGraph,
     serial: int,
@@ -140,7 +277,10 @@ def current_u32_route_comparison(
         target_block = _stable_flow_block(flow_graph, target)
         if target_block is None:
             terminal = flow_graph.get_block(target)
-            if not _is_stop_block(terminal):
+            if not (
+                _is_stop_block(terminal)
+                or _is_exact_logical_function_exit(terminal)
+            ):
                 return None
             target_block = terminal
         if int(serial) not in tuple(int(pred) for pred in target_block.preds):
@@ -252,7 +392,15 @@ def current_u32_route_alias(flow_graph: FlowGraph, serial: int) -> int | None:
     if len(successors) != 1 or successors[0] == int(serial):
         return None
     target = _stable_flow_block(flow_graph, successors[0])
-    if target is None or int(serial) not in tuple(int(pred) for pred in target.preds):
+    if target is None:
+        terminal = flow_graph.get_block(successors[0])
+        if not (
+            _is_stop_block(terminal)
+            or _is_exact_logical_function_exit(terminal)
+        ):
+            return None
+        target = terminal
+    if int(serial) not in tuple(int(pred) for pred in target.preds):
         return None
     raw_instructions = tuple(block.insn_snapshots)
     if not raw_instructions:

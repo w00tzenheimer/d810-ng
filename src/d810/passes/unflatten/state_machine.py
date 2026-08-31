@@ -165,6 +165,7 @@ def _typed_or_empty_unflatten_plan(plan: PatchPlan) -> PatchPlan:
     if not plan.steps and not plan.new_blocks:
         return plan
 
+
     proposal = plan.unflatten_proposal
     if proposal is None:
         rejection = ProposalRejected(
@@ -182,6 +183,7 @@ def _typed_or_empty_unflatten_plan(plan: PatchPlan) -> PatchPlan:
             )
         else:
             rejection = validation
+
 
     return PatchPlan(
         plan_id=plan.plan_id,
@@ -1293,13 +1295,16 @@ class RecoverStateTransitions(PipelinePass):
                     context.graph,
                     semantic_evidence,
                 )
-                _publish(
-                    context,
-                    CANONICAL_SEMANTIC_EVIDENCE,
-                    semantic_evidence,
-                )
-                analysis_outputs[CANONICAL_SEMANTIC_EVIDENCE] = semantic_evidence
                 if bound_semantic_evidence is not None:
+                    # Native/CALLS evidence is proposal topology, never current
+                    # authority.  Hand it to lowering only after the immutable
+                    # current graph has replayed every route fact successfully.
+                    _publish(
+                        context,
+                        CANONICAL_SEMANTIC_EVIDENCE,
+                        semantic_evidence,
+                    )
+                    analysis_outputs[CANONICAL_SEMANTIC_EVIDENCE] = semantic_evidence
                     _publish(
                         context,
                         BOUND_CANONICAL_SEMANTIC_EVIDENCE,
@@ -1308,6 +1313,15 @@ class RecoverStateTransitions(PipelinePass):
                     analysis_outputs[BOUND_CANONICAL_SEMANTIC_EVIDENCE] = (
                         bound_semantic_evidence
                     )
+                else:
+                    # A reused analysis manager may still retain a prior
+                    # maturity's candidate.  Replace that occurrence rather
+                    # than merely declining to publish, so lowering must mint
+                    # against this GLBOPT1 graph.
+                    _publish(context, CANONICAL_SEMANTIC_EVIDENCE, None)
+                    _publish(context, BOUND_CANONICAL_SEMANTIC_EVIDENCE, None)
+                    analysis_outputs[CANONICAL_SEMANTIC_EVIDENCE] = None
+                    analysis_outputs[BOUND_CANONICAL_SEMANTIC_EVIDENCE] = None
         if valrange is not None and dispatch_map is not None:
             confirmable_count = _count_valrange_confirmable(
                 valrange,
@@ -3142,6 +3156,23 @@ class LowerStateMachine(PipelinePass):
                     initial_state=initial_state,
                 )
             )
+            canonical_candidate = _analysis(
+                context, CANONICAL_SEMANTIC_EVIDENCE,
+            )
+            bound_candidate = _analysis(
+                context, BOUND_CANONICAL_SEMANTIC_EVIDENCE,
+            )
+            canonical_route_evidence = (
+                canonical_candidate
+                if (
+                    isinstance(canonical_candidate, CanonicalSemanticEvidence)
+                    and bound_candidate is not None
+                    and bind_canonical_semantic_evidence(
+                        context.graph, canonical_candidate,
+                    ) is not None
+                )
+                else None
+            )
             plan = emit_minimal_unflatten(
                 context.graph,
                 dispatcher,
@@ -3225,9 +3256,7 @@ class LowerStateMachine(PipelinePass):
                     else current_block_identity_index.native_key
                 ),
                 native_cfg_persistence=self.native_cfg_persistence,
-                canonical_route_evidence=_analysis(
-                    context, CANONICAL_SEMANTIC_EVIDENCE
-                ),
+                canonical_route_evidence=canonical_route_evidence,
             )
             plan = _typed_or_empty_unflatten_plan(plan)
             plan_metadata = plan.metadata_dict()

@@ -295,70 +295,92 @@ def analyze_switch_table_flow_graph(
         ``SwitchTableResult`` if a switch-table dispatcher was found,
         None otherwise.
     """
-    for serial, blk in sorted(flow_graph.blocks.items()):
-        if blk.tail is None or blk.tail_kind is not InsnKind.TABLE_JUMP:
-            continue
-
-        state_var_node = _find_table_jump_state_var(blk.tail)
-        if state_var_node is None:
-            logger.debug(
-                "table jump at blk[%d]: could not identify state variable stkoff",
-                serial,
-            )
-            continue
-
-        stkoff = int(state_var_node.offset)
-        state_var_operand = Varnode(
-            Space.STACK,
-            stkoff,
-            int(state_var_node.size or 0),
-        )
-
-        cases = _extract_cases_from_switch_control(blk.tail, serial)
-        if len(cases) < 2:
-            logger.debug(
-                "table jump at blk[%d]: too few cases (%d), skipping",
-                serial,
-                len(cases),
-            )
-            continue
-
-        case_values = frozenset(
-            int(case_value) & 0xFFFFFFFFFFFFFFFF
-            for case_value, _target in cases
-            if case_value is not None
-        )
-        dispatcher_blocks = frozenset(
-            {
-                serial,
-                *find_switch_loop_guard_blocks(
-                    flow_graph,
-                    serial,
-                    state_var_stkoff=stkoff,
-                    case_values=case_values,
-                ),
-            }
-        )
-        state_dispatcher_map = build_state_dispatcher_map_from_cases(
-            cases=cases,
-            dispatcher_serial=serial,
-            dispatcher_blocks=dispatcher_blocks,
-            state_var_stkoff=stkoff,
-        )
-        _observe_state_dispatcher_map(
-            flow_graph, state_dispatcher_map, observe_dispatcher_rows
-        )
-        handler_map = state_dispatcher_map.to_dispatcher_handler_map()
-
-        logger.info(
-            "Switch-table dispatcher at blk[%d]: %d handlers, stkoff=0x%X",
+    for serial in sorted(flow_graph.blocks):
+        result = analyze_switch_table_at_dispatcher(
+            flow_graph,
             serial,
-            len(handler_map.handler_state_map),
-            stkoff,
+            observe_dispatcher_rows=observe_dispatcher_rows,
         )
-        return SwitchTableResult(
-            state_dispatcher_map=state_dispatcher_map,
-            state_var_operand=state_var_operand,
-        )
-
+        if result is not None:
+            return result
     return None
+
+
+def analyze_switch_table_at_dispatcher(
+    flow_graph: FlowGraph,
+    dispatcher_serial: int,
+    *,
+    observe_dispatcher_rows: ObserveDispatcherRows | None = None,
+) -> SwitchTableResult | None:
+    """Analyze only the exact claimed table-dispatcher block.
+
+    Evidence binders already possess a stable identity rebound to one live
+    serial.  They must not scan and accidentally validate that claim against
+    a different, lower-serial table elsewhere in the function.
+    """
+    serial = int(dispatcher_serial)
+    blk = flow_graph.get_block(serial)
+    if blk is None or blk.tail is None or blk.tail_kind is not InsnKind.TABLE_JUMP:
+        return None
+
+    state_var_node = _find_table_jump_state_var(blk.tail)
+    if state_var_node is None:
+        logger.debug(
+            "table jump at blk[%d]: could not identify state variable stkoff",
+            serial,
+        )
+        return None
+
+    stkoff = int(state_var_node.offset)
+    state_var_operand = Varnode(
+        Space.STACK,
+        stkoff,
+        int(state_var_node.size or 0),
+    )
+
+    cases = _extract_cases_from_switch_control(blk.tail, serial)
+    if len(cases) < 2:
+        logger.debug(
+            "table jump at blk[%d]: too few cases (%d), skipping",
+            serial,
+            len(cases),
+        )
+        return None
+
+    case_values = frozenset(
+        int(case_value) & 0xFFFFFFFFFFFFFFFF
+        for case_value, _target in cases
+        if case_value is not None
+    )
+    dispatcher_blocks = frozenset(
+        {
+            serial,
+            *find_switch_loop_guard_blocks(
+                flow_graph,
+                serial,
+                state_var_stkoff=stkoff,
+                case_values=case_values,
+            ),
+        }
+    )
+    state_dispatcher_map = build_state_dispatcher_map_from_cases(
+        cases=cases,
+        dispatcher_serial=serial,
+        dispatcher_blocks=dispatcher_blocks,
+        state_var_stkoff=stkoff,
+    )
+    _observe_state_dispatcher_map(
+        flow_graph, state_dispatcher_map, observe_dispatcher_rows
+    )
+    handler_map = state_dispatcher_map.to_dispatcher_handler_map()
+
+    logger.info(
+        "Switch-table dispatcher at blk[%d]: %d handlers, stkoff=0x%X",
+        serial,
+        len(handler_map.handler_state_map),
+        stkoff,
+    )
+    return SwitchTableResult(
+        state_dispatcher_map=state_dispatcher_map,
+        state_var_operand=state_var_operand,
+    )

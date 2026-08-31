@@ -55,6 +55,81 @@ def _make_temp_repo_worktree(
     return wt
 
 
+def test_fixture_build_requires_explicit_output_and_verify_defaults_to_canonical(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Local builds cannot overwrite the canonical reversepc-built corpus."""
+    from d810.testing import fixture_builder
+
+    monkeypatch.setattr(d810cli, "REPO_ROOT", tmp_path)
+    built: list[str] = []
+    verified: list[str] = []
+
+    def fake_build(_repo_root, binary_name, *, runner):
+        built.append(binary_name)
+        return tmp_path / f"{binary_name}.dll"
+
+    def fake_verify(_repo_root, _function, binary_name, *, runner):
+        verified.append(binary_name)
+        return True
+
+    monkeypatch.setattr(fixture_builder, "build_fixture_dll", fake_build)
+    monkeypatch.setattr(fixture_builder, "verify_fixture_case", fake_verify)
+
+    with pytest.raises(SystemExit) as exc_info:
+        d810cli.cmd_fixture(
+            argparse.Namespace(
+                fixture_cmd="build",
+                out=None,
+                idb="unused.i64",
+                function="sub_fixture",
+                binary_name=None,
+            )
+        )
+    assert exc_info.value.code == 1
+    assert "requires --binary-name" in capsys.readouterr().err
+    assert built == []
+
+    for reserved_name in ("libobfuscated", "LIBOBFUSCATED"):
+        with pytest.raises(SystemExit) as exc_info:
+            d810cli.cmd_fixture(
+                argparse.Namespace(
+                    fixture_cmd="build",
+                    out=None,
+                    idb="unused.i64",
+                    function="sub_fixture",
+                    binary_name=reserved_name,
+                )
+            )
+        assert exc_info.value.code == 1
+        assert "reserved canonical binary name" in capsys.readouterr().err
+        assert built == []
+
+    assert d810cli.cmd_fixture(
+        argparse.Namespace(
+            fixture_cmd="build",
+            out=None,
+            idb="unused.i64",
+            function="sub_fixture",
+            binary_name="local_fixture_candidate",
+        )
+    ) == 0
+    assert d810cli.cmd_fixture(
+        argparse.Namespace(
+            fixture_cmd="verify",
+            out=None,
+            idb="unused.i64",
+            function="sub_fixture",
+            binary_name=None,
+        )
+    ) == 0
+
+    assert built == ["local_fixture_candidate"]
+    assert verified == ["libobfuscated"]
+
+
 @pytest.mark.parametrize("tool", ["d810cli.py", "cff_debug.py"])
 def test_cli_help_works_through_new_name_and_legacy_shim(tool: str) -> None:
     result = _run_tool(tool, "--help")

@@ -17,6 +17,9 @@ from d810.analyses.control_flow.semantic_route_evidence import (
     CanonicalSemanticEvidence,
     BoundCanonicalSemanticEvidence,
 )
+from d810.analyses.control_flow.logical_route_endpoint import (
+    is_exact_logical_function_exit_inventory_row_shape,
+)
 from d810.core.native_preanalysis_key import NativePreanalysisKey
 from d810.ir.block_identity import NativeEaInterval, NativeEaIntervalSet, StableBlockIdentity
 from d810.core.typing import Literal, Protocol, TypeAlias, runtime_checkable
@@ -25,7 +28,12 @@ from d810.ir.flowgraph import BlockKind, InsnKind
 from d810.ir.semantics import CallKind, ControlTransferKind, PredicateKind
 from d810.ir.maturity import MaturityEnvelope
 from d810.ir.storage_identity import StorageIdentity
-from d810.transforms.patch_binding import BoundPatchPlan, validate_bound_patch_plan
+from d810.transforms.patch_binding import (
+    BoundPatchPlan,
+    ObservedPatchBinding,
+    validate_bound_patch_plan,
+    validate_observed_patch_binding,
+)
 from d810.transforms.cfg_transaction import (
     CfgBlockRef,
     LogicalBlockRef,
@@ -142,8 +150,8 @@ def _paired_tuples(
     right = tuple(right_values)
     if len(left) != len(right):
         raise ValueError(f"{left_label} and {right_label} must have equal length")
-    if len(set(left)) != len(left) or len(set(right)) != len(right):
-        raise ValueError(f"{left_label} and {right_label} must not contain duplicates")
+    if len(set(left)) != len(left):
+        raise ValueError(f"{left_label} must not contain duplicates")
     return tuple(sorted(zip(left, right), key=lambda pair: _structural_key(pair[0])))
 
 
@@ -265,15 +273,18 @@ class SemanticSubjectRole(str, Enum):
     # here, once per catalog identity; the remaining block roles are semantic
     # views and must not create competing loss ledgers.
     SOURCE_CATALOG_BLOCK = "source_catalog_block"
+    SOURCE_LOGICAL_EXIT = "source_logical_exit"
     SOURCE_ENTRY = "source_entry"
     DISPATCHER_ENTRY = "dispatcher_entry"
     DISPATCHER_INFRASTRUCTURE = "dispatcher_infrastructure"
     SEMANTIC_ROUTE_SOURCE = "semantic_route_source"
     SEMANTIC_ROUTE_DESTINATION = "semantic_route_destination"
+    SEMANTIC_DAG_ENDPOINT = "semantic_dag_endpoint"
     EXACT_EFFECT_SOURCE = "exact_effect_source"
     EXACT_EFFECT_PREDICATE = "exact_effect_predicate"
     EXACT_EFFECT_SELECTED_TARGET = "exact_effect_selected_target"
     EXACT_EFFECT_DISCARDED_OWNER = "exact_effect_discarded_owner"
+    DEFAULT_GAP_INFEASIBLE_RESIDUAL = "default_gap_infeasible_residual"
     EFFECT_SITE = "effect_site"
     AUTHORITATIVE_HANDLER = "authoritative_handler"
     TERMINAL_SITE = "terminal_site"
@@ -317,6 +328,7 @@ class SemanticLossKind(str, Enum):
     TERMINAL_CYCLE_BREAK = "terminal_cycle_break"
     LOCAL_ALIAS_SCALARIZATION = "local_alias_scalarization"
     DETACHED_DEAD_HANDLER_COMPONENT = "detached_dead_handler_component"
+    COMPOSITE_ALLOWED = "composite_allowed"
     UNCLASSIFIED = "unclassified"
     CONFLICTING = "conflicting"
 
@@ -356,6 +368,7 @@ class CorridorPathDisposition(str, Enum):
 
     STRUCTURALLY_COVERED = "structurally_covered"
     SEMANTICALLY_EXCLUDED = "semantically_excluded"
+    EXACT_UNREACHABLE_DEFAULT = "exact_unreachable_default"
     RESIDUAL = "residual"
 
 
@@ -496,6 +509,19 @@ class BlockSubjectLocator:
 
 
 @dataclass(frozen=True, slots=True)
+class LogicalFunctionExitSubjectLocator:
+    """Exact anchorless logical FUNCTION_EXIT member of one semantic route."""
+
+    block_ref: LogicalBlockRef
+    serial: int
+
+    def __post_init__(self) -> None:
+        if type(self.block_ref) is not LogicalBlockRef:
+            raise TypeError("logical function exit requires a LogicalBlockRef")
+        object.__setattr__(self, "serial", _nonnegative(self.serial, "serial"))
+
+
+@dataclass(frozen=True, slots=True)
 class EdgeSubjectLocator:
     source_ref: CfgBlockRef
     source_anchor_ea: int
@@ -517,23 +543,40 @@ class RouteSubjectLocator:
     atomic_group_id: str
     source_ref: CfgBlockRef
     source_anchor_ea: int
-    destination_refs: tuple[CfgBlockRef, ...]
-    destination_anchor_eas: tuple[int, ...]
+    destination_locators: tuple[BlockSubjectLocator, ...]
+    dag_endpoint_locators: tuple[LogicalFunctionExitSubjectLocator, ...] = ()
 
     def __post_init__(self) -> None:
         _id(self.proof_id, "proof_id")
         _id(self.atomic_group_id, "atomic_group_id")
         _cfg_ref(self.source_ref, "source_ref")
         object.__setattr__(self, "source_anchor_ea", _ea(self.source_anchor_ea, "source_anchor_ea"))
-        pairs = _paired_tuples(
-            self.destination_refs, self.destination_anchor_eas,
-            "destination_refs", "destination_anchor_eas",
+        destinations = _tuple(
+            self.destination_locators, "destination_locators", sort=True,
         )
-        for ref, ea in pairs:
-            _cfg_ref(ref, "destination_refs item")
-            _ea(ea, "destination_anchor_eas item")
-        object.__setattr__(self, "destination_refs", tuple(pair[0] for pair in pairs))
-        object.__setattr__(self, "destination_anchor_eas", tuple(pair[1] for pair in pairs))
+        if not destinations:
+            raise ValueError("destination_locators must not be empty")
+        if any(type(item) is not BlockSubjectLocator for item in destinations):
+            raise TypeError("route destinations must use native block locators")
+        if len(set(destinations)) != len(destinations):
+            raise ValueError("destination_locators must not contain duplicates")
+        dag_endpoints = _tuple(
+            self.dag_endpoint_locators, "dag_endpoint_locators", sort=True,
+        )
+        if any(type(item) is not LogicalFunctionExitSubjectLocator for item in dag_endpoints):
+            raise TypeError("route DAG endpoints must use logical function-exit locators")
+        if len(set(dag_endpoints)) != len(dag_endpoints):
+            raise ValueError("dag_endpoint_locators must not contain duplicates")
+        object.__setattr__(self, "destination_locators", destinations)
+        object.__setattr__(self, "dag_endpoint_locators", dag_endpoints)
+
+    def native_destination_members(self) -> tuple[BlockSubjectLocator, ...]:
+        """Return only physical semantic redirect destinations."""
+        return self.destination_locators
+
+    def dag_endpoint_members(self) -> tuple[LogicalFunctionExitSubjectLocator, ...]:
+        """Return only anchorless logical decision-DAG closure endpoints."""
+        return self.dag_endpoint_locators
 
 
 @dataclass(frozen=True, slots=True)
@@ -675,6 +718,171 @@ class CorridorSemanticExclusion:
 
 
 @dataclass(frozen=True, slots=True)
+class DefaultGapInitialStateSeed:
+    """One route-proven source state entering the dispatcher default gap."""
+
+    normalized_state: int
+    route_proof_id: str
+
+    def __post_init__(self) -> None:
+        _nonnegative(self.normalized_state, "normalized_state")
+        _id(self.route_proof_id, "route_proof_id")
+
+
+@dataclass(frozen=True, slots=True)
+class DefaultGapInfeasibilityExclusion:
+    """Producer proof that an exact default arm cannot reach one residual node."""
+
+    exclusion_id: str
+    digest: str
+    state_width_bytes: int
+    state_identity: StorageIdentity
+    dispatcher: CorridorCoveragePathNode
+    default_entry: CorridorCoveragePathNode
+    residual: CorridorCoveragePathNode
+    initial_state_seeds: tuple[DefaultGapInitialStateSeed, ...]
+    route_proof_ids: tuple[str, ...]
+    normalized_reachable_states: tuple[int, ...]
+
+    def __post_init__(self) -> None:
+        _id(self.exclusion_id, "exclusion_id")
+        _id(self.digest, "digest")
+        if type(self.state_width_bytes) is not int or self.state_width_bytes != 4:
+            raise ValueError("state_width_bytes must be exact u32 width (4)")
+        if type(self.state_identity) is not StorageIdentity:
+            raise TypeError("state_identity must be a StorageIdentity")
+        for name in ("dispatcher", "default_entry", "residual"):
+            if type(getattr(self, name)) is not CorridorCoveragePathNode:
+                raise TypeError(f"{name} must be a CorridorCoveragePathNode")
+        seeds = tuple(self.initial_state_seeds)
+        if not seeds or any(type(item) is not DefaultGapInitialStateSeed for item in seeds):
+            raise TypeError("initial_state_seeds must be a non-empty tuple of closed rows")
+        if seeds != tuple(sorted(seeds, key=canonical_bytes)) or len(set(seeds)) != len(seeds):
+            raise ValueError("initial_state_seeds must be canonically ordered and unique")
+        proofs = _strict_id_tuple(self.route_proof_ids, "route_proof_ids")
+        if len(seeds) != len(proofs) or len({seed.route_proof_id for seed in seeds}) != len(seeds) or {seed.route_proof_id for seed in seeds} != set(proofs):
+            raise ValueError("initial state seeds must link bijectively to route proofs")
+        reachable = tuple(self.normalized_reachable_states)
+        if not reachable or any(type(value) is not int or value < 0 or value >= (1 << 32) for value in reachable):
+            raise ValueError("normalized_reachable_states must be non-empty u32 states")
+        if reachable != tuple(sorted(set(reachable))):
+            raise ValueError("normalized_reachable_states must be canonically ordered and unique")
+        if any(seed.normalized_state not in reachable for seed in seeds):
+            raise ValueError("initial state seeds must be normalized reachable states")
+        content = (
+            "unflatten.default-gap-infeasibility-exclusion.v2", self.state_width_bytes,
+            self.state_identity, self.dispatcher,
+            self.default_entry, self.residual, seeds, proofs, reachable,
+        )
+        if self.exclusion_id != authority_id(content):
+            raise ValueError("exclusion_id does not match exact default-gap content")
+        if self.digest != authority_id(("unflatten.default-gap-infeasibility-exclusion-digest.v1", content)):
+            raise ValueError("exclusion digest does not match exact default-gap content")
+        object.__setattr__(self, "initial_state_seeds", seeds)
+        object.__setattr__(self, "route_proof_ids", proofs)
+        object.__setattr__(self, "normalized_reachable_states", reachable)
+
+
+@dataclass(frozen=True, slots=True)
+class DefaultGapInfeasibilityPath:
+    """Nominal v2 path row for a default arm proven unreachable to its residual."""
+
+    path_id: str
+    nodes: tuple[CorridorCoveragePathNode, ...]
+    state_merge: CorridorCoveragePathNode | None
+    exclusion_id: str
+
+    def __post_init__(self) -> None:
+        _id(self.path_id, "path_id")
+        if type(self.nodes) is not tuple or len(self.nodes) < 2 or any(type(node) is not CorridorCoveragePathNode for node in self.nodes):
+            raise TypeError("default-gap path requires at least two closed nodes")
+        if len({(node.block_ref, node.anchor_ea) for node in self.nodes}) != len(self.nodes):
+            raise ValueError("default-gap path nodes must be unique")
+        if self.state_merge is not None and type(self.state_merge) is not CorridorCoveragePathNode:
+            raise TypeError("state_merge must be a CorridorCoveragePathNode or None")
+        if self.state_merge is not None and self.state_merge not in self.nodes:
+            raise ValueError("state merge must be an exact default-gap path node")
+        _id(self.exclusion_id, "exclusion_id")
+        expected = authority_id((
+            "unflatten.default-gap-infeasibility-path.v1", self.nodes,
+            self.state_merge, self.exclusion_id,
+        ))
+        if self.path_id != expected:
+            raise ValueError("path_id does not match exact default-gap path content")
+
+    @property
+    def disposition(self) -> CorridorPathDisposition:
+        return CorridorPathDisposition.EXACT_UNREACHABLE_DEFAULT
+
+
+@dataclass(frozen=True, slots=True)
+class DefaultGapInfeasibilityForecast:
+    """Versioned nonempty extension of a legacy corridor forecast."""
+
+    extension_id: str
+    base_forecast: CorridorCoverageForecast
+    paths: tuple[DefaultGapInfeasibilityPath, ...]
+    exclusion_digests: tuple[tuple[str, str], ...]
+    exclusions: tuple[DefaultGapInfeasibilityExclusion, ...]
+
+    def __post_init__(self) -> None:
+        _id(self.extension_id, "extension_id")
+        if type(self.base_forecast) is not CorridorCoverageForecast:
+            raise TypeError("base_forecast must be a legacy CorridorCoverageForecast")
+        paths = tuple(self.paths)
+        if not paths or any(type(path) is not DefaultGapInfeasibilityPath for path in paths):
+            raise TypeError("default-gap forecast requires non-empty closed paths")
+        if paths != tuple(sorted(paths, key=lambda path: path.path_id)) or len({path.path_id for path in paths}) != len(paths):
+            raise ValueError("default-gap paths must be canonically ordered and unique")
+        exclusions = tuple(self.exclusions)
+        if not exclusions or any(type(item) is not DefaultGapInfeasibilityExclusion for item in exclusions):
+            raise TypeError("default-gap forecast requires non-empty closed exclusions")
+        if exclusions != tuple(sorted(exclusions, key=lambda item: item.exclusion_id)) or len({item.exclusion_id for item in exclusions}) != len(exclusions):
+            raise ValueError("default-gap exclusions must be canonically ordered and unique")
+        digests = tuple(self.exclusion_digests)
+        if type(self.exclusion_digests) is not tuple or digests != tuple(sorted(digests)) or len(set(digests)) != len(digests):
+            raise ValueError("default-gap exclusion digests must be canonical and unique")
+        expected_digests = tuple((item.exclusion_id, item.digest) for item in exclusions)
+        if digests != expected_digests:
+            raise ValueError("default-gap digest rows must equal sealed exclusion digests")
+        if {path.exclusion_id for path in paths} != {item.exclusion_id for item in exclusions} or len(paths) != len(exclusions):
+            raise ValueError("default-gap path linkage must be bijective")
+        if {item.exclusion_id for item in exclusions} & {
+            exclusion_id for path in self.base_forecast.paths for exclusion_id in path.semantic_exclusion_ids
+        }:
+            raise ValueError("default-gap exclusions must not overlap route semantic exclusions")
+        exclusions_by_id = {item.exclusion_id: item for item in exclusions}
+        residual_paths = {
+            (path.nodes, path.state_merge): path
+            for path in self.base_forecast.paths
+            if path.disposition is CorridorPathDisposition.RESIDUAL
+        }
+        if len(residual_paths) != sum(
+            path.disposition is CorridorPathDisposition.RESIDUAL
+            for path in self.base_forecast.paths
+        ):
+            raise ValueError("base residual paths must have unique exact coordinates")
+        if any(
+            path.nodes[-1].block_ref != self.base_forecast.dispatcher_ref
+            or path.nodes[-1].anchor_ea != self.base_forecast.dispatcher_anchor_ea
+            or exclusions_by_id[path.exclusion_id].dispatcher != path.nodes[-1]
+            or (path.nodes, path.state_merge) not in residual_paths
+            for path in paths
+        ):
+            raise ValueError("default-gap path dispatcher identity drifted or lacks exact base residual linkage")
+        if len({residual_paths[(path.nodes, path.state_merge)].path_id for path in paths}) != len(paths):
+            raise ValueError("default-gap paths must link bijectively to base residual paths")
+        if self.extension_id != authority_id((
+            "unflatten.default-gap-infeasibility-forecast.v1", self.base_forecast,
+            paths, digests, exclusions,
+        )):
+            raise ValueError("extension_id does not match exact default-gap forecast content")
+        object.__setattr__(self, "paths", paths)
+        object.__setattr__(self, "exclusion_digests", digests)
+        object.__setattr__(self, "exclusions", exclusions)
+
+
+@dataclass(frozen=True, slots=True)
 class CorridorCoveragePath:
     """A closed path row; no backend serial or live graph object is retained."""
 
@@ -706,7 +914,9 @@ class CorridorCoveragePath:
         if self.disposition is CorridorPathDisposition.SEMANTICALLY_EXCLUDED and not exclusions:
             raise ValueError("semantic exclusion disposition requires exclusion IDs")
         if self.disposition is not CorridorPathDisposition.SEMANTICALLY_EXCLUDED and exclusions:
-            raise ValueError("only semantically excluded paths may carry exclusion IDs")
+            raise ValueError("only semantically excluded paths may carry semantic exclusion IDs")
+        if self.disposition is CorridorPathDisposition.EXACT_UNREACHABLE_DEFAULT:
+            raise ValueError("exact unreachable default paths require DefaultGapInfeasibilityPath")
         node_pairs = {(node.block_ref, node.anchor_ea) for node in self.nodes}
         if self.state_merge is not None and (
             self.state_merge.block_ref, self.state_merge.anchor_ea
@@ -858,6 +1068,59 @@ class CorridorSemanticExclusionCorrelation:
 
 
 @dataclass(frozen=True, slots=True)
+class DefaultGapInfeasibilityCorrelation:
+    """Binder-owned phase linkage for one exact default-gap exclusion/path."""
+
+    exclusion_id: str
+    exclusion_digest: str
+    path_id: str
+    dispatcher: CorridorCoveragePathNode
+    default_entry: CorridorCoveragePathNode
+    residual: CorridorCoveragePathNode
+    initial_state_seeds: tuple[DefaultGapInitialStateSeed, ...]
+    route_proof_ids: tuple[str, ...]
+    normalized_reachable_states: tuple[int, ...]
+    source_fingerprint: str
+    candidate_fingerprint: str
+    source_generation: int
+    candidate_generation: int
+    phase_result_id: str
+
+    def __post_init__(self) -> None:
+        for name in ("exclusion_id", "exclusion_digest", "path_id", "source_fingerprint", "candidate_fingerprint", "phase_result_id"):
+            _id(getattr(self, name), name)
+        for name in ("dispatcher", "default_entry", "residual"):
+            if type(getattr(self, name)) is not CorridorCoveragePathNode:
+                raise TypeError(f"{name} must be a CorridorCoveragePathNode")
+        seeds = tuple(self.initial_state_seeds)
+        if not seeds or any(type(item) is not DefaultGapInitialStateSeed for item in seeds):
+            raise TypeError("initial_state_seeds must be non-empty closed rows")
+        if seeds != tuple(sorted(seeds, key=canonical_bytes)) or len({seed.route_proof_id for seed in seeds}) != len(seeds):
+            raise ValueError("initial_state_seeds must be canonical with unique proof IDs")
+        proofs = _strict_id_tuple(self.route_proof_ids, "route_proof_ids")
+        if len(seeds) != len(proofs) or {seed.route_proof_id for seed in seeds} != set(proofs):
+            raise ValueError("initial state seeds must link bijectively to route proofs")
+        states = tuple(self.normalized_reachable_states)
+        if not states or states != tuple(sorted(set(states))) or any(type(value) is not int or value < 0 or value >= (1 << 32) for value in states):
+            raise ValueError("normalized_reachable_states must be canonical u32 states")
+        if any(seed.normalized_state not in states for seed in seeds):
+            raise ValueError("initial state seeds must be normalized reachable states")
+        _generation(self.source_generation, "source_generation")
+        _generation(self.candidate_generation, "candidate_generation")
+
+    @property
+    def content_key(self) -> tuple[object, ...]:
+        return (
+            self.exclusion_id, self.exclusion_digest, self.path_id,
+            self.dispatcher, self.default_entry, self.residual,
+            self.initial_state_seeds, self.route_proof_ids,
+            self.normalized_reachable_states,
+            self.source_fingerprint, self.candidate_fingerprint,
+            self.source_generation, self.candidate_generation,
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class CorridorCoveragePhaseResult:
     """Transaction/binder result consumed by the evaluator as one aggregate fact."""
 
@@ -950,6 +1213,187 @@ class CorridorCoveragePhaseResult:
             and not self.residual_path_ids
             and not self.drifted_path_ids
         )
+
+
+@dataclass(frozen=True, slots=True, weakref_slot=True)
+class DefaultGapInfeasibilityPhaseResult:
+    """Versioned binder result that reuses one exact default-gap forecast."""
+
+    result_id: str
+    base_result: CorridorCoveragePhaseResult
+    forecast: DefaultGapInfeasibilityForecast
+    phase: UnflattenAuthorityPhase
+    source_fingerprint: str
+    candidate_fingerprint: str
+    source_generation: int
+    candidate_generation: int
+    matched_exclusion_ids: tuple[str, ...]
+    correlations: tuple[DefaultGapInfeasibilityCorrelation, ...]
+
+    def __post_init__(self) -> None:
+        _id(self.result_id, "result_id")
+        if type(self.base_result) is not CorridorCoveragePhaseResult:
+            raise TypeError("base_result must be a legacy CorridorCoveragePhaseResult")
+        if type(self.forecast) is not DefaultGapInfeasibilityForecast:
+            raise TypeError("forecast must be DefaultGapInfeasibilityForecast")
+        _enum(self.phase, UnflattenAuthorityPhase, "phase")
+        _id(self.source_fingerprint, "source_fingerprint")
+        _id(self.candidate_fingerprint, "candidate_fingerprint")
+        _generation(self.source_generation, "source_generation")
+        _generation(self.candidate_generation, "candidate_generation")
+        if (
+            self.base_result.forecast_id != self.forecast.base_forecast.forecast_id
+            or self.base_result.phase is not self.phase
+            or self.base_result.source_fingerprint != self.source_fingerprint
+            or self.base_result.candidate_fingerprint != self.candidate_fingerprint
+            or self.base_result.source_generation != self.source_generation
+            or self.base_result.candidate_generation != self.candidate_generation
+        ):
+            raise ValueError("default-gap phase coordinates differ from base result")
+        matched = _strict_id_tuple(self.matched_exclusion_ids, "matched_exclusion_ids")
+        correlations = tuple(self.correlations)
+        if correlations != tuple(sorted(correlations, key=lambda item: (item.exclusion_id, item.path_id))) or len(correlations) != len(matched):
+            raise ValueError("default-gap correlations must be canonically ordered and bijective")
+        if any(type(item) is not DefaultGapInfeasibilityCorrelation for item in correlations):
+            raise TypeError("default-gap correlations must be closed rows")
+        expected_exclusions = {item.exclusion_id: item for item in self.forecast.exclusions}
+        expected_paths = {item.path_id: item for item in self.forecast.paths}
+        if {item.exclusion_id for item in correlations} != set(matched) or len({item.path_id for item in correlations}) != len(correlations):
+            raise ValueError("default-gap correlations must exactly cover matched exclusions")
+        for item in correlations:
+            exclusion = expected_exclusions.get(item.exclusion_id)
+            path = expected_paths.get(item.path_id)
+            if exclusion is None or path is None or path.exclusion_id != exclusion.exclusion_id:
+                raise ValueError("default-gap correlation references foreign forecast authority")
+            if (
+                item.exclusion_digest != exclusion.digest
+                or item.dispatcher != exclusion.dispatcher
+                or item.default_entry != exclusion.default_entry
+                or item.residual != exclusion.residual
+                or item.initial_state_seeds != exclusion.initial_state_seeds
+                or item.route_proof_ids != exclusion.route_proof_ids
+                or item.normalized_reachable_states != exclusion.normalized_reachable_states
+                or item.phase_result_id != self.result_id
+                or item.source_fingerprint != self.source_fingerprint
+                or item.candidate_fingerprint != self.candidate_fingerprint
+                or item.source_generation != self.source_generation
+                or item.candidate_generation != self.candidate_generation
+            ):
+                raise ValueError("default-gap correlation content or phase coordinates are stale")
+        if set(matched) & set(self.base_result.matched_semantic_exclusion_ids):
+            raise ValueError("default-gap exclusions must not overlap route semantic exclusions")
+        content = (
+            "unflatten.default-gap-infeasibility-phase.v1", self.base_result,
+            self.forecast, self.phase, self.source_fingerprint,
+            self.candidate_fingerprint, self.source_generation,
+            self.candidate_generation, matched,
+            tuple(item.content_key for item in correlations),
+        )
+        if self.result_id != authority_id(content):
+            raise ValueError("result_id does not match exact default-gap phase content")
+        object.__setattr__(self, "matched_exclusion_ids", matched)
+        object.__setattr__(self, "correlations", correlations)
+
+
+CorridorCoverageForecastAuthority: TypeAlias = (
+    CorridorCoverageForecast | DefaultGapInfeasibilityForecast
+)
+CorridorCoveragePhaseResultAuthority: TypeAlias = (
+    CorridorCoveragePhaseResult | DefaultGapInfeasibilityPhaseResult
+)
+
+
+def corridor_base_forecast(
+    forecast: CorridorCoverageForecastAuthority,
+) -> CorridorCoverageForecast:
+    """Return the legacy corridor record underlying one closed authority union."""
+    if type(forecast) is CorridorCoverageForecast:
+        return forecast
+    if type(forecast) is DefaultGapInfeasibilityForecast:
+        return forecast.base_forecast
+    raise TypeError("corridor forecast must be a closed authority record")
+
+
+def corridor_base_phase_result(
+    result: CorridorCoveragePhaseResultAuthority,
+) -> CorridorCoveragePhaseResult:
+    """Return the legacy phase record underlying one closed authority union."""
+    if type(result) is CorridorCoveragePhaseResult:
+        return result
+    if type(result) is DefaultGapInfeasibilityPhaseResult:
+        return result.base_result
+    raise TypeError("corridor phase result must be a closed authority record")
+
+
+def _validate_corridor_authority_pair(
+    forecast: CorridorCoverageForecastAuthority,
+    result: CorridorCoveragePhaseResultAuthority,
+) -> tuple[CorridorCoverageForecast, CorridorCoveragePhaseResult]:
+    """Validate the nominal wrapper occurrence before exposing legacy coordinates."""
+    if type(forecast) is CorridorCoverageForecast:
+        if type(result) is not CorridorCoveragePhaseResult:
+            raise TypeError("legacy corridor forecast requires legacy phase result")
+        forecast.__post_init__()
+        result.__post_init__()
+        base_forecast, base_result = forecast, result
+    if type(forecast) is DefaultGapInfeasibilityForecast:
+        if type(result) is not DefaultGapInfeasibilityPhaseResult:
+            raise TypeError("default-gap corridor forecast requires default-gap phase result")
+        forecast.__post_init__()
+        result.__post_init__()
+        if (
+            result.forecast.extension_id != forecast.extension_id
+            or result.forecast != forecast
+        ):
+            raise ValueError("default-gap phase result carries a foreign forecast")
+        if result.base_result.forecast_id != forecast.base_forecast.forecast_id:
+            raise ValueError("default-gap phase result base forecast differs from wrapper")
+        expected_exclusions = {item.exclusion_id for item in forecast.exclusions}
+        expected_paths = {item.path_id for item in forecast.paths}
+        if set(result.matched_exclusion_ids) != expected_exclusions:
+            raise ValueError("default-gap phase result does not exactly cover forecast exclusions")
+        if {item.exclusion_id for item in result.correlations} != expected_exclusions:
+            raise ValueError("default-gap correlation exclusion IDs differ from forecast")
+        if {item.path_id for item in result.correlations} != expected_paths:
+            raise ValueError("default-gap correlation path IDs differ from forecast")
+        path_exclusions = {item.path_id: item.exclusion_id for item in forecast.paths}
+        if any(
+            path_exclusions.get(item.path_id) != item.exclusion_id
+            for item in result.correlations
+        ):
+            raise ValueError("default-gap correlation path linkage differs from forecast")
+        base_forecast, base_result = forecast.base_forecast, result.base_result
+    elif type(forecast) is not CorridorCoverageForecast:
+        raise TypeError("corridor forecast must be a closed authority record")
+    if base_result.forecast_id != base_forecast.forecast_id:
+        raise ValueError("corridor phase result is foreign to the forecast")
+    partitions = (
+        set(base_result.covered_path_ids),
+        set(base_result.residual_path_ids),
+        set(base_result.drifted_path_ids),
+    )
+    if any(left & right for index, left in enumerate(partitions) for right in partitions[index + 1:]):
+        raise ValueError("corridor phase result path partitions overlap")
+    if set().union(*partitions) != {path.path_id for path in base_forecast.paths}:
+        raise ValueError("corridor phase result path partitions do not exactly cover forecast")
+    return base_forecast, base_result
+
+
+def _same_corridor_forecast_content(
+    left: CorridorCoverageForecastAuthority | None,
+    right: CorridorCoverageForecastAuthority | None,
+) -> bool:
+    """Compare sealed legacy or versioned forecast content across persistence."""
+    if left is None or right is None:
+        return left is right
+    if type(left) is DefaultGapInfeasibilityForecast or type(right) is DefaultGapInfeasibilityForecast:
+        return (
+            type(left) is DefaultGapInfeasibilityForecast
+            and type(right) is DefaultGapInfeasibilityForecast
+            and left.extension_id == right.extension_id
+            and left == right
+        )
+    return type(left) is CorridorCoverageForecast and type(right) is CorridorCoverageForecast and left == right
 
 
 @dataclass(frozen=True, slots=True, weakref_slot=True)
@@ -1403,7 +1847,14 @@ def _validate_terminal_cycle_phase_results(
         cycle = claim.cycle_subject.locator
         cleanup = claim.cleanup_source_subject.locator
         terminal = claim.terminal_subject.locator
-        if type(cycle) is not CorridorSubjectLocator or type(cleanup) is not BlockSubjectLocator or type(terminal) is not TerminalSubjectLocator:
+        if (
+            type(cycle) is not CorridorSubjectLocator
+            or type(cleanup) is not BlockSubjectLocator
+            or type(terminal) not in (
+                TerminalSubjectLocator,
+                LogicalFunctionExitSubjectLocator,
+            )
+        ):
             raise ValueError("terminal-cycle claim locators are not closed")
         if (
             result.residue_refs != cycle.member_refs
@@ -1482,7 +1933,7 @@ def _validate_terminal_cycle_evidence(
 
 
 SemanticSubjectLocator: TypeAlias = (
-    BlockSubjectLocator | EdgeSubjectLocator | RouteSubjectLocator
+    BlockSubjectLocator | LogicalFunctionExitSubjectLocator | EdgeSubjectLocator | RouteSubjectLocator
     | EffectSubjectLocator | HandlerSubjectLocator | TerminalSubjectLocator
     | ValueFlowSubjectLocator | CorridorSubjectLocator
 )
@@ -1490,23 +1941,29 @@ SemanticSubjectLocator: TypeAlias = (
 
 _SUBJECT_MATRIX = {
     (SemanticSubjectKind.BLOCK, SemanticSubjectRole.SOURCE_CATALOG_BLOCK): BlockSubjectLocator,
+    (SemanticSubjectKind.BLOCK, SemanticSubjectRole.SOURCE_LOGICAL_EXIT): LogicalFunctionExitSubjectLocator,
     (SemanticSubjectKind.BLOCK, SemanticSubjectRole.SOURCE_ENTRY): BlockSubjectLocator,
     (SemanticSubjectKind.BLOCK, SemanticSubjectRole.DISPATCHER_ENTRY): BlockSubjectLocator,
     (SemanticSubjectKind.BLOCK, SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE): BlockSubjectLocator,
     (SemanticSubjectKind.BLOCK, SemanticSubjectRole.DETACHED_DEAD_HANDLER_COMPONENT): BlockSubjectLocator,
     (SemanticSubjectKind.BLOCK, SemanticSubjectRole.SEMANTIC_ROUTE_SOURCE): BlockSubjectLocator,
     (SemanticSubjectKind.BLOCK, SemanticSubjectRole.SEMANTIC_ROUTE_DESTINATION): BlockSubjectLocator,
+    (SemanticSubjectKind.BLOCK, SemanticSubjectRole.SEMANTIC_DAG_ENDPOINT): LogicalFunctionExitSubjectLocator,
     (SemanticSubjectKind.BLOCK, SemanticSubjectRole.EXACT_EFFECT_SOURCE): BlockSubjectLocator,
     (SemanticSubjectKind.BLOCK, SemanticSubjectRole.EXACT_EFFECT_PREDICATE): BlockSubjectLocator,
     (SemanticSubjectKind.BLOCK, SemanticSubjectRole.EXACT_EFFECT_SELECTED_TARGET): BlockSubjectLocator,
     (SemanticSubjectKind.BLOCK, SemanticSubjectRole.EXACT_EFFECT_DISCARDED_OWNER): BlockSubjectLocator,
+    (SemanticSubjectKind.BLOCK, SemanticSubjectRole.DEFAULT_GAP_INFEASIBLE_RESIDUAL): BlockSubjectLocator,
     (SemanticSubjectKind.BLOCK, SemanticSubjectRole.EFFECT_SITE): BlockSubjectLocator,
     (SemanticSubjectKind.BLOCK, SemanticSubjectRole.PLANNED_HELPER): BlockSubjectLocator,
     (SemanticSubjectKind.EDGE, SemanticSubjectRole.SEMANTIC_ROUTE_SOURCE): EdgeSubjectLocator,
     (SemanticSubjectKind.ROUTE, SemanticSubjectRole.SEMANTIC_ROUTE_SOURCE): RouteSubjectLocator,
     (SemanticSubjectKind.EFFECT, SemanticSubjectRole.EFFECT_SITE): EffectSubjectLocator,
     (SemanticSubjectKind.HANDLER, SemanticSubjectRole.AUTHORITATIVE_HANDLER): HandlerSubjectLocator,
-    (SemanticSubjectKind.TERMINAL, SemanticSubjectRole.TERMINAL_SITE): TerminalSubjectLocator,
+    (SemanticSubjectKind.TERMINAL, SemanticSubjectRole.TERMINAL_SITE): (
+        TerminalSubjectLocator,
+        LogicalFunctionExitSubjectLocator,
+    ),
     (SemanticSubjectKind.VALUE_FLOW, SemanticSubjectRole.NON_STATE_VALUE_FLOW): ValueFlowSubjectLocator,
     (SemanticSubjectKind.CORRIDOR, SemanticSubjectRole.DISPATCHER_CORRIDOR): CorridorSubjectLocator,
 }
@@ -1515,6 +1972,8 @@ _SUBJECT_MATRIX = {
 def _subject_owner(locator: SemanticSubjectLocator) -> tuple[CfgBlockRef | None, int | None]:
     if isinstance(locator, BlockSubjectLocator):
         return locator.block_ref, locator.anchor_ea
+    if isinstance(locator, LogicalFunctionExitSubjectLocator):
+        return locator.block_ref, None
     if isinstance(locator, EdgeSubjectLocator):
         return locator.source_ref, locator.source_anchor_ea
     if isinstance(locator, RouteSubjectLocator):
@@ -1544,7 +2003,8 @@ class SemanticSubjectRef:
         _enum(self.role, SemanticSubjectRole, "role")
         _id(self.subject_id, "subject_id")
         expected = _SUBJECT_MATRIX.get((self.kind, self.role))
-        if expected is None or type(self.locator) is not expected:
+        expected_types = expected if type(expected) is tuple else (expected,)
+        if expected is None or type(self.locator) not in expected_types:
             raise ValueError("unsupported subject kind/role/locator")
         if type(self.block_ref) not in _CFG_REF_TYPES and self.block_ref is not None:
             raise TypeError("block_ref must be a CfgBlockRef or None")
@@ -1602,7 +2062,17 @@ class PhaseSubjectBinding:
         if self.status is SubjectBindingStatus.UNIQUE:
             if self.subject.block_ref is None or self.block_ref != self.subject.block_ref:
                 raise ValueError("unique binding requires block_ref")
-            if self.serial is None or self.anchor_ea is None:
+            if self.serial is None:
+                raise ValueError("unique binding requires serial, anchor, and native EAs")
+            if type(self.subject.locator) is LogicalFunctionExitSubjectLocator:
+                if (
+                    self.serial != self.subject.locator.serial
+                    or self.anchor_ea is not None
+                    or eas
+                ):
+                    raise ValueError("logical function-exit binding must remain anchorless")
+                return
+            if self.anchor_ea is None:
                 raise ValueError("unique binding requires serial, anchor, and native EAs")
             if self.anchor_ea != self.subject.anchor_ea:
                 raise ValueError("unique binding anchor must equal subject anchor")
@@ -1670,16 +2140,41 @@ def _is_exact_logical_function_exit_row(row: object) -> bool:
     reference identity exactly once.
     """
 
-    return (
-        type(getattr(row, "block_ref", None)) is LogicalBlockRef
-        and getattr(row, "block_kind", None) is BlockKind.ZERO_WAY
-        and getattr(row, "anchor_ea", object()) is None
-        and not getattr(row, "native_instruction_eas", ())
-        and not getattr(row, "instruction_observations", ())
-        and not getattr(row, "successor_serials", ())
-        and getattr(row, "transfer_ea", object()) is None
-        and getattr(row, "graph_start_ea", _BADADDR) == _BADADDR
+    return is_exact_logical_function_exit_inventory_row_shape(
+        row,
+        logical_block_ref_type=LogicalBlockRef,
     )
+
+
+def _claimed_logical_function_exit_coordinates(
+    proposal: object,
+) -> frozenset[tuple[LogicalBlockRef, int]]:
+    """Return only exact logical exits owned by typed route or terminal claims.
+
+    Logical source rows intentionally sit outside the native identity catalog.
+    They are admissible only where an immutable claim names the exact
+    ``LogicalFunctionExitSubjectLocator``; this keeps a terminal-cycle stop
+    equivalent to a selected DAG endpoint without admitting arbitrary logical
+    coordinates from a patch plan.
+    """
+    coordinates: set[tuple[LogicalBlockRef, int]] = set()
+    for claim in getattr(proposal, "claims", ()):
+        if type(claim) is EquivalentSemanticRouteClaim:
+            subjects = claim.dag_endpoint_subjects
+        elif type(claim) is TerminalCycleBreakClaim:
+            subjects = (claim.terminal_subject,)
+        else:
+            continue
+        for subject in subjects:
+            locator = subject.locator
+            if type(locator) is LogicalFunctionExitSubjectLocator:
+                coordinates.add((locator.block_ref, locator.serial))
+    return frozenset(coordinates)
+
+
+def is_exact_logical_function_exit_inventory_row(row: object) -> bool:
+    """Public authority predicate for the one anchorless DAG endpoint row."""
+    return _is_exact_logical_function_exit_row(row)
 
 
 def _validate_native_identity_primitives(identity: object, label: str) -> None:
@@ -2035,6 +2530,12 @@ def resolve_inventory_block_sites(
             and owner_anchor_ea == 0
             and not instruction_observations
         )
+        and not (
+            type(owner_ref) is LogicalBlockRef
+            and owner_anchor_ea == 0
+            and not instruction_observations
+            and not successor_serials
+        )
     ):
         terminal = InventoryTerminalSite(
             serial, owner_ref, owner_anchor_ea, None, owner_anchor_ea, TerminalKind.STOP,
@@ -2079,11 +2580,14 @@ class InventoryBlockObservation:
         if not 0 <= self.graph_start_ea <= _BADADDR:
             raise ValueError("graph_start_ea must be a graph coordinate or BADADDR")
         if self.block_kind is BlockKind.STOP and self.anchor_ea is None and not (
-            self.block_ref is None
-            and not self.native_instruction_eas
-            and not self.instruction_observations
-            and not self.successor_serials
-            and self.graph_start_ea == _BADADDR
+            (
+                self.block_ref is None
+                and not self.native_instruction_eas
+                and not self.instruction_observations
+                and not self.successor_serials
+                and self.graph_start_ea == _BADADDR
+            )
+            or _is_exact_logical_function_exit_row(self)
         ):
             raise ValueError("STOP observations require a resolved anchor EA")
         if self.anchor_ea is not None:
@@ -2499,11 +3003,12 @@ class SemanticRouteEvidencePayload:
     source_subject_id: str
     destination_subject_ids: tuple[str, ...]
     matched: bool
+    dag_endpoint_subject_ids: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         for name in ("route_subject_id", "atomic_group_id", "source_subject_id"):
             _id(getattr(self, name), name)
-        for name in ("proof_ids", "destination_subject_ids"):
+        for name in ("proof_ids", "destination_subject_ids", "dag_endpoint_subject_ids"):
             # Proof IDs are an unordered scope. Destination IDs are not:
             # they are the projection of RouteSubjectLocator's canonical
             # (ref, EA) pairs and must retain that paired order.
@@ -2767,10 +3272,11 @@ class ProviderConsensusWitness:
         object.__setattr__(self, "provider_ids", providers)
 
 
-def _claim_subject(value: object, kind: SemanticSubjectKind, role: SemanticSubjectRole, locator: type, label: str) -> None:
+def _claim_subject(value: object, kind: SemanticSubjectKind, role: SemanticSubjectRole, locator: type | tuple[type, ...], label: str) -> None:
     if type(value) is not SemanticSubjectRef:
         raise TypeError(f"{label} must be a SemanticSubjectRef")
-    if value.kind is not kind or value.role is not role or type(value.locator) is not locator:
+    locators = locator if type(locator) is tuple else (locator,)
+    if value.kind is not kind or value.role is not role or type(value.locator) not in locators:
         raise ValueError(f"{label} has an unsupported subject kind/role/locator")
 
 
@@ -2786,8 +3292,21 @@ def _route_pairs(subject: SemanticSubjectRef) -> tuple[tuple[CfgBlockRef, int], 
     locator = subject.locator
     return (
         (locator.source_ref, locator.source_anchor_ea),
-        *tuple(zip(locator.destination_refs, locator.destination_anchor_eas)),
+        *tuple(
+            (item.block_ref, item.anchor_ea)
+            for item in locator.native_destination_members()
+            if type(item) is BlockSubjectLocator
+        ),
     )
+
+
+def _route_destination_locator(subject: SemanticSubjectRef) -> BlockSubjectLocator | LogicalFunctionExitSubjectLocator:
+    """Return the typed native/logical destination locator owned by one subject."""
+    if type(subject.locator) not in (
+        BlockSubjectLocator, LogicalFunctionExitSubjectLocator,
+    ):
+        raise ValueError("route destination subject must use a typed destination locator")
+    return subject.locator
 
 
 def _claim_subjects(claim: ProducerUnflattenClaim) -> tuple[SemanticSubjectRef, ...]:
@@ -2805,10 +3324,15 @@ def _subject_refs(subject: SemanticSubjectRef) -> tuple[CfgBlockRef, ...]:
     locator = subject.locator
     if type(locator) is BlockSubjectLocator:
         return (locator.block_ref,)
+    if type(locator) is LogicalFunctionExitSubjectLocator:
+        return (locator.block_ref,)
     if type(locator) is EdgeSubjectLocator:
         return (locator.source_ref, locator.target_ref)
     if type(locator) is RouteSubjectLocator:
-        return (locator.source_ref, *locator.destination_refs)
+        return (
+            locator.source_ref,
+            *(item.block_ref for item in locator.native_destination_members()),
+        )
     if type(locator) is EffectSubjectLocator:
         return (locator.owner_ref,)
     if type(locator) is HandlerSubjectLocator:
@@ -2826,6 +3350,8 @@ def _subject_pairs(subject: SemanticSubjectRef) -> tuple[tuple[CfgBlockRef, int 
     locator = subject.locator
     if type(locator) is BlockSubjectLocator:
         return ((locator.block_ref, locator.anchor_ea),)
+    if type(locator) is LogicalFunctionExitSubjectLocator:
+        return ((locator.block_ref, None),)
     if type(locator) is EdgeSubjectLocator:
         return (
             (locator.source_ref, locator.source_anchor_ea),
@@ -2834,7 +3360,9 @@ def _subject_pairs(subject: SemanticSubjectRef) -> tuple[tuple[CfgBlockRef, int 
     if type(locator) is RouteSubjectLocator:
         return (
             (locator.source_ref, locator.source_anchor_ea),
-            *tuple(zip(locator.destination_refs, locator.destination_anchor_eas)),
+            *tuple((item.block_ref, item.anchor_ea)
+                   if type(item) is BlockSubjectLocator else (item.block_ref, None)
+                   for item in locator.native_destination_members()),
         )
     if type(locator) is EffectSubjectLocator:
         return ((locator.owner_ref, locator.owner_anchor_ea),)
@@ -2949,6 +3477,10 @@ class DetachedDeadHandlerComponentClaim:
             raise ValueError("dead and retained handler subjects overlap")
         if not {subject.block_ref for subject in dead} <= {subject.block_ref for subject in component}:
             raise ValueError("component subjects must contain every dead handler")
+        if {subject.block_ref for subject in retained} & {
+            subject.block_ref for subject in component
+        }:
+            raise ValueError("detached component must not contain retained handlers")
         object.__setattr__(self, "dead_handler_subjects", dead)
         object.__setattr__(self, "retained_handler_subjects", retained)
         object.__setattr__(self, "component_subjects", component)
@@ -2967,6 +3499,7 @@ class EquivalentSemanticRouteClaim:
     route_proof_ids: tuple[str, ...]
     atomic_group_id: str
     source_generation: int
+    dag_endpoint_subjects: tuple[SemanticSubjectRef, ...] = ()
 
     def __post_init__(self) -> None:
         _claim_common(self.claim_id, self.kind, UnflattenClaimKind.EQUIVALENT_SEMANTIC_ROUTE, self.source_generation)
@@ -2975,7 +3508,22 @@ class EquivalentSemanticRouteClaim:
         _claim_subject(self.source_subject, SemanticSubjectKind.BLOCK, SemanticSubjectRole.SEMANTIC_ROUTE_SOURCE, BlockSubjectLocator, "source_subject")
         destinations = _tuple(self.destination_subjects, "destination_subjects", sort=True)
         for subject in destinations:
-            _claim_subject(subject, SemanticSubjectKind.BLOCK, SemanticSubjectRole.SEMANTIC_ROUTE_DESTINATION, BlockSubjectLocator, "destination_subject")
+            if (
+                type(subject) is not SemanticSubjectRef
+                or subject.kind is not SemanticSubjectKind.BLOCK
+                or subject.role is not SemanticSubjectRole.SEMANTIC_ROUTE_DESTINATION
+                or type(subject.locator) is not BlockSubjectLocator
+            ):
+                raise ValueError("destination_subject has an unsupported route destination locator")
+        dag_endpoints = _tuple(self.dag_endpoint_subjects, "dag_endpoint_subjects", sort=True)
+        for subject in dag_endpoints:
+            if (
+                type(subject) is not SemanticSubjectRef
+                or subject.kind is not SemanticSubjectKind.BLOCK
+                or subject.role is not SemanticSubjectRole.SEMANTIC_DAG_ENDPOINT
+                or type(subject.locator) is not LogicalFunctionExitSubjectLocator
+            ):
+                raise ValueError("dag_endpoint_subject has an unsupported logical endpoint locator")
         proofs = _tuple(self.route_proof_ids, "route_proof_ids", sort=True)
         for proof in proofs:
             _id(proof, "route_proof_ids item")
@@ -2983,20 +3531,28 @@ class EquivalentSemanticRouteClaim:
             raise ValueError("equivalent route claim must select exactly one proof")
         _id(self.atomic_group_id, "atomic_group_id")
         object.__setattr__(self, "destination_subjects", destinations)
+        object.__setattr__(self, "dag_endpoint_subjects", dag_endpoints)
         object.__setattr__(self, "route_proof_ids", proofs)
         source_pair = _subject_block_pair(self.source_subject)
-        destination_pairs = tuple(_subject_block_pair(subject) for subject in destinations)
-        retired_pairs = _route_pairs(self.retired_route_subject)
-        replacement_pairs = _route_pairs(self.replacement_route_subject)
+        destination_locators = tuple(
+            _route_destination_locator(subject) for subject in destinations
+        )
+        dag_endpoint_locators = tuple(
+            _route_destination_locator(subject) for subject in dag_endpoints
+        )
+        retired_locator = self.retired_route_subject.locator
+        replacement_locator = self.replacement_route_subject.locator
         if self.retired_route_subject != self.replacement_route_subject:
             raise ValueError(
                 "equivalent route claim must use one stable route subject"
             )
         if (
-            retired_pairs[0] != source_pair
-            or replacement_pairs[0] != source_pair
-            or set(retired_pairs[1:]) != set(destination_pairs)
-            or set(replacement_pairs[1:]) != set(destination_pairs)
+            (retired_locator.source_ref, retired_locator.source_anchor_ea) != source_pair
+            or (replacement_locator.source_ref, replacement_locator.source_anchor_ea) != source_pair
+            or set(retired_locator.native_destination_members()) != set(destination_locators)
+            or set(replacement_locator.native_destination_members()) != set(destination_locators)
+            or set(retired_locator.dag_endpoint_locators) != set(dag_endpoint_locators)
+            or set(replacement_locator.dag_endpoint_locators) != set(dag_endpoint_locators)
         ):
             raise ValueError("route claim subjects must match route locator members")
         if (
@@ -3118,7 +3674,13 @@ class TerminalCycleBreakClaim:
         _claim_common(self.claim_id, self.kind, UnflattenClaimKind.TERMINAL_CYCLE_BREAK, self.source_generation)
         _claim_subject(self.cycle_subject, SemanticSubjectKind.CORRIDOR, SemanticSubjectRole.DISPATCHER_CORRIDOR, CorridorSubjectLocator, "cycle_subject")
         _claim_subject(self.cleanup_source_subject, SemanticSubjectKind.BLOCK, SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE, BlockSubjectLocator, "cleanup_source_subject")
-        _claim_subject(self.terminal_subject, SemanticSubjectKind.TERMINAL, SemanticSubjectRole.TERMINAL_SITE, TerminalSubjectLocator, "terminal_subject")
+        _claim_subject(
+            self.terminal_subject,
+            SemanticSubjectKind.TERMINAL,
+            SemanticSubjectRole.TERMINAL_SITE,
+            (TerminalSubjectLocator, LogicalFunctionExitSubjectLocator),
+            "terminal_subject",
+        )
         proofs = _tuple(self.terminal_route_proof_ids, "terminal_route_proof_ids", sort=True)
         for proof in proofs:
             _id(proof, "terminal_route_proof_ids item")
@@ -3185,16 +3747,16 @@ def _anchor_matches_native_scope(
     )
 
 
-def _observed_native_origin_subset_preserves_anchor(
+def _phase_native_origin_subset_preserves_anchor(
     block_ref: CfgBlockRef | None,
     anchor_ea: int | None,
     observed_instruction_eas: tuple[int, ...],
     expected_instruction_eas: tuple[int, ...],
 ) -> bool:
-    """Allow observed origin loss only when it retains the canonical anchor.
+    """Allow phase-local origin loss only when it retains the canonical anchor.
 
     A native physical block entry can be the canonical anchor without being an
-    instruction origin. In that one case a strict observed subset need not
+    instruction origin. In that one case a strict projected/observed subset need not
     contain the anchor. If the canonical anchor is an exact instruction, it
     must remain present in the observed origin subset.
     """
@@ -3649,7 +4211,7 @@ class ProposedUnflattenContract:
     use_def_witness: UseDefFragmentWitness
     claims: tuple[ProducerUnflattenClaim, ...]
     plan_inputs: UnflattenPlanInputCatalog
-    corridor_coverage_forecast: CorridorCoverageForecast | None = None
+    corridor_coverage_forecast: CorridorCoverageForecast | DefaultGapInfeasibilityForecast | None = None
     retirement_candidate_catalog: RetirementCandidateCatalog | None = None
 
     def __post_init__(self) -> None:
@@ -3684,10 +4246,14 @@ class ProposedUnflattenContract:
                 if witness is None or witness.anchor_ea != member.anchor_ea or witness.native_instruction_eas != member.native_instruction_eas:
                     raise ValueError("retirement candidate member identity drifted")
         if self.corridor_coverage_forecast is not None:
-            if type(self.corridor_coverage_forecast) is not CorridorCoverageForecast:
-                raise TypeError("corridor_coverage_forecast must be CorridorCoverageForecast or None")
+            if type(self.corridor_coverage_forecast) not in (CorridorCoverageForecast, DefaultGapInfeasibilityForecast):
+                raise TypeError("corridor_coverage_forecast must be a closed corridor forecast or None")
             self.corridor_coverage_forecast.__post_init__()
-            forecast = self.corridor_coverage_forecast
+            forecast = (
+                self.corridor_coverage_forecast.base_forecast
+                if type(self.corridor_coverage_forecast) is DefaultGapInfeasibilityForecast
+                else self.corridor_coverage_forecast
+            )
             if forecast.plan_id != self.plan_id:
                 raise ValueError("corridor forecast belongs to a foreign plan")
             if forecast.source_native_key != self.source_identity_catalog.native_key:
@@ -3769,6 +4335,11 @@ class ProposedUnflattenContract:
             for subject in _claim_subjects(claim):
                 for ref, anchor in _subject_pairs(subject):
                     witness = catalog_by_ref.get(ref)
+                    if type(ref) is LogicalBlockRef and anchor is None:
+                        # Exact logical function exits are deliberately
+                        # anchorless and close through the selected DAG
+                        # endpoint plus source inventory, not native catalog.
+                        continue
                     if witness is None:
                         raise ValueError("proposal subject reference is absent from source catalog")
                     if anchor is not None and witness.anchor_ea != anchor:
@@ -3989,6 +4560,34 @@ _LOSS_RULE_CLAIMS = {
 }
 
 
+def _join_semantic_loss_kinds(
+    kinds: tuple[SemanticLossKind, ...],
+) -> SemanticLossKind:
+    """Join independent typed allowances owned by one physical source row."""
+
+    if type(kinds) is not tuple or any(
+        type(kind) is not SemanticLossKind for kind in kinds
+    ):
+        raise TypeError("semantic loss kinds must be an exact enum tuple")
+    canonical = tuple(sorted(set(kinds), key=lambda kind: kind.value))
+    if not canonical:
+        return SemanticLossKind.UNCLASSIFIED
+    if any(
+        kind in {
+            SemanticLossKind.UNCLASSIFIED,
+            SemanticLossKind.CONFLICTING,
+            SemanticLossKind.COMPOSITE_ALLOWED,
+        }
+        for kind in canonical
+    ):
+        raise ValueError("only atomic allowed loss kinds may be joined")
+    return (
+        canonical[0]
+        if len(canonical) == 1
+        else SemanticLossKind.COMPOSITE_ALLOWED
+    )
+
+
 def _semantic_loss_source_subject_ids(case: SemanticSafetyCase) -> tuple[str, ...]:
     """Return the complete canonical block-owner domain for a loss ledger.
 
@@ -4073,7 +4672,10 @@ class SemanticLossRow:
     def __post_init__(self) -> None:
         if type(self.case) is not SemanticSafetyCase:
             raise TypeError("case must be a SemanticSafetyCase")
-        self.case.__post_init__()
+        # ``SemanticLossRow`` is minted only from an already-validated case.
+        # Replaying the complete case here makes ledger construction O(rows x
+        # case-size) and does not add a new authority boundary.  The unified
+        # gate validates the case occurrence once after the full ledger exists.
         if self.case.phase is UnflattenAuthorityPhase.PRODUCER_FORECAST:
             raise ValueError("semantic loss rows require a projected or observed case")
         if type(self.source_subject) is not SemanticSubjectRef:
@@ -4308,9 +4910,30 @@ class SemanticLossRow:
             if expected is None or claim is None or type(claim) not in expected:
                 return SemanticLossKind.CONFLICTING
             kinds.add(_LOSS_RULE_KIND[item.rule])
-        if len(kinds) != 1:
-            return SemanticLossKind.CONFLICTING if len(kinds) > 1 else SemanticLossKind.UNCLASSIFIED
-        return next(iter(kinds))
+        return _join_semantic_loss_kinds(tuple(kinds))
+
+    @property
+    def classification_kinds(self) -> tuple[SemanticLossKind, ...]:
+        """Return every atomic allowance contributing to this owner row."""
+
+        derived = self._derived_kind()
+        if derived in {
+            SemanticLossKind.UNCLASSIFIED,
+            SemanticLossKind.CONFLICTING,
+        }:
+            return (derived,)
+        kinds = tuple(sorted({
+            _LOSS_RULE_KIND[item.rule]
+            for item in self.justifications
+            if item.polarity is EvidencePolarity.SUPPORTS
+            and item.claim_id is not None
+            and item.rule in _LOSS_RULE_KIND
+        }, key=lambda kind: kind.value))
+        if not kinds:
+            raise ValueError("allowed semantic loss row lacks atomic classifications")
+        if _join_semantic_loss_kinds(kinds) is not derived:
+            raise ValueError("semantic loss row classifications disagree with joined kind")
+        return kinds
 
     @property
     def structural_cell(self) -> ObligationEvidenceCell:
@@ -4349,7 +4972,8 @@ class SemanticLossLedger:
     def __post_init__(self) -> None:
         if type(self.case) is not SemanticSafetyCase:
             raise TypeError("case must be a SemanticSafetyCase")
-        self.case.__post_init__()
+        # The case is an exact parent occurrence, validated once by the gate.
+        # Do not recursively replay its content for every ledger carrier.
         _id(self.authority_id, "authority_id")
         _id(self.case_id, "case_id")
         _enum(self.phase, UnflattenAuthorityPhase, "phase")
@@ -4392,7 +5016,7 @@ class SemanticLossLedger:
             tuple(
                 (
                     row.source_subject.subject_id,
-                    row.kind.value,
+                    tuple(kind.value for kind in row.classification_kinds),
                     tuple(item.justification_id for item in row.justifications),
                     tuple(item.evidence_id for item in row.evidence),
                     tuple(item.claim_id for item in row.claims),
@@ -4468,7 +5092,7 @@ class ObservedSemanticLossDelta:
             tuple(
                 (
                     row.source_subject.subject_id,
-                    row.kind.value,
+                    tuple(kind.value for kind in row.classification_kinds),
                     tuple(item.justification_id for item in row.justifications),
                     tuple(item.evidence_id for item in row.evidence),
                     tuple(item.claim_id for item in row.claims),
@@ -4657,6 +5281,98 @@ class SemanticGraphInventory:
         expected_reachable: set[int] = set()
         if self.blocks:
             blocks_by_serial = {item.serial: item for item in self.blocks}
+            serial_by_ref = {
+                item.block_ref: item.serial
+                for item in self.blocks
+                if item.block_ref is not None
+            }
+            dispatcher_serials = {
+                serial_by_ref.get(subject.block_ref)
+                for subject in self.subjects
+                if subject.role is SemanticSubjectRole.DISPATCHER_ENTRY
+            }
+            if len(dispatcher_serials) > 1 or None in dispatcher_serials:
+                raise ValueError(
+                    "semantic inventory dispatcher entry is ambiguous or unbound"
+                )
+            dispatcher_serial = (
+                next(iter(dispatcher_serials)) if dispatcher_serials else None
+            )
+            component_refs = {
+                subject.block_ref
+                for subject in self.subjects
+                if subject.role
+                is SemanticSubjectRole.DETACHED_DEAD_HANDLER_COMPONENT
+            }
+            authoritative_handler_refs = {
+                subject.block_ref
+                for subject in self.subjects
+                if subject.role is SemanticSubjectRole.AUTHORITATIVE_HANDLER
+            }
+            candidate_detached_handler_refs = (
+                component_refs & authoritative_handler_refs
+                if self.phase is not UnflattenAuthorityPhase.PRODUCER_FORECAST
+                else set()
+            )
+            candidate_exact_effect_refs = (
+                {
+                    subject.block_ref
+                    for subject in self.subjects
+                    if subject.role
+                    is SemanticSubjectRole.EXACT_EFFECT_DISCARDED_OWNER
+                }
+                if self.phase is not UnflattenAuthorityPhase.PRODUCER_FORECAST
+                else set()
+            )
+            candidate_default_gap_refs = (
+                {
+                    subject.block_ref
+                    for subject in self.subjects
+                    if subject.role
+                    is SemanticSubjectRole.DEFAULT_GAP_INFEASIBLE_RESIDUAL
+                }
+                if self.phase is not UnflattenAuthorityPhase.PRODUCER_FORECAST
+                else set()
+            )
+            candidate_semantic_loss_refs = (
+                candidate_detached_handler_refs
+                | candidate_exact_effect_refs
+                | candidate_default_gap_refs
+            )
+            semantic_roots: set[int] = set()
+            for subject in self.subjects:
+                # Candidate semantic-loss subjects are the typed markers that
+                # permit their source handler/route aliases to be tested as
+                # absent. Rooting a detached handler or exact-infeasible
+                # effect owner here would pre-accept the opposite topology
+                # before the transaction-owned binder can decide it.
+                if subject.block_ref in candidate_semantic_loss_refs:
+                    continue
+                if (
+                    (
+                        subject.role is SemanticSubjectRole.AUTHORITATIVE_HANDLER
+                        and type(subject.locator) is HandlerSubjectLocator
+                    )
+                    or (
+                        subject.role in {
+                            SemanticSubjectRole.SEMANTIC_ROUTE_SOURCE,
+                            SemanticSubjectRole.SEMANTIC_ROUTE_DESTINATION,
+                        }
+                        and type(subject.locator) is BlockSubjectLocator
+                    )
+                ):
+                    serial = serial_by_ref.get(subject.block_ref)
+                    if serial is None:
+                        if self.phase is UnflattenAuthorityPhase.PRODUCER_FORECAST:
+                            raise ValueError(
+                                "semantic root subject is absent from source inventory blocks"
+                            )
+                        continue
+                    semantic_roots.add(serial)
+            # Physical entry reachability remains ordinary CFG reachability.
+            # Typed handler/route roots are an evidence-model supplement and
+            # stop before dispatcher infrastructure so they cannot make a
+            # retired dispatcher semantically reachable by construction.
             pending = [self.entry_serial]
             while pending:
                 serial = pending.pop()
@@ -4667,8 +5383,33 @@ class SemanticGraphInventory:
                     raise ValueError("reachable successor is absent from inventory blocks")
                 expected_reachable.add(serial)
                 pending.extend(reversed(block.successor_serials))
+            pending = list(sorted(semantic_roots, reverse=True))
+            while pending:
+                serial = pending.pop()
+                barrier_active = (
+                    self.phase is not UnflattenAuthorityPhase.PRODUCER_FORECAST
+                    and dispatcher_serial is not None
+                )
+                if (
+                    barrier_active and serial == dispatcher_serial
+                    or serial in expected_reachable
+                ):
+                    continue
+                block = blocks_by_serial.get(serial)
+                if block is None:
+                    raise ValueError(
+                        "semantic root successor is absent from inventory blocks"
+                    )
+                expected_reachable.add(serial)
+                pending.extend(
+                    successor
+                    for successor in reversed(block.successor_serials)
+                    if not barrier_active or successor != dispatcher_serial
+                )
         if tuple(sorted(expected_reachable)) != reachable_serials:
-            raise ValueError("reachable_serials must equal the raw successor closure")
+            raise ValueError(
+                "reachable_serials must equal the semantic-root successor closure"
+            )
         source_subject_ids = self.source_subject_ids
         if type(source_subject_ids) is not tuple:
             raise TypeError("source_subject_ids must be an exact tuple")
@@ -4741,9 +5482,12 @@ class SemanticGraphInventory:
         for block in self.blocks:
             if type(block.block_ref) is NativeBlockRef:
                 identity = block.block_ref.identity
-                observed_anchor_preserving_subset = (
-                    self.phase is UnflattenAuthorityPhase.OBSERVED_POST_APPLY
-                    and _observed_native_origin_subset_preserves_anchor(
+                phase_anchor_preserving_subset = (
+                    self.phase in {
+                        UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+                        UnflattenAuthorityPhase.OBSERVED_POST_APPLY,
+                    }
+                    and _phase_native_origin_subset_preserves_anchor(
                         block.block_ref,
                         block.anchor_ea,
                         block.native_instruction_eas,
@@ -4753,7 +5497,7 @@ class SemanticGraphInventory:
                 if (
                     identity.exact_instruction_eas
                     != frozenset(block.native_instruction_eas)
-                    and not observed_anchor_preserving_subset
+                    and not phase_anchor_preserving_subset
                 ):
                     expected_instruction_eas = set(identity.exact_instruction_eas)
                     observed_instruction_eas = set(block.native_instruction_eas)
@@ -5038,7 +5782,10 @@ def _validate_terminal_cycle_phase_result_inventories(
     terminal = claim.terminal_subject.locator
     if (
         type(cycle) is not CorridorSubjectLocator
-        or type(terminal) is not TerminalSubjectLocator
+        or type(terminal) not in (
+            TerminalSubjectLocator,
+            LogicalFunctionExitSubjectLocator,
+        )
     ):
         raise ValueError("terminal-cycle inventory replay requires closed locators")
 
@@ -5179,18 +5926,19 @@ def _validate_terminal_cycle_phase_result_inventories(
             "terminal-cycle terminal path differs from the phase result"
         )
 
-    terminal_rows = tuple(
-        row for row in candidate_inventory.terminals
-        if row.owner_serial == terminal_binding.serial
-        and row.owner_ref == terminal.block_ref
-        and row.owner_anchor_ea == terminal.anchor_ea
-        and row.terminal_kind is terminal.terminal_kind
-        and row.instruction_ea == terminal.instruction_ea
-    )
-    if len(terminal_rows) != 1:
-        raise ValueError(
-            "terminal-cycle exact terminal site differs from the inventory"
+    if type(terminal) is TerminalSubjectLocator:
+        terminal_rows = tuple(
+            row for row in candidate_inventory.terminals
+            if row.owner_serial == terminal_binding.serial
+            and row.owner_ref == terminal.block_ref
+            and row.owner_anchor_ea == terminal.anchor_ea
+            and row.terminal_kind is terminal.terminal_kind
+            and row.instruction_ea == terminal.instruction_ea
         )
+        if len(terminal_rows) != 1:
+            raise ValueError(
+                "terminal-cycle exact terminal site differs from the inventory"
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -5259,7 +6007,7 @@ class PreparationAuthorityReceipt:
     generic_gate_facts_digest: str | None = None
     source_route_authority_id: str | None = None
     projected_route_realization_id: str | None = None
-    corridor_coverage_forecast: CorridorCoverageForecast | None = None
+    corridor_coverage_forecast: CorridorCoverageForecastAuthority | None = None
     retirement_candidate_catalog: RetirementCandidateCatalog | None = None
     # The receipt remains constructor-closed.  The transaction package uses
     # ``mint`` below after it has completed both inventory walks; callers
@@ -5299,12 +6047,15 @@ class PreparationAuthorityReceipt:
             if self.retirement_candidate_catalog.source_generation != self.source_generation:
                 raise ValueError("receipt retirement candidate catalog generation differs from source")
         if self.corridor_coverage_forecast is not None:
-            if type(self.corridor_coverage_forecast) is not CorridorCoverageForecast:
-                raise TypeError("corridor_coverage_forecast must be CorridorCoverageForecast or None")
+            if type(self.corridor_coverage_forecast) not in (
+                CorridorCoverageForecast, DefaultGapInfeasibilityForecast,
+            ):
+                raise TypeError("corridor_coverage_forecast must be a closed corridor forecast or None")
             self.corridor_coverage_forecast.__post_init__()
-            if self.corridor_coverage_forecast.plan_id != self.plan_id:
+            forecast = corridor_base_forecast(self.corridor_coverage_forecast)
+            if forecast.plan_id != self.plan_id:
                 raise ValueError("receipt corridor forecast belongs to a foreign plan")
-            if self.corridor_coverage_forecast.source_generation != self.source_generation:
+            if forecast.source_generation != self.source_generation:
                 raise ValueError("receipt corridor forecast generation differs from source")
         _generation(self.source_generation, "source_generation")
         _generation(self.candidate_generation, "candidate_generation")
@@ -5450,7 +6201,7 @@ class DerivedUnflattenPreparationInputs:
     patch_step_facts: tuple[PatchStepEvidencePayload, ...]
     preparation_metrics: PreparationBuildMetrics
     phase_build_metrics: PhaseBuildMetrics
-    corridor_coverage_phase_result: CorridorCoveragePhaseResult | None = None
+    corridor_coverage_phase_result: CorridorCoveragePhaseResultAuthority | None = None
     detached_dead_handler_component_source_results: tuple[DetachedDeadHandlerComponentSourceResult, ...] = ()
     detached_dead_handler_component_phase_results: tuple[DetachedDeadHandlerComponentPhaseResult, ...] = ()
     terminal_cycle_phase_results: tuple[TerminalCyclePhaseResult, ...] = ()
@@ -5489,11 +6240,15 @@ class DerivedUnflattenPreparationInputs:
             raise ValueError("projected topology reference subject partition differs")
         phase = self.phase_build_metrics.phase
         if phase is UnflattenAuthorityPhase.PROJECTED_PREFLIGHT:
-            if reference is not self.candidate_inventory:
-                raise ValueError("projected phase must reference its candidate inventory")
+            if reference != self.candidate_inventory:
+                raise ValueError("projected phase must match its candidate inventory")
             if reference.generation != self.candidate_inventory.generation:
                 raise ValueError("projected topology reference generation differs from candidate")
-        forecast = self.proposal.corridor_coverage_forecast
+        forecast_authority = self.proposal.corridor_coverage_forecast
+        forecast = (
+            corridor_base_forecast(forecast_authority)
+            if forecast_authority is not None else None
+        )
         if forecast is not None and not (
             forecast.function_ea == self.source_inventory.function_ea
             and forecast.function_ea == self.candidate_inventory.function_ea
@@ -5531,12 +6286,15 @@ class DerivedUnflattenPreparationInputs:
         if type(self.phase_build_metrics) is not PhaseBuildMetrics:
             raise TypeError("phase_build_metrics must be PhaseBuildMetrics")
         if self.corridor_coverage_phase_result is not None:
-            if type(self.corridor_coverage_phase_result) is not CorridorCoveragePhaseResult:
-                raise TypeError("corridor_coverage_phase_result must be CorridorCoveragePhaseResult or None")
-            result = self.corridor_coverage_phase_result
-            result.__post_init__()
-            if forecast is None or result.forecast_id != forecast.forecast_id:
+            if type(self.corridor_coverage_phase_result) not in (
+                CorridorCoveragePhaseResult, DefaultGapInfeasibilityPhaseResult,
+            ):
+                raise TypeError("corridor_coverage_phase_result must be a closed corridor phase result or None")
+            if forecast_authority is None:
                 raise ValueError("corridor phase result is foreign to the proposal forecast")
+            forecast, result = _validate_corridor_authority_pair(
+                forecast_authority, self.corridor_coverage_phase_result,
+            )
             if result.phase is not self.phase_build_metrics.phase:
                 raise ValueError("corridor phase result phase differs from inputs")
             if (
@@ -5567,14 +6325,18 @@ class DerivedUnflattenPreparationInputs:
                 or item.source_generation != self.source_inventory.generation
                 or self.corridor_coverage_phase_result is None
                 or item.corridor_forecast_id
-                != self.corridor_coverage_phase_result.forecast_id
+                != corridor_base_phase_result(
+                    self.corridor_coverage_phase_result,
+                ).forecast_id
             ):
                 raise ValueError("detached source result is not sealed to preparation authority")
             if (
                 self.phase_build_metrics.phase
                 is UnflattenAuthorityPhase.PROJECTED_PREFLIGHT
                 and item.corridor_coverage_result_id
-                != self.corridor_coverage_phase_result.result_id
+                != corridor_base_phase_result(
+                    self.corridor_coverage_phase_result,
+                ).result_id
             ):
                 raise ValueError(
                     "projected detached source result differs from its minting corridor result"
@@ -5662,7 +6424,10 @@ class DerivedUnflattenPreparationInputs:
             or self.preparation_receipt.retirement_candidate_catalog is not None
         ):
             raise ValueError("retirement candidate catalog is present without a claim")
-        if self.preparation_receipt.corridor_coverage_forecast != self.proposal.corridor_coverage_forecast:
+        if not _same_corridor_forecast_content(
+            self.preparation_receipt.corridor_coverage_forecast,
+            self.proposal.corridor_coverage_forecast,
+        ):
             raise ValueError("preparation receipt corridor forecast differs from proposal")
         validate_preparation_build_metrics(self.preparation_metrics)
         validate_phase_build_metrics(self.phase_build_metrics)
@@ -5728,7 +6493,7 @@ class SemanticSafetyCase:
     source_bindings: tuple[PhaseSubjectBinding, ...] = ()
     retirement_candidate_catalog: RetirementCandidateCatalog | None = None
     retirement_phase_result: RetirementPhaseResult | None = None
-    corridor_coverage_phase_result: CorridorCoveragePhaseResult | None = None
+    corridor_coverage_phase_result: CorridorCoveragePhaseResultAuthority | None = None
     detached_dead_handler_component_source_results: tuple[DetachedDeadHandlerComponentSourceResult, ...] = ()
     detached_dead_handler_component_phase_results: tuple[DetachedDeadHandlerComponentPhaseResult, ...] = ()
     terminal_cycle_phase_results: tuple[TerminalCyclePhaseResult, ...] = ()
@@ -5742,7 +6507,11 @@ class SemanticSafetyCase:
         PreparationAuthorityReceipt.__post_init__(self.preparation_receipt)
         validate_semantic_graph_inventory(self.source_inventory)
         validate_semantic_graph_inventory(self.candidate_inventory)
-        forecast = self.preparation_receipt.corridor_coverage_forecast
+        forecast_authority = self.preparation_receipt.corridor_coverage_forecast
+        forecast = (
+            corridor_base_forecast(forecast_authority)
+            if forecast_authority is not None else None
+        )
         if forecast is not None and forecast.function_ea != self.source_inventory.function_ea:
             raise ValueError("case corridor forecast function EA differs from source inventory")
         if self.retirement_candidate_catalog is not None and type(self.retirement_candidate_catalog) is not RetirementCandidateCatalog:
@@ -5754,12 +6523,15 @@ class SemanticSafetyCase:
         elif self.preparation_receipt.retirement_candidate_catalog is not None:
             raise ValueError("receipt retirement candidate catalog requires a case catalog")
         if self.corridor_coverage_phase_result is not None:
-            if type(self.corridor_coverage_phase_result) is not CorridorCoveragePhaseResult:
-                raise TypeError("corridor_coverage_phase_result must be CorridorCoveragePhaseResult or None")
-            self.corridor_coverage_phase_result.__post_init__()
-            if forecast is None or self.corridor_coverage_phase_result.forecast_id != forecast.forecast_id:
+            if type(self.corridor_coverage_phase_result) not in (
+                CorridorCoveragePhaseResult, DefaultGapInfeasibilityPhaseResult,
+            ):
+                raise TypeError("corridor_coverage_phase_result must be a closed corridor phase result or None")
+            if forecast_authority is None:
                 raise ValueError("case corridor phase result is foreign to receipt forecast")
-            result = self.corridor_coverage_phase_result
+            forecast, result = _validate_corridor_authority_pair(
+                forecast_authority, self.corridor_coverage_phase_result,
+            )
             if (
                 result.phase is not self.phase
                 or result.source_fingerprint != self.source_fingerprint
@@ -5780,8 +6552,13 @@ class SemanticSafetyCase:
         if any(type(item) is not DetachedDeadHandlerComponentSourceResult for item in source_results):
             raise TypeError("case detached source results must be closed")
         source_by_claim: dict[str, DetachedDeadHandlerComponentSourceResult] = {}
+        from .bind import (
+            validate_detached_phase_result,
+            validate_detached_source_result,
+        )
         for item in source_results:
             item.__post_init__()
+            validate_detached_source_result(item)
             if item.claim_id in source_by_claim:
                 raise ValueError("case detached source authority is ambiguous")
             if (
@@ -5789,13 +6566,17 @@ class SemanticSafetyCase:
                 or item.source_generation != self.source_inventory.generation
                 or self.corridor_coverage_phase_result is None
                 or item.corridor_forecast_id
-                != self.corridor_coverage_phase_result.forecast_id
+                != corridor_base_phase_result(
+                    self.corridor_coverage_phase_result,
+                ).forecast_id
             ):
                 raise ValueError("case detached source result has foreign coordinates")
             if (
                 self.phase is UnflattenAuthorityPhase.PROJECTED_PREFLIGHT
                 and item.corridor_coverage_result_id
-                != self.corridor_coverage_phase_result.result_id
+                != corridor_base_phase_result(
+                    self.corridor_coverage_phase_result,
+                ).result_id
             ):
                 raise ValueError("case projected detached source result has foreign corridor authority")
             source_by_claim[item.claim_id] = item
@@ -5807,6 +6588,7 @@ class SemanticSafetyCase:
             raise TypeError("case detached phase results must be closed")
         for item in phase_results:
             item.__post_init__()
+            validate_detached_phase_result(item)
             source_result = source_by_claim.get(item.claim_id)
             if item.accepted and (
                 source_result is None
@@ -5902,6 +6684,43 @@ class SemanticSafetyCase:
             raise TypeError("evidence must contain AuthorityEvidence values")
         if any(type(item) is not AuthorityJustification for item in self.justifications):
             raise TypeError("justifications must contain AuthorityJustification values")
+        # Compact case IDs compose independently sealed child IDs.  Revalidate
+        # every model-owned occurrence behind those IDs exactly once at this
+        # boundary so a stale or validly reminted parent ID cannot conceal a
+        # mutated claim, subject, evidence payload, binding, or justification.
+        # The visited set is construction-local; authority never depends on a
+        # process-global cache or on a digest without its validated object.
+        validated_occurrences: set[int] = set()
+
+        def validate_occurrence(value: object) -> None:
+            if type(value) is tuple:
+                for nested in value:
+                    validate_occurrence(nested)
+                return
+            if (
+                not is_dataclass(value)
+                or type(value).__module__ != __name__
+                or type(value) is SemanticSafetyCase
+            ):
+                return
+            identity = id(value)
+            if identity in validated_occurrences:
+                return
+            validated_occurrences.add(identity)
+            for record_field in fields(value):
+                validate_occurrence(getattr(value, record_field.name))
+            post_init = getattr(type(value), "__post_init__", None)
+            if post_init is not None:
+                post_init(value)
+
+        validate_occurrence(self.claims)
+        validate_occurrence(self.subjects)
+        validate_occurrence(self.bindings)
+        validate_occurrence(self.conditional_relations)
+        validate_occurrence(self.required_obligations)
+        validate_occurrence(self.evidence)
+        validate_occurrence(self.justifications)
+        validate_occurrence(self.obligation_index)
         if tuple(sorted(self.subjects, key=lambda item: item.subject_id)) != self.subjects:
             raise ValueError("subjects must be in canonical subject-id order")
         if tuple(sorted(self.claims, key=lambda item: item.claim_id)) != self.claims:
@@ -6100,7 +6919,6 @@ class UnflattenAuthorityVerdict:
         if self.observed_acceptance is not None:
             if type(self.observed_acceptance) is not ObservedUnflattenAuthorityAccepted:
                 raise TypeError("observed_acceptance must be ObservedUnflattenAuthorityAccepted or None")
-            self.observed_acceptance.__post_init__()
             if (
                 not self.accepted
                 or self.phase is not UnflattenAuthorityPhase.OBSERVED_POST_APPLY
@@ -6111,7 +6929,6 @@ class UnflattenAuthorityVerdict:
         if self.loss_ledger is not None:
             if type(self.loss_ledger) is not SemanticLossLedger:
                 raise TypeError("loss_ledger must be SemanticLossLedger or None")
-            SemanticLossLedger.__post_init__(self.loss_ledger)
             if (
                 self.safety_case is None
                 or self.loss_ledger.case is not self.safety_case
@@ -6210,7 +7027,6 @@ class PreparedUnflattenAuthority:
             raise TypeError("projected_case must be SemanticSafetyCase")
         if type(self.projected_loss_ledger) is not SemanticLossLedger:
             raise TypeError("projected_loss_ledger must be SemanticLossLedger")
-        SemanticLossLedger.__post_init__(self.projected_loss_ledger)
         if self.projected_loss_ledger.case is not self.projected_case:
             raise ValueError("prepared projected loss ledger must own the exact projected case")
         if type(self.source_inventory) is not SemanticGraphInventory:
@@ -6221,7 +7037,6 @@ class PreparedUnflattenAuthority:
         if self.source_inputs is not None and type(self.source_inputs) is not DerivedUnflattenPreparationInputs:
             raise TypeError("source_inputs must be DerivedUnflattenPreparationInputs or None")
         if self.source_inputs is not None:
-            DerivedUnflattenPreparationInputs.__post_init__(self.source_inputs)
             if self.source_route_authority is not self.source_inputs.source_route_authority:
                 raise ValueError("prepared source route authority must be the exact input object")
             if self.projected_route_realization is not self.source_inputs.projected_route_realization:
@@ -6304,9 +7119,44 @@ class PreparedUnflattenAuthority:
             for ref, serial in plan_coordinate_rows
             if ref not in catalog_refs
         )
+        dag_endpoint_subjects = tuple({
+            subject.subject_id: subject
+            for claim in self.proposal.claims
+            if type(claim) is EquivalentSemanticRouteClaim
+            for subject in claim.dag_endpoint_subjects
+        }.values())
+        logical_exit_coordinates = _claimed_logical_function_exit_coordinates(
+            self.proposal
+        )
+        dag_endpoint_coordinates = {
+            (subject.locator.block_ref, subject.locator.serial)
+            for subject in dag_endpoint_subjects
+        }
+        if not logical_exit_coordinates <= set(extra_coordinates):
+            raise ValueError(
+                "owning plan source coordinates omit a selected logical function exit"
+            )
         if any(
             type(ref) is not LogicalBlockRef
-            or not _is_unowned_structural_stop_row(inventory_blocks[serial])
+            or (
+                (ref, serial) not in logical_exit_coordinates
+                and not _is_unowned_structural_stop_row(inventory_blocks[serial])
+                and not (
+                    _is_exact_logical_function_exit_row(inventory_blocks[serial])
+                    and inventory_blocks[serial].predecessor_serials
+                    and all(
+                        predecessor in inventory_blocks
+                        and serial
+                        in inventory_blocks[predecessor].successor_serials
+                        for predecessor
+                        in inventory_blocks[serial].predecessor_serials
+                    )
+                )
+            )
+            or (
+                (ref, serial) in logical_exit_coordinates
+                and not _is_exact_logical_function_exit_row(inventory_blocks[serial])
+            )
             for ref, serial in extra_coordinates
         ):
             raise ValueError(
@@ -6318,10 +7168,29 @@ class PreparedUnflattenAuthority:
             (binding.block_ref, binding.serial)
             for binding in self.source_bindings
             if binding.status is SubjectBindingStatus.UNIQUE
-            and binding.block_ref is not None and binding.serial is not None
+            and binding.block_ref in catalog_refs and binding.serial is not None
         )
         if frozenset(source_binding_coordinates) != frozenset(expected_coordinates):
             raise ValueError("source bindings do not cover the proposal catalog")
+        endpoint_bindings = {
+            binding.subject.subject_id: binding
+            for binding in self.source_bindings
+            if binding.subject.role is SemanticSubjectRole.SEMANTIC_DAG_ENDPOINT
+        }
+        if set(endpoint_bindings) != {
+            subject.subject_id for subject in dag_endpoint_subjects
+        } or any(
+            binding.status is not SubjectBindingStatus.UNIQUE
+            or binding.block_ref != subject.locator.block_ref
+            or binding.serial != subject.locator.serial
+            or binding.anchor_ea is not None
+            or binding.native_instruction_eas
+            for subject in dag_endpoint_subjects
+            for binding in (endpoint_bindings[subject.subject_id],)
+        ):
+            raise ValueError(
+                "source bindings do not exactly cover selected logical DAG endpoints"
+            )
         source_subject_ids = self.projected_case.source_subject_ids
         if source_subject_ids != self.source_inventory.source_subject_ids:
             raise ValueError("prepared case/source inventory partition differs")
@@ -6379,10 +7248,10 @@ class BoundUnflattenAuthority:
         _id(self.binding_id, "binding_id")
         if type(self.prepared) is not PreparedUnflattenAuthority:
             raise TypeError("prepared must be PreparedUnflattenAuthority")
-        # This carrier crosses the public commit boundary.  Revalidate the
-        # nested preparation here so low-level fingerprint/generation drift
-        # cannot survive inside an otherwise nominally valid bound authority.
-        PreparedUnflattenAuthority.__post_init__(self.prepared)
+        # The binder consumes the exact prepared occurrence.  Its public
+        # boundary validates the patch binding and identity relations; nested
+        # semantic content was sealed during preparation and must not be
+        # recursively replayed by each carrier construction.
         if type(self.attempt_id) is not TransactionAttemptId:
             raise TypeError("attempt_id must be TransactionAttemptId")
         _text(self.session_id, "session_id")
@@ -6429,6 +7298,7 @@ class ObservedUnflattenAuthorityAccepted:
     """One accepted observed realization closed over its bound authority."""
 
     bound_authority: BoundUnflattenAuthority
+    observed_patch_binding: ObservedPatchBinding
     projected_ledger: SemanticLossLedger
     observed_case: SemanticSafetyCase
     observed_ledger: SemanticLossLedger
@@ -6437,23 +7307,24 @@ class ObservedUnflattenAuthorityAccepted:
     def __post_init__(self) -> None:
         if type(self.bound_authority) is not BoundUnflattenAuthority:
             raise TypeError("bound_authority must be BoundUnflattenAuthority")
-        BoundUnflattenAuthority.__post_init__(self.bound_authority)
+        if type(self.observed_patch_binding) is not ObservedPatchBinding:
+            raise TypeError("observed_patch_binding must be ObservedPatchBinding")
+        validate_observed_patch_binding(self.observed_patch_binding)
+        if self.observed_patch_binding.bound_plan is not self.bound_authority.patch_binding:
+            raise ValueError(
+                "observed patch binding must retain exact bound patch authority"
+            )
         prepared = self.bound_authority.prepared
-        PreparedUnflattenAuthority.__post_init__(prepared)
         if self.projected_ledger is not prepared.projected_loss_ledger:
             raise ValueError("observed acceptance must retain exact projected ledger")
-        SemanticLossLedger.__post_init__(self.projected_ledger)
         if type(self.observed_case) is not SemanticSafetyCase:
             raise TypeError("observed_case must be SemanticSafetyCase")
-        SemanticSafetyCase.__post_init__(self.observed_case)
         if type(self.observed_ledger) is not SemanticLossLedger:
             raise TypeError("observed_ledger must be SemanticLossLedger")
-        SemanticLossLedger.__post_init__(self.observed_ledger)
         if self.observed_ledger.case is not self.observed_case:
             raise ValueError("observed ledger must retain exact observed case")
         if type(self.delta) is not ObservedSemanticLossDelta:
             raise TypeError("delta must be ObservedSemanticLossDelta")
-        ObservedSemanticLossDelta.__post_init__(self.delta)
         if (
             self.observed_case.authority_id != prepared.authority_id
             or self.observed_case.source_fingerprint != prepared.source_fingerprint
@@ -7254,6 +8125,103 @@ class DirectRouteRealization:
 
 
 @dataclass(frozen=True, slots=True, weakref_slot=True, init=False)
+class SharedCarrierSourceBypassRouteRealization:
+    """One source-specific bypass of an exactly shared state-carrier feeder.
+
+    The carrier feeder remains live for its other predecessors.  This relation
+    therefore names both the semantic proof source and the shared physical
+    carrier corridor instead of pretending the source-owned redirect is the
+    ordinary feeder-owned direct realization.
+    """
+
+    proof_source: AnchoredBlockRef
+    shared_feeder: AnchoredBlockRef
+    comparison_entry: AnchoredBlockRef
+    semantic_target: AnchoredBlockRef
+    relation_id: str
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        del args, kwargs
+        raise TypeError("shared-carrier source-bypass realizations are binder-owned")
+
+    def __post_init__(self) -> None:
+        refs = (
+            self.proof_source,
+            self.shared_feeder,
+            self.comparison_entry,
+            self.semantic_target,
+        )
+        _validate_route_ref_coherence(refs)
+        if len({item.ref for item in refs}) != 4:
+            raise ValueError("shared-carrier source-bypass roles must be distinct")
+        _id(self.relation_id, "relation_id")
+        expected = route_realization_id((
+            "shared_carrier_source_bypass",
+            self.proof_source,
+            self.shared_feeder,
+            self.comparison_entry,
+            self.semantic_target,
+        ))
+        if self.relation_id != expected:
+            raise ValueError(
+                "relation_id does not match shared-carrier source-bypass content"
+            )
+
+    __copy__ = _reject_route_copy
+    __deepcopy__ = _reject_route_copy
+    __reduce__ = _reject_route_copy
+
+
+@dataclass(frozen=True, slots=True, weakref_slot=True, init=False)
+class RetainedPrefixRouteRealization:
+    """One preserved proof-source edge followed by a rewritten delivery edge.
+
+    Some state writes must retain their single-successor carrier/glue block so
+    its non-state semantics still execute.  The physical patch therefore owns
+    the delivery block's outgoing edge, while the canonical proof remains
+    anchored at its predecessor state write.  Keep both roles explicit instead
+    of pretending either block owns the whole relation.
+    """
+
+    proof_source: AnchoredBlockRef
+    delivery_owner: AnchoredBlockRef
+    old_target: AnchoredBlockRef
+    new_target: AnchoredBlockRef
+    relation_id: str
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        del args, kwargs
+        raise TypeError("retained-prefix route realizations are binder-owned")
+
+    def __post_init__(self) -> None:
+        refs = (
+            self.proof_source,
+            self.delivery_owner,
+            self.old_target,
+            self.new_target,
+        )
+        _validate_route_ref_coherence(refs)
+        if self.proof_source.ref == self.delivery_owner.ref:
+            raise ValueError("retained-prefix proof source and delivery owner must differ")
+        if self.old_target.ref == self.new_target.ref:
+            raise ValueError("retained-prefix old and new targets must differ")
+        _id(self.relation_id, "relation_id")
+        expected = route_realization_id((
+            "retained_prefix",
+            self.proof_source,
+            self.delivery_owner,
+            self.old_target,
+            self.new_target,
+        ))
+        if self.relation_id != expected:
+            raise ValueError("relation_id does not match retained-prefix content")
+
+    __copy__ = _reject_route_copy
+    __deepcopy__ = _reject_route_copy
+    __reduce__ = _reject_route_copy
+
+
+@dataclass(frozen=True, slots=True, weakref_slot=True, init=False)
 class LoweredConditionalRouteRealization:
     feeder: AnchoredBlockRef
     proof_source: AnchoredBlockRef
@@ -7487,6 +8455,37 @@ class ClonedSemanticPrefix:
 
 
 @dataclass(frozen=True, slots=True, weakref_slot=True, init=False)
+class FoldedConditionalRouteRealization:
+    """One exact two-arm conditional folded to its selected existing arm."""
+
+    feeder: AnchoredBlockRef
+    selected_target: AnchoredBlockRef
+    discarded_target: AnchoredBlockRef
+    relation_id: str
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        del args, kwargs
+        raise TypeError("folded conditional realizations are binder-owned")
+
+    def __post_init__(self) -> None:
+        refs = (self.feeder, self.selected_target, self.discarded_target)
+        _validate_route_ref_coherence(refs)
+        if len({item.ref for item in refs}) != 3:
+            raise ValueError("folded conditional roles must be distinct")
+        _id(self.relation_id, "relation_id")
+        expected = route_realization_id((
+            "folded_conditional", self.feeder,
+            self.selected_target, self.discarded_target,
+        ))
+        if self.relation_id != expected:
+            raise ValueError("relation_id does not match folded conditional")
+
+    __copy__ = _reject_route_copy
+    __deepcopy__ = _reject_route_copy
+    __reduce__ = _reject_route_copy
+
+
+@dataclass(frozen=True, slots=True, weakref_slot=True, init=False)
 class TwoArmDirectBranchRouteRealization:
     feeder: AnchoredBlockRef
     source_rewritten_arm: AnchoredBlockRef
@@ -7617,11 +8616,88 @@ class ClonedRouteCorridorRealization:
 
 
 @dataclass(frozen=True, slots=True, weakref_slot=True, init=False)
+class ClonedCarrierRouteCorridorRealization:
+    """Exact carrier relation with distinct semantic and physical sources."""
+
+    proof_source: AnchoredBlockRef
+    physical_feeder: AnchoredBlockRef
+    comparison_entry: AnchoredBlockRef
+    source_corridor: tuple[AnchoredBlockRef, ...]
+    cloned_corridor: tuple[AnchoredBlockRef, ...]
+    semantic_target: AnchoredBlockRef
+    semantic_prefixes: tuple[ClonedSemanticPrefix, ...]
+    creation_spec_digests: tuple[tuple[PlanBlockRef, str], ...]
+    relation_id: str
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        del args, kwargs
+        raise TypeError("carrier corridor realizations are binder-owned")
+
+    def __post_init__(self) -> None:
+        refs = (
+            self.proof_source, self.physical_feeder, self.comparison_entry,
+            self.semantic_target, *self.source_corridor,
+            *self.cloned_corridor,
+        )
+        _validate_route_ref_coherence(refs)
+        if (
+            type(self.source_corridor) is not tuple
+            or type(self.cloned_corridor) is not tuple
+            or type(self.semantic_prefixes) is not tuple
+        ):
+            raise TypeError("carrier corridors and prefixes must be exact tuples")
+        if (
+            self.source_corridor != (self.physical_feeder,)
+            or len(self.cloned_corridor) != 1
+            or len(self.semantic_prefixes) != 1
+        ):
+            raise ValueError("exact carrier relation requires one feeder clone")
+        if self.proof_source == self.physical_feeder:
+            raise ValueError("carrier proof source and physical feeder must differ")
+        primary_roles = (
+            self.proof_source, self.physical_feeder,
+            self.comparison_entry, self.semantic_target,
+            *self.cloned_corridor,
+        )
+        if len(set(primary_roles)) != len(primary_roles):
+            raise ValueError("carrier relation roles are incoherent")
+        if set(self.source_corridor) & set(self.cloned_corridor):
+            raise ValueError("carrier source and clone corridors must be disjoint")
+        prefix = self.semantic_prefixes[0]
+        if type(prefix) is not ClonedSemanticPrefix:
+            raise TypeError("carrier semantic prefix must be exact")
+        _validate_creation_spec_rows(
+            self.creation_spec_digests, (self.cloned_corridor[0].ref,),
+        )
+        if (
+            prefix.ordinal != 0
+            or prefix.source_owner != self.physical_feeder
+            or prefix.clone_owner != self.cloned_corridor[0]
+            or prefix.projected_successor != self.semantic_target
+            or prefix.creation_spec_row != self.creation_spec_digests[0]
+        ):
+            raise ValueError("carrier prefix does not follow the exact feeder clone")
+        _id(self.relation_id, "relation_id")
+        expected = route_realization_id((
+            "cloned_carrier_route_corridor", self.proof_source,
+            self.physical_feeder, self.comparison_entry,
+            self.source_corridor, self.cloned_corridor, self.semantic_target,
+            self.semantic_prefixes, self.creation_spec_digests,
+        ))
+        if self.relation_id != expected:
+            raise ValueError("relation_id does not match carrier corridor")
+
+    __copy__ = _reject_route_copy
+    __deepcopy__ = _reject_route_copy
+    __reduce__ = _reject_route_copy
+
+
+@dataclass(frozen=True, slots=True, weakref_slot=True, init=False)
 class ProjectedRouteRealizationRow:
     claim_id: str
     proof_id: str
     route_subject_id: str
-    relation: DirectRouteRealization | LoweredConditionalRouteRealization | ClonedConditionalRouteRealization | TwoArmDirectBranchRouteRealization | BranchFallthroughHelperRouteRealization | ClonedRouteCorridorRealization
+    relation: DirectRouteRealization | SharedCarrierSourceBypassRouteRealization | RetainedPrefixRouteRealization | LoweredConditionalRouteRealization | ClonedConditionalRouteRealization | FoldedConditionalRouteRealization | TwoArmDirectBranchRouteRealization | BranchFallthroughHelperRouteRealization | ClonedRouteCorridorRealization | ClonedCarrierRouteCorridorRealization
     site_preservation: ProjectedRouteSitePreservation
     plan_step_index: int
     plan_step_type: PatchStepKind
@@ -7638,7 +8714,7 @@ class ProjectedRouteRealizationRow:
 
     def __post_init__(self) -> None:
         _id(self.claim_id, "claim_id"); _id(self.proof_id, "proof_id"); _id(self.route_subject_id, "route_subject_id")
-        if type(self.relation) not in {DirectRouteRealization, LoweredConditionalRouteRealization, ClonedConditionalRouteRealization, TwoArmDirectBranchRouteRealization, BranchFallthroughHelperRouteRealization, ClonedRouteCorridorRealization}:
+        if type(self.relation) not in {DirectRouteRealization, SharedCarrierSourceBypassRouteRealization, RetainedPrefixRouteRealization, LoweredConditionalRouteRealization, ClonedConditionalRouteRealization, FoldedConditionalRouteRealization, TwoArmDirectBranchRouteRealization, BranchFallthroughHelperRouteRealization, ClonedRouteCorridorRealization, ClonedCarrierRouteCorridorRealization}:
             raise TypeError("relation must be a closed route realization")
         self.relation.__post_init__()
         if type(self.site_preservation) is not ProjectedRouteSitePreservation:
@@ -7656,35 +8732,55 @@ class ProjectedRouteRealizationRow:
 
     @property
     def source_ref(self) -> CfgBlockRef:
-        if type(self.relation) in {DirectRouteRealization, LoweredConditionalRouteRealization, ClonedConditionalRouteRealization, TwoArmDirectBranchRouteRealization, BranchFallthroughHelperRouteRealization}:
+        if type(self.relation) is SharedCarrierSourceBypassRouteRealization:
+            return self.relation.proof_source.ref
+        if type(self.relation) is RetainedPrefixRouteRealization:
+            return self.relation.delivery_owner.ref
+        if type(self.relation) in {DirectRouteRealization, LoweredConditionalRouteRealization, ClonedConditionalRouteRealization, FoldedConditionalRouteRealization, TwoArmDirectBranchRouteRealization, BranchFallthroughHelperRouteRealization}:
             return self.relation.feeder.ref
         if type(self.relation) is ClonedRouteCorridorRealization:
             return self.relation.predecessor.ref
+        if type(self.relation) is ClonedCarrierRouteCorridorRealization:
+            return self.relation.proof_source.ref
         raise TypeError("unknown route relation")
 
     @property
     def old_target_ref(self) -> CfgBlockRef:
+        if type(self.relation) is SharedCarrierSourceBypassRouteRealization:
+            return self.relation.shared_feeder.ref
+        if type(self.relation) is RetainedPrefixRouteRealization:
+            return self.relation.old_target.ref
         if type(self.relation) is DirectRouteRealization:
             return self.relation.old_target.ref
         if type(self.relation) is LoweredConditionalRouteRealization:
             return self.relation.old_target.ref
         if type(self.relation) is ClonedConditionalRouteRealization:
             return self.relation.old_target.ref
+        if type(self.relation) is FoldedConditionalRouteRealization:
+            return self.relation.discarded_target.ref
         if type(self.relation) is TwoArmDirectBranchRouteRealization:
             return self.relation.source_rewritten_arm.ref
         if type(self.relation) is BranchFallthroughHelperRouteRealization:
             return self.relation.source_fallthrough.ref
         if type(self.relation) is ClonedRouteCorridorRealization:
             return self.relation.proof_source.ref
+        if type(self.relation) is ClonedCarrierRouteCorridorRealization:
+            return self.relation.comparison_entry.ref
         raise TypeError("unknown route relation")
 
     @property
     def new_target_ref(self) -> CfgBlockRef | None:
+        if type(self.relation) is SharedCarrierSourceBypassRouteRealization:
+            return self.relation.semantic_target.ref
+        if type(self.relation) is RetainedPrefixRouteRealization:
+            return self.relation.new_target.ref
         if type(self.relation) is DirectRouteRealization:
             return self.relation.new_target.ref
         if type(self.relation) is TwoArmDirectBranchRouteRealization:
             return self.relation.projected_replacement_arm.ref
-        if type(self.relation) in {BranchFallthroughHelperRouteRealization, ClonedRouteCorridorRealization}:
+        if type(self.relation) is FoldedConditionalRouteRealization:
+            return self.relation.selected_target.ref
+        if type(self.relation) in {BranchFallthroughHelperRouteRealization, ClonedRouteCorridorRealization, ClonedCarrierRouteCorridorRealization}:
             return self.relation.semantic_target.ref
         if type(self.relation) in {LoweredConditionalRouteRealization, ClonedConditionalRouteRealization}:
             return None
@@ -7692,14 +8788,16 @@ class ProjectedRouteRealizationRow:
 
     @property
     def realization_kind(self) -> RouteRealizationKind:
-        if type(self.relation) is DirectRouteRealization:
+        if type(self.relation) in {DirectRouteRealization, SharedCarrierSourceBypassRouteRealization, RetainedPrefixRouteRealization}:
             return RouteRealizationKind.DIRECT_REDIRECT
         if type(self.relation) in {
             LoweredConditionalRouteRealization, ClonedConditionalRouteRealization,
             TwoArmDirectBranchRouteRealization, BranchFallthroughHelperRouteRealization,
         }:
             return RouteRealizationKind.CONDITIONAL_REDIRECT
-        if type(self.relation) is ClonedRouteCorridorRealization:
+        if type(self.relation) is FoldedConditionalRouteRealization:
+            return RouteRealizationKind.FOLDED
+        if type(self.relation) in {ClonedRouteCorridorRealization, ClonedCarrierRouteCorridorRealization}:
             return RouteRealizationKind.HELPER_CORRIDOR
         raise TypeError("unknown route relation")
 
@@ -7711,7 +8809,7 @@ class ProjectedRouteRealizationRow:
             return (ConditionalRoleCoordinate(SemanticEdgeRole.CONDITIONAL_FALLTHROUGH, self.relation.untouched_arm.anchor_ea), ConditionalRoleCoordinate(SemanticEdgeRole.CONDITIONAL_TAKEN, self.relation.projected_replacement_arm.anchor_ea))
         if type(self.relation) is BranchFallthroughHelperRouteRealization:
             return (ConditionalRoleCoordinate(SemanticEdgeRole.CONDITIONAL_FALLTHROUGH, self.relation.helper.anchor_ea), ConditionalRoleCoordinate(SemanticEdgeRole.CONDITIONAL_TAKEN, self.relation.untouched_conditional_arm.anchor_ea))
-        if type(self.relation) in {DirectRouteRealization, ClonedRouteCorridorRealization}:
+        if type(self.relation) in {DirectRouteRealization, SharedCarrierSourceBypassRouteRealization, RetainedPrefixRouteRealization, FoldedConditionalRouteRealization, ClonedRouteCorridorRealization, ClonedCarrierRouteCorridorRealization}:
             return ()
         raise TypeError("unknown route relation")
 
@@ -7723,8 +8821,11 @@ class ProjectedRouteRealizationRow:
             return (self.relation.helper.ref,)
         if type(self.relation) is ClonedRouteCorridorRealization:
             return tuple(item.ref for item in self.relation.cloned_corridor)
+        if type(self.relation) is ClonedCarrierRouteCorridorRealization:
+            return tuple(item.ref for item in self.relation.cloned_corridor)
         if type(self.relation) in {
-            DirectRouteRealization, LoweredConditionalRouteRealization,
+            DirectRouteRealization, SharedCarrierSourceBypassRouteRealization, RetainedPrefixRouteRealization,
+            LoweredConditionalRouteRealization, FoldedConditionalRouteRealization,
             TwoArmDirectBranchRouteRealization,
         }:
             return ()
@@ -7734,10 +8835,11 @@ class ProjectedRouteRealizationRow:
     def creation_spec_digests(self) -> tuple[tuple[PlanBlockRef, str], ...]:
         if type(self.relation) is ClonedConditionalRouteRealization:
             return self.relation.creation_spec_digests
-        if type(self.relation) in {BranchFallthroughHelperRouteRealization, ClonedRouteCorridorRealization}:
+        if type(self.relation) in {BranchFallthroughHelperRouteRealization, ClonedRouteCorridorRealization, ClonedCarrierRouteCorridorRealization}:
             return self.relation.creation_spec_digests
         if type(self.relation) in {
-            DirectRouteRealization, LoweredConditionalRouteRealization,
+            DirectRouteRealization, SharedCarrierSourceBypassRouteRealization, RetainedPrefixRouteRealization,
+            LoweredConditionalRouteRealization, FoldedConditionalRouteRealization,
             TwoArmDirectBranchRouteRealization,
         }:
             return ()
@@ -7808,6 +8910,20 @@ class ProjectedRouteRealization:
                 relation_refs = (
                     row.relation.feeder, row.relation.old_target, row.relation.new_target,
                 )
+            elif type(row.relation) is SharedCarrierSourceBypassRouteRealization:
+                relation_refs = (
+                    row.relation.proof_source,
+                    row.relation.shared_feeder,
+                    row.relation.comparison_entry,
+                    row.relation.semantic_target,
+                )
+            elif type(row.relation) is RetainedPrefixRouteRealization:
+                relation_refs = (
+                    row.relation.proof_source,
+                    row.relation.delivery_owner,
+                    row.relation.old_target,
+                    row.relation.new_target,
+                )
             elif type(row.relation) is LoweredConditionalRouteRealization:
                 relation_refs = (
                     row.relation.feeder, row.relation.proof_source, row.relation.old_target,
@@ -7819,12 +8935,30 @@ class ProjectedRouteRealization:
                     row.relation.replacement_clone, row.relation.fallthrough_helper,
                     *(arm.target for arm in row.relation.arms),
                 )
+            elif type(row.relation) is FoldedConditionalRouteRealization:
+                relation_refs = (
+                    row.relation.feeder,
+                    row.relation.selected_target,
+                    row.relation.discarded_target,
+                )
             elif type(row.relation) is TwoArmDirectBranchRouteRealization:
                 relation_refs = (row.relation.feeder, row.relation.source_rewritten_arm, row.relation.projected_replacement_arm, row.relation.untouched_arm)
             elif type(row.relation) is BranchFallthroughHelperRouteRealization:
                 relation_refs = (row.relation.feeder, row.relation.source_fallthrough, row.relation.untouched_conditional_arm, row.relation.helper, row.relation.semantic_target)
             elif type(row.relation) is ClonedRouteCorridorRealization:
                 relation_refs = (row.relation.predecessor, row.relation.proof_source, row.relation.descriptor_old_target, row.relation.terminal_continuation, row.relation.semantic_target, *row.relation.source_corridor, *row.relation.cloned_corridor, *(item.source_owner for item in row.relation.semantic_prefixes), *(item.clone_owner for item in row.relation.semantic_prefixes), *(item.projected_successor for item in row.relation.semantic_prefixes))
+            elif type(row.relation) is ClonedCarrierRouteCorridorRealization:
+                relation_refs = (
+                    row.relation.proof_source,
+                    row.relation.physical_feeder,
+                    row.relation.comparison_entry,
+                    row.relation.semantic_target,
+                    *row.relation.source_corridor,
+                    *row.relation.cloned_corridor,
+                    *(item.source_owner for item in row.relation.semantic_prefixes),
+                    *(item.clone_owner for item in row.relation.semantic_prefixes),
+                    *(item.projected_successor for item in row.relation.semantic_prefixes),
+                )
             else:
                 raise TypeError("unknown projected route relation")
             for anchored in relation_refs:
@@ -7948,5 +9082,5 @@ ProjectedRouteRealizationResult: TypeAlias = ProjectedRouteRealizationAccepted |
 __all__ = [
     name for name, value in tuple(globals().items())
     if (isinstance(value, type) and (getattr(value, "__module__", None) == __name__))
-    or name in {"SemanticSubjectLocator", "AuthorityEvidencePayload", "ProducerUnflattenClaim", "TransactionDerivedUnflattenClaim", "UnflattenClaim", "CLONED_SEMANTIC_OBSERVATION_SCHEMA", "CLONED_SEMANTIC_ORIGIN_SCHEMA", "CLONED_SEMANTIC_PREFIX_SCHEMA", "cloned_semantic_observation_digest", "cloned_semantic_instruction_origin_id", "cloned_semantic_prefix_id"}
+    or name in {"SemanticSubjectLocator", "AuthorityEvidencePayload", "ProducerUnflattenClaim", "TransactionDerivedUnflattenClaim", "UnflattenClaim", "CorridorCoverageForecastAuthority", "CorridorCoveragePhaseResultAuthority", "corridor_base_forecast", "corridor_base_phase_result", "CLONED_SEMANTIC_OBSERVATION_SCHEMA", "CLONED_SEMANTIC_ORIGIN_SCHEMA", "CLONED_SEMANTIC_PREFIX_SCHEMA", "cloned_semantic_observation_digest", "cloned_semantic_instruction_origin_id", "cloned_semantic_prefix_id"}
 ]

@@ -359,6 +359,30 @@ def test_non_authoritative_results_are_not_observed(
     assert _run(spec, observer) == _FINAL
 
     assert observer.observations == []
+    assert observer.freezes == []
+
+
+def test_later_non_authoritative_callback_does_not_refreeze_shared_observer() -> None:
+    observer = _Observer()
+    authoritative = PassSpec(
+        "stage-c-pass",
+        _Pass,
+        no_caps,
+        default,
+        options={"native_cfg_persistence": True},
+    )
+    non_authoritative = PassSpec(
+        "stage-c-pass",
+        _NoContractPass,
+        no_caps,
+        default,
+        options={"native_cfg_persistence": True},
+    )
+
+    assert _run(authoritative, observer) == _FINAL
+    assert _run(non_authoritative, observer) == _FINAL
+
+    assert len(observer.observations) == 1
     assert len(observer.freezes) == 1
 
 

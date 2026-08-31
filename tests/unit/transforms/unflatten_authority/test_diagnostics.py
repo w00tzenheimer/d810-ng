@@ -14,6 +14,7 @@ from d810.transforms.unflatten_authority.diagnostics import (
     CanonicalPhaseCounters,
     PhaseTimings,
     build_phase_payload,
+    native_bound_transition_route_receipts_from_plan,
     phase_observation,
 )
 from d810.transforms.unflatten_authority.evaluate import (
@@ -24,6 +25,101 @@ from d810.transforms.unflatten_authority import views
 from d810.transforms.unflatten_authority.ids import canonical_bytes, canonical_decode
 from d810.transforms.cfg_transaction import TransactionAttemptId
 from .test_evaluate import _complete_inputs, _role_subject
+
+
+@pytest.mark.parametrize("fact_kind", ("native_bound", "state_carrier"))
+def test_native_bound_receipt_projects_from_canonical_plan(fact_kind: str) -> None:
+    """Typed plans diagnose from selected proof and step, never legacy metadata."""
+    from d810.analyses.control_flow.semantic_route_evidence import (
+        SemanticRouteDestination,
+        SemanticRouteProof,
+        SemanticRouteProofKind,
+        SemanticRouteShape,
+        SemanticStateWriteDeliveryKind,
+        SemanticStateWriteProof,
+        canonical_semantic_evidence_from_proofs,
+    )
+    from d810.ir.block_identity import NativeEaInterval
+    from d810.ir.semantic_edge import SemanticEdgeRole
+    from d810.transforms.graph_modification import RedirectGoto
+    from d810.transforms.unflatten_authority import producer_api
+    from tests.typed_patch_authority import compile_patch_plan
+    from .helpers import exact_fixture
+
+    source, base, _exclusion, refs = exact_fixture()
+    state = base.plan_inputs.state_identity
+    proof = SemanticRouteProof(
+        proof_id="native-bound-diagnostic",
+        atomic_group_id="native-bound-diagnostic-group",
+        proof_kind=SemanticRouteProofKind.STATE_ASSIGNMENT,
+        shape=SemanticRouteShape.DIRECT,
+        source_identity=refs[0].identity,
+        source_anchor_ea=0x1000,
+        delivery_region=NativeEaInterval(0x1000, 0x1001),
+        destinations=(SemanticRouteDestination(
+            SemanticEdgeRole.DIRECT,
+            7,
+            refs[2].identity,
+            0x3000,
+        ),),
+        state_write=SemanticStateWriteProof(
+            refs[0].identity,
+            0x1000,
+            state,
+            4,
+            7,
+            (0x1000,),
+            None,
+            (),
+            SemanticStateWriteDeliveryKind.INDIRECT,
+        ),
+        diagnostic_provenance=(
+            ("fact_id", "transition:state=0x7:target=2:resolver=exact"),
+            ("fact_kind", fact_kind),
+        ),
+    )
+    evidence = canonical_semantic_evidence_from_proofs(
+        base.route_evidence.native_key,
+        base.route_evidence.generation,
+        (proof,),
+    )
+    proposal = producer_api.build_proposal(
+        plan_id=base.plan_id,
+        source=source,
+        block_refs_by_serial=refs,
+        source_generation=base.source_identity_catalog.generation,
+        canonical_route_evidence=evidence,
+        selected_route_proof_ids=(evidence.route_proofs[0].proof_id,),
+        exact_state_effect_exclusions=(),
+        dispatcher_entry_serial=1,
+        dispatcher_member_serials=(0, 1),
+        authoritative_handler_serials=(2,),
+        state_identity=state,
+        use_def_witness=base.use_def_witness,
+    )
+    plan = compile_patch_plan(
+        (RedirectGoto(0, 1, 2),),
+        source,
+        plan_id=base.plan_id,
+        source_generation=base.source_identity_catalog.generation,
+        block_refs_by_serial=refs,
+    )
+    plan = replace(plan, unflatten_proposal=proposal)
+
+    assert native_bound_transition_route_receipts_from_plan(plan) == (
+        __import__(
+            "d810.transforms.unflatten_authority.legacy_codec",
+            fromlist=["NativeBoundTransitionRouteReceipt"],
+        ).NativeBoundTransitionRouteReceipt(
+            fact_id="transition:state=0x7:target=2:resolver=exact",
+            native_ea=0x1000,
+            current_block="blk0@0x1000",
+            state=7,
+            target=2,
+            target_block="blk2@0x3000",
+            operation_key=("block_goto_change", 0, 1, 2),
+        ),
+    )
 
 
 def test_one_anchored_fact_observation_per_authoritative_phase() -> None:

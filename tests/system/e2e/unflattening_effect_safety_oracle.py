@@ -820,8 +820,11 @@ def require_target_authority_policy(
     """Apply exact fixture policy to an already-validated canonical pair.
 
     A makes a deliberately partial redirect and retains its dispatcher; B/C
-    are full dispatcher-retirement outcomes.  This only inspects typed rows
-    emitted by the authority verdict and never reconstructs CFG coverage.
+    require transaction-owned corridor closure.  A successful closure may
+    preserve every source block while removing the dispatcher's semantics, so
+    structural loss is not itself a required retirement witness.  This only
+    inspects typed rows emitted by the authority verdict and never reconstructs
+    CFG coverage.
     """
     if type(evidence) is not AuthorityOracleEvidence:
         raise TypeError("evidence must be AuthorityOracleEvidence")
@@ -873,9 +876,15 @@ def require_target_authority_policy(
             for explanation in support
         )
 
-    retired_rows = tuple(row for row in observed.loss_rows if sealed_retirement(row))
-    if not retired_rows:
-        raise ValueError("dispatcher-removal target requires retired dispatcher loss")
+    retirement_rows = tuple(
+        row
+        for row in observed.loss_rows
+        if row.classification == "retired_dispatcher_infrastructure"
+    )
+    if any(not sealed_retirement(row) for row in retirement_rows):
+        raise ValueError(
+            "dispatcher-removal target has unsealed retired dispatcher loss"
+        )
 
 
 def select_committed_authority_phase_payloads(

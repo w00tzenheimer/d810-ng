@@ -503,7 +503,7 @@ def test_authority_target_a_requires_a_retained_dispatcher_empty_loss_ledger(
 
 
 @pytest.mark.parametrize("target", ["B", "C"])
-def test_authority_removal_targets_require_observed_coverage_and_retired_loss(
+def test_authority_removal_targets_accept_canonical_zero_loss_coverage(
     target: str,
 ) -> None:
     payloads = _authority_payloads()
@@ -536,13 +536,12 @@ def test_authority_removal_targets_require_observed_coverage_and_retired_loss(
             parse_authority_phase_payloads(missing_coverage), target
         )
 
-    missing_retirement = _authority_payloads()
-    missing_retirement[1]["coverage"] = observed["coverage"]
-    missing_retirement[1]["obligation_states"] = observed["obligation_states"]
-    with pytest.raises(ValueError, match="retired"):
-        require_target_authority_policy(
-            parse_authority_phase_payloads(missing_retirement), target
-        )
+    zero_loss = _authority_payloads()
+    zero_loss[1]["coverage"] = observed["coverage"]
+    zero_loss[1]["obligation_states"] = observed["obligation_states"]
+    require_target_authority_policy(
+        parse_authority_phase_payloads(zero_loss), target
+    )
 
 
 def test_authority_parser_preserves_a_typed_observed_only_loss() -> None:

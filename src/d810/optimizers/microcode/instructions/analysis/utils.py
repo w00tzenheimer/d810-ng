@@ -8,11 +8,19 @@ def get_possible_patterns(
     if ast.is_leaf():
         return [ast]
     if ref_ast_info_by_index is None:
-        if ast.ast_index not in ast.sub_ast_info_by_index.keys():
-            ast.compute_sub_ast()
+        # A root entry can survive while descendant entries are stale after
+        # Hex-Rays or an optimizer mutates the AST.  This call owns the index
+        # when no explicit reference mapping was supplied, so rebuild the
+        # complete subtree unconditionally before recursive lookup.
+        ast.compute_sub_ast()
         ref_ast_info_by_index = ast.sub_ast_info_by_index
     possible_patterns = []
-    if ref_ast_info_by_index[ast.ast_index].number_of_use >= min_nb_use:
+    ast_info = ref_ast_info_by_index.get(ast.ast_index)
+    # A missing descendant has no authoritative multiplicity witness.  It may
+    # still contribute its concrete recursive patterns, but must not be
+    # abstracted into a repeated-variable leaf (and must never abort the
+    # optimizer hook with a KeyError).
+    if ast_info is not None and ast_info.number_of_use >= min_nb_use:
         node_as_leaf = AstLeaf("x_{0}".format(ast.ast_index))
         node_as_leaf.mop = ast.mop
         node_as_leaf.ast_index = ast.ast_index

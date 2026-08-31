@@ -75,7 +75,102 @@ class BoundPatchPlan:
             raise ValueError("bound plan bindings must not duplicate references")
         if len(set(serials)) != len(serials):
             raise ValueError("bound plan bindings must not duplicate live serials")
+        discovered_refs = tuple(dict.fromkeys(iter_refs(
+            (self.plan.steps, self.plan.new_blocks, self.plan.relocation_map),
+        )))
+        planned_refs = tuple(spec.block_id for spec in self.plan.new_blocks)
+        unknown_planned = tuple(
+            ref for ref in discovered_refs
+            if type(ref) is PlanBlockRef and ref not in planned_refs
+        )
+        if unknown_planned:
+            raise ValueError("bound plan contains a PlanBlockRef without a creation specification")
+        source_refs = tuple(
+            ref for ref in discovered_refs
+            if type(ref) in (NativeBlockRef, LogicalBlockRef)
+        )
+        expected_refs = source_refs + planned_refs
+        if refs != expected_refs:
+            raise ValueError("bound plan bindings do not exactly cover canonical reference order")
+        source_coordinates = dict(self.plan.source_coordinates)
+        for ref, serial in rows:
+            if type(ref) is PlanBlockRef:
+                continue
+            if ref not in source_coordinates:
+                raise ValueError("bound plan source reference lacks sealed source coordinates")
+            if serial != source_coordinates[ref]:
+                raise ValueError("bound plan source serial differs from sealed source coordinates")
         object.__setattr__(self, "bindings", rows)
+
+
+@dataclass(frozen=True, slots=True)
+class ObservedPatchBinding:
+    """Exact post-mutation helper coordinates for one bound patch occurrence."""
+
+    bound_plan: BoundPatchPlan
+    bindings: tuple[tuple[CfgBlockRef, int], ...]
+
+    def __post_init__(self) -> None:
+        if type(self.bound_plan) is not BoundPatchPlan:
+            raise TypeError("observed binding requires the exact BoundPatchPlan")
+        validate_bound_patch_plan(self.bound_plan)
+        if type(self.bindings) is not tuple:
+            raise TypeError("observed bindings must be an exact tuple")
+        rows = tuple(_validate_binding_pair(item, "observed bindings") for item in self.bindings)
+        if len({ref for ref, _serial in rows}) != len(rows):
+            raise ValueError("observed bindings must not duplicate references")
+        helper_rows = tuple(
+            row for row in rows if type(row[0]) is PlanBlockRef
+        )
+        if len({serial for _ref, serial in helper_rows}) != len(helper_rows):
+            raise ValueError(
+                "observed helper bindings must not duplicate live serials"
+            )
+        if tuple(ref for ref, _serial in rows) != tuple(
+            ref for ref, _serial in self.bound_plan.bindings
+        ):
+            raise ValueError("observed bindings differ from bound reference order")
+        for observed, bound in zip(rows, self.bound_plan.bindings, strict=True):
+            if type(bound[0]) is not PlanBlockRef and observed != bound:
+                raise ValueError("observed bindings changed a canonical source row")
+        object.__setattr__(self, "bindings", rows)
+
+
+def observed_patch_binding(
+    bound_plan: BoundPatchPlan,
+    helper_rows: tuple[tuple[PlanBlockRef, int], ...],
+) -> ObservedPatchBinding:
+    """Mint post-mutation coordinates while retaining the bound occurrence."""
+    if type(bound_plan) is not BoundPatchPlan:
+        raise TypeError("observed binding requires the exact BoundPatchPlan")
+    if type(helper_rows) is not tuple:
+        raise TypeError("observed helper rows must be an exact tuple")
+    helpers = tuple(_validate_binding_pair(row, "observed helper rows") for row in helper_rows)
+    if any(type(ref) is not PlanBlockRef for ref, _serial in helpers):
+        raise TypeError("observed helper rows require PlanBlockRef values")
+    expected = tuple((ref, serial) for ref, serial in bound_plan.bindings if type(ref) is PlanBlockRef)
+    if tuple(ref for ref, _serial in helpers) != tuple(ref for ref, _serial in expected):
+        raise ValueError("observed helper rows differ from canonical helpers")
+    serial_by_helper = dict(helpers)
+    return ObservedPatchBinding(
+        bound_plan,
+        tuple(
+            (ref, serial_by_helper[ref]) if type(ref) is PlanBlockRef else (ref, serial)
+            for ref, serial in bound_plan.bindings
+        ),
+    )
+
+
+def validate_observed_patch_binding(
+    observed_binding: ObservedPatchBinding,
+) -> ObservedPatchBinding:
+    """Revalidate one exact observed binding without rebuilding it."""
+    if type(observed_binding) is not ObservedPatchBinding:
+        raise TypeError(
+            "observed binding validation requires the exact ObservedPatchBinding type"
+        )
+    ObservedPatchBinding.__post_init__(observed_binding)
+    return observed_binding
 
 
 def _validate_transaction_attempt(value: TransactionAttemptId) -> None:
@@ -180,9 +275,12 @@ def validate_bound_patch_plan(bound_plan: BoundPatchPlan) -> BoundPatchPlan:
 
 __all__ = [
     "BoundPatchPlan",
+    "ObservedPatchBinding",
     "PatchBindingRejected",
     "iter_refs",
+    "observed_patch_binding",
     "realize_value",
     "serial_for",
     "validate_bound_patch_plan",
+    "validate_observed_patch_binding",
 ]

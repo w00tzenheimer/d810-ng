@@ -25,6 +25,12 @@ from d810.analyses.control_flow.semantic_route_evidence import (
     SemanticDagEndpoint,
     SemanticDagEndpointKind,
     SemanticLogicalDagEndpoint,
+    DecisionDagRouteWitness,
+    SemanticDecisionDagWitness,
+    SemanticGuardedStateSelection,
+    SemanticPhysicalGuardSelectionWitness,
+    SemanticPhysicalStateWriteWitness,
+    is_exact_logical_function_exit_shape,
 )
 from d810.analyses.control_flow.effect_branch_exclusion import (
     ExactStateBranchEffectExclusion,
@@ -32,6 +38,8 @@ from d810.analyses.control_flow.effect_branch_exclusion import (
 from d810.core.native_preanalysis_key import NativePreanalysisKey
 from d810.ir.expressions import ValueOpKind
 from d810.ir.flowgraph import BlockKind, BlockSnapshot, FlowGraph, InsnKind, InsnSnapshot, MopSnapshot, OperandKind
+from d810.ir.graph_fingerprint import instruction_projection_without_block_references
+from d810.ir.insn_projection import project_instruction
 from d810.ir.semantics import CallKind, ControlTransferKind, PredicateKind
 from d810.ir.semantic_edge import SemanticEdgeRole
 from d810.ir.storage_identity import StorageIdentity, storage_identity_from_mop_snapshot
@@ -54,6 +62,7 @@ from .model import (
     UnflattenPlanShape,
     UseDefFragmentWitness,
     BlockSubjectLocator,
+    LogicalFunctionExitSubjectLocator,
     ExactInfeasibleEffectClaim,
     ProposedUnflattenContract,
     ProviderConsensusMode,
@@ -375,8 +384,19 @@ def _inventory_instruction_rows(
                 predicate_observation = model.InventoryPredicateObservation(
                     PredicateKind.EQ, storage, insn.l.size, insn.r.value, insn.d.block_ref,
                 )
+        semantic_width = (
+            int(insn.d.size)
+            if insn.kind is InsnKind.LOAD and insn.d is not None
+            else int(insn.l.size)
+            if (
+                insn.kind is InsnKind.STORE
+                and insn.l is not None
+                and insn.d is not None
+            )
+            else max(sizes, default=0)
+        )
         rows.append(InventoryInstructionObservation(
-            ordinal, instruction_ea, insn.opcode, max(sizes, default=0),
+            ordinal, instruction_ea, insn.opcode, semantic_width,
             insn.kind, insn.control_transfer_kind, insn.is_call, insn.call_kind,
             insn.display_text, predicate_observation, insn.raw_opcode,
         ))
@@ -885,14 +905,7 @@ def is_exact_logical_function_exit(
 ) -> bool:
     """Recognize the one owned logical endpoint admitted by a decision DAG."""
 
-    return (
-        type(block_ref) is LogicalBlockRef
-        and getattr(block, "kind", None) is BlockKind.ZERO_WAY
-        and not tuple(getattr(block, "insn_snapshots", ()))
-        and not tuple(getattr(block, "succs", ()))
-        and not _valid_ea(getattr(block, "native_start_ea", None))
-        and getattr(block, "start_ea", _BADADDR) == _BADADDR
-    )
+    return type(block_ref) is LogicalBlockRef and is_exact_logical_function_exit_shape(block)
 
 
 def _as_serial(value: object, label: str) -> int:
@@ -1572,6 +1585,11 @@ def resolve_concrete_entry_route(
     )
     if expected_target != route.target_identity:
         raise ValueError("concrete entry target stable identity mismatch")
+    source_witness = _route_witness(
+        source_catalog,
+        route.source_identity,
+        route.source_anchor_ea,
+    )
     matches = tuple(
         proof for proof in canonical_evidence.route_proofs
         if proof.proof_id == route.canonical_proof_id
@@ -1583,12 +1601,49 @@ def resolve_concrete_entry_route(
             f"candidate_ids={tuple(proof.proof_id for proof in matches)!r}"
         )
     proof = matches[0]
-    if proof.state_write is None or (
-        proof.state_write.identity != route.source_identity
-        or proof.state_write.state_variable != route.state_identity
-        or int(proof.state_write.state_constant) != int(route.normalized_state)
-        or int(proof.state_write.instruction_ea) != int(route.source_anchor_ea)
-    ):
+    try:
+        for destination in proof.destinations:
+            SemanticRouteDestination.__post_init__(destination)
+        if proof.state_write is not None:
+            type(proof.state_write).__post_init__(proof.state_write)
+        if proof.state_carrier is not None:
+            type(proof.state_carrier).__post_init__(proof.state_carrier)
+        SemanticRouteProof.__post_init__(proof)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("concrete entry source/state identity mismatch") from exc
+    assignment_matches = bool(
+        proof.state_write is not None
+        and proof.state_write.identity == route.source_identity
+        and proof.state_write.state_variable == route.state_identity
+        and int(proof.state_write.state_constant) == int(route.normalized_state)
+        # The concrete-entry forecast carries native receipt provenance; the
+        # canonical state-write proof carries the separately rebound physical
+        # state MOV coordinate.
+        and int(proof.source_anchor_ea) == int(route.source_anchor_ea)
+    )
+    carrier = proof.state_carrier
+    # A carrier seals two different coordinates on the same stable block:
+    # the catalog's physical block-owner anchor and the receipt instruction
+    # that produced the carrier value.  A stable identity's deterministic
+    # semantic anchor is neither authoritative for the owner role nor
+    # guaranteed to equal either of those coordinates.
+    carrier_owner_anchor = source_witness.anchor_ea
+    carrier_matches = bool(
+        proof.proof_kind is SemanticRouteProofKind.STATE_CARRIER
+        and proof.state_write is None
+        and carrier is not None
+        and proof.source_identity == route.source_identity
+        and int(proof.source_anchor_ea) == int(route.source_anchor_ea)
+        and proof.source_owner_identity is None
+        and proof.source_owner_anchor_ea is None
+        and carrier.owner_identity == route.source_identity
+        and int(carrier.owner_anchor_ea) == int(carrier_owner_anchor)
+        and carrier.source_identity == route.source_identity
+        and int(carrier.source_anchor_ea) == int(route.source_anchor_ea)
+        and carrier.state_identity == route.state_identity
+        and int(carrier.state_constant) == int(route.normalized_state)
+    )
+    if not assignment_matches and not carrier_matches:
         raise ValueError("concrete entry source/state identity mismatch")
     destinations = tuple(
         destination
@@ -1727,6 +1782,7 @@ def adapt_native_bound_transition_route(
     source_catalog: SourceIdentityCatalog,
     block_refs_by_serial: Mapping[int, AuthorityBlockRef],
     canonical_evidence: CanonicalSemanticEvidence,
+    semantic_route_fact: SemanticRouteFact | None = None,
 ) -> SemanticRouteProof:
     """Select one canonical proof for a native-bound transition receipt."""
 
@@ -1740,21 +1796,93 @@ def adapt_native_bound_transition_route(
     target_identity = _target_identity(
         source, source_catalog, block_refs_by_serial, route.target_handler_serial,
     )
-    try:
+    if (
+        semantic_route_fact is not None
+        and semantic_route_fact.kind is SemanticRouteFactKind.STATE_CARRIER
+    ):
+        fact = semantic_route_fact
+        witness = fact.carrier_witness
+        if (
+            witness is None
+            or fact.fact_id != route.fact_id
+            or int(fact.owner_serial) != int(route.source_block_serial)
+            or int(fact.source_serial) != int(route.source_block_serial)
+            or int(fact.source_instruction_ea) != int(route.source_instruction_ea)
+            or int(fact.state_constant) != int(route.state_constant)
+            or int(fact.target_serial) != int(route.target_handler_serial)
+            or int(witness.source_serial) != int(route.source_block_serial)
+            or int(witness.source_instruction_ea) != int(route.source_instruction_ea)
+            or int(witness.state) != int(route.state_constant)
+        ):
+            raise ValueError("native-bound carrier fact does not exactly match its receipt")
+        feeder_identity = _target_identity(
+            source,
+            source_catalog,
+            block_refs_by_serial,
+            witness.feeder_serial,
+        )
+        comparison_identity = _target_identity(
+            source,
+            source_catalog,
+            block_refs_by_serial,
+            witness.comparison_entry_serial,
+        )
+
+        def matches_carrier(proof: SemanticRouteProof) -> bool:
+            carrier = proof.state_carrier
+            return bool(
+                proof.proof_kind is SemanticRouteProofKind.STATE_CARRIER
+                and carrier is not None
+                and proof.source_identity == source_identity
+                and int(proof.source_anchor_ea) == int(route.source_instruction_ea)
+                and proof.source_owner_identity is None
+                and carrier.owner_identity == source_identity
+                and carrier.source_identity == source_identity
+                and int(carrier.source_anchor_ea) == int(route.source_instruction_ea)
+                and carrier.feeder_identity == feeder_identity
+                and carrier.comparison_entry_identity == comparison_identity
+                and carrier.carrier == witness.carrier
+                and carrier.state_identity == witness.state_identity
+                and int(carrier.state_constant) == int(route.state_constant)
+                and bool(carrier.requires_feeder_clone)
+                == bool(witness.requires_feeder_clone)
+                and any(
+                    int(destination.state_constant) == int(route.state_constant)
+                    and destination.target_identity == target_identity
+                    for destination in proof.destinations
+                )
+            )
+
         return _select_route_proof(
             canonical_evidence,
-            lambda proof: (
-                proof.state_write is not None
+            matches_carrier,
+            "native-bound carrier transition",
+        )
+    try:
+        def matches_native_bound(proof: SemanticRouteProof) -> bool:
+            return (
+                # The native-bound receipt is the direct physical-entry view.
+                # BOOTSTRAP has distinct ownership in resolve_bootstrap_entry_route;
+                # STATE_CHOICE and every other proof kind remain distinct facts.
+                proof.proof_kind is SemanticRouteProofKind.STATE_ASSIGNMENT
+                and proof.state_write is not None
                 and proof.state_write.identity == source_identity
                 and proof.state_write.state_constant == route.state_constant
                 and proof.state_write.width == 4
-                and proof.state_write.instruction_ea == route.source_instruction_ea
+                # The route receipt is producer provenance.  A canonical
+                # native proof may bind its separately witnessed physical
+                # state MOV later in this same source block.
+                and proof.source_anchor_ea == route.source_instruction_ea
                 and any(
                     destination.state_constant == route.state_constant
                     and destination.target_identity == target_identity
                     for destination in proof.destinations
                 )
-            ),
+            )
+
+        return _select_route_proof(
+            canonical_evidence,
+            matches_native_bound,
             "native-bound transition",
         )
     except ValueError as exc:
@@ -1819,6 +1947,124 @@ def _dag_endpoint_matches(
     return False
 
 
+def _matches_exact_decision_dag_witness(
+    raw: DecisionDagRouteWitness,
+    canonical: SemanticDecisionDagWitness,
+    *,
+    source: FlowGraph,
+    source_catalog: SourceIdentityCatalog,
+    block_refs_by_serial: Mapping[int, AuthorityBlockRef],
+) -> bool:
+    """Bind every typed raw DAG coordinate to its canonical witness."""
+
+    if (
+        raw.state_identity != canonical.state_identity
+        or raw.state_constant != canonical.state_constant
+        or raw.entry_anchor_ea != canonical.entry.anchor_ea
+        or len(raw.path_serials) != len(canonical.path)
+        or len(raw.comparisons) != len(canonical.comparisons)
+        or len(raw.bridges) != len(canonical.bridges)
+    ):
+        return False
+    try:
+        if _target_identity(
+            source, source_catalog, block_refs_by_serial, raw.entry_serial,
+        ) != canonical.entry.identity:
+            return False
+        raw_path = tuple(
+            (_target_identity(source, source_catalog, block_refs_by_serial, serial), int(anchor))
+            for serial, anchor in zip(raw.path_serials, raw.path_anchors)
+        )
+        canonical_path = tuple((point.identity, point.anchor_ea) for point in canonical.path)
+        raw_comparisons = tuple(
+            (
+                _target_identity(source, source_catalog, block_refs_by_serial, item.serial),
+                dict(zip(raw.path_serials, raw.path_anchors)).get(
+                    int(item.serial),
+                    stable_block_identity_semantic_anchor(
+                        _target_identity(
+                            source, source_catalog, block_refs_by_serial, item.serial,
+                        )
+                    ),
+                ),
+                item.comparison.op,
+                int(item.comparison.const) & 0xFFFFFFFF,
+                item.state_identity,
+                _raw_dag_endpoint(
+                    source, source_catalog, block_refs_by_serial, item.comparison.true_target,
+                ),
+                _raw_dag_endpoint(
+                    source, source_catalog, block_refs_by_serial, item.comparison.false_target,
+                ),
+            )
+            for item in raw.comparisons
+        )
+        canonical_comparisons = tuple(
+            (
+                item.node.identity,
+                item.node.anchor_ea,
+                item.operation,
+                item.constant,
+                item.state_identity,
+                item.true_target,
+                item.false_target,
+            )
+            for item in canonical.comparisons
+        )
+        raw_aliases = tuple(
+            (
+                _target_identity(source, source_catalog, block_refs_by_serial, left),
+                stable_block_identity_semantic_anchor(
+                    _target_identity(source, source_catalog, block_refs_by_serial, left),
+                ),
+                _target_identity(source, source_catalog, block_refs_by_serial, right),
+                stable_block_identity_semantic_anchor(
+                    _target_identity(source, source_catalog, block_refs_by_serial, right),
+                ),
+            )
+            for left, right in raw.aliases
+        )
+        raw_bridges = tuple(
+            (
+                _target_identity(source, source_catalog, block_refs_by_serial, item.node_serial),
+                item.node_anchor_ea,
+                item.instruction_ea,
+                item.source_identity,
+                item.result_identity,
+                item.source_width,
+                item.result_width,
+            )
+            for item in raw.bridges
+        )
+    except (KeyError, TypeError, ValueError):
+        return False
+    return (
+        raw_path == canonical_path
+        and all(
+            raw_item[:5] == canonical_item[:5]
+            and _dag_endpoint_matches(raw_item[5], canonical_item[5])
+            and _dag_endpoint_matches(raw_item[6], canonical_item[6])
+            for raw_item, canonical_item in zip(raw_comparisons, canonical_comparisons)
+        )
+        and raw_aliases == tuple(
+            (left.identity, left.anchor_ea, right.identity, right.anchor_ea)
+            for left, right in canonical.aliases
+        )
+        and raw_bridges == tuple(
+            (
+                item.node.identity,
+                item.node.anchor_ea,
+                item.instruction_ea,
+                item.source_identity,
+                item.result_identity,
+                item.source_width,
+                item.result_width,
+            )
+            for item in canonical.bridges
+        )
+    )
+
+
 def _matches_complete_decision_dag_route(
     proof: SemanticRouteProof,
     *,
@@ -1836,12 +2082,179 @@ def _matches_complete_decision_dag_route(
 
     raw = fact.decision_dag_witness
     dag = proof.state_dag
+    state_write = proof.state_write
+    physical = fact.physical_state_write
+    physical_coordinates_match = False
+    if isinstance(physical, SemanticPhysicalStateWriteWitness):
+        physical_serial = physical.source_serial
+        physical_ea = int(
+            physical.source_instruction.native_ea
+            or physical.source_instruction.ea
+        )
+        try:
+            if type(physical_serial) is not int:
+                raise ValueError("physical writer lacks an exact source serial")
+            physical_identity = _target_identity(
+                source, source_catalog, block_refs_by_serial, physical_serial,
+            )
+            physical_block = source.get_block(physical_serial)
+            delivery_block = source.get_block(fact.source_serial)
+            if physical.source_instruction.kind is InsnKind.MOV:
+                physical_owner_identity = physical_identity
+                physical_owner_anchor_ea = physical_ea
+            elif (
+                physical.source_instruction.kind is InsnKind.STORE
+                and type(physical.alias_definition_serial) is int
+                and physical.alias_definition_instruction is not None
+            ):
+                physical_owner_identity = _target_identity(
+                    source,
+                    source_catalog,
+                    block_refs_by_serial,
+                    physical.alias_definition_serial,
+                )
+                physical_owner_anchor_ea = int(
+                    physical.alias_definition_instruction.native_ea
+                    or physical.alias_definition_instruction.ea
+                )
+            else:
+                raise ValueError("physical writer has no exact semantic owner")
+        except (KeyError, TypeError, ValueError):
+            return False
+        split_delivery = int(physical_serial) != int(fact.source_serial)
+        if (
+            split_delivery
+            or physical.source_instruction.kind is InsnKind.STORE
+        ):
+            expected_owner_identity = physical_owner_identity
+            expected_owner_anchor_ea = physical_owner_anchor_ea
+        elif owner_identity != source_identity:
+            expected_owner_identity = owner_identity
+            expected_owner_anchor_ea = int(
+                fact.owner_anchor_ea
+                or stable_block_identity_semantic_anchor(owner_identity)
+            )
+        else:
+            expected_owner_identity = None
+            expected_owner_anchor_ea = None
+        delivery = None if state_write is None else state_write.physical_delivery
+        delivery_succs = tuple(int(item) for item in delivery_block.succs)
+        delivery_target_serial = (
+            delivery_succs[0] if len(delivery_succs) == 1 else None
+        )
+        try:
+            delivery_target_identity = (
+                None
+                if delivery_target_serial is None
+                else _target_identity(
+                    source,
+                    source_catalog,
+                    block_refs_by_serial,
+                    delivery_target_serial,
+                )
+            )
+            delivery_target_block = (
+                None
+                if delivery_target_serial is None
+                else source.get_block(delivery_target_serial)
+            )
+        except (KeyError, TypeError, ValueError):
+            return False
+        delivery_target_matches = bool(
+            delivery is not None
+            and delivery_target_serial is not None
+            and delivery_target_identity is not None
+            and delivery_target_block is not None
+            and delivery.target.identity == delivery_target_identity
+            and delivery.target.anchor_ea
+            == stable_block_identity_semantic_anchor(delivery_target_identity)
+            and int(fact.source_serial)
+            in tuple(int(item) for item in delivery_target_block.preds)
+        )
+        live_delivery = (
+            ()
+            if delivery is None
+            else tuple(
+                snapshot
+                for snapshot in delivery_block.insn_snapshots
+                if int(snapshot.native_ea or snapshot.ea)
+                == int(delivery.delivery.anchor_ea)
+            )
+        )
+        live_delivery_instruction = (
+            None if len(live_delivery) != 1 else project_instruction(live_delivery[0])
+        )
+        exact_delivery_goto_matches = bool(
+            delivery is not None
+            and len(live_delivery) == 1
+            and live_delivery[0].kind is InsnKind.GOTO
+            and live_delivery_instruction is not None
+            and live_delivery_instruction.control is not None
+            and live_delivery_instruction.control.transfer
+            is ControlTransferKind.GOTO
+            and live_delivery_instruction.control.target == delivery_target_serial
+            and instruction_projection_without_block_references(live_delivery[0])
+            == delivery.delivery_instruction
+        )
+        matching_delivery_members = (
+            ()
+            if delivery is None
+            else tuple(
+                member
+                for member in delivery.members
+                if member.identity == physical_identity
+                and member.instruction_ea == physical_ea
+                and member.physical_state_write == physical
+            )
+        )
+        physical_coordinates_match = bool(
+            state_write is not None
+            and physical.state_identity == state_identity
+            and int(physical.width) == 4
+            and int(physical.state_constant) == int(fact.state_constant)
+            and state_write.identity == physical_identity
+            and state_write.instruction_ea == physical_ea
+            and state_write.state_variable == state_identity
+            and int(state_write.width) == 4
+            and int(state_write.state_constant) == int(fact.state_constant)
+            and state_write.physical_state_write == physical
+            and proof.source_owner_identity == expected_owner_identity
+            and proof.source_owner_anchor_ea == expected_owner_anchor_ea
+            and (
+                not split_delivery
+                and delivery is None
+                or split_delivery
+                and physical_block is not None
+                and delivery_block is not None
+                and tuple(int(item) for item in physical_block.succs)
+                == (int(fact.source_serial),)
+                and int(physical_serial)
+                in tuple(int(item) for item in delivery_block.preds)
+                and delivery is not None
+                and delivery.delivery.identity == source_identity
+                and delivery.delivery.anchor_ea == int(fact.source_instruction_ea)
+                and exact_delivery_goto_matches
+                and delivery_target_matches
+                and delivery.target.identity == dag.witness.entry.identity
+                and len(matching_delivery_members) == 1
+            )
+        )
+    else:
+        physical_coordinates_match = bool(
+            state_write is not None
+            and proof.source_owner_identity in (None, owner_identity)
+            and state_write.identity == source_identity
+            and state_write.instruction_ea == fact.source_instruction_ea
+            and state_write.state_variable == state_identity
+            and state_write.width == 4
+            and state_write.state_constant == fact.state_constant
+            and state_write.recovered_state_write == fact.recovered_state_write
+        )
     if (
         raw is None or dag is None
         or proof.proof_kind is not SemanticRouteProofKind.STATE_DAG
         or proof.source_identity != source_identity
         or proof.source_anchor_ea != fact.source_instruction_ea
-        or proof.source_owner_identity not in (None, owner_identity)
         or dag.source_identity != source_identity
         or dag.source_anchor_ea != fact.source_instruction_ea
         or dag.target_identity != target_identity
@@ -1850,12 +2263,7 @@ def _matches_complete_decision_dag_route(
         or dag.witness.state_constant != fact.state_constant
         or dag.witness.entry.identity != _target_identity(source, source_catalog, block_refs_by_serial, raw.entry_serial)
         or dag.witness.entry.anchor_ea != raw.entry_anchor_ea
-        or proof.state_write is None
-        or proof.state_write.identity != source_identity
-        or proof.state_write.instruction_ea != fact.source_instruction_ea
-        or proof.state_write.state_variable != state_identity
-        or proof.state_write.width != 4
-        or proof.state_write.state_constant != fact.state_constant
+        or not physical_coordinates_match
         or len(proof.destinations) != 1
         or proof.destinations[0].state_constant != fact.state_constant
         or proof.destinations[0].target_identity != target_identity
@@ -1874,66 +2282,111 @@ def _matches_complete_decision_dag_route(
         ))
     ):
         return False
+    return _matches_exact_decision_dag_witness(
+        raw, dag.witness, source=source, source_catalog=source_catalog,
+        block_refs_by_serial=block_refs_by_serial,
+    )
+
+
+def _matches_exact_guarded_state_assignment(
+    proof: SemanticRouteProof,
+    *,
+    fact: SemanticRouteFact,
+    source: FlowGraph,
+    source_catalog: SourceIdentityCatalog,
+    block_refs_by_serial: Mapping[int, AuthorityBlockRef],
+    source_identity: StableBlockIdentity,
+    owner_identity: StableBlockIdentity,
+    target_identity: StableBlockIdentity,
+    state_identity: StorageIdentity,
+) -> bool:
+    """Bind one typed physical STORE/guard fact to its stable assignment."""
+
+    physical = fact.physical_state_write
+    if not isinstance(physical, SemanticPhysicalStateWriteWitness):
+        return False
+    raw_guarded = physical.guarded_selection
+    state_write = proof.state_write
+    guarded = None if state_write is None else state_write.guarded_selection
+    source_ea = int(
+        physical.source_instruction.native_ea or physical.source_instruction.ea
+    )
+    comparison_ea = (
+        -1
+        if not isinstance(raw_guarded, SemanticPhysicalGuardSelectionWitness)
+        else int(
+            raw_guarded.comparison_instruction.native_ea
+            or raw_guarded.comparison_instruction.ea
+        )
+    )
+    if (
+        fact.kind is not SemanticRouteFactKind.DECISION_DAG
+        or fact.decision_dag_witness is not None
+        or not isinstance(raw_guarded, SemanticPhysicalGuardSelectionWitness)
+        or proof.proof_kind is not SemanticRouteProofKind.STATE_ASSIGNMENT
+        or state_write is None
+        or not isinstance(guarded, SemanticGuardedStateSelection)
+        or physical.source_serial != int(fact.source_serial)
+        or physical.alias_definition_serial != int(fact.owner_serial)
+        or source_ea != int(fact.source_instruction_ea)
+        or int(raw_guarded.guard_serial) != int(fact.source_serial)
+        or int(raw_guarded.selected_target_serial) != int(fact.target_serial)
+        or raw_guarded.state_identity != physical.state_identity
+        or physical.state_identity != state_identity
+        or int(physical.width) != 4
+        or int(physical.state_constant) != (int(fact.state_constant) & 0xFFFFFFFF)
+        or tuple(int(item) for item in fact.path_serials)
+        != (int(fact.owner_serial), int(fact.source_serial))
+        or tuple((int(left), int(right)) for left, right in fact.path_edges)
+        != ((int(fact.owner_serial), int(fact.source_serial)),)
+        or proof.source_identity != source_identity
+        or proof.source_anchor_ea != int(fact.source_instruction_ea)
+        or proof.source_owner_identity != owner_identity
+        or proof.source_owner_anchor_ea != fact.owner_anchor_ea
+        or len(proof.destinations) != 1
+        or proof.destinations[0].state_constant != int(fact.state_constant)
+        or proof.destinations[0].target_identity != target_identity
+        or proof.destinations[0].target_anchor_ea != fact.target_anchor_ea
+        or state_write.identity != source_identity
+        or state_write.instruction_ea != int(fact.source_instruction_ea)
+        or state_write.state_variable != state_identity
+        or int(state_write.width) != 4
+        or int(state_write.state_constant) != int(fact.state_constant)
+        or state_write.physical_state_write
+        != replace(physical, guarded_selection=None)
+        or guarded.guard.identity != source_identity
+        or guarded.guard.anchor_ea != comparison_ea
+        or guarded.comparison_instruction != raw_guarded.comparison_instruction
+        or guarded.state_identity != raw_guarded.state_identity
+        or int(guarded.width) != int(raw_guarded.width)
+        or int(guarded.constant) != int(raw_guarded.constant)
+    ):
+        return False
     try:
-        raw_path = tuple(
-            (_target_identity(source, source_catalog, block_refs_by_serial, serial), int(anchor))
-            for serial, anchor in zip(raw.path_serials, raw.path_anchors)
+        raw_true = _raw_dag_endpoint(
+            source,
+            source_catalog,
+            block_refs_by_serial,
+            raw_guarded.true_target_serial,
         )
-        canonical_path = tuple((point.identity, point.anchor_ea) for point in dag.witness.path)
-        raw_comparisons = tuple(
-            (
-                _target_identity(source, source_catalog, block_refs_by_serial, serial),
-                dict(zip(raw.path_serials, raw.path_anchors)).get(
-                    int(serial),
-                    stable_block_identity_semantic_anchor(
-                        _target_identity(source, source_catalog, block_refs_by_serial, serial)
-                    ),
-                ),
-                comparison.op,
-                int(comparison.const) & 0xFFFFFFFF,
-                _raw_dag_endpoint(
-                    source, source_catalog, block_refs_by_serial,
-                    comparison.true_target,
-                ),
-                _raw_dag_endpoint(
-                    source, source_catalog, block_refs_by_serial,
-                    comparison.false_target,
-                ),
-            )
-            for serial, comparison in raw.comparisons
+        raw_false = _raw_dag_endpoint(
+            source,
+            source_catalog,
+            block_refs_by_serial,
+            raw_guarded.false_target_serial,
         )
-        canonical_comparisons = tuple(
-            (
-                comparison.node.identity,
-                comparison.node.anchor_ea,
-                comparison.operation,
-                comparison.constant,
-                comparison.true_target,
-                comparison.false_target,
-            )
-            for comparison in dag.witness.comparisons
-        )
-        raw_aliases = tuple(
-            (_target_identity(source, source_catalog, block_refs_by_serial, left),
-             stable_block_identity_semantic_anchor(_target_identity(source, source_catalog, block_refs_by_serial, left)),
-             _target_identity(source, source_catalog, block_refs_by_serial, right),
-             stable_block_identity_semantic_anchor(_target_identity(source, source_catalog, block_refs_by_serial, right)))
-            for left, right in raw.aliases
+        raw_selected = _raw_dag_endpoint(
+            source,
+            source_catalog,
+            block_refs_by_serial,
+            raw_guarded.selected_target_serial,
         )
     except (KeyError, TypeError, ValueError):
         return False
-    return (
-        raw.state_identity == state_identity
-        and raw.state_constant == fact.state_constant
-        and raw_path == canonical_path
-        and len(raw_comparisons) == len(canonical_comparisons)
-        and all(
-            raw_item[:4] == canonical_item[:4]
-            and _dag_endpoint_matches(raw_item[4], canonical_item[4])
-            and _dag_endpoint_matches(raw_item[5], canonical_item[5])
-            for raw_item, canonical_item in zip(raw_comparisons, canonical_comparisons)
-        )
-        and raw_aliases == tuple((left.identity, left.anchor_ea, right.identity, right.anchor_ea) for left, right in dag.witness.aliases)
+    return bool(
+        _dag_endpoint_matches(raw_true, guarded.true_target)
+        and _dag_endpoint_matches(raw_false, guarded.false_target)
+        and _dag_endpoint_matches(raw_selected, guarded.selected_target)
     )
 
 
@@ -2006,16 +2459,60 @@ def adapt_state_transition_route(
         target_witness = _witness_for_serial(
             source, source_catalog, block_refs_by_serial, route.target_handler,
         )
+        guarded_physical_fact = bool(
+            transform_fact.kind is SemanticRouteFactKind.DECISION_DAG
+            and transform_fact.decision_dag_witness is None
+            and isinstance(
+                transform_fact.physical_state_write,
+                SemanticPhysicalStateWriteWitness,
+            )
+            and isinstance(
+                transform_fact.physical_state_write.guarded_selection,
+                SemanticPhysicalGuardSelectionWitness,
+            )
+        )
+        guarded_route_matches_fact = bool(
+            guarded_physical_fact
+            and int(transform_fact.owner_serial) == int(route.write_block)
+            and route.via_block is not None
+            and int(transform_fact.source_serial) == int(route.via_block)
+            and int(transform_fact.state_constant) == int(route.next_state)
+            and int(transform_fact.target_serial) == int(route.target_handler)
+            and route.physical_state_write == transform_fact.physical_state_write
+        )
+        split_physical_dag_fact = bool(
+            transform_fact.kind is SemanticRouteFactKind.DECISION_DAG
+            and transform_fact.decision_dag_witness is not None
+            and isinstance(
+                transform_fact.physical_state_write,
+                SemanticPhysicalStateWriteWitness,
+            )
+        )
+        split_physical_dag_route_matches_fact = bool(
+            split_physical_dag_fact
+            and int(transform_fact.owner_serial) == int(route.write_block)
+            and int(transform_fact.source_serial) == int(
+                route.write_block if route.via_block is None else route.via_block
+            )
+            and int(transform_fact.state_constant) == int(route.next_state)
+            and int(transform_fact.target_serial) == int(route.target_handler)
+            and route.physical_state_write == transform_fact.physical_state_write
+        )
 
         def matches(proof: SemanticRouteProof) -> bool:
             if not proof.destinations:
                 return False
             expected_kind = {
+                SemanticRouteFactKind.DISPATCHER_MAP: SemanticRouteProofKind.STATE_ASSIGNMENT,
                 SemanticRouteFactKind.NATIVE_BOUND: SemanticRouteProofKind.STATE_ASSIGNMENT,
                 SemanticRouteFactKind.STATE_TRANSFORM: SemanticRouteProofKind.STATE_TRANSFORM,
                 SemanticRouteFactKind.STATE_CARRIER: SemanticRouteProofKind.STATE_CARRIER,
                 SemanticRouteFactKind.STATE_PARTITION: SemanticRouteProofKind.STATE_PARTITION,
-                SemanticRouteFactKind.DECISION_DAG: SemanticRouteProofKind.STATE_DAG,
+                SemanticRouteFactKind.DECISION_DAG: (
+                    SemanticRouteProofKind.STATE_ASSIGNMENT
+                    if guarded_physical_fact
+                    else SemanticRouteProofKind.STATE_DAG
+                ),
                 SemanticRouteFactKind.BOOTSTRAP: SemanticRouteProofKind.BOOTSTRAP,
             }.get(transform_fact.kind)
             if expected_kind is None or proof.proof_kind is not expected_kind:
@@ -2114,63 +2611,35 @@ def adapt_state_transition_route(
                     or proof.destinations[0].target_anchor_ea != canonical_target_anchor
                 ):
                     return False
-                raw_dag = witness.decision_dag_witness
-                dag = proof.state_dag.witness
-                if (
-                    raw_dag.state_identity != dag.state_identity
-                    or raw_dag.state_constant != dag.state_constant
-                    or raw_dag.entry_anchor_ea != dag.entry.anchor_ea
+                if not _matches_exact_decision_dag_witness(
+                    witness.decision_dag_witness,
+                    proof.state_dag.witness,
+                    source=source,
+                    source_catalog=source_catalog,
+                    block_refs_by_serial=block_refs_by_serial,
                 ):
                     return False
-                # Compare every raw DAG node through its stable serial identity;
-                # this prevents endpoint-only bootstrap selection.
-                if len(raw_dag.path_serials) != len(dag.path):
+                return True
+            if guarded_physical_fact:
+                if not guarded_route_matches_fact:
                     return False
-                for serial, anchor, point in zip(
-                    raw_dag.path_serials, raw_dag.path_anchors, dag.path
-                ):
-                    current = _witness_for_serial(
-                        source, source_catalog, block_refs_by_serial, serial,
-                    )
-                    if (
-                        current.block_ref.identity != point.identity
-                        or int(anchor) != point.anchor_ea
-                    ):
-                        return False
-                if len(raw_dag.comparisons) != len(dag.comparisons):
-                    return False
-                for (serial, comparison), canonical in zip(
-                    raw_dag.comparisons, dag.comparisons
-                ):
-                    node = _witness_for_serial(
-                        source, source_catalog, block_refs_by_serial, serial,
-                    )
-                    if (
-                        node.block_ref.identity != canonical.node.identity
-                        or comparison.op != canonical.operation
-                        or comparison.const != canonical.constant
-                        or _target_identity(source, source_catalog, block_refs_by_serial, comparison.true_target)
-                        != canonical.true_target.identity
-                        or _target_identity(source, source_catalog, block_refs_by_serial, comparison.false_target)
-                        != canonical.false_target.identity
-                    ):
-                        return False
-                raw_aliases = tuple(
-                    (
-                        _target_identity(source, source_catalog, block_refs_by_serial, source_serial),
-                        _target_identity(source, source_catalog, block_refs_by_serial, target_serial),
-                    )
-                    for source_serial, target_serial in raw_dag.aliases
+                return _matches_exact_guarded_state_assignment(
+                    proof,
+                    fact=transform_fact,
+                    source=source,
+                    source_catalog=source_catalog,
+                    block_refs_by_serial=block_refs_by_serial,
+                    source_identity=source_identity,
+                    owner_identity=owner_identity,
+                    target_identity=target_identity,
+                    state_identity=state_identity,
                 )
-                canonical_aliases = tuple(
-                    (source_point.identity, target_point.identity)
-                    for source_point, target_point in dag.aliases
-                )
-                return raw_aliases == canonical_aliases
             if (
                 transform_fact.kind is SemanticRouteFactKind.DECISION_DAG
                 and transform_fact.decision_dag_witness is None
             ):
+                return False
+            if split_physical_dag_fact and not split_physical_dag_route_matches_fact:
                 return False
             if (
                 proof.source_identity != source_identity
@@ -2179,9 +2648,13 @@ def adapt_state_transition_route(
                 or proof.destinations[0].target_identity != target_identity
             ):
                 return False
-            if proof.source_owner_identity is not None and proof.source_owner_identity != owner_identity:
+            if (
+                not split_physical_dag_fact
+                and proof.source_owner_identity is not None
+                and proof.source_owner_identity != owner_identity
+            ):
                 return False
-            if proof.state_write is not None:
+            if proof.state_write is not None and not split_physical_dag_fact:
                 if (
                     proof.state_write.identity != source_identity
                     or proof.state_write.instruction_ea != transform_fact.source_instruction_ea
@@ -2211,10 +2684,19 @@ def adapt_state_transition_route(
                     transform_fact.kind is SemanticRouteFactKind.STATE_PARTITION
                     and proof.proof_kind is SemanticRouteProofKind.STATE_PARTITION
                     and proof.state_partition.state_identity == state_identity
+                    and proof.state_dag is not None
+                    and transform_fact.decision_dag_witness is not None
+                    and _matches_exact_decision_dag_witness(
+                        transform_fact.decision_dag_witness,
+                        proof.state_dag.witness,
+                        source=source,
+                        source_catalog=source_catalog,
+                        block_refs_by_serial=block_refs_by_serial,
+                    )
                     and any(
-                    member.owner_identity == owner_identity
-                    and member.state_constant == int(route.next_state)
-                    for member in proof.state_partition.members
+                        member.owner_identity == owner_identity
+                        and member.state_constant == int(route.next_state)
+                        for member in proof.state_partition.members
                     )
                 )
             if proof.state_dag is not None:
@@ -2229,7 +2711,10 @@ def adapt_state_transition_route(
                     target_identity=target_identity,
                     state_identity=state_identity,
                 )
-            if transform_fact.kind is SemanticRouteFactKind.NATIVE_BOUND:
+            if transform_fact.kind in {
+                SemanticRouteFactKind.DISPATCHER_MAP,
+                SemanticRouteFactKind.NATIVE_BOUND,
+            }:
                 return (
                     proof.proof_kind is SemanticRouteProofKind.STATE_ASSIGNMENT
                     and proof.state_write is not None
@@ -2245,9 +2730,11 @@ def adapt_state_transition_route(
 
 def _equivalent_route_claim(
     *,
+    source: FlowGraph,
     source_catalog: SourceIdentityCatalog,
     route_evidence: CanonicalSemanticEvidence,
     proof: SemanticRouteProof,
+    block_refs_by_serial: Mapping[int, AuthorityBlockRef] | None,
 ) -> EquivalentSemanticRouteClaim:
     """Adapt one selected canonical proof into a closed route claim."""
 
@@ -2283,7 +2770,7 @@ def _equivalent_route_claim(
     source_locator = BlockSubjectLocator(
         source_witness.block_ref, source_witness.anchor_ea,
     )
-    destination_subjects = tuple(
+    native_destination_subjects = tuple(
         _subject_factory(
             SemanticSubjectRef,
             kind=SemanticSubjectKind.BLOCK,
@@ -2294,6 +2781,37 @@ def _equivalent_route_claim(
         )
         for witness in destination_witnesses
     )
+    logical_endpoints: dict[int, SemanticLogicalDagEndpoint] = {}
+    if proof.state_dag is not None:
+        for comparison in proof.state_dag.witness.comparisons:
+            for endpoint in (comparison.true_target, comparison.false_target):
+                if type(endpoint) is not SemanticLogicalDagEndpoint:
+                    continue
+                prior = logical_endpoints.setdefault(endpoint.serial, endpoint)
+                if prior != endpoint:
+                    raise ValueError("canonical logical route endpoint serial is ambiguous")
+    if logical_endpoints and block_refs_by_serial is None:
+        raise ValueError("logical route endpoint requires exact source references")
+    dag_endpoint_subjects = []
+    for serial, endpoint in sorted(logical_endpoints.items()):
+        ref = block_refs_by_serial.get(serial) if block_refs_by_serial is not None else None
+        block = source.blocks.get(serial)
+        if (
+            type(ref) is not LogicalBlockRef
+            or block is None
+            or not is_exact_logical_function_exit(block, ref)
+        ):
+            raise ValueError("logical route endpoint differs from selected canonical proof")
+        locator = LogicalFunctionExitSubjectLocator(ref, serial)
+        dag_endpoint_subjects.append(_subject_factory(
+            SemanticSubjectRef,
+            kind=SemanticSubjectKind.BLOCK,
+            role=SemanticSubjectRole.SEMANTIC_DAG_ENDPOINT,
+            block_ref=ref,
+            anchor_ea=None,
+            locator=locator,
+        ))
+    destination_subjects = native_destination_subjects
     source_subject = _subject_factory(
         SemanticSubjectRef,
         kind=SemanticSubjectKind.BLOCK,
@@ -2302,16 +2820,15 @@ def _equivalent_route_claim(
         anchor_ea=source_witness.anchor_ea,
         locator=source_locator,
     )
-    destination_pairs = tuple(
-        (subject.block_ref, subject.anchor_ea) for subject in destination_subjects
-    )
+    destination_locators = tuple(subject.locator for subject in destination_subjects)
+    dag_endpoint_locators = tuple(subject.locator for subject in dag_endpoint_subjects)
     retired_locator = RouteSubjectLocator(
         proof.proof_id,
         proof.atomic_group_id,
         source_witness.block_ref,
         source_witness.anchor_ea,
-        tuple(ref for ref, _anchor in destination_pairs),
-        tuple(anchor for _ref, anchor in destination_pairs),
+        destination_locators,
+        dag_endpoint_locators,
     )
     retired_subject = _subject_factory(
         SemanticSubjectRef,
@@ -2335,6 +2852,7 @@ def _equivalent_route_claim(
         route_proof_ids=(proof.proof_id,),
         atomic_group_id=proof.atomic_group_id,
         source_generation=route_evidence.generation,
+        dag_endpoint_subjects=tuple(dag_endpoint_subjects),
     )
 
 
@@ -2344,6 +2862,7 @@ def build_equivalent_route_claims(
     source_catalog: SourceIdentityCatalog,
     route_evidence: CanonicalSemanticEvidence,
     selected_proof_ids: Iterable[str] | None = None,
+    block_refs_by_serial: Mapping[int, AuthorityBlockRef] | None = None,
 ) -> tuple[EquivalentSemanticRouteClaim, ...]:
     """Mint claims only for explicitly selected canonical route proofs."""
 
@@ -2375,6 +2894,8 @@ def build_equivalent_route_claims(
                 source_catalog=source_catalog,
                 route_evidence=route_evidence,
                 proof=proof,
+                source=source,
+                block_refs_by_serial=block_refs_by_serial,
             )
         )
     return tuple(claims)
@@ -2410,6 +2931,7 @@ def resolve_equivalent_route_claim(
         source_catalog=source_catalog,
         route_evidence=proposal.route_evidence,
         selected_proof_ids=claim.route_proof_ids,
+        block_refs_by_serial=block_refs_by_serial,
     )
     selected = tuple(item for item in rebuilt if item.claim_id == claim.claim_id)
     if len(selected) != 1 or selected[0] != claim:
@@ -2445,6 +2967,7 @@ def build_proposal(
         source_catalog=source_catalog,
         route_evidence=canonical_route_evidence,
         selected_proof_ids=selected_route_proof_ids,
+        block_refs_by_serial=block_refs_by_serial,
     )
     exact_claims = tuple(
         _exact_effect_claim(

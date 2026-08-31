@@ -13,6 +13,7 @@ from d810.ir.flowgraph import (
 from d810.ir.varnode import Space, Varnode
 from d810.capabilities.dispatcher import RouterKind
 from d810.analyses.control_flow.switch_table_analysis import (
+    analyze_switch_table_at_dispatcher,
     analyze_switch_table_flow_graph,
     build_state_dispatcher_map_from_cases,
     find_switch_loop_guard_blocks,
@@ -176,6 +177,30 @@ def test_analyze_switch_table_flow_graph_extracts_cases_and_guard_block():
     assert dispatch_map.state_to_handler() == {0: 4, 1: 5, 2: 5}
     assert dispatch_map.default_target_block == 3
     assert dispatch_map.default_row_kind == "dispatcher_default_self_loop"
+
+
+def test_analyze_switch_table_at_dispatcher_ignores_lower_serial_table():
+    def table(cases):
+        return _insn(
+            kind=InsnKind.TABLE_JUMP,
+            left=_mop(kind=OperandKind.SUBINSN, stack_refs=(0x10,)),
+            right=_mop(kind=OperandKind.CASE_LIST, switch_cases=cases),
+        )
+
+    flow_graph = _flow_graph({
+        2: _block(2, succs=(4, 5), tail=table((((1,), 4), ((2,), 5)))),
+        3: _block(3, succs=(6, 7), tail=table((((7,), 6), ((8,), 7)))),
+        4: _block(4),
+        5: _block(5),
+        6: _block(6, preds=(3,)),
+        7: _block(7, preds=(3,)),
+    })
+
+    result = analyze_switch_table_at_dispatcher(flow_graph, 3)
+
+    assert result is not None
+    assert result.state_dispatcher_map.dispatcher_entry_block == 3
+    assert result.state_dispatcher_map.state_to_handler() == {7: 6, 8: 7}
 
 
 class TestBuildStateDispatcherMapFromCases:

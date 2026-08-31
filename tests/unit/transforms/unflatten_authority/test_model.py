@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+from copy import copy
 from dataclasses import is_dataclass, replace
 import inspect
+import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -21,9 +24,72 @@ from d810.analyses.control_flow.semantic_route_evidence import (
 from .helpers import import_authority_model, realize_projected_routes_for_test
 from .helpers import authority_id, block_ref, edge_role, state_identity
 from d810.transforms.cfg_transaction import LogicalBlockRef, NativeBlockRef, PlanBlockRef, PatchStepKind
-from d810.transforms.unflatten_authority.ids import _subject_factory, _claim_factory, _evidence_factory, subject_id, authority_id as canonical_authority_id, canonical_bytes, canonical_decode
+from d810.transforms.unflatten_authority.ids import _subject_factory, _claim_factory, _evidence_factory, subject_id, authority_id as canonical_authority_id, canonical_bytes, canonical_decode, receipt_id
 
 model = import_authority_model()
+
+
+def test_route_locator_separates_native_destinations_from_logical_dag_endpoints() -> None:
+    """A logical function exit is closure evidence, never a redirect target."""
+    source = block_ref("split-source")
+    native = block_ref("split-native")
+    logical = LogicalBlockRef("authority-test", "split-exit", 1)
+    proof_id = authority_id("split-proof")
+    group_id = authority_id("split-group")
+
+    with pytest.raises(TypeError, match="native block locators"):
+        model.RouteSubjectLocator(
+            proof_id, group_id, source, 0x1000,
+            (model.LogicalFunctionExitSubjectLocator(logical, 7),),
+        )
+    with pytest.raises(TypeError, match="logical function-exit locators"):
+        model.RouteSubjectLocator(
+            proof_id, group_id, source, 0x1000,
+            (model.BlockSubjectLocator(native, 0x1100),),
+            (model.BlockSubjectLocator(native, 0x1100),),
+        )
+    locator = model.RouteSubjectLocator(
+        proof_id, group_id, source, 0x1000,
+        (model.BlockSubjectLocator(native, 0x1100),),
+        (model.LogicalFunctionExitSubjectLocator(logical, 7),),
+    )
+    assert locator.native_destination_members() == (
+        model.BlockSubjectLocator(native, 0x1100),
+    )
+    assert locator.dag_endpoint_members() == (
+        model.LogicalFunctionExitSubjectLocator(logical, 7),
+    )
+
+
+def test_claim_owned_logical_exit_coordinates_include_terminal_cycle_stops() -> None:
+    """A terminal-cycle claim can own one exact anchorless source exit."""
+    from types import SimpleNamespace
+
+    from .test_bind import _terminal_cycle_fixture
+
+    proposal, native_claim = _terminal_cycle_fixture()
+    logical_ref = LogicalBlockRef("terminal-cycle-model", "logical-exit", 1)
+    logical_terminal = _subject_factory(
+        model.SemanticSubjectRef,
+        kind=model.SemanticSubjectKind.TERMINAL,
+        role=model.SemanticSubjectRole.TERMINAL_SITE,
+        block_ref=logical_ref,
+        anchor_ea=None,
+        locator=model.LogicalFunctionExitSubjectLocator(logical_ref, 9),
+    )
+    logical_claim = _claim_factory(
+        model.TerminalCycleBreakClaim,
+        model.UnflattenClaimKind.TERMINAL_CYCLE_BREAK,
+        native_claim.cycle_subject,
+        native_claim.cleanup_source_subject,
+        logical_terminal,
+        native_claim.terminal_route_proof_ids,
+        native_claim.source_generation,
+    )
+
+    assert model._claimed_logical_function_exit_coordinates(
+        SimpleNamespace(claims=(logical_claim,))
+    ) == {(logical_ref, 9)}
 
 
 def test_13_1_16_all_slice_c_record_types_are_binder_owned() -> None:
@@ -119,6 +185,20 @@ def test_detached_component_justification_has_its_closed_loss_kind() -> None:
     rule = model.UnflattenJustificationRule.DETACHED_COMPONENT_PROVEN
     assert model._LOSS_RULE_KIND[rule] is model.SemanticLossKind.DETACHED_DEAD_HANDLER_COMPONENT
     assert model._LOSS_RULE_CLAIMS[rule] == (model.DetachedDeadHandlerComponentClaim,)
+
+
+def test_semantic_loss_kind_join_preserves_composable_allowances() -> None:
+    """One physical owner may carry independent route and effect authority."""
+    model = import_authority_model()
+    kinds = (
+        model.SemanticLossKind.EQUIVALENT_SEMANTIC_ROUTE,
+        model.SemanticLossKind.LOCAL_ALIAS_SCALARIZATION,
+    )
+
+    assert model._join_semantic_loss_kinds(kinds) is (
+        model.SemanticLossKind.COMPOSITE_ALLOWED
+    )
+    assert model._join_semantic_loss_kinds(kinds[:1]) is kinds[0]
 
 
 def _retirement_catalog(model, refs, anchors, generation=3):
@@ -281,11 +361,11 @@ def _valid_proposal(model):
     proof = route_evidence.route_proofs[0]
     route_locator = model.RouteSubjectLocator(
         proof.proof_id, proof.atomic_group_id, b0, 0x1000,
-        (b2,), (0x1100,),
+        (model.BlockSubjectLocator(b2, 0x1100),),
     )
     replacement_locator = model.RouteSubjectLocator(
         proof.proof_id, proof.atomic_group_id, b0, 0x1000,
-        (b2,), (0x1100,),
+        (model.BlockSubjectLocator(b2, 0x1100),),
     )
     retired_route = _subject(model, model.SemanticSubjectKind.ROUTE,
                              model.SemanticSubjectRole.SEMANTIC_ROUTE_SOURCE,
@@ -364,6 +444,436 @@ def _minimal_corridor_forecast(model, proposal):
     )
 
 
+def test_default_gap_infeasibility_exclusion_has_path_independent_content() -> None:
+    """Exact default-gap authority is a closed, serial-free forecast record."""
+    model = import_authority_model()
+    state = state_identity()
+    dispatcher = model.CorridorCoveragePathNode(block_ref("default-gap-dispatcher"), 0x1000)
+    default_entry = model.CorridorCoveragePathNode(block_ref("default-gap-default"), 0x1100)
+    residual = model.CorridorCoveragePathNode(block_ref("default-gap-residual"), 0x1200)
+    seeds = (
+        model.DefaultGapInitialStateSeed(2, authority_id("default-gap-proof-b")),
+        model.DefaultGapInitialStateSeed(1, authority_id("default-gap-proof-a")),
+    )
+    proof_ids = tuple(sorted((authority_id("default-gap-proof-a"), authority_id("default-gap-proof-b"))))
+    reachable = (1, 2, 7)
+    content = (
+        "unflatten.default-gap-infeasibility-exclusion.v2", 4, state,
+        dispatcher, default_entry, residual,
+        tuple(sorted(seeds, key=canonical_bytes)), proof_ids, reachable,
+    )
+    exclusion_id = canonical_authority_id(content)
+    exclusion = model.DefaultGapInfeasibilityExclusion(
+        exclusion_id,
+        canonical_authority_id(("unflatten.default-gap-infeasibility-exclusion-digest.v1", content)),
+        4, state, dispatcher, default_entry, residual,
+        tuple(sorted(seeds, key=canonical_bytes)), proof_ids, reachable,
+    )
+
+    assert exclusion.exclusion_id == exclusion_id
+    assert exclusion.initial_state_seeds == tuple(sorted(seeds, key=canonical_bytes))
+    assert exclusion.normalized_reachable_states == reachable
+    assert model.CorridorPathDisposition.EXACT_UNREACHABLE_DEFAULT.value == "exact_unreachable_default"
+
+
+def test_default_gap_authority_requires_exact_path_and_phase_linkage() -> None:
+    """One default-gap record must link bijectively to its covered path and phase."""
+    model = import_authority_model()
+    proposal = _valid_proposal(model)
+    covered_base_forecast = _minimal_corridor_forecast(model, SimpleNamespace(**proposal))
+    legacy_path = covered_base_forecast.paths[0]
+    dispatcher_node = legacy_path.nodes[-1]
+    start = legacy_path.nodes[0]
+    default_entry = model.CorridorCoveragePathNode(block_ref("default-gap-entry"), 0x1300)
+    residual = model.CorridorCoveragePathNode(block_ref("default-gap-residual-link"), 0x1400)
+    proof_id = authority_id("default-gap-link-proof")
+    seed = model.DefaultGapInitialStateSeed(3, proof_id)
+    exclusion_content = (
+        "unflatten.default-gap-infeasibility-exclusion.v2", 4, state_identity(),
+        dispatcher_node, default_entry, residual, (seed,), (proof_id,), (3, 7),
+    )
+    exclusion = model.DefaultGapInfeasibilityExclusion(
+        canonical_authority_id(exclusion_content),
+        canonical_authority_id(("unflatten.default-gap-infeasibility-exclusion-digest.v1", exclusion_content)),
+        4, state_identity(), dispatcher_node, default_entry, residual,
+        (seed,), (proof_id,), (3, 7),
+    )
+    path = model.DefaultGapInfeasibilityPath(
+        canonical_authority_id((
+            "unflatten.default-gap-infeasibility-path.v1", (start, dispatcher_node), None,
+            exclusion.exclusion_id,
+        )),
+        (start, dispatcher_node), None, exclusion.exclusion_id,
+    )
+    with pytest.raises(ValueError, match="residual"):
+        model.DefaultGapInfeasibilityForecast(
+            canonical_authority_id((
+                "unflatten.default-gap-infeasibility-forecast.v1", covered_base_forecast,
+                (path,), ((exclusion.exclusion_id, exclusion.digest),), (exclusion,),
+            )),
+            covered_base_forecast, (path,), ((exclusion.exclusion_id, exclusion.digest),), (exclusion,),
+        )
+    residual_legacy_path = model.CorridorCoveragePath(
+        canonical_authority_id((
+            "unflatten.corridor-coverage-path.v1", legacy_path.nodes, legacy_path.state_merge,
+            model.CorridorPathDisposition.RESIDUAL, (),
+        )),
+        legacy_path.nodes, legacy_path.state_merge, model.CorridorPathDisposition.RESIDUAL, (),
+    )
+    base_content = (
+        "unflatten.corridor-coverage-forecast.v1", covered_base_forecast.plan_id,
+        covered_base_forecast.function_ea, covered_base_forecast.source_native_key,
+        covered_base_forecast.source_generation, covered_base_forecast.dispatcher_ref,
+        covered_base_forecast.dispatcher_anchor_ea, (residual_legacy_path,), (),
+        (residual_legacy_path.path_id,), True, (), (), (),
+    )
+    base_forecast = model.CorridorCoverageForecast(
+        canonical_authority_id(base_content), covered_base_forecast.plan_id,
+        covered_base_forecast.function_ea, covered_base_forecast.source_native_key,
+        covered_base_forecast.source_generation, covered_base_forecast.dispatcher_ref,
+        covered_base_forecast.dispatcher_anchor_ea, (residual_legacy_path,), (),
+        (residual_legacy_path.path_id,), True, (), (), (),
+    )
+    forecast = model.DefaultGapInfeasibilityForecast(
+        canonical_authority_id((
+            "unflatten.default-gap-infeasibility-forecast.v1", base_forecast,
+            (path,), ((exclusion.exclusion_id, exclusion.digest),), (exclusion,),
+        )),
+        base_forecast, (path,), ((exclusion.exclusion_id, exclusion.digest),), (exclusion,),
+    )
+    foreign_dispatcher = model.CorridorCoveragePathNode(block_ref("default-gap-foreign-dispatcher"), 0x1500)
+    foreign_content = (
+        "unflatten.default-gap-infeasibility-exclusion.v2", 4, state_identity(),
+        foreign_dispatcher, default_entry, residual, (seed,), (proof_id,), (3, 7),
+    )
+    foreign_exclusion = model.DefaultGapInfeasibilityExclusion(
+        canonical_authority_id(foreign_content),
+        canonical_authority_id(("unflatten.default-gap-infeasibility-exclusion-digest.v1", foreign_content)),
+        4, state_identity(), foreign_dispatcher, default_entry, residual,
+        (seed,), (proof_id,), (3, 7),
+    )
+    foreign_path = model.DefaultGapInfeasibilityPath(
+        canonical_authority_id((
+            "unflatten.default-gap-infeasibility-path.v1", path.nodes, path.state_merge,
+            foreign_exclusion.exclusion_id,
+        )), path.nodes, path.state_merge, foreign_exclusion.exclusion_id,
+    )
+    with pytest.raises(ValueError, match="dispatcher identity"):
+        model.DefaultGapInfeasibilityForecast(
+            canonical_authority_id((
+                "unflatten.default-gap-infeasibility-forecast.v1", base_forecast,
+                (foreign_path,), ((foreign_exclusion.exclusion_id, foreign_exclusion.digest),),
+                (foreign_exclusion,),
+            )),
+            base_forecast, (foreign_path,), ((foreign_exclusion.exclusion_id, foreign_exclusion.digest),),
+            (foreign_exclusion,),
+        )
+    source_fingerprint = authority_id("default-gap-link-source")
+    candidate_fingerprint = authority_id("default-gap-link-candidate")
+    base_content = (
+        "unflatten.corridor-coverage-phase.v1", base_forecast.forecast_id,
+        model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT, source_fingerprint,
+        candidate_fingerprint, 2, 3, (base_forecast.paths[0].path_id,), (), (), True, (), True, False, (),
+    )
+    base_result = model.CorridorCoveragePhaseResult(
+        canonical_authority_id(base_content), base_forecast.forecast_id,
+        model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT, source_fingerprint,
+        candidate_fingerprint, 2, 3, (base_forecast.paths[0].path_id,), (), (), True,
+        (), True, False, (),
+    )
+    correlation = model.DefaultGapInfeasibilityCorrelation(
+        exclusion.exclusion_id, exclusion.digest, path.path_id, dispatcher_node,
+        default_entry, residual, (seed,), (proof_id,), (3, 7), source_fingerprint,
+        candidate_fingerprint, 2, 3, authority_id("default-gap-placeholder"),
+    )
+    phase_content = (
+        "unflatten.default-gap-infeasibility-phase.v1", base_result, forecast,
+        model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT, source_fingerprint,
+        candidate_fingerprint, 2, 3, (exclusion.exclusion_id,), (correlation.content_key,),
+    )
+    result_id = canonical_authority_id(phase_content)
+    result = model.DefaultGapInfeasibilityPhaseResult(
+        result_id, base_result, forecast, model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        source_fingerprint, candidate_fingerprint, 2, 3, (exclusion.exclusion_id,),
+        (replace(correlation, phase_result_id=result_id),),
+    )
+    assert result.matched_exclusion_ids == (exclusion.exclusion_id,)
+    assert canonical_decode(canonical_bytes(forecast)) == forecast
+    assert canonical_decode(canonical_bytes(result)) == result
+    with pytest.raises(ValueError, match="digest rows"):
+        model.DefaultGapInfeasibilityForecast(
+            forecast.extension_id, base_forecast, (path,),
+            ((exclusion.exclusion_id, authority_id("wrong-default-gap-digest")),),
+            (exclusion,),
+        )
+
+
+def test_default_gap_extension_keeps_empty_legacy_wire_schema_and_rejects_duplicate_proof_seed() -> None:
+    """Empty default-gap fields retain v1 bytes; each seed owns one proof ID."""
+    model = import_authority_model()
+    proposal = _valid_proposal(model)
+    forecast = _minimal_corridor_forecast(model, SimpleNamespace(**proposal))
+    path = forecast.paths[0]
+    encoded = json.loads(canonical_bytes(path))
+    assert encoded["n"] == "CorridorCoveragePath"
+    assert [name for name, _value in encoded["v"]] == [
+        "path_id", "nodes", "state_merge", "disposition", "semantic_exclusion_ids",
+    ]
+    assert canonical_decode(canonical_bytes(forecast)) == forecast
+
+    proof_id = authority_id("default-gap-duplicate-proof")
+    seed_a = model.DefaultGapInitialStateSeed(1, proof_id)
+    seed_b = model.DefaultGapInitialStateSeed(2, proof_id)
+    state = state_identity()
+    dispatcher = model.CorridorCoveragePathNode(block_ref("default-gap-duplicate-dispatcher"), 0x1000)
+    default_entry = model.CorridorCoveragePathNode(block_ref("default-gap-duplicate-default"), 0x1100)
+    residual = model.CorridorCoveragePathNode(block_ref("default-gap-duplicate-residual"), 0x1200)
+    content = (
+        "unflatten.default-gap-infeasibility-exclusion.v2", 4, state,
+        dispatcher, default_entry, residual,
+        tuple(sorted((seed_a, seed_b), key=canonical_bytes)), (proof_id,), (1, 2),
+    )
+    with pytest.raises(ValueError, match="bijectively"):
+        model.DefaultGapInfeasibilityExclusion(
+            canonical_authority_id(content),
+            canonical_authority_id(("unflatten.default-gap-infeasibility-exclusion-digest.v1", content)),
+            4, state, dispatcher, default_entry, residual,
+            tuple(sorted((seed_a, seed_b), key=canonical_bytes)), (proof_id,), (1, 2),
+        )
+
+
+def _default_gap_wrapper(model, covered_forecast, *, token="union"):
+    """Make one nominal extension over an otherwise ordinary legacy forecast."""
+    legacy_path = covered_forecast.paths[0]
+    residual_path = model.CorridorCoveragePath(
+        canonical_authority_id((
+            "unflatten.corridor-coverage-path.v1", legacy_path.nodes,
+            legacy_path.state_merge, model.CorridorPathDisposition.RESIDUAL, (),
+        )),
+        legacy_path.nodes, legacy_path.state_merge,
+        model.CorridorPathDisposition.RESIDUAL, (),
+    )
+    base_content = (
+        "unflatten.corridor-coverage-forecast.v1", covered_forecast.plan_id,
+        covered_forecast.function_ea, covered_forecast.source_native_key,
+        covered_forecast.source_generation, covered_forecast.dispatcher_ref,
+        covered_forecast.dispatcher_anchor_ea, (residual_path,), (),
+        (residual_path.path_id,), True, (), (), (),
+    )
+    base = model.CorridorCoverageForecast(
+        canonical_authority_id(base_content), covered_forecast.plan_id,
+        covered_forecast.function_ea, covered_forecast.source_native_key,
+        covered_forecast.source_generation, covered_forecast.dispatcher_ref,
+        covered_forecast.dispatcher_anchor_ea, (residual_path,), (),
+        (residual_path.path_id,), True, (), (), (),
+    )
+    dispatcher = residual_path.nodes[-1]
+    proof_id = authority_id(f"default-gap-{token}-proof")
+    seed = model.DefaultGapInitialStateSeed(3, proof_id)
+    default_entry = model.CorridorCoveragePathNode(block_ref(f"default-gap-{token}-entry"), 0x1300)
+    residual = model.CorridorCoveragePathNode(block_ref(f"default-gap-{token}-residual"), 0x1400)
+    exclusion_content = (
+        "unflatten.default-gap-infeasibility-exclusion.v2", 4, state_identity(),
+        dispatcher, default_entry, residual, (seed,), (proof_id,), (3,),
+    )
+    exclusion = model.DefaultGapInfeasibilityExclusion(
+        canonical_authority_id(exclusion_content),
+        canonical_authority_id(("unflatten.default-gap-infeasibility-exclusion-digest.v1", exclusion_content)),
+        4, state_identity(), dispatcher, default_entry, residual,
+        (seed,), (proof_id,), (3,),
+    )
+    path = model.DefaultGapInfeasibilityPath(
+        canonical_authority_id((
+            "unflatten.default-gap-infeasibility-path.v1", residual_path.nodes,
+            residual_path.state_merge, exclusion.exclusion_id,
+        )),
+        residual_path.nodes, residual_path.state_merge, exclusion.exclusion_id,
+    )
+    forecast = model.DefaultGapInfeasibilityForecast(
+        canonical_authority_id((
+            "unflatten.default-gap-infeasibility-forecast.v1", base, (path,),
+            ((exclusion.exclusion_id, exclusion.digest),), (exclusion,),
+        )),
+        base, (path,), ((exclusion.exclusion_id, exclusion.digest),), (exclusion,),
+    )
+    return forecast, exclusion, path
+
+
+def _default_gap_phase_result(model, wrapper, exclusion, path, coordinate_result):
+    base_content = (
+        "unflatten.corridor-coverage-phase.v1", wrapper.base_forecast.forecast_id,
+        coordinate_result.phase, coordinate_result.source_fingerprint,
+        coordinate_result.candidate_fingerprint, coordinate_result.source_generation,
+        coordinate_result.candidate_generation,
+        (wrapper.base_forecast.paths[0].path_id,), (), (),
+        coordinate_result.enumeration_complete, (),
+        coordinate_result.source_dispatcher_reachable,
+        coordinate_result.candidate_dispatcher_reachable, (),
+    )
+    if coordinate_result.comparison_region_subject_ids:
+        base_content = (*base_content, coordinate_result.comparison_region_subject_ids)
+    if coordinate_result.dispatcher_subject_id is not None:
+        base_content = (*base_content, coordinate_result.dispatcher_subject_id)
+    base_result = model.CorridorCoveragePhaseResult(
+        canonical_authority_id(base_content), wrapper.base_forecast.forecast_id,
+        coordinate_result.phase, coordinate_result.source_fingerprint,
+        coordinate_result.candidate_fingerprint, coordinate_result.source_generation,
+        coordinate_result.candidate_generation,
+        (wrapper.base_forecast.paths[0].path_id,), (), (),
+        coordinate_result.enumeration_complete, (),
+        coordinate_result.source_dispatcher_reachable,
+        coordinate_result.candidate_dispatcher_reachable, (),
+        coordinate_result.comparison_region_subject_ids,
+        coordinate_result.dispatcher_subject_id,
+    )
+    correlation = model.DefaultGapInfeasibilityCorrelation(
+        exclusion.exclusion_id, exclusion.digest, path.path_id, exclusion.dispatcher,
+        exclusion.default_entry, exclusion.residual, exclusion.initial_state_seeds,
+        exclusion.route_proof_ids, exclusion.normalized_reachable_states,
+        base_result.source_fingerprint, base_result.candidate_fingerprint,
+        base_result.source_generation, base_result.candidate_generation,
+        authority_id("default-gap-phase-placeholder"),
+    )
+    result_content = (
+        "unflatten.default-gap-infeasibility-phase.v1", base_result, wrapper,
+        base_result.phase, base_result.source_fingerprint,
+        base_result.candidate_fingerprint, base_result.source_generation,
+        base_result.candidate_generation, (exclusion.exclusion_id,),
+        (correlation.content_key,),
+    )
+    result_id = canonical_authority_id(result_content)
+    return model.DefaultGapInfeasibilityPhaseResult(
+        result_id, base_result, wrapper, base_result.phase,
+        base_result.source_fingerprint, base_result.candidate_fingerprint,
+        base_result.source_generation, base_result.candidate_generation,
+        (exclusion.exclusion_id,),
+        (replace(correlation, phase_result_id=result_id),),
+    )
+
+
+def test_preparation_receipt_accepts_one_nominal_default_gap_forecast() -> None:
+    """The one corridor receipt field carries either legacy or its nominal extension."""
+    from .test_evaluate import _complete_inputs
+
+    model = import_authority_model()
+    proposal_values = _valid_proposal(model)
+    ordinary = model.ProposedUnflattenContract(**proposal_values)
+    covered = _minimal_corridor_forecast(model, ordinary)
+    proposal = replace(ordinary, corridor_coverage_forecast=covered)
+    inputs = _complete_inputs(source_subjects=(), proposal=proposal)
+    wrapper, _exclusion, _path = _default_gap_wrapper(model, covered)
+    receipt = copy(inputs.preparation_receipt)
+    object.__setattr__(receipt, "corridor_coverage_forecast", wrapper)
+    object.__setattr__(receipt, "receipt_id", receipt_id(receipt))
+
+    model.PreparationAuthorityReceipt.__post_init__(receipt)
+    assert receipt.corridor_coverage_forecast is wrapper
+
+
+def test_default_gap_wrapper_threads_one_exact_receipt_result_and_case() -> None:
+    """Derived inputs and the case retain the exact wrapper, not only its base IDs."""
+    from d810.transforms.unflatten_authority.evaluate import build_semantic_case
+    from .test_evaluate import _complete_inputs, _role_subject
+
+    model = import_authority_model()
+    ordinary = model.ProposedUnflattenContract(**_valid_proposal(model))
+    covered = _minimal_corridor_forecast(model, ordinary)
+    wrapper, exclusion, path = _default_gap_wrapper(model, covered)
+    base_proposal = replace(ordinary, corridor_coverage_forecast=covered)
+    base_inputs = _complete_inputs(
+        source_subjects=(*(
+            _role_subject(model.SemanticSubjectRole.SOURCE_CATALOG_BLOCK, str(index))
+            for index in range(3)
+        ), _role_subject(model.SemanticSubjectRole.SOURCE_ENTRY, "0")),
+        proposal=base_proposal,
+    )
+    original_result = base_inputs.corridor_coverage_phase_result
+    assert type(original_result) is model.CorridorCoveragePhaseResult
+    result = _default_gap_phase_result(
+        model, wrapper, exclusion, path, original_result,
+    )
+    base_result = result.base_result
+    proposal = replace(base_inputs.proposal, corridor_coverage_forecast=wrapper)
+    receipt = copy(base_inputs.preparation_receipt)
+    from d810.transforms.unflatten_authority.evaluate import _receipt_digest
+    object.__setattr__(receipt, "proposal_id", _receipt_digest(proposal))
+    object.__setattr__(receipt, "corridor_coverage_forecast", wrapper)
+    object.__setattr__(receipt, "receipt_id", receipt_id(receipt))
+    inputs = replace(
+        base_inputs, proposal=proposal, preparation_receipt=receipt,
+        corridor_coverage_phase_result=result,
+    )
+
+    assert inputs.corridor_coverage_phase_result is result
+    assert canonical_decode(canonical_bytes(receipt)) == receipt
+    decoded_inputs = canonical_decode(canonical_bytes(inputs))
+    assert decoded_inputs == inputs
+    model.DerivedUnflattenPreparationInputs.__post_init__(decoded_inputs)
+    case = build_semantic_case(
+        authority_id=authority_id("default-gap-union-case"),
+        phase=base_result.phase,
+        inputs=inputs,
+    )
+    assert case.corridor_coverage_phase_result is result
+    decoded_case = canonical_decode(canonical_bytes(case))
+    assert decoded_case == case
+    model.SemanticSafetyCase.__post_init__(decoded_case)
+
+    with pytest.raises(ValueError, match="coordinates differ from base result"):
+        replace(result, base_result=original_result)
+
+    foreign_wrapper, foreign_exclusion, foreign_path = _default_gap_wrapper(
+        model, covered, token="foreign",
+    )
+    foreign_result = _default_gap_phase_result(
+        model, foreign_wrapper, foreign_exclusion, foreign_path, original_result,
+    )
+    with pytest.raises(ValueError, match="forecast"):
+        replace(inputs, corridor_coverage_phase_result=foreign_result)
+
+    incomplete_content = (
+        "unflatten.default-gap-infeasibility-phase.v1", base_result, wrapper,
+        base_result.phase, base_result.source_fingerprint,
+        base_result.candidate_fingerprint, base_result.source_generation,
+        base_result.candidate_generation, (), (),
+    )
+    incomplete = model.DefaultGapInfeasibilityPhaseResult(
+        canonical_authority_id(incomplete_content), base_result, wrapper,
+        base_result.phase, base_result.source_fingerprint,
+        base_result.candidate_fingerprint, base_result.source_generation,
+        base_result.candidate_generation, (), (),
+    )
+    with pytest.raises(ValueError, match="exactly cover forecast exclusions"):
+        model._validate_corridor_authority_pair(wrapper, incomplete)
+
+
+def test_default_gap_wrapper_does_not_change_legacy_receipt_identity() -> None:
+    """The union leaves legacy receipt canonical bytes and IDs untouched."""
+    from d810.transforms.unflatten_authority.evaluate import build_semantic_case
+    from .test_evaluate import _complete_inputs, _role_subject
+
+    model = import_authority_model()
+    ordinary = model.ProposedUnflattenContract(**_valid_proposal(model))
+    covered = _minimal_corridor_forecast(model, ordinary)
+    inputs = _complete_inputs(
+        source_subjects=(*(
+            _role_subject(model.SemanticSubjectRole.SOURCE_CATALOG_BLOCK, str(index))
+            for index in range(3)
+        ), _role_subject(model.SemanticSubjectRole.SOURCE_ENTRY, "0")),
+        proposal=replace(ordinary, corridor_coverage_forecast=covered),
+    )
+
+    assert canonical_decode(canonical_bytes(inputs.preparation_receipt)) == inputs.preparation_receipt
+    assert receipt_id(inputs.preparation_receipt) == inputs.preparation_receipt.receipt_id
+    assert canonical_decode(canonical_bytes(inputs)) == inputs
+    case = build_semantic_case(
+        authority_id=authority_id("legacy-corridor-roundtrip-case"),
+        phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        inputs=inputs,
+    )
+    assert canonical_decode(canonical_bytes(case)) == case
+
+
 def test_authority_model_package_exists_and_is_closed() -> None:
     """The model package is the only import surface for typed authority data."""
 
@@ -397,13 +907,17 @@ def test_subject_kind_role_locator_matrix_is_closed() -> None:
         (model.SemanticSubjectKind.EDGE, model.SemanticSubjectRole.SEMANTIC_ROUTE_SOURCE,
          model.EdgeSubjectLocator(b0, 0x1000, b1, 0x1100, edge_role())),
         (model.SemanticSubjectKind.ROUTE, model.SemanticSubjectRole.SEMANTIC_ROUTE_SOURCE,
-         model.RouteSubjectLocator(authority_id("p"), authority_id("g"), b0, 0x1000, (b1,), (0x1100,))),
+         model.RouteSubjectLocator(authority_id("p"), authority_id("g"), b0, 0x1000, (model.BlockSubjectLocator(b1, 0x1100),))),
         (model.SemanticSubjectKind.EFFECT, model.SemanticSubjectRole.EFFECT_SITE,
          model.EffectSubjectLocator(b0, 0x1000, 0x1004, model.EffectSiteKind.STORE)),
         (model.SemanticSubjectKind.HANDLER, model.SemanticSubjectRole.AUTHORITATIVE_HANDLER,
          model.HandlerSubjectLocator(b0, 0x1000, (1, 2))),
         (model.SemanticSubjectKind.TERMINAL, model.SemanticSubjectRole.TERMINAL_SITE,
          model.TerminalSubjectLocator(b0, 0x1000, model.TerminalKind.RETURN, 0x1004)),
+        (model.SemanticSubjectKind.TERMINAL, model.SemanticSubjectRole.TERMINAL_SITE,
+         model.LogicalFunctionExitSubjectLocator(
+             LogicalBlockRef("authority-test", "logical-terminal", 1), 7,
+         )),
         (model.SemanticSubjectKind.VALUE_FLOW, model.SemanticSubjectRole.NON_STATE_VALUE_FLOW,
          model.ValueFlowSubjectLocator(authority_id("f"), state_identity(), (b0,))),
         (model.SemanticSubjectKind.CORRIDOR, model.SemanticSubjectRole.DISPATCHER_CORRIDOR,
@@ -734,14 +1248,13 @@ def test_locator_tuples_are_normalized_and_duplicate_checked() -> None:
     b0, b1 = block_ref("b0"), block_ref("b1")
     locator = model.RouteSubjectLocator(
         authority_id("p"), authority_id("g"), b0, 0x1000,
-        [b1], [0x1100],
+        [model.BlockSubjectLocator(b1, 0x1100)],
     )
-    assert locator.destination_refs == (b1,)
-    assert locator.destination_anchor_eas == (0x1100,)
+    assert locator.native_destination_members() == (model.BlockSubjectLocator(b1, 0x1100),)
     with pytest.raises(ValueError):
         model.RouteSubjectLocator(
             authority_id("p"), authority_id("g"), b0, 0x1000,
-            [b1, b1], [0x1100, 0x1100],
+            [model.BlockSubjectLocator(b1, 0x1100), model.BlockSubjectLocator(b1, 0x1100)],
         )
 
 
@@ -750,16 +1263,54 @@ def test_parallel_locator_tuples_preserve_ref_to_anchor_associations() -> None:
     b0, b1 = block_ref("b0"), block_ref("b1")
     route = model.RouteSubjectLocator(
         authority_id("p"), authority_id("g"), b0, 0x1000,
-        [b1, b0], [0x1100, 0x1000],
+        [model.BlockSubjectLocator(b1, 0x1100), model.BlockSubjectLocator(b0, 0x1000)],
     )
-    assert route.destination_refs == (b0, b1)
-    assert route.destination_anchor_eas == (0x1000, 0x1100)
+    assert route.native_destination_members() == (
+        model.BlockSubjectLocator(b0, 0x1000), model.BlockSubjectLocator(b1, 0x1100),
+    )
+    e0 = LogicalBlockRef("authority-test", "endpoint-0", 1)
+    e1 = LogicalBlockRef("authority-test", "endpoint-1", 1)
+    endpoints = model.RouteSubjectLocator(
+        authority_id("p"), authority_id("g"), b0, 0x1000,
+        [model.BlockSubjectLocator(b1, 0x1100)],
+        [
+            model.LogicalFunctionExitSubjectLocator(e1, 9),
+            model.LogicalFunctionExitSubjectLocator(e0, 7),
+        ],
+    )
+    assert endpoints.dag_endpoint_members() == (
+        model.LogicalFunctionExitSubjectLocator(e0, 7),
+        model.LogicalFunctionExitSubjectLocator(e1, 9),
+    )
+    with pytest.raises(ValueError, match="dag_endpoint_locators"):
+        model.RouteSubjectLocator(
+            authority_id("p"), authority_id("g"), b0, 0x1000,
+            [model.BlockSubjectLocator(b1, 0x1100)],
+            [
+                model.LogicalFunctionExitSubjectLocator(e0, 7),
+                model.LogicalFunctionExitSubjectLocator(e0, 7),
+            ],
+        )
     corridor = model.CorridorSubjectLocator(
         authority_id("c"), b0, 0x1000,
         [b1, b0], [0x1100, 0x1000],
     )
     assert corridor.member_refs == (b0, b1)
     assert corridor.member_anchor_eas == (0x1000, 0x1100)
+
+
+def test_corridor_locator_keeps_distinct_members_at_one_native_anchor() -> None:
+    """Split source coordinates may share an EA without becoming one member."""
+    model = import_authority_model()
+    b0, b1 = block_ref("split-anchor-0"), block_ref("split-anchor-1")
+
+    corridor = model.CorridorSubjectLocator(
+        authority_id("split-anchor-corridor"), b0, 0x1000,
+        [b1, b0], [0x1000, 0x1000],
+    )
+
+    assert corridor.member_refs == (b0, b1)
+    assert corridor.member_anchor_eas == (0x1000, 0x1000)
 
 
 def test_phase_binding_requires_serial_and_ea_together() -> None:
@@ -1091,7 +1642,7 @@ def test_claim_fields_use_the_closed_15_1_rows() -> None:
                         model.CorridorSubjectLocator(authority_id("corridor"), b0, 0x1000,
                                                      (b0, b1), (0x1000, 0x1100)))
     route_locator = model.RouteSubjectLocator(authority_id("route"), authority_id("group"),
-                                               b0, 0x1000, (b1,), (0x1100,))
+                                               b0, 0x1000, (model.BlockSubjectLocator(b1, 0x1100),))
     route = _subject(model, model.SemanticSubjectKind.ROUTE,
                      model.SemanticSubjectRole.SEMANTIC_ROUTE_SOURCE, route_locator)
     source = _subject(model, model.SemanticSubjectKind.BLOCK,
@@ -1215,11 +1766,11 @@ def test_retirement_and_route_claims_preserve_cross_field_membership() -> None:
 
     retired_locator = model.RouteSubjectLocator(
         authority_id("retired-route"), authority_id("group-x"), b0, 0x1000,
-        (b1,), (0x1100,),
+        (model.BlockSubjectLocator(b1, 0x1100),),
     )
     replacement_locator = model.RouteSubjectLocator(
         authority_id("replacement-route"), authority_id("group-x"), b1, 0x1100,
-        (b0,), (0x1000,),
+        (model.BlockSubjectLocator(b0, 0x1000),),
     )
     retired = _subject(model, model.SemanticSubjectKind.ROUTE,
                        model.SemanticSubjectRole.SEMANTIC_ROUTE_SOURCE, retired_locator)
@@ -1243,7 +1794,7 @@ def test_retirement_and_route_claims_preserve_cross_field_membership() -> None:
         model.SemanticSubjectRole.SEMANTIC_ROUTE_SOURCE,
         model.RouteSubjectLocator(
             authority_id("proof-route"), authority_id("other-group"),
-            b0, 0x1000, (b1,), (0x1100,),
+            b0, 0x1000, (model.BlockSubjectLocator(b1, 0x1100),),
         ),
     )
     with pytest.raises(ValueError, match="atomic_group_id"):

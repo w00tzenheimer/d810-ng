@@ -119,6 +119,20 @@ def _index_aliases(body: str, index_expr: str) -> set[str]:
             if rhs in aliases and lhs not in aliases:
                 aliases.add(lhs)
                 changed = True
+        for alias in tuple(aliases):
+            if not re.fullmatch(r"[A-Za-z_]\w*", alias):
+                continue
+            for match in re.finditer(
+                rf"\b([A-Za-z_]\w*)\s*=\s*"
+                rf"(?:\([^)]+\)\s*)*"
+                rf"(?:{re.escape(alias)}|LODWORD\(\s*{re.escape(alias)}\s*\)|"
+                rf"\*\s*{re.escape(alias)})(?:\s*\+\+)?\s*;",
+                body,
+            ):
+                lhs = _canonical_expr(match.group(1))
+                if lhs not in aliases:
+                    aliases.add(lhs)
+                    changed = True
     return aliases
 
 
@@ -187,6 +201,43 @@ def _has_rendered_payload_loop(code: str) -> bool:
     ):
         body = match.group("braced") or match.group("single") or ""
         if _loop_body_has_payload_update(body, match.group("idx")):
+            return True
+
+    pointer_index = (
+        r"(?:LODWORD\(\s*[A-Za-z_]\w*\s*\)|"
+        r"\*+\s*[A-Za-z_]\w*|[A-Za-z_]\w*)"
+    )
+    for match in re.finditer(
+        rf"while\s*\(\s*(?P<idx>{pointer_index})\s*<\s*"
+        rf"{COUNTED_LOOP_BOUND_PATTERN}[uUlL]*\s*\)\s*"
+        rf"\{{(?P<body>.*?)\}}",
+        code,
+        re.MULTILINE | re.DOTALL,
+    ):
+        identifiers = tuple(
+            item for item in re.findall(r"[A-Za-z_]\w*", match.group("idx"))
+            if item != "LODWORD"
+        )
+        if len(identifiers) != 1:
+            continue
+        token = identifiers[0]
+        lvalue = (
+            rf"(?:LODWORD\(\s*{re.escape(token)}\s*\)|"
+            rf"\*+\s*{re.escape(token)}|{re.escape(token)})"
+        )
+        prefix = code[max(0, match.start() - 1000):match.start()]
+        if not re.search(rf"{lvalue}\s*=\s*0\s*;\s*$", prefix):
+            continue
+        body = match.group("body") or ""
+        progressed = bool(
+            re.search(rf"(?:\+\+\s*{lvalue}|{lvalue}\s*\+\+)", body)
+            or re.search(
+                rf"{lvalue}\s*=\s*(?:\([^)]+\)\s*)*"
+                rf"{lvalue}\s*\+\s*1\s*;",
+                body,
+            )
+        )
+        if progressed and _loop_body_has_payload_update(body, token):
             return True
 
     return False

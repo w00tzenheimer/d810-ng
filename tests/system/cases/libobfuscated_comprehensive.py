@@ -810,9 +810,17 @@ DAC_MASM_CASES = [
         deobfuscated_contains=[
             "switch ( *(_WORD *)",
             "case 0x2C:",
-            "__ROL8__(v28, 0x15)",
-            "if ( v92 > v26 )",
             "return a1;",
+        ],
+        # The transaction-owned authority changes the order in which Hex-Rays
+        # materializes equivalent locals.  Bind the oracle to the case-owned
+        # rotate and the exact transformed-value comparison continuation, not
+        # snapshot-local variable numbers or an inverted branch spelling.
+        deobfuscated_regexes=[
+            r"case 0x2C:\s+v\d+ = __ROL8__\(v\d+, 0x15\);",
+            r"v\d+ = v\d+ \^ 0x71A7EB2DF7C173A2LL;",
+            r"v\d+ = v\d+ \^ 0x3F2E194C0657CB6FLL;",
+            r"if \( v\d+ (?:<=|>) v\d+ \)",
         ],
         deobfuscated_not_contains=[
             "0x3BEDBE32",

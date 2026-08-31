@@ -324,6 +324,18 @@ class TestMbaSerializerInstructionMeta:
             with pytest.raises(ValueError, match="operand shape"):
                 validate_operand_shape(name, l=invalid[0], r=invalid[1], d=invalid[2])
 
+    def test_ijmp_accepts_exact_ida94_right_and_destination_layout(self) -> None:
+        """IDA 9.4 can expose early-maturity m_ijmp as z,r,d."""
+        from d810.hexrays.instruction_vocabulary import validate_operand_shape
+        from d810.ir.flowgraph import MopSnapshot, OperandKind
+
+        register = MopSnapshot(kind=OperandKind.REGISTER, size=8, reg=1)
+        target = MopSnapshot(kind=OperandKind.GLOBAL, size=8, gaddr=0x5000)
+
+        validate_operand_shape("m_ijmp", l=None, r=register, d=target)
+        with pytest.raises(ValueError, match="operand shape"):
+            validate_operand_shape("m_ijmp", l=None, r=register, d=None)
+
     def test_conditional_normalizer_keeps_jcnd_unary_and_only_canonicalizes_eq(
         self,
     ) -> None:

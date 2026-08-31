@@ -154,6 +154,7 @@ class TransactionAttemptId:
 class PatchStepKind(str, Enum):
     REDIRECT_GOTO = "redirect_goto"
     REDIRECT_BRANCH = "redirect_branch"
+    CONVERT_TO_GOTO = "convert_to_goto"
     LOWER_CONDITIONAL = "lower_conditional"
     BYPASS_TRAMPOLINE = "bypass_trampoline"
     CONDITIONAL_REDIRECT = "conditional_redirect"

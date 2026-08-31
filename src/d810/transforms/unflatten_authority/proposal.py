@@ -18,6 +18,7 @@ from d810.transforms.plan import (
     PatchBlockSpec,
     PatchRedirectGoto,
     PatchRedirectBranch,
+    PatchConvertToGoto,
     PatchLowerConditionalStateTransition,
     PatchBypassDispatcherTrampoline,
     PatchConditionalRedirect,
@@ -37,17 +38,24 @@ from d810.transforms.dispatcher_corridor_coverage import (
 from d810.analyses.control_flow.minimal_state_recovery import (
     CandidatePrefixAlternateCorridorProof,
 )
+from d810.analyses.control_flow.route_comparison import current_u32_route_comparison
 from d810.ir.block_identity import StableBlockIdentity
+from d810.ir.flowgraph import InsnKind
 
 from .model import (
     CorridorCoverageForecast,
     CorridorCoveragePath,
     CorridorCoveragePathNode,
+    DefaultGapInfeasibilityExclusion,
+    DefaultGapInfeasibilityForecast,
+    DefaultGapInfeasibilityPath,
+    DefaultGapInitialStateSeed,
     CorridorPathDisposition,
     CorridorSemanticExclusion,
     CorridorSubjectLocator,
     BlockSubjectLocator,
     HandlerSubjectLocator,
+    LogicalFunctionExitSubjectLocator,
     ProposedUnflattenContract,
     RetirementCandidateCatalog,
     RetirementPlanMember,
@@ -79,6 +87,54 @@ from .ids import (
     validate_canonical_roundtrip,
 )
 from .legacy_keys import LEGACY_UNFLATTEN_KEYS
+
+
+def _native_route_destination_subject_for_proof_destination(
+    *,
+    claim: EquivalentSemanticRouteClaim,
+    proof_destination: object,
+    catalog: object,
+) -> SemanticSubjectRef:
+    """Select the one native claim member sealed by a proof destination.
+
+    A route claim may also retain an anchorless logical FUNCTION_EXIT leaf as
+    decision-DAG closure evidence.  That leaf is never a physical redirect or
+    carrier target: only the proof's native stable identity selects one block
+    subject from the source identity catalog.
+    """
+    target_identity = getattr(proof_destination, "target_identity", None)
+    target_anchor_ea = getattr(proof_destination, "target_anchor_ea", None)
+    if not isinstance(target_identity, StableBlockIdentity) or type(target_anchor_ea) is not int:
+        raise TypeError("route destination selection requires a native proof target")
+    blocks = getattr(catalog, "blocks", None)
+    if type(blocks) is not tuple:
+        raise TypeError("route destination selection requires a source identity catalog")
+    witnesses = {item.block_ref: item for item in blocks}
+    selected = []
+    for subject in claim.destination_subjects:
+        locator = subject.locator
+        if (
+            type(locator) is not BlockSubjectLocator
+            or locator.anchor_ea != target_anchor_ea
+        ):
+            continue
+        witness = witnesses.get(locator.block_ref)
+        if witness is None or witness.anchor_ea != locator.anchor_ea:
+            continue
+        subject_identity = (
+            locator.block_ref.identity
+            if type(locator.block_ref) is NativeBlockRef
+            else StableBlockIdentity.from_instruction_eas(
+                witness.native_instruction_eas,
+                native_key=catalog.native_key,
+            )
+        )
+        if subject_identity != target_identity:
+            continue
+        selected.append(subject)
+    if len(selected) != 1:
+        raise ValueError("route proof native destination is absent or ambiguous in route claim")
+    return selected[0]
 
 
 @dataclass(frozen=True, slots=True)
@@ -147,6 +203,8 @@ def _nominal_patch_lineage_parts(step: object):
         return ((step.from_serial, helper) if helper is not None else (step.from_serial,), (step.from_serial, step.old_target, step.new_target), None, None)
     if step_type is PatchRedirectGoto:
         return ((step.from_serial,), (step.from_serial, step.old_target, step.new_target), None, None)
+    if step_type is PatchConvertToGoto:
+        return ((step.block_serial,), (step.block_serial, step.goto_target), None, None)
     if step_type is PatchLowerConditionalStateTransition:
         return ((step.source_serial,), (step.source_serial, step.old_dispatcher_serial, step.false_target_serial, step.true_target_serial), step.rewrite_from_ea, None)
     if step_type is PatchBypassDispatcherTrampoline:
@@ -204,6 +262,7 @@ def _patch_step_kind(step: object) -> PatchStepKind | None:
     return {
         PatchRedirectGoto: PatchStepKind.REDIRECT_GOTO,
         PatchRedirectBranch: PatchStepKind.REDIRECT_BRANCH,
+        PatchConvertToGoto: PatchStepKind.CONVERT_TO_GOTO,
         PatchLowerConditionalStateTransition: PatchStepKind.LOWER_CONDITIONAL,
         PatchBypassDispatcherTrampoline: PatchStepKind.BYPASS_TRAMPOLINE,
         PatchConditionalRedirect: PatchStepKind.CONDITIONAL_REDIRECT,
@@ -265,7 +324,8 @@ def corridor_coverage_forecast_from_analysis(
     *,
     proposal: ProposedUnflattenContract,
     block_refs_by_serial: dict[int, NativeBlockRef | LogicalBlockRef],
-) -> CorridorCoverageForecast:
+    default_gap_infeasibility_exclusions: tuple[DefaultGapInfeasibilityExclusion, ...] = (),
+) -> CorridorCoverageForecast | DefaultGapInfeasibilityForecast:
     """Seal producer coverage directly into the typed proposal vocabulary.
 
     The emitter already owns the immutable corridor analysis.  This adapter
@@ -417,12 +477,88 @@ def corridor_coverage_forecast_from_analysis(
         dispatcher_node.anchor_ea, paths, covered_ids, residual_ids,
         bool(coverage.enumeration_complete), digest_rows, exclusion_rows, linked_paths,
     ))
-    return CorridorCoverageForecast(
+    base_forecast = CorridorCoverageForecast(
         forecast_id, proposal.plan_id, int(coverage.function_ea),
         proposal.source_identity_catalog.native_key,
         proposal.source_identity_catalog.generation, dispatcher_ref,
         dispatcher_node.anchor_ea, paths, covered_ids, residual_ids,
         bool(coverage.enumeration_complete), digest_rows, exclusion_rows, linked_paths,
+    )
+    default_gaps = tuple(default_gap_infeasibility_exclusions)
+    if not default_gaps:
+        return base_forecast
+    if not coverage.enumeration_complete:
+        raise ValueError("default-gap exclusions require complete corridor enumeration")
+    if any(type(item) is not DefaultGapInfeasibilityExclusion for item in default_gaps):
+        raise TypeError("default-gap exclusions must be prebuilt closed rows")
+    if default_gaps != tuple(sorted(default_gaps, key=lambda item: item.exclusion_id)):
+        raise ValueError("default-gap exclusions must be canonically ordered")
+    source_blocks = {item.block_ref: item for item in proposal.source_identity_catalog.blocks}
+    residual_paths = tuple(
+        path for path in base_forecast.paths
+        if path.disposition is CorridorPathDisposition.RESIDUAL
+    )
+    covered_coordinates = {
+        (path.nodes, path.state_merge)
+        for path in base_forecast.paths
+        if path.disposition is not CorridorPathDisposition.RESIDUAL
+    }
+    residual_coordinates = {(path.nodes, path.state_merge) for path in residual_paths}
+    if len(residual_coordinates) != len(residual_paths) or covered_coordinates & residual_coordinates:
+        raise ValueError("corridor residual coordinates must be unique and disjoint from covered paths")
+    proofs_by_id = {
+        proof.proof_id: proof
+        for proof in proposal.route_evidence.route_proofs
+    }
+    extension_paths: list[DefaultGapInfeasibilityPath] = []
+    for exclusion in default_gaps:
+        if exclusion.state_identity != proposal.plan_inputs.state_identity:
+            raise ValueError("default-gap exclusion state identity differs from plan")
+        for node in (exclusion.dispatcher, exclusion.default_entry, exclusion.residual):
+            witness = source_blocks.get(node.block_ref)
+            if witness is None or witness.anchor_ea != node.anchor_ea:
+                raise ValueError("default-gap exclusion coordinate is foreign to source catalog")
+        if exclusion.dispatcher != dispatcher_node:
+            raise ValueError("default-gap exclusion dispatcher differs from coverage dispatcher")
+        for seed in exclusion.initial_state_seeds:
+            proof = proofs_by_id.get(seed.route_proof_id)
+            if proof is None or seed.route_proof_id not in exclusion.route_proof_ids:
+                raise ValueError("default-gap seed route proof is absent from canonical route evidence")
+            if seed.normalized_state not in {
+                int(destination.state_constant) & 0xFFFFFFFF
+                for destination in proof.destinations
+            }:
+                raise ValueError("default-gap seed state is absent from canonical route proof")
+            if not any(
+                witness.block_ref.identity == proof.source_identity
+                and witness.anchor_ea == proof.source_anchor_ea
+                for witness in proposal.source_identity_catalog.blocks
+                if type(witness.block_ref) is NativeBlockRef
+            ):
+                raise ValueError("default-gap seed route proof source is foreign to source catalog")
+        matching_paths = tuple(path for path in residual_paths if path.nodes[0] == exclusion.residual)
+        if len(matching_paths) != 1:
+            raise ValueError("default-gap exclusion is not linked to an exact residual path")
+        base_path = matching_paths[0]
+        extension_paths.append(DefaultGapInfeasibilityPath(
+            authority_id((
+                "unflatten.default-gap-infeasibility-path.v1", base_path.nodes,
+                base_path.state_merge, exclusion.exclusion_id,
+            )),
+            base_path.nodes, base_path.state_merge, exclusion.exclusion_id,
+        ))
+    if len({path.path_id for path in extension_paths}) != len(extension_paths):
+        raise ValueError("default-gap exclusions must not link one residual path multiple times")
+    if {(path.nodes, path.state_merge) for path in extension_paths} != residual_coordinates:
+        raise ValueError("default-gap exclusions must cover every exact residual path")
+    extension_paths = sorted(extension_paths, key=lambda item: item.path_id)
+    digest_rows = tuple((item.exclusion_id, item.digest) for item in default_gaps)
+    return DefaultGapInfeasibilityForecast(
+        authority_id((
+            "unflatten.default-gap-infeasibility-forecast.v1", base_forecast,
+            tuple(extension_paths), digest_rows, default_gaps,
+        )),
+        base_forecast, tuple(extension_paths), digest_rows, default_gaps,
     )
 
 
@@ -519,6 +655,12 @@ def _validate_redirect_ref(
 
 
 def _validate_redirect_step(plan: PatchPlan, step: object) -> None:
+    if type(step) is PatchConvertToGoto:
+        _validate_redirect_ref(
+            plan, step.block_serial, "convert source owner", source_owner=True,
+        )
+        _validate_redirect_ref(plan, step.goto_target, "convert selected target")
+        return
     if type(step) is PatchLowerConditionalStateTransition:
         _validate_redirect_ref(plan, step.source_serial, "lower source owner", source_owner=True)
         _validate_redirect_ref(plan, step.old_dispatcher_serial, "lower old dispatcher")
@@ -557,6 +699,7 @@ def canonical_redirect_manifest(plan: PatchPlan) -> RedirectStepManifest:
         if type(step) not in (
             PatchRedirectGoto,
             PatchRedirectBranch,
+            PatchConvertToGoto,
             PatchLowerConditionalStateTransition,
         ):
             continue
@@ -577,6 +720,15 @@ def canonical_redirect_manifest(plan: PatchPlan) -> RedirectStepManifest:
                 "old_target": step.old_target,
                 "new_target": step.new_target,
             }
+        elif type(step) is PatchConvertToGoto:
+            descriptor = canonical_patch_step_descriptor(plan, index)
+            row = {
+                "index": index,
+                "step_type": "PatchConvertToGoto",
+                "feeder_ref": step.block_serial,
+                "selected_target_ref": step.goto_target,
+                "step_digest": descriptor.step_digest,
+            }
         elif type(step) is PatchLowerConditionalStateTransition:
             descriptor = canonical_patch_step_descriptor(plan, index)
             row = {
@@ -594,6 +746,8 @@ def canonical_redirect_manifest(plan: PatchPlan) -> RedirectStepManifest:
         owners.append(
             step.source_serial
             if type(step) is PatchLowerConditionalStateTransition
+            else step.block_serial
+            if type(step) is PatchConvertToGoto
             else step.from_serial
         )
     if not rows:
@@ -846,12 +1000,6 @@ def _validated_terminal_route_claim(
     if proof.atomic_group_id != claim.atomic_group_id:
         raise ValueError("terminal route proof atomic group differs from route claim")
     destinations = tuple(proof.destinations)
-    terminal_destinations = tuple(
-        destination for destination in destinations if destination.terminal
-    )
-    if len(terminal_destinations) != 1:
-        raise ValueError("terminal route proof must contain exactly one terminal destination")
-
     catalog = {
         item.block_ref: item for item in proposal.source_identity_catalog.blocks
     }
@@ -871,22 +1019,34 @@ def _validated_terminal_route_claim(
 
     source_subject = claim.source_subject
     source_identity = identity_for(source_subject, "source")
-    destination = terminal_destinations[0]
-    destination_subjects = tuple(
-        subject
-        for subject in claim.destination_subjects
-        if identity_for(subject, "destination") == destination.target_identity
+    bound_destinations = tuple(
+        (
+            destination,
+            _native_route_destination_subject_for_proof_destination(
+                claim=claim,
+                proof_destination=destination,
+                catalog=proposal.source_identity_catalog,
+            ),
+        )
+        for destination in destinations
     )
-    if len(destination_subjects) != 1:
-        raise ValueError("terminal route destination subject is absent or ambiguous")
-    destination_subject = destination_subjects[0]
+    if target_ref is None:
+        selected_destinations = bound_destinations
+    else:
+        selected_destinations = tuple(
+            item for item in bound_destinations if item[1].block_ref == target_ref
+        )
+    if len(selected_destinations) != 1:
+        raise ValueError(
+            "terminal route proof must bind exactly one terminal carrier destination"
+        )
+    destination, destination_subject = selected_destinations[0]
     if target_ref is not None and destination_subject.block_ref != target_ref:
         raise ValueError("terminal route destination differs from selected endpoint")
     destination_identity = destination.target_identity
     if (
         proof.source_identity != source_identity
         or not source_identity.native_ranges.contains(proof.source_anchor_ea)
-        or destination.target_identity != destination_identity
         or not destination_identity.native_ranges.contains(destination.target_anchor_ea)
     ):
         raise ValueError("terminal route proof endpoints differ from selected route claim")
@@ -908,8 +1068,23 @@ def claims_from_dispatcher_removal_forecast(
 
     if type(coverage) is not DispatcherCorridorCoverage:
         raise TypeError("dispatcher removal forecast must be corridor coverage")
-    if not coverage.enumeration_complete or coverage.residual_corridors:
+    if not coverage.enumeration_complete:
         return ()
+    if coverage.residual_corridors:
+        forecast = proposal.corridor_coverage_forecast
+        if type(forecast) is not DefaultGapInfeasibilityForecast:
+            return ()
+        base = forecast.base_forecast
+        base_residual_coordinates = {
+            (path.nodes, path.state_merge)
+            for path in base.paths
+            if path.path_id in base.residual_path_ids
+        }
+        extension_coordinates = {
+            (path.nodes, path.state_merge) for path in forecast.paths
+        }
+        if base_residual_coordinates != extension_coordinates or len(base_residual_coordinates) != len(forecast.paths):
+            return ()
     terminal = coverage.cycle_break
     retired_forecast = tuple(coverage.retirement_candidates)
     detached = getattr(coverage, "detached_dead_handler_component", None)
@@ -935,6 +1110,14 @@ def claims_from_dispatcher_removal_forecast(
         serial, ea = int(anchor.serial), int(anchor.ea)
         ref = refs_by_serial.get(serial)
         witness = catalog.get(ref)
+        # An anchorless logical terminal remains an exact source coordinate by
+        # its sealed ref/serial pairing; it must not be fabricated as native.
+        if (
+            label == "terminal stop"
+            and type(ref) is LogicalBlockRef
+            and witness is None
+        ):
+            return ref, serial
         if ref is None or witness is None or witness.anchor_ea != ea:
             raise ValueError(f"dispatcher removal {label} is foreign to source catalog")
         return ref, ea
@@ -989,13 +1172,18 @@ def claims_from_dispatcher_removal_forecast(
             anchor_ea=merge_ea,
             locator=BlockSubjectLocator(merge_ref, merge_ea),
         )
+        terminal_locator = (
+            LogicalFunctionExitSubjectLocator(stop_ref, stop_ea)
+            if type(stop_ref) is LogicalBlockRef
+            else TerminalSubjectLocator(stop_ref, stop_ea, TerminalKind.STOP, stop_ea)
+        )
         terminal_subject = _subject_factory(
             SemanticSubjectRef,
             kind=SemanticSubjectKind.TERMINAL,
             role=SemanticSubjectRole.TERMINAL_SITE,
             block_ref=stop_ref,
-            anchor_ea=stop_ea,
-            locator=TerminalSubjectLocator(stop_ref, stop_ea, TerminalKind.STOP, stop_ea),
+            anchor_ea=None if type(stop_ref) is LogicalBlockRef else stop_ea,
+            locator=terminal_locator,
         )
         return (_claim_factory(
             TerminalCycleBreakClaim,
@@ -1223,6 +1411,199 @@ PlanRouteResult: TypeAlias = (
 )
 
 
+def _derive_default_gap_infeasibility_exclusions(
+    *,
+    source,
+    proposal: ProposedUnflattenContract,
+    block_refs_by_serial,
+    selected_route_proof_ids,
+    corridor_coverage,
+    condition_chain_dag,
+    default_entry_serial,
+) -> tuple[DefaultGapInfeasibilityExclusion, ...]:
+    """Propose exact default-loop exclusions from closed producer evidence.
+
+    This intentionally returns no rows for every non-exact shape.  It is a
+    proposal adapter only: transaction binding replays the same facts before a
+    loss is ever allowed.
+    """
+    if (
+        type(proposal) is not ProposedUnflattenContract
+        or type(corridor_coverage) is not DispatcherCorridorCoverage
+        or not corridor_coverage.enumeration_complete
+        or corridor_coverage.dispatcher is None
+        or condition_chain_dag is None
+        or int(getattr(condition_chain_dag, "width", 0)) != 32
+        or not getattr(condition_chain_dag, "nodes", None)
+        or type(default_entry_serial) is not int
+    ):
+        return ()
+    # The route forest is deliberately limited to exact equality/inequality
+    # comparisons.  A broader predicate language belongs in a later feature.
+    if any(str(node.op).lower() not in {"jz"}
+           for node in condition_chain_dag.nodes.values()):
+        return ()
+    refs = dict(block_refs_by_serial)
+    dispatcher_serial = int(corridor_coverage.dispatcher.serial)
+    if refs.get(dispatcher_serial) != proposal.plan_inputs.dispatcher_entry_ref:
+        return ()
+    if int(condition_chain_dag.root) != dispatcher_serial or condition_chain_dag.aliases:
+        return ()
+    catalog_by_ref = {item.block_ref: item for item in proposal.source_identity_catalog.blocks}
+
+    def source_coordinate_exists(serial: int) -> bool:
+        ref = refs.get(int(serial))
+        block = source.get_block(int(serial))
+        witness = None if ref is None else catalog_by_ref.get(ref)
+        return bool(
+            ref is not None and block is not None and witness is not None
+            and witness.anchor_ea == int(block.start_ea)
+        )
+
+    # A closed dispatcher chain has no disconnected comparison authority: walk
+    # its fallthroughs from the exact entry and account for every node.  The
+    # source CFG owns arm order, so the portable DAG cannot reverse it.
+    chain: set[int] = set()
+    current_serial = dispatcher_serial
+    while current_serial in condition_chain_dag.nodes:
+        if current_serial in chain or not source_coordinate_exists(current_serial):
+            return ()
+        chain.add(current_serial)
+        comparison = condition_chain_dag.nodes[current_serial]
+        if int(comparison.serial) != current_serial:
+            return ()
+        if not source_coordinate_exists(int(comparison.true_target)) or not source_coordinate_exists(int(comparison.false_target)):
+            return ()
+        block = source.get_block(current_serial)
+        if block is None or tuple(block.succs) != (int(comparison.false_target), int(comparison.true_target)):
+            return ()
+        rebuilt = current_u32_route_comparison(
+            source,
+            current_serial,
+            expected_identities=frozenset({proposal.plan_inputs.state_identity}),
+        )
+        if rebuilt is None or rebuilt[0] != comparison:
+            return ()
+        if int(comparison.true_target) == default_entry_serial:
+            return ()
+        current_serial = int(comparison.false_target)
+    if current_serial != default_entry_serial or chain != set(condition_chain_dag.nodes):
+        return ()
+    default_block = source.get_block(default_entry_serial)
+    dispatcher_block = source.get_block(dispatcher_serial)
+    if default_block is None or dispatcher_block is None:
+        return ()
+    if default_entry_serial in condition_chain_dag.nodes:
+        return ()
+    try:
+        default_leaf_exists = any(
+            int(path.target) == default_entry_serial and not path.domain.is_empty()
+            for path in condition_chain_dag.resolve_paths()
+        )
+    except (TypeError, ValueError):
+        return ()
+    if not default_leaf_exists:
+        return ()
+    if (
+        tuple(default_block.succs) != (dispatcher_serial,)
+        or default_entry_serial not in dispatcher_block.preds
+    ):
+        return ()
+    # Only NOP/GOTO blocks are eligible default-loop residue.  In particular,
+    # never hide a CALL, STORE, RET, or a state load/write behind this adapter.
+    if any(snapshot.kind not in {InsnKind.NOP, InsnKind.GOTO}
+           for snapshot in default_block.insn_snapshots):
+        return ()
+    if not default_block.insn_snapshots or default_block.insn_snapshots[-1].kind is not InsnKind.GOTO:
+        return ()
+    selected_ids = tuple(selected_route_proof_ids or ())
+    if not selected_ids or len(set(selected_ids)) != len(selected_ids):
+        return ()
+    proofs = {item.proof_id: item for item in proposal.route_evidence.route_proofs}
+    selected = tuple(proofs.get(item) for item in selected_ids)
+    if any(item is None for item in selected):
+        return ()
+    serial_by_identity = {
+        (ref.identity, catalog_by_ref[ref].anchor_ea): serial
+        for serial, ref in refs.items()
+        if ref in catalog_by_ref and type(ref) is NativeBlockRef
+    }
+    seeds: list[DefaultGapInitialStateSeed] = []
+    for proof in selected:
+        state_write = proof.state_write
+        if (
+            state_write is None
+            or state_write.state_variable != proposal.plan_inputs.state_identity
+            or int(state_write.width) != 4
+        ):
+            return ()
+        state = int(state_write.state_constant) & 0xFFFFFFFF
+        destinations = [
+            destination for destination in proof.destinations
+            if int(destination.state_constant) & 0xFFFFFFFF == state
+        ]
+        if len(destinations) != 1:
+            return ()
+        destination = destinations[0]
+        target_serial = serial_by_identity.get((destination.target_identity, destination.target_anchor_ea))
+        try:
+            routed_serial = int(condition_chain_dag.route(state))
+        except (TypeError, ValueError):
+            return ()
+        if target_serial is None or routed_serial != int(target_serial):
+            return ()
+        if routed_serial == default_entry_serial:
+            return ()
+        seeds.append(DefaultGapInitialStateSeed(state, proof.proof_id))
+    if len({seed.normalized_state for seed in seeds}) != len(seeds):
+        return ()
+    seeds = sorted(seeds, key=canonical_bytes)
+    selected_ids = tuple(sorted(seed.route_proof_id for seed in seeds))
+    reachable_states = tuple(sorted(seed.normalized_state for seed in seeds))
+    dispatcher_ref = refs.get(dispatcher_serial)
+    default_ref = refs.get(default_entry_serial)
+    if dispatcher_ref is None or default_ref is None:
+        return ()
+
+    def node(serial: int) -> CorridorCoveragePathNode | None:
+        ref = refs.get(serial)
+        block = source.get_block(serial)
+        witness = None if ref is None else catalog_by_ref.get(ref)
+        if ref is None or block is None or witness is None or witness.anchor_ea != int(block.start_ea):
+            return None
+        return CorridorCoveragePathNode(ref, int(block.start_ea))
+
+    dispatcher_node = node(dispatcher_serial)
+    default_node = node(default_entry_serial)
+    if dispatcher_node is None or default_node is None:
+        return ()
+    rows: list[DefaultGapInfeasibilityExclusion] = []
+    for corridor in corridor_coverage.residual_corridors:
+        if (
+            len(corridor.path) != 2
+            or int(corridor.path[0].serial) != default_entry_serial
+            or int(corridor.path[-1].serial) != dispatcher_serial
+        ):
+            return ()
+        residual = node(default_entry_serial)
+        if residual is None:
+            return ()
+        content = (
+            "unflatten.default-gap-infeasibility-exclusion.v2", 4,
+            proposal.plan_inputs.state_identity, dispatcher_node, default_node,
+            residual, tuple(seeds), tuple(selected_ids), reachable_states,
+        )
+        rows.append(DefaultGapInfeasibilityExclusion(
+            authority_id(content),
+            authority_id(("unflatten.default-gap-infeasibility-exclusion-digest.v1", content)),
+            4, proposal.plan_inputs.state_identity, dispatcher_node, default_node,
+            residual, tuple(seeds), tuple(selected_ids), reachable_states,
+        ))
+    if not rows or len({item.exclusion_id for item in rows}) != len(rows):
+        return ()
+    return tuple(sorted(rows, key=lambda item: item.exclusion_id))
+
+
 def attach_typed_proposal(
     plan: PatchPlan,
     *,
@@ -1238,6 +1619,8 @@ def attach_typed_proposal(
     use_def_witness,
     corridor_coverage=None,
     dispatcher_removal_forecast=None,
+    condition_chain_dag=None,
+    default_entry_serial=None,
 ) -> PatchPlan:
     """Attach one typed proposal from producer-owned typed evidence."""
 
@@ -1278,6 +1661,24 @@ def attach_typed_proposal(
         raise ValueError("typed producer plans cannot carry reserved legacy metadata")
     full_dispatcher_retirement = False
     if dispatcher_removal_forecast is not None:
+        if corridor_coverage is None:
+            raise ValueError("coverage-dependent proposal requires coverage metadata")
+        default_gaps = _derive_default_gap_infeasibility_exclusions(
+            source=source,
+            proposal=proposal,
+            block_refs_by_serial=source_refs_by_serial,
+            selected_route_proof_ids=selected_route_proof_ids,
+            corridor_coverage=dispatcher_removal_forecast,
+            condition_chain_dag=condition_chain_dag,
+            default_entry_serial=default_entry_serial,
+        )
+        coverage_forecast = corridor_coverage_forecast_from_analysis(
+            dispatcher_removal_forecast,
+            proposal=proposal,
+            block_refs_by_serial=source_refs_by_serial,
+            default_gap_infeasibility_exclusions=default_gaps,
+        )
+        proposal = replace(proposal, corridor_coverage_forecast=coverage_forecast)
         candidate_catalog = retirement_candidate_catalog_from_forecast(
             dispatcher_removal_forecast,
             proposal=proposal,
@@ -1288,8 +1689,6 @@ def attach_typed_proposal(
             proposal=proposal,
             block_refs_by_serial=source_refs_by_serial,
         )
-        if corridor_coverage is None:
-            raise ValueError("coverage-dependent proposal requires coverage metadata")
         if claims:
             candidate_refs = {
                 member.block_ref
@@ -1325,22 +1724,12 @@ def attach_typed_proposal(
                     if full_dispatcher_retirement
                     else UnflattenPlanShape.PARTIAL_REWRITE,
                 ),
-                corridor_coverage_forecast=(
-                    corridor_coverage_forecast_from_analysis(
-                        corridor_coverage,
-                        proposal=proposal,
-                        block_refs_by_serial=source_refs_by_serial,
-                    )
-                ),
+                corridor_coverage_forecast=coverage_forecast,
             )
         else:
             proposal = replace(
                 proposal,
-                corridor_coverage_forecast=corridor_coverage_forecast_from_analysis(
-                    corridor_coverage,
-                    proposal=proposal,
-                    block_refs_by_serial=source_refs_by_serial,
-                ),
+                corridor_coverage_forecast=coverage_forecast,
             )
     if (
         proposal.retirement_candidate_catalog is not None

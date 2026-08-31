@@ -37,6 +37,8 @@ from d810.transforms.plan import (
 from d810.hexrays.mutation.patch_binding import bind_patch_plan
 from d810.transforms.patch_binding import (
     BoundPatchPlan,
+    ObservedPatchBinding,
+    observed_patch_binding,
     validate_bound_patch_plan,
 )
 from d810.hexrays.mutation.semantic_ownership import (
@@ -524,6 +526,9 @@ class HexRaysPatchTransactionParticipant:
         repr=False,
     )
     _applied_count: int | None = field(default=None, init=False, repr=False)
+    _observed_patch_binding: ObservedPatchBinding | None = field(
+        default=None, init=False, repr=False,
+    )
     _unflatten_authority: object | None = field(default=None, init=False, repr=False)
     _projected_unflatten_verdict: object | None = field(default=None, init=False, repr=False)
     _observed_unflatten_verdict: object | None = field(default=None, init=False, repr=False)
@@ -894,6 +899,13 @@ class HexRaysPatchTransactionParticipant:
             observed,
             applied_operation_count=receipt,
         )
+        self._observed_patch_binding = observed_patch_binding(
+            self._bound.patch_binding,
+            tuple(
+                (binding.plan_ref, binding.returned_serial)
+                for binding in self.gateway.observed_plan_bindings
+            ),
+        )
         self._applied_count = receipt
         return observed
 
@@ -1016,6 +1028,7 @@ class _PatchTransactionLifecycle:
                 observed=observed,
                 observed_generation=int(self.gateway.generation),
                 generic_gates=semantic_gates,
+                observed_patch_binding=self.participant._observed_patch_binding,
             )
             if not isinstance(
                 semantic_timed_result, transaction_api.TimedUnflattenAuthorityResult
@@ -1056,8 +1069,18 @@ class _PatchTransactionLifecycle:
                 ),),
             )
             if not semantic_verdict.accepted:
+                failed = tuple(
+                    (
+                        item.key.dimension.value,
+                        item.key.subject.role.value,
+                        item.key.subject.anchor_ea,
+                        item.state.value,
+                    )
+                    for item in semantic_verdict.failed_obligations
+                )
                 raise PatchTransactionPostObservationRejected(
-                    "observed unflatten authority rejected",
+                    "observed unflatten authority rejected: "
+                    f"reason={semantic_verdict.reason.value}; failed={failed!r}",
                     unflatten_verdict=semantic_verdict,
                 )
         post_projection = CfgProjection(
@@ -1102,6 +1125,13 @@ class _PatchTransactionLifecycle:
             if accepted is not self.participant._observed_unflatten_acceptance:
                 raise PatchTransactionPostObservationRejected(
                     "observed semantic authority acceptance occurrence drifted"
+                )
+            if (
+                accepted.observed_patch_binding
+                is not self.participant._observed_patch_binding
+            ):
+                raise PatchTransactionPostObservationRejected(
+                    "observed patch binding occurrence drifted"
                 )
             if accepted.observed_case is not self.participant._observed_unflatten_case_occurrence:
                 raise PatchTransactionPostObservationRejected(

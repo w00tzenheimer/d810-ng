@@ -1128,7 +1128,9 @@ def prove_exact_u32_carrier_state_write(
         allow_low_u32_projection=allow_low_u32_projection,
     ):
         return None
-    source_instruction_ea = candidate.attrs.get("ea")
+    source_instruction_ea = candidate.attrs.get(
+        "native_ea", candidate.attrs.get("ea")
+    )
     if type(source_instruction_ea) is not int:
         return None
     return ExactCarrierStateWrite(

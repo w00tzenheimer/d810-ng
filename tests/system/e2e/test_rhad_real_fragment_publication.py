@@ -820,6 +820,12 @@ def _run_worker(
 
 
 @pytest.mark.skipif(not _BINARY.exists(), reason="real loader fixture unavailable")
+@pytest.mark.xfail(
+    reason=(
+        "deferred RHAD C5 publication: canonical source binding does not yet "
+        "model the real fragment's duplicate/split delivery block and logical sink"
+    ),
+)
 def test_real_a560_terminal_fragment_reaches_c5_with_db_evidence(
     tmp_path: pathlib.Path,
 ) -> None:

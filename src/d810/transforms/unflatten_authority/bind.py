@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field, fields as dataclass_fields, is_dataclass
+from dataclasses import dataclass, field, fields as dataclass_fields, is_dataclass, replace
 import hashlib
 import re
 import threading
 from types import MappingProxyType, MemberDescriptorType
 import weakref
 
+from d810.core.logging import getLogger
 from d810.ir.flowgraph import BlockKind, InsnKind
 from d810.ir.semantics import ControlTransferKind
 from d810.ir.block_identity import StableBlockIdentity
@@ -17,7 +18,8 @@ from d810.analyses.control_flow import semantic_route_evidence as route_model
 from d810.ir.semantic_edge import SemanticEdgeRole
 from d810.transforms.plan import (
     PatchPlan, PatchConditionalRedirect, PatchLowerConditionalStateTransition,
-    PatchRedirectBranch, PatchRedirectGoto, PatchScalarizeLocalAliasAccess,
+    PatchConvertToGoto, PatchRedirectBranch, PatchRedirectGoto,
+    PatchScalarizeLocalAliasAccess,
     PatchEdgeSplitTrampoline, PatchEdgeSplitCorridor,
 )
 from d810.transforms.cfg_transaction import (
@@ -30,6 +32,7 @@ from .proposal import (
     CanonicalPatchStepDescriptor,
     canonical_patch_step_descriptors,
     _patch_block_spec_preimage,
+    _native_route_destination_subject_for_proof_destination,
 )
 from .ids import (
     _subject_factory,
@@ -59,6 +62,9 @@ from .ids import (
     patch_step_fact_id,
     patch_step_fact_id as _canonical_patch_step_fact_id,
 )
+
+
+logger = getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -161,7 +167,7 @@ def _validate_derived_transaction_claim_inventory_fields(
     if any(type(item) is not _LocalAliasClaimFactOccurrence for item in value.local_alias_occurrences):
         raise TypeError("derived transaction local occurrences are not closed")
     local_claims: list[model.LocalAliasEffectScalarizationClaim] = []
-    local_facts: list[model.PatchStepEvidencePayload] = []
+    claimed_local_facts: list[model.PatchStepEvidencePayload] = []
     seen_steps: set[tuple[int, object, int, int]] = set()
     source_blocks = {block.serial: block for block in value.source_inventory.blocks}
     source_serials = value.source_inventory.serial_by_ref
@@ -227,19 +233,65 @@ def _validate_derived_transaction_claim_inventory_fields(
             raise ValueError("derived local occurrence is duplicated")
         seen_steps.add(key)
         local_claims.append(claim)
-        local_facts.append(fact)
+        claimed_local_facts.append(fact)
     scalar_steps = tuple(
         index for index, step in enumerate(value.plan.steps)
         if type(step) is PatchScalarizeLocalAliasAccess
     )
     if tuple(sorted(
-        item.claim.step_index for item in value.local_alias_occurrences
+        item.step_index for item in value.local_patch_step_facts
     )) != scalar_steps:
-        raise ValueError("derived local occurrences do not exhaust scalar steps")
-    if value.local_patch_step_facts != tuple(local_facts) or any(
-        left is not right for left, right in zip(value.local_patch_step_facts, local_facts)
-    ):
-        raise ValueError("derived local fact subset has foreign occurrences")
+        raise ValueError("derived local patch facts do not exhaust scalar steps")
+    occurrence_by_step = {
+        item.claim.step_index: item for item in value.local_alias_occurrences
+    }
+    local_fact_ids = {id(item) for item in value.local_patch_step_facts}
+    if any(id(item) not in local_fact_ids for item in claimed_local_facts):
+        raise ValueError("derived local claim fact is outside the local fact inventory")
+    for fact in value.local_patch_step_facts:
+        if type(fact) is not model.PatchStepEvidencePayload:
+            raise TypeError("derived local patch fact is not closed")
+        if fact.step_index < 0 or fact.step_index >= len(value.plan.steps):
+            raise ValueError("derived local patch fact step is outside the plan")
+        step = value.plan.steps[fact.step_index]
+        if type(step) is not PatchScalarizeLocalAliasAccess:
+            raise ValueError("derived local patch fact does not select a scalar step")
+        serial = source_serials.get(step.block_serial)
+        block = source_blocks.get(serial)
+        expected_digest = canonical_authority_id((
+            "PatchScalarizeLocalAliasAccess",
+            fact.step_index,
+            step.block_serial,
+            step.host_ea,
+            step.host_opcode,
+            step.alias_token,
+            step.base_token,
+            step.host_text_sha1,
+            step.value_size,
+        ))
+        observations = () if block is None else tuple(
+            item for item in block.instruction_observations
+            if item.instruction_ea == step.host_ea
+            and item.opcode == step.host_opcode
+        )
+        if (
+            fact.plan_id != value.plan.plan_id
+            or fact.step_type != "PatchScalarizeLocalAliasAccess"
+            or fact.owner_ref != step.block_serial
+            or fact.step_digest != expected_digest
+            or fact.host_ea != step.host_ea
+            or fact.host_opcode != step.host_opcode
+            or fact.value_size != step.value_size
+            or len(observations) != 1
+            or observations[0].instruction_kind not in {InsnKind.LOAD, InsnKind.STORE}
+        ):
+            raise ValueError("derived local patch fact differs from its exact source host")
+        occurrence = occurrence_by_step.get(fact.step_index)
+        if observations[0].instruction_kind is InsnKind.STORE:
+            if occurrence is None or occurrence.patch_step_fact is not fact:
+                raise ValueError("derived local STORE fact lacks its exact loss claim")
+        elif occurrence is not None:
+            raise ValueError("derived local LOAD fact must not mint an effect-loss claim")
     canonical_claims = tuple(sorted(
         (*value.proposal_claims, *local_claims), key=lambda item: item.claim_id,
     ))
@@ -411,6 +463,16 @@ def _projected_relation_diagnostic_anchors(
         return ()
     if type(relation) is model.DirectRouteRealization:
         values = (relation.feeder, relation.old_target, relation.new_target)
+    elif type(relation) is model.SharedCarrierSourceBypassRouteRealization:
+        values = (
+            relation.proof_source, relation.shared_feeder,
+            relation.comparison_entry, relation.semantic_target,
+        )
+    elif type(relation) is model.RetainedPrefixRouteRealization:
+        values = (
+            relation.proof_source, relation.delivery_owner,
+            relation.old_target, relation.new_target,
+        )
     elif type(relation) is model.LoweredConditionalRouteRealization:
         values = (
             relation.feeder, relation.proof_source, relation.old_target,
@@ -421,6 +483,11 @@ def _projected_relation_diagnostic_anchors(
             relation.feeder, relation.proof_source, relation.old_target,
             relation.replacement_clone, relation.fallthrough_helper,
             *(arm.target for arm in relation.arms),
+        )
+    elif type(relation) is model.FoldedConditionalRouteRealization:
+        values = (
+            relation.feeder, relation.selected_target,
+            relation.discarded_target,
         )
     elif type(relation) is model.TwoArmDirectBranchRouteRealization:
         values = (
@@ -439,6 +506,15 @@ def _projected_relation_diagnostic_anchors(
             relation.descriptor_old_target, relation.terminal_continuation,
             *relation.source_corridor, *relation.cloned_corridor,
             relation.semantic_target,
+            *(prefix.source_owner for prefix in relation.semantic_prefixes),
+            *(prefix.clone_owner for prefix in relation.semantic_prefixes),
+            *(prefix.projected_successor for prefix in relation.semantic_prefixes),
+        )
+    elif type(relation) is model.ClonedCarrierRouteCorridorRealization:
+        values = (
+            relation.proof_source, relation.physical_feeder,
+            relation.comparison_entry, *relation.source_corridor,
+            *relation.cloned_corridor, relation.semantic_target,
             *(prefix.source_owner for prefix in relation.semantic_prefixes),
             *(prefix.clone_owner for prefix in relation.semantic_prefixes),
             *(prefix.projected_successor for prefix in relation.semantic_prefixes),
@@ -509,9 +585,12 @@ def _translate_projected_site_draft_violation(exc: _ProjectedSiteDraftViolation)
             anchor = getattr(locator, anchor_name, None)
             if ref is not None and type(anchor) is int:
                 pairs.append((ref, anchor))
-        destination_refs = getattr(locator, "destination_refs", ())
-        destination_anchors = getattr(locator, "destination_anchor_eas", ())
-        pairs.extend(zip(destination_refs, destination_anchors))
+        if type(locator) is model.RouteSubjectLocator:
+            pairs.extend(
+                (item.block_ref, item.anchor_ea)
+                for item in locator.native_destination_members()
+                if type(item) is model.BlockSubjectLocator
+            )
         anchored: list[model.AnchoredBlockRef] = []
         for ref, anchor in pairs:
             try:
@@ -698,7 +777,9 @@ def _site_mint(
     return _register_site(value, identity)
 
 
-def _validate_registered_site(value: object, _registry=_SITE_REGISTRY) -> None:
+def _require_registered_site_occurrence(
+    value: object, _registry=_SITE_REGISTRY,
+) -> None:
     if type(value) not in {
         model.EffectSiteCoordinate, model.TerminalSiteCoordinate,
         model.RawEffectGatePhaseFact, model.ScalarizedInstructionCoordinate,
@@ -707,6 +788,16 @@ def _validate_registered_site(value: object, _registry=_SITE_REGISTRY) -> None:
     row = _registry.get(id(value))
     if row is None or row[0]() is not value:
         raise ValueError("semantic site value was not minted by its binder")
+
+
+def _validate_registered_site(
+    value: object, _registry=_SITE_REGISTRY, *,
+    _content_sealed: bool = False,
+) -> None:
+    _require_registered_site_occurrence(value, _registry)
+    if _content_sealed:
+        return
+    row = _registry[id(value)]
     expected = _canonical_registry_seal(value, _registry)
     if row[1] != expected:
         raise ValueError("semantic site content seal does not match")
@@ -761,7 +852,7 @@ def _register_site_binding(
     return _register_registry_occurrence(value, identity, _registry)
 
 
-def _validate_site_binding(value: object, identity_name: str) -> None:
+def _require_registered_site_binding_occurrence(value: object) -> None:
     if type(value) not in {
         model.ExactEffectBindingResult, model.LocalAliasScalarizationBindingResult,
         model.ProjectedEffectSiteResult, model.ProjectedTerminalSiteResult,
@@ -771,41 +862,71 @@ def _validate_site_binding(value: object, identity_name: str) -> None:
     row = _SITE_BINDING_REGISTRY.get(id(value))
     if row is None or row[0]() is not value:
         raise ValueError("semantic site binding was not minted by this binder")
+
+
+def _validate_site_binding(
+    value: object, identity_name: str, *, _content_sealed: bool = False,
+) -> None:
+    _require_registered_site_binding_occurrence(value)
+    if _content_sealed:
+        return
+    row = _SITE_BINDING_REGISTRY[id(value)]
     expected = _canonical_registry_seal(value, _SITE_BINDING_REGISTRY)
     if row[1] != expected:
         raise ValueError("semantic site binding content seal does not match")
 
 
-def validate_exact_effect_binding_result(value: model.ExactEffectBindingResult) -> None:
-    _validate_site_binding(value, "binding_result_id")
+def validate_exact_effect_binding_result(
+    value: model.ExactEffectBindingResult, *, _content_sealed: bool = False,
+) -> None:
+    _validate_site_binding(
+        value, "binding_result_id", _content_sealed=_content_sealed,
+    )
 
 
-def validate_local_alias_binding_result(value: model.LocalAliasScalarizationBindingResult) -> None:
-    _validate_site_binding(value, "binding_result_id")
+def validate_local_alias_binding_result(
+    value: model.LocalAliasScalarizationBindingResult, *,
+    _content_sealed: bool = False,
+) -> None:
+    _validate_site_binding(
+        value, "binding_result_id", _content_sealed=_content_sealed,
+    )
 
 
-def validate_projected_effect_site_result(value: model.ProjectedEffectSiteResult) -> None:
-    _validate_site_binding(value, "result_id")
+def validate_projected_effect_site_result(
+    value: model.ProjectedEffectSiteResult, *, _content_sealed: bool = False,
+) -> None:
+    _validate_site_binding(value, "result_id", _content_sealed=_content_sealed)
 
 
-def validate_projected_terminal_site_result(value: model.ProjectedTerminalSiteResult) -> None:
-    _validate_site_binding(value, "result_id")
+def validate_projected_terminal_site_result(
+    value: model.ProjectedTerminalSiteResult, *, _content_sealed: bool = False,
+) -> None:
+    _validate_site_binding(value, "result_id", _content_sealed=_content_sealed)
 
 
-def validate_projected_site_phase_result(value: model.ProjectedSemanticSitePhaseResult) -> None:
-    _validate_site_binding(value, "result_id")
+def validate_projected_site_phase_result(
+    value: model.ProjectedSemanticSitePhaseResult, *,
+    _content_sealed: bool = False,
+) -> None:
+    _validate_site_binding(value, "result_id", _content_sealed=_content_sealed)
     for binding in value.exact_effect_bindings:
-        validate_exact_effect_binding_result(binding)
+        validate_exact_effect_binding_result(binding, _content_sealed=True)
     for binding in value.local_alias_bindings:
-        validate_local_alias_binding_result(binding)
+        validate_local_alias_binding_result(binding, _content_sealed=True)
     for result in value.effect_results:
-        validate_projected_effect_site_result(result)
+        validate_projected_effect_site_result(result, _content_sealed=True)
     for result in value.terminal_results:
-        validate_projected_terminal_site_result(result)
+        validate_projected_terminal_site_result(result, _content_sealed=True)
 
 
-def validate_projected_route_site_preservation(value: model.ProjectedRouteSitePreservation) -> None:
-    _validate_site_binding(value, "preservation_id")
+def validate_projected_route_site_preservation(
+    value: model.ProjectedRouteSitePreservation, *,
+    _content_sealed: bool = False,
+) -> None:
+    _validate_site_binding(
+        value, "preservation_id", _content_sealed=_content_sealed,
+    )
 
 
 def _inventory_owner_coordinate(
@@ -842,10 +963,14 @@ def _bind_effect_site_coordinate(
     inventory: model.SemanticGraphInventory,
     row: model.InventoryEffectSite,
     *, _batch: _AtomicPublicationBatch | None = None,
+    _inventory_validated: bool = False,
 ) -> model.EffectSiteCoordinate:
     if type(row) is not model.InventoryEffectSite:
         raise TypeError("effect row must be InventoryEffectSite")
-    model.validate_semantic_graph_inventory(inventory)
+    if type(_inventory_validated) is not bool:
+        raise TypeError("inventory validation state must be an exact bool")
+    if not _inventory_validated:
+        model.validate_semantic_graph_inventory(inventory)
     if row not in inventory.effects or sum(item is row for item in inventory.effects) != 1:
         raise ValueError("effect row is not the exact inventory-owned occurrence")
     if row.owner_serial not in inventory.reachable_serials:
@@ -867,10 +992,14 @@ def _bind_terminal_site_coordinate(
     inventory: model.SemanticGraphInventory,
     row: model.InventoryTerminalSite,
     *, _batch: _AtomicPublicationBatch | None = None,
+    _inventory_validated: bool = False,
 ) -> model.TerminalSiteCoordinate:
     if type(row) is not model.InventoryTerminalSite:
         raise TypeError("terminal row must be InventoryTerminalSite")
-    model.validate_semantic_graph_inventory(inventory)
+    if type(_inventory_validated) is not bool:
+        raise TypeError("inventory validation state must be an exact bool")
+    if not _inventory_validated:
+        model.validate_semantic_graph_inventory(inventory)
     if row not in inventory.terminals or sum(item is row for item in inventory.terminals) != 1:
         raise ValueError("terminal row is not the exact inventory-owned occurrence")
     if row.owner_serial not in inventory.reachable_serials:
@@ -891,8 +1020,16 @@ def bind_raw_effect_gate_phase_fact(
     source_inventory: model.SemanticGraphInventory,
     projected_inventory: model.SemanticGraphInventory,
     raw_gate_facts: GenericEffectfulGateFacts,
+    derived_claim_inventory: _DerivedTransactionClaimInventory | None = None,
 ) -> model.RawEffectGatePhaseFact:
-    """Resolve the legacy raw serial DTO exactly once into stable owners."""
+    """Resolve the legacy raw serial DTO once against typed transaction facts.
+
+    A legacy gate reports block owners, whereas a local STORE-to-MOV
+    scalarization is an effect-site loss while its owner block remains
+    reachable.  The typed, transaction-derived occurrence is therefore the
+    only authority that may explain a raw lost owner which is still present in
+    the projected inventory.  Raw serials never create that allowance.
+    """
     if type(source_inventory) is not model.SemanticGraphInventory:
         raise TypeError("source_inventory must be SemanticGraphInventory")
     if type(projected_inventory) is not model.SemanticGraphInventory:
@@ -907,6 +1044,12 @@ def bind_raw_effect_gate_phase_fact(
     if type(raw_gate_facts) is not GenericEffectfulGateFacts:
         raise TypeError("raw_gate_facts must be GenericEffectfulGateFacts")
     raw_gate_facts.__post_init__()
+    if derived_claim_inventory is not None:
+        _validate_derived_transaction_claim_inventory(derived_claim_inventory)
+        if (
+            derived_claim_inventory.source_inventory is not source_inventory
+        ):
+            raise ValueError("raw gate derived inventory differs from source inventory")
 
     source_rows = {row.serial: row for row in source_inventory.blocks}
     pre = raw_gate_facts.pre_effectful_block_serials
@@ -921,9 +1064,49 @@ def bind_raw_effect_gate_phase_fact(
     expected_effect_owners = {
         row.owner_serial
         for row in source_inventory.effects
+        if row.owner_serial in source_inventory.reachable_serials
     }
-    if pre != expected_effect_owners:
-        raise ValueError("raw gate pre serials do not equal source effect-owner partition")
+    raw_only = pre - expected_effect_owners
+    if raw_only:
+        raise ValueError(
+            "raw gate contains a non-canonical effect owner "
+            f"raw_only={tuple(sorted(raw_only))!r}"
+        )
+    source_owner_refs = {
+        serial: source_rows[serial].block_ref for serial in expected_effect_owners
+    }
+    if any(ref is None for ref in source_owner_refs.values()):
+        raise ValueError("canonical effect owner lacks an exact source reference")
+    projected_serial_by_ref = projected_inventory.serial_by_ref
+    structurally_retained = frozenset(
+        serial
+        for serial, ref in source_owner_refs.items()
+        if (
+            (projected_serial := projected_serial_by_ref.get(ref)) is not None
+            and projected_serial in projected_inventory.reachable_serials
+        )
+    )
+    structurally_lost = frozenset(expected_effect_owners) - structurally_retained
+    local_scalarized_owners = frozenset(
+        occurrence.source_site.owner_serial
+        for occurrence in (
+            () if derived_claim_inventory is None
+            else derived_claim_inventory.local_alias_occurrences
+        )
+    )
+    allowed_lost = structurally_lost | local_scalarized_owners
+    if not lost <= allowed_lost:
+        raise ValueError(
+            "raw gate effect-owner disposition contradicts canonical inventory "
+            f"lost_conflicts={tuple(sorted(lost - allowed_lost))!r}"
+        )
+    # Older gates can report only a subset of source effect owners.  Complete
+    # that view from immutable structural reachability, exactly as before; a
+    # reported typed scalarization loss is never inferred for an omitted owner.
+    omitted = expected_effect_owners - pre
+    retained = retained | (omitted & structurally_retained)
+    lost = lost | (omitted & structurally_lost)
+    pre = frozenset(expected_effect_owners)
     pre_owners = tuple(sorted(
         (_inventory_owner_coordinate(source_inventory, serial, label="raw pre") for serial in pre),
         key=canonical_bytes,
@@ -969,6 +1152,35 @@ def _claim_source_effect_row(
     if len(matches) > 1:
         raise ValueError("exact-effect source site is ambiguous")
     return matches[0] if matches else None
+
+
+def _canonical_semantic_site_owner_mapping(
+    *, source_inventory: model.SemanticGraphInventory,
+    source_owner: model.AnchoredBlockRef,
+    clone_occurrences: tuple[tuple[str, model.AnchoredBlockRef, model.AnchoredBlockRef], ...],
+) -> model.AnchoredBlockRef | None:
+    """Return a single clone owner, or omit a site-free multi-clone source.
+
+    Route incidence remains exhaustive elsewhere.  This narrower domain is only
+    for semantic-site dispositions, which deliberately remain one per source
+    row and therefore cannot choose between distinct clone coordinates.
+    """
+    clone_owners = {
+        projected_owner
+        for _relation_id, occurrence_source, projected_owner in clone_occurrences
+        if occurrence_source == source_owner
+    }
+    if len(clone_owners) <= 1:
+        return next(iter(clone_owners), None)
+    has_site = any(
+        row.owner_ref == source_owner.ref
+        and row.owner_anchor_ea == source_owner.anchor_ea
+        and row.owner_serial in source_inventory.reachable_serials
+        for row in (*source_inventory.effects, *source_inventory.terminals)
+    )
+    if has_site:
+        raise ValueError("conflicting clone mappings for semantic-site owner")
+    return None
 
 
 def bind_projected_exact_effect(
@@ -1147,6 +1359,7 @@ def _draft_local_alias_binding(
     patch_step_fact: model.PatchStepEvidencePayload,
     source_inventory: model.SemanticGraphInventory,
     projected_inventory: model.SemanticGraphInventory,
+    _allow_route_owned_retirement: bool = False,
 ) -> _LocalAliasBindingDraft:
     """Validate local STORE/MOV grammar without minting coordinates or IDs."""
     if type(claim) is not model.LocalAliasEffectScalarizationClaim:
@@ -1215,26 +1428,43 @@ def _draft_local_alias_binding(
         and row.anchor_ea == source_row.owner_anchor_ea
     )
     block = projected_blocks[0] if len(projected_blocks) == 1 else None
-    if block is None or block.serial not in projected_inventory.reachable_serials:
+    if block is None:
+        raise ValueError("local-alias projected owner is missing")
+    if (
+        block.serial not in projected_inventory.reachable_serials
+        and not _allow_route_owned_retirement
+    ):
         raise ValueError("local-alias projected owner is unreachable")
+    projected_widths = {
+        width for width in (
+            claim.value_size,
+            source_observation.width,
+            (
+                claim.owner_subject.block_ref.identity.native_key.bitness // 8
+                if type(claim.owner_subject.block_ref) is NativeBlockRef
+                else None
+            ),
+        )
+        if type(width) is int and not isinstance(width, bool) and width > 0
+    }
     observations = tuple(
         item for item in block.instruction_observations
         if item.instruction_ea == claim.host_ea
-        and item.ordinal == source_row.instruction_ordinal
-        and (
-            claim.value_size is None
-            or item.width == claim.value_size
-        )
+        and item.width in projected_widths
         and item.instruction_kind is InsnKind.MOV
     )
     if len(observations) != 1:
-        raise ValueError("local-alias requires one exact MOV observation")
+        raise ValueError(
+            "local-alias requires one exact MOV observation: "
+            f"host=0x{claim.host_ea:X} width={claim.value_size!r} "
+            f"observed={tuple((item.ordinal, item.instruction_ea, item.width, item.instruction_kind.value, item.display_text) for item in block.instruction_observations)!r}"
+        )
     observation = observations[0]
     if (
         observation.opcode != claim.host_opcode
         or observation.opcode != source_observation.opcode
         or observation.raw_opcode != source_observation.raw_opcode
-        or observation.width != source_observation.width
+        or observation.width not in projected_widths
         or observation.is_call
         or observation.call_kind is not None
     ):
@@ -1256,6 +1486,49 @@ def _draft_local_alias_binding(
         projected_block=block, projected_observation=observation,
         source_inventory=source_inventory, projected_inventory=projected_inventory,
     )
+
+
+def _local_alias_has_route_owned_retirement(
+    *,
+    claim: model.LocalAliasEffectScalarizationClaim,
+    projected_inventory: model.SemanticGraphInventory,
+    drafts: tuple[object, ...],
+    owner_index: object,
+) -> bool:
+    """Return whether one exact route relation owns an unreachable alias site.
+
+    A scalarization claim proves the STORE-to-MOV semantic normalization.  It
+    does not independently authorize structural loss of its owner.  When the
+    transformed owner is outside the projected closure, the same owner must
+    also occur in exactly one already-validated structural route relation.
+    """
+
+    source_owner = model.AnchoredBlockRef(
+        claim.owner_subject.block_ref,
+        claim.owner_subject.anchor_ea,
+    )
+    blocks = tuple(
+        row for row in projected_inventory.blocks
+        if row.block_ref == source_owner.ref
+        and row.anchor_ea == source_owner.anchor_ea
+    )
+    if len(blocks) != 1:
+        return False
+    if blocks[0].serial in projected_inventory.reachable_serials:
+        return False
+    relation_ids = {
+        occurrence.relation_id
+        for occurrence in getattr(owner_index, "relation_owner_occurrences", ())
+        if occurrence.source_owner == source_owner
+    }
+    if len(relation_ids) != 1:
+        return False
+    relation_id = next(iter(relation_ids))
+    return sum(
+        getattr(getattr(draft, "relation", None), "relation_id", None)
+        == relation_id
+        for draft in drafts
+    ) == 1
 
 
 def _site_subject(inventory: model.SemanticGraphInventory, row: object) -> object:
@@ -1355,9 +1628,16 @@ def _draft_projected_site_closure(
                 scope=model.RouteRealizationFailureScope.STEP, claim=claim,
             )
         try:
+            route_owned_retirement = _local_alias_has_route_owned_retirement(
+                claim=claim,
+                projected_inventory=projected_inventory,
+                drafts=drafts,
+                owner_index=owner_index,
+            )
             local_binding_drafts.append(_draft_local_alias_binding(
                 claim=claim, patch_step_fact=fact,
                 source_inventory=source_inventory, projected_inventory=projected_inventory,
+                _allow_route_owned_retirement=route_owned_retirement,
             ))
         except (TypeError, ValueError) as exc:
             source_row = next(
@@ -1366,6 +1646,41 @@ def _draft_projected_site_closure(
                  and row.owner_anchor_ea == claim.owner_subject.anchor_ea
                  and row.instruction_ea == claim.host_ea),
                 None,
+            )
+            source_owner = model.AnchoredBlockRef(
+                claim.owner_subject.block_ref,
+                claim.owner_subject.anchor_ea,
+            )
+            owner_rows = tuple(
+                item for item in getattr(owner_index, "owner_rows", ())
+                if item.source_owner == source_owner
+            )
+            relation_occurrences = tuple(
+                item
+                for item in getattr(owner_index, "relation_owner_occurrences", ())
+                if item.source_owner == source_owner
+            )
+            projected_blocks = tuple(
+                (
+                    row.serial,
+                    row.anchor_ea,
+                    row.successor_serials,
+                    row.serial in projected_inventory.reachable_serials,
+                )
+                for row in projected_inventory.blocks
+                if row.block_ref == claim.owner_subject.block_ref
+                or row.anchor_ea == claim.owner_subject.anchor_ea
+            )
+            logger.warning(
+                "local-alias projected binding context: claim=%s step=%d "
+                "source=%r owner_rows=%r relation_occurrences=%r projected_blocks=%r",
+                claim.claim_id,
+                claim.step_index,
+                (source_row.owner_serial, source_row.owner_anchor_ea)
+                if source_row is not None else None,
+                owner_rows,
+                relation_occurrences,
+                projected_blocks,
             )
             raise _ProjectedSiteDraftViolation(
                 str(exc), scope=model.RouteRealizationFailureScope.STEP,
@@ -1589,7 +1904,10 @@ def _validate_projected_site_closure_draft(
     expected_route_publications: list[object] = []
     for structural in drafts:
         relation = structural.relation
-        if type(relation) is model.ClonedRouteCorridorRealization:
+        if type(relation) in {
+            model.ClonedRouteCorridorRealization,
+            model.ClonedCarrierRouteCorridorRealization,
+        }:
             for prefix in relation.semantic_prefixes:
                 expected_route_publications.extend(prefix.instruction_origins)
                 expected_route_publications.append(prefix)
@@ -1648,10 +1966,11 @@ def _validate_projected_site_closure_draft(
         raise _ProjectedSiteDraftViolation("raw owner partitions differ", scope=model.RouteRealizationFailureScope.EVIDENCE)
     source_serials = {row.serial for row in source_inventory.blocks}
     pre_serials = {owner.ref for owner in raw_effect_gate_fact.pre_effectful_source_owners}
-    # The raw gate is a source-phase partition: it commits every source
-    # effect owner, including an owner that is no longer reachable in the
-    # projected closure.  Site dispositions below remain reachability-scoped.
-    expected_pre = {row.owner_ref for row in source_inventory.effects}
+    # The raw gate is a source-phase partition: it commits every effect owner
+    # reachable in the immutable source, including an owner that becomes
+    # unreachable in the projected closure.  Inventory rows that were already
+    # unreachable in the source are not preservation obligations.
+    expected_pre = {row.owner_ref for row in source_effects}
     retained_refs = {owner.ref for owner in raw_effect_gate_fact.raw_retained_source_owners}
     lost_refs = {owner.ref for owner in raw_effect_gate_fact.raw_lost_source_owners}
     if (
@@ -1700,7 +2019,20 @@ def _validate_projected_site_closure_draft(
         if item.patch_step_fact not in patch_step_facts or not any(item.patch_step_fact is fact for fact in patch_step_facts):
             raise _ProjectedSiteDraftViolation("local patch fact occurrence differs", scope=model.RouteRealizationFailureScope.STEP, claim=canonical, patch_step_fact=item.patch_step_fact)
         try:
-            expected = _draft_local_alias_binding(claim=canonical, patch_step_fact=item.patch_step_fact, source_inventory=source_inventory, projected_inventory=projected_inventory)
+            expected = _draft_local_alias_binding(
+                claim=canonical,
+                patch_step_fact=item.patch_step_fact,
+                source_inventory=source_inventory,
+                projected_inventory=projected_inventory,
+                _allow_route_owned_retirement=(
+                    _local_alias_has_route_owned_retirement(
+                        claim=canonical,
+                        projected_inventory=projected_inventory,
+                        drafts=drafts,
+                        owner_index=owner_index,
+                    )
+                ),
+            )
         except (TypeError, ValueError) as exc:
             raise _ProjectedSiteDraftViolation(
                 str(exc), scope=model.RouteRealizationFailureScope.STEP,
@@ -1741,6 +2073,18 @@ def _validate_projected_site_closure_draft(
             add_expected(relation.new_target, relation.new_target, same, None)
             add_occurrence(relation.feeder, relation.feeder, same)
             add_occurrence(relation.new_target, relation.new_target, same)
+        elif type(relation) is model.SharedCarrierSourceBypassRouteRealization:
+            for owner in (relation.proof_source, relation.semantic_target):
+                add_expected(owner, owner, same, None)
+                add_occurrence(owner, owner, same)
+        elif type(relation) is model.RetainedPrefixRouteRealization:
+            for owner in (
+                relation.proof_source,
+                relation.delivery_owner,
+                relation.new_target,
+            ):
+                add_expected(owner, owner, same, None)
+                add_occurrence(owner, owner, same)
         elif type(relation) is model.LoweredConditionalRouteRealization:
             add_expected(relation.feeder, relation.feeder, same, None)
             add_expected(relation.proof_source, relation.proof_source, same, None)
@@ -1760,6 +2104,10 @@ def _validate_projected_site_closure_draft(
                 add_expected(arm.target, arm.target, same, None)
                 add_occurrence(arm.target, arm.target, same)
             expected_inverse_only.add(relation.fallthrough_helper)
+        elif type(relation) is model.FoldedConditionalRouteRealization:
+            for owner in (relation.feeder, relation.selected_target):
+                add_expected(owner, owner, same, None)
+                add_occurrence(owner, owner, same)
         elif type(relation) is model.TwoArmDirectBranchRouteRealization:
             add_expected(relation.feeder, relation.feeder, same, None)
             add_expected(relation.projected_replacement_arm, relation.projected_replacement_arm, same, None)
@@ -1791,6 +2139,61 @@ def _validate_projected_site_closure_draft(
             for source_owner, projected_owner in zip(relation.source_corridor, relation.cloned_corridor):
                 add_expected(source_owner, projected_owner, clone, relation.relation_id)
                 add_occurrence(source_owner, projected_owner, clone)
+        elif type(relation) is model.ClonedCarrierRouteCorridorRealization:
+            add_expected(relation.proof_source, relation.proof_source, same, None)
+            add_expected(relation.semantic_target, relation.semantic_target, same, None)
+            add_occurrence(relation.proof_source, relation.proof_source, same)
+            add_occurrence(relation.semantic_target, relation.semantic_target, same)
+            for source_owner, projected_owner in zip(
+                relation.source_corridor, relation.cloned_corridor,
+            ):
+                add_expected(
+                    source_owner, projected_owner, clone, relation.relation_id,
+                )
+                add_occurrence(source_owner, projected_owner, clone)
+    expected_rows_by_source: dict[object, list[tuple[object, object, object, str | None]]] = {}
+    for expected in expected_owner_rows:
+        expected_rows_by_source.setdefault(expected[0], []).append(expected)
+    canonical_expected_owner_rows: dict[object, tuple[object, object, object, str | None]] = {}
+    for source, source_expected_rows in expected_rows_by_source.items():
+        clone_occurrences = tuple(
+            (relation_id, source, projected)
+            for _source, projected, lineage, relation_id in source_expected_rows
+            if lineage is model.ProjectedSiteLineageKind.RELATION_CLONE
+            and relation_id is not None
+        )
+        clone_owner = _canonical_semantic_site_owner_mapping(
+            source_inventory=source_inventory,
+            source_owner=source,
+            clone_occurrences=clone_occurrences,
+        )
+        if clone_occurrences and clone_owner is None and not any(
+            item[2] is model.ProjectedSiteLineageKind.SAME_OWNER
+            for item in source_expected_rows
+        ):
+            continue
+        def is_same_owner(item: tuple[object, object, object, str | None]) -> bool:
+            return (
+                item[0] == item[1]
+                and item[2] is model.ProjectedSiteLineageKind.SAME_OWNER
+                and item[3] is None
+            )
+
+        for expected in source_expected_rows:
+            source, projected, lineage, relation_id = expected
+            previous = canonical_expected_owner_rows.get(source)
+            if previous is None or previous == expected:
+                canonical_expected_owner_rows[source] = expected
+            elif is_same_owner(previous):
+                continue
+            elif is_same_owner(expected):
+                canonical_expected_owner_rows[source] = expected
+            else:
+                raise _ProjectedSiteDraftViolation(
+                    "owner-index has conflicting clone mappings",
+                    scope=model.RouteRealizationFailureScope.STEP,
+                )
+    expected_owner_rows = list(canonical_expected_owner_rows.values())
     actual_owner_rows = tuple(
         (row.source_owner, row.projected_owner, row.lineage, row.relation_id)
         for row in owner_rows
@@ -2098,6 +2501,11 @@ def _validate_projected_site_closure_draft(
         expected_outcome = model.ProjectedEffectSiteOutcome.RELATION_CLONED if expected_lineage is model.ProjectedSiteLineageKind.RELATION_CLONE else model.ProjectedEffectSiteOutcome.PRESERVED if expected_row is not None else model.ProjectedEffectSiteOutcome.LOCAL_ALIAS_SCALARIZED if alias_claim is not None else model.ProjectedEffectSiteOutcome.EXACT_INFEASIBLE if exact_claim is not None else model.ProjectedEffectSiteOutcome.UNCLASSIFIED
         if item.outcome is not expected_outcome or item.lineage is not expected_lineage:
             raise _ProjectedSiteDraftViolation("effect lineage/outcome differs", scope=model.RouteRealizationFailureScope.STEP if mapping else model.RouteRealizationFailureScope.EVIDENCE, claim=exact_claim or alias_claim, relation_draft=expected_structural or item.relation_draft, source_row=item.source_row, projected_row=item.projected_row)
+        if expected_outcome is model.ProjectedEffectSiteOutcome.UNCLASSIFIED:
+            raise _ProjectedSiteDraftViolation(
+                "projected effect site has no typed disposition",
+                scope=model.RouteRealizationFailureScope.EVIDENCE,
+            )
         if mapping is not None:
             if (
                 len(expected_relation_ids) == 1
@@ -2268,7 +2676,27 @@ def _validate_projected_site_closure_draft(
         )
         effective_lost = raw_lost - authorized_raw_lost
         effective_post = raw_retained | authorized_raw_lost
-        expected = GenericEffectfulGateFacts(not effective_lost, pre, effective_post, effective_lost, legacy_effective_gate_facts.reason)
+        # The legacy gate is only a compatibility observation over the raw
+        # structural reachability universe.  The canonical inventory may add
+        # typed route roots that the legacy walk cannot see (notably indirect
+        # dispatcher targets).  Compare the DTO against the canonical verdict
+        # restricted to its own declared universe; never require it to
+        # reconstruct the transaction's larger semantic partition.
+        legacy_pre = legacy_effective_gate_facts.pre_effectful_block_serials
+        if not legacy_pre <= pre:
+            raise _ProjectedSiteDraftViolation(
+                "legacy effective gate contains a foreign effect owner",
+                scope=model.RouteRealizationFailureScope.EVIDENCE,
+            )
+        legacy_post = effective_post & legacy_pre
+        legacy_lost = effective_lost & legacy_pre
+        expected = GenericEffectfulGateFacts(
+            not legacy_lost,
+            legacy_pre,
+            legacy_post,
+            legacy_lost,
+            legacy_effective_gate_facts.reason,
+        )
         if legacy_effective_gate_facts != expected:
             raise _ProjectedSiteDraftViolation(
                 "legacy effective gate differs from derived view",
@@ -2561,11 +2989,15 @@ def _canonical_registry_seal(
         model.ClonedSemanticInstructionOrigin: "origin_id",
         model.ClonedSemanticPrefix: "prefix_id",
         model.DirectRouteRealization: "relation_id",
+        model.SharedCarrierSourceBypassRouteRealization: "relation_id",
+        model.RetainedPrefixRouteRealization: "relation_id",
         model.LoweredConditionalRouteRealization: "relation_id",
         model.ClonedConditionalRouteRealization: "relation_id",
+        model.FoldedConditionalRouteRealization: "relation_id",
         model.TwoArmDirectBranchRouteRealization: "relation_id",
         model.BranchFallthroughHelperRouteRealization: "relation_id",
         model.ClonedRouteCorridorRealization: "relation_id",
+        model.ClonedCarrierRouteCorridorRealization: "relation_id",
         model.SourceBoundRouteAuthority: "source_authority_id",
         model.ProjectedRouteRealizationRow: "row_id",
         model.ProjectedRouteRealization: "realization_id",
@@ -2604,13 +3036,20 @@ def _register_route(value: object, identity: str, _registry=_ROUTE_REGISTRY, _se
     return _register_registry_occurrence(value, seal, _registry)
 
 
-def _validate_registered_route(value: object, identity_name: str, _registry=_ROUTE_REGISTRY, _seal=_route_content_seal) -> None:
+def _require_registered_route_occurrence(
+    value: object, _registry=_ROUTE_REGISTRY,
+) -> None:
     if type(value) not in {
-        model.DirectRouteRealization, model.LoweredConditionalRouteRealization,
+        model.DirectRouteRealization,
+        model.SharedCarrierSourceBypassRouteRealization,
+        model.RetainedPrefixRouteRealization,
+        model.LoweredConditionalRouteRealization,
         model.ClonedConditionalRouteRealization,
+        model.FoldedConditionalRouteRealization,
         model.ClonedSemanticInstructionOrigin, model.ClonedSemanticPrefix,
         model.TwoArmDirectBranchRouteRealization, model.BranchFallthroughHelperRouteRealization,
         model.ClonedRouteCorridorRealization,
+        model.ClonedCarrierRouteCorridorRealization,
         model.SourceBoundRouteAuthority, model.ProjectedRouteRealizationRow,
         model.ProjectedRouteRealization,
         model.SourceBoundRouteAuthorityAccepted, model.SourceBoundRouteAuthorityRejected,
@@ -2620,6 +3059,16 @@ def _validate_registered_route(value: object, identity_name: str, _registry=_ROU
     row = _registry.get(id(value))
     if row is None or row[0]() is not value:
         raise ValueError("route authority value was not minted by its kernel")
+
+
+def _validate_registered_route(
+    value: object, identity_name: str, _registry=_ROUTE_REGISTRY,
+    _seal=_route_content_seal, *, _content_sealed: bool = False,
+) -> None:
+    _require_registered_route_occurrence(value, _registry)
+    if _content_sealed:
+        return
+    row = _registry[id(value)]
     expected = _canonical_registry_seal(value, _registry)
     if row[1] != expected:
         raise ValueError("route authority content seal does not match")
@@ -2722,7 +3171,11 @@ def _route_failure_coordinates(proposal: object, *, stage: model.RouteRealizatio
         scope = model.RouteRealizationFailureScope.CLAIM
         locator = claim.retired_route_subject.locator
         refs = ((locator.source_ref, locator.source_anchor_ea),)
-        refs += tuple(zip(locator.destination_refs, locator.destination_anchor_eas))
+        refs += tuple(
+            (item.block_ref, item.anchor_ea)
+            for item in locator.native_destination_members()
+            if type(item) is model.BlockSubjectLocator
+        )
         for ref, anchor in refs:
             try:
                 anchored.append(model.AnchoredBlockRef(ref, anchor))
@@ -2810,7 +3263,7 @@ def _validate_source_claim_bindings(
         for item in inventory.bindings
         if item.subject.subject_id in subjects
     }
-    expected_subjects = (claim.source_subject, *claim.destination_subjects)
+    expected_subjects = (claim.source_subject, *claim.destination_subjects, *claim.dag_endpoint_subjects)
     catalog = {
         item.block_ref: item
         for item in proposal.source_identity_catalog.blocks
@@ -2823,6 +3276,15 @@ def _validate_source_claim_bindings(
         if binding.status is not model.SubjectBindingStatus.UNIQUE:
             raise ValueError("route claim subject is not uniquely source-bound")
         locator = subject.locator
+        if type(locator) is model.LogicalFunctionExitSubjectLocator:
+            if (
+                binding.block_ref != locator.block_ref
+                or binding.serial != locator.serial
+                or binding.anchor_ea is not None
+                or binding.native_instruction_eas
+            ):
+                raise ValueError("logical route claim binding drifted from its locator")
+            continue
         if binding.block_ref != locator.block_ref or binding.anchor_ea != locator.anchor_ea:
             raise ValueError("route claim subject binding drifted from its locator")
         witness = catalog.get(locator.block_ref)
@@ -2869,10 +3331,15 @@ def _validate_route_claim_proof_members(
     if _catalog_stable_identity(source_witness, catalog=catalog) != proof.source_identity:
         raise ValueError("route claim source identity differs from canonical proof")
 
-    locator_destinations = tuple(zip(
-        locator.destination_refs, locator.destination_anchor_eas,
-    ))
-    if len(locator_destinations) != len(proof.destinations):
+    native_locators = tuple(
+        item for item in locator.native_destination_members()
+        if type(item) is model.BlockSubjectLocator
+    )
+    logical_locators = tuple(
+        item for item in locator.dag_endpoint_members()
+        if type(item) is model.LogicalFunctionExitSubjectLocator
+    )
+    if len(native_locators) != len(proof.destinations):
         raise ValueError("route claim destination cardinality differs from canonical proof")
     destination_by_identity = {
         destination.target_identity: destination
@@ -2881,13 +3348,37 @@ def _validate_route_claim_proof_members(
     if len(destination_by_identity) != len(proof.destinations):
         raise ValueError("canonical proof destinations are not identity-unique")
     claimed_identities = tuple(
-        _catalog_stable_identity(witness_for(ref, anchor), catalog=catalog)
-        for ref, anchor in locator_destinations
+        _catalog_stable_identity(
+            witness_for(item.block_ref, item.anchor_ea), catalog=catalog,
+        )
+        for item in native_locators
     )
     if len(set(claimed_identities)) != len(claimed_identities):
         raise ValueError("route claim destinations are not identity-unique")
     if set(claimed_identities) != set(destination_by_identity):
         raise ValueError("route claim destination identities differ from canonical proof")
+    expected_logical: dict[int, route_model.SemanticLogicalDagEndpoint] = {}
+    if proof.state_dag is not None:
+        for comparison in proof.state_dag.witness.comparisons:
+            for endpoint in (comparison.true_target, comparison.false_target):
+                if type(endpoint) is not route_model.SemanticLogicalDagEndpoint:
+                    continue
+                prior = expected_logical.setdefault(endpoint.serial, endpoint)
+                if prior != endpoint:
+                    raise ValueError("canonical logical DAG endpoint serial is ambiguous")
+    claimed_logical = {item.serial: item for item in logical_locators}
+    if len(claimed_logical) != len(logical_locators):
+        raise ValueError("route claim logical endpoints are not serial-unique")
+    if set(claimed_logical) != set(expected_logical):
+        raise ValueError("route claim logical endpoints differ from canonical proof")
+    for serial, endpoint in expected_logical.items():
+        ref = claimed_logical[serial].block_ref
+        if (
+            ref.session_id != endpoint.session_id
+            or ref.proxy_token != endpoint.proxy_token
+            or ref.version != endpoint.version
+        ):
+            raise ValueError("route claim logical endpoint identity differs from canonical proof")
 
 
 def _validate_source_logical_dag_endpoints(
@@ -2903,7 +3394,15 @@ def _validate_source_logical_dag_endpoints(
     """
 
     expected: dict[int, route_model.SemanticLogicalDagEndpoint] = {}
+    selected_proof_ids = {
+        proof_id
+        for claim in proposal.claims
+        if type(claim) is model.EquivalentSemanticRouteClaim
+        for proof_id in claim.route_proof_ids
+    }
     for proof in proposal.route_evidence.route_proofs:
+        if proof.proof_id not in selected_proof_ids:
+            continue
         dag = proof.state_dag
         if dag is None:
             continue
@@ -2920,14 +3419,7 @@ def _validate_source_logical_dag_endpoints(
         ref = None if row is None else row.block_ref
         if (
             row is None
-            or type(ref) is not LogicalBlockRef
-            or row.anchor_ea is not None
-            or row.block_kind is not BlockKind.ZERO_WAY
-            or row.graph_start_ea != 0xFFFFFFFFFFFFFFFF
-            or row.native_instruction_eas
-            or row.instruction_observations
-            or row.successor_serials
-            or row.transfer_ea is not None
+            or not model.is_exact_logical_function_exit_inventory_row(row)
             or ref.session_id != endpoint.session_id
             or ref.proxy_token != endpoint.proxy_token
             or ref.version != endpoint.version
@@ -2979,7 +3471,14 @@ def _bind_source_route_authority(*, proposal: model.ProposedUnflattenContract,
                 )
                 if len(matching_claims) == 1:
                     active_claim = matching_claims[0]
-            raise ValueError("canonical source route binding rejected")
+            logger.warning(
+                "canonical source route binding rejected: failures=%r",
+                result.failures,
+            )
+            raise ValueError(
+                "canonical source route binding rejected: "
+                f"failures={result.failures!r}"
+            )
         proofs = tuple(sorted(proof.proof_id for proof in proposal.route_evidence.route_proofs))
         claim_proofs = tuple(sorted(proof for claim in claims for proof in claim.route_proof_ids))
         active_stage = model.RouteRealizationFailureStage.CLAIM_COVERAGE
@@ -2987,13 +3486,14 @@ def _bind_source_route_authority(*, proposal: model.ProposedUnflattenContract,
             claim.retired_route_subject.subject_id for claim in claims
         )
         if (
-            len(claims) != len(proofs)
-            or claim_proofs != proofs
-            or len(claim_proofs) != len(set(claim_proofs))
-            or any(len(claim.route_proof_ids) != 1 for claim in claims)
+            any(len(claim.route_proof_ids) != 1 for claim in claims)
+            or claim_proofs != tuple(sorted(set(claim_proofs)))
+            or any(proof_id not in proofs for proof_id in claim_proofs)
             or len(claim_subject_ids) != len(set(claim_subject_ids))
         ):
-            raise ValueError("route claims must cover the complete proof group exactly once")
+            raise ValueError(
+                "route claims must select canonical proofs at most once"
+            )
         for claim in claims:
             locator = claim.retired_route_subject.locator
             if locator.proof_id not in proofs or locator.atomic_group_id != proposal.route_evidence.atomic_group_id:
@@ -3072,6 +3572,27 @@ def _normalized_branch_observation(observation: object) -> tuple[object, ...]:
             predicate.width, predicate.compare_constant,
         ),
     )
+
+
+def _expected_projected_branch_target(
+    *,
+    source_explicit_target: int,
+    old_target: int,
+    untouched_target: int,
+    projected_untouched_target: int,
+    new_target: int,
+    has_fallthrough_helper: bool,
+) -> int:
+    """Replay the source branch arm role after one exact edge replacement."""
+    if source_explicit_target == old_target:
+        if has_fallthrough_helper:
+            raise ValueError(
+                "fallthrough helper cannot replace the source explicit arm"
+            )
+        return new_target
+    if source_explicit_target == untouched_target:
+        return projected_untouched_target
+    raise ValueError("source predicate target is not one source branch arm")
 
 
 def _require_projected_feeder_semantics(source_row: object, projected_row: object) -> None:
@@ -3353,6 +3874,437 @@ def _descriptor_refs_match(ref: object, target: object) -> bool:
     return ref == target or _ref_matches_identity(ref, target)
 
 
+def _state_transform_direct_old_target_is_proof_owned(
+    proof: route_model.SemanticRouteProof,
+    old_target_ref: object,
+) -> bool:
+    """Return whether a direct transform route owns its bypassed feeder."""
+    transform = proof.state_transform
+    return bool(
+        proof.proof_kind is route_model.SemanticRouteProofKind.STATE_TRANSFORM
+        and proof.shape is route_model.SemanticRouteShape.DIRECT
+        and transform is not None
+        and _ref_matches_identity(old_target_ref, transform.feeder_identity)
+    )
+
+
+def _owner_bound_direct_coordinates_match(
+    plan: PatchPlan,
+    proof: route_model.SemanticRouteProof,
+    descriptor: CanonicalPatchStepDescriptor,
+) -> bool:
+    """Match owner -> proof source -> direct destination without inference."""
+    if (
+        descriptor.step_kind not in {
+            PatchStepKind.REDIRECT_GOTO,
+            PatchStepKind.REDIRECT_BRANCH,
+        }
+        or descriptor.step_index < 0
+        or descriptor.step_index >= len(plan.steps)
+        or type(plan.steps[descriptor.step_index]) not in {
+            PatchRedirectGoto,
+            PatchRedirectBranch,
+        }
+        or len(descriptor.route_refs) != 3
+        or descriptor.helper_refs
+        or proof.shape is not route_model.SemanticRouteShape.DIRECT
+        or proof.source_owner_identity is None
+        or proof.source_owner_anchor_ea is None
+        or len(proof.destinations) != 1
+        or proof.destinations[0].role is not SemanticEdgeRole.DIRECT
+    ):
+        return False
+    step = plan.steps[descriptor.step_index]
+    owner_ref, old_ref, new_ref = descriptor.route_refs
+    destination = proof.destinations[0]
+    return bool(
+        step.from_serial == owner_ref
+        and step.old_target == old_ref
+        and step.new_target == new_ref
+        and _ref_matches_identity(owner_ref, proof.source_owner_identity)
+        and _ref_matches_identity(old_ref, proof.source_identity)
+        and _ref_matches_identity(new_ref, destination.target_identity)
+    )
+
+
+def _proof_source_direct_coordinates_match(
+    plan: PatchPlan,
+    proof: route_model.SemanticRouteProof,
+    descriptor: CanonicalPatchStepDescriptor,
+) -> bool:
+    """Match a direct GOTO owned by the proof source itself exactly.
+
+    This is deliberately narrower than the legacy source-neighborhood
+    candidate set.  It is the only direct form that can supersede a retained
+    prefix: the post-state already proves that the prefix delivery is
+    intentionally bypassed by this exact source-to-destination rewrite.
+    """
+    if (
+        descriptor.step_kind is not PatchStepKind.REDIRECT_GOTO
+        or descriptor.step_index < 0
+        or descriptor.step_index >= len(plan.steps)
+        or type(plan.steps[descriptor.step_index]) is not PatchRedirectGoto
+        or len(descriptor.route_refs) != 3
+        or descriptor.helper_refs
+        or proof.shape is not route_model.SemanticRouteShape.DIRECT
+        or proof.proof_kind is route_model.SemanticRouteProofKind.STATE_CARRIER
+        or len(proof.destinations) != 1
+        or proof.destinations[0].role is not SemanticEdgeRole.DIRECT
+    ):
+        return False
+    source_ref, _old_ref, new_ref = descriptor.route_refs
+    step = plan.steps[descriptor.step_index]
+    destination = proof.destinations[0]
+    return bool(
+        step.from_serial == source_ref
+        and step.new_target == new_ref
+        and _ref_matches_identity(source_ref, proof.source_identity)
+        and _ref_matches_identity(new_ref, destination.target_identity)
+    )
+
+
+def _state_carrier_feeder_direct_coordinates_match(
+    plan: PatchPlan,
+    proof: route_model.SemanticRouteProof,
+    descriptor: CanonicalPatchStepDescriptor,
+) -> bool:
+    """Match one carrier proof's typed feeder bypass exactly.
+
+    A CONST32 carrier proves a three-point source -> feeder -> comparison
+    corridor.  The semantic source is the producer, while the executable
+    rewrite deliberately replaces the feeder's edge to the comparison entry.
+    That is not a generic neighbourhood allowance: every coordinate comes
+    from the source-bound carrier proof, and cloned feeders retain their
+    separate helper realization path.
+    """
+    carrier = proof.state_carrier
+    if (
+        descriptor.step_kind is not PatchStepKind.REDIRECT_GOTO
+        or descriptor.step_index < 0
+        or descriptor.step_index >= len(plan.steps)
+        or type(plan.steps[descriptor.step_index]) is not PatchRedirectGoto
+        or len(descriptor.route_refs) != 3
+        or descriptor.helper_refs
+        or proof.proof_kind is not route_model.SemanticRouteProofKind.STATE_CARRIER
+        or proof.shape is not route_model.SemanticRouteShape.DIRECT
+        or carrier is None
+        or carrier.requires_feeder_clone
+        or len(proof.destinations) != 1
+        or proof.destinations[0].role is not SemanticEdgeRole.DIRECT
+    ):
+        return False
+    feeder_ref, comparison_ref, destination_ref = descriptor.route_refs
+    step = plan.steps[descriptor.step_index]
+    destination = proof.destinations[0]
+    return bool(
+        step.from_serial == feeder_ref
+        and step.old_target == comparison_ref
+        and step.new_target == destination_ref
+        and _ref_matches_identity(feeder_ref, carrier.feeder_identity)
+        and _ref_matches_identity(comparison_ref, carrier.comparison_entry_identity)
+        and _ref_matches_identity(destination_ref, destination.target_identity)
+    )
+
+
+def _shared_state_carrier_source_bypass_coordinates_match(
+    plan: PatchPlan,
+    proof: route_model.SemanticRouteProof,
+    descriptor: CanonicalPatchStepDescriptor,
+    source_inventory: model.SemanticGraphInventory,
+) -> bool:
+    """Match one source-specific bypass of a genuinely shared carrier.
+
+    Unlike the ordinary carrier realization, the patch owner is the semantic
+    proof source.  The feeder must remain a source-CFG corridor shared by at
+    least one other predecessor; otherwise this shape is the unsupported
+    direct-source bypass rather than a distinct relation family.
+    """
+    carrier = proof.state_carrier
+    if (
+        descriptor.step_kind is not PatchStepKind.REDIRECT_GOTO
+        or descriptor.step_index < 0
+        or descriptor.step_index >= len(plan.steps)
+        or type(plan.steps[descriptor.step_index]) is not PatchRedirectGoto
+        or len(descriptor.route_refs) != 3
+        or descriptor.helper_refs
+        or proof.proof_kind is not route_model.SemanticRouteProofKind.STATE_CARRIER
+        or proof.shape is not route_model.SemanticRouteShape.DIRECT
+        or carrier is None
+        or carrier.requires_feeder_clone
+        or len(proof.destinations) != 1
+        or proof.destinations[0].role is not SemanticEdgeRole.DIRECT
+    ):
+        return False
+    source_ref, feeder_ref, destination_ref = descriptor.route_refs
+    step = plan.steps[descriptor.step_index]
+    destination = proof.destinations[0]
+    if not (
+        step.from_serial == source_ref
+        and step.old_target == feeder_ref
+        and step.new_target == destination_ref
+        and _ref_matches_identity(source_ref, proof.source_identity)
+        and _ref_matches_identity(source_ref, carrier.source_identity)
+        and _ref_matches_identity(feeder_ref, carrier.feeder_identity)
+        and _ref_matches_identity(destination_ref, destination.target_identity)
+    ):
+        return False
+    comparison_refs = tuple(
+        row.block_ref
+        for row in source_inventory.blocks
+        if _ref_matches_identity(
+            row.block_ref, carrier.comparison_entry_identity,
+        )
+    )
+    if len(comparison_refs) != 1:
+        return False
+    try:
+        source_row = _inventory_block(source_inventory, source_ref)
+        feeder_row = _inventory_block(source_inventory, feeder_ref)
+        comparison_row = _inventory_block(
+            source_inventory, comparison_refs[0],
+        )
+    except (KeyError, TypeError, ValueError):
+        return False
+    return bool(
+        source_row.successor_serials == (feeder_row.serial,)
+        and source_row.serial in feeder_row.predecessor_serials
+        and len(feeder_row.predecessor_serials) >= 2
+        and any(
+            predecessor != source_row.serial
+            for predecessor in feeder_row.predecessor_serials
+        )
+        and feeder_row.successor_serials == (comparison_row.serial,)
+        and feeder_row.serial in comparison_row.predecessor_serials
+    )
+
+
+def _state_carrier_helper_corridor_coordinates_match(
+    plan: PatchPlan,
+    proof: route_model.SemanticRouteProof,
+    descriptor: CanonicalPatchStepDescriptor,
+) -> bool:
+    """Match the cloned form of one exact state-carrier corridor.
+
+    The operation splits the proof source's edge into a cloned feeder.  Its
+    descriptor therefore records ``feeder, source, comparison, destination``
+    rather than pretending the source is itself the cloned block.  All four
+    coordinates are already sealed in the carrier evidence.
+    """
+    carrier = proof.state_carrier
+    if (
+        descriptor.step_kind is not PatchStepKind.HELPER_CORRIDOR
+        or descriptor.step_index < 0
+        or descriptor.step_index >= len(plan.steps)
+        or type(plan.steps[descriptor.step_index]) is not PatchEdgeSplitCorridor
+        or len(descriptor.route_refs) < 5
+        or not descriptor.helper_refs
+        or proof.proof_kind is not route_model.SemanticRouteProofKind.STATE_CARRIER
+        or proof.shape is not route_model.SemanticRouteShape.DIRECT
+        or carrier is None
+        or not carrier.requires_feeder_clone
+        or len(proof.destinations) != 1
+        or proof.destinations[0].role is not SemanticEdgeRole.DIRECT
+    ):
+        return False
+    feeder_ref, source_ref, comparison_ref, destination_ref, clone_until_ref = (
+        descriptor.route_refs[:5]
+    )
+    step = plan.steps[descriptor.step_index]
+    destination = proof.destinations[0]
+    return bool(
+        step.source_serial == feeder_ref
+        and step.via_pred == source_ref
+        and step.old_target == comparison_ref
+        and step.new_target == destination_ref
+        and step.clone_until == clone_until_ref
+        and len(step.corridor_serials) == 1
+        and step.corridor_serials[0] == feeder_ref
+        and clone_until_ref == feeder_ref
+        and _ref_matches_identity(source_ref, carrier.source_identity)
+        and _ref_matches_identity(feeder_ref, carrier.feeder_identity)
+        and _ref_matches_identity(comparison_ref, carrier.comparison_entry_identity)
+        and _ref_matches_identity(destination_ref, destination.target_identity)
+    )
+
+
+def _retained_prefix_direct_coordinates_match(
+    plan: PatchPlan,
+    proof: route_model.SemanticRouteProof,
+    descriptor: CanonicalPatchStepDescriptor,
+    source_inventory: model.SemanticGraphInventory,
+) -> bool:
+    """Match proof-source -> delivery-owner -> rewritten destination exactly."""
+    if (
+        descriptor.step_kind is not PatchStepKind.REDIRECT_GOTO
+        or descriptor.step_index < 0
+        or descriptor.step_index >= len(plan.steps)
+        or type(plan.steps[descriptor.step_index]) is not PatchRedirectGoto
+        or len(descriptor.route_refs) != 3
+        or descriptor.helper_refs
+        or proof.proof_kind is not route_model.SemanticRouteProofKind.STATE_ASSIGNMENT
+        or proof.shape is not route_model.SemanticRouteShape.DIRECT
+        or proof.source_owner_identity is not None
+        or len(proof.destinations) != 1
+        or proof.destinations[0].role is not SemanticEdgeRole.DIRECT
+    ):
+        return False
+    delivery_ref, _old_ref, new_ref = descriptor.route_refs
+    source_matches = tuple(
+        row for row in source_inventory.blocks
+        if _ref_matches_identity(row.block_ref, proof.source_identity)
+    )
+    if len(source_matches) != 1:
+        return False
+    source_row = source_matches[0]
+    delivery_serial = source_inventory.serial_by_ref.get(delivery_ref)
+    if delivery_serial is None or delivery_ref == source_row.block_ref:
+        return False
+    try:
+        delivery_row = _inventory_block(source_inventory, delivery_ref)
+    except (KeyError, TypeError, ValueError):
+        return False
+    step = plan.steps[descriptor.step_index]
+    destination = proof.destinations[0]
+    return bool(
+        step.from_serial == delivery_ref
+        and step.old_target == descriptor.route_refs[1]
+        and step.new_target == new_ref
+        and source_row.successor_serials == (delivery_serial,)
+        and source_row.serial in delivery_row.predecessor_serials
+        and _ref_matches_identity(new_ref, destination.target_identity)
+    )
+
+
+def _native_route_destination_subject_for_target_ref(
+    *,
+    claim: model.EquivalentSemanticRouteClaim,
+    proof: route_model.SemanticRouteProof,
+    target_ref: object,
+    catalog: model.SourceIdentityCatalog,
+) -> model.SemanticSubjectRef:
+    """Resolve one physical target through the proof, never route-member order."""
+    destinations = tuple(
+        destination for destination in proof.destinations
+        if _ref_matches_identity(target_ref, destination.target_identity)
+    )
+    if len(destinations) != 1:
+        raise ValueError("route target does not select one native proof destination")
+    subject = _native_route_destination_subject_for_proof_destination(
+        claim=claim,
+        proof_destination=destinations[0],
+        catalog=catalog,
+    )
+    if subject.block_ref != target_ref:
+        raise ValueError("route proof destination differs from typed target locator")
+    return subject
+
+
+def _guarded_conditional_fold_coordinates_match(
+    plan: PatchPlan,
+    proof: route_model.SemanticRouteProof,
+    descriptor: CanonicalPatchStepDescriptor,
+) -> bool:
+    """Match the sole exact conditional fold admitted by route authority."""
+    if (
+        descriptor.step_kind is not PatchStepKind.CONVERT_TO_GOTO
+        or descriptor.step_index < 0
+        or descriptor.step_index >= len(plan.steps)
+        or type(plan.steps[descriptor.step_index]) is not PatchConvertToGoto
+        or len(descriptor.route_refs) != 2
+        or descriptor.helper_refs
+        or proof.proof_kind
+        is not route_model.SemanticRouteProofKind.STATE_ASSIGNMENT
+        or proof.shape is not route_model.SemanticRouteShape.DIRECT
+        or proof.state_write is None
+        or proof.state_write.guarded_selection is None
+        or len(proof.destinations) != 1
+        or proof.destinations[0].role is not SemanticEdgeRole.DIRECT
+    ):
+        return False
+    feeder_ref, selected_ref = descriptor.route_refs
+    step = plan.steps[descriptor.step_index]
+    guarded = proof.state_write.guarded_selection
+    destination = proof.destinations[0]
+    return bool(
+        step.block_serial == feeder_ref
+        and step.goto_target == selected_ref
+        and _ref_matches_identity(feeder_ref, proof.source_identity)
+        and _ref_matches_identity(feeder_ref, guarded.guard.identity)
+        and _ref_matches_identity(selected_ref, guarded.selected_target.identity)
+        and _ref_matches_identity(selected_ref, destination.target_identity)
+    )
+
+
+def _default_gap_conditional_fold_parts(
+    plan: PatchPlan,
+    proof: route_model.SemanticRouteProof,
+    descriptor: CanonicalPatchStepDescriptor,
+) -> tuple[route_model.SemanticRouteDestination, route_model.SemanticRouteDestination] | None:
+    """Return the selected/default arms for one typed default-gap fold only.
+
+    This is intentionally topology correlation, not infeasibility validation:
+    the default-gap binder still replays the u32 comparison/state closure.
+    """
+    forecast = plan.unflatten_proposal.corridor_coverage_forecast
+    if (
+        type(forecast) is not model.DefaultGapInfeasibilityForecast
+        or descriptor.step_kind is not PatchStepKind.CONVERT_TO_GOTO
+        or descriptor.step_index < 0
+        or descriptor.step_index >= len(plan.steps)
+        or type(plan.steps[descriptor.step_index]) is not PatchConvertToGoto
+        or len(descriptor.route_refs) != 2
+        or descriptor.helper_refs
+        or proof.proof_kind is not route_model.SemanticRouteProofKind.STATE_CHOICE
+        or proof.shape is not route_model.SemanticRouteShape.CONDITIONAL
+        or len(proof.destinations) != 2
+    ):
+        return None
+    feeder_ref, selected_ref = descriptor.route_refs
+    step = plan.steps[descriptor.step_index]
+    if (
+        step.block_serial != feeder_ref
+        or step.goto_target != selected_ref
+        or not _ref_matches_identity(feeder_ref, proof.source_identity)
+    ):
+        return None
+    selected = tuple(
+        destination for destination in proof.destinations
+        if _ref_matches_identity(selected_ref, destination.target_identity)
+    )
+    if len(selected) != 1:
+        return None
+    opposite = tuple(
+        destination for destination in proof.destinations
+        if destination is not selected[0]
+    )
+    if len(opposite) != 1:
+        return None
+    exclusion = tuple(
+        item for item in forecast.exclusions
+        if item.route_proof_ids == (proof.proof_id,)
+        and _descriptor_refs_match(item.default_entry.block_ref, opposite[0].target_identity)
+        and _descriptor_refs_match(item.residual.block_ref, opposite[0].target_identity)
+    )
+    if len(exclusion) != 1:
+        return None
+    linked = tuple(path for path in forecast.paths if path.exclusion_id == exclusion[0].exclusion_id)
+    if (
+        len(linked) != 1
+        or linked[0].nodes[0] != exclusion[0].residual
+        or linked[0].nodes[-1] != exclusion[0].dispatcher
+    ):
+        return None
+    return selected[0], opposite[0]
+
+
+def _default_gap_conditional_fold_coordinates_match(
+    plan: PatchPlan,
+    proof: route_model.SemanticRouteProof,
+    descriptor: CanonicalPatchStepDescriptor,
+) -> bool:
+    return _default_gap_conditional_fold_parts(plan, proof, descriptor) is not None
+
+
 def _exact_selected_arm_claim_bundle(
     *, plan: PatchPlan, route_claim: model.EquivalentSemanticRouteClaim,
     proof: route_model.SemanticRouteProof,
@@ -3459,10 +4411,12 @@ def _exact_selected_arm_claim_bundle(
             or exact_claim.source_generation != route_claim.source_generation
         ):
             raise ValueError("selected-arm direct exact claim bundle is inconsistent")
-    route_destinations = {
-        subject.locator.block_ref for subject in route_claim.destination_subjects
-    }
-    if new_ref not in route_destinations:
+    selected_subject = _native_route_destination_subject_for_proof_destination(
+        claim=route_claim,
+        proof_destination=selected_destination,
+        catalog=plan.unflatten_proposal.source_identity_catalog,
+    )
+    if selected_subject.block_ref != new_ref:
         raise ValueError("selected-arm direct target is foreign to route claim")
     if len({item.claim_id for item in exact_claims}) != len(exact_claims):
         raise ValueError("selected-arm direct exact claim bundle is duplicated")
@@ -3474,6 +4428,7 @@ def _select_lineage_fact_group(
     *, plan: PatchPlan,
     claim: model.EquivalentSemanticRouteClaim,
     proof: route_model.SemanticRouteProof,
+    source_inventory: model.SemanticGraphInventory,
 ) -> _LineageFactGroupEntry:
     """Select one descriptor using only closed step and structural coordinates."""
     source_ref = claim.source_subject.locator.block_ref
@@ -3555,22 +4510,140 @@ def _select_lineage_fact_group(
             for exact_claim in plan.unflatten_proposal.claims
         )
     ) if is_conditional else ()
+    owner_bound_direct = tuple(
+        entry for entry in entries
+        if entry.descriptor.step_kind in {
+            PatchStepKind.REDIRECT_GOTO,
+            PatchStepKind.REDIRECT_BRANCH,
+        }
+        if _owner_bound_direct_coordinates_match(
+            plan, proof, entry.descriptor,
+        )
+    ) if not is_conditional else ()
+    retained_prefix_direct = tuple(
+        entry for entry in kind_entries(PatchStepKind.REDIRECT_GOTO)
+        if _retained_prefix_direct_coordinates_match(
+            plan, proof, entry.descriptor, source_inventory,
+        )
+    ) if not is_conditional else ()
+    proof_source_direct = tuple(
+        entry for entry in kind_entries(PatchStepKind.REDIRECT_GOTO)
+        if _proof_source_direct_coordinates_match(
+            plan, proof, entry.descriptor,
+        )
+    ) if not is_conditional else ()
+    state_carrier_feeder_direct = tuple(
+        entry for entry in kind_entries(PatchStepKind.REDIRECT_GOTO)
+        if _state_carrier_feeder_direct_coordinates_match(
+            plan, proof, entry.descriptor,
+        )
+    ) if not is_conditional else ()
+    shared_state_carrier_source_bypass = tuple(
+        entry for entry in kind_entries(PatchStepKind.REDIRECT_GOTO)
+        if _shared_state_carrier_source_bypass_coordinates_match(
+            plan, proof, entry.descriptor, source_inventory,
+        )
+    ) if not is_conditional else ()
+    state_carrier_helper_corridor = tuple(
+        entry for entry in kind_entries(PatchStepKind.HELPER_CORRIDOR)
+        if _state_carrier_helper_corridor_coordinates_match(
+            plan, proof, entry.descriptor,
+        )
+    ) if not is_conditional else ()
+    guarded_conditional_fold = tuple(
+        entry for entry in kind_entries(PatchStepKind.CONVERT_TO_GOTO)
+        if _guarded_conditional_fold_coordinates_match(
+            plan, proof, entry.descriptor,
+        )
+    ) if not is_conditional else ()
+    default_gap_conditional_fold = tuple(
+        entry for entry in kind_entries(PatchStepKind.CONVERT_TO_GOTO)
+        if _default_gap_conditional_fold_coordinates_match(
+            plan, proof, entry.descriptor,
+        )
+    ) if is_conditional else ()
     if is_conditional:
         conditional_tier = tuple({
             entry.descriptor.step_index: entry
             for entry in (*conditional_exact, *conditional_fallback)
         }.values())
         tiers = (
-            conditional_tier,
+            default_gap_conditional_fold, conditional_tier,
             lower_exact, lower_fallback,
             branch + split + corridor,
             exact_selected_arm_direct,
         )
         candidates = next((tier for tier in tiers if tier), ())
     else:
-        candidates = direct + branch + split + corridor
+        candidates = (
+            guarded_conditional_fold
+            if guarded_conditional_fold
+            else owner_bound_direct
+            if owner_bound_direct
+            else proof_source_direct
+            if proof_source_direct
+            else shared_state_carrier_source_bypass
+            if shared_state_carrier_source_bypass
+            else state_carrier_feeder_direct
+            if state_carrier_feeder_direct
+            else state_carrier_helper_corridor
+            if state_carrier_helper_corridor
+            else retained_prefix_direct
+            if retained_prefix_direct
+            else direct + branch + split + corridor
+        )
     unique = tuple({entry.descriptor.step_index: entry for entry in candidates}.values())
     if not unique:
+        def identity_serial(identity: object) -> int | None:
+            return next(
+                (
+                    serial for ref, serial in source_inventory.serial_by_ref.items()
+                    if _ref_matches_identity(ref, identity)
+                ),
+                None,
+            )
+        carrier = proof.state_carrier
+        carrier_coordinates = (
+            None if carrier is None else (
+                identity_serial(carrier.source_identity),
+                identity_serial(carrier.feeder_identity),
+                identity_serial(carrier.comparison_entry_identity),
+                carrier.requires_feeder_clone,
+            )
+        )
+        proof_identities = {
+            proof.source_identity,
+            proof.source_owner_identity,
+            *(destination.target_identity for destination in proof.destinations),
+        }
+        nearby = tuple(
+            (
+                entry.descriptor.step_index,
+                entry.descriptor.step_kind.value,
+                tuple(source_inventory.serial_by_ref.get(ref) for ref in entry.descriptor.route_refs),
+                tuple(source_inventory.serial_by_ref.get(ref) for ref in entry.descriptor.owner_refs),
+            )
+            for entry in entries
+            if any(
+                any(_descriptor_refs_match(ref, identity) for identity in proof_identities)
+                for ref in (
+                    *entry.descriptor.route_refs,
+                    *entry.descriptor.owner_refs,
+                )
+            )
+        )
+        logger.warning(
+            "projected route has no owning step: proof=%s kind=%s shape=%s "
+            "source=%r owner=%r destinations=%r carrier=%r nearby=%r",
+            proof.proof_id,
+            proof.proof_kind.value,
+            proof.shape.value,
+            proof.source_identity,
+            proof.source_owner_identity,
+            tuple(destination.target_identity for destination in proof.destinations),
+            carrier_coordinates,
+            nearby,
+        )
         selected_arm_redirects = tuple(
             entry for entry in kind_entries(PatchStepKind.REDIRECT_GOTO)
             if is_conditional
@@ -3702,6 +4775,7 @@ def _legacy_structural_projected_routes(*, source_authority: model.SourceBoundRo
             try:
                 entry = _select_lineage_fact_group(
                     lineage_index, plan=plan, claim=claim, proof=claim_proof,
+                    source_inventory=source_inventory,
                 )
             except _LineageFactViolation as violation:
                 active_stage = violation.stage
@@ -3718,7 +4792,9 @@ def _legacy_structural_projected_routes(*, source_authority: model.SourceBoundRo
             claim_locator = claim.retired_route_subject.locator
             for anchor_ref, anchor_ea in (
                 (claim_locator.source_ref, claim_locator.source_anchor_ea),
-                *zip(claim_locator.destination_refs, claim_locator.destination_anchor_eas),
+                *((item.block_ref, item.anchor_ea)
+                  for item in claim_locator.native_destination_members()
+                  if type(item) is model.BlockSubjectLocator),
             ):
                 try:
                     selected_anchors.append(model.AnchoredBlockRef(anchor_ref, anchor_ea))
@@ -3812,7 +4888,9 @@ def _legacy_structural_projected_routes(*, source_authority: model.SourceBoundRo
                 claim_locator = claim.retired_route_subject.locator
                 for claim_ref, claim_anchor in (
                     (claim_locator.source_ref, claim_locator.source_anchor_ea),
-                    *zip(claim_locator.destination_refs, claim_locator.destination_anchor_eas),
+                    *((item.block_ref, item.anchor_ea)
+                      for item in claim_locator.native_destination_members()
+                      if type(item) is model.BlockSubjectLocator),
                 ):
                     try:
                         known_anchors.append(model.AnchoredBlockRef(claim_ref, claim_anchor))
@@ -3849,6 +4927,38 @@ def _legacy_structural_projected_routes(*, source_authority: model.SourceBoundRo
                     raise ValueError("projected redirect descriptor lacks exact edge coordinates")
                 _step_source, old_serial, new_serial = descriptor.route_refs
                 expected_projected_targets = (new_serial,)
+            elif descriptor.step_kind is PatchStepKind.CONVERT_TO_GOTO:
+                guarded_fold = _guarded_conditional_fold_coordinates_match(
+                    plan, claim_proof, descriptor,
+                )
+                default_gap_fold = _default_gap_conditional_fold_coordinates_match(
+                    plan, claim_proof, descriptor,
+                )
+                if len(descriptor.route_refs) != 2 or not (guarded_fold or default_gap_fold):
+                    raise ValueError(
+                        "conditional fold descriptor differs from guarded proof"
+                    )
+                _step_source, new_serial = descriptor.route_refs
+                if guarded_fold:
+                    guarded = claim_proof.state_write.guarded_selection
+                    other_endpoint = (
+                        guarded.false_target
+                        if guarded.selected_target == guarded.true_target
+                        else guarded.true_target
+                    )
+                else:
+                    parts = _default_gap_conditional_fold_parts(plan, claim_proof, descriptor)
+                    assert parts is not None
+                    _selected, other_endpoint = parts
+                old_serial = next(
+                    ref for ref in source_by_ref
+                    if _ref_matches_identity(
+                        ref,
+                        other_endpoint.identity
+                        if guarded_fold else other_endpoint.target_identity,
+                    )
+                )
+                expected_projected_targets = (new_serial,)
             elif descriptor.step_kind is PatchStepKind.LOWER_CONDITIONAL:
                 if len(descriptor.route_refs) != 4:
                     raise ValueError("lower-conditional descriptor lacks exact arm coordinates")
@@ -3881,6 +4991,10 @@ def _legacy_structural_projected_routes(*, source_authority: model.SourceBoundRo
             conditional_helper_ref = None
             conditional_replacement_serial = None
             conditional_helper_serial = None
+            retained_prefix_match = False
+            retained_prefix_source_ref = None
+            state_carrier_helper_corridor_match = False
+            shared_state_carrier_source_bypass_match = False
             route_source_ref = source_ref
             route_source_serial_number = source_by_ref.get(source_ref)
             if descriptor.step_kind is PatchStepKind.LOWER_CONDITIONAL:
@@ -3896,6 +5010,33 @@ def _legacy_structural_projected_routes(*, source_authority: model.SourceBoundRo
                 route_source_ref, route_source_serial_number = _ref_and_serial(
                     descriptor.route_refs[0], source_by_ref,
                 )
+            if descriptor.step_kind is PatchStepKind.CONVERT_TO_GOTO:
+                route_source_ref, route_source_serial_number = _ref_and_serial(
+                    descriptor.route_refs[0], source_by_ref,
+                )
+            if (
+                descriptor.step_kind is PatchStepKind.HELPER_CORRIDOR
+                and _state_carrier_helper_corridor_coordinates_match(
+                    plan, claim_proof, descriptor,
+                )
+            ):
+                # The source proof owns the predecessor, while the cloned
+                # physical edge is the feeder -> comparison entry.  Use the
+                # latter only for physical edge replay; the exact carrier
+                # matcher below retains the semantic source coordinate.
+                state_carrier_helper_corridor_match = True
+                route_source_ref, route_source_serial_number = _ref_and_serial(
+                    descriptor.route_refs[0], source_by_ref,
+                )
+            if (
+                descriptor.step_kind is PatchStepKind.REDIRECT_BRANCH
+                and _owner_bound_direct_coordinates_match(
+                    plan, claim_proof, descriptor,
+                )
+            ):
+                route_source_ref, route_source_serial_number = _ref_and_serial(
+                    descriptor.route_refs[0], source_by_ref,
+                )
             if descriptor.step_kind in {
                 PatchStepKind.REDIRECT_GOTO,
                 PatchStepKind.BYPASS_TRAMPOLINE,
@@ -3908,9 +5049,48 @@ def _legacy_structural_projected_routes(*, source_authority: model.SourceBoundRo
                     *plan_inputs.dispatcher_member_refs,
                 }
                 if old_ref not in dispatcher_refs:
-                    raise ValueError(
-                        "goto or bypass old target is outside dispatcher authority"
-                    )
+                    if (
+                        descriptor.step_kind is PatchStepKind.REDIRECT_GOTO
+                        and (
+                            _state_transform_direct_old_target_is_proof_owned(
+                                claim_proof, old_ref,
+                            )
+                            or _owner_bound_direct_coordinates_match(
+                                plan, claim_proof, descriptor,
+                            )
+                            or _state_carrier_feeder_direct_coordinates_match(
+                                plan, claim_proof, descriptor,
+                            )
+                            or _shared_state_carrier_source_bypass_coordinates_match(
+                                plan, claim_proof, descriptor,
+                                source_inventory,
+                            )
+                        )
+                    ):
+                        pass
+                    elif descriptor.step_kind is PatchStepKind.REDIRECT_GOTO:
+                        # A physical selected-arm redirect bypasses the proof's
+                        # conditional predicate, which need not itself be
+                        # dispatcher infrastructure.  Admit that topology only
+                        # through the complete exact-arm correlation; ordinary
+                        # GOTOs retain the dispatcher-membership requirement.
+                        try:
+                            exact_selected_arm_parts = (
+                                _exact_selected_arm_claim_bundle(
+                                    plan=plan,
+                                    route_claim=claim,
+                                    proof=claim_proof,
+                                    descriptor=descriptor,
+                                )
+                            )
+                        except (TypeError, ValueError):
+                            raise ValueError(
+                                "goto or bypass old target is outside dispatcher authority"
+                            ) from None
+                    else:
+                        raise ValueError(
+                            "goto or bypass old target is outside dispatcher authority"
+                        )
             proof = next(
                 proof for proof in source_authority.proposal.route_evidence.route_proofs
                 if proof.proof_id == claim.route_proof_ids[0]
@@ -3918,7 +5098,68 @@ def _legacy_structural_projected_routes(*, source_authority: model.SourceBoundRo
             destinations_by_role = {
                 item.role: item for item in proof.destinations
             }
+            if descriptor.step_kind is PatchStepKind.CONVERT_TO_GOTO:
+                guarded_fold = _guarded_conditional_fold_coordinates_match(
+                    plan, proof, descriptor,
+                )
+                default_gap_parts = _default_gap_conditional_fold_parts(
+                    plan, proof, descriptor,
+                )
+                if not guarded_fold and default_gap_parts is None:
+                    raise ValueError(
+                        "conditional fold does not match exact guarded route"
+                    )
+                selected_destination = (
+                    proof.destinations[0]
+                    if guarded_fold else default_gap_parts[0]
+                )
+                selected_subject = (
+                    _native_route_destination_subject_for_proof_destination(
+                        claim=claim,
+                        proof_destination=selected_destination,
+                        catalog=(
+                            plan.unflatten_proposal.source_identity_catalog
+                        ),
+                    )
+                )
+                if selected_subject.block_ref != new_ref:
+                    raise ValueError(
+                        "conditional fold selected target differs from claim"
+                    )
             if descriptor.step_kind is PatchStepKind.REDIRECT_GOTO:
+                owner_bound_direct_match = (
+                    _owner_bound_direct_coordinates_match(
+                        plan, proof, descriptor,
+                    )
+                )
+                state_carrier_feeder_direct_match = (
+                    _state_carrier_feeder_direct_coordinates_match(
+                        plan, proof, descriptor,
+                    )
+                )
+                shared_state_carrier_source_bypass_match = (
+                    _shared_state_carrier_source_bypass_coordinates_match(
+                        plan, proof, descriptor, source_inventory,
+                    )
+                )
+                if (
+                    proof.proof_kind
+                    is route_model.SemanticRouteProofKind.STATE_CARRIER
+                    and not state_carrier_feeder_direct_match
+                    and not shared_state_carrier_source_bypass_match
+                ):
+                    active_stage = (
+                        model.RouteRealizationFailureStage
+                        .UNSUPPORTED_REALIZATION_KIND
+                    )
+                    raise ValueError(
+                        "state-carrier direct route requires its exact feeder"
+                    )
+                retained_prefix_match = (
+                    _retained_prefix_direct_coordinates_match(
+                        plan, proof, descriptor, source_inventory,
+                    )
+                )
                 direct_proof_match = (
                     proof.shape.value == "direct"
                     and len(proof.destinations) == 1
@@ -3930,27 +5171,57 @@ def _legacy_structural_projected_routes(*, source_authority: model.SourceBoundRo
                         new_serial, proof.destinations[0].target_identity,
                     )
                 )
+                if owner_bound_direct_match:
+                    direct_proof_match = True
+                    route_source_ref, route_source_serial_number = _ref_and_serial(
+                        descriptor.route_refs[0], source_by_ref,
+                    )
+                if state_carrier_feeder_direct_match:
+                    direct_proof_match = True
+                    route_source_ref, route_source_serial_number = _ref_and_serial(
+                        descriptor.route_refs[0], source_by_ref,
+                    )
+                if shared_state_carrier_source_bypass_match:
+                    direct_proof_match = True
+                    route_source_ref, route_source_serial_number = _ref_and_serial(
+                        descriptor.route_refs[0], source_by_ref,
+                    )
+                if retained_prefix_match:
+                    direct_proof_match = True
+                    retained_prefix_source_ref = next(
+                        row.block_ref for row in source_inventory.blocks
+                        if _ref_matches_identity(
+                            row.block_ref, proof.source_identity,
+                        )
+                    )
+                    route_source_ref, route_source_serial_number = _ref_and_serial(
+                        descriptor.route_refs[0], source_by_ref,
+                    )
                 if direct_proof_match:
                     exact_selected_arm_match = False
                 else:
-                    exact_selected_arm_parts = _exact_selected_arm_claim_bundle(
-                        plan=plan, route_claim=claim, proof=proof,
-                        descriptor=descriptor,
-                    )
+                    if exact_selected_arm_parts is None:
+                        exact_selected_arm_parts = _exact_selected_arm_claim_bundle(
+                            plan=plan, route_claim=claim, proof=proof,
+                            descriptor=descriptor,
+                        )
                     exact_selected_arm_match = True
                     route_source_ref, route_source_serial_number = _ref_and_serial(
                         descriptor.route_refs[0], source_by_ref,
                     )
                 if not direct_proof_match and not exact_selected_arm_match:
                     raise ValueError("goto step does not match one direct semantic route")
-                claim_destinations = tuple(
-                    subject.locator.block_ref for subject in claim.destination_subjects
+                selected_destination = (
+                    proof.destinations[0]
+                    if direct_proof_match
+                    else exact_selected_arm_parts[0]
                 )
-                if (
-                    direct_proof_match and claim_destinations != (new_ref,)
-                ) or (
-                    exact_selected_arm_match and new_ref not in claim_destinations
-                ):
+                selected_subject = _native_route_destination_subject_for_proof_destination(
+                    claim=claim,
+                    proof_destination=selected_destination,
+                    catalog=plan.unflatten_proposal.source_identity_catalog,
+                )
+                if selected_subject.block_ref != new_ref:
                     raise ValueError("goto destination differs from route claim")
             if descriptor.step_kind is PatchStepKind.BYPASS_TRAMPOLINE:
                 if (
@@ -3961,7 +5232,12 @@ def _legacy_structural_projected_routes(*, source_authority: model.SourceBoundRo
                     or not _ref_matches_identity(new_serial, proof.destinations[0].target_identity)
                 ):
                     raise ValueError("bypass step does not match one direct semantic route")
-                if tuple(subject.locator.block_ref for subject in claim.destination_subjects) != (new_ref,):
+                selected_subject = _native_route_destination_subject_for_proof_destination(
+                    claim=claim,
+                    proof_destination=proof.destinations[0],
+                    catalog=plan.unflatten_proposal.source_identity_catalog,
+                )
+                if selected_subject.block_ref != new_ref:
                     raise ValueError("bypass destination differs from route claim")
             if descriptor.step_kind is PatchStepKind.LOWER_CONDITIONAL:
                 if type(plan.steps[fact.step_index]) is not PatchLowerConditionalStateTransition:
@@ -4051,9 +5327,22 @@ def _legacy_structural_projected_routes(*, source_authority: model.SourceBoundRo
                     false_destination is None or true_destination is None
                     or not _ref_matches_identity(step.fallthrough_target, false_destination.target_identity)
                     or not _ref_matches_identity(step.conditional_target, true_destination.target_identity)
-                    or {subject.locator.block_ref for subject in claim.destination_subjects}
-                    != {step.fallthrough_target, step.conditional_target}
                 ):
+                    raise ValueError("conditional redirect semantic arms differ from proof")
+                claim_false_subject = _native_route_destination_subject_for_proof_destination(
+                    claim=claim,
+                    proof_destination=false_destination,
+                    catalog=plan.unflatten_proposal.source_identity_catalog,
+                )
+                claim_true_subject = _native_route_destination_subject_for_proof_destination(
+                    claim=claim,
+                    proof_destination=true_destination,
+                    catalog=plan.unflatten_proposal.source_identity_catalog,
+                )
+                if {
+                    claim_false_subject.block_ref,
+                    claim_true_subject.block_ref,
+                } != {step.fallthrough_target, step.conditional_target}:
                     raise ValueError("conditional redirect semantic arms differ from proof")
             source_row = _inventory_block(source_inventory, route_source_ref)
             old_row = _inventory_block(source_inventory, old_ref)
@@ -4063,6 +5352,26 @@ def _legacy_structural_projected_routes(*, source_authority: model.SourceBoundRo
                 projected_inventory,
                 conditional_replacement_ref if descriptor.step_kind is PatchStepKind.CONDITIONAL_REDIRECT else new_ref,
             )
+            if retained_prefix_match:
+                retained_source_row = _inventory_block(
+                    source_inventory, retained_prefix_source_ref,
+                )
+                retained_projected_row = _inventory_block(
+                    projected_inventory, retained_prefix_source_ref,
+                )
+                if (
+                    retained_source_row.successor_serials
+                    != (source_row.serial,)
+                    or retained_projected_row.successor_serials
+                    != (projected_source_row.serial,)
+                    or retained_source_row.serial
+                    not in source_row.predecessor_serials
+                    or retained_projected_row.serial
+                    not in projected_source_row.predecessor_serials
+                ):
+                    raise ValueError(
+                        "retained-prefix proof-source edge differs"
+                    )
             if descriptor.step_kind is PatchStepKind.CONDITIONAL_REDIRECT:
                 conditional_rows = (
                     source_row,
@@ -4090,12 +5399,21 @@ def _legacy_structural_projected_routes(*, source_authority: model.SourceBoundRo
                             source_inventory, corridor_refs[-1],
                         ).successor_serials[0], source_by_ref,
                     )[0]
+                    selected_corridor_target = (
+                        _native_route_destination_subject_for_proof_destination(
+                            claim=claim,
+                            proof_destination=proof.destinations[0],
+                            catalog=plan.unflatten_proposal.source_identity_catalog,
+                        ).block_ref
+                        if len(proof.destinations) == 1
+                        else None
+                    )
                     literal_refs = (
                         corridor_step.via_pred,
                         *corridor_refs,
                         terminal_ref,
                         *corridor_step.clone_block_ids,
-                        claim.retired_route_subject.locator.destination_refs[-1],
+                        *((selected_corridor_target,) if selected_corridor_target is not None else ()),
                     )
                     for literal_ref in literal_refs:
                         inventory = (
@@ -4132,9 +5450,98 @@ def _legacy_structural_projected_routes(*, source_authority: model.SourceBoundRo
                 raise ValueError("projected route retains the old edge")
             lower_relation: model.LoweredConditionalRouteRealization | None = None
             cloned_relation: model.ClonedConditionalRouteRealization | None = None
+            folded_relation: model.FoldedConditionalRouteRealization | None = None
             branch_relation: object | None = None
             corridor_relation: object | None = None
             expected_roles: tuple[object, ...] | None = None
+            if descriptor.step_kind is PatchStepKind.CONVERT_TO_GOTO:
+                active_stage = model.RouteRealizationFailureStage.CONDITIONAL_ROLES
+                guarded_fold = _guarded_conditional_fold_coordinates_match(
+                    plan, proof, descriptor,
+                )
+                default_gap_parts = _default_gap_conditional_fold_parts(
+                    plan, proof, descriptor,
+                )
+                if not guarded_fold and default_gap_parts is None:
+                    raise ValueError("conditional fold does not match typed route")
+                guarded = None if proof.state_write is None else proof.state_write.guarded_selection
+                endpoints = (
+                    (guarded.true_target, guarded.false_target)
+                    if guarded_fold else default_gap_parts
+                )
+                endpoint_refs = tuple(
+                    next(
+                        ref for ref in source_by_ref
+                        if _ref_matches_identity(
+                            ref,
+                            endpoint.identity
+                            if guarded_fold else endpoint.target_identity,
+                        )
+                    )
+                    for endpoint in endpoints
+                )
+                endpoint_serials = tuple(source_by_ref[ref] for ref in endpoint_refs)
+                if (
+                    source_row.block_kind is not BlockKind.TWO_WAY
+                    or len(source_row.successor_serials) != 2
+                    or set(source_row.successor_serials) != set(endpoint_serials)
+                    or new_serial_number not in endpoint_serials
+                    or old_serial_number not in endpoint_serials
+                    or old_serial_number == new_serial_number
+                ):
+                    raise ValueError(
+                        "conditional fold source arms differ from guarded proof"
+                    )
+                selected_source_row = _inventory_block(source_inventory, new_ref)
+                selected_projected_row = _inventory_block(
+                    projected_inventory, new_ref,
+                )
+                discarded_projected_row = _inventory_block(
+                    projected_inventory, old_ref,
+                )
+                if (
+                    source_row.serial not in selected_source_row.predecessor_serials
+                    or projected_source_row.successor_serials
+                    != (new_serial_number,)
+                    or projected_source_row.serial
+                    not in selected_projected_row.predecessor_serials
+                    or projected_source_row.serial
+                    in discarded_projected_row.predecessor_serials
+                ):
+                    raise ValueError(
+                        "conditional fold projected topology differs"
+                    )
+                rows = (source_row, selected_source_row, old_row)
+                if any(row.anchor_ea is None for row in rows):
+                    raise ValueError(
+                        "conditional fold requires exact native anchors"
+                    )
+                feeder = model.AnchoredBlockRef(
+                    route_source_ref, source_row.anchor_ea,
+                )
+                selected = model.AnchoredBlockRef(
+                    new_ref, selected_source_row.anchor_ea,
+                )
+                discarded = model.AnchoredBlockRef(
+                    old_ref, old_row.anchor_ea,
+                )
+                expected_roles = (
+                    model.FoldedConditionalRouteRealization.__name__,
+                    feeder, selected, discarded,
+                )
+                folded_relation = _mint(
+                    model.FoldedConditionalRouteRealization,
+                    {
+                        "feeder": feeder,
+                        "selected_target": selected,
+                        "discarded_target": discarded,
+                        "relation_id": route_realization_id((
+                            "folded_conditional", feeder,
+                            selected, discarded,
+                        )),
+                    },
+                    "relation_id",
+                )
             if descriptor.step_kind is PatchStepKind.HELPER_CORRIDOR:
                 active_stage = model.RouteRealizationFailureStage.UNSUPPORTED_REALIZATION_KIND
                 step = plan.steps[fact.step_index]
@@ -4144,7 +5551,13 @@ def _legacy_structural_projected_routes(*, source_authority: model.SourceBoundRo
                     raise ValueError("corridor proof must be one direct destination")
                 source_refs = tuple(_ref_and_serial(ref, source_by_ref)[0] for ref in step.corridor_serials)
                 active_stage = model.RouteRealizationFailureStage.PLAN_STEP_CORRELATION
-                if not source_refs or source_ref != source_refs[0]:
+                if (
+                    not source_refs
+                    or (
+                        not state_carrier_helper_corridor_match
+                        and source_ref != source_refs[0]
+                    )
+                ):
                     raise ValueError("corridor proof source differs from claim source")
                 active_stage = model.RouteRealizationFailureStage.UNSUPPORTED_REALIZATION_KIND
                 # Corridor unsupported rows still report the complete family
@@ -4165,13 +5578,21 @@ def _legacy_structural_projected_routes(*, source_authority: model.SourceBoundRo
                 # step.new_target is a plan coordinate and may intentionally
                 # differ (for example in an unsupported proof fixture), so it
                 # must never add a second production anchor.
-                claim_target_ref = claim.retired_route_subject.locator.destination_refs[-1]
+                claim_target_ref = (
+                    _native_route_destination_subject_for_proof_destination(
+                        claim=claim,
+                        proof_destination=proof.destinations[0],
+                        catalog=plan.unflatten_proposal.source_identity_catalog,
+                    ).block_ref
+                    if len(proof.destinations) == 1
+                    else None
+                )
                 family_refs = (
                     step.via_pred,
                     *source_refs,
                     terminal_ref,
                     *step.clone_block_ids,
-                    claim_target_ref,
+                    *((claim_target_ref,) if claim_target_ref is not None else ()),
                 )
                 family_anchors: list[model.AnchoredBlockRef] = []
                 for ref in family_refs:
@@ -4187,10 +5608,16 @@ def _legacy_structural_projected_routes(*, source_authority: model.SourceBoundRo
                     except (TypeError, ValueError):
                         continue
                 active_anchored_refs = tuple(family_anchors)
-                if proof.proof_kind not in {
-                    route_model.SemanticRouteProofKind.STATE_ASSIGNMENT,
-                    route_model.SemanticRouteProofKind.STATE_PARTITION,
-                }:
+                if state_carrier_helper_corridor_match:
+                    admitted_proof_kinds = {
+                        route_model.SemanticRouteProofKind.STATE_CARRIER,
+                    }
+                else:
+                    admitted_proof_kinds = {
+                        route_model.SemanticRouteProofKind.STATE_ASSIGNMENT,
+                        route_model.SemanticRouteProofKind.STATE_PARTITION,
+                    }
+                if proof.proof_kind not in admitted_proof_kinds:
                     raise ValueError("corridor proof kind is unsupported")
                 active_stage = model.RouteRealizationFailureStage.OLD_EDGE_REMOVAL
                 for retained_ref in source_refs:
@@ -4205,7 +5632,12 @@ def _legacy_structural_projected_routes(*, source_authority: model.SourceBoundRo
                 projected_edge_source_row = _inventory_block(
                     projected_inventory, predecessor_ref,
                 )
-                if (
+                if state_carrier_helper_corridor_match:
+                    if not _state_carrier_helper_corridor_coordinates_match(
+                        plan, proof, descriptor,
+                    ):
+                        raise ValueError("carrier corridor coordinates differ")
+                elif (
                     not _ref_matches_identity(source_refs[0], proof.source_identity)
                     or proof.source_owner_identity is None
                     or predecessor_ref == source_refs[0]
@@ -4294,17 +5726,94 @@ def _legacy_structural_projected_routes(*, source_authority: model.SourceBoundRo
                     prefixes.append(_mint(model.ClonedSemanticPrefix, {
                         "ordinal": index, "source_owner": prefix_owner, "clone_owner": prefix_clone, "source_start_ordinal": 0, "source_end_ordinal_exclusive": len(source_obs) - 1, "instruction_origins": tuple(prefixes_origins), "source_trailing_goto_ordinal": len(source_obs) - 1, "projected_synthetic_goto_ordinal": len(clone_obs) - 1, "projected_successor": prefix_successor, "creation_spec_row": creation, "prefix_id": cloned_semantic_prefix_id(prefix_preimage),
                     }, "prefix_id"))
-                relation_refs = (model.AnchoredBlockRef(predecessor_ref, _inventory_block(source_inventory, predecessor_ref).anchor_ea), model.AnchoredBlockRef(source_refs[0], _inventory_block(source_inventory, source_refs[0]).anchor_ea), model.AnchoredBlockRef(descriptor_old_ref, _inventory_block(source_inventory, descriptor_old_ref).anchor_ea), model.AnchoredBlockRef(terminal_ref, _inventory_block(source_inventory, terminal_ref).anchor_ea), tuple(model.AnchoredBlockRef(ref, _inventory_block(source_inventory, ref).anchor_ea) for ref in source_refs), tuple(model.AnchoredBlockRef(ref, _inventory_block(projected_inventory, ref).anchor_ea) for ref in clone_refs), model.AnchoredBlockRef(new_ref, projected_new_row.anchor_ea))
-                expected_roles = (
-                    model.ClonedRouteCorridorRealization.__name__,
-                    relation_refs[0], relation_refs[1], relation_refs[2],
-                    relation_refs[3], relation_refs[4], relation_refs[5],
-                    relation_refs[6], tuple(expected_prefixes),
-                    descriptor.new_block_spec_digests,
+                anchored_predecessor = model.AnchoredBlockRef(
+                    predecessor_ref,
+                    _inventory_block(source_inventory, predecessor_ref).anchor_ea,
                 )
-                corridor_relation = _mint(model.ClonedRouteCorridorRealization, {
-                    "predecessor": relation_refs[0], "proof_source": relation_refs[1], "descriptor_old_target": relation_refs[2], "terminal_continuation": relation_refs[3], "source_corridor": relation_refs[4], "cloned_corridor": relation_refs[5], "semantic_target": relation_refs[6], "semantic_prefixes": tuple(prefixes), "creation_spec_digests": descriptor.new_block_spec_digests, "relation_id": route_realization_id(("cloned_route_corridor", *relation_refs[:3], relation_refs[3], relation_refs[4], relation_refs[5], relation_refs[6], tuple(prefixes), descriptor.new_block_spec_digests)),
-                }, "relation_id")
+                anchored_source_corridor = tuple(
+                    model.AnchoredBlockRef(
+                        ref, _inventory_block(source_inventory, ref).anchor_ea,
+                    )
+                    for ref in source_refs
+                )
+                anchored_cloned_corridor = tuple(
+                    model.AnchoredBlockRef(
+                        ref, _inventory_block(projected_inventory, ref).anchor_ea,
+                    )
+                    for ref in clone_refs
+                )
+                anchored_semantic_target = model.AnchoredBlockRef(
+                    new_ref, projected_new_row.anchor_ea,
+                )
+                if state_carrier_helper_corridor_match:
+                    carrier = proof.state_carrier
+                    if carrier is None:
+                        raise ValueError("carrier corridor lacks typed carrier evidence")
+                    anchored_proof_source = model.AnchoredBlockRef(
+                        predecessor_ref,
+                        _inventory_block(source_inventory, predecessor_ref).anchor_ea,
+                    )
+                    anchored_physical_feeder = anchored_source_corridor[0]
+                    anchored_comparison_entry = model.AnchoredBlockRef(
+                        descriptor_old_ref,
+                        _inventory_block(source_inventory, descriptor_old_ref).anchor_ea,
+                    )
+                    carrier_roles = (
+                        anchored_proof_source, anchored_physical_feeder,
+                        anchored_comparison_entry, anchored_source_corridor,
+                        anchored_cloned_corridor, anchored_semantic_target,
+                    )
+                    expected_roles = (
+                        model.ClonedCarrierRouteCorridorRealization.__name__,
+                        *carrier_roles, tuple(expected_prefixes),
+                        descriptor.new_block_spec_digests,
+                    )
+                    corridor_relation = _mint(
+                        model.ClonedCarrierRouteCorridorRealization,
+                        {
+                            "proof_source": carrier_roles[0],
+                            "physical_feeder": carrier_roles[1],
+                            "comparison_entry": carrier_roles[2],
+                            "source_corridor": carrier_roles[3],
+                            "cloned_corridor": carrier_roles[4],
+                            "semantic_target": carrier_roles[5],
+                            "semantic_prefixes": tuple(prefixes),
+                            "creation_spec_digests": descriptor.new_block_spec_digests,
+                            "relation_id": route_realization_id((
+                                "cloned_carrier_route_corridor", *carrier_roles,
+                                tuple(prefixes), descriptor.new_block_spec_digests,
+                            )),
+                        },
+                        "relation_id",
+                    )
+                else:
+                    relation_refs = (
+                        anchored_predecessor, anchored_source_corridor[0],
+                        model.AnchoredBlockRef(
+                            descriptor_old_ref,
+                            _inventory_block(
+                                source_inventory, descriptor_old_ref,
+                            ).anchor_ea,
+                        ),
+                        model.AnchoredBlockRef(
+                            terminal_ref,
+                            _inventory_block(
+                                source_inventory, terminal_ref,
+                            ).anchor_ea,
+                        ),
+                        anchored_source_corridor, anchored_cloned_corridor,
+                        anchored_semantic_target,
+                    )
+                    expected_roles = (
+                        model.ClonedRouteCorridorRealization.__name__,
+                        relation_refs[0], relation_refs[1], relation_refs[2],
+                        relation_refs[3], relation_refs[4], relation_refs[5],
+                        relation_refs[6], tuple(expected_prefixes),
+                        descriptor.new_block_spec_digests,
+                    )
+                    corridor_relation = _mint(model.ClonedRouteCorridorRealization, {
+                        "predecessor": relation_refs[0], "proof_source": relation_refs[1], "descriptor_old_target": relation_refs[2], "terminal_continuation": relation_refs[3], "source_corridor": relation_refs[4], "cloned_corridor": relation_refs[5], "semantic_target": relation_refs[6], "semantic_prefixes": tuple(prefixes), "creation_spec_digests": descriptor.new_block_spec_digests, "relation_id": route_realization_id(("cloned_route_corridor", *relation_refs[:3], relation_refs[3], relation_refs[4], relation_refs[5], relation_refs[6], tuple(prefixes), descriptor.new_block_spec_digests)),
+                    }, "relation_id")
                 expected_projected_targets = (descriptor.owner_refs[0],)
             if descriptor.step_kind is PatchStepKind.REDIRECT_BRANCH:
                 active_stage = model.RouteRealizationFailureStage.UNSUPPORTED_REALIZATION_KIND
@@ -4338,16 +5847,35 @@ def _legacy_structural_projected_routes(*, source_authority: model.SourceBoundRo
                 )
                 active_stage = model.RouteRealizationFailureStage.CONDITIONAL_ROLES
                 _require_projected_feeder_semantics(source_row, projected_source_row)
-                if not projected_source_row.instruction_observations:
+                if (
+                    not source_row.instruction_observations
+                    or not projected_source_row.instruction_observations
+                ):
                     raise ValueError("projected branch feeder has no tail observation")
+                source_predicate = (
+                    source_row.instruction_observations[-1].predicate_observation
+                )
                 projected_predicate = projected_source_row.instruction_observations[-1].predicate_observation
-                expected_predicate_target = (
-                    untouched_projected_serial
-                    if descriptor.helper_refs else new_serial_number
+                source_explicit_target = (
+                    source_predicate.explicit_target_serial
+                    if source_predicate is not None
+                    else source_successors[1]
+                )
+                expected_predicate_target = _expected_projected_branch_target(
+                    source_explicit_target=source_explicit_target,
+                    old_target=old_serial_number,
+                    untouched_target=untouched_serial,
+                    projected_untouched_target=untouched_projected_serial,
+                    new_target=new_serial_number,
+                    has_fallthrough_helper=bool(descriptor.helper_refs),
                 )
                 if (
-                    projected_predicate is None
-                    or projected_predicate.explicit_target_serial != expected_predicate_target
+                    (source_predicate is None) != (projected_predicate is None)
+                    or (
+                        projected_predicate is not None
+                        and projected_predicate.explicit_target_serial
+                        != expected_predicate_target
+                    )
                 ):
                     raise ValueError("projected branch predicate target differs from arm slot")
                 if descriptor.helper_refs:
@@ -4365,7 +5893,9 @@ def _legacy_structural_projected_routes(*, source_authority: model.SourceBoundRo
                     helper_anchor = helper_row.anchor_ea
                     if helper_anchor is None or source_row.anchor_ea is None or _inventory_block(projected_inventory, untouched_ref).anchor_ea is None or projected_new_row.anchor_ea is None:
                         raise ValueError("branch relation requires exact anchors")
-                    feeder_ref = model.AnchoredBlockRef(source_ref, source_row.anchor_ea)
+                    feeder_ref = model.AnchoredBlockRef(
+                        route_source_ref, source_row.anchor_ea,
+                    )
                     fallthrough = model.AnchoredBlockRef(untouched_ref, _inventory_block(source_inventory, untouched_ref).anchor_ea)
                     untouched = model.AnchoredBlockRef(untouched_ref, _inventory_block(projected_inventory, untouched_ref).anchor_ea)
                     helper = model.AnchoredBlockRef(helper_ref, helper_anchor)
@@ -4384,12 +5914,23 @@ def _legacy_structural_projected_routes(*, source_authority: model.SourceBoundRo
                     }, "relation_id")
                     expected_projected_targets = (helper_serial, untouched_projected_serial)
                 else:
-                    if projected_source_row.successor_serials != (untouched_serial, new_serial_number):
+                    expected_projected_arm_order = tuple(
+                        new_serial_number
+                        if serial == old_serial_number
+                        else untouched_projected_serial
+                        for serial in source_successors
+                    )
+                    if (
+                        projected_source_row.successor_serials
+                        != expected_projected_arm_order
+                    ):
                         raise ValueError("branch projected arm order differs")
                     expected_projected_targets = (untouched_serial, new_serial_number)
                     if None in (source_row.anchor_ea, _inventory_block(source_inventory, old_ref).anchor_ea, projected_new_row.anchor_ea, _inventory_block(source_inventory, untouched_ref).anchor_ea):
                         raise ValueError("branch relation requires exact anchors")
-                    feeder_ref = model.AnchoredBlockRef(source_ref, source_row.anchor_ea)
+                    feeder_ref = model.AnchoredBlockRef(
+                        route_source_ref, source_row.anchor_ea,
+                    )
                     source_arm = model.AnchoredBlockRef(old_ref, _inventory_block(source_inventory, old_ref).anchor_ea)
                     projected_arm = model.AnchoredBlockRef(new_ref, projected_new_row.anchor_ea)
                     untouched = model.AnchoredBlockRef(untouched_ref, _inventory_block(source_inventory, untouched_ref).anchor_ea)
@@ -4703,12 +6244,12 @@ def _legacy_structural_projected_routes(*, source_authority: model.SourceBoundRo
             source_route_refs = {
                 ref for ref in descriptor.route_refs if ref in source_by_ref
             }
-            destination_refs = {
-                subject.locator.block_ref
-                for subject in claim.destination_subjects
-            }
-            if new_ref not in destination_refs:
-                raise ValueError("projected route target is foreign to its claim")
+            _native_route_destination_subject_for_target_ref(
+                claim=claim,
+                proof=proof,
+                target_ref=new_ref,
+                catalog=plan.unflatten_proposal.source_identity_catalog,
+            )
             active_stage = model.RouteRealizationFailureStage.CONDITIONAL_ROLES
             roles = tuple(
                 model.ConditionalRoleCoordinate(item.role, int(item.target_anchor_ea))
@@ -4719,6 +6260,8 @@ def _legacy_structural_projected_routes(*, source_authority: model.SourceBoundRo
             kind = (
                 model.RouteRealizationKind.HELPER_CORRIDOR
                 if descriptor.step_kind is PatchStepKind.HELPER_CORRIDOR
+                else model.RouteRealizationKind.FOLDED
+                if descriptor.step_kind is PatchStepKind.CONVERT_TO_GOTO
                 else model.RouteRealizationKind.CONDITIONAL_REDIRECT
                 if len(proof.destinations) > 1
                 else model.RouteRealizationKind.DIRECT_REDIRECT
@@ -4734,6 +6277,8 @@ def _legacy_structural_projected_routes(*, source_authority: model.SourceBoundRo
                 relation = cloned_relation
             elif lower_relation is not None:
                 relation = lower_relation
+            elif folded_relation is not None:
+                relation = folded_relation
             elif branch_relation is not None:
                 relation = branch_relation
             elif corridor_relation is not None:
@@ -4762,22 +6307,105 @@ def _legacy_structural_projected_routes(*, source_authority: model.SourceBoundRo
                         discarded_destination=discarded_destination,
                         exact_claims=exact_claims,
                     )
-                expected_roles = (
-                    model.DirectRouteRealization.__name__,
-                    feeder_anchor_ref, old_anchor_ref, new_anchor_ref,
-                )
-                relation = _mint(
-                    model.DirectRouteRealization,
-                    {
-                        "feeder": feeder_anchor_ref,
-                        "old_target": old_anchor_ref,
-                        "new_target": new_anchor_ref,
-                        "relation_id": route_realization_id(
-                            ("direct", feeder_anchor_ref, old_anchor_ref, new_anchor_ref)
-                        ),
-                    },
-                    "relation_id",
-                )
+                if shared_state_carrier_source_bypass_match:
+                    carrier = proof.state_carrier
+                    if carrier is None:
+                        raise ValueError("shared-carrier relation lacks carrier evidence")
+                    comparison_rows = tuple(
+                        row for row in source_inventory.blocks
+                        if _ref_matches_identity(
+                            row.block_ref,
+                            carrier.comparison_entry_identity,
+                        )
+                    )
+                    if (
+                        len(comparison_rows) != 1
+                        or comparison_rows[0].anchor_ea is None
+                    ):
+                        raise ValueError(
+                            "shared-carrier comparison entry lacks one exact anchor"
+                        )
+                    comparison_anchor_ref = model.AnchoredBlockRef(
+                        comparison_rows[0].block_ref,
+                        comparison_rows[0].anchor_ea,
+                    )
+                    expected_roles = (
+                        model.SharedCarrierSourceBypassRouteRealization.__name__,
+                        feeder_anchor_ref,
+                        old_anchor_ref,
+                        comparison_anchor_ref,
+                        new_anchor_ref,
+                    )
+                    relation = _mint(
+                        model.SharedCarrierSourceBypassRouteRealization,
+                        {
+                            "proof_source": feeder_anchor_ref,
+                            "shared_feeder": old_anchor_ref,
+                            "comparison_entry": comparison_anchor_ref,
+                            "semantic_target": new_anchor_ref,
+                            "relation_id": route_realization_id((
+                                "shared_carrier_source_bypass",
+                                feeder_anchor_ref,
+                                old_anchor_ref,
+                                comparison_anchor_ref,
+                                new_anchor_ref,
+                            )),
+                        },
+                        "relation_id",
+                    )
+                elif retained_prefix_match:
+                    proof_source_row = _inventory_block(
+                        source_inventory, retained_prefix_source_ref,
+                    )
+                    if proof_source_row.anchor_ea is None:
+                        raise ValueError(
+                            "retained-prefix proof source requires an anchor"
+                        )
+                    proof_source_anchor_ref = model.AnchoredBlockRef(
+                        retained_prefix_source_ref,
+                        proof_source_row.anchor_ea,
+                    )
+                    expected_roles = (
+                        model.RetainedPrefixRouteRealization.__name__,
+                        proof_source_anchor_ref,
+                        feeder_anchor_ref,
+                        old_anchor_ref,
+                        new_anchor_ref,
+                    )
+                    relation = _mint(
+                        model.RetainedPrefixRouteRealization,
+                        {
+                            "proof_source": proof_source_anchor_ref,
+                            "delivery_owner": feeder_anchor_ref,
+                            "old_target": old_anchor_ref,
+                            "new_target": new_anchor_ref,
+                            "relation_id": route_realization_id((
+                                "retained_prefix",
+                                proof_source_anchor_ref,
+                                feeder_anchor_ref,
+                                old_anchor_ref,
+                                new_anchor_ref,
+                            )),
+                        },
+                        "relation_id",
+                    )
+                else:
+                    expected_roles = (
+                        model.DirectRouteRealization.__name__,
+                        feeder_anchor_ref, old_anchor_ref, new_anchor_ref,
+                    )
+                    relation = _mint(
+                        model.DirectRouteRealization,
+                        {
+                            "feeder": feeder_anchor_ref,
+                            "old_target": old_anchor_ref,
+                            "new_target": new_anchor_ref,
+                            "relation_id": route_realization_id(
+                                ("direct", feeder_anchor_ref, old_anchor_ref, new_anchor_ref)
+                            ),
+                        },
+                        "relation_id",
+                    )
             if _draft_factory is not None:
                 if expected_roles is None:
                     raise TypeError("projected route family did not select expected roles")
@@ -4800,6 +6428,32 @@ def _legacy_structural_projected_routes(*, source_authority: model.SourceBoundRo
         for entry in lineage_index.entries:
             if entry.descriptor.step_index in selected_step_indices:
                 continue
+            if entry.descriptor.step_kind is PatchStepKind.CONVERT_TO_GOTO:
+                active_stage = model.RouteRealizationFailureStage.CLAIM_SELECTION
+                active_descriptor = entry.descriptor
+                active_fact = entry.facts[0] if entry.facts else None
+                active_claim = None
+                active_anchored_refs = ()
+                raise ValueError(
+                    "conditional fold has no exact typed route owner"
+                )
+            if (
+                entry.descriptor.step_kind is PatchStepKind.REDIRECT_GOTO
+                and any(
+                    _shared_state_carrier_source_bypass_coordinates_match(
+                        plan, proof, entry.descriptor, source_inventory,
+                    )
+                    for proof in source_authority.proposal.route_evidence.route_proofs
+                )
+            ):
+                active_stage = model.RouteRealizationFailureStage.CLAIM_SELECTION
+                active_descriptor = entry.descriptor
+                active_fact = entry.facts[0] if entry.facts else None
+                active_claim = None
+                active_anchored_refs = ()
+                raise ValueError(
+                    "shared-carrier source bypass has no exact typed route owner"
+                )
             if entry.facts and entry.violation is not None:
                 active_stage = entry.violation.stage
                 active_descriptor = entry.violation.descriptor
@@ -4814,7 +6468,16 @@ def _legacy_structural_projected_routes(*, source_authority: model.SourceBoundRo
         if _draft_factory is not None:
             return None
         raise RuntimeError("structural projected route kernel requires a draft sink")
-    except (TypeError, ValueError, StopIteration):
+    except (TypeError, ValueError, StopIteration) as exc:
+        logger.warning(
+            "projected route relation rejected: stage=%s claim=%s step=%s "
+            "reason=%s:%s",
+            active_stage.value,
+            None if active_claim is None else active_claim.claim_id,
+            None if active_descriptor is None else active_descriptor.step_index,
+            type(exc).__name__,
+            exc,
+        )
         failure = _failure(**_route_failure_coordinates(
             source_authority.proposal if type(source_authority) is model.SourceBoundRouteAuthority else None,
             stage=active_stage,
@@ -4835,16 +6498,16 @@ def _validate_registered_result(value, expected, _registry=_ROUTE_REGISTRY,
     if row[1] != _canonical_registry_seal(value, _registry):
         raise ValueError("route result content seal does not match")
     if expected is model.SourceBoundRouteAuthorityAccepted:
-        _validate(value.authority, "source_authority_id")
+        _validate(
+            value.authority, "source_authority_id", _content_sealed=True,
+        )
     elif expected is model.ProjectedRouteRealizationAccepted:
-        _validate(value.realization, "realization_id")
+        _validate(value.realization, "realization_id", _content_sealed=True)
     else:
         for failure in value.failures:
             failure_row = _registry.get(id(failure))
             if failure_row is None or failure_row[0]() is not failure:
                 raise ValueError("route failure was not minted by the route kernel")
-            if failure_row[1] != _canonical_registry_seal(failure, _registry):
-                raise ValueError("route failure content seal does not match")
 
 
 def _make_route_kernels():
@@ -4958,6 +6621,18 @@ def _make_route_kernels():
 
         if type(relation) is model.DirectRouteRealization:
             return (type(relation).__name__, relation.feeder, relation.old_target, relation.new_target)
+        if type(relation) is model.SharedCarrierSourceBypassRouteRealization:
+            return (
+                type(relation).__name__, relation.proof_source,
+                relation.shared_feeder, relation.comparison_entry,
+                relation.semantic_target,
+            )
+        if type(relation) is model.RetainedPrefixRouteRealization:
+            return (
+                type(relation).__name__, relation.proof_source,
+                relation.delivery_owner, relation.old_target,
+                relation.new_target,
+            )
         if type(relation) is model.LoweredConditionalRouteRealization:
             return (
                 type(relation).__name__, relation.feeder, relation.proof_source,
@@ -4969,6 +6644,11 @@ def _make_route_kernels():
                 relation.old_target, relation.replacement_clone,
                 relation.fallthrough_helper, relation.arms,
                 relation.creation_spec_digests,
+            )
+        if type(relation) is model.FoldedConditionalRouteRealization:
+            return (
+                type(relation).__name__, relation.feeder,
+                relation.selected_target, relation.discarded_target,
             )
         if type(relation) is model.TwoArmDirectBranchRouteRealization:
             return (
@@ -4989,7 +6669,17 @@ def _make_route_kernels():
                 relation.semantic_target, nested(relation.semantic_prefixes),
                 relation.creation_spec_digests,
             )
-        raise TypeError("unknown projected route relation")
+        if type(relation) is model.ClonedCarrierRouteCorridorRealization:
+            return (
+                type(relation).__name__, relation.proof_source,
+                relation.physical_feeder, relation.comparison_entry,
+                relation.source_corridor, relation.cloned_corridor,
+                relation.semantic_target, nested(relation.semantic_prefixes),
+                relation.creation_spec_digests,
+            )
+        raise TypeError(
+            f"unknown projected route relation {type(relation).__name__}"
+        )
 
     def register_draft(draft: _SelectedProjectedRouteRelation) -> _SelectedProjectedRouteRelation:
         seal = draft_content_seal(draft)
@@ -5038,11 +6728,15 @@ def _make_route_kernels():
                 raise TypeError("projected route family expected roles are not sealed")
             if type(relation) not in {
                 model.DirectRouteRealization,
+                model.SharedCarrierSourceBypassRouteRealization,
+                model.RetainedPrefixRouteRealization,
                 model.LoweredConditionalRouteRealization,
                 model.ClonedConditionalRouteRealization,
+                model.FoldedConditionalRouteRealization,
                 model.TwoArmDirectBranchRouteRealization,
                 model.BranchFallthroughHelperRouteRealization,
                 model.ClonedRouteCorridorRealization,
+                model.ClonedCarrierRouteCorridorRealization,
             }:
                 raise TypeError("projected route family relation is not sealed")
             if expected_roles[0] != type(relation).__name__:
@@ -5064,6 +6758,7 @@ def _make_route_kernels():
             index = _build_projected_owner_mapping_index(
                 drafts=tuple(drafts),
                 source_authority=kwargs["source_authority"],
+                source_inventory=kwargs["source_inventory"],
                 plan=kwargs["plan"],
                 patch_step_facts=kwargs["patch_step_facts"],
                 selected_context=tuple(selected_context),
@@ -5080,6 +6775,7 @@ def _make_route_kernels():
     def _build_projected_owner_mapping_index(
         *, drafts: tuple[_SelectedProjectedRouteRelation, ...],
         source_authority: model.SourceBoundRouteAuthority,
+        source_inventory: model.SemanticGraphInventory,
         plan: PatchPlan,
         patch_step_facts: tuple[model.PatchStepEvidencePayload, ...],
         selected_context: tuple[tuple[_LineageFactGroupEntry, tuple[model.PatchStepEvidencePayload, ...]], ...],
@@ -5089,6 +6785,9 @@ def _make_route_kernels():
             raise TypeError("projected relation drafts must be an exact tuple")
         if type(source_authority) is not model.SourceBoundRouteAuthority:
             raise TypeError("projected relation drafts require source authority")
+        if type(source_inventory) is not model.SemanticGraphInventory:
+            raise TypeError("projected relation drafts require source inventory")
+        model.validate_semantic_graph_inventory(source_inventory)
         if type(plan) is not PatchPlan:
             raise TypeError("projected relation drafts require a PatchPlan")
         if plan.unflatten_proposal is not source_authority.proposal:
@@ -5115,6 +6814,11 @@ def _make_route_kernels():
         relation_occurrences: list[_RelationOwnerOccurrence] = []
         inverse_only: set[model.AnchoredBlockRef] = set()
         source_rows: dict[model.AnchoredBlockRef, _OwnerMapping] = {}
+        clone_occurrences_by_source: dict[
+            model.AnchoredBlockRef,
+            set[tuple[str, model.AnchoredBlockRef, model.AnchoredBlockRef]],
+        ] = {}
+        site_free_multi_clone_sources: set[model.AnchoredBlockRef] = set()
         validated_drafts: list[_SelectedProjectedRouteRelation] = []
 
         def add(source: model.AnchoredBlockRef, projected: model.AnchoredBlockRef,
@@ -5122,9 +6826,54 @@ def _make_route_kernels():
             if type(source) is not model.AnchoredBlockRef or type(projected) is not model.AnchoredBlockRef:
                 raise TypeError("owner mappings require anchored owners")
             row = _OwnerMapping(source, projected, lineage, relation_id)
+            if lineage is model.ProjectedSiteLineageKind.RELATION_CLONE:
+                clone_occurrences = clone_occurrences_by_source.setdefault(
+                    source, set(),
+                )
+                clone_occurrences.add((relation_id or "", source, projected))
+                if len({item[2] for item in clone_occurrences}) > 1:
+                    _canonical_semantic_site_owner_mapping(
+                        source_inventory=source_inventory,
+                        source_owner=source,
+                        clone_occurrences=tuple(clone_occurrences),
+                    )
+                    previous = source_rows.get(source)
+                    if (
+                        previous is not None
+                        and previous.lineage
+                        is model.ProjectedSiteLineageKind.RELATION_CLONE
+                    ):
+                        source_rows.pop(source)
+                        owner_rows.remove(previous)
+                    site_free_multi_clone_sources.add(source)
+                    return
+            if (
+                source in site_free_multi_clone_sources
+                and lineage is model.ProjectedSiteLineageKind.RELATION_CLONE
+            ):
+                return
             previous = source_rows.get(source)
+            def is_same_owner(item: _OwnerMapping) -> bool:
+                return (
+                    item.source_owner == item.projected_owner
+                    and item.lineage is model.ProjectedSiteLineageKind.SAME_OWNER
+                    and item.relation_id is None
+                )
             if previous is not None and previous != row:
-                raise ValueError("conflicting source-owner mappings")
+                # Site disposition is single-valued, while a source owner can
+                # participate in several route relations.  Preserve every
+                # relation incidence separately, but prefer the physical
+                # same-owner row when a clone relation also names this owner.
+                if is_same_owner(previous):
+                    return
+                if is_same_owner(row):
+                    owner_rows[owner_rows.index(previous)] = row
+                    source_rows[source] = row
+                    return
+                raise ValueError(
+                    "conflicting source-owner mappings: "
+                    f"source={source!r} previous={previous!r} current={row!r}"
+                )
             if previous is None:
                 source_rows[source] = row
                 owner_rows.append(row)
@@ -5194,19 +6943,24 @@ def _make_route_kernels():
                 proof = proof_by_id.get(draft.proof_id)
                 if proof is None or proof is not draft.proof or proof.proof_id != draft.proof_id:
                     raise ValueError("projected relation draft proof is foreign to authority")
-                destinations = draft.claim.retired_route_subject.locator.destination_refs
-                if not destinations:
-                    raise ValueError("projected relation draft has no selected target")
                 selected_target = draft.selected_target_ref
-                if selected_target not in destinations:
-                    raise ValueError("projected relation draft selected target mismatch")
+                _native_route_destination_subject_for_target_ref(
+                    claim=draft.claim,
+                    proof=proof,
+                    target_ref=selected_target,
+                    catalog=source_authority.proposal.source_identity_catalog,
+                )
                 if type(draft.relation) not in {
                     model.DirectRouteRealization,
+                    model.SharedCarrierSourceBypassRouteRealization,
+                    model.RetainedPrefixRouteRealization,
                     model.LoweredConditionalRouteRealization,
                     model.ClonedConditionalRouteRealization,
+                    model.FoldedConditionalRouteRealization,
                     model.TwoArmDirectBranchRouteRealization,
                     model.BranchFallthroughHelperRouteRealization,
                     model.ClonedRouteCorridorRealization,
+                    model.ClonedCarrierRouteCorridorRealization,
                 }:
                     raise TypeError("projected relation draft relation is not sealed")
                 if type(draft.expected_roles) is not tuple:
@@ -5219,7 +6973,11 @@ def _make_route_kernels():
                 # closure-local mint phase.
                 draft.relation.__post_init__()
                 expected_relation_type = {
-                    PatchStepKind.REDIRECT_GOTO: model.DirectRouteRealization,
+                    PatchStepKind.REDIRECT_GOTO: (
+                        model.DirectRouteRealization,
+                        model.SharedCarrierSourceBypassRouteRealization,
+                        model.RetainedPrefixRouteRealization,
+                    ),
                     PatchStepKind.BYPASS_TRAMPOLINE: model.DirectRouteRealization,
                     PatchStepKind.REDIRECT_BRANCH: (
                         model.BranchFallthroughHelperRouteRealization
@@ -5228,9 +6986,18 @@ def _make_route_kernels():
                     ),
                     PatchStepKind.LOWER_CONDITIONAL: model.LoweredConditionalRouteRealization,
                     PatchStepKind.CONDITIONAL_REDIRECT: model.ClonedConditionalRouteRealization,
-                    PatchStepKind.HELPER_CORRIDOR: model.ClonedRouteCorridorRealization,
+                    PatchStepKind.CONVERT_TO_GOTO: model.FoldedConditionalRouteRealization,
+                    PatchStepKind.HELPER_CORRIDOR: (
+                        model.ClonedRouteCorridorRealization,
+                        model.ClonedCarrierRouteCorridorRealization,
+                    ),
                 }.get(draft.descriptor.step_kind)
-                if type(draft.relation) is not expected_relation_type:
+                if (
+                    isinstance(expected_relation_type, tuple)
+                    and type(draft.relation) not in expected_relation_type
+                    or not isinstance(expected_relation_type, tuple)
+                    and type(draft.relation) is not expected_relation_type
+                ):
                     raise ValueError("projected relation draft relation family mismatch")
 
                 # Relation objects are already sealed and selected by the
@@ -5282,6 +7049,19 @@ def _make_route_kernels():
                     proof.source_identity, proof.source_anchor_ea,
                 )
                 exact_selected_arm = draft.exact_selected_arm
+                owner_bound_direct = _owner_bound_direct_coordinates_match(
+                    plan, proof, draft.descriptor,
+                )
+                carrier_feeder_direct = (
+                    _state_carrier_feeder_direct_coordinates_match(
+                        plan, proof, draft.descriptor,
+                    )
+                )
+                shared_carrier_source_bypass = (
+                    _shared_state_carrier_source_bypass_coordinates_match(
+                        plan, proof, draft.descriptor, source_inventory,
+                    )
+                )
                 if exact_selected_arm is not None:
                     if type(exact_selected_arm) is not _ExactSelectedArmDirectCorrelation:
                         raise TypeError("selected-arm direct correlation is not closed")
@@ -5320,15 +7100,33 @@ def _make_route_kernels():
                 relation_source_owner = (
                     draft.relation.proof_source
                     if type(draft.relation) in {
+                        model.SharedCarrierSourceBypassRouteRealization,
+                        model.RetainedPrefixRouteRealization,
                         model.LoweredConditionalRouteRealization,
                         model.ClonedConditionalRouteRealization,
                         model.ClonedRouteCorridorRealization,
+                        model.ClonedCarrierRouteCorridorRealization,
                     }
                     else draft.relation.feeder
                 )
                 expected_relation_source_owner = (
                     exact_selected_arm.feeder
                     if exact_selected_arm is not None
+                    else identity_owner(
+                        proof.source_identity, proof.source_anchor_ea,
+                    )
+                    if type(draft.relation)
+                    is model.FoldedConditionalRouteRealization
+                    else identity_owner(
+                        proof.state_carrier.feeder_identity,
+                        proof.state_carrier.feeder_anchor_ea,
+                    )
+                    if carrier_feeder_direct and proof.state_carrier is not None
+                    else identity_owner(
+                        proof.source_owner_identity,
+                        proof.source_owner_anchor_ea,
+                    )
+                    if owner_bound_direct
                     else expected_proof_owner
                 )
                 if relation_source_owner != expected_relation_source_owner:
@@ -5352,12 +7150,24 @@ def _make_route_kernels():
 
                 relation = draft.relation
                 if type(relation) is model.DirectRouteRealization:
+                    if (
+                        proof.proof_kind
+                        is route_model.SemanticRouteProofKind.STATE_CARRIER
+                        and not carrier_feeder_direct
+                    ):
+                        raise ValueError(
+                            "state-carrier direct relation lacks exact feeder coordinates"
+                        )
                     if exact_selected_arm is None:
                         if (
                             proof.shape is not route_model.SemanticRouteShape.DIRECT
                             or len(proof.destinations) != 1
                             or proof.destinations[0].role is not SemanticEdgeRole.DIRECT
                             or relation.old_target.ref != draft.descriptor.route_refs[1]
+                            or (
+                                owner_bound_direct
+                                and relation.old_target != expected_proof_owner
+                            )
                         ):
                             raise ValueError("ordinary direct relation proof differs")
                     elif (
@@ -5370,6 +7180,43 @@ def _make_route_kernels():
                         raise ValueError("selected-arm direct relation roles differ")
                     if relation.new_target.ref != selected_target:
                         raise ValueError("direct relation target differs from selected target")
+                elif type(relation) is model.SharedCarrierSourceBypassRouteRealization:
+                    carrier = proof.state_carrier
+                    if (
+                        not shared_carrier_source_bypass
+                        or proof.proof_kind
+                        is not route_model.SemanticRouteProofKind.STATE_CARRIER
+                        or carrier is None
+                        or carrier.requires_feeder_clone
+                    ):
+                        raise ValueError(
+                            "shared-carrier bypass lacks exact typed carrier coordinates"
+                        )
+                    expected_feeder = identity_owner(
+                        carrier.feeder_identity, carrier.feeder_anchor_ea,
+                    )
+                    expected_comparison = identity_owner(
+                        carrier.comparison_entry_identity,
+                        carrier.comparison_entry_anchor_ea,
+                    )
+                    if (
+                        relation.proof_source != expected_proof_owner
+                        or relation.shared_feeder != expected_feeder
+                        or relation.comparison_entry != expected_comparison
+                        or relation.semantic_target.ref != selected_target
+                    ):
+                        raise ValueError(
+                            "shared-carrier bypass roles differ from exact typed evidence"
+                        )
+                elif type(relation) is model.RetainedPrefixRouteRealization:
+                    expected_proof_source = identity_owner(
+                        proof.source_identity, proof.source_anchor_ea,
+                    )
+                    if (
+                        relation.proof_source != expected_proof_source
+                        or relation.new_target.ref != selected_target
+                    ):
+                        raise ValueError("retained-prefix relation differs from proof")
                 elif type(relation) is model.LoweredConditionalRouteRealization:
                     if relation.old_target != relation.proof_source:
                         raise ValueError("lowered conditional old target differs from proof source")
@@ -5404,6 +7251,54 @@ def _make_route_kernels():
                     }
                     if any(arm.target != destination_by_role.get(arm.role) for arm in relation.arms):
                         raise ValueError("cloned conditional arms differ from proof destinations")
+                elif type(relation) is model.FoldedConditionalRouteRealization:
+                    guarded = (
+                        None if proof.state_write is None
+                        else proof.state_write.guarded_selection
+                    )
+                    default_gap_parts = _default_gap_conditional_fold_parts(
+                        plan, proof, draft.descriptor,
+                    )
+                    guarded_fold = _guarded_conditional_fold_coordinates_match(
+                        plan, proof, draft.descriptor,
+                    )
+                    selected_identity = (
+                        guarded.selected_target.identity
+                        if guarded_fold and guarded is not None
+                        else default_gap_parts[0].target_identity
+                        if default_gap_parts is not None else None
+                    )
+                    discarded_identity = (
+                        tuple(
+                            endpoint.identity for endpoint in (
+                                guarded.true_target, guarded.false_target,
+                            ) if endpoint != guarded.selected_target
+                        )
+                        if guarded_fold and guarded is not None
+                        else (default_gap_parts[1].target_identity,)
+                        if default_gap_parts is not None else ()
+                    )
+                    if (
+                        (not guarded_fold and default_gap_parts is None)
+                        or not _ref_matches_identity(
+                            relation.feeder.ref, proof.source_identity,
+                        )
+                        or not _ref_matches_identity(
+                            relation.selected_target.ref,
+                            selected_identity,
+                        )
+                        or relation.selected_target.ref != selected_target
+                        or not any(
+                            _ref_matches_identity(
+                                relation.discarded_target.ref,
+                                identity,
+                            )
+                            for identity in discarded_identity
+                        )
+                    ):
+                        raise ValueError(
+                            "folded relation differs from guarded proof"
+                        )
                 elif type(relation) is model.TwoArmDirectBranchRouteRealization:
                     if relation.projected_replacement_arm.ref != selected_target:
                         raise ValueError("two-arm projected arm differs from selected target")
@@ -5422,10 +7317,47 @@ def _make_route_kernels():
                     )
                     if relation.source_corridor != expected_corridor:
                         raise ValueError("corridor source roles differ from exact lineage")
+                elif type(relation) is model.ClonedCarrierRouteCorridorRealization:
+                    carrier = proof.state_carrier
+                    if (
+                        proof.proof_kind
+                        is not route_model.SemanticRouteProofKind.STATE_CARRIER
+                        or carrier is None
+                        or not carrier.requires_feeder_clone
+                        or not _state_carrier_helper_corridor_coordinates_match(
+                            plan, proof, draft.descriptor,
+                        )
+                    ):
+                        raise ValueError(
+                            "carrier relation lacks its exact typed carrier proof"
+                        )
+                    expected_feeder = identity_owner(
+                        carrier.feeder_identity, carrier.feeder_anchor_ea,
+                    )
+                    expected_comparison = identity_owner(
+                        carrier.comparison_entry_identity,
+                        carrier.comparison_entry_anchor_ea,
+                    )
+                    if (
+                        relation.proof_source != expected_proof_owner
+                        or relation.physical_feeder != expected_feeder
+                        or relation.comparison_entry != expected_comparison
+                        or relation.source_corridor != (expected_feeder,)
+                        or relation.semantic_target.ref != selected_target
+                    ):
+                        raise ValueError(
+                            "carrier relation roles differ from exact typed evidence"
+                        )
                 semantic_targets = {
-                    type(draft.relation) is model.DirectRouteRealization
-                    and draft.relation.new_target.ref,
+                    draft.relation.new_target.ref
+                    if type(draft.relation) in {
+                        model.DirectRouteRealization,
+                        model.RetainedPrefixRouteRealization,
+                    }
+                    else False,
                 }
+                if type(draft.relation) is model.SharedCarrierSourceBypassRouteRealization:
+                    semantic_targets = {draft.relation.semantic_target.ref}
                 if type(draft.relation) in {
                     model.LoweredConditionalRouteRealization,
                     model.ClonedConditionalRouteRealization,
@@ -5433,9 +7365,13 @@ def _make_route_kernels():
                     semantic_targets = {arm.target.ref for arm in draft.relation.arms}
                 elif type(draft.relation) is model.TwoArmDirectBranchRouteRealization:
                     semantic_targets = {draft.relation.projected_replacement_arm.ref}
+                elif type(draft.relation) is model.FoldedConditionalRouteRealization:
+                    semantic_targets = {draft.relation.selected_target.ref}
                 elif type(draft.relation) is model.BranchFallthroughHelperRouteRealization:
                     semantic_targets = {draft.relation.semantic_target.ref}
                 elif type(draft.relation) is model.ClonedRouteCorridorRealization:
+                    semantic_targets = {draft.relation.semantic_target.ref}
+                elif type(draft.relation) is model.ClonedCarrierRouteCorridorRealization:
                     semantic_targets = {draft.relation.semantic_target.ref}
                 if selected_target not in semantic_targets:
                     raise ValueError("projected relation draft selected target mismatch")
@@ -5498,6 +7434,20 @@ def _make_route_kernels():
                         add_for_draft(relation.new_target, relation.new_target, same, None)
                         occur(relation.feeder, relation.feeder, same)
                         occur(relation.new_target, relation.new_target, same)
+                    elif type(relation) is model.SharedCarrierSourceBypassRouteRealization:
+                        for owner in (
+                            relation.proof_source, relation.semantic_target,
+                        ):
+                            add_for_draft(owner, owner, same, None)
+                            occur(owner, owner, same)
+                    elif type(relation) is model.RetainedPrefixRouteRealization:
+                        for owner in (
+                            relation.proof_source,
+                            relation.delivery_owner,
+                            relation.new_target,
+                        ):
+                            add_for_draft(owner, owner, same, None)
+                            occur(owner, owner, same)
                     elif type(relation) is model.LoweredConditionalRouteRealization:
                         add_for_draft(relation.feeder, relation.feeder, same, None)
                         add_for_draft(relation.proof_source, relation.proof_source, same, None)
@@ -5515,6 +7465,12 @@ def _make_route_kernels():
                             add_for_draft(arm.target, arm.target, same, None)
                             occur(arm.target, arm.target, same)
                         inverse_only.add(relation.fallthrough_helper)
+                    elif type(relation) is model.FoldedConditionalRouteRealization:
+                        for owner in (
+                            relation.feeder, relation.selected_target,
+                        ):
+                            add_for_draft(owner, owner, same, None)
+                            occur(owner, owner, same)
                     elif type(relation) is model.TwoArmDirectBranchRouteRealization:
                         add_for_draft(relation.feeder, relation.feeder, same, None)
                         add_for_draft(relation.projected_replacement_arm, relation.projected_replacement_arm, same, None)
@@ -5544,8 +7500,37 @@ def _make_route_kernels():
                         ):
                             add_for_draft(source_owner, projected_owner, clone, relation.relation_id)
                             occur(source_owner, projected_owner, clone)
+                    elif type(relation) is model.ClonedCarrierRouteCorridorRealization:
+                        add_for_draft(
+                            relation.proof_source, relation.proof_source,
+                            same, None,
+                        )
+                        add_for_draft(
+                            relation.semantic_target, relation.semantic_target,
+                            same, None,
+                        )
+                        occur(
+                            relation.proof_source, relation.proof_source, same,
+                        )
+                        occur(
+                            relation.semantic_target,
+                            relation.semantic_target,
+                            same,
+                        )
+                        for source_owner, projected_owner in zip(
+                            relation.source_corridor,
+                            relation.cloned_corridor,
+                        ):
+                            add_for_draft(
+                                source_owner, projected_owner, clone,
+                                relation.relation_id,
+                            )
+                            occur(source_owner, projected_owner, clone)
                     else:
-                        raise TypeError("unknown projected route relation")
+                        raise TypeError(
+                            "unknown projected route relation "
+                            f"{type(relation).__name__}"
+                        )
                 except _ProjectedDraftViolation:
                     raise
                 except (TypeError, ValueError) as exc:
@@ -5568,26 +7553,44 @@ def _make_route_kernels():
             tuple(sorted(inverse_only, key=canonical_bytes)),
         )
 
-    def validate_route(value, identity_name):
-        base_validate_route(value, identity_name)
+    def validate_route(value, identity_name, *, _content_sealed=False):
+        base_validate_route(
+            value, identity_name, _content_sealed=_content_sealed,
+        )
         if type(value) is model.ProjectedRouteRealization:
-            validate_route(value.source_authority, "source_authority_id")
-            validate_projected_site_phase_result(value.site_phase_result)
+            validate_route(
+                value.source_authority, "source_authority_id",
+                _content_sealed=True,
+            )
+            validate_projected_site_phase_result(
+                value.site_phase_result, _content_sealed=True,
+            )
             for row in value.rows:
-                validate_route(row, "row_id")
+                validate_route(row, "row_id", _content_sealed=True)
         elif type(value) is model.ProjectedRouteRealizationRow:
-            validate_route(value.relation, "relation_id")
-            validate_projected_route_site_preservation(value.site_preservation)
-        elif type(value) is model.ClonedRouteCorridorRealization:
+            validate_route(
+                value.relation, "relation_id", _content_sealed=True,
+            )
+            validate_projected_route_site_preservation(
+                value.site_preservation, _content_sealed=True,
+            )
+        elif type(value) in {
+            model.ClonedRouteCorridorRealization,
+            model.ClonedCarrierRouteCorridorRealization,
+        }:
             for prefix in value.semantic_prefixes:
-                validate_route(prefix, "prefix_id")
+                validate_route(prefix, "prefix_id", _content_sealed=True)
         elif type(value) is model.ClonedSemanticPrefix:
             for origin in value.instruction_origins:
-                validate_route(origin, "origin_id")
+                validate_route(origin, "origin_id", _content_sealed=True)
         elif type(value) is model.ProjectedRouteRealizationAccepted:
-            validate_route(value.realization, "realization_id")
+            validate_route(
+                value.realization, "realization_id", _content_sealed=True,
+            )
         elif type(value) is model.SourceBoundRouteAuthorityAccepted:
-            validate_route(value.authority, "source_authority_id")
+            validate_route(
+                value.authority, "source_authority_id", _content_sealed=True,
+            )
 
     def validate_result(value, expected):
         return base_validate_result(value, expected, _validate=validate_route)
@@ -5605,9 +7608,16 @@ def _make_route_kernels():
         """Mint the accepted closure only after independent draft validation."""
         publication_batch = _AtomicPublicationBatch()
         publish_route_objects(route_publications, publication_batch)
+        # The inventories are immutable, exact transaction-owned occurrences.
+        # Replay each complete canonical inventory once before binding its site
+        # rows; replaying it again for every row makes closure quadratic while
+        # adding no intervening mutation or authority boundary.
+        model.validate_semantic_graph_inventory(source_inventory)
+        model.validate_semantic_graph_inventory(projected_inventory)
         source_effect_coordinates = {
             id(row): _bind_effect_site_coordinate(
                 source_inventory, row, _batch=publication_batch,
+                _inventory_validated=True,
             )
             for row in source_inventory.effects
             if row.owner_serial in source_inventory.reachable_serials
@@ -5615,6 +7625,7 @@ def _make_route_kernels():
         projected_effect_coordinates = {
             id(row): _bind_effect_site_coordinate(
                 projected_inventory, row, _batch=publication_batch,
+                _inventory_validated=True,
             )
             for row in projected_inventory.effects
             if row.owner_serial in projected_inventory.reachable_serials
@@ -5622,6 +7633,7 @@ def _make_route_kernels():
         source_terminal_coordinates = {
             id(row): _bind_terminal_site_coordinate(
                 source_inventory, row, _batch=publication_batch,
+                _inventory_validated=True,
             )
             for row in source_inventory.terminals
             if row.owner_serial in source_inventory.reachable_serials
@@ -5629,6 +7641,7 @@ def _make_route_kernels():
         projected_terminal_coordinates = {
             id(row): _bind_terminal_site_coordinate(
                 projected_inventory, row, _batch=publication_batch,
+                _inventory_validated=True,
             )
             for row in projected_inventory.terminals
             if row.owner_serial in projected_inventory.reachable_serials
@@ -5850,7 +7863,9 @@ def _make_route_kernels():
     ) -> model.ProjectedRouteRealizationResult:
         """Close structural relations and every projected semantic site atomically."""
         if claim_inventory is not None:
-            validate_transaction_projected_claim_inventory(claim_inventory)
+            require_registered_transaction_projected_claim_inventory(
+                claim_inventory,
+            )
         site_draft = _draft_projected_site_closure(
             authority_id=authority_id, source_authority=source_authority, plan=plan,
             source_inventory=source_inventory, projected_inventory=projected_inventory,
@@ -5869,7 +7884,9 @@ def _make_route_kernels():
             route_publications=route_publications,
         )
         if claim_inventory is not None:
-            validate_transaction_projected_claim_inventory(claim_inventory)
+            require_registered_transaction_projected_claim_inventory(
+                claim_inventory,
+            )
         return _mint_projected_site_closure(
             draft=site_draft, authority_id=authority_id,
             source_authority=source_authority, plan=plan,
@@ -5991,16 +8008,23 @@ def _make_route_kernels():
             projected_claim_inventories[key] = (weakref.ref(value, cleanup), token)
         return value
 
-    def validate_transaction_projected_claim_inventory(
+    def require_registered_transaction_projected_claim_inventory(
         value: _TransactionProjectedClaimInventory,
     ) -> None:
-        validate_transaction_projected_claim_inventory_fields(value)
+        if type(value) is not _TransactionProjectedClaimInventory:
+            raise TypeError("projected transaction claims require the exact private inventory")
         with _REGISTRY_PUBLICATION_LOCK:
             row = projected_claim_inventories.get(id(value))
             if row is None or row[0]() is not value:
                 raise ValueError("projected transaction inventory is not binder-owned")
             if row[1] != projected_claim_inventory_token(value):
                 raise ValueError("projected transaction inventory occurrence drifted")
+
+    def validate_transaction_projected_claim_inventory(
+        value: _TransactionProjectedClaimInventory,
+    ) -> None:
+        validate_transaction_projected_claim_inventory_fields(value)
+        require_registered_transaction_projected_claim_inventory(value)
 
     def source(*, proposal, source_inventory, source_materialization):
         bound = source_impl(
@@ -6020,6 +8044,13 @@ def _make_route_kernels():
         claim = getattr(draft, "claim", None)
         fact = draft.facts[0] if draft is not None and draft.facts else None
         descriptor = getattr(draft, "descriptor", None)
+        logger.warning(
+            "projected route draft rejected: claim=%s proof=%s step=%s reason=%s",
+            None if claim is None else claim.claim_id,
+            getattr(draft, "proof_id", None),
+            None if descriptor is None else descriptor.step_index,
+            exc,
+        )
         rejected = failure(**_route_failure_coordinates(
             source_authority.proposal
             if type(source_authority) is model.SourceBoundRouteAuthority else None,
@@ -6037,7 +8068,9 @@ def _make_route_kernels():
         *, authority_id, claim_inventory, raw_effect_gate_fact,
         legacy_effective_gate_facts,
     ):
-        validate_transaction_projected_claim_inventory(claim_inventory)
+        require_registered_transaction_projected_claim_inventory(
+            claim_inventory,
+        )
         derived = claim_inventory.derived
         source_authority = claim_inventory.source_authority
         plan = derived.plan
@@ -6157,6 +8190,22 @@ def _make_route_kernels():
                 raise TypeError("projected route finalizer returned an unexpected result")
             return finalized
         except _ProjectedSiteDraftViolation as exc:
+            logger.warning(
+                "projected semantic-site closure rejected: reason=%s scope=%s "
+                "claim=%s step=%s source=%s projected=%s",
+                exc.reason_code,
+                getattr(exc.scope, "value", exc.scope),
+                None if exc.claim is None else getattr(exc.claim, "claim_id", None),
+                None
+                if exc.patch_step_fact is None
+                else exc.patch_step_fact.step_index,
+                None
+                if exc.source_row is None
+                else (exc.source_row.owner_serial, exc.source_row.owner_anchor_ea),
+                None
+                if exc.projected_row is None
+                else (exc.projected_row.owner_serial, exc.projected_row.owner_anchor_ea),
+            )
             coordinates = _translate_projected_site_draft_violation(exc)
             failure_value = failure(**_route_failure_coordinates(
                 source_authority.proposal
@@ -6167,7 +8216,12 @@ def _make_route_kernels():
                 model.ProjectedRouteRealizationRejected,
                 {"failures": (failure_value,)},
             )
-        except (TypeError, ValueError):
+        except (TypeError, ValueError) as exc:
+            logger.warning(
+                "projected semantic-site finalization failed: %s: %s",
+                type(exc).__name__,
+                exc,
+            )
             failure_value = failure(**_route_failure_coordinates(
                 source_authority.proposal,
                 stage=model.RouteRealizationFailureStage.EFFECT_TERMINAL_PRESERVATION,
@@ -6654,21 +8708,38 @@ def terminal_cycle_binding_subjects(
             )
         )
     cleanup = catalog_by_ref.get(claim.cleanup_source_subject.block_ref)
+    terminal_locator = claim.terminal_subject.locator
     terminal = catalog_by_ref.get(claim.terminal_subject.block_ref)
+    native_terminal_valid = (
+        type(terminal_locator) is model.TerminalSubjectLocator
+        and terminal is not None
+        and terminal.anchor_ea == claim.terminal_subject.anchor_ea
+        and terminal_locator.instruction_ea in terminal.native_instruction_eas
+    )
+    logical_terminal_valid = (
+        type(terminal_locator) is model.LogicalFunctionExitSubjectLocator
+        and type(claim.terminal_subject.block_ref) is LogicalBlockRef
+        and terminal_locator.block_ref == claim.terminal_subject.block_ref
+        and claim.terminal_subject.anchor_ea is None
+    )
     if (
         cleanup is None
         or cleanup.anchor_ea != claim.cleanup_source_subject.anchor_ea
-        or terminal is None
-        or terminal.anchor_ea != claim.terminal_subject.anchor_ea
-        or claim.terminal_subject.locator.instruction_ea
-        not in terminal.native_instruction_eas
+        or not (native_terminal_valid or logical_terminal_valid)
     ):
         raise ValueError("terminal-cycle endpoint is foreign to the source catalog")
-    route_claim, _proof = _validated_terminal_route_claim(
+    route_claim, route_proof = _validated_terminal_route_claim(
         proposal, proof_id=claim.terminal_route_proof_ids[0],
     )
     route_source_subject = route_claim.source_subject
-    carrier_subject = route_claim.destination_subjects[0]
+    terminal_destination = tuple(route_proof.destinations)
+    if len(terminal_destination) != 1:
+        raise ValueError("terminal route proof must contain one terminal carrier destination")
+    carrier_subject = _native_route_destination_subject_for_proof_destination(
+        claim=route_claim,
+        proof_destination=terminal_destination[0],
+        catalog=proposal.source_identity_catalog,
+    )
     if route_source_subject.block_ref == claim.cleanup_source_subject.block_ref:
         raise ValueError("terminal route source aliases the cleanup source")
     return tuple(
@@ -6753,8 +8824,9 @@ class TerminalCycleBindingResult:
             for item in self.proposal.source_identity_catalog.blocks
         }
         for subject_id, subject in expected.items():
-            witness = catalog_by_ref[subject.block_ref]
             source_row = source[subject_id]
+            logical_exit = type(subject.locator) is model.LogicalFunctionExitSubjectLocator
+            witness = catalog_by_ref.get(subject.block_ref)
             if (
                 source_row.subject != subject
                 or source_row.phase is not model.UnflattenAuthorityPhase.PRODUCER_FORECAST
@@ -6762,8 +8834,21 @@ class TerminalCycleBindingResult:
                 or source_row.generation != self.generation
                 or source_row.block_ref != subject.block_ref
                 or source_row.anchor_ea != subject.anchor_ea
-                or tuple(source_row.native_instruction_eas)
-                != tuple(witness.native_instruction_eas)
+                or (
+                    logical_exit
+                    and (
+                        source_row.serial != subject.locator.serial
+                        or tuple(source_row.native_instruction_eas) != ()
+                    )
+                )
+                or (
+                    not logical_exit
+                    and (
+                        witness is None
+                        or tuple(source_row.native_instruction_eas)
+                        != tuple(witness.native_instruction_eas)
+                    )
+                )
             ):
                 raise ValueError("terminal-cycle source binding is not catalog-bound")
             projected_row = projected[subject_id]
@@ -6779,7 +8864,7 @@ class TerminalCycleBindingResult:
                     or projected_row.block_ref != subject.block_ref
                     or projected_row.anchor_ea != subject.anchor_ea
                     or tuple(projected_row.native_instruction_eas)
-                    != tuple(witness.native_instruction_eas)
+                    != (() if logical_exit else tuple(witness.native_instruction_eas))
                 ):
                     raise ValueError("terminal subject must remain projected-reachable by identity")
         if not _contains_directed_cycle(
@@ -7355,6 +9440,7 @@ def _classify_corridor_coverage_forecast(
     phase: model.UnflattenAuthorityPhase,
     claims: tuple[model.UnflattenClaim, ...] | None = None,
     projected_correlations: tuple[model.CorridorSemanticExclusionCorrelation, ...] | None = None,
+    default_gap_paths: tuple[model.DefaultGapInfeasibilityPath, ...] = (),
 ) -> model.CorridorCoveragePhaseResult | None:
     """Fold one sealed forecast against already-built inventory topology."""
 
@@ -7363,6 +9449,14 @@ def _classify_corridor_coverage_forecast(
     forecast = proposal.corridor_coverage_forecast
     if forecast is None:
         return None
+    if (
+        type(default_gap_paths) is not tuple
+        or any(type(item) is not model.DefaultGapInfeasibilityPath for item in default_gap_paths)
+    ):
+        raise TypeError("default-gap classifier context must contain closed typed paths")
+    default_gap_coordinates = {
+        (item.nodes, item.state_merge) for item in default_gap_paths
+    }
     if type(source_inventory) is not model.SemanticGraphInventory or type(candidate_inventory) is not model.SemanticGraphInventory:
         raise TypeError("corridor forecast binding requires closed inventories")
     model.validate_semantic_graph_inventory(source_inventory)
@@ -7523,25 +9617,24 @@ def _classify_corridor_coverage_forecast(
             )
             if source_match and state_route_match:
                 destination = matching_destinations[0]
-                destination_pairs = {
-                    (subject.block_ref, subject.anchor_ea)
-                    for subject in claim.destination_subjects
-                }
-                exact_destination_nodes = tuple(
-                    model.CorridorCoveragePathNode(block_ref, anchor_ea)
-                    for block_ref, anchor_ea in destination_pairs
-                    if anchor_ea == destination.target_anchor_ea
-                    and exact_native_identity(
-                        model.CorridorCoveragePathNode(block_ref, anchor_ea)
-                    ) == destination.target_identity
-                )
-                destination_match = (
-                    len(exact_destination_nodes) == 1
-                    and (
-                        exact_destination_nodes[0].block_ref,
-                        exact_destination_nodes[0].anchor_ea,
-                    ) in destination_pairs
-                )
+                try:
+                    destination_subject = _native_route_destination_subject_for_proof_destination(
+                        claim=claim,
+                        proof_destination=destination,
+                        catalog=proposal.source_identity_catalog,
+                    )
+                except (TypeError, ValueError):
+                    destination_match = False
+                else:
+                    destination_match = (
+                        destination_subject.anchor_ea == destination.target_anchor_ea
+                        and exact_native_identity(
+                            model.CorridorCoveragePathNode(
+                                destination_subject.block_ref,
+                                destination_subject.anchor_ea,
+                            )
+                        ) == destination.target_identity
+                    )
             else:
                 destination_match = False
             if source_match and state_route_match and destination_match:
@@ -7644,11 +9737,18 @@ def _classify_corridor_coverage_forecast(
                     ))
             covered.append(path.path_id)
         elif path.disposition is model.CorridorPathDisposition.RESIDUAL:
-            if not candidate_path_exists or candidate_state_hard_failure:
+            typed_default_gap = (path.nodes, path.state_merge) in default_gap_coordinates
+            if (not candidate_path_exists or candidate_state_hard_failure) and not typed_default_gap:
                 raise ValueError(
                     "residual corridor path classification lacks required candidate topology"
                 )
-            (residual if candidate_state_ok else drifted).append(path.path_id)
+            (residual if typed_default_gap or candidate_state_ok else drifted).append(path.path_id)
+        elif not candidate_dispatcher_reachable:
+            # Structural residue in a disconnected dispatcher component is
+            # semantically covered.  Requiring the physical path to disappear
+            # would make this phase independently reconstruct a stronger loss
+            # decision than the transaction's sealed reachability partition.
+            covered.append(path.path_id)
         elif candidate_path_exists:
             drifted.append(path.path_id)
         else:
@@ -7697,6 +9797,17 @@ def _classify_corridor_coverage_forecast(
         or set(covered) & set(residual)
         or set(covered) | set(residual) | set(drifted) != forecast_path_ids
     ):
+        logger.warning(
+            "corridor phase partition mismatch: phase=%s dispatcher=%s "
+            "forecast_covered=%r covered=%r residual=%r drifted=%r universe=%r",
+            phase.value,
+            candidate_dispatcher_reachable,
+            tuple(sorted(expected_covered)),
+            tuple(sorted(covered)),
+            tuple(sorted(residual)),
+            tuple(sorted(drifted)),
+            tuple(sorted(forecast_path_ids)),
+        )
         raise ValueError("corridor phase classification disagrees with sealed forecast partition")
     correlations = tuple(
         model.CorridorSemanticExclusionCorrelation(*spec, phase_result_id=result_id)
@@ -8286,6 +10397,546 @@ def bind_corridor_coverage_forecast(
     )
 
 
+def _default_gap_base_phase_result(
+    base_result: model.CorridorCoveragePhaseResult,
+    forecast: model.DefaultGapInfeasibilityForecast,
+) -> model.CorridorCoveragePhaseResult:
+    """Reclassify only the v2-linked legacy residual rows as covered."""
+
+    linked = {
+        next(
+            base.path_id for base in forecast.base_forecast.paths
+            if (base.nodes, base.state_merge) == (path.nodes, path.state_merge)
+        )
+        for path in forecast.paths
+    }
+    base_residual_coordinates = {
+        (path.nodes, path.state_merge)
+        for path in forecast.base_forecast.paths
+        if path.disposition is model.CorridorPathDisposition.RESIDUAL
+    }
+    extension_coordinates = {
+        (path.nodes, path.state_merge) for path in forecast.paths
+    }
+    if extension_coordinates != base_residual_coordinates:
+        raise ValueError("default-gap extension must cover every base residual coordinate")
+    if not linked <= set(base_result.residual_path_ids):
+        raise ValueError("default-gap paths are not exact residual phase rows")
+    covered = tuple(sorted(set(base_result.covered_path_ids) | linked))
+    residual = tuple(sorted(set(base_result.residual_path_ids) - linked))
+    content = (
+        "unflatten.corridor-coverage-phase.v1", base_result.forecast_id,
+        base_result.phase, base_result.source_fingerprint,
+        base_result.candidate_fingerprint, base_result.source_generation,
+        base_result.candidate_generation, covered, residual,
+        base_result.drifted_path_ids, base_result.enumeration_complete,
+        base_result.matched_semantic_exclusion_ids,
+        base_result.source_dispatcher_reachable,
+        base_result.candidate_dispatcher_reachable,
+        tuple(item.content_key for item in base_result.semantic_exclusion_correlations),
+    )
+    if base_result.comparison_region_subject_ids:
+        content = (*content, base_result.comparison_region_subject_ids)
+    if base_result.dispatcher_subject_id is not None:
+        content = (*content, base_result.dispatcher_subject_id)
+    return model.CorridorCoveragePhaseResult(
+        authority_id(content), base_result.forecast_id, base_result.phase,
+        base_result.source_fingerprint, base_result.candidate_fingerprint,
+        base_result.source_generation, base_result.candidate_generation,
+        covered, residual, base_result.drifted_path_ids,
+        base_result.enumeration_complete,
+        base_result.matched_semantic_exclusion_ids,
+        base_result.source_dispatcher_reachable,
+        base_result.candidate_dispatcher_reachable,
+        base_result.semantic_exclusion_correlations,
+        base_result.comparison_region_subject_ids,
+        base_result.dispatcher_subject_id,
+    )
+
+
+def _validate_default_gap_extension(
+    *,
+    extension: model.DefaultGapInfeasibilityForecast,
+    exclusion: model.DefaultGapInfeasibilityExclusion,
+    path: model.DefaultGapInfeasibilityPath,
+    proposal: model.ProposedUnflattenContract,
+    source_inventory: model.SemanticGraphInventory,
+    candidate_inventory: model.SemanticGraphInventory,
+    source_authority: model.SourceBoundRouteAuthority,
+) -> None:
+    """Replay the narrow, effect-free default arm from sealed inventory facts."""
+
+    if exclusion.state_identity != proposal.plan_inputs.state_identity:
+        raise ValueError("default-gap state identity differs from plan")
+    if exclusion.state_width_bytes != 4:
+        raise ValueError("default-gap state width is not exact u32")
+    if not (
+        exclusion.default_entry == exclusion.residual == path.nodes[0]
+        and path.nodes[-1] == exclusion.dispatcher
+    ):
+        raise ValueError(
+            "default-gap default entry, residual, and exact path endpoints differ"
+        )
+    source_by_ref = {
+        row.block_ref: row for row in source_inventory.blocks if row.block_ref is not None
+    }
+    candidate_by_ref = {
+        row.block_ref: row for row in candidate_inventory.blocks if row.block_ref is not None
+    }
+    serial_by_ref = source_inventory.serial_by_ref
+    for node in (exclusion.dispatcher, exclusion.default_entry, exclusion.residual, *path.nodes):
+        row = source_by_ref.get(node.block_ref)
+        if row is None or row.anchor_ea != node.anchor_ea or serial_by_ref.get(node.block_ref) != row.serial:
+            raise ValueError("default-gap source coordinate is absent or drifted")
+    if path.exclusion_id != exclusion.exclusion_id or path.nodes[0] != exclusion.residual:
+        raise ValueError("default-gap residual path linkage differs from exclusion")
+    if path not in extension.paths or exclusion not in extension.exclusions:
+        raise ValueError("default-gap exclusion/path is foreign to the extension forecast")
+    source_edges = {
+        (row.owner_serial, row.peer_serial) for row in source_inventory.topology
+        if row.kind is model.TopologyIncidenceKind.SUCCESSOR
+    }
+    def serial(node: model.CorridorCoveragePathNode) -> int:
+        return source_by_ref[node.block_ref].serial
+    if any(edge not in source_edges for edge in zip(map(serial, path.nodes), map(serial, path.nodes[1:]))):
+        raise ValueError("default-gap residual path is absent from source topology")
+
+    proofs = {proof.proof_id: proof for proof in proposal.route_evidence.route_proofs}
+    if set(exclusion.route_proof_ids) - set(source_authority.covered_proof_ids):
+        raise ValueError("default-gap route proof is not covered by source authority")
+    states: set[int] = set()
+    seed_destinations: list[
+        tuple[model.DefaultGapInitialStateSeed, route_model.SemanticRouteDestination]
+    ] = []
+    seed_by_proof = {seed.route_proof_id: seed for seed in exclusion.initial_state_seeds}
+    for proof_id in exclusion.route_proof_ids:
+        proof = proofs.get(proof_id)
+        if proof is None or proof.state_write is None:
+            raise ValueError("default-gap route proof lacks canonical state write")
+        write = proof.state_write
+        if write.state_variable != exclusion.state_identity or write.width != 4:
+            raise ValueError("default-gap route proof state write differs from exclusion")
+        source_row = next((row for row in source_by_ref.values()
+                           if row.anchor_ea == proof.source_anchor_ea
+                           and type(row.block_ref) is NativeBlockRef
+                           and row.block_ref.identity == proof.source_identity), None)
+        write_row = next((row for row in source_by_ref.values()
+                          if type(row.block_ref) is NativeBlockRef
+                          and row.block_ref.identity == write.identity
+                          and write.instruction_ea in row.native_instruction_eas), None)
+        if source_row is None or write_row is None:
+            raise ValueError("default-gap route proof source identity differs from inventory")
+        seed = seed_by_proof[proof_id]
+        if seed.normalized_state != (int(write.state_constant) & 0xFFFFFFFF):
+            raise ValueError(
+                "default-gap seed state differs from canonical state write"
+            )
+        destinations = {int(item.state_constant) & 0xFFFFFFFF for item in proof.destinations}
+        if not destinations or seed.normalized_state not in destinations:
+            raise ValueError("default-gap seed state is absent from canonical route proof")
+        exact_destinations = tuple(
+            item for item in proof.destinations
+            if (int(item.state_constant) & 0xFFFFFFFF)
+            == seed.normalized_state
+        )
+        if len(exact_destinations) != 1:
+            raise ValueError("default-gap seed has no unique canonical proof destination")
+        seed_destinations.append((seed, exact_destinations[0]))
+        # The seed is the source-bound entry into this closed route family;
+        # other proof destinations may be discarded effect branches and are
+        # not automatically reachable dispatcher states.
+        states.add(seed.normalized_state)
+    if tuple(sorted(states)) != exclusion.normalized_reachable_states:
+        raise ValueError("default-gap reachable state closure differs from canonical proofs")
+
+    # The only admitted arm is an acyclic u32 EQ chain.  Successor[1] is the
+    # explicit taken edge; successor[0] is the fallthrough/default continuation.
+    serial_rows = {row.serial: row for row in source_by_ref.values()}
+    for seed, destination in seed_destinations:
+        state = seed.normalized_state
+        current = exclusion.dispatcher
+        visited: set[int] = set()
+        selected = False
+        while current != exclusion.default_entry:
+            current_serial = serial(current)
+            if current_serial in visited:
+                raise ValueError("default-gap dispatcher comparison chain is cyclic")
+            visited.add(current_serial)
+            row = source_by_ref[current.block_ref]
+            if len(row.successor_serials) != 2 or not row.instruction_observations:
+                raise ValueError("default-gap dispatcher chain lacks exact conditional topology")
+            predicate = row.instruction_observations[-1].predicate_observation
+            if (
+                predicate is None or predicate.predicate_kind is not model.PredicateKind.EQ
+                or predicate.storage_identity != exclusion.state_identity
+                or predicate.width != 4
+                or predicate.explicit_target_serial != row.successor_serials[1]
+            ):
+                raise ValueError("default-gap dispatcher chain is not an exact u32 EQ predicate")
+            if (state & 0xFFFFFFFF) == predicate.compare_constant:
+                target_row = serial_rows.get(predicate.explicit_target_serial)
+                if (
+                    target_row is None
+                    or type(target_row.block_ref) is not NativeBlockRef
+                    or target_row.block_ref.identity != destination.target_identity
+                    or target_row.anchor_ea != destination.target_anchor_ea
+                    or target_row.block_ref in {
+                        exclusion.default_entry.block_ref,
+                        exclusion.residual.block_ref,
+                    }
+                ):
+                    raise ValueError(
+                        "default-gap EQ target differs from canonical proof destination"
+                    )
+                selected = True
+                break
+            next_row = serial_rows.get(row.successor_serials[0])
+            if next_row is None or next_row.block_ref is None or next_row.anchor_ea is None:
+                raise ValueError("default-gap fallthrough is not a native source coordinate")
+            current = model.CorridorCoveragePathNode(next_row.block_ref, next_row.anchor_ea)
+        else:
+            raise ValueError("default-gap reachable state set reaches the default entry")
+        if not selected:
+            raise ValueError("default-gap seed did not select a canonical handler")
+
+    # Every comparison that falls through eventually reaches the declared
+    # default entry; the default edge belongs to the final comparison, not
+    # necessarily to the dispatcher root.
+    current = exclusion.dispatcher
+    visited: set[int] = set()
+    while current != exclusion.default_entry:
+        current_serial = serial(current)
+        if current_serial in visited:
+            raise ValueError("default-gap dispatcher comparison chain is cyclic")
+        visited.add(current_serial)
+        row = source_by_ref[current.block_ref]
+        predicate = (
+            row.instruction_observations[-1].predicate_observation
+            if row.instruction_observations else None
+        )
+        if (
+            len(row.successor_serials) != 2
+            or predicate is None
+            or predicate.predicate_kind is not model.PredicateKind.EQ
+            or predicate.storage_identity != exclusion.state_identity
+            or predicate.width != 4
+            or predicate.explicit_target_serial != row.successor_serials[1]
+        ):
+            raise ValueError("default-gap dispatcher chain lacks exact conditional topology")
+        next_row = serial_rows.get(row.successor_serials[0])
+        if next_row is None or next_row.block_ref is None or next_row.anchor_ea is None:
+            raise ValueError("default-gap fallthrough is not a native source coordinate")
+        current = model.CorridorCoveragePathNode(next_row.block_ref, next_row.anchor_ea)
+    if not visited:
+        raise ValueError("default-gap default entry is not reached by an explicit fallthrough")
+
+    residual_nodes = tuple(node for node in path.nodes if node != exclusion.dispatcher)
+    region_serials = {serial(node) for node in residual_nodes}
+    for index, node in enumerate(path.nodes[:-1]):
+        row = source_by_ref[node.block_ref]
+        if tuple(row.successor_serials) != (serial(path.nodes[index + 1]),):
+            raise ValueError("default-gap residual corridor has an unsealed successor escape")
+    for node in residual_nodes:
+        row = source_by_ref[node.block_ref]
+        if any(pred not in region_serials and pred != serial(exclusion.dispatcher)
+               for pred in row.predecessor_serials):
+            raise ValueError("default-gap residual corridor has external ingress")
+        for observation in row.instruction_observations:
+            if (
+                observation.is_call
+                or observation.instruction_kind not in {InsnKind.NOP, InsnKind.GOTO}
+                or observation.predicate_observation is not None
+            ):
+                raise ValueError("default-gap residual corridor contains an effect or terminal")
+    for node in residual_nodes:
+        candidate_residual = candidate_by_ref.get(node.block_ref)
+        if candidate_residual is not None and candidate_residual.serial in candidate_inventory.reachable_serials:
+            raise ValueError("default-gap residual remains candidate-reachable")
+
+
+def _bind_default_gap_infeasibility_forecast(
+    *,
+    proposal: model.ProposedUnflattenContract,
+    source_inventory: model.SemanticGraphInventory,
+    candidate_inventory: model.SemanticGraphInventory,
+    phase: model.UnflattenAuthorityPhase,
+    source_authority: model.SourceBoundRouteAuthority,
+) -> model.DefaultGapInfeasibilityPhaseResult | None:
+    """Bind projected default-gap exclusions to one sealed corridor authority."""
+
+    if type(proposal) is not model.ProposedUnflattenContract:
+        raise TypeError("default-gap binding requires a closed proposal")
+    forecast = proposal.corridor_coverage_forecast
+    if forecast is None:
+        return None
+    if type(forecast) is not model.DefaultGapInfeasibilityForecast:
+        raise TypeError("default-gap binding requires DefaultGapInfeasibilityForecast")
+    if type(source_authority) is not model.SourceBoundRouteAuthority:
+        raise TypeError("default-gap binding requires SourceBoundRouteAuthority")
+    validate_source_route_authority(source_authority)
+    if source_authority.proposal is not proposal:
+        raise ValueError("default-gap proposal is not the source-authority occurrence")
+    if phase is not model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT:
+        raise ValueError("default-gap binding is projected-preflight only")
+    if source_authority.source_fingerprint != source_inventory.graph_fingerprint:
+        raise ValueError("default-gap source inventory differs from source authority")
+    if source_authority.source_inventory_digest != source_inventory.inventory_digest:
+        raise ValueError("default-gap source inventory digest differs from source authority")
+    base_proposal = replace(proposal, corridor_coverage_forecast=forecast.base_forecast)
+    base_result = _classify_corridor_coverage_forecast(
+        proposal=base_proposal, source_inventory=source_inventory,
+        candidate_inventory=candidate_inventory, phase=phase,
+        default_gap_paths=forecast.paths,
+    )
+    if base_result is None:
+        raise ValueError("default-gap base forecast did not classify")
+    for path in forecast.paths:
+        exclusion = next(item for item in forecast.exclusions if item.exclusion_id == path.exclusion_id)
+        _validate_default_gap_extension(
+            extension=forecast, exclusion=exclusion, path=path, proposal=proposal,
+            source_inventory=source_inventory, candidate_inventory=candidate_inventory,
+            source_authority=source_authority,
+        )
+    base_result = _default_gap_base_phase_result(base_result, forecast)
+    if base_result.residual_path_ids or base_result.drifted_path_ids:
+        raise ValueError("default-gap extension did not close every base residual atomically")
+    provisional = tuple(
+        (item.exclusion_id, item.digest, path.path_id, item.dispatcher,
+         item.default_entry, item.residual, item.initial_state_seeds,
+         item.route_proof_ids, item.normalized_reachable_states,
+         source_inventory.graph_fingerprint, candidate_inventory.graph_fingerprint,
+         source_inventory.generation, candidate_inventory.generation)
+        for path in forecast.paths
+        for item in forecast.exclusions if item.exclusion_id == path.exclusion_id
+    )
+    result_id = authority_id((
+        "unflatten.default-gap-infeasibility-phase.v1", base_result, forecast, phase,
+        source_inventory.graph_fingerprint, candidate_inventory.graph_fingerprint,
+        source_inventory.generation, candidate_inventory.generation,
+        tuple(sorted(item.exclusion_id for item in forecast.exclusions)), provisional,
+    ))
+    correlations = tuple(sorted((
+        model.DefaultGapInfeasibilityCorrelation(
+            exclusion.exclusion_id, exclusion.digest, path.path_id,
+            exclusion.dispatcher, exclusion.default_entry, exclusion.residual,
+            exclusion.initial_state_seeds, exclusion.route_proof_ids,
+            exclusion.normalized_reachable_states,
+            source_inventory.graph_fingerprint, candidate_inventory.graph_fingerprint,
+            source_inventory.generation, candidate_inventory.generation, result_id,
+        )
+        for path in forecast.paths
+        for exclusion in forecast.exclusions if exclusion.exclusion_id == path.exclusion_id
+    ), key=lambda item: (item.exclusion_id, item.path_id)))
+    return model.DefaultGapInfeasibilityPhaseResult(
+        result_id, base_result, forecast, phase,
+        source_inventory.graph_fingerprint, candidate_inventory.graph_fingerprint,
+        source_inventory.generation, candidate_inventory.generation,
+        tuple(sorted(item.exclusion_id for item in forecast.exclusions)), correlations,
+    )
+
+
+def _revalidate_observed_default_gap_infeasibility(
+    *,
+    projected_result: model.DefaultGapInfeasibilityPhaseResult,
+    proposal: model.ProposedUnflattenContract,
+    source_inventory: model.SemanticGraphInventory,
+    observed_inventory: model.SemanticGraphInventory,
+    source_authority: model.SourceBoundRouteAuthority,
+) -> model.DefaultGapInfeasibilityPhaseResult:
+    """Reclassify only the observed default corridor from projected authority."""
+    if type(projected_result) is not model.DefaultGapInfeasibilityPhaseResult:
+        raise TypeError("observed default-gap requires the exact projected result")
+    if type(proposal) is not model.ProposedUnflattenContract:
+        raise TypeError("observed default-gap requires a closed proposal")
+    if type(source_authority) is not model.SourceBoundRouteAuthority:
+        raise TypeError("observed default-gap requires SourceBoundRouteAuthority")
+    validate_source_route_authority(source_authority)
+    if source_authority.proposal is not proposal:
+        raise ValueError("observed default-gap proposal is not the source-authority occurrence")
+    if source_authority.source_fingerprint != source_inventory.graph_fingerprint:
+        raise ValueError("observed default-gap source inventory differs from source authority")
+    if source_authority.source_inventory_digest != source_inventory.inventory_digest:
+        raise ValueError("observed default-gap source inventory digest differs from source authority")
+    forecast = proposal.corridor_coverage_forecast
+    if type(forecast) is not model.DefaultGapInfeasibilityForecast:
+        raise TypeError("observed default-gap requires DefaultGapInfeasibilityForecast")
+    projected_result.__post_init__()
+    if (
+        projected_result.forecast is not forecast
+        or projected_result.phase is not model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT
+        or projected_result.source_fingerprint != source_inventory.graph_fingerprint
+        or projected_result.source_generation != source_inventory.generation
+        or projected_result.base_result.forecast_id != forecast.base_forecast.forecast_id
+    ):
+        raise ValueError("observed default-gap authority is not the prepared occurrence")
+    if observed_inventory.phase is not model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY:
+        raise ValueError("observed default-gap inventory must be observed post apply")
+
+    # This deliberately consumes the sealed projected route/state payload.  It
+    # only replays the legacy corridor partition against observed topology.
+    base_proposal = replace(proposal, corridor_coverage_forecast=forecast.base_forecast)
+    base_result = _classify_corridor_coverage_forecast(
+        proposal=base_proposal, source_inventory=source_inventory,
+        candidate_inventory=observed_inventory,
+        phase=model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY,
+        projected_correlations=(
+            projected_result.base_result.semantic_exclusion_correlations
+        ),
+        default_gap_paths=forecast.paths,
+    )
+    if base_result is None:
+        raise ValueError("observed default-gap base forecast did not classify")
+    observed_by_ref = {
+        row.block_ref: row for row in observed_inventory.blocks if row.block_ref is not None
+    }
+    observed_by_serial = {row.serial: row for row in observed_inventory.blocks}
+    for path in forecast.paths:
+        exclusion = next(item for item in forecast.exclusions if item.exclusion_id == path.exclusion_id)
+        # The complete residual remains forbidden if it survives reachable;
+        # absence is permitted.  Surviving rows must retain the exact sealed
+        # default-corridor predecessor/successor closure; otherwise a partial
+        # observed rewrite could silently introduce ingress or an escape.
+        residual_nodes = tuple(item for item in path.nodes if item != exclusion.dispatcher)
+        for index, node in enumerate(residual_nodes):
+            observed = observed_by_ref.get(node.block_ref)
+            if observed is not None and observed.anchor_ea != node.anchor_ea:
+                raise ValueError("observed default-gap residual coordinate drifted")
+            if observed is None:
+                continue
+            predecessor_ref = (
+                residual_nodes[index - 1] if index else exclusion.dispatcher
+            ).block_ref
+            predecessor = observed_by_ref.get(predecessor_ref)
+            expected_predecessors = (
+                {predecessor_ref}
+                if predecessor is not None
+                and observed.serial in predecessor.successor_serials
+                else set()
+            )
+            actual_predecessors = {
+                observed_by_serial[serial].block_ref
+                for serial in observed.predecessor_serials
+                if serial in observed_by_serial and observed_by_serial[serial].block_ref is not None
+            }
+            if actual_predecessors != expected_predecessors:
+                raise ValueError("observed default-gap residual has external ingress or partial rewiring")
+            expected_successor = (
+                residual_nodes[index + 1] if index + 1 < len(residual_nodes)
+                else exclusion.dispatcher
+            )
+            actual_successors = {
+                observed_by_serial[serial].block_ref
+                for serial in observed.successor_serials
+                if serial in observed_by_serial and observed_by_serial[serial].block_ref is not None
+            }
+            if actual_successors != {expected_successor.block_ref}:
+                raise ValueError("observed default-gap residual has successor escape or partial rewiring")
+            if observed.serial in observed_inventory.reachable_serials:
+                raise ValueError("default-gap residual remains candidate-reachable")
+    base_result = _default_gap_base_phase_result(base_result, forecast)
+    if base_result.residual_path_ids or base_result.drifted_path_ids:
+        raise ValueError("observed default-gap extension did not close every residual atomically")
+
+    provisional = tuple(
+        (correlation.exclusion_id, correlation.exclusion_digest, correlation.path_id,
+         correlation.dispatcher, correlation.default_entry, correlation.residual,
+         correlation.initial_state_seeds, correlation.route_proof_ids,
+         correlation.normalized_reachable_states,
+         source_inventory.graph_fingerprint, observed_inventory.graph_fingerprint,
+         source_inventory.generation, observed_inventory.generation)
+        for correlation in projected_result.correlations
+    )
+    result_id = authority_id((
+        "unflatten.default-gap-infeasibility-phase.v1", base_result, forecast,
+        model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY,
+        source_inventory.graph_fingerprint, observed_inventory.graph_fingerprint,
+        source_inventory.generation, observed_inventory.generation,
+        projected_result.matched_exclusion_ids, provisional,
+    ))
+    correlations = tuple(
+        model.DefaultGapInfeasibilityCorrelation(
+            item.exclusion_id, item.exclusion_digest, item.path_id,
+            item.dispatcher, item.default_entry, item.residual,
+            item.initial_state_seeds, item.route_proof_ids,
+            item.normalized_reachable_states,
+            source_inventory.graph_fingerprint, observed_inventory.graph_fingerprint,
+            source_inventory.generation, observed_inventory.generation, result_id,
+        )
+        for item in projected_result.correlations
+    )
+    return model.DefaultGapInfeasibilityPhaseResult(
+        result_id, base_result, forecast,
+        model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY,
+        source_inventory.graph_fingerprint, observed_inventory.graph_fingerprint,
+        source_inventory.generation, observed_inventory.generation,
+        projected_result.matched_exclusion_ids, correlations,
+    )
+
+
+def _make_default_gap_binding_entrypoints(
+    projected_impl=_bind_default_gap_infeasibility_forecast,
+    observed_impl=_revalidate_observed_default_gap_infeasibility,
+):
+    """Keep default-gap phase results as transaction-binder occurrences."""
+    phase_registry: dict[
+        int,
+        tuple[weakref.ReferenceType[model.DefaultGapInfeasibilityPhaseResult], str],
+    ] = {}
+
+    def validate_phase(result: model.DefaultGapInfeasibilityPhaseResult) -> None:
+        if type(result) is not model.DefaultGapInfeasibilityPhaseResult:
+            raise TypeError("default-gap phase result must be closed")
+        registered = phase_registry.get(id(result))
+        if registered is None or registered[0]() is not result:
+            raise ValueError("default-gap phase result was not minted by the transaction binder")
+        result.__post_init__()
+        if registered[1] != authority_id(("unflatten.default-gap-phase-object-seal.v1", result)):
+            raise ValueError("default-gap phase result content changed after minting")
+
+    def register_phase(
+        result: model.DefaultGapInfeasibilityPhaseResult,
+    ) -> model.DefaultGapInfeasibilityPhaseResult:
+        if type(result) is not model.DefaultGapInfeasibilityPhaseResult:
+            raise TypeError("default-gap phase result must be closed")
+        result.__post_init__()
+        identity = id(result)
+        registered = phase_registry.get(identity)
+        if registered is not None and registered[0]() is result:
+            raise ValueError("default-gap phase result occurrence was already minted")
+        seal = authority_id(("unflatten.default-gap-phase-object-seal.v1", result))
+
+        def cleanup(reference: weakref.ReferenceType[model.DefaultGapInfeasibilityPhaseResult]) -> None:
+            registered = phase_registry.get(identity)
+            if registered is not None and registered[0] is reference:
+                phase_registry.pop(identity, None)
+
+        phase_registry[identity] = (weakref.ref(result, cleanup), seal)
+        validate_phase(result)
+        return result
+
+    def entrypoint(**kwargs: object) -> model.DefaultGapInfeasibilityPhaseResult | None:
+        result = projected_impl(**kwargs)
+        return None if result is None else register_phase(result)
+
+    def observed_entrypoint(**kwargs: object) -> model.DefaultGapInfeasibilityPhaseResult:
+        projected = kwargs.get("projected_result")
+        if type(projected) is not model.DefaultGapInfeasibilityPhaseResult:
+            raise TypeError("observed default-gap requires the exact projected result")
+        validate_phase(projected)
+        return register_phase(observed_impl(**kwargs))
+
+    return entrypoint, validate_phase, observed_entrypoint
+
+
+(
+    bind_default_gap_infeasibility_forecast,
+    validate_default_gap_infeasibility_phase_result,
+    revalidate_observed_default_gap_infeasibility,
+) = _make_default_gap_binding_entrypoints()
+del _make_default_gap_binding_entrypoints
+del _bind_default_gap_infeasibility_forecast
+
+
 def revalidate_observed_corridor_coverage(
     *,
     projected_result: model.CorridorCoveragePhaseResult | None,
@@ -8581,10 +11232,12 @@ def _locator_refs(subject: model.SemanticSubjectRef) -> tuple[object, ...]:
     locator = subject.locator
     if type(locator) is model.BlockSubjectLocator:
         return (locator.block_ref,)
+    if type(locator) is model.LogicalFunctionExitSubjectLocator:
+        return (locator.block_ref,)
     if type(locator) is model.EdgeSubjectLocator:
         return (locator.source_ref, locator.target_ref)
     if type(locator) is model.RouteSubjectLocator:
-        return (locator.source_ref, *locator.destination_refs)
+        return (locator.source_ref, *(item.block_ref for item in locator.native_destination_members()), *(item.block_ref for item in locator.dag_endpoint_members()))
     if type(locator) is model.EffectSubjectLocator:
         return (locator.owner_ref,)
     if type(locator) is model.HandlerSubjectLocator:
@@ -8645,8 +11298,21 @@ def bind_subjects(
     witnesses = {item.block_ref: item for item in catalog.blocks}
     if len(witnesses) != len(catalog.blocks):
         raise ValueError("source catalog contains duplicate block references")
-    if set(serial_by_ref) != set(witnesses):
-        raise ValueError("serial binding must exactly cover the source catalog")
+    if not set(witnesses) <= set(serial_by_ref):
+        raise ValueError("serial binding must cover the source catalog")
+    extra_refs = set(serial_by_ref) - set(witnesses)
+    logical_locators = {
+        subject.locator.block_ref: subject.locator
+        for subject in subjects
+        if type(subject) is model.SemanticSubjectRef
+        and type(subject.locator) is model.LogicalFunctionExitSubjectLocator
+    }
+    if any(type(ref) is not LogicalBlockRef for ref in extra_refs):
+        raise ValueError("serial binding extras must be logical source references")
+    for ref in extra_refs:
+        locator = logical_locators.get(ref)
+        if locator is None or serial_by_ref[ref] != locator.serial:
+            raise ValueError("serial binding logical function-exit coordinate is not exact")
     serials = tuple(serial_by_ref.values())
     if any(type(serial) is not int or serial < 0 for serial in serials):
         raise ValueError("serial bindings must be exact non-negative integers")
@@ -8671,14 +11337,47 @@ def bind_subjects(
         if subject.subject_id in seen_subjects:
             raise ValueError("subject bindings contain duplicate subjects")
         seen_subjects.add(subject.subject_id)
+        if type(subject.locator) is model.LogicalFunctionExitSubjectLocator:
+            locator = subject.locator
+            if serial_by_ref.get(locator.block_ref) != locator.serial:
+                result.append(model.PhaseSubjectBinding(
+                    subject=subject,
+                    phase=phase,
+                    block_ref=None,
+                    graph_fingerprint=graph_fingerprint,
+                    generation=generation,
+                    status=model.SubjectBindingStatus.MISSING,
+                    serial=None,
+                    anchor_ea=None,
+                    native_instruction_eas=(),
+                    role=subject.role,
+                ))
+                continue
+            result.append(model.PhaseSubjectBinding(
+                subject=subject,
+                phase=phase,
+                block_ref=locator.block_ref,
+                graph_fingerprint=graph_fingerprint,
+                generation=generation,
+                status=model.SubjectBindingStatus.UNIQUE,
+                serial=locator.serial,
+                anchor_ea=None,
+                native_instruction_eas=(),
+                role=subject.role,
+            ))
+            continue
         refs = _locator_refs(subject)
-        if any(ref not in witnesses for ref in refs):
+        native_refs = tuple(ref for ref in refs if type(ref) is not LogicalBlockRef)
+        if any(ref not in witnesses for ref in native_refs):
             raise ValueError("subject contains a foreign or missing source reference")
-        for ref in refs:
+        for ref in native_refs:
             expected = tuple(witnesses[ref].native_instruction_eas)
             supplied = tuple(origins[ref])
             if supplied != expected:
-                raise ValueError("native instruction origins do not exactly match catalog")
+                raise ValueError(
+                    "native identity instruction EAs do not exactly match catalog "
+                    f"ref={ref!r} supplied={supplied!r} expected={expected!r}"
+                )
         if subject.kind is model.SemanticSubjectKind.VALUE_FLOW:
             result.append(model.PhaseSubjectBinding(
                 subject=subject,
@@ -8720,6 +11419,37 @@ def bind_subjects(
 bind_source_subjects = bind_subjects
 
 
+def _bounded_native_ea_diagnostic(values: tuple[int, ...], *, limit: int = 8) -> str:
+    """Render native origins compactly without exposing a full ref repr."""
+    shown = ", ".join(f"0x{ea:X}" for ea in values[:limit])
+    if len(values) > limit:
+        shown = f"{shown}, ...+{len(values) - limit}"
+    return f"({shown})"
+
+
+def _projected_native_origin_mismatch(
+    *,
+    serial: int,
+    anchor_ea: int,
+    supplied: tuple[int, ...],
+    expected: tuple[int, ...],
+) -> ValueError:
+    """Return one bounded, anchored native-origin mismatch diagnostic."""
+    site = (
+        f"blk{serial}@0x{anchor_ea:X}"
+        if type(serial) is int
+        and type(anchor_ea) is int
+        and 0 <= anchor_ea < 0xFFFFFFFFFFFFFFFF
+        else "native@unanchored"
+    )
+    return ValueError(
+        "native identity instruction EAs do not exactly match catalog "
+        f"{site} "
+        f"supplied={_bounded_native_ea_diagnostic(supplied)} "
+        f"expected={_bounded_native_ea_diagnostic(expected)}"
+    )
+
+
 def bind_projected_subjects(
     subjects: Sequence[model.SemanticSubjectRef],
     *,
@@ -8753,8 +11483,20 @@ def bind_projected_subjects(
         ref for ref in serial_by_ref
         if ref not in witnesses
     }
-    if any(type(ref) is not PlanBlockRef for ref in extra_refs):
+    logical_locators = {
+        subject.locator.block_ref: subject.locator
+        for subject in subjects
+        if type(subject) is model.SemanticSubjectRef
+        and type(subject.locator) is model.LogicalFunctionExitSubjectLocator
+    }
+    if any(type(ref) not in (PlanBlockRef, LogicalBlockRef) for ref in extra_refs):
         raise ValueError("projected serial binding contains a foreign source reference")
+    for ref in extra_refs:
+        if type(ref) is not LogicalBlockRef:
+            continue
+        locator = logical_locators.get(ref)
+        if locator is None or serial_by_ref[ref] != locator.serial:
+            raise ValueError("projected logical function-exit coordinate is not exact")
     serials = tuple(serial_by_ref.values())
     if any(type(serial) is not int or serial < 0 for serial in serials):
         raise ValueError("serial bindings must be exact non-negative integers")
@@ -8778,22 +11520,34 @@ def bind_projected_subjects(
             expected_origins = tuple(witnesses[ref].native_instruction_eas)
             supplied_origins = tuple(supplied)
             if supplied_origins != expected_origins and not (
-                phase is model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY
-                and model._observed_native_origin_subset_preserves_anchor(
+                phase in {
+                    model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+                    model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY,
+                }
+                and model._phase_native_origin_subset_preserves_anchor(
                     ref,
                     witnesses[ref].anchor_ea,
                     supplied_origins,
                     expected_origins,
                 )
             ):
-                raise ValueError("native instruction origins do not exactly match catalog")
-        if ref in extra_refs and (
-            type(supplied) is not tuple
-            or not supplied
-            or any(type(ea) is not int or ea < 0 for ea in supplied)
-            or len(set(supplied)) != len(supplied)
-        ):
-            raise ValueError("plan helper origins must be exact and nonempty")
+                raise _projected_native_origin_mismatch(
+                    serial=serial_by_ref[ref],
+                    anchor_ea=witnesses[ref].anchor_ea,
+                    supplied=supplied_origins,
+                    expected=expected_origins,
+                )
+        if ref in extra_refs:
+            if type(ref) is LogicalBlockRef:
+                if tuple(supplied) != ():
+                    raise ValueError("logical function-exit origin must remain anchorless")
+            elif (
+                type(supplied) is not tuple
+                or not supplied
+                or any(type(ea) is not int or ea < 0 for ea in supplied)
+                or len(set(supplied)) != len(supplied)
+            ):
+                raise ValueError("plan helper origins must be exact and nonempty")
 
     result: list[model.PhaseSubjectBinding] = []
     seen_subjects: set[str] = set()
@@ -8804,6 +11558,38 @@ def bind_projected_subjects(
         if subject.subject_id in seen_subjects:
             raise ValueError("subject bindings contain duplicate subjects")
         seen_subjects.add(subject.subject_id)
+        if type(subject.locator) is model.LogicalFunctionExitSubjectLocator:
+            locator = subject.locator
+            present = serial_by_ref.get(locator.block_ref)
+            if present is None:
+                result.append(model.PhaseSubjectBinding(
+                    subject=subject,
+                    phase=phase,
+                    block_ref=None,
+                    graph_fingerprint=graph_fingerprint,
+                    generation=generation,
+                    status=model.SubjectBindingStatus.MISSING,
+                    serial=None,
+                    anchor_ea=None,
+                    native_instruction_eas=(),
+                    role=subject.role,
+                ))
+                continue
+            if present != locator.serial:
+                raise ValueError("projected logical function-exit serial drift")
+            result.append(model.PhaseSubjectBinding(
+                subject=subject,
+                phase=phase,
+                block_ref=locator.block_ref,
+                graph_fingerprint=graph_fingerprint,
+                generation=generation,
+                status=model.SubjectBindingStatus.UNIQUE,
+                serial=present,
+                anchor_ea=None,
+                native_instruction_eas=(),
+                role=subject.role,
+            ))
+            continue
         refs = _locator_refs(subject)
         if any(ref not in witnesses and ref not in extra_refs for ref in refs):
             raise ValueError("subject contains a foreign or missing source reference")
@@ -8845,7 +11631,14 @@ def bind_projected_subjects(
             # rows were validated above; bind only to one of those rows.
             valid_anchor = bool(witness_origins) and int(subject.anchor_ea) in witness_origins
         if not valid_anchor:
-            raise ValueError("projected subject origin does not exactly match catalog")
+            raise ValueError(
+                "projected subject origin does not exactly match catalog: "
+                f"subject={subject.subject_id} role={subject.role.value} "
+                f"kind={subject.kind.value} owner={owner!r} "
+                f"serial={serial_by_ref.get(owner)!r} "
+                f"anchor=0x{int(subject.anchor_ea):X} "
+                f"witness_origins={witness_origins!r}"
+            )
         result.append(model.PhaseSubjectBinding(
             subject=subject,
             phase=phase,

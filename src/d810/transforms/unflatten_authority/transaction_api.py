@@ -9,8 +9,10 @@ from time import perf_counter_ns
 import hashlib
 import re
 
+from d810.core.logging import getLogger
 from d810.transforms.plan import (
     PatchConditionalRedirect,
+    PatchConvertToGoto,
     PatchEdgeSplitCorridor,
     PatchEdgeSplitTrampoline,
     PatchLowerConditionalStateTransition,
@@ -21,11 +23,21 @@ from d810.transforms.plan import (
 )
 from d810.analyses.control_flow.semantic_route_evidence import (
     CanonicalRouteMaterialization,
+    SemanticCorridorPoint,
+    SemanticLogicalDagEndpoint,
     capture_observed_route_materialization,
     capture_projected_route_materialization,
     capture_source_route_materialization,
 )
-from d810.ir.flowgraph import BlockKind, FlowGraph, InsnKind, OperandKind
+from d810.ir.flowgraph import (
+    BlockKind,
+    BlockSnapshot,
+    FlowGraph,
+    InsnKind,
+    InsnSnapshot,
+    MopSnapshot,
+    OperandKind,
+)
 from d810.ir.semantics import ControlTransferKind
 from d810.transforms.cfg_transaction import CfgProjection, TransactionAttemptId
 from d810.transforms.cfg_transaction import (
@@ -35,8 +47,10 @@ from d810.transforms.cfg_transaction import (
 )
 from d810.transforms.patch_binding import (
     BoundPatchPlan,
+    ObservedPatchBinding,
     iter_refs,
     validate_bound_patch_plan,
+    validate_observed_patch_binding,
 )
 from d810.transforms.unflatten_authority import bind as authority_bind
 from d810.transforms.unflatten_authority import model
@@ -87,6 +101,8 @@ from .model import (
     UnflattenAuthorityReason,
     UnflattenPlanRoute,
 )
+
+logger = getLogger(__name__)
 from .proposal import (
     MetadataKeyTypeError,
     PlanRouteResult,
@@ -196,6 +212,43 @@ def _live_binding_failed_verdict() -> model.UnflattenAuthorityVerdict:
     )
 
 
+def _observed_live_binding_failure(
+    stage: str,
+    error: TypeError | ValueError | AttributeError,
+    *,
+    authority_id_value: str | None = None,
+    binding_id_value: str | None = None,
+    candidate_fingerprint: str | None = None,
+) -> model.UnflattenAuthorityVerdict:
+    """Log a bounded stage-specific live binding rejection."""
+    message = str(error)
+    if len(message) > 512:
+        message = f"{message[:509]}..."
+    logger.warning(
+        "observed unflatten authority live binding failed: stage=%s cause=%s: %s",
+        stage,
+        type(error).__name__,
+        message,
+    )
+    if (
+        authority_id_value is None
+        and binding_id_value is None
+        and candidate_fingerprint is None
+    ):
+        return _live_binding_failed_verdict()
+    return model.UnflattenAuthorityVerdict(
+        False,
+        model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY,
+        model.UnflattenAuthorityReason.LIVE_BINDING_FAILED,
+        authority_id_value,
+        binding_id_value,
+        None,
+        candidate_fingerprint or _unavailable_candidate_fingerprint("observed-live-binding"),
+        None,
+        (),
+    )
+
+
 def _claim_subjects(claim):
     if type(claim) is model.RetiredDispatcherInfrastructureClaim:
         return (claim.infrastructure_subject, claim.corridor_subject, *claim.member_subjects)
@@ -203,7 +256,7 @@ def _claim_subjects(claim):
         return (claim.dispatcher_subject, *claim.dead_handler_subjects,
                 *claim.retained_handler_subjects, *claim.component_subjects)
     if type(claim) is model.EquivalentSemanticRouteClaim:
-        return (claim.retired_route_subject, claim.replacement_route_subject, claim.source_subject, *claim.destination_subjects)
+        return (claim.retired_route_subject, claim.replacement_route_subject, claim.source_subject, *claim.destination_subjects, *claim.dag_endpoint_subjects)
     if type(claim) is model.ExactInfeasibleEffectClaim:
         return (claim.effect_subject, claim.source_subject, claim.predicate_subject, claim.selected_target_subject, claim.discarded_effect_subject)
     if type(claim) is model.LocalAliasEffectScalarizationClaim:
@@ -211,6 +264,174 @@ def _claim_subjects(claim):
     if type(claim) is model.TerminalCycleBreakClaim:
         return (claim.cycle_subject, claim.cleanup_source_subject, claim.terminal_subject)
     raise TypeError("unsupported closed claim")
+
+
+def _selected_route_subject_refs(proposal) -> set[object]:
+    """Project the complete selected canonical route witness into CFG refs.
+
+    Route claims name their semantic source and destinations, while the
+    selected decision-DAG proof owns the comparison, alias, and namespace
+    bridge members that connect them.  Patch lineage must consume that same
+    typed witness closure; reconstructing it from the planned redirects would
+    recreate the proof-authority split this package exists to remove.
+    """
+
+    selected_proof_ids = {
+        proof_id
+        for claim in proposal.claims
+        if type(claim) is model.EquivalentSemanticRouteClaim
+        for proof_id in claim.route_proof_ids
+    }
+    refs = {
+        subject.block_ref
+        for claim in proposal.claims
+        for subject in _claim_subjects(claim)
+        if subject.block_ref is not None
+    }
+    selected_proofs = tuple(
+        proof
+        for proof in proposal.route_evidence.route_proofs
+        if proof.proof_id in selected_proof_ids
+    )
+    if {proof.proof_id for proof in selected_proofs} != selected_proof_ids:
+        raise ValueError("selected route claim is absent from canonical evidence")
+
+    native_refs_by_identity: dict[object, set[NativeBlockRef]] = {}
+    for row in proposal.source_identity_catalog.blocks:
+        if type(row.block_ref) is NativeBlockRef:
+            native_refs_by_identity.setdefault(
+                row.block_ref.identity, set(),
+            ).add(row.block_ref)
+
+    dag_points: list[SemanticCorridorPoint] = []
+    for proof in selected_proofs:
+        if proof.source_owner_identity is not None:
+            dag_points.append(SemanticCorridorPoint(
+                proof.source_owner_identity,
+                proof.source_owner_anchor_ea,
+            ))
+        if proof.bootstrap is not None:
+            # A bootstrap entry is a view over the selected transition proof,
+            # not a second allowance.  Its stable corridor is nevertheless
+            # part of that proof's physical route closure and may own the
+            # entry-to-dispatcher redirect applied by the transaction.
+            dag_points.extend((
+                proof.bootstrap.entry,
+                proof.bootstrap.source,
+                proof.bootstrap.owner,
+                proof.bootstrap.dispatcher,
+                *proof.bootstrap.corridor,
+            ))
+        if proof.state_dag is None:
+            continue
+        witness = proof.state_dag.witness
+        dag_points.extend((witness.entry, *witness.path))
+        for comparison in witness.comparisons:
+            dag_points.append(comparison.node)
+            dag_points.extend(
+                endpoint
+                for endpoint in (
+                    comparison.true_target, comparison.false_target,
+                )
+                if type(endpoint) is SemanticCorridorPoint
+            )
+        for source_point, target_point in witness.aliases:
+            dag_points.extend((source_point, target_point))
+        dag_points.extend(bridge.node for bridge in witness.bridges)
+
+    for point in dag_points:
+        matches = native_refs_by_identity.get(point.identity, set())
+        if len(matches) != 1:
+            raise ValueError(
+                "selected canonical route member lacks one exact source reference"
+            )
+        refs.update(matches)
+    return refs
+
+
+def _source_entry_dispatcher_frontier_refs(
+    source_inventory: model.SemanticGraphInventory,
+    proposal: model.ProposedUnflattenContract,
+) -> set[object]:
+    """Classify exact entry-side predecessors of the dispatcher.
+
+    The dispatcher is a traversal barrier.  Reachability starts from the same
+    physical entry plus selected semantic-route roots used by the canonical
+    inventory, so entry lineage and effect/coverage classification cannot
+    disagree about disconnected native route components.
+    """
+
+    model.validate_semantic_graph_inventory(source_inventory)
+    if type(proposal) is not model.ProposedUnflattenContract:
+        raise TypeError("entry frontier requires a closed unflatten proposal")
+    serial_by_ref = source_inventory.serial_by_ref
+    entry_serial = serial_by_ref.get(proposal.plan_inputs.source_entry_ref)
+    dispatcher_serial = serial_by_ref.get(
+        proposal.plan_inputs.dispatcher_entry_ref
+    )
+    if entry_serial is None or dispatcher_serial is None:
+        raise ValueError("entry frontier coordinates are absent from source inventory")
+    if int(entry_serial) != int(source_inventory.entry_serial):
+        raise ValueError("proposal source entry differs from source inventory")
+    blocks = {block.serial: block for block in source_inventory.blocks}
+    roots = {int(entry_serial)}
+    for claim in proposal.claims:
+        if type(claim) is not model.EquivalentSemanticRouteClaim:
+            continue
+        route_source = serial_by_ref.get(claim.source_subject.block_ref)
+        if route_source is None:
+            raise ValueError("selected route source is absent from source inventory")
+        roots.add(int(route_source))
+    reachable_before_dispatch: set[int] = set()
+    pending = list(sorted(roots, reverse=True))
+    while pending:
+        serial = pending.pop()
+        if serial == int(dispatcher_serial) or serial in reachable_before_dispatch:
+            continue
+        block = blocks.get(serial)
+        if block is None:
+            raise ValueError("entry frontier traversal left source inventory")
+        reachable_before_dispatch.add(serial)
+        pending.extend(
+            successor
+            for successor in block.successor_serials
+            if successor != int(dispatcher_serial)
+        )
+    reachable_frontier = {
+        block.block_ref
+        for serial in reachable_before_dispatch
+        if (block := blocks[serial]).block_ref is not None
+        and int(dispatcher_serial) in block.successor_serials
+    }
+    additional_native_roots = {
+        block.block_ref
+        for block in source_inventory.blocks
+        if type(block.block_ref) is NativeBlockRef
+        and not block.predecessor_serials
+        and int(dispatcher_serial) in block.successor_serials
+    }
+    return reachable_frontier | additional_native_roots
+
+
+def _is_exact_source_logical_exit(
+    blocks: Mapping[int, BlockSnapshot],
+    serial: int,
+    ref: object,
+) -> bool:
+    """Bind one source-owned logical sink and its reciprocal incoming edge."""
+
+    block = blocks.get(int(serial))
+    return bool(
+        type(ref) is LogicalBlockRef
+        and block is not None
+        and producer_api.is_exact_logical_function_exit(block, ref)
+        and block.preds
+        and all(
+            (predecessor := blocks.get(int(pred))) is not None
+            and int(serial) in tuple(int(item) for item in predecessor.succs)
+            for pred in block.preds
+        )
+    )
 
 
 def _catalog_serials(source: FlowGraph, proposal, plan: PatchPlan, *, blocks=None) -> dict[object, int]:
@@ -224,21 +445,62 @@ def _catalog_serials(source: FlowGraph, proposal, plan: PatchPlan, *, blocks=Non
         raise ValueError("plan source coordinates differ from the source catalog")
     if any(serial not in block_map for serial in by_ref.values()):
         raise ValueError("plan source coordinate points outside the source graph")
+    selected_route_proof_ids = {
+        proof_id
+        for claim in proposal.claims
+        if type(claim) is model.EquivalentSemanticRouteClaim
+        for proof_id in claim.route_proof_ids
+    }
+    selected_logical_endpoint_serials = {
+        int(endpoint.serial)
+        for proof in proposal.route_evidence.route_proofs
+        if proof.proof_id in selected_route_proof_ids and proof.state_dag is not None
+        for comparison in proof.state_dag.witness.comparisons
+        for endpoint in (comparison.true_target, comparison.false_target)
+        if type(endpoint) is SemanticLogicalDagEndpoint
+    }
+    terminal_logical_refs = {
+        claim.terminal_subject.locator.block_ref: claim.terminal_subject.locator.serial
+        for claim in proposal.claims
+        if type(claim) is model.TerminalCycleBreakClaim
+        and type(claim.terminal_subject.locator) is model.LogicalFunctionExitSubjectLocator
+    }
     for ref, serial in by_ref.items():
         if ref in expected:
             continue
-        if not producer_api.is_unowned_structural_logical_stop(block_map[serial], ref):
+        source_logical_exit = (
+            int(serial) not in selected_logical_endpoint_serials
+            and _is_exact_source_logical_exit(block_map, serial, ref)
+        )
+        selected_logical_endpoint = (
+            int(serial) in selected_logical_endpoint_serials
+            and producer_api.is_exact_logical_function_exit(block_map[serial], ref)
+        )
+        selected_terminal_logical = (
+            terminal_logical_refs.get(ref) == int(serial)
+            and producer_api.is_exact_logical_function_exit(block_map[serial], ref)
+        )
+        if not source_logical_exit and not selected_logical_endpoint and not selected_terminal_logical and not producer_api.is_unowned_structural_logical_stop(
+            block_map[serial], ref,
+        ):
             raise ValueError("plan source coordinates contain an unowned non-structural reference")
-    # Keep only the exact logical function-exit coordinate in addition to the
+    # Keep only a selected logical function-exit coordinate in addition to the
     # native source catalog.  It is intentionally anchorless but source route
-    # binding consumes its owned row to compare session/token/version for a
-    # typed DAG leaf.  Ordinary synthetic STOP rows and arbitrary extra plan
-    # coordinates remain unowned structural rows.
+    # binding consumes its owned row to compare session/token/version for the
+    # exact typed DAG leaf.  An unrelated synthetic STOP stays ownerless.
     return {
         ref: serial
         for ref, serial in by_ref.items()
         if ref in expected
-        or producer_api.is_exact_logical_function_exit(block_map[serial], ref)
+        or (
+            int(serial) not in selected_logical_endpoint_serials
+            and _is_exact_source_logical_exit(block_map, serial, ref)
+        )
+        or (
+            int(serial) in selected_logical_endpoint_serials
+            and producer_api.is_exact_logical_function_exit(block_map[serial], ref)
+        ) or terminal_logical_refs.get(ref) == int(serial)
+        and producer_api.is_exact_logical_function_exit(block_map[serial], ref)
     }
 
 
@@ -270,10 +532,44 @@ def _projected_serials(
         witness.block_ref: witness
         for witness in proposal.source_identity_catalog.blocks
     }
+    route_claims = getattr(proposal, "claims", ())
+    route_evidence = getattr(proposal, "route_evidence", None)
+    selected_route_proof_ids = {
+        proof_id
+        for claim in route_claims
+        if type(claim) is model.EquivalentSemanticRouteClaim
+        for proof_id in claim.route_proof_ids
+    }
+    selected_logical_endpoint_by_serial = {
+        int(endpoint.serial): endpoint
+        for proof in (() if route_evidence is None else route_evidence.route_proofs)
+        if proof.proof_id in selected_route_proof_ids and proof.state_dag is not None
+        for comparison in proof.state_dag.witness.comparisons
+        for endpoint in (comparison.true_target, comparison.false_target)
+        if type(endpoint) is SemanticLogicalDagEndpoint
+    }
+    terminal_logical_ref_by_serial = {
+        claim.terminal_subject.locator.serial: claim.terminal_subject.locator.block_ref
+        for claim in route_claims
+        if type(claim) is model.TerminalCycleBreakClaim
+        and type(claim.terminal_subject.locator) is model.LogicalFunctionExitSubjectLocator
+    }
     sealed_source_ref_by_serial = {
         int(serial): ref
         for ref, serial in (() if plan is None else plan.source_coordinates)
         if ref in catalog_by_ref
+        or (
+            int(serial) not in selected_logical_endpoint_by_serial
+            and _is_exact_source_logical_exit(block_values, int(serial), ref)
+        )
+        or (
+            type(ref) is LogicalBlockRef
+            and int(serial) in selected_logical_endpoint_by_serial
+            and selected_logical_endpoint_by_serial[int(serial)].session_id == ref.session_id
+            and selected_logical_endpoint_by_serial[int(serial)].proxy_token == ref.proxy_token
+            and selected_logical_endpoint_by_serial[int(serial)].version == ref.version
+        )
+        or terminal_logical_ref_by_serial.get(int(serial)) == ref
     }
     if planned_serials is None:
         planned_serials = _projected_plan_serials(plan) if plan is not None else {}
@@ -286,6 +582,16 @@ def _projected_serials(
     candidate_identities = []
     for block in block_values.values():
         if block.serial in planned_serial_set:
+            continue
+        sealed_ref = sealed_source_ref_by_serial.get(int(block.serial))
+        if (
+            type(sealed_ref) is LogicalBlockRef
+            and producer_api.is_exact_logical_function_exit(block, sealed_ref)
+        ):
+            # A selected DAG function-exit is a transaction coordinate, not a
+            # native source identity.  Preserve only its exact sealed serial;
+            # unrelated instructionless STOP rows remain ownerless.
+            result[sealed_ref] = int(block.serial)
             continue
         try:
             native_origins = producer_api.native_instruction_origins(block)
@@ -459,6 +765,43 @@ def _inventory_subjects(
                 model.BlockSubjectLocator(effect.locator.owner_ref, effect.locator.owner_anchor_ea),
             )
             by_id[endpoint.subject_id] = endpoint
+    forecast = proposal.corridor_coverage_forecast
+    if type(forecast) is model.DefaultGapInfeasibilityForecast:
+        for exclusion in forecast.exclusions:
+            for endpoint in (exclusion.default_entry, exclusion.residual):
+                subject = _subject(
+                    model.SemanticSubjectKind.BLOCK,
+                    model.SemanticSubjectRole.DEFAULT_GAP_INFEASIBLE_RESIDUAL,
+                    model.BlockSubjectLocator(
+                        endpoint.block_ref, endpoint.anchor_ea,
+                    ),
+                )
+                by_id[subject.subject_id] = subject
+    # Logical function exits are source-owned coordinates, not native blocks
+    # and not semantic terminal sites.  Inventory them through the existing
+    # anchorless endpoint subject so binding can seal their exact
+    # session/token/version while effect and terminal gates remain limited to
+    # real semantic sites.
+    claimed_logical_ref_by_serial = {
+        subject.locator.serial: subject.locator.block_ref
+        for subject in by_id.values()
+        if type(subject.locator) is model.LogicalFunctionExitSubjectLocator
+    }
+    for ref, serial in source_serials.items():
+        if type(ref) is not LogicalBlockRef:
+            continue
+        # A selected claim already owns this serial.  Do not let a plan-local
+        # remint replace its sealed logical identity by minting a second
+        # transaction-derived subject.
+        if int(serial) in claimed_logical_ref_by_serial:
+            continue
+        locator = model.LogicalFunctionExitSubjectLocator(ref, int(serial))
+        endpoint = _subject(
+            model.SemanticSubjectKind.BLOCK,
+            model.SemanticSubjectRole.SOURCE_LOGICAL_EXIT,
+            locator,
+        )
+        by_id[endpoint.subject_id] = endpoint
     for item in effects:
         if item.owner_ref is None:
             continue
@@ -522,6 +865,135 @@ def _reachable_serials_from_blocks(blocks, entry_serial: int) -> frozenset[int]:
     return frozenset(seen)
 
 
+def _reachable_serials_from_semantic_roots(
+    blocks,
+    *,
+    roots: tuple[int, ...] | list[int] | set[int],
+    dispatcher_serial: int,
+) -> frozenset[int]:
+    """Close typed payload roots without reviving dispatcher infrastructure."""
+
+    if type(dispatcher_serial) is not int or dispatcher_serial < 0:
+        raise ValueError("dispatcher_serial must be an exact non-negative integer")
+    if dispatcher_serial not in blocks:
+        raise ValueError("dispatcher_serial is absent from graph blocks")
+    if type(roots) not in (tuple, list, set) or any(
+        type(root) is not int or root < 0 for root in roots
+    ):
+        raise TypeError("semantic roots must contain exact non-negative integers")
+    reachable: set[int] = set()
+    pending = list(sorted(set(roots), reverse=True))
+    while pending:
+        serial = pending.pop()
+        if serial == dispatcher_serial or serial in reachable:
+            continue
+        block = blocks.get(serial)
+        if block is None:
+            raise ValueError("semantic root traversal left graph blocks")
+        reachable.add(serial)
+        pending.extend(
+            successor
+            for successor in sorted(block.succs, reverse=True)
+            if successor != dispatcher_serial
+        )
+    return frozenset(reachable)
+
+
+def _semantic_reachable_serials(
+    blocks,
+    *,
+    entry_serial: int,
+    serial_by_ref: Mapping[object, int],
+    proposal: model.ProposedUnflattenContract,
+    require_all_semantic_roots: bool = True,
+) -> frozenset[int]:
+    """Close reachability over physical entry and typed semantic roots.
+
+    An indirect dispatcher may have no structural successor edges in the
+    portable source graph even though the proposal has already bound its exact
+    handler catalogue.  Those handlers are semantic roots for preservation;
+    omitting them makes effects appear only after projection and splits the
+    evidence model between route and effect gates.
+    """
+
+    physical_reachable = set(
+        _reachable_serials_from_blocks(blocks, int(entry_serial))
+    )
+    candidate_semantic_loss_refs = frozenset()
+    if not require_all_semantic_roots:
+        candidate_semantic_loss_refs = (
+            frozenset(
+                subject.block_ref
+                for claim in proposal.claims
+                if type(claim) is model.DetachedDeadHandlerComponentClaim
+                for subject in claim.dead_handler_subjects
+            )
+            | frozenset(
+                claim.effect_subject.locator.owner_ref
+                for claim in proposal.claims
+                if type(claim) is model.ExactInfeasibleEffectClaim
+            )
+        )
+        forecast = proposal.corridor_coverage_forecast
+        if type(forecast) is model.DefaultGapInfeasibilityForecast:
+            candidate_semantic_loss_refs |= frozenset(
+                endpoint.block_ref
+                for exclusion in forecast.exclusions
+                for endpoint in (exclusion.default_entry, exclusion.residual)
+            )
+    semantic_roots: set[int] = set()
+    for handler in proposal.plan_inputs.authoritative_handlers:
+        # A typed semantic-loss claim proposes that this exact source block is
+        # absent from the candidate closure.  Rooting a detached handler or an
+        # exact-infeasible effect owner here would decide the opposite before
+        # the transaction-owned binder can validate the claim.  Source
+        # inventories still root every handler and route endpoint.
+        if handler.block_ref in candidate_semantic_loss_refs:
+            continue
+        serial = serial_by_ref.get(handler.block_ref)
+        if serial is None:
+            if not require_all_semantic_roots:
+                continue
+            raise ValueError(
+                "authoritative handler is absent from semantic inventory"
+            )
+        semantic_roots.add(int(serial))
+    for claim in proposal.claims:
+        if type(claim) is not model.EquivalentSemanticRouteClaim:
+            continue
+        route_subjects = (claim.source_subject, *claim.destination_subjects)
+        for subject in route_subjects:
+            if subject.block_ref in candidate_semantic_loss_refs:
+                continue
+            serial = serial_by_ref.get(subject.block_ref)
+            if serial is None:
+                if require_all_semantic_roots:
+                    raise ValueError(
+                        "canonical native route endpoint is absent from semantic inventory"
+                    )
+                continue
+            semantic_roots.add(int(serial))
+    dispatcher_serial = serial_by_ref.get(
+        proposal.plan_inputs.dispatcher_entry_ref
+    )
+    if dispatcher_serial is None:
+        raise ValueError("dispatcher entry is absent from semantic inventory")
+    if require_all_semantic_roots:
+        for root in sorted(semantic_roots):
+            physical_reachable.update(
+                _reachable_serials_from_blocks(blocks, root)
+            )
+    else:
+        physical_reachable.update(
+            _reachable_serials_from_semantic_roots(
+                blocks,
+                roots=semantic_roots,
+                dispatcher_serial=int(dispatcher_serial),
+            )
+        )
+    return frozenset(physical_reachable)
+
+
 def _observed_native_identity_origins(
     block,
     *,
@@ -529,6 +1001,7 @@ def _observed_native_identity_origins(
     serial_by_ref: Mapping[object, int],
     plan: PatchPlan,
     phase: model.UnflattenAuthorityPhase,
+    function_ea: int,
 ) -> int | None:
     """Exclude one plan-authorized generated redirect from native identity.
 
@@ -536,31 +1009,129 @@ def _observed_native_identity_origins(
     assign it a valid-looking fallback EA.  That transfer remains part of the
     observed instruction/topology inventory, but it is not a source-native
     instruction origin.  This exception is deliberately exact: one native
-    owner, one exact ``PatchRedirectGoto``, one tail GOTO, and its exact live
-    target must all agree.  Every other additional origin stays in the row and
-    is rejected by the normal native-identity invariant.
+    owner, one exact ``PatchRedirectGoto`` or ``PatchConvertToGoto``, one tail
+    GOTO, and its exact live target must all agree.  Every other additional
+    origin stays in the row and is rejected by the normal native-identity
+    invariant.  A ``PatchEdgeSplitCorridor`` may likewise redirect its exact
+    ``via_pred`` to the first cloned helper; no other corridor member is
+    authorized by this normalization.  Decline diagnostics are emitted only
+    for matched candidates carrying a valid live tail origin.
     """
     if phase is not model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY:
         return None
     if type(owner_ref) is not NativeBlockRef:
         return None
+    if type(function_ea) is not int or not 0 <= function_ea < 0xFFFFFFFFFFFFFFFF:
+        raise ValueError("observed function entry EA must be exact")
     if owner_ref not in dict(plan.source_coordinates):
         return None
-    matching_steps = tuple(
-        step for step in plan.steps
-        if type(step) is PatchRedirectGoto and step.from_serial == owner_ref
-    )
+
+    def warn_decline(
+        *,
+        stage: str,
+        reason: str,
+        step: object | None = None,
+        selected_target: object | None = None,
+    ) -> None:
+        """Log one bounded, anchored explanation for a matched live tail."""
+        if not block.insn_snapshots:
+            return
+        tail = block.insn_snapshots[-1]
+        tail_origin = tail.native_ea
+        if type(tail_origin) is not int or not 0 <= tail_origin < 0xFFFFFFFFFFFFFFFF:
+            tail_origin = tail.ea
+        anchors = tuple(sorted(
+            ea for ea in owner_ref.identity.exact_instruction_eas
+            if type(ea) is int and 0 <= ea < 0xFFFFFFFFFFFFFFFF
+        ))
+        if not anchors or type(tail_origin) is not int or not 0 <= tail_origin < 0xFFFFFFFFFFFFFFFF:
+            return
+        serial = serial_by_ref.get(owner_ref)
+        if type(serial) is not int or serial < 0:
+            return
+        target_serial = serial_by_ref.get(selected_target)
+        shown_succs = tuple(block.succs[:8])
+        succs = f"{shown_succs!r}" if len(block.succs) <= 8 else f"{shown_succs!r}+{len(block.succs) - 8}"
+        tail_kind = tail.kind.value if type(tail.kind) is InsnKind else "unknown"
+        block_kind = block.kind.value if type(block.kind) is BlockKind else "unknown"
+        step_kind = type(step).__name__ if step is not None else "none"
+        tail_native = tail.native_ea
+        tail_native_text = (
+            f"0x{tail_native:X}"
+            if type(tail_native) is int and 0 <= tail_native < 0xFFFFFFFFFFFFFFFF
+            else "none"
+        )
+        logger.warning(
+            "observed generated-tail normalization declined "
+            "blk%d@0x%X stage=%s reason=%s step=%s target=%s succs=%s "
+            "block_kind=%s tail_kind=%s tail_opcode=%r raw_tail_opcode=%r "
+            "tail_ea=0x%X tail_native_ea=%s",
+            serial,
+            anchors[0],
+            stage,
+            reason,
+            step_kind,
+            target_serial,
+            succs,
+            block_kind,
+            tail_kind,
+            tail.opcode,
+            tail.raw_opcode,
+            tail_origin,
+            tail_native_text,
+        )
+    matching_steps = []
+    for step in plan.steps:
+        if type(step) is PatchRedirectGoto and step.from_serial == owner_ref:
+            matching_steps.append((step, step.new_target))
+        elif type(step) is PatchConvertToGoto and step.block_serial == owner_ref:
+            matching_steps.append((step, step.goto_target))
+        elif (
+            type(step) is PatchEdgeSplitCorridor
+            and step.via_pred == owner_ref
+            and step.clone_block_ids
+        ):
+            matching_steps.append((step, step.clone_block_ids[0]))
+    matching_steps = tuple(matching_steps)
     if len(matching_steps) != 1:
+        if matching_steps:
+            step, selected_target = matching_steps[0]
+            warn_decline(
+                stage="candidate",
+                reason="multiple-matching-steps",
+                step=step,
+                selected_target=selected_target,
+            )
         return None
-    step = matching_steps[0]
-    if serial_by_ref.get(step.new_target) is None:
+    selected_step, selected_target = matching_steps[0]
+    selected_serial = serial_by_ref.get(selected_target)
+    if selected_serial is None:
+        warn_decline(
+            stage="target",
+            reason="selected-target-unbound",
+            step=selected_step,
+            selected_target=selected_target,
+        )
         return None
-    if (
-        block.kind is not BlockKind.ONE_WAY
-        or len(block.succs) != 1
-        or block.succs[0] != serial_by_ref[step.new_target]
-        or not block.insn_snapshots
-    ):
+    if block.kind is not BlockKind.ONE_WAY:
+        warn_decline(
+            stage="topology", reason="block-is-not-one-way",
+            step=selected_step, selected_target=selected_target,
+        )
+        return None
+    if len(block.succs) != 1:
+        warn_decline(
+            stage="topology", reason="successor-count-mismatch",
+            step=selected_step, selected_target=selected_target,
+        )
+        return None
+    if block.succs[0] != selected_serial:
+        warn_decline(
+            stage="topology", reason="successor-target-mismatch",
+            step=selected_step, selected_target=selected_target,
+        )
+        return None
+    if not block.insn_snapshots:
         return None
     tail = block.insn_snapshots[-1]
     if (
@@ -578,6 +1149,10 @@ def _observed_native_identity_origins(
         or tail.r is not None
         or tail.d is not None
     ):
+        warn_decline(
+            stage="tail", reason="tail-is-not-unconditional-goto",
+            step=selected_step, selected_target=selected_target,
+        )
         return None
     # Match producer_api's native-origin preference exactly: native EA when
     # valid, otherwise the backend row EA.  Do not normalize duplicate origins;
@@ -593,16 +1168,253 @@ def _observed_native_identity_origins(
         if type(origin) is not int or not 0 <= origin < 0xFFFFFFFFFFFFFFFF:
             origin = instruction.ea
         if type(origin) is not int or not 0 <= origin < 0xFFFFFFFFFFFFFFFF:
+            warn_decline(
+                stage="origin", reason="instruction-origin-unavailable",
+                step=selected_step, selected_target=selected_target,
+            )
             return None
         all_origins.append(origin)
     if all_origins.count(tail_origin) != 1:
+        warn_decline(
+            stage="origin", reason="tail-origin-not-unique",
+            step=selected_step, selected_target=selected_target,
+        )
         return None
-    if tail_origin in owner_ref.identity.exact_instruction_eas:
+    source_native_origins = {
+        origin
+        for source_ref, _serial in plan.source_coordinates
+        if type(source_ref) is NativeBlockRef
+        for origin in source_ref.identity.exact_instruction_eas
+    }
+    if tail_origin in source_native_origins and tail_origin != function_ea:
+        warn_decline(
+            stage="origin", reason="tail-origin-belongs-to-source",
+            step=selected_step, selected_target=selected_target,
+        )
         return None
     normalized_origins = tuple(sorted(set(all_origins) - {tail_origin}))
     if not set(normalized_origins) <= owner_ref.identity.exact_instruction_eas:
+        warn_decline(
+            stage="origin", reason="retained-origins-outside-owner",
+            step=selected_step, selected_target=selected_target,
+        )
         return None
     return tail_origin
+
+
+def _bound_plan_helper_anchor_from_exact_origins(
+    block: BlockSnapshot,
+) -> int | None:
+    """Derive a bound PlanBlockRef helper anchor from copied native rows."""
+    origins = tuple(getattr(item, "native_ea", None) for item in block.insn_snapshots)
+    if not origins or any(
+        type(origin) is not int or not 0 <= origin < 0xFFFFFFFFFFFFFFFF
+        for origin in origins
+    ):
+        return None
+    return min(origins)
+
+
+def _normalize_observed_plan_helper_allocation_origins(
+    *,
+    block: BlockSnapshot,
+    observed: model.InventoryBlockObservation,
+    projected: model.InventoryBlockObservation,
+    owner_ref: PlanBlockRef,
+    observed_patch_binding: ObservedPatchBinding,
+    function_ea: int,
+) -> model.InventoryBlockObservation:
+    """Rebind exact helper allocation EAs to their projected native origins.
+
+    ``create_standalone_block`` assigns ``mba.entry_ea`` to copied live rows.
+    That address is an allocation coordinate, not native provenance.  Only the
+    exact helper occurrence sealed by ``ObservedPatchBinding`` may reuse the
+    already-validated projected row, and its instruction semantics must remain
+    byte-for-byte equal after substituting those coordinates.
+    """
+
+    if type(block) is not BlockSnapshot:
+        raise TypeError("observed helper block must be BlockSnapshot")
+    if type(observed) is not model.InventoryBlockObservation:
+        raise TypeError("observed helper row must be InventoryBlockObservation")
+    if type(projected) is not model.InventoryBlockObservation:
+        raise TypeError("projected helper row must be InventoryBlockObservation")
+    if type(owner_ref) is not PlanBlockRef:
+        raise TypeError("observed helper owner must be PlanBlockRef")
+    validate_observed_patch_binding(observed_patch_binding)
+    if (owner_ref, observed.serial) not in observed_patch_binding.bindings:
+        raise ValueError("observed helper is absent from exact observed patch binding")
+    if observed.block_ref != owner_ref or projected.block_ref != owner_ref:
+        raise ValueError("observed/projected helper rows differ from exact helper")
+    if projected.anchor_ea != observed.anchor_ea:
+        raise ValueError("observed helper anchor differs from projected helper anchor")
+    if (
+        observed.block_kind is not projected.block_kind
+        or len(observed.successor_serials) != len(projected.successor_serials)
+    ):
+        raise ValueError("observed helper topology shape differs from projected helper")
+    if len(projected.instruction_observations) != len(
+        observed.instruction_observations
+    ):
+        raise ValueError("observed helper body differs from projected helper body")
+    raw_origins = tuple(
+        row.native_ea
+        if type(row.native_ea) is int and 0 <= row.native_ea < 0xFFFFFFFFFFFFFFFF
+        else row.ea
+        for row in block.insn_snapshots
+    )
+    collapsed_allocation_tail = bool(
+        raw_origins
+        and raw_origins[-1] == function_ea
+        and raw_origins.count(function_ea) > 1
+        and observed.transfer_ea is None
+    )
+    normalized_rows = []
+    normalized_synthetic_tail = False
+    last_ordinal = len(observed.instruction_observations) - 1
+    for ordinal, (live_row, projected_row_instruction) in enumerate(zip(
+        observed.instruction_observations,
+        projected.instruction_observations,
+        strict=True,
+    )):
+        exact_collapsed_tail = bool(
+            ordinal == last_ordinal
+            and live_row.instruction_ea is None
+            and collapsed_allocation_tail
+            and live_row.control_transfer_kind is not None
+            and projected_row_instruction.control_transfer_kind
+            is live_row.control_transfer_kind
+        )
+        if (
+            live_row.instruction_ea
+            not in {projected_row_instruction.instruction_ea, function_ea}
+            and not exact_collapsed_tail
+        ):
+            raise ValueError(
+                "observed helper instruction origin is neither projected nor "
+                "allocation EA: "
+                f"helper={owner_ref.local_block_id} serial={observed.serial} "
+                f"ordinal={ordinal} live={live_row.instruction_ea!r} "
+                f"projected={projected_row_instruction.instruction_ea!r} "
+                f"allocation=0x{function_ea:X}"
+            )
+        normalized_row = replace(
+            live_row,
+            instruction_ea=projected_row_instruction.instruction_ea,
+        )
+        if normalized_row != projected_row_instruction:
+            raw_tail = (
+                block.insn_snapshots[-1]
+                if ordinal == last_ordinal and block.insn_snapshots
+                else None
+            )
+            exact_backend_goto_encoding = bool(
+                ordinal == last_ordinal
+                and projected_row_instruction.opcode == -1
+                and projected_row_instruction.raw_opcode is None
+                and projected_row_instruction.instruction_kind is InsnKind.GOTO
+                and projected_row_instruction.control_transfer_kind
+                is ControlTransferKind.GOTO
+                and live_row.opcode >= 0
+                and live_row.raw_opcode == live_row.opcode
+                and live_row.instruction_kind is InsnKind.GOTO
+                and live_row.control_transfer_kind is ControlTransferKind.GOTO
+                and observed.block_kind is BlockKind.ONE_WAY
+                and len(observed.successor_serials) == 1
+                and type(raw_tail) is InsnSnapshot
+                and raw_tail.opcode == live_row.opcode
+                and raw_tail.raw_opcode == live_row.raw_opcode
+                and raw_tail.kind is InsnKind.GOTO
+                and raw_tail.control_transfer_kind is ControlTransferKind.GOTO
+                and raw_tail.is_unconditional_jump
+                and not raw_tail.is_conditional_jump
+                and not raw_tail.is_call
+                and raw_tail.call_kind is None
+                and raw_tail.branch_predicate is None
+                and raw_tail.predicate_kind is None
+                and type(raw_tail.l) is MopSnapshot
+                and raw_tail.l.kind is OperandKind.BLOCK
+                and raw_tail.l.block_ref == observed.successor_serials[0]
+                and raw_tail.r is None
+                and raw_tail.d is None
+            )
+            if exact_backend_goto_encoding:
+                normalized_row = replace(
+                    normalized_row,
+                    opcode=projected_row_instruction.opcode,
+                    raw_opcode=projected_row_instruction.raw_opcode,
+                    display_text=projected_row_instruction.display_text,
+                )
+            if normalized_row != projected_row_instruction:
+                differing_fields = tuple(
+                    field_name
+                    for field_name in (
+                        "opcode",
+                        "width",
+                        "instruction_kind",
+                        "control_transfer_kind",
+                        "is_call",
+                        "call_kind",
+                        "display_text",
+                        "predicate_observation",
+                        "raw_opcode",
+                    )
+                    if getattr(normalized_row, field_name)
+                    != getattr(projected_row_instruction, field_name)
+                )
+                raise ValueError(
+                    "observed helper body differs from projected helper body: "
+                    f"helper={owner_ref.local_block_id} serial={observed.serial} "
+                    f"ordinal={ordinal} fields={differing_fields!r}"
+                )
+            normalized_synthetic_tail = True
+        normalized_rows.append(normalized_row)
+    return replace(
+        observed,
+        native_instruction_eas=projected.native_instruction_eas,
+        instruction_observations=tuple(normalized_rows),
+        transfer_ea=projected.transfer_ea,
+        tail_opcode=(
+            projected.tail_opcode if normalized_synthetic_tail
+            else observed.tail_opcode
+        ),
+        raw_tail_opcode=(
+            projected.raw_tail_opcode if normalized_synthetic_tail
+            else observed.raw_tail_opcode
+        ),
+        tail_kind=(
+            projected.tail_kind if normalized_synthetic_tail
+            else observed.tail_kind
+        ),
+    )
+
+
+def _is_bound_originless_structural_stop(
+    block: BlockSnapshot,
+    *,
+    owner_ref: PlanBlockRef,
+    owner_anchor_ea: int | None,
+    phase: model.UnflattenAuthorityPhase,
+    planned_serials: Mapping[PlanBlockRef, int] | None,
+    observed_patch_binding: ObservedPatchBinding | None,
+) -> bool:
+    """Recognize the sole anchorless helper shape admitted after live folding."""
+    return (
+        phase is model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY
+        and observed_patch_binding is not None
+        and planned_serials is not None
+        and owner_anchor_ea is None
+        and planned_serials.get(owner_ref) == block.serial
+        and (owner_ref, block.serial) in observed_patch_binding.bindings
+        and block.kind is BlockKind.STOP
+        and not block.insn_snapshots
+        and not block.succs
+        and block.start_ea == 0xFFFFFFFFFFFFFFFF
+        and not (
+            type(getattr(block, "native_start_ea", None)) is int
+            and 0 <= block.native_start_ea < 0xFFFFFFFFFFFFFFFF
+        )
+    )
 
 
 def _build_semantic_graph_inventory(
@@ -615,6 +1427,8 @@ def _build_semantic_graph_inventory(
     source_subjects: tuple[model.SemanticSubjectRef, ...] = (),
     materialization: CanonicalRouteMaterialization | None = None,
     planned_serials: Mapping[PlanBlockRef, int] | None = None,
+    observed_patch_binding: ObservedPatchBinding | None = None,
+    prepared_authority: model.PreparedUnflattenAuthority | None = None,
 ) -> model.SemanticGraphInventory:
     """Build one complete source or candidate inventory.
 
@@ -622,6 +1436,58 @@ def _build_semantic_graph_inventory(
     discovery, subject construction, and topology materialization.
     """
 
+    if observed_patch_binding is not None:
+        if type(observed_patch_binding) is not ObservedPatchBinding:
+            raise TypeError(
+                "observed_patch_binding must be ObservedPatchBinding or None"
+            )
+        validate_observed_patch_binding(observed_patch_binding)
+        if phase is not model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY:
+            raise ValueError("observed patch binding only authorizes observed inventory")
+        if observed_patch_binding.bound_plan.plan is not plan:
+            raise ValueError("observed patch binding is foreign to inventory plan")
+        bound_helper_rows = tuple(
+            (ref, serial)
+            for ref, serial in observed_patch_binding.bindings
+            if type(ref) is PlanBlockRef
+        )
+        if planned_serials is None or bound_helper_rows != tuple(planned_serials.items()):
+            raise ValueError("observed helper bindings differ from observed patch binding")
+    projected_reference_inventory = None
+    if prepared_authority is not None:
+        if type(prepared_authority) is not model.PreparedUnflattenAuthority:
+            raise TypeError(
+                "prepared_authority must be PreparedUnflattenAuthority or None"
+            )
+        prepared_authority.__post_init__()
+        if phase is not model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY:
+            raise ValueError(
+                "prepared authority only authorizes observed inventory"
+            )
+        if observed_patch_binding is None:
+            raise ValueError(
+                "prepared observed inventory requires exact observed patch binding"
+            )
+        if (
+            prepared_authority.owning_plan is not plan
+            or prepared_authority.proposal is not proposal
+            or prepared_authority.source_inputs is None
+        ):
+            raise ValueError("prepared authority differs from inventory occurrence")
+        projected_reference_inventory = (
+            prepared_authority.source_inputs.candidate_inventory
+        )
+        if (
+            projected_reference_inventory.phase
+            is not model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT
+        ):
+            raise ValueError("observed helper reference must be projected preflight")
+        if (
+            projected_reference_inventory.generation
+            != proposal.source_identity_catalog.generation
+            or projected_reference_inventory.function_ea != graph.func_ea
+        ):
+            raise ValueError("projected helper reference graph coordinates differ")
     if materialization is None:
         capture = (
             capture_source_route_materialization
@@ -635,13 +1501,19 @@ def _build_semantic_graph_inventory(
     if materialization.generation != proposal.source_identity_catalog.generation:
         raise ValueError("route materialization generation differs from inventory")
     blocks_by_serial = materialization.blocks
-    reachable = _reachable_serials_from_blocks(blocks_by_serial, graph.entry_serial)
     serial_by_ref = (
         _catalog_serials(graph, proposal, plan, blocks=blocks_by_serial)
         if source else _projected_serials(
             graph, proposal, blocks=blocks_by_serial, plan=plan,
             planned_serials=planned_serials,
         )
+    )
+    reachable = _semantic_reachable_serials(
+        blocks_by_serial,
+        entry_serial=graph.entry_serial,
+        serial_by_ref=serial_by_ref,
+        proposal=proposal,
+        require_all_semantic_roots=source,
     )
     fingerprint = materialization.graph_fingerprint
     block_rows = []
@@ -653,6 +1525,7 @@ def _build_semantic_graph_inventory(
         block = blocks_by_serial[serial]
         owner_ref = next((ref for ref, value in serial_by_ref.items() if value == serial), None)
         owner_anchor = None
+        observation_owner_ref = owner_ref
         if owner_ref is not None:
             owner_anchor = next(
                 (
@@ -667,15 +1540,57 @@ def _build_semantic_graph_inventory(
             if owner_anchor is None:
                 owner_anchor = getattr(block, "start_ea", None)
             if (
+                type(owner_ref) is PlanBlockRef
+                and (
+                    type(owner_anchor) is not int
+                    or not 0 <= owner_anchor < 0xFFFFFFFFFFFFFFFF
+                )
+            ):
+                owner_anchor = _bound_plan_helper_anchor_from_exact_origins(
+                    block,
+                )
+            if (
+                type(owner_ref) is PlanBlockRef
+                and block.kind is BlockKind.STOP
+                and block.start_ea == 0xFFFFFFFFFFFFFFFF
+                and (owner_anchor is not None or block.insn_snapshots or block.succs)
+            ):
+                raise ValueError(
+                    "originless planned helper must be an exact structural STOP",
+                )
+            if (
+                type(owner_ref) is PlanBlockRef
+                and owner_anchor is None
+            ):
+                if observed_patch_binding is None:
+                    raise ValueError(
+                        "originless planned helper requires exact observed binding",
+                    )
+                if not _is_bound_originless_structural_stop(
+                    block,
+                    owner_ref=owner_ref,
+                    owner_anchor_ea=owner_anchor,
+                    phase=phase,
+                    planned_serials=planned_serials,
+                    observed_patch_binding=observed_patch_binding,
+                ):
+                    raise ValueError(
+                        "originless planned helper must be an exact structural STOP",
+                    )
+                observation_owner_ref = None
+            if (
                 type(owner_ref) is LogicalBlockRef
                 and type(owner_anchor) is int
                 and owner_anchor == 0xFFFFFFFFFFFFFFFF
             ):
                 owner_anchor = None
-            if owner_anchor is None and type(owner_ref) is not LogicalBlockRef:
+            if (
+                owner_anchor is None
+                and type(owner_ref) not in (LogicalBlockRef, PlanBlockRef)
+            ):
                 raise ValueError("planned block has no exact native anchor")
         observed = producer_api.observe_inventory_block(
-            block, owner_ref=owner_ref, owner_anchor_ea=owner_anchor,
+            block, owner_ref=observation_owner_ref, owner_anchor_ea=owner_anchor,
         )
         synthetic_tail_origin = _observed_native_identity_origins(
             block,
@@ -683,6 +1598,7 @@ def _build_semantic_graph_inventory(
             serial_by_ref=serial_by_ref,
             plan=plan,
             phase=phase,
+            function_ea=graph.func_ea,
         )
         if synthetic_tail_origin is not None:
             normalized_tail = replace(
@@ -699,6 +1615,31 @@ def _build_semantic_graph_inventory(
                 ),
                 transfer_ea=None,
             )
+        if (
+            type(owner_ref) is PlanBlockRef
+            and observed.anchor_ea is not None
+            and observed.anchor_ea not in observed.native_instruction_eas
+        ):
+            if projected_reference_inventory is None:
+                raise ValueError(
+                    "observed helper allocation EAs require the exact projected inventory"
+                )
+            projected_rows = tuple(
+                row for row in projected_reference_inventory.blocks
+                if row.block_ref == owner_ref
+            )
+            if len(projected_rows) != 1:
+                raise ValueError(
+                    "observed helper has no unique projected helper occurrence"
+                )
+            observed = _normalize_observed_plan_helper_allocation_origins(
+                block=block,
+                observed=observed,
+                projected=projected_rows[0],
+                owner_ref=owner_ref,
+                observed_patch_binding=observed_patch_binding,
+                function_ea=graph.func_ea,
+            )
         block_rows.append(observed)
         block_effects, block_terminals = model.resolve_inventory_block_sites(
             serial=observed.serial, owner_ref=observed.block_ref,
@@ -707,6 +1648,12 @@ def _build_semantic_graph_inventory(
             successor_serials=observed.successor_serials,
             instruction_observations=observed.instruction_observations,
         )
+        if (
+            type(owner_ref) is PlanBlockRef
+            and observed.anchor_ea is None
+            and (block_effects or block_terminals)
+        ):
+            raise ValueError("originless planned helper cannot carry semantic sites")
         effects.extend(block_effects)
         terminals.extend(block_terminals)
     effects = tuple(sorted(effects, key=lambda item: (
@@ -727,6 +1674,11 @@ def _build_semantic_graph_inventory(
         )
         for ref, serial in serial_by_ref.items()
         if not source and type(ref) is PlanBlockRef
+        and next(
+            block.anchor_ea is not None
+            for block in block_rows
+            if block.serial == serial
+        )
     }
     discovered_subjects = _inventory_subjects(
         proposal,
@@ -744,31 +1696,54 @@ def _build_semantic_graph_inventory(
             raise TypeError("source_subjects must be exact semantic subjects")
         subjects = tuple(sorted({item.subject_id: item for item in (*source_subjects, *discovered_subjects)}.values(), key=lambda item: item.subject_id))
         source_subject_ids = tuple(sorted(item.subject_id for item in source_subjects))
+    binding_serial_by_ref = {
+        ref: serial
+        for ref, serial in serial_by_ref.items()
+        if not (
+            type(ref) is PlanBlockRef
+            and next(
+                block.anchor_ea is None
+                for block in block_rows
+                if block.serial == serial
+            )
+        )
+    }
     bindings = (
         authority_bind.bind_subjects(
             subjects, catalog=proposal.source_identity_catalog,
             phase=phase, graph_fingerprint=fingerprint,
             generation=proposal.source_identity_catalog.generation,
-            serial_by_ref=serial_by_ref,
+            # Anchorless logical function-exit route subjects bind their exact
+            # LogicalBlockRef and source serial; native subjects remain bound
+            # through the source identity catalog.
+            serial_by_ref=binding_serial_by_ref,
         ) if source else authority_bind.bind_inventory_subjects(
             subjects, catalog=proposal.source_identity_catalog,
             phase=phase, graph_fingerprint=fingerprint,
             generation=proposal.source_identity_catalog.generation,
-            serial_by_ref=serial_by_ref,
+            serial_by_ref=binding_serial_by_ref,
             effects=tuple(item for item in effects if item.owner_serial in reachable),
             terminals=tuple(item for item in terminals if item.owner_serial in reachable),
             reachable_serials=tuple(sorted(reachable)),
             native_instruction_eas_by_ref=(
                 {
-                    row.block_ref: row.native_instruction_eas
-                    for row in block_rows
-                    if row.block_ref is not None
+                    ref: next(
+                        (
+                            row.native_instruction_eas
+                            for row in block_rows
+                            if row.block_ref == ref
+                        ),
+                        (),
+                    )
+                    for ref in binding_serial_by_ref
                 }
                 if any(
                     isinstance(
                         step,
                         (
+                            PatchRedirectGoto,
                             PatchRedirectBranch,
+                            PatchConvertToGoto,
                             PatchLowerConditionalStateTransition,
                             PatchConditionalRedirect,
                             PatchEdgeSplitTrampoline,
@@ -930,9 +1905,15 @@ def _derive_local_alias_transaction_facts(
     plan: PatchPlan,
 ) -> tuple[
     tuple[authority_bind._LocalAliasClaimFactOccurrence, ...],
+    tuple[model.PatchStepEvidencePayload, ...],
     tuple[model.ConditionalSubjectRelation, ...],
 ]:
-    """Derive alias authority from the exact typed plan and source inventory."""
+    """Derive exact alias patch facts and STORE-loss authority.
+
+    Both LOAD and STORE alias accesses are mechanical scalarization steps and
+    therefore enter the closed patch receipt.  Only STORE -> MOV changes the
+    effect catalogue, so only STORE steps mint semantic-loss claims.
+    """
 
     if plan.source_generation is not None and plan.source_generation != source_inventory.generation:
         raise ValueError("local-alias plan generation differs from source inventory")
@@ -985,29 +1966,19 @@ def _derive_local_alias_transaction_facts(
             if item.instruction_ea == step.host_ea
             and item.opcode == step.host_opcode
         )
-        effects = tuple(
-            item for item in source_inventory.effects
-            if item.owner_serial == serial
-            and item.instruction_ea == step.host_ea
-            and item.opcode == step.host_opcode
-            and item.effect_kind is model.EffectSiteKind.STORE
-        )
-        if len(observations) != 1 or len(effects) != 1:
-            raise ValueError("local-alias step must identify one exact STORE observation")
+        if len(observations) != 1:
+            raise ValueError(
+                "local-alias step must identify one exact LOAD or STORE observation"
+            )
         observation = observations[0]
-        source_site = effects[0]
         if (
-            observation.instruction_kind is not model.InsnKind.STORE
-            or observation.ordinal != source_site.instruction_ordinal
-            or observation.width != source_site.width
+            observation.instruction_kind not in {model.InsnKind.LOAD, model.InsnKind.STORE}
             or observation.raw_opcode is None
             or observation.is_call
             or observation.call_kind is not None
             or observation.control_transfer_kind is not None
-            or block.block_ref != source_site.owner_ref
-            or block.anchor_ea != source_site.owner_anchor_ea
         ):
-            raise ValueError("local-alias step host is not a STORE")
+            raise ValueError("local-alias step host is not an exact LOAD or STORE")
         display_text = observation.display_text
         if display_text is None:
             raise ValueError("local-alias step host lacks exact text provenance")
@@ -1020,9 +1991,34 @@ def _derive_local_alias_transaction_facts(
             display_text.encode("utf-8", errors="replace")
         ).hexdigest()[:16] != step.host_text_sha1:
             raise ValueError("local-alias host text digest is stale")
-        if step.value_size is not None and step.value_size != source_site.width:
-            raise ValueError("local-alias step value size disagrees with STORE")
+        if step.value_size is not None and step.value_size != observation.width:
+            raise ValueError("local-alias step value size disagrees with its host")
         step_digest = authority_id(_local_alias_step_preimage(step_index, step))
+        patch_fact = model.PatchStepEvidencePayload(
+            plan.plan_id, step_index, "PatchScalarizeLocalAliasAccess",
+            step.block_serial, step_digest, step.host_ea, step.host_opcode,
+            step.value_size,
+        )
+        patch_facts.append(patch_fact)
+        if observation.instruction_kind is model.InsnKind.LOAD:
+            continue
+        effects = tuple(
+            item for item in source_inventory.effects
+            if item.owner_serial == serial
+            and item.instruction_ea == step.host_ea
+            and item.opcode == step.host_opcode
+            and item.effect_kind is model.EffectSiteKind.STORE
+        )
+        if len(effects) != 1:
+            raise ValueError("local-alias STORE must identify one exact effect site")
+        source_site = effects[0]
+        if (
+            observation.ordinal != source_site.instruction_ordinal
+            or observation.width != source_site.width
+            or block.block_ref != source_site.owner_ref
+            or block.anchor_ea != source_site.owner_anchor_ea
+        ):
+            raise ValueError("local-alias STORE observation differs from its effect site")
         claim = _claim_factory(
             model.LocalAliasEffectScalarizationClaim,
             kind=model.UnflattenClaimKind.LOCAL_ALIAS_EFFECT_SCALARIZATION,
@@ -1037,12 +2033,6 @@ def _derive_local_alias_transaction_facts(
             step_digest=step_digest,
             source_generation=source_inventory.generation,
         )
-        patch_fact = model.PatchStepEvidencePayload(
-            plan.plan_id, step_index, "PatchScalarizeLocalAliasAccess",
-            step.block_serial, step_digest, step.host_ea, step.host_opcode,
-            step.value_size,
-        )
-        patch_facts.append(patch_fact)
         effect_subject = next(
             subject for subject in source_inventory.subjects
             if subject.kind is model.SemanticSubjectKind.EFFECT
@@ -1070,11 +2060,58 @@ def _derive_local_alias_transaction_facts(
     ))
     return (
         ordered_occurrences,
+        tuple(sorted(patch_facts, key=authority_bind.patch_step_fact_id)),
         tuple(sorted(relations, key=lambda item: (
             item.source_subject_id, item.target_subject_id,
             item.dimension.value, item.provenance_id,
         ))),
     )
+
+
+@dataclass(frozen=True, slots=True)
+class _StructuralStopPatchPreimage:
+    """One exact ownerless STOP used only as a redirect's old edge."""
+
+    block_ref: LogicalBlockRef
+    serial: int
+
+
+def _structural_stop_patch_preimage(
+    *,
+    source_inventory: model.SemanticGraphInventory,
+    plan: PatchPlan,
+    step: object,
+    ref_position: int,
+    ref: object,
+) -> _StructuralStopPatchPreimage | None:
+    """Classify the sole non-semantic reference admitted in a patch preimage.
+
+    An instructionless structural STOP is deliberately absent from the source
+    identity catalog and semantic subjects.  A native route may nevertheless
+    replace the exact old edge to that STOP.  Bind that physical preimage
+    through the immutable plan coordinate and the already-validated inventory
+    shape; never promote it into route authority.
+    """
+
+    if (
+        type(step) is not PatchRedirectGoto
+        or ref_position != 1
+        or type(ref) is not LogicalBlockRef
+        or step.old_target != ref
+    ):
+        return None
+    coordinates = tuple(
+        int(serial)
+        for coordinate_ref, serial in plan.source_coordinates
+        if coordinate_ref == ref
+    )
+    if len(coordinates) != 1:
+        return None
+    serial = coordinates[0]
+    rows = tuple(row for row in source_inventory.blocks if row.serial == serial)
+    if len(rows) != 1 or not model._is_unowned_structural_stop_row(rows[0]):
+        return None
+    return _StructuralStopPatchPreimage(ref, serial)
 
 
 def _derive_patch_lineage_facts(
@@ -1084,12 +2121,27 @@ def _derive_patch_lineage_facts(
     """Derive helper/resegmentation step evidence once at the transaction edge."""
 
     source_refs = set(source_inventory.serial_by_ref)
-    route_refs = {
-        subject.block_ref
-        for claim in plan.unflatten_proposal.claims
-        for subject in _claim_subjects(claim)
-        if subject.block_ref is not None
-    } if plan.unflatten_proposal is not None else set()
+    source_logical_exit_refs = {
+        block.block_ref
+        for block in source_inventory.blocks
+        if (
+            type(block.block_ref) is LogicalBlockRef
+            and block.predecessor_serials
+            and model.is_exact_logical_function_exit_inventory_row(block)
+        )
+    }
+    route_refs = (
+        _selected_route_subject_refs(plan.unflatten_proposal)
+        if plan.unflatten_proposal is not None
+        else set()
+    )
+    entry_frontier_refs = (
+        _source_entry_dispatcher_frontier_refs(
+            source_inventory, plan.unflatten_proposal,
+        )
+        if plan.unflatten_proposal is not None
+        else set()
+    )
     rows: list[model.PatchStepEvidencePayload] = []
     helper_specs = {
         spec.block_id: (spec_index, spec)
@@ -1105,7 +2157,8 @@ def _derive_patch_lineage_facts(
             # canonical preimage is malformed.  Do not silently drop such a
             # step and later report an unrelated helper-ownership failure.
             if type(step) in {
-                PatchConditionalRedirect, PatchLowerConditionalStateTransition,
+                PatchConditionalRedirect, PatchConvertToGoto,
+                PatchLowerConditionalStateTransition,
                 PatchRedirectGoto, PatchRedirectBranch,
                 PatchEdgeSplitTrampoline, PatchEdgeSplitCorridor,
             }:
@@ -1116,23 +2169,99 @@ def _derive_patch_lineage_facts(
         refs = descriptor.route_refs
         host_ea = descriptor.host_ea
         host_opcode = descriptor.host_opcode
+        structural_preimages = tuple(
+            preimage
+            for ref_position, ref in enumerate(refs)
+            if (
+                preimage := _structural_stop_patch_preimage(
+                    source_inventory=source_inventory,
+                    plan=plan,
+                    step=step,
+                    ref_position=ref_position,
+                    ref=ref,
+                )
+            ) is not None
+        )
+        structural_preimage_refs = {
+            preimage.block_ref for preimage in structural_preimages
+        }
+
+        def foreign_reference_error(
+            ref_position: int,
+            ref: object,
+        ) -> ValueError:
+            serial = source_inventory.serial_by_ref.get(ref)
+            anchor = next(
+                (
+                    block.anchor_ea
+                    for block in source_inventory.blocks
+                    if block.serial == serial
+                ),
+                None,
+            )
+            serial_anchor = (
+                f"{serial}@{anchor:#x}"
+                if type(anchor) is int else f"{serial}@None"
+            )
+            logical_coordinates = (
+                repr(ref) if type(ref) is LogicalBlockRef else None
+            )
+            source_coordinate_candidates = tuple(
+                serial
+                for coordinate_ref, serial in plan.source_coordinates
+                if coordinate_ref == ref
+            )
+            return ValueError(
+                "patch-step reference is foreign to the source plan: "
+                f"step={step_index} kind={step_type} "
+                f"ref_position={ref_position} ref_type={type(ref).__name__} "
+                f"source_member={ref in source_refs} "
+                f"route_member={ref in route_refs} "
+                f"structural_preimage={ref in structural_preimage_refs} "
+                f"serial_anchor={serial_anchor} "
+                f"logical_ref={logical_coordinates} "
+                f"source_coordinate_candidates={source_coordinate_candidates}"
+            )
+
         for owner in owners:
-            if type(owner) is not PlanBlockRef and owner not in source_refs:
+            if type(owner) is PlanBlockRef:
+                if owner.plan_id != plan.plan_id:
+                    raise ValueError("patch-step owner belongs to a foreign plan")
+            elif type(owner) is LogicalBlockRef:
+                if owner not in route_refs:
+                    raise ValueError("patch-step owner is foreign to the source or plan")
+            elif type(owner) is NativeBlockRef:
+                if owner not in source_refs and owner not in route_refs:
+                    raise ValueError("patch-step owner is foreign to the source or plan")
+            else:
                 raise ValueError("patch-step owner is foreign to the source or plan")
-            if type(owner) is PlanBlockRef and owner.plan_id != plan.plan_id:
-                raise ValueError("patch-step owner belongs to a foreign plan")
             helper_spec = helper_specs.get(owner) if type(owner) is PlanBlockRef else None
             if type(owner) is PlanBlockRef and helper_spec is None:
                 raise ValueError("patch-step helper owner lacks exactly one creation spec")
             owner_preimage = ("owner", owner)
-            for ref in refs:
+            for ref_position, ref in enumerate(refs):
                 if ref is None:
                     continue
                 if type(ref) is PlanBlockRef:
                     if ref.plan_id != plan.plan_id:
                         raise ValueError("patch-step reference belongs to a foreign plan")
-                elif ref not in source_refs:
-                    raise ValueError("patch-step reference is foreign to the source plan")
+                    continue
+                if type(ref) is LogicalBlockRef:
+                    if (
+                        ref in source_logical_exit_refs
+                        or ref in route_refs
+                        or ref in structural_preimage_refs
+                    ):
+                        continue
+                    raise foreign_reference_error(ref_position, ref)
+                if type(ref) is NativeBlockRef and (
+                    ref in source_refs or ref in route_refs
+                ):
+                    continue
+                if ref in structural_preimage_refs:
+                    continue
+                else:
+                    raise foreign_reference_error(ref_position, ref)
             allowed_corridor_refs = {
                 proposal_ref
                 for proposal_ref in (
@@ -1145,6 +2274,7 @@ def _derive_patch_lineage_facts(
             if plan.unflatten_proposal is not None:
                 forecast = plan.unflatten_proposal.corridor_coverage_forecast
                 if forecast is not None:
+                    forecast = model.corridor_base_forecast(forecast)
                     allowed_corridor_refs.update(
                         node.block_ref
                         for path in forecast.paths
@@ -1166,10 +2296,85 @@ def _derive_patch_lineage_facts(
                             if block.serial in successor_serials
                             and block.block_ref is not None
                         )
-            if type(step) in {PatchLowerConditionalStateTransition, PatchRedirectGoto, PatchRedirectBranch} and route_refs and not {
-                ref for ref in refs if ref is not None
-            } <= route_refs | allowed_corridor_refs:
-                raise ValueError("patch-step source and destination refs are outside proposal route subjects")
+            if type(step) in {
+                PatchConvertToGoto, PatchLowerConditionalStateTransition,
+                PatchRedirectGoto, PatchRedirectBranch,
+            } and route_refs:
+                entry_bridge_refs = set()
+                if type(step) in {PatchRedirectGoto, PatchRedirectBranch}:
+                    source_ref, old_target_ref, new_target_ref = refs
+                    if (
+                        source_ref in entry_frontier_refs
+                        and old_target_ref
+                        == plan.unflatten_proposal.plan_inputs.dispatcher_entry_ref
+                        and new_target_ref in route_refs
+                    ):
+                        entry_bridge_refs.add(source_ref)
+                missing_route_refs = {
+                    ref for ref in refs if ref is not None
+                } - route_refs - allowed_corridor_refs - entry_bridge_refs \
+                    - structural_preimage_refs - source_logical_exit_refs
+                if missing_route_refs:
+                    selected_proof_ids = {
+                        proof_id
+                        for claim in plan.unflatten_proposal.claims
+                        if type(claim) is model.EquivalentSemanticRouteClaim
+                        for proof_id in claim.route_proof_ids
+                    }
+                    selected_proof_rows = tuple(
+                        (
+                            proof.proof_kind.value,
+                            source_inventory.serial_by_ref.get(next((
+                                row.block_ref
+                                for row in plan.unflatten_proposal.source_identity_catalog.blocks
+                                if type(row.block_ref) is NativeBlockRef
+                                and row.block_ref.identity == proof.source_identity
+                            ), None)),
+                            source_inventory.serial_by_ref.get(next((
+                                row.block_ref
+                                for row in plan.unflatten_proposal.source_identity_catalog.blocks
+                                if type(row.block_ref) is NativeBlockRef
+                                and row.block_ref.identity == proof.source_owner_identity
+                            ), None)),
+                            tuple(
+                                (
+                                    destination.state_constant,
+                                    source_inventory.serial_by_ref.get(next((
+                                        row.block_ref
+                                        for row in plan.unflatten_proposal.source_identity_catalog.blocks
+                                        if type(row.block_ref) is NativeBlockRef
+                                        and row.block_ref.identity == destination.target_identity
+                                    ), None)),
+                                )
+                                for destination in proof.destinations
+                            ),
+                            None if proof.bootstrap is None else tuple(
+                                source_inventory.serial_by_ref.get(next((
+                                    row.block_ref
+                                    for row in plan.unflatten_proposal.source_identity_catalog.blocks
+                                    if type(row.block_ref) is NativeBlockRef
+                                    and row.block_ref.identity == point.identity
+                                ), None))
+                                for point in proof.bootstrap.corridor
+                            ),
+                        )
+                        for proof in plan.unflatten_proposal.route_evidence.route_proofs
+                        if proof.proof_id in selected_proof_ids
+                    )
+                    raise ValueError(
+                        "patch-step source and destination refs are outside proposal "
+                        f"route subjects: step={step_index} kind={type(step).__name__} "
+                        "refs="
+                        f"{tuple((index, source_inventory.serial_by_ref.get(ref)) for index, ref in enumerate(refs))!r} "
+                        "missing="
+                        f"{tuple(sorted([(source_inventory.serial_by_ref.get(ref), ref) for ref in missing_route_refs], key=lambda item: (item[0] is None, item[0], repr(item[1]))))!r} "
+                        f"route_closure={tuple(sorted(source_inventory.serial_by_ref.get(ref) for ref in route_refs if source_inventory.serial_by_ref.get(ref) is not None))!r} "
+                        f"entry_frontier={tuple(sorted(source_inventory.serial_by_ref.get(ref) for ref in entry_frontier_refs if source_inventory.serial_by_ref.get(ref) is not None))!r} "
+                        f"entry={source_inventory.entry_serial!r} "
+                        f"dispatcher={source_inventory.serial_by_ref.get(plan.unflatten_proposal.plan_inputs.dispatcher_entry_ref)!r} "
+                        f"entry_neighborhood={tuple((block.serial, block.predecessor_serials, block.successor_serials) for block in source_inventory.blocks if block.serial <= 6)!r} "
+                        f"selected_proofs={selected_proof_rows!r}"
+                    )
             if fact_descriptor := descriptor:
                 step_digest = fact_descriptor.step_digest
             rows.append(model.PatchStepEvidencePayload(
@@ -1202,11 +2407,10 @@ def _derive_transaction_facts(
     from silently comparing a Task 12 plan against the Task 11-only replay.
     """
 
-    alias_occurrences, alias_relations = (
+    alias_occurrences, alias_patch_facts, alias_relations = (
         _derive_local_alias_transaction_facts(source_inventory, plan)
     )
     alias_claims = tuple(item.claim for item in alias_occurrences)
-    alias_patch_facts = tuple(item.patch_step_fact for item in alias_occurrences)
     route_patch_step_facts = _derive_patch_lineage_facts(source_inventory, plan)
     patch_step_facts = tuple(sorted(
         (*alias_patch_facts, *route_patch_step_facts),
@@ -1405,8 +2609,11 @@ def _bind_detached_authority_results(
         for item in prior_source_results
     ):
         raise TypeError("prior_source_results must contain sealed detached source results")
-    if corridor_result is not None and type(corridor_result) is not model.CorridorCoveragePhaseResult:
-        raise TypeError("corridor_result must be CorridorCoveragePhaseResult or None")
+    if corridor_result is not None:
+        # Detached-component compatibility is deliberately expressed against
+        # the legacy corridor partition, but the transaction retains the one
+        # enclosing authority union in its preparation inputs.
+        corridor_result = model.corridor_base_phase_result(corridor_result)
 
     expected_claim_ids = {claim.claim_id for claim in detached_claims}
     prior_claim_ids = tuple(item.claim_id for item in prior_source_results)
@@ -1469,6 +2676,80 @@ def _bind_detached_authority_results(
     )
 
 
+def _bind_projected_corridor_authority(
+    *,
+    proposal: model.ProposedUnflattenContract,
+    source_inventory: model.SemanticGraphInventory,
+    candidate_inventory: model.SemanticGraphInventory,
+    phase: model.UnflattenAuthorityPhase,
+    source_route_authority: model.SourceBoundRouteAuthority | None,
+) -> model.CorridorCoveragePhaseResultAuthority | None:
+    """Mint exactly one projected corridor authority at the transaction edge."""
+
+    forecast = proposal.corridor_coverage_forecast
+    if forecast is None:
+        return None
+    if type(forecast) is model.CorridorCoverageForecast:
+        return authority_bind.bind_corridor_coverage_forecast(
+            proposal=proposal,
+            source_inventory=source_inventory,
+            candidate_inventory=candidate_inventory,
+            phase=phase,
+        )
+    if type(forecast) is model.DefaultGapInfeasibilityForecast:
+        if type(source_route_authority) is not model.SourceBoundRouteAuthority:
+            raise TypeError("default-gap projected binding requires source route authority")
+        return authority_bind.bind_default_gap_infeasibility_forecast(
+            proposal=proposal,
+            source_inventory=source_inventory,
+            candidate_inventory=candidate_inventory,
+            phase=phase,
+            source_authority=source_route_authority,
+        )
+    raise TypeError("corridor forecast must be a closed authority record")
+
+
+def _revalidate_observed_corridor_authority(
+    *,
+    projected_result: model.CorridorCoveragePhaseResultAuthority | None,
+    proposal: model.ProposedUnflattenContract,
+    claims: tuple[model.UnflattenClaim, ...],
+    source_inventory: model.SemanticGraphInventory,
+    observed_inventory: model.SemanticGraphInventory,
+    source_route_authority: model.SourceBoundRouteAuthority | None,
+) -> model.CorridorCoveragePhaseResultAuthority | None:
+    """Revalidate the exact projected union without re-planning route authority."""
+
+    forecast = proposal.corridor_coverage_forecast
+    if forecast is None:
+        if projected_result is not None:
+            raise ValueError("observed corridor result lacks its forecast")
+        return None
+    if type(forecast) is model.CorridorCoverageForecast:
+        if projected_result is not None and type(projected_result) is not model.CorridorCoveragePhaseResult:
+            raise TypeError("legacy corridor forecast requires legacy prepared result")
+        return authority_bind.revalidate_observed_corridor_coverage(
+            projected_result=projected_result,
+            proposal=proposal,
+            claims=claims,
+            source_inventory=source_inventory,
+            observed_inventory=observed_inventory,
+        )
+    if type(forecast) is model.DefaultGapInfeasibilityForecast:
+        if type(projected_result) is not model.DefaultGapInfeasibilityPhaseResult:
+            raise TypeError("default-gap forecast requires exact prepared phase result")
+        if type(source_route_authority) is not model.SourceBoundRouteAuthority:
+            raise TypeError("default-gap observed validation requires source route authority")
+        return authority_bind.revalidate_observed_default_gap_infeasibility(
+            projected_result=projected_result,
+            proposal=proposal,
+            source_inventory=source_inventory,
+            observed_inventory=observed_inventory,
+            source_authority=source_route_authority,
+        )
+    raise TypeError("corridor forecast must be a closed authority record")
+
+
 def _derive_inputs(
     source_inventory, candidate_inventory, plan, proposal, generic_gates, *,
     phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
@@ -1493,6 +2774,15 @@ def _derive_inputs(
         if type(preparation_inputs) is not model.DerivedUnflattenPreparationInputs:
             raise TypeError(
                 "observed derivation requires transaction-owned preparation inputs"
+            )
+        # Persistence validates equal inventories by content, but the live
+        # transaction must carry the exact projected occurrence it prepared.
+        if (
+            preparation_inputs.projected_topology_reference
+            is not preparation_inputs.candidate_inventory
+        ):
+            raise ValueError(
+                "observed derivation requires the exact prepared projected topology occurrence"
             )
         projected_topology_reference = preparation_inputs.projected_topology_reference
     else:
@@ -1579,14 +2869,13 @@ def _derive_inputs(
         claims = preparation_inputs.claims
         patch_step_facts = preparation_inputs.patch_step_facts
         conditional_relations = preparation_inputs.conditional_relations
-        corridor_coverage_phase_result = (
-            authority_bind.revalidate_observed_corridor_coverage(
-                projected_result=preparation_inputs.corridor_coverage_phase_result,
-                proposal=proposal,
-                claims=claims,
-                source_inventory=source_inventory,
-                observed_inventory=candidate_inventory,
-            )
+        corridor_coverage_phase_result = _revalidate_observed_corridor_authority(
+            projected_result=preparation_inputs.corridor_coverage_phase_result,
+            proposal=proposal,
+            claims=claims,
+            source_inventory=source_inventory,
+            observed_inventory=candidate_inventory,
+            source_route_authority=source_route_authority,
         )
         retirement_claims = tuple(
             claim for claim in claims
@@ -1635,11 +2924,12 @@ def _derive_inputs(
             key=lambda item: (item.source_subject_id, item.target_subject_id,
                               item.dimension.value, item.provenance_id),
         ))
-        corridor_coverage_phase_result = authority_bind.bind_corridor_coverage_forecast(
+        corridor_coverage_phase_result = _bind_projected_corridor_authority(
             proposal=proposal,
             source_inventory=source_inventory,
             candidate_inventory=candidate_inventory,
             phase=phase,
+            source_route_authority=source_route_authority,
         )
         claims = derived_claim_inventory.claims
     prior_detached_source_results = ()
@@ -1799,7 +3089,21 @@ def _prepare_unflatten_authority(*, source, projection, plan, attempt_id, generi
             source_materialization=source_materialization,
         )
         if type(source_binding) is not model.SourceBoundRouteAuthorityAccepted:
-            raise ValueError("source route authority binding rejected")
+            failures = tuple(
+                (
+                    failure.stage.value,
+                    failure.scope.value,
+                    failure.proof_id,
+                    tuple(
+                        (item.anchor_ea, item.ref)
+                        for item in failure.anchored_refs
+                    ),
+                )
+                for failure in source_binding.failures
+            )
+            raise ValueError(
+                f"source route authority binding rejected: {failures!r}"
+            )
         source_route_authority = source_binding.authority
         if type(generic_gates) is not GenericCfgGateBundle:
             raise TypeError("applicable unflatten preparation requires generic gates")
@@ -1812,6 +3116,7 @@ def _prepare_unflatten_authority(*, source, projection, plan, attempt_id, generi
             source_inventory=source_inventory,
             projected_inventory=candidate_inventory,
             raw_gate_facts=generic_gate_facts.effectful_raw,
+            derived_claim_inventory=derived_claim_inventory,
         )
         legacy_effective_comparison = _legacy_effective_gate_comparison_facts(
             generic_gate_facts.effectful_raw
@@ -1837,9 +3142,22 @@ def _prepare_unflatten_authority(*, source, projection, plan, attempt_id, generi
             legacy_effective_gate_facts=legacy_effective_comparison,
         )
         if type(realization_result) is not model.ProjectedRouteRealizationAccepted:
+            failure_rows = tuple(
+                (
+                    failure.stage.value,
+                    failure.scope.value,
+                    failure.proof_id,
+                    failure.step_index,
+                    tuple(
+                        (source_inventory.serial_by_ref.get(item.ref), item.anchor_ea)
+                        for item in failure.anchored_refs
+                    ),
+                )
+                for failure in getattr(realization_result, "failures", ())
+            )
             raise ValueError(
                 "projected route realization rejected: "
-                f"failures={getattr(realization_result, 'failures', None)!r}"
+                f"failures={failure_rows!r}"
             )
         projected_route_realization = realization_result.realization
         inputs = _derive_inputs(
@@ -1874,6 +3192,117 @@ def _prepare_unflatten_authority(*, source, projection, plan, attempt_id, generi
             inputs=inputs,
         )
         verdict = evaluate_case(case)
+        if not verdict.accepted:
+            justifications_by_id = {
+                item.justification_id: item for item in case.justifications
+            }
+            for failed in verdict.failed_obligations:
+                if failed.state is not model.ObligationState.INCONSISTENT:
+                    continue
+                cell = next(
+                    item for item in case.obligation_index.cells
+                    if item.key == failed.key
+                )
+                sealed_rows = tuple(
+                    row
+                    for row in inputs.projected_route_realization.site_phase_result.effect_results
+                    if row.source_subject_id == failed.key.subject.subject_id
+                )
+                effect_evidence = tuple(
+                    item.payload
+                    for item in case.evidence
+                    if type(item.payload) is model.EffectSiteEvidencePayload
+                    and item.payload.effect_subject_id
+                    == failed.key.subject.subject_id
+                )
+                source_effects = tuple(
+                    row for row in inputs.source_inventory.effects
+                    if type(failed.key.subject.locator)
+                    is model.EffectSubjectLocator
+                    and row.owner_ref
+                    == failed.key.subject.locator.owner_ref
+                    and row.owner_anchor_ea
+                    == failed.key.subject.locator.owner_anchor_ea
+                    and row.instruction_ea
+                    == failed.key.subject.locator.instruction_ea
+                    and row.effect_kind
+                    is failed.key.subject.locator.effect_kind
+                )
+                candidate_effects = tuple(
+                    row for source_row in source_effects
+                    for row in inputs.candidate_inventory.effects
+                    if row.instruction_ea == source_row.instruction_ea
+                    and row.effect_kind is source_row.effect_kind
+                )
+                raw_effect = inputs.generic_gate_facts.effectful_raw
+                effective_effect = inputs.generic_gate_facts.effectful_effective
+                logger.warning(
+                    "projected inconsistent obligation: dimension=%s role=%s "
+                    "anchor=%r support=%r refute=%r sealed=%r effect=%r "
+                    "source_rows=%r candidate_rows=%r raw=%r effective=%r",
+                    failed.key.dimension.value,
+                    failed.key.subject.role.value,
+                    failed.key.subject.anchor_ea,
+                    tuple(
+                        (
+                            justifications_by_id[item].rule.value,
+                            justifications_by_id[item].claim_id,
+                        )
+                        for item in cell.supporting_justification_ids
+                    ),
+                    tuple(
+                        (
+                            justifications_by_id[item].rule.value,
+                            justifications_by_id[item].claim_id,
+                        )
+                        for item in cell.refuting_justification_ids
+                    ),
+                    tuple(
+                        (
+                            row.outcome.value,
+                            (row.source_site.owner.anchor_ea,
+                             row.source_site.instruction_ea),
+                            None if row.projected_site is None else
+                            (row.projected_site.owner.anchor_ea,
+                             row.projected_site.instruction_ea),
+                            row.relation_id,
+                            row.supporting_claim_id,
+                        )
+                        for row in sealed_rows
+                    ),
+                    tuple(
+                        (row.preserved, row.effect_kind.value, row.instruction_ea)
+                        for row in effect_evidence
+                    ),
+                    tuple(
+                        (row.owner_serial, row.owner_anchor_ea,
+                         row.instruction_ea, row.effect_kind.value)
+                        for row in source_effects
+                    ),
+                    tuple(
+                        (row.owner_serial, row.owner_anchor_ea,
+                         row.instruction_ea, row.effect_kind.value,
+                         row.owner_serial
+                         in inputs.candidate_inventory.reachable_serials)
+                        for row in candidate_effects
+                    ),
+                    tuple(
+                        (
+                            row.owner_serial in raw_effect.pre_effectful_block_serials,
+                            row.owner_serial in raw_effect.lost_block_serials,
+                        )
+                        for row in source_effects
+                    ),
+                    tuple(
+                        (
+                            row.owner_serial in effective_effect.pre_effectful_block_serials,
+                            row.owner_serial in effective_effect.lost_block_serials,
+                            row.owner_serial
+                            in effective_effect.post_reachable_effectful_block_serials,
+                        )
+                        for row in source_effects
+                    ),
+                )
         if _timings is not None:
             _timings.evaluation_ms = _elapsed_ms(evaluation_started_ns, perf_counter_ns())
         # Mint the exhaustive classification even for a rejected semantic
@@ -1883,14 +3312,36 @@ def _prepare_unflatten_authority(*, source, projection, plan, attempt_id, generi
         projected_loss_ledger = build_projected_semantic_loss_ledger(case, verdict)
         verdict = replace(verdict, loss_ledger=projected_loss_ledger)
         if verdict.accepted:
+            if projected_loss_ledger.unclassified or projected_loss_ledger.conflicting:
+                logger.warning(
+                    "accepted projected case produced noncanonical loss rows: %r",
+                    tuple(
+                        (
+                            row.source_subject.anchor_ea,
+                            row.source_subject.block_ref,
+                            row.kind.value,
+                            row.structural_obligation.state.value,
+                            tuple(
+                                (
+                                    cell.key.dimension.value,
+                                    cell.key.subject.anchor_ea,
+                                    cell.state.value,
+                                )
+                                for cell in row.relevant_semantic_obligations
+                            ),
+                            tuple(item.rule.value for item in row.justifications),
+                        )
+                        for row in (
+                            *projected_loss_ledger.unclassified,
+                            *projected_loss_ledger.conflicting,
+                        )
+                    ),
+                )
             # Mint exactly once, then make every applicable projected gate
             # consume the same immutable occurrence.  Generic CFG facts were
             # inputs to canonical classification above; they are not a second
             # acceptance authority after this point.
-            gates.validate_projected_effect_loss_ledger(projected_loss_ledger, case)
-            gates.validate_projected_dispatcher_removal_ledger(projected_loss_ledger, case)
-            gates.validate_projected_corridor_coverage_ledger(projected_loss_ledger, case)
-            gates.validate_projected_terminal_loss_ledger(projected_loss_ledger, case)
+            gates.validate_projected_loss_ledger(projected_loss_ledger, case)
             prepared = model.PreparedUnflattenAuthority(
                 authority_id=prepared_authority_id, route=route.route,
                 owning_plan=plan, proposal=proposal, claims=inputs.claims,
@@ -1914,21 +3365,20 @@ def _prepare_unflatten_authority(*, source, projection, plan, attempt_id, generi
                 preparation_attempt_id=attempt_id,
             )
             return UnflattenAuthorityPreparationAccepted(prepared, verdict)
-        # The canonical verdict is already rejecting.  Exercise every gate
-        # against its exact ledger so no gate keeps an independent loss model;
-        # their ValueErrors add no authority beyond that verdict.
-        for projected_gate in (
-            gates.validate_projected_effect_loss_ledger,
-            gates.validate_projected_dispatcher_removal_ledger,
-            gates.validate_projected_corridor_coverage_ledger,
-            gates.validate_projected_terminal_loss_ledger,
-        ):
-            try:
-                projected_gate(projected_loss_ledger, case)
-            except ValueError:
-                pass
+        # The canonical verdict is already rejecting.  Revalidate the same
+        # exhaustive ledger once for diagnostics; no dimension-specific gate
+        # owns a second loss model or replays the classification.
+        try:
+            gates.validate_projected_loss_ledger(projected_loss_ledger, case)
+        except ValueError:
+            pass
         return UnflattenAuthorityPreparationRejected(verdict)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError) as error:
+        logger.warning(
+            "unflatten authority projected binding failed: %s: %s",
+            type(error).__name__,
+            error,
+        )
         verdict = model.UnflattenAuthorityVerdict(
             False, model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
             model.UnflattenAuthorityReason.PROJECTED_BINDING_FAILED,
@@ -1976,10 +3426,8 @@ def revalidate_bound_patch_plan_against_prepared(
     if type(bound_plan) is not BoundPatchPlan:
         raise TypeError("bound_plan must be BoundPatchPlan")
     validate_bound_patch_plan(bound_plan)
-    model.validate_semantic_graph_inventory(prepared.source_inventory)
     if prepared.source_inputs is None:
         raise ValueError("prepared authority lacks source inputs")
-    model.DerivedUnflattenPreparationInputs.__post_init__(prepared.source_inputs)
     if bound_plan.plan is not prepared.owning_plan:
         raise ValueError("bound patch plan belongs to a foreign plan")
     # Preparation sealed the complete claim/lineage inventory.  Binding and
@@ -2004,73 +3452,21 @@ def revalidate_bound_patch_plan_against_prepared(
         and bound_plan.maturity.provider_id != prepared.source_maturity.provider_id
     ):
         raise ValueError("bound patch plan maturity differs from source maturity")
-    source_coordinates = dict(prepared.owning_plan.source_coordinates)
-    discovered_refs = tuple(dict.fromkeys(iter_refs(
-        (bound_plan.plan.steps, bound_plan.plan.new_blocks, bound_plan.plan.relocation_map),
-    )))
-    executable_refs = {
-        ref for ref in discovered_refs
-        if type(ref) in (NativeBlockRef, LogicalBlockRef)
-    }
-    helper_refs = {
-        spec.block_id for spec in bound_plan.plan.new_blocks
-    }
-    supplied_refs = {ref for ref, _serial in bound_plan.bindings}
-    if supplied_refs != executable_refs | helper_refs:
-        raise ValueError("bound patch plan does not exactly cover executable references")
-    expected_order = (
-        tuple(ref for ref in discovered_refs if type(ref) in (NativeBlockRef, LogicalBlockRef))
-        + tuple(spec.block_id for spec in bound_plan.plan.new_blocks)
-    )
-    if tuple(ref for ref, _serial in bound_plan.bindings) != expected_order:
-        raise ValueError("bound patch plan reference order differs from live binder")
-    if any(
-        sum(1 for ref, _serial in bound_plan.bindings if ref == helper_ref) != 1
-        for helper_ref in helper_refs
-    ):
-        raise ValueError("each PlanBlockRef helper requires exactly one bound row")
-    for ref, serial in bound_plan.bindings:
-        if type(ref) is PlanBlockRef:
-            if ref not in helper_refs:
-                raise ValueError("bound patch plan contains a foreign helper reference")
-            continue
-        if ref not in source_coordinates:
-            raise ValueError("bound patch plan contains a foreign source reference")
-        if int(source_coordinates[ref]) != int(serial):
-            raise ValueError("bound patch plan source tuple differs from source coordinates")
     return bound_plan
 
 
 def _observed_helper_serial_bindings(
     prepared: model.PreparedUnflattenAuthority,
-    bound_plan: BoundPatchPlan,
+    observed_binding: ObservedPatchBinding,
     observed: FlowGraph,
 ) -> dict[PlanBlockRef, int]:
     """Use the revalidated binder rows as the live helper-coordinate authority."""
-    helper_refs = tuple(spec.block_id for spec in bound_plan.plan.new_blocks)
+    validate_observed_patch_binding(observed_binding)
+    bound_plan = observed_binding.bound_plan
     rows = tuple(
-        (ref, serial) for ref, serial in bound_plan.bindings
+        (ref, serial) for ref, serial in observed_binding.bindings
         if type(ref) is PlanBlockRef
     )
-    if tuple(ref for ref, _serial in rows) != helper_refs:
-        raise ValueError("observed helper bindings do not exactly cover plan helpers")
-    if len({serial for _ref, serial in rows}) != len(rows):
-        raise ValueError("observed helper bindings duplicate live serials")
-    source_serials = {
-        serial for ref, serial in bound_plan.bindings
-        if type(ref) in (NativeBlockRef, LogicalBlockRef)
-    }
-    source_serials.update(
-        int(serial)
-        for _ref, serial in prepared.owning_plan.source_coordinates
-    )
-    source_serials.update(
-        int(binding.serial)
-        for binding in prepared.source_inventory.bindings
-        if binding.serial is not None
-    )
-    if any(serial in source_serials for _ref, serial in rows):
-        raise ValueError("observed helper binding collides with a source serial")
     if any(serial not in observed.blocks for _ref, serial in rows):
         raise ValueError("observed helper binding is absent from the live graph")
     if prepared.owning_plan.plan_id != bound_plan.plan.plan_id:
@@ -2114,9 +3510,14 @@ def validate_observed_commit_authority(authority, verdict, accepted) -> None:
         raise TypeError("commit requires UnflattenAuthorityVerdict")
     if type(accepted) is not model.ObservedUnflattenAuthorityAccepted:
         raise TypeError("commit requires ObservedUnflattenAuthorityAccepted")
+    # Bound authority validation already revalidates its exact nested
+    # binding.  Validate the preparation's own scalar/identity relations once,
+    # but its child cases and ledgers remain exact sealed occurrences and are
+    # not recursively replayed here.
     model.BoundUnflattenAuthority.__post_init__(authority)
     model.PreparedUnflattenAuthority.__post_init__(authority.prepared)
     model.ObservedUnflattenAuthorityAccepted.__post_init__(accepted)
+    model.ObservedSemanticLossDelta.__post_init__(accepted.delta)
     model.UnflattenAuthorityVerdict.__post_init__(verdict)
     if verdict.observed_acceptance is not accepted:
         raise ValueError("commit observed acceptance differs from verdict")
@@ -2140,11 +3541,18 @@ def validate_observed_commit_authority(authority, verdict, accepted) -> None:
 
 
 def _revalidate_observed_unflatten_authority(
-    *, authority, observed, observed_generation, generic_gates, _timings=None,
+    *, authority, observed, observed_generation, generic_gates,
+    observed_patch_binding, _timings=None,
 ):
     """Revalidate a bound authority against the observed graph identity."""
     if type(authority) is not model.BoundUnflattenAuthority:
-        return _live_binding_failed_verdict()
+        return _observed_live_binding_failure(
+            "authority_type",
+            TypeError(
+                "expected BoundUnflattenAuthority, got "
+                f"{type(authority).__name__}"
+            ),
+        )
     if type(observed) is not FlowGraph:
         raise TypeError("observed must be FlowGraph")
     if type(observed_generation) is not int or observed_generation < 0:
@@ -2161,16 +3569,29 @@ def _revalidate_observed_unflatten_authority(
         )
     binding_started_ns = perf_counter_ns()
     try:
+        # This transitively revalidates the exact nested preparation once.
         model.BoundUnflattenAuthority.__post_init__(authority)
-        model.PreparedUnflattenAuthority.__post_init__(authority.prepared)
+    except (TypeError, ValueError, AttributeError) as error:
+        return _observed_live_binding_failure("bound_authority_validation", error)
+    try:
         revalidate_bound_patch_plan_against_prepared(
             authority.prepared, authority.patch_binding
         )
+    except (TypeError, ValueError, AttributeError) as error:
+        return _observed_live_binding_failure("bound_patch_plan_validation", error)
+    try:
+        if type(observed_patch_binding) is not ObservedPatchBinding:
+            raise TypeError("observed validation requires ObservedPatchBinding")
+        validate_observed_patch_binding(observed_patch_binding)
+        if observed_patch_binding.bound_plan is not authority.patch_binding:
+            raise ValueError(
+                "observed patch binding differs from exact bound authority"
+            )
         observed_helper_serials = _observed_helper_serial_bindings(
-            authority.prepared, authority.patch_binding, observed,
+            authority.prepared, observed_patch_binding, observed,
         )
-    except (TypeError, ValueError, AttributeError):
-        return _live_binding_failed_verdict()
+    except (TypeError, ValueError, AttributeError) as error:
+        return _observed_live_binding_failure("observed_helper_bindings", error)
     pre_inventory_binding_ms = _elapsed_ms(binding_started_ns, perf_counter_ns())
     validated_prepared = authority.prepared
     validated_generation = authority.generation
@@ -2197,18 +3618,17 @@ def _revalidate_observed_unflatten_authority(
             source_subjects=validated_prepared.source_inventory.subjects,
             materialization=observed_materialization,
             planned_serials=observed_helper_serials,
+            observed_patch_binding=observed_patch_binding,
+            prepared_authority=validated_prepared,
         )
-    except (TypeError, ValueError):
-        return model.UnflattenAuthorityVerdict(
-            False,
-            model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY,
-            model.UnflattenAuthorityReason.LIVE_BINDING_FAILED,
-            validated_prepared.authority_id,
-            authority.binding_id,
-            None,
-            _unavailable_candidate_fingerprint("observed-inventory"),
-            None,
-            (),
+    except (TypeError, ValueError) as error:
+        return _observed_live_binding_failure(
+            "observed_inventory", error,
+            authority_id_value=validated_prepared.authority_id,
+            binding_id_value=authority.binding_id,
+            candidate_fingerprint=_unavailable_candidate_fingerprint(
+                "observed-inventory"
+            ),
         )
     inventory_ms = _elapsed_ms(inventory_started_ns, perf_counter_ns())
     phase_build_metrics = model.PhaseBuildMetrics(
@@ -2241,17 +3661,12 @@ def _revalidate_observed_unflatten_authority(
                 pre_inventory_binding_ms
                 + _elapsed_ms(post_inventory_binding_started_ns, perf_counter_ns())
             )
-    except (TypeError, ValueError):
-        return model.UnflattenAuthorityVerdict(
-            False,
-            model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY,
-            model.UnflattenAuthorityReason.LIVE_BINDING_FAILED,
-            validated_prepared.authority_id,
-            authority.binding_id,
-            None,
-            observed_fingerprint,
-            None,
-            (),
+    except (TypeError, ValueError) as error:
+        return _observed_live_binding_failure(
+            "observed_input_derivation", error,
+            authority_id_value=validated_prepared.authority_id,
+            binding_id_value=authority.binding_id,
+            candidate_fingerprint=observed_fingerprint,
         )
     evaluation_started_ns = perf_counter_ns()
     observed_case = build_semantic_case(
@@ -2283,7 +3698,8 @@ def _revalidate_observed_unflatten_authority(
             projected_ledger.ledger_id,
             observed_ledger.ledger_id,
             tuple((
-                row.source_subject.subject_id, row.kind.value,
+                row.source_subject.subject_id,
+                tuple(kind.value for kind in row.classification_kinds),
                 tuple(item.justification_id for item in row.justifications),
                 tuple(item.evidence_id for item in row.evidence),
                 tuple(item.claim_id for item in row.claims),
@@ -2292,12 +3708,10 @@ def _revalidate_observed_unflatten_authority(
     )
     if verdict.accepted:
         # The observed decisions consume this one occurrence, never raw sets.
-        gates.validate_projected_effect_loss_ledger(observed_ledger, observed_case)
-        gates.validate_projected_dispatcher_removal_ledger(observed_ledger, observed_case)
-        gates.validate_projected_corridor_coverage_ledger(observed_ledger, observed_case)
-        gates.validate_projected_terminal_loss_ledger(observed_ledger, observed_case)
+        gates.validate_projected_loss_ledger(observed_ledger, observed_case)
         accepted = model.ObservedUnflattenAuthorityAccepted(
-            authority, projected_ledger, observed_case, observed_ledger, delta,
+            authority, observed_patch_binding, projected_ledger,
+            observed_case, observed_ledger, delta,
         )
         verdict = replace(verdict, observed_acceptance=accepted)
     if _timings is not None:
@@ -2307,20 +3721,22 @@ def _revalidate_observed_unflatten_authority(
 
 def revalidate_observed_unflatten_authority(
     *, authority, observed, observed_generation, generic_gates,
+    observed_patch_binding,
 ):
     return _revalidate_observed_unflatten_authority(
         authority=authority, observed=observed,
-        observed_generation=observed_generation, generic_gates=generic_gates,
+        observed_generation=observed_generation, generic_gates=generic_gates, observed_patch_binding=observed_patch_binding,
     )
 
 
 def revalidate_observed_unflatten_authority_timed(
     *, authority, observed, observed_generation, generic_gates,
+    observed_patch_binding,
 ) -> TimedUnflattenAuthorityResult:
     recorder = _AuthorityTimingRecorder()
     result = _revalidate_observed_unflatten_authority(
         authority=authority, observed=observed,
-        observed_generation=observed_generation, generic_gates=generic_gates,
+        observed_generation=observed_generation, generic_gates=generic_gates, observed_patch_binding=observed_patch_binding,
         _timings=recorder,
     )
     return TimedUnflattenAuthorityResult(

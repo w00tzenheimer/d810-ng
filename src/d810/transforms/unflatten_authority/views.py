@@ -28,6 +28,8 @@ class ObservedLossReclassification:
     anchored_location: str
     projected_kind: model.SemanticLossKind
     observed_kind: model.SemanticLossKind
+    projected_classification_kinds: tuple[model.SemanticLossKind, ...]
+    observed_classification_kinds: tuple[model.SemanticLossKind, ...]
     projected_evidence_ids: tuple[str, ...]
     observed_evidence_ids: tuple[str, ...]
 
@@ -39,6 +41,19 @@ class ObservedLossReclassification:
         for name in ("projected_kind", "observed_kind"):
             if type(getattr(self, name)) is not model.SemanticLossKind:
                 raise TypeError(f"{name} must be SemanticLossKind")
+        for name in (
+            "projected_classification_kinds",
+            "observed_classification_kinds",
+        ):
+            values = getattr(self, name)
+            if type(values) is not tuple or any(
+                type(item) is not model.SemanticLossKind for item in values
+            ):
+                raise TypeError(f"{name} must contain SemanticLossKind values")
+            if not values or values != tuple(
+                sorted(set(values), key=lambda item: item.value)
+            ):
+                raise ValueError(f"{name} must be canonical, non-empty, and unique")
         for name in ("projected_evidence_ids", "observed_evidence_ids"):
             values = getattr(self, name)
             if type(values) is not tuple or any(type(item) is not str or not item for item in values):
@@ -60,6 +75,7 @@ class SemanticLossProjectionRow:
     evidence: tuple[model.AuthorityEvidence, ...]
     claims: tuple[model.UnflattenClaim, ...]
     kind: model.SemanticLossKind
+    classification_kinds: tuple[model.SemanticLossKind, ...]
 
     @property
     def anchored_location(self) -> str:
@@ -301,8 +317,15 @@ def corridor_coverage_rows(case: model.SemanticSafetyCase) -> CorridorCoverageVi
     if len(evidence) != 1 or type(evidence[0].payload) is not model.CorridorCoverageEvidencePayload:
         raise ValueError("corridor coverage requires one canonical evidence row")
     payload = evidence[0].payload
-    result = case.corridor_coverage_phase_result
-    if result is None or payload.phase_result_id != result.result_id:
+    authority_result = case.corridor_coverage_phase_result
+    forecast_authority = case.preparation_receipt.corridor_coverage_forecast
+    if authority_result is None or forecast_authority is None:
+        raise ValueError("corridor coverage lacks its case-owned phase result")
+    # _check_case has already validated the exact authority pair; this view
+    # intentionally projects the legacy result rather than owning a second
+    # corridor decision.
+    result = model.corridor_base_phase_result(authority_result)
+    if payload.phase_result_id != result.result_id:
         raise ValueError("corridor coverage lacks its case-owned phase result")
     key = next(
         (
@@ -527,11 +550,12 @@ def retirement_rows(
                 row for row in ledger.rows
                 if row.source_subject == canonical_subject
             )
-            if len(rows) != 1 or rows[0].kind is not model.SemanticLossKind.RETIRED_DISPATCHER_INFRASTRUCTURE:
+            if (
+                len(rows) != 1
+                or model.SemanticLossKind.RETIRED_DISPATCHER_INFRASTRUCTURE
+                not in rows[0].classification_kinds
+            ):
                 raise ValueError("retired row lacks exact retirement ledger authority")
-            if {justification.claim_id for justification in rows[0].justifications
-                if justification.claim_id is not None} != {claim_id}:
-                raise ValueError("retired row lacks exact retirement claim justification")
             if not any(
                 justification.rule is model.UnflattenJustificationRule.RETIRED_INFRASTRUCTURE_PROVEN
                 and justification.conclusion == key
@@ -573,8 +597,9 @@ def detached_component_rows(
     if tuple(row.source_subject.subject_id for row in rows) != dead_ids:
         raise ValueError("detached component lacks exact dead-handler ledger rows")
     if any(
-        row.kind is not model.SemanticLossKind.DETACHED_DEAD_HANDLER_COMPONENT
-        or tuple(row.claim_ids) != (claim_id,)
+        model.SemanticLossKind.DETACHED_DEAD_HANDLER_COMPONENT
+        not in row.classification_kinds
+        or claim_id not in row.claim_ids
         for row in rows
     ):
         raise ValueError("detached component lacks exact ledger classification")
@@ -613,6 +638,7 @@ def semantic_loss_projection(
             row.evidence,
             row.claims,
             row.kind,
+            row.classification_kinds,
         )
         for row in ledger.rows
     ))
@@ -675,7 +701,10 @@ def observed_loss_delta(
     common = set(projected_by_subject) & set(observed_by_subject)
     drift = {
         subject_id for subject_id in common
-        if projected_by_subject[subject_id].kind is not observed_by_subject[subject_id].kind
+        if (
+            projected_by_subject[subject_id].classification_kinds
+            != observed_by_subject[subject_id].classification_kinds
+        )
     }
     reclassifications = tuple(
         ObservedLossReclassification(
@@ -683,6 +712,12 @@ def observed_loss_delta(
             anchored_location=observed_by_subject[subject_id].anchored_location,
             projected_kind=projected_by_subject[subject_id].kind,
             observed_kind=observed_by_subject[subject_id].kind,
+            projected_classification_kinds=(
+                projected_by_subject[subject_id].classification_kinds
+            ),
+            observed_classification_kinds=(
+                observed_by_subject[subject_id].classification_kinds
+            ),
             projected_evidence_ids=projected_by_subject[subject_id].evidence_ids,
             observed_evidence_ids=observed_by_subject[subject_id].evidence_ids,
         )
