@@ -48,7 +48,9 @@ call_result_predicate_done:
     ret
 _TEXT ENDS
 
-CONST SEGMENT ALIGN(4) 'DATA'
+; This witness must remain writable so Hex-Rays cannot constant-fold the later
+; load.  The call-result regression relies on observing the distinct EAX write.
+_DATA SEGMENT
 call_result_later_value DWORD 12345678h
-CONST ENDS
+_DATA ENDS
 END

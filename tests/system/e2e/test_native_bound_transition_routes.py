@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import re
 
 import pytest
@@ -24,7 +23,7 @@ _RECEIPT_IDENTITY = re.compile(
 class TestNativeBoundTransitionRoutes:
     """Prove all native-bound routes survive real Hex-Rays lowering."""
 
-    binary_name = os.environ.get("D810_TEST_BINARY", "libobfuscated_fixturetest.dll")
+    binary_name = "libobfuscated.dll"
 
     def test_fixture_recovers_effect_corridor_and_route_receipts(
         self,
