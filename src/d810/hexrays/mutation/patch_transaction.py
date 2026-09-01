@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields, is_dataclass
 import hashlib
 
 from d810.analyses.control_flow.graph_checks import (
@@ -24,6 +24,9 @@ from d810.transforms.cfg_transaction import (
     CfgProjection,
     PatchPlanExecutionResult,
     PreparedCfgTransaction,
+    LogicalBlockRef,
+    NativeBlockRef,
+    PlanBlockRef,
     TransactionAttemptId,
 )
 from d810.transforms.contract import CfgContract
@@ -41,6 +44,114 @@ from d810.hexrays.mutation.semantic_ownership import (
 )
 
 
+def _iter_plan_refs(value: object):
+    if isinstance(value, (NativeBlockRef, LogicalBlockRef, PlanBlockRef)):
+        yield value
+        return
+    if isinstance(value, tuple):
+        for item in value:
+            yield from _iter_plan_refs(item)
+        return
+    if is_dataclass(value):
+        for item in fields(value):
+            if not item.name.startswith("_"):
+                yield from _iter_plan_refs(getattr(value, item.name))
+
+
+class _PlanObservationFilteringEmitter:
+    """Keep the preflight plan receipt while suppressing its later duplicate."""
+
+    def __init__(self, delegate: object, plan_event: type) -> None:
+        self._delegate = delegate
+        self._plan_event = plan_event
+
+    def emit_isolated(self, event: type, payload: object, *args, **kwargs):
+        if event is self._plan_event:
+            return ()
+        return self._delegate.emit_isolated(event, payload, *args, **kwargs)
+
+    def __getattr__(self, name: str):
+        return getattr(self._delegate, name)
+
+
+def _patch_plan_observation_items(plan: PatchPlan, snapshot: FlowGraph):
+    from d810.hexrays.mutation.mba_mutation_events import MbaMutationPlanItem
+
+    source_coordinates = dict(plan.source_coordinates)
+
+    def coordinate(ref: object) -> tuple[int | None, int | None]:
+        serial = source_coordinates.get(ref)
+        if serial is None:
+            return None, None
+        block = snapshot.get_block(int(serial))
+        if block is None:
+            return None, None
+        native_ea = getattr(block, "native_start_ea", None)
+        anchor = int(block.start_ea if native_ea is None else native_ea)
+        return int(serial), anchor
+
+    items = []
+    for item_index, step in enumerate(plan.steps):
+        refs = tuple(_iter_plan_refs(step))
+        source_serial, source_anchor = coordinate(refs[0]) if refs else (None, None)
+        target_serial, target_anchor = coordinate(refs[1]) if len(refs) > 1 else (None, None)
+        items.append(
+            MbaMutationPlanItem(
+                item_index=int(item_index),
+                mutation_kind=f"patch_{type(step).__name__}",
+                source_serial=source_serial if source_anchor is not None else None,
+                source_anchor_ea=source_anchor,
+                target_serial=target_serial if target_anchor is not None else None,
+                target_anchor_ea=target_anchor,
+                disposition="planned",
+                reason="immutable PatchPlan step",
+            )
+        )
+    return tuple(items)
+
+
+def _publish_patch_plan_observation(
+    participant: "HexRaysPatchTransactionParticipant",
+    snapshot: FlowGraph,
+) -> None:
+    """Publish plan evidence before projected preflight, without opening a batch."""
+    from d810.hexrays.mutation.mba_mutation_events import (
+        MbaMutationPlanned,
+        StructuralMutationKind,
+    )
+
+    gateway = participant.gateway
+    emitter = getattr(gateway, "event_emitter", None)
+    if emitter is None:
+        return
+    event = MbaMutationPlanned(
+        session_id=str(gateway.session_id),
+        function_ea=int(snapshot.func_ea),
+        maturity=int(getattr(gateway, "maturity", 0)),
+        mba_generation=int(participant.attempt_id.generation),
+        evidence_generation=int(
+            getattr(gateway.identity_index, "evidence_generation", 0)
+        ),
+        mutation_batch_id=participant.attempt_id.attempt_id,
+        kind=StructuralMutationKind.BLOCK_REPLACE,
+        planned_operation_count=len(participant.plan.steps),
+        description=f"PatchPlan {participant.plan.plan_id}",
+        items=_patch_plan_observation_items(participant.plan, snapshot),
+    )
+    emit_observation = getattr(gateway, "_emit_observation", None)
+    if callable(emit_observation):
+        emit_observation(
+            phase="planned",
+            event_type=MbaMutationPlanned,
+            payload=event,
+            mutation_batch_id=participant.attempt_id.attempt_id,
+        )
+    else:
+        emitter.emit_isolated(MbaMutationPlanned, event)
+    gateway.event_emitter = _PlanObservationFilteringEmitter(
+        emitter,
+        MbaMutationPlanned,
+    )
 def _has_dispatcher_removal_obligation(plan_metadata: object) -> bool:
     """Whether a plan claims exact full dispatcher-corridor retirement."""
     if not isinstance(plan_metadata, dict):
@@ -1254,6 +1365,7 @@ def execute_patch_transaction(
     )
     phase = "projection"
     try:
+        _publish_patch_plan_observation(participant, pre_cfg)
         projected = participant.project(plan, pre_cfg)
         phase = "preflight"
         prepared = participant.preflight(projected)

@@ -35,12 +35,14 @@ IDA / Hex-Rays imports.  The MBA fold runs through the registered
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from enum import Enum
 import operator
 
 from d810.core.logging import getLogger
+from d810.core.observability import emit
+from d810.core.observability_events import RecoverySearchObserved
 from d810.analyses.control_flow.state_machine_analysis import (
     _SnapshotProjectionCache,
     _constant_dest_locator_snapshot,
@@ -3470,6 +3472,66 @@ def _resolve_back_edge_states(
     if entry is not None:
         region_entries.add(int(entry))
     region_entries.discard(disp)
+    disp_block = flow_graph.get_block(disp)
+
+    def _anchor_for_serial(serial: int) -> int | None:
+        block = flow_graph.get_block(int(serial))
+        if block is None:
+            return None
+        native_ea = getattr(block, "native_start_ea", None)
+        anchor = int(block.start_ea if native_ea is None else native_ea)
+        return anchor if anchor >= 0 else None
+
+    target_serials = (
+        tuple(sorted(int(serial) for serial in target_back_edges))
+        if target_back_edges is not None
+        else tuple(
+            sorted(
+                int(serial)
+                for serial in (() if disp_block is None else disp_block.preds)
+            )
+        )
+    )
+    target_anchors = tuple(
+        sorted(
+            anchor
+            for serial in target_serials
+            if (anchor := _anchor_for_serial(serial)) is not None
+        )
+    )
+    entry_anchors = tuple(
+        sorted(
+            anchor
+            for serial in sorted(region_entries)
+            if (anchor := _anchor_for_serial(serial)) is not None
+        )
+    )
+
+    def _observe_search(outcome: str, reason: str) -> None:
+        try:
+            metadata = getattr(flow_graph, "metadata", {})
+            session_id = getattr(flow_graph, "session_id", None)
+            if session_id is None and isinstance(metadata, Mapping):
+                session_id = metadata.get("session_id")
+            emit(
+                RecoverySearchObserved(
+                    session_id=str(session_id or "recovery"),
+                    func_ea=int(flow_graph.func_ea),
+                    provider="region_seeded",
+                    outcome=outcome,
+                    budget=int(path_state_pop_budget),
+                    consumed=int(consumed_path_states),
+                    target_anchors=target_anchors,
+                    entry_anchors=entry_anchors,
+                    reason=reason,
+                )
+            )
+        except Exception:
+            logger.debug("recovery search diagnostic emission failed", exc_info=True)
+
+    if disp_block is None:
+        _observe_search("abstained", "dispatcher entry is absent from the snapshot")
+        return {}
 
     # Region seeding is the penultimate provider.  When the higher-ranked
     # providers defer only selected physical back-edges, restrict this expensive
@@ -3590,6 +3652,10 @@ def _resolve_back_edge_states(
                     path_state_pop_budget,
                     consumed_path_states,
                 )
+                _observe_search(
+                    "exhausted",
+                    "region-seeded DFS path-state budget exhausted",
+                )
                 return {}
             consumed_path_states += 1
             blk_serial, in_stk, in_reg, visited, depth, parent = stack.pop()
@@ -3631,6 +3697,7 @@ def _resolve_back_edge_states(
                 stack.append(
                     (succ, out_stk, out_reg, visited | {succ}, depth + 1, blk_serial)
                 )
+    _observe_search("completed", "region-seeded DFS completed")
     return back_edge_states
 
 

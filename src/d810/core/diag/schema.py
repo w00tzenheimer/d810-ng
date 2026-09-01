@@ -12,8 +12,7 @@ from __future__ import annotations
 from d810._vendor.peewee import SqliteDatabase
 from d810.core.diag.models import DiagnosticSchemaVersion, MODELS
 
-# The closed-case producer consumed schema v10. Pass-contract output receipts
-# add one typed table and therefore require the next disposable hard cut.
+# Recovery-search outcomes are part of the current disposable schema contract.
 DIAGNOSTIC_SCHEMA_VERSION = 11
 
 # Recovered-CFG tables were historically named ``dag_*``.  The modeled

@@ -16,6 +16,7 @@ from d810.core.observability_events import (
     LifecycleEventObserved,
     MutationPlanObserved,
     MutationReceiptObserved,
+    RecoverySearchObserved,
     PassContractEvidencePublished,
     SemanticOutputVerifiedObserved,
     SemanticFragmentRouteOracleComparedObserved,
@@ -733,6 +734,51 @@ def persist_mutation_plan(
     return event_id
 
 
+def persist_recovery_search(
+    conn: sqlite3.Connection,
+    event: RecoverySearchObserved,
+) -> int:
+    event_id = persist_lifecycle_event(
+        conn,
+        LifecycleEventObserved(
+            session_id=event.session_id,
+            func_ea=event.func_ea,
+            event_kind="recovery_search",
+            provider=event.provider,
+            correlation_id=f"{event.session_id}:{event.provider}",
+            summary=f"{event.provider}: {event.outcome}",
+            payload={
+                "budget": int(event.budget),
+                "consumed": int(event.consumed),
+                "target_anchors": list(event.target_anchors),
+                "entry_anchors": list(event.entry_anchors),
+                "reason": event.reason,
+            },
+        ),
+        snapshot_id=None,
+    )
+    conn.execute(
+        "INSERT INTO recovery_search_outcomes "
+        "(event_id,session_id,func_ea_hex,func_ea_i64,provider,outcome,budget,"
+        "consumed,target_anchors_json,entry_anchors_json,reason) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+        (
+            event_id,
+            event.session_id,
+            _func_hex(event.func_ea),
+            int(event.func_ea),
+            event.provider,
+            event.outcome,
+            int(event.budget),
+            int(event.consumed),
+            json.dumps(list(event.target_anchors), separators=(",", ":")),
+            json.dumps(list(event.entry_anchors), separators=(",", ":")),
+            event.reason,
+        ),
+    )
+    return event_id
+
+
 def persist_semantic_fragment_route_oracle(
     conn: sqlite3.Connection,
     event: SemanticFragmentRouteOracleComparedObserved,
@@ -1130,6 +1176,7 @@ def persist_mutation_receipt(
 __all__.extend(
     [
         "persist_mutation_plan",
+        "persist_recovery_search",
         "persist_mutation_receipt",
         "persist_semantic_fragment_route_oracle",
     ]

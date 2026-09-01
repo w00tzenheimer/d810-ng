@@ -829,6 +829,49 @@ class MutationPlanObserved:
                 )
 
 
+@dataclass(frozen=True, slots=True)
+class RecoverySearchObserved:
+    """One terminal, diagnostic-only seeded recovery search outcome."""
+
+    session_id: str
+    func_ea: int
+    provider: str
+    outcome: str
+    budget: int
+    consumed: int
+    target_anchors: tuple[int, ...]
+    entry_anchors: tuple[int, ...]
+    reason: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.session_id, str) or not self.session_id.strip():
+            raise ValueError("session_id must be non-empty")
+        if isinstance(self.func_ea, bool) or int(self.func_ea) < 0:
+            raise ValueError("func_ea must be non-negative")
+        if not isinstance(self.provider, str) or not self.provider.strip():
+            raise ValueError("provider must be non-empty")
+        if self.outcome not in {"completed", "exhausted", "abstained"}:
+            raise ValueError("recovery search outcome is invalid")
+        if isinstance(self.budget, bool) or int(self.budget) < 0:
+            raise ValueError("recovery search budget must be non-negative")
+        if isinstance(self.consumed, bool) or int(self.consumed) < 0:
+            raise ValueError("recovery search consumed count must be non-negative")
+        if int(self.consumed) > int(self.budget):
+            raise ValueError("recovery search consumed count exceeds budget")
+        for field_name in ("target_anchors", "entry_anchors"):
+            anchors = tuple(int(anchor) for anchor in getattr(self, field_name))
+            if any(anchor < 0 for anchor in anchors):
+                raise ValueError(f"{field_name} must contain non-negative EAs")
+            if anchors != tuple(sorted(set(anchors))):
+                raise ValueError(f"{field_name} must be ordered and unique")
+            object.__setattr__(self, field_name, anchors)
+        if not isinstance(self.reason, str) or not self.reason.strip():
+            raise ValueError("recovery search reason must be non-empty")
+        object.__setattr__(self, "func_ea", int(self.func_ea))
+        object.__setattr__(self, "budget", int(self.budget))
+        object.__setattr__(self, "consumed", int(self.consumed))
+
+
 @dataclass(frozen=True)
 class SemanticFragmentRouteOracleComparedObserved:
     """One pre-root detached-route comparison batch for a fragment plan."""
@@ -1331,6 +1374,7 @@ __all__ = [
     "FragmentRootPublicationGroupObserved",
     "SemanticOutputVerifiedObserved",
     "SemanticFragmentFailureObserved",
+    "RecoverySearchObserved",
     # Preanalysis
     "BranchOwnershipProofsObserved",
     "BranchWitnessDecisionsObserved",

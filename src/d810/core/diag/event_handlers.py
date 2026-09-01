@@ -48,6 +48,7 @@ from d810.core.diag.lifecycle import (
     persist_lifecycle_event,
     persist_mutation_plan,
     persist_mutation_receipt,
+    persist_recovery_search,
     persist_pass_contract_evidence,
     persist_semantic_fragment_route_oracle,
     persist_semantic_output_verified,
@@ -108,6 +109,7 @@ from d810.core.observability_events import (
     InputIdentityResolutionObserved,
     MutationPlanObserved,
     MutationReceiptObserved,
+    RecoverySearchObserved,
     OptblockCallbackExceptionObserved,
     PassContractEvidencePublished,
     SemanticFragmentRouteOracleComparedObserved,
@@ -430,6 +432,16 @@ def _handle_mutation_receipt(ev: MutationReceiptObserved) -> None:
     if conn is not None:
         with conn:
             persist_mutation_receipt(conn, ev)
+
+
+def _handle_recovery_search(ev: RecoverySearchObserved) -> None:
+    try:
+        conn = get_diag_conn(int(ev.func_ea))
+    except Exception:
+        return
+    if conn is not None:
+        with conn:
+            persist_recovery_search(conn, ev)
 
 
 def _handle_cfg_transaction_attempt(ev: CfgTransactionAttemptObserved) -> None:
@@ -1268,6 +1280,7 @@ _HANDLERS: tuple[tuple[type, object], ...] = (
     (PassContractEvidencePublished, _handle_pass_contract_evidence),
     (MutationPlanObserved, _handle_mutation_plan),
     (MutationReceiptObserved, _handle_mutation_receipt),
+    (RecoverySearchObserved, _handle_recovery_search),
     (CfgTransactionAttemptObserved, _handle_cfg_transaction_attempt),
     (
         SemanticFragmentRouteOracleComparedObserved,

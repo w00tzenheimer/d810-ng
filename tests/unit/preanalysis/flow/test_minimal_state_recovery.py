@@ -3497,6 +3497,73 @@ def test_seeded_dfs_budget_warning_anchors_target_serials_to_eas(
     ]
 
 
+def test_seeded_dfs_budget_exhaustion_emits_one_anchored_observation(
+    _seam, monkeypatch
+) -> None:
+    fg = _branching_cyclic_seeded_graph()
+    observations = []
+    monkeypatch.setattr(
+        minimal_state_recovery,
+        "emit",
+        observations.append,
+        raising=False,
+    )
+
+    assert (
+        minimal_state_recovery._resolve_back_edge_states(
+            fg,
+            dispatcher=_dispatcher({0x10: 10}, exit_block=99),
+            state_var_stkoff=_STATE_OFF,
+            dispatcher_entry=2,
+            max_depth=24,
+            target_back_edges=frozenset({30}),
+            _path_state_pop_budget=1,
+        )
+        == {}
+    )
+    assert len(observations) == 1
+    observed = observations[0]
+    assert observed.provider == "region_seeded"
+    assert observed.outcome == "exhausted"
+    assert observed.budget == 1
+    assert observed.consumed == 1
+    assert observed.target_anchors == (0x1000 + 30 * 0x40,)
+    assert observed.entry_anchors == (0x1000 + 10 * 0x40,)
+
+
+def test_seeded_dfs_completion_emits_one_observation_without_changing_result(
+    _seam, monkeypatch
+) -> None:
+    fg = _branching_cyclic_seeded_graph()
+    observations = []
+    monkeypatch.setattr(
+        minimal_state_recovery,
+        "emit",
+        observations.append,
+        raising=False,
+    )
+
+    result = minimal_state_recovery._resolve_back_edge_states(
+        fg,
+        dispatcher=_dispatcher({0x10: 10}, exit_block=99),
+        state_var_stkoff=_STATE_OFF,
+        dispatcher_entry=2,
+        max_depth=24,
+        target_back_edges=frozenset({30}),
+        _path_state_pop_budget=64,
+    )
+
+    assert result == {30: {13: {0x10}, 14: {0x10}}}
+    assert len(observations) == 1
+    observed = observations[0]
+    assert observed.provider == "region_seeded"
+    assert observed.outcome == "completed"
+    assert observed.budget == 64
+    assert observed.consumed == 17
+    assert observed.target_anchors == (0x1000 + 30 * 0x40,)
+    assert observed.entry_anchors == (0x1000 + 10 * 0x40,)
+
+
 def test_seeded_dfs_budget_is_atomic_across_multiple_targets(_seam) -> None:
     fg = FlowGraph(
         blocks={

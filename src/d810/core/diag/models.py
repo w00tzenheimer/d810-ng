@@ -395,6 +395,33 @@ class MutationPlanItem(BaseModel):
         indexes = ((("mutation_batch_id", "item_index"), True),)
 
 
+class RecoverySearchOutcomeRecord(BaseModel):
+    event = ForeignKeyField(
+        LifecycleEvent,
+        field="event_id",
+        column_name="event_id",
+        primary_key=True,
+        index=False,
+        null=False,
+    )
+    session_id = TextField()
+    func_ea_hex = TextField()
+    func_ea_i64 = IntegerField()
+    provider = TextField()
+    outcome = TextField(
+        constraints=[Check("outcome IN ('completed','exhausted','abstained')")]
+    )
+    budget = IntegerField()
+    consumed = IntegerField()
+    target_anchors_json = TextField()
+    entry_anchors_json = TextField()
+    reason = TextField()
+
+    class Meta:
+        table_name = "recovery_search_outcomes"
+        indexes = ((('func_ea_i64', 'provider', 'outcome'), False),)
+
+
 class FrontendNormalizationPlanIntent(BaseModel):
     """Typed receipt-backed frontend plan intent used by the case projector."""
 
@@ -1731,6 +1758,7 @@ MODELS = (
     EvidenceGenerationEvent,
     IdentityDecision,
     MutationPlanItem,
+    RecoverySearchOutcomeRecord,
     FrontendNormalizationPlanIntent,
     SemanticOutputVerdict,
     PassContractEvidencePublication,
