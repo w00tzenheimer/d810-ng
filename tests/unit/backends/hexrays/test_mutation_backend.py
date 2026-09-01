@@ -499,7 +499,8 @@ def test_apply_rejects_plan_that_orphans_reachable_terminal() -> None:
                         opcode=0x70,
                         ea=0x1003,
                         operands=(),
-                        kind=InsnKind.MOV,
+                        kind=InsnKind.CALL,
+                        is_call=True,
                     ),
                 ),
             ),
@@ -549,6 +550,11 @@ def test_apply_rejects_plan_that_orphans_reachable_terminal() -> None:
         CfgTransactionPhase.REJECTED_CLEAN,
     ]
     assert all(not event.mutation_started for event in phases)
+    failure = phases[-1].failure
+    assert failure is not None
+    assert not failure.live_mutation_started
+    assert "effectful=reachable effectful blocks became unreachable" in failure.reason
+    assert "lost=blk3@0x1003" in failure.reason
 
 
 def test_apply_rejects_plan_that_collapses_entry_reachability() -> None:

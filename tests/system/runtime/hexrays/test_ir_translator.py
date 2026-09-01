@@ -21,10 +21,25 @@ import pytest
 ida_hexrays = pytest.importorskip("ida_hexrays")
 
 from d810.core.events import EventEmitter
+from d810.core.diag import create_diag_database
+from d810.core.diag.event_handlers import (
+    install_diag_event_handlers,
+    uninstall_diag_event_handlers,
+)
+from d810.core.observability import (
+    emit as emit_diagnostic,
+    reset_diagnostic_bus,
+)
+from d810.core.observability_events import DiagnosticSessionObserved
+from d810.backends.hexrays.mutation.backend import HexRaysMutationBackend
 from d810.hexrays.mutation.mba_mutation_events import (
     MbaCfgTransactionAuthorityObserved,
     MbaMutationCommitted,
+    MbaMutationGateway,
+    MbaMutationPlanned,
 )
+from d810.hexrays.ir.mba_identity_index import MbaBlockIdentityIndex
+from d810.manager.manager import D810Manager
 from d810.ir.flowgraph import (
     PredicateKind,
     BlockKind,
@@ -61,10 +76,12 @@ from d810.transforms.plan import (
     PatchRemoveInstruction,
     compile_patch_plan,
 )
+from d810.ir.block_identity import StableBlockIdentity
 from d810.transforms.cfg_transaction import (
     CfgProjection,
     CfgTransactionPhase,
     LogicalBlockRef,
+    NativeBlockRef,
     PlanBlockRef,
     PreparedCfgTransaction,
     TransactionAttemptId,
@@ -89,6 +106,7 @@ from d810.hexrays.mutation.ir_translator import (
     capture_mop_snapshot,
 )
 from tests.system.runtime.mutation_gateway import make_mutation_gateway
+from tests.native_preanalysis import make_native_key
 
 
 _DEFAULT_TEST_BINARY = (
@@ -238,6 +256,128 @@ def _corridor_cfg() -> FlowGraph:
         entry_serial=44,
         func_ea=0,
     )
+
+
+def test_rejected_patch_plan_reaches_real_manager_diag_bridge(monkeypatch) -> None:
+    """A projected CALL loss persists the immutable plan before rejection."""
+    native_key = make_native_key()
+    source_ref = NativeBlockRef(
+        StableBlockIdentity.from_instruction_eas((0x401000,), native_key=native_key)
+    )
+    call_ref = NativeBlockRef(
+        StableBlockIdentity.from_instruction_eas((0x401010,), native_key=native_key)
+    )
+    plan = PatchPlan(
+        plan_id="manager-bridge-rejected-plan",
+        snapshot_id="manager-bridge-rejected-snapshot",
+        source_maturity=_TEST_MATURITY,
+        source_generation=0,
+        steps=(
+            PatchRedirectGoto(
+                from_serial=source_ref,
+                old_target=call_ref,
+                new_target=source_ref,
+            ),
+        ),
+        source_coordinates=((source_ref, 0), (call_ref, 1)),
+    )
+    call = InsnSnapshot(
+        opcode=int(ida_hexrays.m_call),
+        ea=0x401011,
+        operands=(),
+        kind=InsnKind.CALL,
+        is_call=True,
+    )
+    pre_cfg = FlowGraph(
+        blocks={
+            0: BlockSnapshot(
+                serial=0,
+                block_type=1,
+                succs=(1,),
+                preds=(),
+                flags=0,
+                start_ea=0x401000,
+                insn_snapshots=(),
+                kind=BlockKind.ONE_WAY,
+                tail_kind=InsnKind.GOTO,
+            ),
+            1: BlockSnapshot(
+                serial=1,
+                block_type=0,
+                succs=(),
+                preds=(0,),
+                flags=0,
+                start_ea=0x401010,
+                insn_snapshots=(call,),
+                kind=BlockKind.STOP,
+            ),
+        },
+        entry_serial=0,
+        func_ea=0x401000,
+    )
+    index = MbaBlockIdentityIndex.from_flow_graph(
+        session_id="manager-bridge-session",
+        generation=0,
+        maturity=4,
+        snapshot_id=plan.snapshot_id,
+        native_key=native_key,
+        flow_graph=pre_cfg,
+    )
+    emitter = EventEmitter()
+    planned: list[MbaMutationPlanned] = []
+    emitter.on(MbaMutationPlanned, planned.append)
+    emitter.on(MbaMutationPlanned, D810Manager._on_mutation_planned)
+    gateway = MbaMutationGateway(
+        native_key=native_key,
+        generation=0,
+        session_id=index.session_id,
+        function_ea=pre_cfg.func_ea,
+        maturity=4,
+        identity_index=index,
+        event_emitter=emitter,
+    )
+    diag_conn = create_diag_database(":memory:").connection()
+    reset_diagnostic_bus()
+    monkeypatch.setattr(
+        "d810.core.diag.event_handlers.get_diag_conn",
+        lambda *_args, **_kwargs: diag_conn,
+    )
+    install_diag_event_handlers()
+    emit_diagnostic(
+        DiagnosticSessionObserved(
+            gateway.session_id,
+            gateway.function_ea,
+            1,
+            gateway.native_key.to_json(),
+            "active",
+        )
+    )
+    backend = HexRaysMutationBackend(
+        mutation_gateway=gateway,
+        translator=SimpleNamespace(contract=None),
+    )
+    try:
+        execution = backend.execute_patch_plan(
+            plan,
+            SimpleNamespace(qty=2),
+            pre_cfg=pre_cfg,
+        )
+    finally:
+        uninstall_diag_event_handlers()
+        reset_diagnostic_bus()
+
+    assert execution.applied_count == 0
+    assert execution.graph is pre_cfg
+    assert len(planned) == 1
+    assert backend.last_patch_failure is not None
+    assert "effectful" in str(backend.last_patch_failure)
+    assert "blk1@0x401010" in str(backend.last_patch_failure)
+    rows = diag_conn.execute(
+        "SELECT item_index,disposition,source_anchor_ea_i64,"
+        "old_target_anchor_ea_i64,target_anchor_ea_i64 "
+        "FROM mutation_plan_items ORDER BY item_index"
+    ).fetchall()
+    assert rows == [(0, "planned", 0x401000, 0x401010, 0x401000)]
 
 
 def test_hexrays_enum_values_map_to_cfg_semantic_kinds():
