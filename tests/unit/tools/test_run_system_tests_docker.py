@@ -287,6 +287,59 @@ fi
     assert any("/opt/d810-cobra-source:ro" in call for call in calls)
 
 
+@pytest.mark.parametrize("docker_exit", [0, 23])
+def test_pinned_cobra_root_materializes_the_canonical_index_and_cleans_temp(
+    tmp_path: Path,
+    docker_exit: int,
+) -> None:
+    extension_root = tmp_path / "cobra extension"
+    (extension_root / "third_party" / "cobra").mkdir(parents=True)
+    temp_root = tmp_path / ".tmp"
+    preexisting = temp_root / "cobra-source.preexisting"
+    preexisting.mkdir(parents=True)
+    git_log = tmp_path / "git.log"
+    expected_parent = "3b3c406270f1efd8e222f0b05040ae4e074b27d5"
+    expected_core = "72f616f822f538a0cfbea3c880f9d1e68bb9a8f1"
+    mock_git = f"""#!/usr/bin/env bash
+set -eu
+printf 'replace=%s args=%s\\n' "${{GIT_NO_REPLACE_OBJECTS:-}}" "$*" >> "$GIT_LOG"
+if [[ \"$*\" == *\"rev-parse HEAD\"* ]]; then
+  case \"$*\" in
+    *third_party/cobra*) printf '%s\\n' '{expected_core}' ;;
+    *) printf '%s\\n' '{expected_parent}' ;;
+  esac
+elif [[ \"$*\" == *\"archive --format=tar\"* ]]; then
+  tar -cf - --files-from /dev/null
+fi
+"""
+    before = set(temp_root.glob("cobra-source.*"))
+
+    extra_env = {
+        "D810_COBRA_ROOT": str(extension_root),
+        "GIT_LOG": str(git_log),
+    }
+    if docker_exit:
+        extra_env["MOCK_DOCKER_RUN_EXIT"] = str(docker_exit)
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--",
+        "true",
+        extra_env=extra_env,
+        mock_git=mock_git,
+    )
+
+    assert result.returncode == docker_exit
+    git_calls = git_log.read_text(encoding="utf-8")
+    assert "replace=1 args=-C" in git_calls
+    assert "read-tree" in git_calls
+    assert "checkout-index" in git_calls
+    assert "archive --format=tar" not in git_calls
+    assert set(temp_root.glob("cobra-source.*")) == before
+    assert preexisting.is_dir()
+    assert any("/opt/d810-cobra-source:ro" in call for call in calls)
+
+
 @pytest.mark.parametrize("root", ["relative/extension", "missing-extension"])
 def test_invalid_extension_root_fails_before_docker(
     tmp_path: Path,

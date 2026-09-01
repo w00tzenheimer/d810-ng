@@ -460,6 +460,17 @@ VOL_EGGLOG=()
 if [ "$EGGLOG_EXTENSION_ENABLED" = "1" ]; then
   VOL_EGGLOG=(-v "${D810_EGGLOG_ROOT}:/opt/d810-egglog:ro")
 fi
+COBRA_SOURCE_ARCHIVE_DIR=""
+COBRA_SOURCE_ARCHIVE_SENTINEL=""
+_cleanup_cobra_source_artifact() {
+  local source_dir="$COBRA_SOURCE_ARCHIVE_DIR"
+  local sentinel="$COBRA_SOURCE_ARCHIVE_SENTINEL"
+  [ -n "$source_dir" ] && [ -n "$sentinel" ] || return 0
+  case "$source_dir" in "$WORK_DIR"/.tmp/cobra-source.*) ;; *) return 0 ;; esac
+  [ -f "$sentinel" ] || return 0
+  [ "$(cat "$sentinel")" = "d810-cobra-source-artifact-v1" ] || return 0
+  rm -rf "$source_dir"
+}
 VOL_COBRA=()
 VOL_COBRA_CACHE=()
 COBRA_CACHE_DIR=""
@@ -467,17 +478,23 @@ if [ "$COBRA_SOURCE_MODE" = "mounted-pinned" ]; then
   # A worktree's .git file can point at an object database outside its root,
   # which is unavailable after a read-only Docker mount. Materialize canonical
   # bytes on the host while its object database is reachable, then mount only
-  # that archive extraction. GIT_NO_REPLACE_OBJECTS makes the receipt IDs and
-  # exported bytes immune to local refs/replace rewrites.
+  # that source tree. checkout-index does not honor export-ignore attributes;
+  # GIT_NO_REPLACE_OBJECTS makes both the receipt IDs and exported bytes immune
+  # to local refs/replace rewrites.
   mkdir -p "$WORK_DIR/.tmp"
   COBRA_SOURCE_ARCHIVE_DIR="$(mktemp -d "${WORK_DIR}/.tmp/cobra-source.XXXXXX")"
+  COBRA_SOURCE_ARCHIVE_SENTINEL="$COBRA_SOURCE_ARCHIVE_DIR/.d810-cobra-source-artifact"
+  printf '%s\n' "d810-cobra-source-artifact-v1" > "$COBRA_SOURCE_ARCHIVE_SENTINEL"
+  trap _cleanup_cobra_source_artifact EXIT
   COBRA_SOURCE_TREE="$COBRA_SOURCE_ARCHIVE_DIR/source"
   mkdir -p "$COBRA_SOURCE_TREE/third_party/cobra"
-  GIT_NO_REPLACE_OBJECTS=1 git -C "$D810_COBRA_ROOT" archive --format=tar "$COBRA_SOURCE_REVISION" > "$COBRA_SOURCE_ARCHIVE_DIR/parent.tar"
-  tar -xf "$COBRA_SOURCE_ARCHIVE_DIR/parent.tar" -C "$COBRA_SOURCE_TREE"
-  GIT_NO_REPLACE_OBJECTS=1 git -C "$D810_COBRA_ROOT/third_party/cobra" archive --format=tar "$COBRA_CORE_SOURCE_REVISION" > "$COBRA_SOURCE_ARCHIVE_DIR/core.tar"
-  tar -xf "$COBRA_SOURCE_ARCHIVE_DIR/core.tar" -C "$COBRA_SOURCE_TREE/third_party/cobra"
-  rm -f "$COBRA_SOURCE_ARCHIVE_DIR/parent.tar" "$COBRA_SOURCE_ARCHIVE_DIR/core.tar"
+  COBRA_PARENT_INDEX="$COBRA_SOURCE_ARCHIVE_DIR/parent.index"
+  COBRA_CORE_INDEX="$COBRA_SOURCE_ARCHIVE_DIR/core.index"
+  GIT_INDEX_FILE="$COBRA_PARENT_INDEX" GIT_NO_REPLACE_OBJECTS=1 git -C "$D810_COBRA_ROOT" read-tree "$COBRA_SOURCE_REVISION"
+  GIT_INDEX_FILE="$COBRA_PARENT_INDEX" GIT_NO_REPLACE_OBJECTS=1 git -C "$D810_COBRA_ROOT" checkout-index --all --prefix="$COBRA_SOURCE_TREE/"
+  GIT_INDEX_FILE="$COBRA_CORE_INDEX" GIT_NO_REPLACE_OBJECTS=1 git -C "$D810_COBRA_ROOT/third_party/cobra" read-tree "$COBRA_CORE_SOURCE_REVISION"
+  GIT_INDEX_FILE="$COBRA_CORE_INDEX" GIT_NO_REPLACE_OBJECTS=1 git -C "$D810_COBRA_ROOT/third_party/cobra" checkout-index --all --prefix="$COBRA_SOURCE_TREE/third_party/cobra/"
+  rm -f "$COBRA_PARENT_INDEX" "$COBRA_CORE_INDEX"
   VOL_COBRA=(-v "${COBRA_SOURCE_TREE}:/opt/d810-cobra-source:ro")
 fi
 # Build outputs are Linux-only and belong to this task's ignored artifact
