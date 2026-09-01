@@ -20,13 +20,17 @@ from d810.analyses.control_flow.native_preanalysis_session import (
 )
 from d810.core.provider_phase import ProviderPhaseSnapshot
 from d810.core.decompilation_session import DecompilationEvent
-from d810.core.observability_events import LifecycleEventObserved
+from d810.core.observability_events import (
+    HostDecompilationOutcomeObserved,
+    LifecycleEventObserved,
+)
 from d810.hexrays.hooks.optblock_adapter import BlockOptimizerManager
 from d810.hexrays.hooks.hexrays_hooks import HexraysDecompilationHook
 from d810.manager.decompilation_lifecycle import (
     DecompilationLifecycleCoordinator,
     FlowgraphReadyPayload,
 )
+from d810.manager.manager import D810Manager
 from d810.transforms.cfg_transaction import (
     CfgGenerationPoisoned,
     CfgTransactionFailure,
@@ -424,6 +428,149 @@ def test_actual_hook_lifecycle_order_is_stable_across_merr_redo(monkeypatch) -> 
         "CALLS",
         "preanalysis-finish:0x401000",
         "SESSION_FINISHED",
+    ]
+
+
+def test_wrapper_and_func_printed_rendered_result_finish_once(monkeypatch) -> None:
+    import d810.manager.decompilation_lifecycle as lifecycle_module
+
+    observed: list[object] = []
+    trace: list[tuple[str, object]] = []
+
+    def record_diagnostic(event) -> None:
+        observed.append(event)
+        if isinstance(event, HostDecompilationOutcomeObserved):
+            trace.append(("host", event.outcome.source))
+
+    monkeypatch.setattr(lifecycle_module, "emit_diagnostic", record_diagnostic)
+    lifecycle_events: list[DecompilationEvent] = []
+
+    class _Emitter:
+        def emit(self, event, _payload) -> None:
+            lifecycle_events.append(event)
+            trace.append(("lifecycle", event))
+
+    coordinator = DecompilationLifecycleCoordinator(
+        preanalysis_runtime=None,
+        analysis_runtime=None,
+        execution_scope_service=None,
+        native_preanalysis_key_provider=lambda _function_ea: NATIVE_KEY,
+        event_emitter=_Emitter(),
+    )
+    hook = SimpleNamespace(
+        callback=lambda *_args, **_kwargs: None,
+        _decompilation_lifecycle=coordinator,
+        _database_identity="sample.i64",
+    )
+    manager = D810Manager.__new__(D810Manager)
+    manager.decompilation_lifecycle = coordinator
+    monkeypatch.setattr(
+        HexraysDecompilationHook,
+        "_function_owner_ea",
+        staticmethod(lambda _mba: 0x401000),
+    )
+
+    assert HexraysDecompilationHook.prolog(hook, SimpleNamespace(), object(), object(), 0) == 0
+    assert HexraysDecompilationHook.structural(hook, SimpleNamespace()) == 0
+    trace.append(("callback", "func_printed"))
+    assert HexraysDecompilationHook.func_printed(
+        hook,
+        SimpleNamespace(entry_ea=0x401000),
+    ) == 0
+    trace.append(("wrapper", "result"))
+    manager.observe_host_decompile_result(
+        0x401000,
+        SimpleNamespace(entry_ea=0x401000),
+        None,
+        source="headless",
+    )
+
+    host_events = [
+        event
+        for event in observed
+        if isinstance(event, HostDecompilationOutcomeObserved)
+    ]
+    assert len(host_events) == 1
+    assert host_events[0].outcome.kind.value == "rendered"
+    assert host_events[0].outcome.source == "hxe_func_printed"
+    assert lifecycle_events.count(DecompilationEvent.SESSION_STARTED) == 1
+    assert lifecycle_events.count(DecompilationEvent.SESSION_FINISHED) == 1
+    assert coordinator.has_active_sessions is False
+    assert trace == [
+        ("lifecycle", DecompilationEvent.SESSION_STARTED),
+        ("callback", "func_printed"),
+        ("host", "hxe_func_printed"),
+        ("lifecycle", DecompilationEvent.SESSION_FINISHED),
+        ("wrapper", "result"),
+    ]
+
+
+def test_wrapper_failed_result_finishes_once_after_structural_completion(monkeypatch) -> None:
+    import d810.manager.decompilation_lifecycle as lifecycle_module
+
+    observed: list[object] = []
+    trace: list[tuple[str, object]] = []
+
+    def record_diagnostic(event) -> None:
+        observed.append(event)
+        if isinstance(event, HostDecompilationOutcomeObserved):
+            trace.append(("host", event.outcome.source))
+
+    monkeypatch.setattr(lifecycle_module, "emit_diagnostic", record_diagnostic)
+    lifecycle_events: list[DecompilationEvent] = []
+
+    class _Emitter:
+        def emit(self, event, _payload) -> None:
+            lifecycle_events.append(event)
+            trace.append(("lifecycle", event))
+
+    coordinator = DecompilationLifecycleCoordinator(
+        preanalysis_runtime=None,
+        analysis_runtime=None,
+        execution_scope_service=None,
+        native_preanalysis_key_provider=lambda _function_ea: NATIVE_KEY,
+        event_emitter=_Emitter(),
+    )
+    hook = SimpleNamespace(
+        callback=lambda *_args, **_kwargs: None,
+        _decompilation_lifecycle=coordinator,
+        _database_identity="sample.i64",
+    )
+    manager = D810Manager.__new__(D810Manager)
+    manager.decompilation_lifecycle = coordinator
+    monkeypatch.setattr(
+        HexraysDecompilationHook,
+        "_function_owner_ea",
+        staticmethod(lambda _mba: 0x401000),
+    )
+
+    assert HexraysDecompilationHook.prolog(hook, SimpleNamespace(), object(), object(), 0) == 0
+    assert HexraysDecompilationHook.structural(hook, SimpleNamespace()) == 0
+    trace.append(("wrapper", "result"))
+    manager.observe_host_decompile_result(
+        0x401000,
+        None,
+        SimpleNamespace(code=50057, errea=0x401010, desc=lambda: "host failure"),
+        source="headless",
+    )
+
+    host_events = [
+        event
+        for event in observed
+        if isinstance(event, HostDecompilationOutcomeObserved)
+    ]
+    assert len(host_events) == 1
+    assert host_events[0].outcome.kind.value == "failed"
+    assert host_events[0].outcome.source == "headless"
+    assert host_events[0].outcome.failure_code == 50057
+    assert lifecycle_events.count(DecompilationEvent.SESSION_STARTED) == 1
+    assert lifecycle_events.count(DecompilationEvent.SESSION_FINISHED) == 1
+    assert coordinator.has_active_sessions is False
+    assert trace == [
+        ("lifecycle", DecompilationEvent.SESSION_STARTED),
+        ("wrapper", "result"),
+        ("host", "headless"),
+        ("lifecycle", DecompilationEvent.SESSION_FINISHED),
     ]
 
 
