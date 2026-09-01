@@ -17,6 +17,9 @@ from d810.core.observability_events import (
     DiagnosticSessionObserved,
     FragmentRootPublicationGroupObserved,
     FragmentValidationOutcomeObserved,
+    HostDecompilationOutcome,
+    HostDecompilationOutcomeKind,
+    HostDecompilationOutcomeObserved,
     LogicalBlockVersionTransitionObserved,
     MutationPlanItemObserved,
     MutationPlanObserved,
@@ -31,8 +34,10 @@ from d810.core.semantic_route_oracle import (
     SemanticTransferKind,
 )
 from d810.diagnostics.lifecycle_timeline import (
+    lifecycle_timeline,
     mutation_batch,
     render_mutation_batch,
+    render_timeline,
 )
 from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
 from tests.native_preanalysis import make_native_key
@@ -173,6 +178,28 @@ def test_plan_and_receipt_are_correlated_by_gateway_batch(diag_conn) -> None:
         (2, "mutation_plan", "batch-1"),
         (3, "mutation_receipt", "batch-1"),
     ]
+
+
+def test_timeline_prints_typed_host_failure_code_and_ea(diag_conn) -> None:
+    emit(
+        HostDecompilationOutcomeObserved(
+            session_id="s1",
+            func_ea=0x40C8B0,
+            outcome=HostDecompilationOutcome(
+                kind=HostDecompilationOutcomeKind.FAILED,
+                source="headless_decompile",
+                cfunc_available=False,
+                failure_code=50057,
+                failure_ea=0x40CA3D,
+                failure_description="internal error 50057",
+            ),
+        )
+    )
+
+    rendered = render_timeline(lifecycle_timeline(diag_conn, session_id="s1"))
+
+    assert "INTERR=50057" in rendered
+    assert "failure_ea=0x000000000040ca3d" in rendered
 
 
 def test_cfg_transaction_authority_and_creation_witness_survive_restart(

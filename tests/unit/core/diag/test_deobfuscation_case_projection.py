@@ -12,6 +12,7 @@ from d810.core.diag.deobfuscation_case import (
 from d810.core.diag.lifecycle import (
     persist_diagnostic_session_transition,
     persist_frontend_normalization_plan_intent,
+    persist_host_decompilation_outcome,
     persist_lifecycle_event,
     persist_pass_contract_evidence,
     persist_semantic_output_verified,
@@ -19,6 +20,9 @@ from d810.core.diag.lifecycle import (
 from d810.core.observability_events import (
     DiagnosticSessionObserved,
     FrontendNormalizationPlanIntentObserved,
+    HostDecompilationOutcome,
+    HostDecompilationOutcomeKind,
+    HostDecompilationOutcomeObserved,
     LifecycleEventObserved,
     PassContractEvidencePublished,
     SemanticOutputVerifiedObserved,
@@ -161,6 +165,7 @@ def _receipt(
     *,
     session_id: str = "session-1",
     batch_id: str = "batch-1",
+    mutation_kind: str = "fragment_publication",
     outcome: str = "committed",
     identity: bool = True,
     anchor: int | None = FUNC_EA,
@@ -190,7 +195,7 @@ def _receipt(
         (
             event_id,
             batch_id,
-            "fragment_publication",
+            mutation_kind,
             1,
             2 if outcome == "committed" else 1,
             1,
@@ -278,6 +283,37 @@ def _semantic_output(conn, *, session_id: str = "session-1") -> int:
             summary="Reference and candidate outputs matched.",
             native_anchor_ea=FUNC_EA,
             evidence_generation=2,
+        ),
+    )
+
+
+def _host_outcome(
+    conn,
+    *,
+    session_id: str = "session-1",
+    kind: HostDecompilationOutcomeKind = HostDecompilationOutcomeKind.RENDERED,
+    failure_code: int | None = None,
+    failure_ea: int | None = None,
+    failure_description: str | None = None,
+) -> int | None:
+    return persist_host_decompilation_outcome(
+        conn,
+        HostDecompilationOutcomeObserved(
+            session_id=session_id,
+            func_ea=FUNC_EA,
+            outcome=HostDecompilationOutcome(
+                kind=kind,
+                source=(
+                    "hxe_func_printed"
+                    if kind is HostDecompilationOutcomeKind.RENDERED
+                    else "headless_decompile"
+                ),
+                cfunc_available=kind is HostDecompilationOutcomeKind.RENDERED,
+                failure_code=failure_code,
+                failure_ea=failure_ea,
+                failure_description=failure_description,
+            ),
+            timestamp=10.0,
         ),
     )
 
@@ -400,6 +436,77 @@ def test_rejected_receipt_is_a_c5_blocker_and_materialization_is_idempotent(conn
         ("mutation-receipt:3", "mutation_receipt_not_committed"),
     ]
     assert conn.execute("SELECT COUNT(*) FROM deobfuscation_cases").fetchone() == (1,)
+
+
+def test_committed_dse_with_failed_host_outcome_blocks_host_output(conn) -> None:
+    _active(conn)
+    _plan(conn)
+    _receipt(conn, mutation_kind="dse")
+    _host_outcome(
+        conn,
+        kind=HostDecompilationOutcomeKind.FAILED,
+        failure_code=50057,
+        failure_ea=0x180001080,
+        failure_description="internal error 50057",
+    )
+    _finish(conn)
+
+    materialize_closed_deobfuscation_case(conn, "session-1")
+
+    assert _closed_case(conn, "session-1") == (
+        "c5_publication",
+        "host_decompilation_output",
+        None,
+    )
+
+
+def test_committed_unflatten_with_abandoned_host_outcome_blocks_host_output(conn) -> None:
+    _active(conn)
+    _plan(conn)
+    _receipt(conn, mutation_kind="unflatten")
+    _host_outcome(conn, kind=HostDecompilationOutcomeKind.ABANDONED)
+    _finish(conn)
+
+    materialize_closed_deobfuscation_case(conn, "session-1")
+
+    assert _closed_case(conn, "session-1") == (
+        "c5_publication",
+        "host_decompilation_output",
+        None,
+    )
+
+
+def test_rendered_host_outcome_without_witness_blocks_semantic_verification(conn) -> None:
+    _active(conn)
+    _plan(conn)
+    _receipt(conn)
+    _host_outcome(conn)
+    _finish(conn)
+
+    materialize_closed_deobfuscation_case(conn, "session-1")
+
+    assert _closed_case(conn, "session-1") == (
+        "c5_publication",
+        "semantic_output_verification",
+        None,
+    )
+
+
+def test_rendered_host_outcome_with_explicit_witness_reaches_c6(conn) -> None:
+    _active(conn)
+    _plan(conn)
+    _receipt(conn)
+    _host_outcome(conn)
+    _semantic_output(conn)
+    _finish(conn)
+
+    materialize_closed_deobfuscation_case(conn, "session-1")
+
+    assert _closed_case(conn, "session-1") == (
+        "c6_semantic_output",
+        None,
+        "verifier:fixture:1",
+    )
 
 
 @pytest.mark.parametrize(

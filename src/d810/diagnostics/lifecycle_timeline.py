@@ -29,12 +29,49 @@ def lifecycle_timeline(
         clauses.append("func_ea_i64=?")
         params.append(int(func_ea))
     where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
-    return _rows(
+    rows = _rows(
         conn.execute(
             "SELECT * FROM lifecycle_timeline" + where + " ORDER BY timestamp,event_id",
             tuple(params),
         )
     )
+    host_where = []
+    host_params: list[Any] = []
+    if session_id is not None:
+        host_where.append("session_id=?")
+        host_params.append(session_id)
+    if func_ea is not None:
+        host_where.append("func_ea_i64=?")
+        host_params.append(int(func_ea))
+    host_clause = f" WHERE {' AND '.join(host_where)}" if host_where else ""
+    host_rows = _rows(
+        conn.execute(
+            "SELECT event_id,outcome AS host_outcome,source AS host_source,"
+            "cfunc_available AS host_cfunc_available,failure_code,failure_ea_hex,"
+            "failure_ea_i64,failure_description FROM host_decompilation_outcomes"
+            + host_clause,
+            tuple(host_params),
+        )
+    )
+    hosts_by_event = {int(row["event_id"]): row for row in host_rows}
+    for row in rows:
+        host = hosts_by_event.get(int(row["event_id"]))
+        if host is None:
+            row.update(
+                {
+                    "host_outcome": None,
+                    "host_source": None,
+                    "host_cfunc_available": None,
+                    "failure_code": None,
+                    "failure_ea_hex": None,
+                    "failure_ea_i64": None,
+                    "failure_description": None,
+                }
+            )
+            continue
+        row.update(host)
+        row["outcome"] = host["host_outcome"]
+    return rows
 
 
 def mutation_batch(conn: sqlite3.Connection, batch_id: str) -> dict[str, Any]:
@@ -195,6 +232,11 @@ def render_timeline(rows: list[dict[str, Any]]) -> str:
             row["mba_generation_before"], row["mba_generation_after"]
         )
         identity = _block_label(row["block_serial"], row["ea_anchor_hex"])
+        summary = str(row["summary"])
+        if row.get("failure_code") is not None:
+            summary += f" INTERR={row['failure_code']}"
+        if row.get("failure_ea_hex") is not None:
+            summary += f" failure_ea={row['failure_ea_hex']}"
         lines.append(
             "\t".join(
                 str(value)
@@ -208,7 +250,7 @@ def render_timeline(rows: list[dict[str, Any]]) -> str:
                     mba,
                     row["outcome"] or "-",
                     identity,
-                    row["summary"],
+                    summary,
                 )
             )
         )

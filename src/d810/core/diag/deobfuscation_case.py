@@ -659,6 +659,61 @@ def project_closed_case_rows(
             ),
         )
 
+    host_outcome = conn.execute(
+        "SELECT h.event_id,h.outcome,h.source,h.cfunc_available,h.failure_code,"
+        "h.failure_ea_i64,h.failure_description FROM host_decompilation_outcomes h "
+        "JOIN lifecycle_events le ON le.event_id=h.event_id "
+        "WHERE h.session_id=?",
+        (session_id,),
+    ).fetchone()
+    if host_outcome is not None:
+        (
+            event_id,
+            outcome,
+            source,
+            cfunc_available,
+            failure_code,
+            failure_ea,
+            failure_description,
+        ) = host_outcome
+        outcome = str(outcome)
+        rendered = outcome == "rendered"
+        add(
+            event_id=int(event_id),
+            tie=0,
+            event_kind="host_decompilation_outcome",
+            blocked_obligation=None if rendered else "host_decompilation_output",
+            finding=_stable_finding(
+                finding_id=f"host-outcome:{int(event_id)}",
+                event_id=int(event_id),
+                kind=(
+                    CaseFindingKind.OBSERVATION
+                    if rendered
+                    else CaseFindingKind.REJECTION
+                ),
+                level=CaseEvidenceLevel.C0_ENVIRONMENT,
+                summary=(
+                    "Host decompilation rendered a cfunc."
+                    if rendered
+                    else f"Host decompilation outcome was {outcome}."
+                ),
+                detail={
+                    "outcome": outcome,
+                    "source": source,
+                    "cfunc_available": bool(cfunc_available),
+                    "failure_code": failure_code,
+                    "failure_ea": failure_ea,
+                    "failure_description": failure_description,
+                },
+                native_ea=(
+                    int(failure_ea)
+                    if failure_ea is not None
+                    else int(function_ea)
+                ),
+                confidence=1.0 if rendered else 0.0,
+            ),
+        )
+
     for row in conn.execute(
         "SELECT s.event_id,s.verifier_id,s.witness_id,s.summary,"
         "s.native_anchor_ea_i64,le.event_seq "
