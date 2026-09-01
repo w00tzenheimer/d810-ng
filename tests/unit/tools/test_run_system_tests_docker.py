@@ -248,6 +248,45 @@ fi
     assert "D810_COBRA_ROOT must be clean" in result.stderr
 
 
+def test_pinned_cobra_root_disables_git_replacement_refs(tmp_path: Path) -> None:
+    extension_root = tmp_path / "cobra extension"
+    (extension_root / "third_party" / "cobra").mkdir(parents=True)
+    expected_parent = "3b3c406270f1efd8e222f0b05040ae4e074b27d5"
+    expected_core = "72f616f822f538a0cfbea3c880f9d1e68bb9a8f1"
+    replacement_parent = "1111111111111111111111111111111111111111"
+    replacement_core = "2222222222222222222222222222222222222222"
+    mock_git = f"""#!/usr/bin/env bash
+set -eu
+if [[ \"$*\" == *\"rev-parse HEAD\"* ]]; then
+  if [[ \"${{GIT_NO_REPLACE_OBJECTS:-}}\" == 1 ]]; then
+    case \"$*\" in
+      *third_party/cobra*) printf '%s\\n' '{expected_core}' ;;
+      *) printf '%s\\n' '{expected_parent}' ;;
+    esac
+  else
+    case \"$*\" in
+      *third_party/cobra*) printf '%s\\n' '{replacement_core}' ;;
+      *) printf '%s\\n' '{replacement_parent}' ;;
+    esac
+  fi
+elif [[ \"$*\" == *\"archive --format=tar\"* ]]; then
+  tar -cf - --files-from /dev/null
+fi
+"""
+
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--",
+        "true",
+        extra_env={"D810_COBRA_ROOT": str(extension_root)},
+        mock_git=mock_git,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert any("/opt/d810-cobra-source:ro" in call for call in calls)
+
+
 @pytest.mark.parametrize("root", ["relative/extension", "missing-extension"])
 def test_invalid_extension_root_fails_before_docker(
     tmp_path: Path,

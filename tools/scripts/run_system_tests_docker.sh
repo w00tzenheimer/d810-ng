@@ -282,14 +282,14 @@ if [ -n "${D810_COBRA_ROOT+x}" ]; then
     exit 1
   fi
   D810_COBRA_ROOT="$(cd "$D810_COBRA_ROOT" && pwd -P)"
-  COBRA_PARENT_SOURCE_ID="$(git -C "$D810_COBRA_ROOT" rev-parse HEAD 2>/dev/null || true)"
-  COBRA_CORE_SOURCE_ID="$(git -C "$D810_COBRA_ROOT/third_party/cobra" rev-parse HEAD 2>/dev/null || true)"
+  COBRA_PARENT_SOURCE_ID="$(GIT_NO_REPLACE_OBJECTS=1 git -C "$D810_COBRA_ROOT" rev-parse HEAD 2>/dev/null || true)"
+  COBRA_CORE_SOURCE_ID="$(GIT_NO_REPLACE_OBJECTS=1 git -C "$D810_COBRA_ROOT/third_party/cobra" rev-parse HEAD 2>/dev/null || true)"
   if [ "$COBRA_PARENT_SOURCE_ID" != "$COBRA_SOURCE_REVISION" ] || [ "$COBRA_CORE_SOURCE_ID" != "$COBRA_CORE_SOURCE_REVISION" ]; then
     echo "ERROR: D810_COBRA_ROOT must be d810-cobra $COBRA_SOURCE_REVISION with third_party/cobra $COBRA_CORE_SOURCE_REVISION" >&2
     exit 1
   fi
-  COBRA_PARENT_DIRTY="$(git -C "$D810_COBRA_ROOT" status --porcelain=v1 --untracked-files=all --ignore-submodules=none 2>/dev/null || true)"
-  COBRA_CORE_DIRTY="$(git -C "$D810_COBRA_ROOT/third_party/cobra" status --porcelain=v1 --untracked-files=all 2>/dev/null || true)"
+  COBRA_PARENT_DIRTY="$(GIT_NO_REPLACE_OBJECTS=1 git -C "$D810_COBRA_ROOT" status --porcelain=v1 --untracked-files=all --ignore-submodules=none 2>/dev/null || true)"
+  COBRA_CORE_DIRTY="$(GIT_NO_REPLACE_OBJECTS=1 git -C "$D810_COBRA_ROOT/third_party/cobra" status --porcelain=v1 --untracked-files=all 2>/dev/null || true)"
   if [ -n "$COBRA_PARENT_DIRTY" ] || [ -n "$COBRA_CORE_DIRTY" ]; then
     echo "ERROR: D810_COBRA_ROOT must be clean; use the pinned remote source or remove tracked/untracked changes" >&2
     exit 1
@@ -464,7 +464,21 @@ VOL_COBRA=()
 VOL_COBRA_CACHE=()
 COBRA_CACHE_DIR=""
 if [ "$COBRA_SOURCE_MODE" = "mounted-pinned" ]; then
-  VOL_COBRA=(-v "${D810_COBRA_ROOT}:/opt/d810-cobra:ro")
+  # A worktree's .git file can point at an object database outside its root,
+  # which is unavailable after a read-only Docker mount. Materialize canonical
+  # bytes on the host while its object database is reachable, then mount only
+  # that archive extraction. GIT_NO_REPLACE_OBJECTS makes the receipt IDs and
+  # exported bytes immune to local refs/replace rewrites.
+  mkdir -p "$WORK_DIR/.tmp"
+  COBRA_SOURCE_ARCHIVE_DIR="$(mktemp -d "${WORK_DIR}/.tmp/cobra-source.XXXXXX")"
+  COBRA_SOURCE_TREE="$COBRA_SOURCE_ARCHIVE_DIR/source"
+  mkdir -p "$COBRA_SOURCE_TREE/third_party/cobra"
+  GIT_NO_REPLACE_OBJECTS=1 git -C "$D810_COBRA_ROOT" archive --format=tar "$COBRA_SOURCE_REVISION" > "$COBRA_SOURCE_ARCHIVE_DIR/parent.tar"
+  tar -xf "$COBRA_SOURCE_ARCHIVE_DIR/parent.tar" -C "$COBRA_SOURCE_TREE"
+  GIT_NO_REPLACE_OBJECTS=1 git -C "$D810_COBRA_ROOT/third_party/cobra" archive --format=tar "$COBRA_CORE_SOURCE_REVISION" > "$COBRA_SOURCE_ARCHIVE_DIR/core.tar"
+  tar -xf "$COBRA_SOURCE_ARCHIVE_DIR/core.tar" -C "$COBRA_SOURCE_TREE/third_party/cobra"
+  rm -f "$COBRA_SOURCE_ARCHIVE_DIR/parent.tar" "$COBRA_SOURCE_ARCHIVE_DIR/core.tar"
+  VOL_COBRA=(-v "${COBRA_SOURCE_TREE}:/opt/d810-cobra-source:ro")
 fi
 # Build outputs are Linux-only and belong to this task's ignored artifact
 # area. Keeping them outside both source forms makes repeated focused runs
@@ -506,7 +520,7 @@ fi
 if [ "$COBRA_EXTENSION_ENABLED" = "1" ]; then
   echo "  extension: d810-cobra ($COBRA_SOURCE_MODE $COBRA_SOURCE_REVISION)"
   if [ "$COBRA_SOURCE_MODE" = "mounted-pinned" ]; then
-    echo "  cobra source: $D810_COBRA_ROOT -> /opt/d810-cobra (read-only)"
+    echo "  cobra source: canonical archive from $D810_COBRA_ROOT -> /opt/d810-cobra-source (read-only)"
   else
     echo "  cobra source: $COBRA_SOURCE_URL@$COBRA_SOURCE_REVISION"
   fi
@@ -624,10 +638,7 @@ if [ "$COBRA_EXTENSION_ENABLED" = "1" ]; then
   # derive the project metadata exactly as for Egglog, while omitting the
   # mounted D810 package so the tested worktree remains authoritative.
   if [ "$COBRA_SOURCE_MODE" = "mounted-pinned" ]; then
-    # Archive exact Git objects instead of copying the mounted worktree. That
-    # excludes ignored build products and makes the installed bytes match the
-    # parent/submodule IDs in COBRA_SOURCE_KEY.
-    COBRA_SOURCE_SETUP="COBRA_BUILD_DIR=\$(mktemp -d) && env -u GIT_DIR git -C /opt/d810-cobra archive --format=tar '$COBRA_SOURCE_REVISION' | tar -x -C \"\$COBRA_BUILD_DIR\" && mkdir -p \"\$COBRA_BUILD_DIR/third_party/cobra\" && env -u GIT_DIR git -C /opt/d810-cobra/third_party/cobra archive --format=tar '$COBRA_CORE_SOURCE_REVISION' | tar -x -C \"\$COBRA_BUILD_DIR/third_party/cobra\""
+    COBRA_SOURCE_SETUP="COBRA_BUILD_DIR=\$(mktemp -d) && cp -a /opt/d810-cobra-source/. \"\$COBRA_BUILD_DIR/\""
   else
     # ENV_GIT pins D810's mounted common Git dir for provenance, but a source
     # checkout needs its own writable .git directory.  Scope the unset to the
