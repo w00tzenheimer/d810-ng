@@ -288,6 +288,12 @@ if [ -n "${D810_COBRA_ROOT+x}" ]; then
     echo "ERROR: D810_COBRA_ROOT must be d810-cobra $COBRA_SOURCE_REVISION with third_party/cobra $COBRA_CORE_SOURCE_REVISION" >&2
     exit 1
   fi
+  COBRA_PARENT_DIRTY="$(git -C "$D810_COBRA_ROOT" status --porcelain=v1 --untracked-files=all --ignore-submodules=none 2>/dev/null || true)"
+  COBRA_CORE_DIRTY="$(git -C "$D810_COBRA_ROOT/third_party/cobra" status --porcelain=v1 --untracked-files=all 2>/dev/null || true)"
+  if [ -n "$COBRA_PARENT_DIRTY" ] || [ -n "$COBRA_CORE_DIRTY" ]; then
+    echo "ERROR: D810_COBRA_ROOT must be clean; use the pinned remote source or remove tracked/untracked changes" >&2
+    exit 1
+  fi
   COBRA_SOURCE_MODE="mounted-pinned"
 fi
 RUNTIME_LABEL_KEY="org.d810.test-runtime"
@@ -618,7 +624,10 @@ if [ "$COBRA_EXTENSION_ENABLED" = "1" ]; then
   # derive the project metadata exactly as for Egglog, while omitting the
   # mounted D810 package so the tested worktree remains authoritative.
   if [ "$COBRA_SOURCE_MODE" = "mounted-pinned" ]; then
-    COBRA_SOURCE_SETUP="COBRA_BUILD_DIR=\$(mktemp -d) && cp -a /opt/d810-cobra/. \"\$COBRA_BUILD_DIR/\""
+    # Archive exact Git objects instead of copying the mounted worktree. That
+    # excludes ignored build products and makes the installed bytes match the
+    # parent/submodule IDs in COBRA_SOURCE_KEY.
+    COBRA_SOURCE_SETUP="COBRA_BUILD_DIR=\$(mktemp -d) && env -u GIT_DIR git -C /opt/d810-cobra archive --format=tar '$COBRA_SOURCE_REVISION' | tar -x -C \"\$COBRA_BUILD_DIR\" && mkdir -p \"\$COBRA_BUILD_DIR/third_party/cobra\" && env -u GIT_DIR git -C /opt/d810-cobra/third_party/cobra archive --format=tar '$COBRA_CORE_SOURCE_REVISION' | tar -x -C \"\$COBRA_BUILD_DIR/third_party/cobra\""
   else
     # ENV_GIT pins D810's mounted common Git dir for provenance, but a source
     # checkout needs its own writable .git directory.  Scope the unset to the

@@ -48,8 +48,13 @@ def _run(
     image: str | None = "test-runtime-image",
     dotenv: str | None = None,
     extra_env: dict[str, str] | None = None,
+    mock_git: str | None = None,
 ) -> tuple[subprocess.CompletedProcess[str], list[str]]:
     script, docker_log = _make_harness(tmp_path)
+    if mock_git is not None:
+        git = tmp_path / "bin" / "git"
+        git.write_text(mock_git, encoding="utf-8")
+        git.chmod(0o755)
     if dotenv is not None:
         (tmp_path / ".env").write_text(dotenv, encoding="utf-8")
     env = os.environ.copy()
@@ -210,6 +215,37 @@ def test_mismatched_cobra_root_fails_before_docker(
     assert result.returncode != 0
     assert calls == []
     assert "must be d810-cobra 3b3c406270f1efd8e222f0b05040ae4e074b27d5" in result.stderr
+
+
+def test_dirty_pinned_cobra_root_fails_before_docker(tmp_path: Path) -> None:
+    extension_root = tmp_path / "cobra extension"
+    (extension_root / "third_party" / "cobra").mkdir(parents=True)
+    expected_parent = "3b3c406270f1efd8e222f0b05040ae4e074b27d5"
+    expected_core = "72f616f822f538a0cfbea3c880f9d1e68bb9a8f1"
+    mock_git = f"""#!/usr/bin/env bash
+set -eu
+if [[ \"$*\" == *\"rev-parse HEAD\"* ]]; then
+  case \"$*\" in
+    *third_party/cobra*) printf '%s\\n' '{expected_core}' ;;
+    *) printf '%s\\n' '{expected_parent}' ;;
+  esac
+elif [[ \"$*\" == *\"status --porcelain=v1 --untracked-files=all\"* ]]; then
+  printf '%s\\n' ' M src/d810_cobra/__init__.py'
+fi
+"""
+
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--",
+        "true",
+        extra_env={"D810_COBRA_ROOT": str(extension_root)},
+        mock_git=mock_git,
+    )
+
+    assert result.returncode != 0
+    assert calls == []
+    assert "D810_COBRA_ROOT must be clean" in result.stderr
 
 
 @pytest.mark.parametrize("root", ["relative/extension", "missing-extension"])
