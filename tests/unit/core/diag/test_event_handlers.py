@@ -162,6 +162,13 @@ def test_host_decompilation_outcome_value_objects_validate_contract():
     )
     assert failed.failure_code == 50057
 
+    code_less_failed = HostDecompilationOutcome(
+        kind=HostDecompilationOutcomeKind.FAILED,
+        source="headless_decompile",
+        cfunc_available=False,
+    )
+    assert code_less_failed.failure_code is None
+
     invalid = (
         dict(kind=HostDecompilationOutcomeKind.RENDERED, source="render", cfunc_available=False),
         dict(kind=HostDecompilationOutcomeKind.FAILED, source="failed", cfunc_available=True, failure_code=1),
@@ -243,6 +250,55 @@ def test_host_decompilation_outcome_is_persisted_once_and_conflicts_are_diagnost
         "SELECT event_kind FROM lifecycle_events "
         "WHERE session_id='host-session' AND event_kind='diagnostic_error'"
     ).fetchone() == ("diagnostic_error",)
+
+
+def test_host_decompilation_outcome_preserves_none_vs_empty_description_conflict(
+    fake_conn,
+):
+    emit(
+        DiagnosticSessionObserved(
+            session_id="description-session",
+            func_ea=0x401000,
+            top_level_epoch=1,
+            native_key_json="{}",
+            status="active",
+            timestamp=1.0,
+        )
+    )
+    emit(
+        HostDecompilationOutcomeObserved(
+            session_id="description-session",
+            func_ea=0x401000,
+            outcome=HostDecompilationOutcome(
+                kind=HostDecompilationOutcomeKind.ABANDONED,
+                source="plugin_stop",
+                cfunc_available=False,
+            ),
+            timestamp=2.0,
+        )
+    )
+    emit(
+        HostDecompilationOutcomeObserved(
+            session_id="description-session",
+            func_ea=0x401000,
+            outcome=HostDecompilationOutcome(
+                kind=HostDecompilationOutcomeKind.ABANDONED,
+                source="plugin_stop",
+                cfunc_available=False,
+                failure_description="",
+            ),
+            timestamp=2.0,
+        )
+    )
+
+    assert fake_conn.execute(
+        "SELECT COUNT(*) FROM host_decompilation_outcomes "
+        "WHERE session_id='description-session'"
+    ).fetchone() == (1,)
+    assert fake_conn.execute(
+        "SELECT diagnostic_error_count FROM diagnostic_sessions "
+        "WHERE session_id='description-session'"
+    ).fetchone() == (1,)
 
 
 # ---------------------------------------------------------------------------

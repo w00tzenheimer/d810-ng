@@ -120,6 +120,24 @@ def persist_host_decompilation_outcome(
 ) -> int | None:
     """Persist one host outcome per session with insert-once semantics."""
     outcome = event.outcome
+    fingerprint = json.dumps(
+        {
+            "func_ea": int(event.func_ea),
+            "kind": outcome.kind.value,
+            "source": outcome.source,
+            "cfunc_available": outcome.cfunc_available,
+            "failure_code": outcome.failure_code,
+            "failure_ea": outcome.failure_ea,
+            "failure_description": outcome.failure_description,
+            "session_id": event.session_id,
+            "timestamp": event.timestamp,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    fingerprint_payload = json.dumps(
+        {"fingerprint": fingerprint}, sort_keys=True, separators=(",", ":")
+    )
     row_values = (
         str(event.session_id),
         _func_hex(event.func_ea),
@@ -139,7 +157,13 @@ def persist_host_decompilation_outcome(
         (str(event.session_id),),
     ).fetchone()
     if existing is not None:
-        if tuple(existing[:-1]) == row_values:
+        lifecycle_payload = conn.execute(
+            "SELECT payload_json FROM lifecycle_events WHERE event_id=?",
+            (int(existing[-1]),),
+        ).fetchone()
+        if tuple(existing[:-1]) == row_values and lifecycle_payload == (
+            fingerprint_payload,
+        ):
             return int(existing[-1])
         conn.execute(
             "UPDATE diagnostic_sessions SET diagnostic_error_count="
@@ -168,6 +192,7 @@ def persist_host_decompilation_outcome(
             func_ea=event.func_ea,
             event_kind="host_decompilation_outcome",
             summary=f"host decompilation {outcome.kind.value}",
+            payload={"fingerprint": fingerprint},
             timestamp=event.timestamp,
         ),
         snapshot_id=None,

@@ -101,8 +101,6 @@ class HostDecompilationOutcome:
         elif self.kind is HostDecompilationOutcomeKind.FAILED:
             if self.cfunc_available:
                 raise ValueError("failed outcome cannot carry a cfunc")
-            if self.failure_code is None:
-                raise ValueError("failed outcome requires a failure_code")
         elif has_failure_metadata:
             raise ValueError("abandoned outcome cannot carry failure metadata")
 
