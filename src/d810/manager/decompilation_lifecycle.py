@@ -693,6 +693,26 @@ class DecompilationLifecycleCoordinator:
             self.finish_hexrays_session()
         return observed
 
+    def drain_active_sessions(self, *, source: str) -> None:
+        """Drain every activation during shutdown, publishing owner outcomes."""
+        while self._active_sessions:
+            activation = self._active_sessions[-1]
+            if not activation.owns_session:
+                self.finish_hexrays_session(force=True)
+                continue
+            session = activation.session
+            if session.host_outcome is None:
+                self.observe_host_outcome(
+                    session.function_ea,
+                    HostDecompilationOutcome(
+                        kind=HostDecompilationOutcomeKind.ABANDONED,
+                        source=str(source),
+                        cfunc_available=False,
+                    ),
+                )
+            if self._active_sessions and self._active_sessions[-1].session is session:
+                self.finish_hexrays_session(force=True)
+
     def _abandon_structurally_complete_owner(self, *, source: str) -> None:
         if not self._active_sessions:
             return
@@ -1467,17 +1487,21 @@ class DecompilationLifecycleCoordinator:
                     exc_info=True,
                 )
 
-    def finish_hexrays_session(self) -> None:
+    def finish_hexrays_session(self, *, force: bool = False) -> None:
         """Finish the innermost session and publish its typed observer event."""
         if not self._active_sessions:
             return None
         activation = self._active_sessions[-1]
-        if activation.owns_session and activation.session.native_preanalysis_depth > 0:
+        if (
+            not force
+            and activation.owns_session
+            and activation.session.native_preanalysis_depth > 0
+        ):
             # A defensive guard for a preflight callback that did not receive
             # its borrowed activation. The manager releases the reservation
             # before the public top-level decompile can finish this owner.
             return None
-        if activation.owns_session and (
+        if not force and activation.owns_session and (
             activation.session.native_preanalysis.has_pending_generated_restart
             or activation.session.native_preanalysis.has_exhausted_poison_restart
         ):

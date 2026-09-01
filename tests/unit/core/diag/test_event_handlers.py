@@ -210,7 +210,8 @@ def test_host_decompilation_outcome_is_persisted_once_and_conflicts_are_diagnost
             session_id="host-session",
             func_ea=0x401000,
             outcome=rendered.outcome,
-            timestamp=2.5,
+            # Delivery time is not part of semantic duplicate identity.
+            timestamp=999.0,
         )
     )
     assert fake_conn.execute(
@@ -251,8 +252,9 @@ def test_host_decompilation_outcome_is_persisted_once_and_conflicts_are_diagnost
     )
     emit(conflicting)
     assert fake_conn.execute(
-        "SELECT COUNT(*),outcome,source FROM host_decompilation_outcomes"
-    ).fetchone() == (1, "rendered", "hxe_func_printed")
+        "SELECT COUNT(*),outcome,source,failure_code,failure_description "
+        "FROM host_decompilation_outcomes"
+    ).fetchone() == (1, "rendered", "hxe_func_printed", None, "")
     assert fake_conn.execute(
         "SELECT diagnostic_error_count FROM diagnostic_sessions "
         "WHERE session_id='host-session'"

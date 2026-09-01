@@ -111,6 +111,31 @@ def test_manager_host_outcome_facade_converts_caller_failure_to_primitives() -> 
     assert outcome.failure_description == "host failure"
 
 
+def test_manager_host_outcome_facade_without_failure_is_abandoned() -> None:
+    observed: list[object] = []
+    lifecycle = SimpleNamespace(
+        observe_host_outcome=lambda function_ea, outcome: observed.append(
+            (function_ea, outcome)
+        )
+    )
+    manager = D810Manager.__new__(D810Manager)
+    manager.decompilation_lifecycle = lifecycle
+
+    manager.observe_host_decompile_result(
+        0x401000,
+        None,
+        None,
+        source="headless",
+    )
+
+    function_ea, outcome = observed[0]
+    assert function_ea == 0x401000
+    assert outcome.kind is HostDecompilationOutcomeKind.ABANDONED
+    assert outcome.failure_code is None
+    assert outcome.failure_ea is None
+    assert outcome.failure_description is None
+
+
 def _evidence_receipt() -> GeneratedRestartReceipt:
     return GeneratedRestartReceipt(
         kind=GeneratedRestartKind.EVIDENCE_REBIND,

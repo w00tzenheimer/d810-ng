@@ -4941,17 +4941,11 @@ class D810Manager:
         self._idb_preparation_gateway = None
         self.pre_hex_preparation = None
         lifecycle = getattr(self, "decompilation_lifecycle", None)
-        abandon_active_session = getattr(lifecycle, "abandon_active_session", None)
-        if callable(abandon_active_session):
+        drain_active_sessions = getattr(lifecycle, "drain_active_sessions", None)
+        if callable(drain_active_sessions):
             self._safe_lifecycle_step(
-                "decompilation.lifecycle.abandon",
-                lambda: abandon_active_session(source="plugin_stop"),
-            )
-        finish_hexrays_session = getattr(lifecycle, "finish_hexrays_session", None)
-        if callable(finish_hexrays_session):
-            self._safe_lifecycle_step(
-                "decompilation.lifecycle.finish",
-                finish_hexrays_session,
+                "decompilation.lifecycle.drain",
+                lambda: drain_active_sessions(source="plugin_stop"),
             )
         try:
             from d810.core.observability import close_observability_session
