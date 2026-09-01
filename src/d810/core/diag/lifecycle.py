@@ -130,7 +130,6 @@ def persist_host_decompilation_outcome(
             "failure_ea": outcome.failure_ea,
             "failure_description": outcome.failure_description,
             "session_id": event.session_id,
-            "timestamp": event.timestamp,
         },
         sort_keys=True,
         separators=(",", ":"),

@@ -205,7 +205,14 @@ def test_host_decompilation_outcome_is_persisted_once_and_conflicts_are_diagnost
         timestamp=2.0,
     )
     emit(rendered)
-    emit(rendered)
+    emit(
+        HostDecompilationOutcomeObserved(
+            session_id="host-session",
+            func_ea=0x401000,
+            outcome=rendered.outcome,
+            timestamp=2.5,
+        )
+    )
     assert fake_conn.execute(
         "SELECT session_id,func_ea_hex,func_ea_i64,outcome,source,cfunc_available,"
         "failure_code,failure_ea_hex,failure_ea_i64,failure_description,event_id "
@@ -225,6 +232,10 @@ def test_host_decompilation_outcome_is_persisted_once_and_conflicts_are_diagnost
             2,
         )
     ]
+    assert fake_conn.execute(
+        "SELECT diagnostic_error_count FROM diagnostic_sessions "
+        "WHERE session_id='host-session'"
+    ).fetchone() == (0,)
 
     conflicting = HostDecompilationOutcomeObserved(
         session_id="host-session",
