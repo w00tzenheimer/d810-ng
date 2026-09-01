@@ -197,12 +197,19 @@ def decompile(
             return ida_hexrays.decompile(function_ea)
         return ida_hexrays.decompile(function_ea, failure)
 
-    return _state.manager.decompile_with_native_preanalysis(
+    result = _state.manager.decompile_with_native_preanalysis(
         function_ea,
         run_decompile,
         ida_hexrays.clear_cached_cfuncs,
         eager_native_preanalysis=bool(eager_native_preanalysis),
     )
+    _state.manager.observe_host_decompile_result(
+        function_ea,
+        result,
+        failure,
+        source="headless",
+    )
+    return result
 
 
 def stop() -> None:

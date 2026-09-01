@@ -7,6 +7,10 @@ import idaapi
 
 from d810.core import getLogger, typing
 from d810.core.decompilation_session import DecompilationEvent
+from d810.core.observability_events import (
+    HostDecompilationOutcome,
+    HostDecompilationOutcomeKind,
+)
 from d810.analyses.control_flow.native_preanalysis_session import (
     NativeMutationBoundary,
 )
@@ -640,17 +644,7 @@ class HexraysDecompilationHook(ida_hexrays.Hexrays_Hooks):
         main_logger.debug("Structural analysis has been finished")
         lifecycle = self._decompilation_lifecycle
         if lifecycle is not None:
-            lifecycle.finish_hexrays_session()
-        if lifecycle is None or not lifecycle.has_active_sessions:
-            try:
-                from d810.core.observability import close_observability_session
-
-                # Finish emits the terminal event while the diagnostic sink is
-                # still live. A controlled redo retains both lifecycle owner
-                # and database until the final structural callback.
-                close_observability_session()
-            except Exception:
-                pass  # diagnostic, never gates decompilation
+            lifecycle.mark_structural_complete()
         return 0
 
     def func_printed(self, cfunc: ida_hexrays.cfunc_t) -> int:
@@ -658,4 +652,23 @@ class HexraysDecompilationHook(ida_hexrays.Hexrays_Hooks):
 
         @param cfunc: (cfunc_t *)"""
         main_logger.debug("Function text has been generated")
+        lifecycle = self._decompilation_lifecycle
+        observe_host_outcome = getattr(lifecycle, "observe_host_outcome", None)
+        if callable(observe_host_outcome):
+            function_ea = int(cfunc.entry_ea)
+            observed = observe_host_outcome(
+                function_ea,
+                HostDecompilationOutcome(
+                    kind=HostDecompilationOutcomeKind.RENDERED,
+                    source="hxe_func_printed",
+                    cfunc_available=True,
+                ),
+            )
+            if observed and not lifecycle.has_active_sessions:
+                try:
+                    from d810.core.observability import close_observability_session
+
+                    close_observability_session()
+                except Exception:
+                    pass  # diagnostic, never gates decompilation
         return 0

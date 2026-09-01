@@ -1503,6 +1503,78 @@ class D810Manager:
                 result = decompile()
         return result
 
+    def observe_host_decompile_result(
+        self,
+        function_ea: int,
+        cfunc: object | None,
+        failure: object | None,
+        *,
+        source: str,
+    ) -> None:
+        """Publish the caller-owned host decompile result at the manager boundary."""
+        lifecycle = getattr(self, "decompilation_lifecycle", None)
+        observe_host_outcome = getattr(lifecycle, "observe_host_outcome", None)
+        if not callable(observe_host_outcome):
+            return
+
+        failure_code = None
+        failure_ea = None
+        failure_description = None
+        if failure is not None:
+            try:
+                raw_code = getattr(failure, "code", None)
+                if raw_code is not None:
+                    raw_code = int(raw_code)
+                    if raw_code > 0:
+                        failure_code = raw_code
+            except (TypeError, ValueError, OverflowError):
+                pass
+            try:
+                raw_ea = getattr(failure, "errea", None)
+                if raw_ea is not None:
+                    raw_ea = int(raw_ea)
+                    if raw_ea >= 0:
+                        failure_ea = raw_ea
+            except (TypeError, ValueError, OverflowError):
+                pass
+            description = getattr(failure, "desc", None)
+            if callable(description):
+                try:
+                    description = description()
+                except Exception:
+                    description = None
+            if description is not None:
+                failure_description = str(description)
+
+        from d810.core.observability_events import (
+            HostDecompilationOutcome,
+            HostDecompilationOutcomeKind,
+        )
+
+        cfunc_available = cfunc is not None
+        if cfunc_available:
+            outcome = HostDecompilationOutcome(
+                kind=HostDecompilationOutcomeKind.RENDERED,
+                source=str(source),
+                cfunc_available=True,
+            )
+        elif failure is not None:
+            outcome = HostDecompilationOutcome(
+                kind=HostDecompilationOutcomeKind.FAILED,
+                source=str(source),
+                cfunc_available=False,
+                failure_code=failure_code,
+                failure_ea=failure_ea,
+                failure_description=failure_description,
+            )
+        else:
+            outcome = HostDecompilationOutcome(
+                kind=HostDecompilationOutcomeKind.ABANDONED,
+                source=str(source),
+                cfunc_available=False,
+            )
+        observe_host_outcome(int(function_ea), outcome)
+
     def _stage_c_collection_enabled(self, function_ea: int) -> bool:
         """Require native policy plus an exact lower-pass config-v2 opt-in."""
         from d810.manager.native_patch_policy import (
@@ -4869,12 +4941,27 @@ class D810Manager:
         self._idb_preparation_gateway = None
         self.pre_hex_preparation = None
         lifecycle = getattr(self, "decompilation_lifecycle", None)
+        abandon_active_session = getattr(lifecycle, "abandon_active_session", None)
+        if callable(abandon_active_session):
+            self._safe_lifecycle_step(
+                "decompilation.lifecycle.abandon",
+                lambda: abandon_active_session(source="plugin_stop"),
+            )
         finish_hexrays_session = getattr(lifecycle, "finish_hexrays_session", None)
         if callable(finish_hexrays_session):
             self._safe_lifecycle_step(
                 "decompilation.lifecycle.finish",
                 finish_hexrays_session,
             )
+        try:
+            from d810.core.observability import close_observability_session
+
+            self._safe_lifecycle_step(
+                "decompilation.observability.close",
+                close_observability_session,
+            )
+        except Exception:
+            pass
         native_patch_execution_journal = getattr(
             self, "_native_patch_execution_journal", None
         )

@@ -273,10 +273,15 @@ def test_hook_starts_and_finishes_typed_sessions_through_the_coordinator() -> No
     assert "ensure_hexrays_session" in ensure_session
     assert "DecompilationEvent.SESSION_STARTED" not in ensure_session
     assert "HexraysDecompilationHook._ensure_lifecycle_session(self, mba)" in decision
-    assert "lifecycle.finish_hexrays_session()" in structural
+    assert "lifecycle.mark_structural_complete()" in structural
     assert "DecompilationEvent.SESSION_FINISHED" not in structural
     assert "DecompilationEvent.STARTED" not in prolog
     assert "DecompilationEvent.FINISHED" not in structural
+
+    func_printed = _method_source(_HOOK, "HexraysDecompilationHook", "func_printed")
+    assert "cfunc.entry_ea" in func_printed
+    assert "HostDecompilationOutcomeKind.RENDERED" in func_printed
+    assert "observe_host_outcome" in func_printed
 
 
 def test_actual_hook_lifecycle_order_is_stable_across_merr_redo(monkeypatch) -> None:
@@ -404,6 +409,10 @@ def test_actual_hook_lifecycle_order_is_stable_across_merr_redo(monkeypatch) -> 
     )
     assert HexraysDecompilationHook.calls_done(hook, mba) == 0
     assert HexraysDecompilationHook.structural(hook, SimpleNamespace()) == 0
+    assert HexraysDecompilationHook.func_printed(
+        hook,
+        SimpleNamespace(entry_ea=0x401000),
+    ) == 0
 
     assert order == [
         "SESSION_STARTED",

@@ -16,6 +16,7 @@ from d810.analyses.control_flow.native_preanalysis_session import (
     NativePreanalysisSessionState,
 )
 from d810.core.observability_events import (
+    HostDecompilationOutcomeKind,
     IdentityDecisionObserved,
     MutationReceiptObserved,
     SemanticFragmentFailureObserved,
@@ -78,6 +79,36 @@ from tests.native_preanalysis import make_native_key
 
 
 NATIVE_KEY = make_native_key()
+
+
+def test_manager_host_outcome_facade_converts_caller_failure_to_primitives() -> None:
+    observed: list[object] = []
+    lifecycle = SimpleNamespace(
+        observe_host_outcome=lambda function_ea, outcome: observed.append(
+            (function_ea, outcome)
+        )
+    )
+    manager = D810Manager.__new__(D810Manager)
+    manager.decompilation_lifecycle = lifecycle
+    failure = SimpleNamespace(
+        code=50057,
+        errea=0x401010,
+        desc=lambda: "host failure",
+    )
+
+    manager.observe_host_decompile_result(
+        0x401000,
+        None,
+        failure,
+        source="headless",
+    )
+
+    function_ea, outcome = observed[0]
+    assert function_ea == 0x401000
+    assert outcome.kind is HostDecompilationOutcomeKind.FAILED
+    assert outcome.failure_code == 50057
+    assert outcome.failure_ea == 0x401010
+    assert outcome.failure_description == "host failure"
 
 
 def _evidence_receipt() -> GeneratedRestartReceipt:

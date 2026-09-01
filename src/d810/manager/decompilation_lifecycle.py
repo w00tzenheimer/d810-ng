@@ -40,6 +40,9 @@ from d810.core.observability import emit as emit_diagnostic
 from d810.core.observability_events import (
     DiagnosticSessionObserved,
     EvidenceGenerationObserved,
+    HostDecompilationOutcome,
+    HostDecompilationOutcomeKind,
+    HostDecompilationOutcomeObserved,
     InputIdentityResolutionObserved,
     LifecycleEventObserved,
 )
@@ -100,6 +103,8 @@ class DecompilationSessionContext:
     database_identity: str
     top_level_epoch: int
     native_key: NativePreanalysisKey
+    structural_complete: bool = False
+    host_outcome: HostDecompilationOutcome | None = None
     #: Stable correlation identity for the execution journal (see
     #: ``d810.core.execution_journal``), minted exactly once per top-level
     #: session by this factory. ``.event`` below must reuse this same value
@@ -525,6 +530,7 @@ class DecompilationLifecycleCoordinator:
                 )
                 return active, False
 
+        self._abandon_structurally_complete_owner(source="next_prolog")
         has_active_parent = bool(self._active_sessions)
         identity = (function_ea, database_identity)
         epoch = self._epochs_by_identity.get(identity, 0) + 1
@@ -624,6 +630,75 @@ class DecompilationLifecycleCoordinator:
                     function_ea,
                 )
         return session, True
+
+    def mark_structural_complete(self) -> None:
+        """Retain the top-level owner until the host publishes its output."""
+        if not self._active_sessions:
+            return
+        activation = self._active_sessions[-1]
+        if not activation.owns_session:
+            self.finish_hexrays_session()
+            return
+        session = activation.session
+        session.structural_complete = True
+        if session.host_outcome is not None:
+            self.finish_hexrays_session()
+
+    def observe_host_outcome(
+        self,
+        function_ea: int,
+        outcome: HostDecompilationOutcome,
+    ) -> bool:
+        """Record one host result and finish its matching top-level owner."""
+        if not isinstance(outcome, HostDecompilationOutcome):
+            raise TypeError("host outcome must be a HostDecompilationOutcome")
+        function_ea = int(function_ea)
+        session = self.current_session(function_ea)
+        if session is None or not self._active_sessions:
+            return False
+        activation = self._active_sessions[-1]
+        if activation.session is not session or not activation.owns_session:
+            return False
+        if session.host_outcome is not None:
+            return session.host_outcome == outcome
+        session.host_outcome = outcome
+        emit_diagnostic(
+            HostDecompilationOutcomeObserved(
+                session_id=session.identity_key,
+                func_ea=function_ea,
+                outcome=outcome,
+            )
+        )
+        if session.structural_complete:
+            self.finish_hexrays_session()
+        return True
+
+    def abandon_active_session(self, *, source: str) -> bool:
+        """Close the active owner with a truthful host-abandonment outcome."""
+        if not self._active_sessions:
+            return False
+        activation = self._active_sessions[-1]
+        if not activation.owns_session:
+            return False
+        session = activation.session
+        observed = self.observe_host_outcome(
+            session.function_ea,
+            HostDecompilationOutcome(
+                kind=HostDecompilationOutcomeKind.ABANDONED,
+                source=str(source),
+                cfunc_available=False,
+            ),
+        )
+        if self.current_session(session.function_ea) is session:
+            self.finish_hexrays_session()
+        return observed
+
+    def _abandon_structurally_complete_owner(self, *, source: str) -> None:
+        if not self._active_sessions:
+            return
+        activation = self._active_sessions[-1]
+        if activation.owns_session and activation.session.structural_complete:
+            self.abandon_active_session(source=source)
 
     def current_session(self, function_ea: int) -> DecompilationSessionContext | None:
         """Return the innermost active session for ``function_ea``."""
