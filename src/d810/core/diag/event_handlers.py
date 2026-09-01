@@ -43,6 +43,7 @@ from d810.core.diag.lifecycle import (
     persist_diagnostic_session_transition,
     persist_evidence_generation,
     persist_frontend_normalization_plan_intent,
+    persist_host_decompilation_outcome,
     persist_identity_decision,
     persist_lifecycle_event,
     persist_mutation_plan,
@@ -95,6 +96,7 @@ from d810.core.observability_events import (
     DiagnosticSessionObserved,
     EvidenceGenerationObserved,
     FrontendNormalizationPlanIntentObserved,
+    HostDecompilationOutcomeObserved,
     FactConflictsObserved,
     FactConsumersForLatestSnapshot,
     FactConsumersObserved,
@@ -378,6 +380,16 @@ def _handle_frontend_normalization_plan_intent(
     if conn is not None:
         with conn:
             persist_frontend_normalization_plan_intent(conn, ev)
+
+
+def _handle_host_decompilation_outcome(ev: HostDecompilationOutcomeObserved) -> None:
+    try:
+        conn = get_diag_conn(int(ev.func_ea))
+    except Exception:
+        return
+    if conn is not None:
+        with conn:
+            persist_host_decompilation_outcome(conn, ev)
 
 
 def _handle_semantic_output_verified(ev: SemanticOutputVerifiedObserved) -> None:
@@ -1251,6 +1263,7 @@ _HANDLERS: tuple[tuple[type, object], ...] = (
         FrontendNormalizationPlanIntentObserved,
         _handle_frontend_normalization_plan_intent,
     ),
+    (HostDecompilationOutcomeObserved, _handle_host_decompilation_outcome),
     (SemanticOutputVerifiedObserved, _handle_semantic_output_verified),
     (PassContractEvidencePublished, _handle_pass_contract_evidence),
     (MutationPlanObserved, _handle_mutation_plan),

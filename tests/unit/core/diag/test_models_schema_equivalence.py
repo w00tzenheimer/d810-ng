@@ -75,6 +75,19 @@ EXPECTED = {
 # ALLOWED_PK_NOTNULL_DIFFS below.
 # --------------------------------------------------------------------------- #
 EXPECTED_TABLE_INFO = {
+    "host_decompilation_outcomes": [
+        ("session_id", "TEXT", 1, 1),
+        ("func_ea_hex", "TEXT", 1, 0),
+        ("func_ea_i64", "INTEGER", 1, 0),
+        ("outcome", "TEXT", 1, 0),
+        ("source", "TEXT", 1, 0),
+        ("cfunc_available", "INTEGER", 1, 0),
+        ("failure_code", "INTEGER", 0, 0),
+        ("failure_ea_hex", "TEXT", 0, 0),
+        ("failure_ea_i64", "INTEGER", 0, 0),
+        ("failure_description", "TEXT", 1, 0),
+        ("event_id", "INTEGER", 1, 0),
+    ],
     "semantic_route_oracle_runs": [
         ("run_id", "TEXT", 1, 1),
         ("func_ea_hex", "TEXT", 1, 0),
@@ -693,6 +706,10 @@ EXPECTED_TABLE_INFO = {
 # Index *names* may differ (peewee names them ``<table>_<col>``); assert
 # presence + indexed columns, not legacy names.
 EXPECTED_INDEXES = {
+    "host_decompilation_outcomes": [
+        ("c", ("event_id",)),
+        ("pk", ("session_id",)),
+    ],
     "semantic_route_oracle_runs": [
         ("c", ("func_ea_i64", "created_at")),
         ("pk", ("run_id",)),
@@ -1021,4 +1038,4 @@ class TestModeledSchemaEquivalence:
 
     def test_modeled_count(self) -> None:
         # Phase A models the non-slice-1, non-view tables plus case sources.
-        assert len(EXPECTED_TABLE_INFO) == 44
+        assert len(EXPECTED_TABLE_INFO) == 45

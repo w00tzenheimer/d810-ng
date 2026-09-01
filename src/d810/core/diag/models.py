@@ -247,6 +247,7 @@ class LifecycleEvent(BaseModel):
     """
 
     Z3_PREDICATE_PROOF_EVENT_KIND = "z3_predicate_proof"
+    DIAGNOSTIC_ERROR_EVENT_KIND = "diagnostic_error"
 
     event_id = AutoField()
     session = ForeignKeyField(
@@ -285,6 +286,32 @@ class LifecycleEvent(BaseModel):
             (("func_ea_i64", "event_kind"), False),
             (("correlation_id",), False),
         )
+
+
+class HostDecompilationOutcomeRecord(BaseModel):
+    session_id = TextField(primary_key=True)
+    func_ea_hex = TextField()
+    func_ea_i64 = IntegerField()
+    outcome = TextField(
+        constraints=[Check("outcome IN ('rendered','failed','abandoned')")]
+    )
+    source = TextField()
+    cfunc_available = IntegerField(constraints=[Check("cfunc_available IN (0,1)")])
+    failure_code = IntegerField(null=True)
+    failure_ea_hex = TextField(null=True)
+    failure_ea_i64 = IntegerField(null=True)
+    failure_description = TextField()
+    event_id = ForeignKeyField(
+        LifecycleEvent,
+        field="event_id",
+        column_name="event_id",
+        unique=True,
+        index=False,
+        null=False,
+    )
+
+    class Meta:
+        table_name = "host_decompilation_outcomes"
 
 
 class EvidenceGenerationEvent(BaseModel):
@@ -1700,6 +1727,7 @@ MODELS = (
     SemanticRouteOracleCaptureRecord,
     SemanticRouteOracleComparisonRecord,
     LifecycleEvent,
+    HostDecompilationOutcomeRecord,
     EvidenceGenerationEvent,
     IdentityDecision,
     MutationPlanItem,

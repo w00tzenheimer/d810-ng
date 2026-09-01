@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import Enum
 import json
 from uuid import uuid4
 
@@ -47,6 +48,83 @@ class DiagnosticSessionObserved:
     native_key_json: str
     status: str
     timestamp: float = 0.0
+
+
+class HostDecompilationOutcomeKind(str, Enum):
+    """Terminal outcome reported by the host decompilation frontend."""
+
+    RENDERED = "rendered"
+    FAILED = "failed"
+    ABANDONED = "abandoned"
+
+
+@dataclass(frozen=True)
+class HostDecompilationOutcome:
+    """Portable, typed result of one host decompilation attempt."""
+
+    kind: HostDecompilationOutcomeKind
+    source: str
+    cfunc_available: bool
+    failure_code: int | None = None
+    failure_ea: int | None = None
+    failure_description: str | None = None
+
+    def __post_init__(self) -> None:
+        if type(self.kind) is not HostDecompilationOutcomeKind:
+            raise TypeError("kind must be a HostDecompilationOutcomeKind")
+        if not isinstance(self.source, str) or not self.source.strip():
+            raise ValueError("source must be non-empty")
+        if type(self.cfunc_available) is not bool:
+            raise TypeError("cfunc_available must be a bool")
+        if self.failure_code is not None:
+            if isinstance(self.failure_code, bool) or int(self.failure_code) <= 0:
+                raise ValueError("failure_code must be positive when set")
+            object.__setattr__(self, "failure_code", int(self.failure_code))
+        if self.failure_ea is not None:
+            if isinstance(self.failure_ea, bool) or int(self.failure_ea) < 0:
+                raise ValueError("failure_ea must be non-negative when set")
+            object.__setattr__(self, "failure_ea", int(self.failure_ea))
+        if self.failure_description is not None and not isinstance(
+            self.failure_description, str
+        ):
+            raise TypeError("failure_description must be text when set")
+        has_failure_metadata = (
+            self.failure_code is not None
+            or self.failure_ea is not None
+            or bool(self.failure_description)
+        )
+        if self.kind is HostDecompilationOutcomeKind.RENDERED:
+            if not self.cfunc_available:
+                raise ValueError("rendered outcome requires a cfunc")
+            if has_failure_metadata:
+                raise ValueError("rendered outcome cannot carry failure metadata")
+        elif self.kind is HostDecompilationOutcomeKind.FAILED:
+            if self.cfunc_available:
+                raise ValueError("failed outcome cannot carry a cfunc")
+            if self.failure_code is None:
+                raise ValueError("failed outcome requires a failure_code")
+        elif has_failure_metadata:
+            raise ValueError("abandoned outcome cannot carry failure metadata")
+
+
+@dataclass(frozen=True)
+class HostDecompilationOutcomeObserved:
+    """Observation receipt for one host decompilation outcome."""
+
+    session_id: str
+    func_ea: int
+    outcome: HostDecompilationOutcome
+    timestamp: float = 0.0
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.session_id, str) or not self.session_id.strip():
+            raise ValueError("session_id must be non-empty")
+        if isinstance(self.func_ea, bool) or int(self.func_ea) < 0:
+            raise ValueError("func_ea must be non-negative")
+        if not isinstance(self.outcome, HostDecompilationOutcome):
+            raise TypeError("outcome must be a HostDecompilationOutcome")
+        object.__setattr__(self, "func_ea", int(self.func_ea))
+        object.__setattr__(self, "timestamp", float(self.timestamp))
 
 
 @dataclass(frozen=True)

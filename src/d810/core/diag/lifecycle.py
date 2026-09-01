@@ -11,6 +11,7 @@ from d810.core.observability_events import (
     DiagnosticSessionObserved,
     EvidenceGenerationObserved,
     FrontendNormalizationPlanIntentObserved,
+    HostDecompilationOutcomeObserved,
     IdentityDecisionObserved,
     LifecycleEventObserved,
     MutationPlanObserved,
@@ -86,6 +87,99 @@ def persist_diagnostic_session_transition(
         snapshot_id=None,
     )
     return True
+
+
+def persist_diagnostic_error(
+    conn: sqlite3.Connection,
+    *,
+    session_id: str,
+    func_ea: int,
+    summary: str,
+    payload: dict[str, object],
+    timestamp: float = 0.0,
+) -> int:
+    """Persist a diagnostic consistency error in the lifecycle timeline."""
+    return persist_lifecycle_event(
+        conn,
+        LifecycleEventObserved(
+            session_id=str(session_id),
+            func_ea=int(func_ea),
+            event_kind="diagnostic_error",
+            phase="diagnostic",
+            summary=str(summary),
+            payload=payload,
+            timestamp=float(timestamp),
+        ),
+        snapshot_id=None,
+    )
+
+
+def persist_host_decompilation_outcome(
+    conn: sqlite3.Connection,
+    event: HostDecompilationOutcomeObserved,
+) -> int | None:
+    """Persist one host outcome per session with insert-once semantics."""
+    outcome = event.outcome
+    row_values = (
+        str(event.session_id),
+        _func_hex(event.func_ea),
+        int(event.func_ea),
+        outcome.kind.value,
+        str(outcome.source),
+        int(outcome.cfunc_available),
+        outcome.failure_code,
+        None if outcome.failure_ea is None else _func_hex(outcome.failure_ea),
+        outcome.failure_ea,
+        "" if outcome.failure_description is None else outcome.failure_description,
+    )
+    existing = conn.execute(
+        "SELECT session_id,func_ea_hex,func_ea_i64,outcome,source,cfunc_available,"
+        "failure_code,failure_ea_hex,failure_ea_i64,failure_description,event_id "
+        "FROM host_decompilation_outcomes WHERE session_id=?",
+        (str(event.session_id),),
+    ).fetchone()
+    if existing is not None:
+        if tuple(existing[:-1]) == row_values:
+            return int(existing[-1])
+        conn.execute(
+            "UPDATE diagnostic_sessions SET diagnostic_error_count="
+            "diagnostic_error_count+1 WHERE session_id=?",
+            (str(event.session_id),),
+        )
+        persist_diagnostic_error(
+            conn,
+            session_id=event.session_id,
+            func_ea=event.func_ea,
+            summary="conflicting host decompilation outcome",
+            payload={
+                "existing_event_id": int(existing[-1]),
+                "incoming_outcome": outcome.kind.value,
+                "incoming_source": outcome.source,
+                "reason": "conflicting_duplicate",
+            },
+            timestamp=event.timestamp,
+        )
+        return None
+
+    event_id = persist_lifecycle_event(
+        conn,
+        LifecycleEventObserved(
+            session_id=event.session_id,
+            func_ea=event.func_ea,
+            event_kind="host_decompilation_outcome",
+            summary=f"host decompilation {outcome.kind.value}",
+            timestamp=event.timestamp,
+        ),
+        snapshot_id=None,
+    )
+    conn.execute(
+        "INSERT INTO host_decompilation_outcomes "
+        "(session_id,func_ea_hex,func_ea_i64,outcome,source,"
+        "cfunc_available,failure_code,failure_ea_hex,failure_ea_i64,"
+        "failure_description,event_id) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+        row_values + (event_id,),
+    )
+    return event_id
 
 
 def persist_lifecycle_event(

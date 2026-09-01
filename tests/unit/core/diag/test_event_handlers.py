@@ -37,6 +37,9 @@ from d810.core.observability_events import (
     MutationReceiptObserved,
     PassContractEvidencePublished,
     SemanticOutputVerifiedObserved,
+    HostDecompilationOutcome,
+    HostDecompilationOutcomeKind,
+    HostDecompilationOutcomeObserved,
     Z3PredicateProofObserved,
 )
 from d810.core.z3_proof import Z3ProofAbstentionReason, Z3ProofStatus
@@ -139,6 +142,107 @@ def _make_snap_blocks() -> list[BlockSnapshot]:
             start_ea=0x100,
         ),
     ]
+
+
+def test_host_decompilation_outcome_value_objects_validate_contract():
+    rendered = HostDecompilationOutcome(
+        kind=HostDecompilationOutcomeKind.RENDERED,
+        source="hxe_func_printed",
+        cfunc_available=True,
+    )
+    assert rendered.failure_code is None
+
+    failed = HostDecompilationOutcome(
+        kind=HostDecompilationOutcomeKind.FAILED,
+        source="headless_decompile",
+        cfunc_available=False,
+        failure_code=50057,
+        failure_ea=0x7FFB159EABD0,
+        failure_description="internal error 50057",
+    )
+    assert failed.failure_code == 50057
+
+    invalid = (
+        dict(kind=HostDecompilationOutcomeKind.RENDERED, source="render", cfunc_available=False),
+        dict(kind=HostDecompilationOutcomeKind.FAILED, source="failed", cfunc_available=True, failure_code=1),
+        dict(kind=HostDecompilationOutcomeKind.RENDERED, source="", cfunc_available=True),
+        dict(kind=HostDecompilationOutcomeKind.FAILED, source="failed", cfunc_available=False, failure_code=1, failure_ea=-1),
+        dict(kind=HostDecompilationOutcomeKind.FAILED, source="failed", cfunc_available=False, failure_code=0),
+        dict(kind=HostDecompilationOutcomeKind.ABANDONED, source="abandoned", cfunc_available=False, failure_code=1),
+    )
+    for kwargs in invalid:
+        with pytest.raises((TypeError, ValueError)):
+            HostDecompilationOutcome(**kwargs)
+
+
+def test_host_decompilation_outcome_is_persisted_once_and_conflicts_are_diagnostic(
+    fake_conn,
+):
+    session = DiagnosticSessionObserved(
+        session_id="host-session",
+        func_ea=0x401000,
+        top_level_epoch=1,
+        native_key_json="{}",
+        status="active",
+        timestamp=1.0,
+    )
+    emit(session)
+    rendered = HostDecompilationOutcomeObserved(
+        session_id="host-session",
+        func_ea=0x401000,
+        outcome=HostDecompilationOutcome(
+            kind=HostDecompilationOutcomeKind.RENDERED,
+            source="hxe_func_printed",
+            cfunc_available=True,
+        ),
+        timestamp=2.0,
+    )
+    emit(rendered)
+    emit(rendered)
+    assert fake_conn.execute(
+        "SELECT session_id,func_ea_hex,func_ea_i64,outcome,source,cfunc_available,"
+        "failure_code,failure_ea_hex,failure_ea_i64,failure_description,event_id "
+        "FROM host_decompilation_outcomes"
+    ).fetchall() == [
+        (
+            "host-session",
+            "0x0000000000401000",
+            0x401000,
+            "rendered",
+            "hxe_func_printed",
+            1,
+            None,
+            None,
+            None,
+            "",
+            2,
+        )
+    ]
+
+    conflicting = HostDecompilationOutcomeObserved(
+        session_id="host-session",
+        func_ea=0x401000,
+        outcome=HostDecompilationOutcome(
+            kind=HostDecompilationOutcomeKind.FAILED,
+            source="headless_decompile",
+            cfunc_available=False,
+            failure_code=50057,
+            failure_description="internal error 50057",
+        ),
+        timestamp=3.0,
+    )
+    emit(conflicting)
+    assert fake_conn.execute(
+        "SELECT COUNT(*),outcome,source FROM host_decompilation_outcomes"
+    ).fetchone() == (1, "rendered", "hxe_func_printed")
+    assert fake_conn.execute(
+        "SELECT diagnostic_error_count FROM diagnostic_sessions "
+        "WHERE session_id='host-session'"
+    ).fetchone() == (1,)
+    assert fake_conn.execute(
+        "SELECT event_kind FROM lifecycle_events "
+        "WHERE session_id='host-session' AND event_kind='diagnostic_error'"
+    ).fetchone() == ("diagnostic_error",)
 
 
 # ---------------------------------------------------------------------------
