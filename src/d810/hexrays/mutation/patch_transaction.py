@@ -61,6 +61,21 @@ def _iter_plan_refs(value: object):
                 yield from _iter_plan_refs(getattr(value, item.name))
 
 
+def _iter_named_plan_refs(value: object, prefix: str = ""):
+    if isinstance(value, (NativeBlockRef, LogicalBlockRef, PlanBlockRef)):
+        yield prefix, value
+        return
+    if isinstance(value, tuple):
+        for index, item in enumerate(value):
+            yield from _iter_named_plan_refs(item, f"{prefix}[{index}]")
+        return
+    if is_dataclass(value):
+        for item in fields(value):
+            if not item.name.startswith("_"):
+                name = item.name if not prefix else f"{prefix}.{item.name}"
+                yield from _iter_named_plan_refs(getattr(value, item.name), name)
+
+
 class _PlanObservationFilteringEmitter:
     """Keep the preflight plan receipt while suppressing its later duplicate."""
 
@@ -78,7 +93,10 @@ class _PlanObservationFilteringEmitter:
 
 
 def _patch_plan_observation_items(plan: PatchPlan, snapshot: FlowGraph):
-    from d810.hexrays.mutation.mba_mutation_events import MbaMutationPlanItem
+    from d810.hexrays.mutation.mba_mutation_events import (
+        MbaMutationPlanItem,
+        MbaMutationPlanTarget,
+    )
 
     source_coordinates = dict(plan.source_coordinates)
 
@@ -93,6 +111,19 @@ def _patch_plan_observation_items(plan: PatchPlan, snapshot: FlowGraph):
         anchor = int(block.start_ea if native_ea is None else native_ea)
         return int(serial), anchor
 
+    def extra_targets(named_refs, excluded):
+        return tuple(
+            MbaMutationPlanTarget(
+                role=role,
+                serial=serial,
+                anchor_ea=anchor,
+            )
+            for role, ref in named_refs
+            if role not in excluded
+            for serial, anchor in (coordinate(ref),)
+            if anchor is not None
+        )
+
     def shape(step: object):
         if isinstance(step, PatchRedirectBranch):
             return (
@@ -101,6 +132,7 @@ def _patch_plan_observation_items(plan: PatchPlan, snapshot: FlowGraph):
                 step.new_target,
                 "block_target_change",
                 "immutable PatchPlan step",
+                (),
             )
         if isinstance(step, PatchRedirectGoto):
             return (
@@ -109,6 +141,7 @@ def _patch_plan_observation_items(plan: PatchPlan, snapshot: FlowGraph):
                 step.new_target,
                 "block_goto_change",
                 "immutable PatchPlan step",
+                (),
             )
         if isinstance(step, PatchLowerConditionalStateTransition):
             _false_serial, false_anchor = coordinate(step.false_target_serial)
@@ -123,6 +156,10 @@ def _patch_plan_observation_items(plan: PatchPlan, snapshot: FlowGraph):
                 step.true_target_serial,
                 "lower_conditional_state_transition",
                 f"immutable PatchPlan step{false_target}",
+                extra_targets(
+                    (("false_target", step.false_target_serial),),
+                    {"source_serial", "old_dispatcher_serial", "true_target_serial"},
+                ),
             )
         if isinstance(step, PatchConvertToGoto):
             return (
@@ -131,6 +168,7 @@ def _patch_plan_observation_items(plan: PatchPlan, snapshot: FlowGraph):
                 step.goto_target,
                 "convert_to_goto",
                 "immutable PatchPlan step",
+                (),
             )
         if isinstance(step, PatchRemoveEdge):
             return (
@@ -139,19 +177,59 @@ def _patch_plan_observation_items(plan: PatchPlan, snapshot: FlowGraph):
                 None,
                 "remove_edge",
                 "immutable PatchPlan step",
+                (),
             )
-        refs = tuple(_iter_plan_refs(step))
+        named_refs = tuple(_iter_named_plan_refs(step))
+
+        def pick(*roles):
+            for role in roles:
+                for named_role, ref in named_refs:
+                    if named_role == role:
+                        return named_role, ref
+            return None, None
+
+        source_role, source_ref = pick(
+            "source_serial",
+            "from_serial",
+            "block_serial",
+            "pred_serial",
+            "jtbl_serial",
+        )
+        old_role, old_ref = pick(
+            "apply_old_target",
+            "old_target",
+            "old_target_serial",
+            "old_dispatcher_serial",
+        )
+        target_role, target_ref = pick(
+            "new_target",
+            "new_target_serial",
+            "target_serial",
+            "goto_target",
+            "final_target",
+            "succ_serial",
+            "keep_target",
+            "keep_target_serial",
+            "conditional_target",
+            "header_target",
+        )
+        if source_ref is None and named_refs:
+            source_role, source_ref = named_refs[0]
+        excluded = {role for role in (source_role, old_role, target_role) if role}
         return (
-            refs[0] if refs else None,
-            None,
-            refs[1] if len(refs) > 1 else None,
+            source_ref,
+            old_ref,
+            target_ref,
             f"patch_{type(step).__name__}",
             "immutable PatchPlan step",
+            extra_targets(named_refs, excluded),
         )
 
     items = []
     for item_index, step in enumerate(plan.steps):
-        source_ref, old_ref, target_ref, mutation_kind, reason = shape(step)
+        source_ref, old_ref, target_ref, mutation_kind, reason, additional_targets = shape(
+            step
+        )
         source_serial, source_anchor = coordinate(source_ref)
         old_target_serial, old_target_anchor = coordinate(old_ref)
         target_serial, target_anchor = coordinate(target_ref)
@@ -164,10 +242,12 @@ def _patch_plan_observation_items(plan: PatchPlan, snapshot: FlowGraph):
                 old_target_serial=(
                     old_target_serial if old_target_anchor is not None else None
                 ),
+                old_target_anchor_ea=old_target_anchor,
                 target_serial=target_serial if target_anchor is not None else None,
                 target_anchor_ea=target_anchor,
                 disposition="planned",
                 reason=reason,
+                additional_targets=additional_targets,
             )
         )
     return tuple(items)

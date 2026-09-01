@@ -3923,20 +3923,45 @@ class D810Manager:
         from d810.core.observability_events import (
             MutationPlanItemObserved,
             MutationPlanObserved,
+            MutationPlanTargetObserved,
         )
+
+        def _anchor(explicit, identity):
+            if explicit is not None:
+                return int(explicit)
+            if identity is not None:
+                return D810Manager._stable_identity_anchor(identity)
+            return None
+
+        def _identity_json(identity):
+            return (
+                None
+                if identity is None
+                else json.dumps(identity.to_dict(), sort_keys=True)
+            )
 
         items = []
         for item in event.items:
-            source_anchor = item.source_anchor_ea
-            if source_anchor is None and item.source_identity is not None:
-                source_anchor = D810Manager._stable_identity_anchor(
-                    item.source_identity
+            source_anchor = _anchor(item.source_anchor_ea, item.source_identity)
+            target_anchor = _anchor(item.target_anchor_ea, item.target_identity)
+            old_target_anchor = _anchor(
+                getattr(item, "old_target_anchor_ea", None),
+                getattr(item, "old_target_identity", None),
+            )
+            additional_targets = tuple(
+                MutationPlanTargetObserved(
+                    role=str(target.role),
+                    serial=(
+                        int(target.serial)
+                        if target.serial is not None
+                        and _anchor(target.anchor_ea, target.identity) is not None
+                        else None
+                    ),
+                    anchor_ea=_anchor(target.anchor_ea, target.identity),
+                    identity_json=_identity_json(target.identity),
                 )
-            target_anchor = item.target_anchor_ea
-            if target_anchor is None and item.target_identity is not None:
-                target_anchor = D810Manager._stable_identity_anchor(
-                    item.target_identity
-                )
+                for target in getattr(item, "additional_targets", ())
+            )
             items.append(
                 MutationPlanItemObserved(
                     item_index=int(item.item_index),
@@ -3947,24 +3972,27 @@ class D810Manager:
                         else None
                     ),
                     source_anchor_ea=source_anchor,
-                    source_identity_json=(
-                        None
-                        if item.source_identity is None
-                        else json.dumps(item.source_identity.to_dict(), sort_keys=True)
-                    ),
+                    source_identity_json=_identity_json(item.source_identity),
                     target_serial=(
                         int(item.target_serial)
                         if item.target_serial is not None and target_anchor is not None
                         else None
                     ),
                     target_anchor_ea=target_anchor,
-                    target_identity_json=(
-                        None
-                        if item.target_identity is None
-                        else json.dumps(item.target_identity.to_dict(), sort_keys=True)
-                    ),
+                    target_identity_json=_identity_json(item.target_identity),
                     disposition=item.disposition,
                     reason=item.reason,
+                    old_target_serial=(
+                        int(item.old_target_serial)
+                        if item.old_target_serial is not None
+                        and old_target_anchor is not None
+                        else None
+                    ),
+                    old_target_anchor_ea=old_target_anchor,
+                    old_target_identity_json=_identity_json(
+                        getattr(item, "old_target_identity", None)
+                    ),
+                    additional_targets=additional_targets,
                 )
             )
         emit_diagnostic(

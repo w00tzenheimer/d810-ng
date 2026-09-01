@@ -72,6 +72,7 @@ from d810.transforms.cfg_transaction import (
     CfgTransactionPhase,
     LogicalBlockRef,
     NativeBlockRef,
+    PlanBlockRef,
     PreparedCfgTransaction,
 )
 from d810.transforms.dispatcher_corridor_coverage import (
@@ -97,9 +98,13 @@ from d810.transforms.graph_modification import (
     SyntheticRegisterNonzeroCondition,
 )
 from d810.transforms.plan import (
+    PatchBypassDispatcherTrampoline,
     PatchConvertToGoto,
+    PatchEdgeSplitTrampoline,
     PatchLowerConditionalStateTransition,
+    PatchPhaseCycleLowering,
     PatchPlan,
+    PatchRemoveEdge,
     PatchRedirectBranch,
     PatchRedirectGoto,
     PatchScalarizeLocalAliasAccess,
@@ -411,10 +416,94 @@ def test_patch_plan_observation_encodes_conditional_multi_target_shape() -> None
     assert "false_target=0x1002" in item.reason
 
 
+@pytest.mark.parametrize("shape", ["trampoline", "phase_cycle", "edge_split"])
+def test_patch_plan_observation_preserves_generic_multi_target_refs(shape) -> None:
+    refs = {serial: _native_ref(serial) for serial in range(6)}
+    if shape == "trampoline":
+        step = PatchBypassDispatcherTrampoline(
+            source_serial=refs[0],
+            trampoline_serial=refs[1],
+            target_serial=refs[2],
+        )
+        expected_target = 2
+        expected_extra = {1}
+    elif shape == "phase_cycle":
+        step = PatchPhaseCycleLowering(
+            header_entries=(refs[0],),
+            header_target=refs[1],
+            body_entries=(refs[2],),
+            body_target=refs[3],
+            next_phase_entries=(refs[4],),
+            next_phase_target=refs[5],
+        )
+        expected_target = 1
+        expected_extra = {2, 3, 4, 5}
+    else:
+        step = PatchEdgeSplitTrampoline(
+            block_id=PlanBlockRef("shape-plan", "split"),
+            source_serial=refs[0],
+            via_pred=refs[1],
+            old_target=refs[2],
+            apply_old_target=refs[3],
+            new_target=refs[4],
+            template_block=refs[5],
+        )
+        expected_target = 4
+        expected_old_target = 3
+        expected_extra = {1, 2, 5}
+    plan = PatchPlan(
+        plan_id="shape-plan",
+        steps=(step,),
+        source_coordinates=tuple((refs[serial], serial) for serial in range(6)),
+    )
+    cfg = _make_cfg([(serial, serial + 1) for serial in range(5)], stop_serials=(5,))
+
+    item = _patch_plan_observation_items(plan, cfg)[0]
+
+    assert item.target_serial == expected_target
+    if shape == "edge_split":
+        assert item.old_target_serial == expected_old_target
+    assert {target.serial for target in item.additional_targets} == expected_extra
+
+
+def test_patch_plan_observation_retains_removed_edge_target() -> None:
+    refs = {serial: _native_ref(serial) for serial in range(2)}
+    plan = PatchPlan(
+        steps=(PatchRemoveEdge(from_serial=refs[0], to_serial=refs[1]),),
+        source_coordinates=((refs[0], 0), (refs[1], 1)),
+    )
+    cfg = _make_cfg([(0, 1)], stop_serials=(1,))
+
+    item = _patch_plan_observation_items(plan, cfg)[0]
+
+    assert item.target_serial is None
+    assert item.old_target_serial == 1
+    assert item.old_target_anchor_ea == 0x1001
+
+
 def test_apply_rejects_plan_that_orphans_reachable_terminal() -> None:
     cfg = _make_cfg(
         [(0, 1), (1, 2), (2, 3)],
         stop_serials=(3,),
+    )
+    # Keep the rejected projected region effectful: this is not an empty STOP
+    # block whose disappearance could be dismissed as harmless cleanup.
+    cfg = replace(
+        cfg,
+        blocks={
+            **cfg.blocks,
+            3: replace(
+                cfg.blocks[3],
+                insn_snapshots=(
+                    InsnSnapshot(
+                        opcode=0x70,
+                        ea=0x1003,
+                        operands=(),
+                        kind=InsnKind.MOV,
+                    ),
+                ),
+            ),
+        },
     )
     plan = _ordinary_plan(
         PatchRedirectGoto,

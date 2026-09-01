@@ -23,6 +23,7 @@ from d810.core.observability_events import (
     LogicalBlockVersionTransitionObserved,
     MutationPlanItemObserved,
     MutationPlanObserved,
+    MutationPlanTargetObserved,
     MutationReceiptObserved,
     RecoverySearchObserved,
     SemanticFragmentFailureObserved,
@@ -214,6 +215,56 @@ def test_recovery_search_observation_is_persisted_with_anchored_targets(
         "SELECT event_kind,correlation_id FROM lifecycle_events "
         "WHERE event_kind='recovery_search'"
     ).fetchone() == ("recovery_search", "s1:region_seeded")
+
+
+def test_plan_item_persists_old_and_additional_target_shapes(diag_conn) -> None:
+    emit(
+        MutationPlanObserved(
+            session_id="s1",
+            func_ea=0x40C8B0,
+            mutation_batch_id="shape-plan",
+            mutation_kind="lower_conditional_state_transition",
+            planned_operation_count=1,
+            mba_generation=8,
+            evidence_generation=3,
+            maturity="MMAT_CALLS",
+            description="lower conditional",
+            items=(
+                MutationPlanItemObserved(
+                    item_index=0,
+                    mutation_kind="lower_conditional_state_transition",
+                    source_serial=17,
+                    source_anchor_ea=0x40CA3D,
+                    source_identity_json=None,
+                    target_serial=21,
+                    target_anchor_ea=0x40CD76,
+                    target_identity_json=None,
+                    disposition="planned",
+                    reason="immutable PatchPlan step",
+                    old_target_serial=19,
+                    old_target_anchor_ea=0x40CB11,
+                    old_target_identity_json=None,
+                    additional_targets=(
+                        MutationPlanTargetObserved(
+                            role="false_target",
+                            serial=23,
+                            anchor_ea=0x40CE01,
+                        ),
+                    ),
+                ),
+            ),
+        )
+    )
+
+    assert diag_conn.execute(
+        "SELECT old_target_serial,old_target_anchor_ea_i64,"
+        "additional_targets_json FROM mutation_plan_items"
+    ).fetchone() == (
+        19,
+        0x40CB11,
+        '[{"anchor_ea":4247041,"identity":null,"role":"false_target",'
+        '"serial":23}]',
+    )
 
 
 def test_timeline_prints_typed_host_failure_code_and_ea(diag_conn) -> None:

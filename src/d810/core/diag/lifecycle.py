@@ -658,7 +658,13 @@ def persist_mutation_plan(
         snapshot_id=None,
     )
     conn.executemany(
-        "INSERT INTO mutation_plan_items VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "INSERT INTO mutation_plan_items "
+        "(event_id,mutation_batch_id,item_index,mutation_kind,source_serial,"
+        "source_anchor_ea_hex,source_anchor_ea_i64,source_identity_json,"
+        "target_serial,target_anchor_ea_hex,target_anchor_ea_i64,target_identity_json,"
+        "old_target_serial,old_target_anchor_ea_hex,old_target_anchor_ea_i64,"
+        "old_target_identity_json,additional_targets_json,disposition,reason) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (
             (
                 event_id,
@@ -673,6 +679,23 @@ def persist_mutation_plan(
                 _anchor_hex(item.target_anchor_ea),
                 item.target_anchor_ea,
                 item.target_identity_json,
+                item.old_target_serial,
+                _anchor_hex(item.old_target_anchor_ea),
+                item.old_target_anchor_ea,
+                item.old_target_identity_json,
+                json.dumps(
+                    [
+                        {
+                            "anchor_ea": target.anchor_ea,
+                            "identity": target.identity_json,
+                            "role": target.role,
+                            "serial": target.serial,
+                        }
+                        for target in item.additional_targets
+                    ],
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
                 item.disposition,
                 item.reason,
             )

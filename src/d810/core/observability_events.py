@@ -418,6 +418,26 @@ class IdentityDecisionObserved:
 
 
 @dataclass(frozen=True)
+class MutationPlanTargetObserved:
+    """One additional typed target in a multi-target mutation plan item."""
+
+    role: str
+    serial: int | None
+    anchor_ea: int | None
+    identity_json: str | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.role, str) or not self.role.strip():
+            raise ValueError("mutation plan target requires a role")
+        if self.serial is not None and self.anchor_ea is None:
+            raise ValueError("a mutation plan target serial requires an EA anchor")
+        if self.anchor_ea is not None and int(self.anchor_ea) < 0:
+            raise ValueError("mutation plan target anchor must be non-negative")
+        if self.serial is not None and int(self.serial) < 0:
+            raise ValueError("mutation plan target serial must be non-negative")
+
+
+@dataclass(frozen=True)
 class MutationPlanItemObserved:
     item_index: int
     mutation_kind: str
@@ -429,12 +449,23 @@ class MutationPlanItemObserved:
     target_identity_json: str | None
     disposition: str
     reason: str
+    old_target_serial: int | None = None
+    old_target_anchor_ea: int | None = None
+    old_target_identity_json: str | None = None
+    additional_targets: tuple[MutationPlanTargetObserved, ...] = ()
 
     def __post_init__(self) -> None:
         if self.source_serial is not None and self.source_anchor_ea is None:
             raise ValueError("a planned source serial requires an EA anchor")
         if self.target_serial is not None and self.target_anchor_ea is None:
             raise ValueError("a planned target serial requires an EA anchor")
+        if self.old_target_serial is not None and self.old_target_anchor_ea is None:
+            raise ValueError("an old target serial requires an EA anchor")
+        if any(
+            not isinstance(target, MutationPlanTargetObserved)
+            for target in self.additional_targets
+        ):
+            raise TypeError("mutation plan additional targets are invalid")
 
 
 @dataclass(frozen=True)
@@ -1375,6 +1406,7 @@ __all__ = [
     "SemanticOutputVerifiedObserved",
     "SemanticFragmentFailureObserved",
     "RecoverySearchObserved",
+    "MutationPlanTargetObserved",
     # Preanalysis
     "BranchOwnershipProofsObserved",
     "BranchWitnessDecisionsObserved",

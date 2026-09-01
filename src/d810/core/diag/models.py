@@ -386,6 +386,11 @@ class MutationPlanItem(BaseModel):
     target_anchor_ea_hex = TextField(null=True)
     target_anchor_ea_i64 = IntegerField(null=True)
     target_identity_json = TextField(null=True)
+    old_target_serial = IntegerField(null=True)
+    old_target_anchor_ea_hex = TextField(null=True)
+    old_target_anchor_ea_i64 = IntegerField(null=True)
+    old_target_identity_json = TextField(null=True)
+    additional_targets_json = TextField(null=True, default="[]")
     disposition = TextField()
     reason = TextField()
 

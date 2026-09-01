@@ -394,6 +394,26 @@ class MbaMutationCommitted:
 
 
 @dataclass(frozen=True, slots=True)
+class MbaMutationPlanTarget:
+    """One additional typed target for a multi-target mutation operation."""
+
+    role: str
+    serial: int | None
+    anchor_ea: int | None
+    identity: StableBlockIdentity | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.role, str) or not self.role.strip():
+            raise ValueError("mutation plan target requires a role")
+        if self.serial is not None and self.anchor_ea is None:
+            raise ValueError("a mutation plan target serial requires an EA anchor")
+        if self.anchor_ea is not None and int(self.anchor_ea) < 0:
+            raise ValueError("mutation plan target anchor must be non-negative")
+        if self.serial is not None and int(self.serial) < 0:
+            raise ValueError("mutation plan target serial must be non-negative")
+
+
+@dataclass(frozen=True, slots=True)
 class MbaMutationPlanItem:
     item_index: int
     mutation_kind: str
@@ -407,8 +427,16 @@ class MbaMutationPlanItem:
     reason: str = ""
     old_target_serial: int | None = None
     operation_key: MbaMutationOperationKey | None = None
+    old_target_anchor_ea: int | None = None
+    old_target_identity: StableBlockIdentity | None = None
+    additional_targets: tuple[MbaMutationPlanTarget, ...] = ()
 
     def __post_init__(self) -> None:
+        if any(
+            not isinstance(target, MbaMutationPlanTarget)
+            for target in self.additional_targets
+        ):
+            raise TypeError("mutation plan additional targets are invalid")
         if self.operation_key is None:
             return
         operation_key = validate_mba_mutation_operation_key(self.operation_key)
@@ -3070,6 +3098,7 @@ __all__ = [
     "MbaMutationObservationFailure",
     "MbaMutationOperationKey",
     "MbaMutationPlanItem",
+    "MbaMutationPlanTarget",
     "MbaMutationPlanned",
     "MbaMutationReceipt",
     "MbaMutationRootPublicationGroup",
