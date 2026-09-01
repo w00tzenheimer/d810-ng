@@ -73,7 +73,7 @@
 #   D810_TEST_BINARY       Passed into container (default: libobfuscated.dll)
 #   D810_SYSTEM_BATCH_SIZE  Tests per fresh interpreter in system mode (default: 20).
 #   D810_EGGLOG_ROOT       Optional absolute host path to a d810-egglog checkout
-#   D810_COBRA_ROOT        Optional absolute host path to a d810-cobra checkout
+#   D810_COBRA_ROOT        Optional absolute host path to the pinned d810-cobra checkout
 #   D810_DOCKER_MEMORY      Memory limit for container (default: 4g). OOM-kills if exceeded.
 #
 # Examples:
@@ -256,11 +256,22 @@ if [ -n "${D810_EGGLOG_ROOT+x}" ]; then
   D810_EGGLOG_ROOT="$(cd "$D810_EGGLOG_ROOT" && pwd -P)"
   EGGLOG_EXTENSION_ENABLED=1
 fi
-# The optional CoBRA repository follows the same wrapper-only policy as
-# Egglog.  The source is mounted read-only and copied into a writable build
-# directory inside the container; the host path never becomes runtime
-# environment authority.
-COBRA_EXTENSION_ENABLED=0
+# CoBRA is a required runtime backend for the API-1 mba-solve contract.  Image
+# tags and the d810-cobra distribution version do not identify its manifest:
+# idapro-9.4-speedups:latest carried a legacy ``rules`` manifest while still
+# reporting d810-cobra 0.1.4.  Install from this immutable source revision on
+# every Docker run, so an image-local package can never decide the contract.
+#
+# D810_COBRA_ROOT is only a local acceleration override.  It must resolve to
+# this exact parent and submodule revision; accepting an arbitrary checkout
+# would merely reintroduce the version-identity bug this pin prevents.
+COBRA_SOURCE_URL="https://github.com/w00tzenheimer/d810-CoBRA.git"
+COBRA_SOURCE_REVISION="3b3c406270f1efd8e222f0b05040ae4e074b27d5"
+COBRA_CORE_SOURCE_REVISION="72f616f822f538a0cfbea3c880f9d1e68bb9a8f1"
+COBRA_EXTENSION_ENABLED=1
+COBRA_SOURCE_MODE="pinned-remote"
+COBRA_PARENT_SOURCE_ID="$COBRA_SOURCE_REVISION"
+COBRA_CORE_SOURCE_ID="$COBRA_CORE_SOURCE_REVISION"
 if [ -n "${D810_COBRA_ROOT+x}" ]; then
   if [ -z "$D810_COBRA_ROOT" ] || [[ "$D810_COBRA_ROOT" != /* ]]; then
     echo "ERROR: D810_COBRA_ROOT must be an absolute existing directory" >&2
@@ -271,9 +282,13 @@ if [ -n "${D810_COBRA_ROOT+x}" ]; then
     exit 1
   fi
   D810_COBRA_ROOT="$(cd "$D810_COBRA_ROOT" && pwd -P)"
-  COBRA_EXTENSION_ENABLED=1
-  COBRA_PARENT_SOURCE_ID="$(git -C "$D810_COBRA_ROOT" rev-parse HEAD 2>/dev/null || printf '%s' unversioned)"
-  COBRA_CORE_SOURCE_ID="$(git -C "$D810_COBRA_ROOT/third_party/cobra" rev-parse HEAD 2>/dev/null || printf '%s' unversioned)"
+  COBRA_PARENT_SOURCE_ID="$(git -C "$D810_COBRA_ROOT" rev-parse HEAD 2>/dev/null || true)"
+  COBRA_CORE_SOURCE_ID="$(git -C "$D810_COBRA_ROOT/third_party/cobra" rev-parse HEAD 2>/dev/null || true)"
+  if [ "$COBRA_PARENT_SOURCE_ID" != "$COBRA_SOURCE_REVISION" ] || [ "$COBRA_CORE_SOURCE_ID" != "$COBRA_CORE_SOURCE_REVISION" ]; then
+    echo "ERROR: D810_COBRA_ROOT must be d810-cobra $COBRA_SOURCE_REVISION with third_party/cobra $COBRA_CORE_SOURCE_REVISION" >&2
+    exit 1
+  fi
+  COBRA_SOURCE_MODE="mounted-pinned"
 fi
 RUNTIME_LABEL_KEY="org.d810.test-runtime"
 RUNTIME_LABEL_VALUE="dev-emulation-z3-v1"
@@ -442,16 +457,16 @@ fi
 VOL_COBRA=()
 VOL_COBRA_CACHE=()
 COBRA_CACHE_DIR=""
-if [ "$COBRA_EXTENSION_ENABLED" = "1" ]; then
+if [ "$COBRA_SOURCE_MODE" = "mounted-pinned" ]; then
   VOL_COBRA=(-v "${D810_COBRA_ROOT}:/opt/d810-cobra:ro")
-  # Build outputs are Linux-only and belong to this task's ignored artifact
-  # area.  Keeping them outside the source mount makes repeated focused runs
-  # reuse one pinned build without ever linking a Darwin archive.
-  COBRA_CACHE_DIR="${WORK_DIR}/.tmp/task11-cobra-linux"
-  mkdir -p "$COBRA_CACHE_DIR"
-  VOL_COBRA_CACHE=(-v "${COBRA_CACHE_DIR}:/opt/d810-cobra-cache:rw")
-  COBRA_IMAGE_ID="$(docker image inspect --format '{{.Id}}' "$DOCKER_IMAGE" 2>/dev/null || printf '%s' unknown)"
 fi
+# Build outputs are Linux-only and belong to this task's ignored artifact
+# area. Keeping them outside both source forms makes repeated focused runs
+# reuse one pinned build without ever linking a Darwin archive.
+COBRA_CACHE_DIR="${WORK_DIR}/.tmp/cobra-linux"
+mkdir -p "$COBRA_CACHE_DIR"
+VOL_COBRA_CACHE=(-v "${COBRA_CACHE_DIR}:/opt/d810-cobra-cache:rw")
+COBRA_IMAGE_ID="$(docker image inspect --format '{{.Id}}' "$DOCKER_IMAGE" 2>/dev/null || printf '%s' unknown)"
 
 # Plan: print what we're about to do so agents see worktree, output path, and options
 echo "$0 plan:"
@@ -483,7 +498,12 @@ if [ "$EGGLOG_EXTENSION_ENABLED" = "1" ]; then
   echo "  extension: d810-egglog (mount ${D810_EGGLOG_ROOT}:/opt/d810-egglog:ro)"
 fi
 if [ "$COBRA_EXTENSION_ENABLED" = "1" ]; then
-  echo "  extension: d810-cobra (mount ${D810_COBRA_ROOT}:/opt/d810-cobra:ro)"
+  echo "  extension: d810-cobra ($COBRA_SOURCE_MODE $COBRA_SOURCE_REVISION)"
+  if [ "$COBRA_SOURCE_MODE" = "mounted-pinned" ]; then
+    echo "  cobra source: $D810_COBRA_ROOT -> /opt/d810-cobra (read-only)"
+  else
+    echo "  cobra source: $COBRA_SOURCE_URL@$COBRA_SOURCE_REVISION"
+  fi
   echo "  cobra cache: $COBRA_CACHE_DIR -> /opt/d810-cobra-cache (Linux artifacts)"
 fi
 case "$CMD" in
@@ -597,7 +617,15 @@ if [ "$COBRA_EXTENSION_ENABLED" = "1" ]; then
   # CoBRA's test extras are not enough to describe its runtime dependencies;
   # derive the project metadata exactly as for Egglog, while omitting the
   # mounted D810 package so the tested worktree remains authoritative.
-  COBRA_SETUP="COBRA_BUILD_DIR=\$(mktemp -d) && cp -a /opt/d810-cobra/. \"\$COBRA_BUILD_DIR/\" && export COBRA_ROOT=/opt/d810-cobra-cache && export COBRA_SOURCE_KEY='$COBRA_PARENT_SOURCE_ID:$COBRA_CORE_SOURCE_ID:$COBRA_IMAGE_ID' && COBRA_TOOLCHAIN_KEY=\$(if ! command -v cmake >/dev/null 2>&1 || ! command -v ninja >/dev/null 2>&1 || ! command -v c++ >/dev/null 2>&1; then apt-get update >/dev/null 2>&1 && apt-get install -y --no-install-recommends cmake ninja-build build-essential >/dev/null 2>&1; fi; cmake --version | head -1; ninja --version; c++ --version | head -1) && COBRA_MARKER=\"linux-cobra-core-v2:\$COBRA_SOURCE_KEY:\$COBRA_TOOLCHAIN_KEY\" && if [ ! -f \"\$COBRA_ROOT/.linux-build-ok\" ] || [ \"\$(<\"\$COBRA_ROOT/.linux-build-ok\")\" != \"\$COBRA_MARKER\" ]; then rm -rf \"\$COBRA_ROOT\"/* \"\$COBRA_ROOT\"/.[!.]* \"\$COBRA_ROOT\"/..?* 2>/dev/null || true; cp -a \"\$COBRA_BUILD_DIR/third_party/cobra/.\" \"\$COBRA_ROOT/\"; $IDA_VENV_PYTHON \"\$COBRA_BUILD_DIR/tools/build_cobra.py\" --root \"\$COBRA_ROOT\" && printf '%s\\n' \"\$COBRA_MARKER\" > \"\$COBRA_ROOT/.linux-build-ok\"; fi && $IDA_VENV_PYTHON -c 'import re, sys, tomllib; project=tomllib.load(open(sys.argv[1], \"rb\"))[\"project\"]; deps=project.get(\"dependencies\", []) + project.get(\"optional-dependencies\", {}).get(\"test\", []); print(\"\\n\".join(dep for dep in deps if re.match(r\"[A-Za-z0-9_.-]+\", dep.strip()).group(0).lower().replace(\"_\", \"-\").replace(\".\", \"-\") != \"d810-ng\"))' \"\$COBRA_BUILD_DIR/pyproject.toml\" > \"\$COBRA_BUILD_DIR/requirements.txt\" && $IDA_VENV_PIP install \"\$COBRA_BUILD_DIR[test]\" --no-deps -q --force-reinstall --no-cache-dir && $IDA_VENV_PIP install -r \"\$COBRA_BUILD_DIR/requirements.txt\" -q && $IDA_VENV_PYTHON -c 'from d810_cobra.expr import parse_cobra_output; from d810_cobra.prove import ProofResult, prove_equivalent; from d810_cobra.solve import SolveStatus, binding_available, solve_signature; assert binding_available(); tree=parse_cobra_output(\"(x0 | x1) - (x0 & x1)\", [\"a\", \"b\"]); solved=solve_signature(tree, [\"a\", \"b\"], 32); assert solved.status is SolveStatus.SOLVED and solved.tree is not None; assert prove_equivalent(tree, solved.tree, [\"a\", \"b\"], 32) is ProofResult.PROVED; import d810_cobra._cobra'"
+  if [ "$COBRA_SOURCE_MODE" = "mounted-pinned" ]; then
+    COBRA_SOURCE_SETUP="COBRA_BUILD_DIR=\$(mktemp -d) && cp -a /opt/d810-cobra/. \"\$COBRA_BUILD_DIR/\""
+  else
+    # ENV_GIT pins D810's mounted common Git dir for provenance, but a source
+    # checkout needs its own writable .git directory.  Scope the unset to the
+    # CoBRA acquisition commands; D810's test provenance keeps ENV_GIT.
+    COBRA_SOURCE_SETUP="COBRA_BUILD_DIR=\$(mktemp -d) && env -u GIT_DIR git clone --no-checkout '$COBRA_SOURCE_URL' \"\$COBRA_BUILD_DIR\" && env -u GIT_DIR git -C \"\$COBRA_BUILD_DIR\" fetch --depth=1 origin '$COBRA_SOURCE_REVISION' && env -u GIT_DIR git -C \"\$COBRA_BUILD_DIR\" checkout --detach FETCH_HEAD && test \"\$(env -u GIT_DIR git -C \"\$COBRA_BUILD_DIR\" rev-parse HEAD)\" = '$COBRA_SOURCE_REVISION' && env -u GIT_DIR git -C \"\$COBRA_BUILD_DIR\" submodule update --init --recursive --depth=1 && test \"\$(env -u GIT_DIR git -C \"\$COBRA_BUILD_DIR/third_party/cobra\" rev-parse HEAD)\" = '$COBRA_CORE_SOURCE_REVISION'"
+  fi
+  COBRA_SETUP="$COBRA_SOURCE_SETUP && export COBRA_ROOT=/opt/d810-cobra-cache && export COBRA_SOURCE_KEY='$COBRA_PARENT_SOURCE_ID:$COBRA_CORE_SOURCE_ID:$COBRA_IMAGE_ID' && COBRA_TOOLCHAIN_KEY=\$(if ! command -v cmake >/dev/null 2>&1 || ! command -v ninja >/dev/null 2>&1 || ! command -v c++ >/dev/null 2>&1; then apt-get update >/dev/null 2>&1 && apt-get install -y --no-install-recommends cmake ninja-build build-essential >/dev/null 2>&1; fi; cmake --version | head -1; ninja --version; c++ --version | head -1) && COBRA_MARKER=\"linux-cobra-core-v2:\$COBRA_SOURCE_KEY:\$COBRA_TOOLCHAIN_KEY\" && if [ ! -f \"\$COBRA_ROOT/.linux-build-ok\" ] || [ \"\$(<\"\$COBRA_ROOT/.linux-build-ok\")\" != \"\$COBRA_MARKER\" ]; then rm -rf \"\$COBRA_ROOT\"/* \"\$COBRA_ROOT\"/.[!.]* \"\$COBRA_ROOT\"/..?* 2>/dev/null || true; cp -a \"\$COBRA_BUILD_DIR/third_party/cobra/.\" \"\$COBRA_ROOT/\"; $IDA_VENV_PYTHON \"\$COBRA_BUILD_DIR/tools/build_cobra.py\" --root \"\$COBRA_ROOT\" && printf '%s\\n' \"\$COBRA_MARKER\" > \"\$COBRA_ROOT/.linux-build-ok\"; fi && $IDA_VENV_PYTHON -c 'import re, sys, tomllib; project=tomllib.load(open(sys.argv[1], \"rb\"))[\"project\"]; deps=project.get(\"dependencies\", []) + project.get(\"optional-dependencies\", {}).get(\"test\", []); print(\"\\n\".join(dep for dep in deps if re.match(r\"[A-Za-z0-9_.-]+\", dep.strip()).group(0).lower().replace(\"_\", \"-\").replace(\".\", \"-\") != \"d810-ng\"))' \"\$COBRA_BUILD_DIR/pyproject.toml\" > \"\$COBRA_BUILD_DIR/requirements.txt\" && $IDA_VENV_PIP install \"\$COBRA_BUILD_DIR[test]\" --no-deps -q --force-reinstall --no-cache-dir && $IDA_VENV_PIP install -r \"\$COBRA_BUILD_DIR/requirements.txt\" -q && $IDA_VENV_PYTHON -c 'import d810_cobra; manifest=d810_cobra.MANIFEST; assert manifest[\"api_version\"] == 1; assert manifest[\"implements\"] == {\"mba-solve\": \"cobra-solve\"}; from d810_cobra.expr import parse_cobra_output; from d810_cobra.prove import ProofResult, prove_equivalent; from d810_cobra.solve import SolveStatus, binding_available, solve_signature; assert binding_available(); tree=parse_cobra_output(\"(x0 | x1) - (x0 & x1)\", [\"a\", \"b\"]); solved=solve_signature(tree, [\"a\", \"b\"], 32); assert solved.status is SolveStatus.SOLVED and solved.tree is not None; assert prove_equivalent(tree, solved.tree, [\"a\", \"b\"], 32) is ProofResult.PROVED; import d810_cobra._cobra'"
   if [ -n "$EXTENSION_SETUP" ]; then
     EXTENSION_SETUP="$EXTENSION_SETUP && $COBRA_SETUP"
   else

@@ -159,6 +159,22 @@ def test_core_mode_does_not_mount_or_forward_extension_root(
     assert "-p no:cacheprovider" not in command
 
 
+def test_core_mode_installs_the_pinned_cobra_plugin_source(
+    tmp_path: Path,
+) -> None:
+    """A legacy image package must not satisfy the API-1 backend contract."""
+    result, calls = _run(tmp_path, "exec", "--", "true")
+
+    assert result.returncode == 0, result.stderr
+    command = _container_run(calls)
+    assert "https://github.com/w00tzenheimer/d810-CoBRA.git" in command
+    assert "3b3c406270f1efd8e222f0b05040ae4e074b27d5" in command
+    assert "env -u GIT_DIR git clone" in command
+    assert 'env -u GIT_DIR git -C "$COBRA_BUILD_DIR" submodule update --init --recursive --depth=1' in command
+    assert '"api_version"] == 1' in command
+    assert '"implements"] == {"mba-solve": "cobra-solve"}' in command
+
+
 @pytest.mark.parametrize("root", ["relative/cobra", "missing-cobra"])
 def test_invalid_cobra_root_fails_before_docker(
     tmp_path: Path,
@@ -177,7 +193,7 @@ def test_invalid_cobra_root_fails_before_docker(
     assert "D810_COBRA_ROOT" in result.stderr
 
 
-def test_cobra_extension_mode_mounts_and_installs_from_copied_source(
+def test_mismatched_cobra_root_fails_before_docker(
     tmp_path: Path,
 ) -> None:
     extension_root = tmp_path / "cobra extension"
@@ -191,48 +207,9 @@ def test_cobra_extension_mode_mounts_and_installs_from_copied_source(
         extra_env={"D810_COBRA_ROOT": str(extension_root)},
     )
 
-    assert result.returncode == 0, result.stderr
-    command = _container_run(calls)
-    mount = f"{extension_root}:/opt/d810-cobra:ro"
-    assert calls.count(f"run-arg {mount}") == 1
-    assert 'cp -a /opt/d810-cobra/. "$COBRA_BUILD_DIR/"' in command
-    assert 'pip install "$COBRA_BUILD_DIR[test]" --no-deps -q' in command
-    assert 'pip install -r "$COBRA_BUILD_DIR/requirements.txt" -q' in command
-    assert "tools/build_cobra.py" in command
-    assert "export COBRA_ROOT=/opt/d810-cobra-cache" in command
-    assert "COBRA_SOURCE_KEY" in command
-    assert "COBRA_TOOLCHAIN_KEY" in command
-    assert "linux-cobra-core-v2" in command
-    assert '.linux-build-ok' in command
-    assert "import d810_cobra._cobra" in command
-    assert f"D810_COBRA_ROOT={extension_root}" not in command
-
-
-@pytest.mark.parametrize(
-    "args",
-    [
-        ("system",),
-        ("test",),
-        ("dump",),
-        ("shell",),
-        ("exec", "--", "true"),
-    ],
-)
-def test_cobra_extension_mounts_once_in_every_docker_mode(
-    tmp_path: Path,
-    args: tuple[str, ...],
-) -> None:
-    extension_root = tmp_path / "extension"
-    extension_root.mkdir()
-
-    result, calls = _run(
-        tmp_path,
-        *args,
-        extra_env={"D810_COBRA_ROOT": str(extension_root)},
-    )
-    assert result.returncode == 0, result.stderr
-    mount = f"{extension_root}:/opt/d810-cobra:ro"
-    assert calls.count(f"run-arg {mount}") == 1
+    assert result.returncode != 0
+    assert calls == []
+    assert "must be d810-cobra 3b3c406270f1efd8e222f0b05040ae4e074b27d5" in result.stderr
 
 
 @pytest.mark.parametrize("root", ["relative/extension", "missing-extension"])
