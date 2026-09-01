@@ -3462,6 +3462,7 @@ def _resolve_back_edge_states(
             raise TypeError("path-state pop budget must be an integer") from error
         if path_state_pop_budget < 0:
             raise ValueError("path-state pop budget must be non-negative")
+    consumed_path_states = 0
     projection_cache = _SnapshotProjectionCache()
     region_entries: set[int] = {
         int(row.target)
@@ -3499,40 +3500,6 @@ def _resolve_back_edge_states(
             if (anchor := _anchor_for_serial(serial)) is not None
         )
     )
-    entry_anchors = tuple(
-        sorted(
-            anchor
-            for serial in sorted(region_entries)
-            if (anchor := _anchor_for_serial(serial)) is not None
-        )
-    )
-
-    def _observe_search(outcome: str, reason: str) -> None:
-        try:
-            metadata = getattr(flow_graph, "metadata", {})
-            session_id = getattr(flow_graph, "session_id", None)
-            if session_id is None and isinstance(metadata, Mapping):
-                session_id = metadata.get("session_id")
-            emit(
-                RecoverySearchObserved(
-                    session_id=str(session_id or "recovery"),
-                    func_ea=int(flow_graph.func_ea),
-                    provider="region_seeded",
-                    outcome=outcome,
-                    budget=int(path_state_pop_budget),
-                    consumed=int(consumed_path_states),
-                    target_anchors=target_anchors,
-                    entry_anchors=entry_anchors,
-                    reason=reason,
-                )
-            )
-        except Exception:
-            logger.debug("recovery search diagnostic emission failed", exc_info=True)
-
-    if disp_block is None:
-        _observe_search("abstained", "dispatcher entry is absent from the snapshot")
-        return {}
-
     # Region seeding is the penultimate provider.  When the higher-ranked
     # providers defer only selected physical back-edges, restrict this expensive
     # walk to their exact reverse ancestor slice.  The filtered slice is trusted
@@ -3587,6 +3554,36 @@ def _resolve_back_edge_states(
             relevant_serials = frozenset(reverse_seen)
             region_entries.intersection_update(relevant_serials)
 
+    entry_anchors = tuple(
+        sorted(
+            anchor
+            for serial in sorted(region_entries)
+            if (anchor := _anchor_for_serial(serial)) is not None
+        )
+    )
+
+    def _observe_search(outcome: str, reason: str) -> None:
+        try:
+            metadata = getattr(flow_graph, "metadata", {})
+            session_id = getattr(flow_graph, "session_id", None)
+            if session_id is None and isinstance(metadata, Mapping):
+                session_id = metadata.get("session_id")
+            emit(
+                RecoverySearchObserved(
+                    session_id=str(session_id or "recovery"),
+                    func_ea=int(flow_graph.func_ea),
+                    provider="region_seeded",
+                    outcome=outcome,
+                    budget=int(path_state_pop_budget),
+                    consumed=int(consumed_path_states),
+                    target_anchors=target_anchors,
+                    entry_anchors=entry_anchors,
+                    reason=reason,
+                )
+            )
+        except Exception:
+            logger.debug("recovery search diagnostic emission failed", exc_info=True)
+
     # Region-entry seed: the dispatch key that routes to each region. A masked /
     # switch-table dispatcher (``switch(state & MASK)``) reaches handler ``H`` iff
     # ``state & MASK == key``, and the handler writes ``state = (state & ~MASK) | M``;
@@ -3621,8 +3618,6 @@ def _resolve_back_edge_states(
     # partitioned case): each edge folds to its own state instead of collapsing
     # to an ambiguous set.
     back_edge_states: dict[int, dict[int | None, set[int]]] = {}
-    consumed_path_states = 0
-
     def _target_identity(serial: int) -> str:
         block = flow_graph.get_block(int(serial))
         if block is None:
@@ -3697,7 +3692,10 @@ def _resolve_back_edge_states(
                 stack.append(
                     (succ, out_stk, out_reg, visited | {succ}, depth + 1, blk_serial)
                 )
-    _observe_search("completed", "region-seeded DFS completed")
+    if disp_block is None:
+        _observe_search("abstained", "dispatcher entry is absent from the snapshot")
+    else:
+        _observe_search("completed", "region-seeded DFS completed")
     return back_edge_states
 
 

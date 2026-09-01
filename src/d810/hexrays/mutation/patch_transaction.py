@@ -32,9 +32,12 @@ from d810.transforms.cfg_transaction import (
 from d810.transforms.contract import CfgContract
 from d810.transforms.edit_simulator import project_patch_plan
 from d810.transforms.plan import (
+    PatchConvertToGoto,
     PatchLowerConditionalStateTransition,
     PatchPlan,
+    PatchRemoveEdge,
     PatchRedirectBranch,
+    PatchRedirectGoto,
     PatchScalarizeLocalAliasAccess,
 )
 from d810.hexrays.mutation.patch_binding import BoundPatchPlan, bind_patch_plan
@@ -90,21 +93,81 @@ def _patch_plan_observation_items(plan: PatchPlan, snapshot: FlowGraph):
         anchor = int(block.start_ea if native_ea is None else native_ea)
         return int(serial), anchor
 
+    def shape(step: object):
+        if isinstance(step, PatchRedirectBranch):
+            return (
+                step.from_serial,
+                step.old_target,
+                step.new_target,
+                "block_target_change",
+                "immutable PatchPlan step",
+            )
+        if isinstance(step, PatchRedirectGoto):
+            return (
+                step.from_serial,
+                step.old_target,
+                step.new_target,
+                "block_goto_change",
+                "immutable PatchPlan step",
+            )
+        if isinstance(step, PatchLowerConditionalStateTransition):
+            _false_serial, false_anchor = coordinate(step.false_target_serial)
+            false_target = (
+                ""
+                if false_anchor is None
+                else f"; false_target=0x{int(false_anchor):X}"
+            )
+            return (
+                step.source_serial,
+                step.old_dispatcher_serial,
+                step.true_target_serial,
+                "lower_conditional_state_transition",
+                f"immutable PatchPlan step{false_target}",
+            )
+        if isinstance(step, PatchConvertToGoto):
+            return (
+                step.block_serial,
+                None,
+                step.goto_target,
+                "convert_to_goto",
+                "immutable PatchPlan step",
+            )
+        if isinstance(step, PatchRemoveEdge):
+            return (
+                step.from_serial,
+                step.to_serial,
+                None,
+                "remove_edge",
+                "immutable PatchPlan step",
+            )
+        refs = tuple(_iter_plan_refs(step))
+        return (
+            refs[0] if refs else None,
+            None,
+            refs[1] if len(refs) > 1 else None,
+            f"patch_{type(step).__name__}",
+            "immutable PatchPlan step",
+        )
+
     items = []
     for item_index, step in enumerate(plan.steps):
-        refs = tuple(_iter_plan_refs(step))
-        source_serial, source_anchor = coordinate(refs[0]) if refs else (None, None)
-        target_serial, target_anchor = coordinate(refs[1]) if len(refs) > 1 else (None, None)
+        source_ref, old_ref, target_ref, mutation_kind, reason = shape(step)
+        source_serial, source_anchor = coordinate(source_ref)
+        old_target_serial, old_target_anchor = coordinate(old_ref)
+        target_serial, target_anchor = coordinate(target_ref)
         items.append(
             MbaMutationPlanItem(
                 item_index=int(item_index),
-                mutation_kind=f"patch_{type(step).__name__}",
+                mutation_kind=mutation_kind,
                 source_serial=source_serial if source_anchor is not None else None,
                 source_anchor_ea=source_anchor,
+                old_target_serial=(
+                    old_target_serial if old_target_anchor is not None else None
+                ),
                 target_serial=target_serial if target_anchor is not None else None,
                 target_anchor_ea=target_anchor,
                 disposition="planned",
-                reason="immutable PatchPlan step",
+                reason=reason,
             )
         )
     return tuple(items)

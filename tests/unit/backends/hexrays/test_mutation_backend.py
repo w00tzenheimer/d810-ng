@@ -26,11 +26,13 @@ from d810.hexrays.ir.mba_identity_index import MbaBlockIdentityIndex
 from d810.hexrays.mutation.mba_mutation_events import (
     MbaCfgTransactionAuthorityObserved,
     MbaMutationGateway,
+    MbaMutationPlanned,
     StructuralMutationKind,
 )
 from d810.hexrays.mutation.patch_transaction import (
     HexRaysPatchTransactionParticipant,
     PatchTransactionPreflightRejected,
+    _patch_plan_observation_items,
     _requires_observed_identity_canonicalization,
 )
 from d810.hexrays.mutation.semantic_ownership import (
@@ -365,6 +367,50 @@ def _ordinary_plan(step_type, *, serials: tuple[int, ...], **coordinates) -> Pat
     )
 
 
+def test_patch_plan_observation_uses_new_and_old_redirect_targets() -> None:
+    cfg = _make_cfg([(0, 1), (1, 2)], stop_serials=(2,))
+    plan = _ordinary_plan(
+        PatchRedirectGoto,
+        serials=(0, 1, 2),
+        from_serial=0,
+        old_target=1,
+        new_target=2,
+    )
+
+    item = _patch_plan_observation_items(plan, cfg)[0]
+
+    assert item.source_serial == 0
+    assert item.source_anchor_ea == 0x1000
+    assert item.old_target_serial == 1
+    assert item.target_serial == 2
+    assert item.target_anchor_ea == 0x1002
+
+
+def test_patch_plan_observation_encodes_conditional_multi_target_shape() -> None:
+    refs = {serial: _native_ref(serial) for serial in range(4)}
+    step = PatchLowerConditionalStateTransition(
+        source_serial=refs[0],
+        old_dispatcher_serial=refs[1],
+        rewrite_from_ea=0x5000,
+        condition_operand=object(),
+        false_target_serial=refs[2],
+        true_target_serial=refs[3],
+    )
+    plan = PatchPlan(
+        steps=(step,),
+        source_coordinates=tuple((refs[serial], serial) for serial in range(4)),
+    )
+    cfg = _make_cfg([(0, 1), (1, 2), (2, 3)], stop_serials=(3,))
+
+    item = _patch_plan_observation_items(plan, cfg)[0]
+
+    assert item.source_serial == 0
+    assert item.old_target_serial == 1
+    assert item.target_serial == 3
+    assert item.target_anchor_ea == 0x1003
+    assert "false_target=0x1002" in item.reason
+
+
 def test_apply_rejects_plan_that_orphans_reachable_terminal() -> None:
     cfg = _make_cfg(
         [(0, 1), (1, 2), (2, 3)],
@@ -379,19 +425,35 @@ def test_apply_rejects_plan_that_orphans_reachable_terminal() -> None:
     )
     translator = _FakeTranslator(cfg)
     emitter = EventEmitter()
+    planned: list[MbaMutationPlanned] = []
+    emitter.on(MbaMutationPlanned, planned.append)
     phases: list[MbaCfgTransactionAuthorityObserved] = []
     emitter.on(MbaCfgTransactionAuthorityObserved, phases.append)
     translator = _FakeTranslator(cfg)
+    gateway = _ordinary_gateway(cfg, plan, event_emitter=emitter)
     backend = HexRaysMutationBackend(
-        mutation_gateway=_ordinary_gateway(cfg, plan, event_emitter=emitter),
+        mutation_gateway=gateway,
         translator=translator,
     )
 
-    result = backend.apply(plan, live_source=SimpleNamespace(qty=cfg.num_blocks))
+    execution = backend.execute_patch_plan(
+        plan,
+        SimpleNamespace(qty=cfg.num_blocks),
+        pre_cfg=cfg,
+    )
+    result = execution.graph
 
     assert result is cfg
+    assert execution.applied_count == 0
+    assert gateway.receipts == ()
+    assert len(planned) == 1
+    assert planned[0].planned_operation_count == len(plan.steps)
+    assert len(planned[0].items) == len(plan.steps)
+    assert all(item.disposition == "planned" for item in planned[0].items)
+    assert planned[0].items[0].old_target_serial == 3
+    assert planned[0].items[0].target_serial == 1
     assert translator.lower_calls == []
-    assert translator.lift_count == 1
+    assert translator.lift_count == 0
     assert [event.phase for event in phases] == [
         CfgTransactionPhase.PLANNED,
         CfgTransactionPhase.PROJECTED,

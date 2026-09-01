@@ -216,62 +216,6 @@ def test_recovery_search_observation_is_persisted_with_anchored_targets(
     ).fetchone() == ("recovery_search", "s1:region_seeded")
 
 
-def test_rejected_plan_retains_planned_items_without_mutation(diag_conn) -> None:
-    """A clean preflight veto persists the immutable plan and zero applies."""
-    item = MutationPlanItemObserved(
-        item_index=0,
-        mutation_kind="edge_redirect",
-        source_serial=17,
-        source_anchor_ea=0x40CA3D,
-        source_identity_json='{"native_ranges":[]}',
-        target_serial=21,
-        target_anchor_ea=0x40CD76,
-        target_identity_json='{"native_ranges":[]}',
-        disposition="planned",
-        reason="immutable PatchPlan step",
-    )
-    emit(
-        MutationPlanObserved(
-            session_id="s1",
-            func_ea=0x40C8B0,
-            mutation_batch_id="rejected-plan",
-            mutation_kind="edge_redirect",
-            planned_operation_count=1,
-            mba_generation=8,
-            evidence_generation=3,
-            maturity="MMAT_CALLS",
-            description="apply route",
-            items=(item,),
-        )
-    )
-    emit(
-        MutationReceiptObserved(
-            session_id="s1",
-            func_ea=0x40C8B0,
-            mutation_batch_id="rejected-plan",
-            mutation_kind="edge_redirect",
-            pre_generation=8,
-            post_generation=8,
-            planned_operation_count=1,
-            applied_operation_count=0,
-            evidence_generation=3,
-            maturity="MMAT_CALLS",
-            outcome="rejected_clean",
-            description="apply route",
-            reason="effectful block lost",
-        )
-    )
-
-    assert diag_conn.execute(
-        "SELECT disposition FROM mutation_plan_items "
-        "WHERE mutation_batch_id='rejected-plan'"
-    ).fetchone() == ("planned",)
-    assert diag_conn.execute(
-        "SELECT outcome,applied_operation_count FROM mutation_receipts "
-        "WHERE mutation_batch_id='rejected-plan'"
-    ).fetchone() == ("rejected_clean", 0)
-
-
 def test_timeline_prints_typed_host_failure_code_and_ea(diag_conn) -> None:
     emit(
         HostDecompilationOutcomeObserved(

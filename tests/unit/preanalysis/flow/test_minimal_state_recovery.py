@@ -3564,6 +3564,71 @@ def test_seeded_dfs_completion_emits_one_observation_without_changing_result(
     assert observed.entry_anchors == (0x1000 + 10 * 0x40,)
 
 
+def test_seeded_dfs_abstention_emits_without_changing_provider_result(
+    _seam, monkeypatch
+) -> None:
+    fg = _branching_cyclic_seeded_graph()
+    observations = []
+    monkeypatch.setattr(
+        minimal_state_recovery,
+        "emit",
+        observations.append,
+        raising=False,
+    )
+
+    result = minimal_state_recovery._resolve_back_edge_states(
+        fg,
+        dispatcher=_dispatcher({0x10: 10}, exit_block=99),
+        state_var_stkoff=_STATE_OFF,
+        dispatcher_entry=999,
+        max_depth=24,
+        target_back_edges=frozenset({30}),
+        _path_state_pop_budget=64,
+    )
+
+    assert result == {}
+    assert len(observations) == 1
+    observed = observations[0]
+    assert observed.provider == "region_seeded"
+    assert observed.outcome == "abstained"
+    assert observed.budget == 64
+    assert observed.target_anchors == (0x1000 + 30 * 0x40,)
+
+
+def test_seeded_dfs_entry_anchors_follow_selected_reverse_slice(
+    _seam, monkeypatch
+) -> None:
+    fg = FlowGraph(
+        blocks={
+            2: _blk(2, (10, 20), (30, 40), ()),
+            10: _blk(10, (30,), (2,), ()),
+            20: _blk(20, (40,), (2,), ()),
+            30: _blk(30, (2,), (10,), ()),
+            40: _blk(40, (2,), (20,), ()),
+        },
+        entry_serial=10,
+        func_ea=0x1000,
+    )
+    observations = []
+    monkeypatch.setattr(
+        minimal_state_recovery,
+        "emit",
+        observations.append,
+        raising=False,
+    )
+
+    assert minimal_state_recovery._resolve_back_edge_states(
+        fg,
+        dispatcher=_dispatcher({0x10: 10, 0x20: 20}, exit_block=99),
+        state_var_stkoff=_STATE_OFF,
+        dispatcher_entry=2,
+        max_depth=8,
+        target_back_edges=frozenset({30}),
+    ) == {30: {10: {0x10}}}
+    assert len(observations) == 1
+    assert observations[0].entry_anchors == (0x1000 + 10 * 0x40,)
+
+
 def test_seeded_dfs_budget_is_atomic_across_multiple_targets(_seam) -> None:
     fg = FlowGraph(
         blocks={
