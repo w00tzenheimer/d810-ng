@@ -471,6 +471,53 @@ _cleanup_cobra_source_artifact() {
   [ "$(cat "$sentinel")" = "d810-cobra-source-artifact-v1" ] || return 0
   rm -rf "$source_dir"
 }
+_materialize_canonical_git_tree() {
+  local repository="$1"
+  local revision="$2"
+  local destination="$3"
+  local listing="$4"
+  local excluded_gitlink="$5"
+  local record metadata relative_path mode object_type object_id output_path
+
+  # ls-tree and cat-file operate on canonical objects directly: unlike
+  # checkout-index, neither consults attributes nor runs clean/smudge filters.
+  GIT_NO_REPLACE_OBJECTS=1 git -C "$repository" ls-tree -rz "$revision" > "$listing"
+  while IFS= read -r -d '' record; do
+    metadata="${record%%$'\t'*}"
+    relative_path="${record#*$'\t'}"
+    read -r mode object_type object_id <<< "$metadata"
+    if [ "$object_type" = "commit" ]; then
+      if [ "$relative_path" = "$excluded_gitlink" ]; then
+        continue
+      fi
+      echo "ERROR: unexpected unpinned gitlink in CoBRA source: $relative_path" >&2
+      return 1
+    fi
+    if [ "$object_type" != "blob" ]; then
+      echo "ERROR: unexpected CoBRA tree object $object_type at $relative_path" >&2
+      return 1
+    fi
+    output_path="$destination/$relative_path"
+    mkdir -p "$(dirname "$output_path")"
+    case "$mode" in
+      100644)
+        GIT_NO_REPLACE_OBJECTS=1 git -C "$repository" cat-file blob "$object_id" > "$output_path"
+        chmod 644 "$output_path"
+        ;;
+      100755)
+        GIT_NO_REPLACE_OBJECTS=1 git -C "$repository" cat-file blob "$object_id" > "$output_path"
+        chmod 755 "$output_path"
+        ;;
+      120000)
+        ln -s "$(GIT_NO_REPLACE_OBJECTS=1 git -C "$repository" cat-file blob "$object_id")" "$output_path"
+        ;;
+      *)
+        echo "ERROR: unsupported CoBRA tree mode $mode at $relative_path" >&2
+        return 1
+        ;;
+    esac
+  done < "$listing"
+}
 VOL_COBRA=()
 VOL_COBRA_CACHE=()
 COBRA_CACHE_DIR=""
@@ -488,13 +535,9 @@ if [ "$COBRA_SOURCE_MODE" = "mounted-pinned" ]; then
   trap _cleanup_cobra_source_artifact EXIT
   COBRA_SOURCE_TREE="$COBRA_SOURCE_ARCHIVE_DIR/source"
   mkdir -p "$COBRA_SOURCE_TREE/third_party/cobra"
-  COBRA_PARENT_INDEX="$COBRA_SOURCE_ARCHIVE_DIR/parent.index"
-  COBRA_CORE_INDEX="$COBRA_SOURCE_ARCHIVE_DIR/core.index"
-  GIT_INDEX_FILE="$COBRA_PARENT_INDEX" GIT_NO_REPLACE_OBJECTS=1 git -C "$D810_COBRA_ROOT" read-tree "$COBRA_SOURCE_REVISION"
-  GIT_INDEX_FILE="$COBRA_PARENT_INDEX" GIT_NO_REPLACE_OBJECTS=1 git -C "$D810_COBRA_ROOT" checkout-index --all --prefix="$COBRA_SOURCE_TREE/"
-  GIT_INDEX_FILE="$COBRA_CORE_INDEX" GIT_NO_REPLACE_OBJECTS=1 git -C "$D810_COBRA_ROOT/third_party/cobra" read-tree "$COBRA_CORE_SOURCE_REVISION"
-  GIT_INDEX_FILE="$COBRA_CORE_INDEX" GIT_NO_REPLACE_OBJECTS=1 git -C "$D810_COBRA_ROOT/third_party/cobra" checkout-index --all --prefix="$COBRA_SOURCE_TREE/third_party/cobra/"
-  rm -f "$COBRA_PARENT_INDEX" "$COBRA_CORE_INDEX"
+  _materialize_canonical_git_tree "$D810_COBRA_ROOT" "$COBRA_SOURCE_REVISION" "$COBRA_SOURCE_TREE" "$COBRA_SOURCE_ARCHIVE_DIR/parent.entries" "third_party/cobra"
+  _materialize_canonical_git_tree "$D810_COBRA_ROOT/third_party/cobra" "$COBRA_CORE_SOURCE_REVISION" "$COBRA_SOURCE_TREE/third_party/cobra" "$COBRA_SOURCE_ARCHIVE_DIR/core.entries" ""
+  rm -f "$COBRA_SOURCE_ARCHIVE_DIR/parent.entries" "$COBRA_SOURCE_ARCHIVE_DIR/core.entries"
   VOL_COBRA=(-v "${COBRA_SOURCE_TREE}:/opt/d810-cobra-source:ro")
 fi
 # Build outputs are Linux-only and belong to this task's ignored artifact

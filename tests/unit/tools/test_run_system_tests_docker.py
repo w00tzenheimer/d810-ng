@@ -28,6 +28,16 @@ if [ "${1:-}" = image ] && [ "${2:-}" = inspect ]; then
   printf '%s\\n' "${MOCK_DOCKER_LABEL:-}"
 fi
 if [ "${1:-}" = run ]; then
+  if [ -n "${MOCK_DOCKER_EXPECT_SOURCE_FILE:-}" ]; then
+    source_mount=""
+    for arg in "$@"; do
+      case "$arg" in
+        *:/opt/d810-cobra-source:ro) source_mount="${arg%:/opt/d810-cobra-source:ro}" ;;
+      esac
+    done
+    test -n "$source_mount"
+    test "$(cat "$source_mount/$MOCK_DOCKER_EXPECT_SOURCE_FILE")" = "$MOCK_DOCKER_EXPECT_SOURCE_CONTENT"
+  fi
   for arg in "$@"; do
     printf 'run-arg %s\n' "$arg" >> "$DOCKER_LOG"
   done
@@ -288,7 +298,7 @@ fi
 
 
 @pytest.mark.parametrize("docker_exit", [0, 23])
-def test_pinned_cobra_root_materializes_the_canonical_index_and_cleans_temp(
+def test_pinned_cobra_root_materializes_the_canonical_tree_and_cleans_temp(
     tmp_path: Path,
     docker_exit: int,
 ) -> None:
@@ -332,11 +342,59 @@ fi
     assert result.returncode == docker_exit
     git_calls = git_log.read_text(encoding="utf-8")
     assert "replace=1 args=-C" in git_calls
-    assert "read-tree" in git_calls
-    assert "checkout-index" in git_calls
+    assert "ls-tree -rz" in git_calls
+    assert "checkout-index" not in git_calls
     assert "archive --format=tar" not in git_calls
     assert set(temp_root.glob("cobra-source.*")) == before
     assert preexisting.is_dir()
+    assert any("/opt/d810-cobra-source:ro" in call for call in calls)
+
+
+def test_pinned_cobra_root_materializes_canonical_blobs_without_smudge_filters(
+    tmp_path: Path,
+) -> None:
+    extension_root = tmp_path / "cobra extension"
+    (extension_root / "third_party" / "cobra").mkdir(parents=True)
+    git_log = tmp_path / "git.log"
+    expected_parent = "3b3c406270f1efd8e222f0b05040ae4e074b27d5"
+    expected_core = "72f616f822f538a0cfbea3c880f9d1e68bb9a8f1"
+    table_blob = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    mock_git = f"""#!/usr/bin/env bash
+set -eu
+printf 'args=%s\\n' "$*" >> "$GIT_LOG"
+if [[ \"$*\" == *\"rev-parse HEAD\"* ]]; then
+  case \"$*\" in
+    *third_party/cobra*) printf '%s\\n' '{expected_core}' ;;
+    *) printf '%s\\n' '{expected_parent}' ;;
+  esac
+elif [[ \"$*\" == *\"ls-tree -rz\"* ]] && [[ \"$*\" != *\"third_party/cobra\"* ]]; then
+  printf '100644 blob {table_blob}\\tsrc/d810_cobra/table.py\\0'
+elif [[ \"$*\" == *\"cat-file blob {table_blob}\"* ]]; then
+  printf '%s' 'canonical table bytes'
+elif [[ \"$*\" == *\"checkout-index\"* ]]; then
+  printf '%s' 'smudged table bytes'
+fi
+"""
+
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--",
+        "true",
+        extra_env={
+            "D810_COBRA_ROOT": str(extension_root),
+            "GIT_LOG": str(git_log),
+            "MOCK_DOCKER_EXPECT_SOURCE_FILE": "src/d810_cobra/table.py",
+            "MOCK_DOCKER_EXPECT_SOURCE_CONTENT": "canonical table bytes",
+        },
+        mock_git=mock_git,
+    )
+
+    assert result.returncode == 0, result.stderr
+    git_calls = git_log.read_text(encoding="utf-8")
+    assert "ls-tree -rz" in git_calls
+    assert f"cat-file blob {table_blob}" in git_calls
+    assert "checkout-index" not in git_calls
     assert any("/opt/d810-cobra-source:ro" in call for call in calls)
 
 
