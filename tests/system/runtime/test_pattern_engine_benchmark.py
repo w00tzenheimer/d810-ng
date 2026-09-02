@@ -400,8 +400,16 @@ class TestCythonPythonParity:
         replacement = RuntimeAstLeaf("resolved")
         replacement.dest_size = 4
 
-        def _resolve(_mop, _blk, _ins, *, node_budget=None):
+        def _resolve(
+            _mop,
+            _blk,
+            _ins,
+            *,
+            node_budget=None,
+            call_result_refiner=None,
+        ):
             assert node_budget is budget_under_test
+            assert call_result_refiner is None
             return replacement
 
         monkeypatch.setattr(def_search, "resolve_mop_to_ast", _resolve)
