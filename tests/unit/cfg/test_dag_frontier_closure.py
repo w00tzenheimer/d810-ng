@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 import d810.transforms.dag_frontier_closure as dag_frontier_closure
 from d810.transforms.cfg_transaction import LogicalBlockRef
 from d810.transforms.dag_frontier_closure import (
@@ -93,6 +95,7 @@ def plan_dag_authoritative_frontier_closure(*, flow_graph, **kwargs):
             for serial in flow_graph.blocks
         },
     )
+    kwargs.setdefault("range_interval_rows", ())
     return _plan_dag_authoritative_frontier_closure(
         flow_graph=flow_graph,
         **kwargs,
@@ -678,15 +681,14 @@ def test_closes_same_scc_frontier_with_range_interval_singleton_proof(
     assert resolved_rows[0].payload["state"] == "0x0ACD0BD5"
 
 
-def test_explicit_range_interval_rows_do_not_use_db_fallback(monkeypatch) -> None:
-    def fail_db_fallback(_flow_graph):
-        raise AssertionError("DB fallback should not run with explicit rows")
-
-    monkeypatch.setattr(
-        dag_frontier_closure,
-        "_load_latest_range_interval_rows",
-        fail_db_fallback,
-    )
+def test_range_interval_rows_argument_is_required() -> None:
+    with pytest.raises(TypeError):
+        _plan_dag_authoritative_frontier_closure(
+            dag=_range_interval_frontier_dag(),
+            flow_graph=_range_interval_frontier_flow(),
+            modifications=[],
+            dispatcher_serial=0,
+        )
 
     result = plan_dag_authoritative_frontier_closure(
         dag=_range_interval_frontier_dag(),

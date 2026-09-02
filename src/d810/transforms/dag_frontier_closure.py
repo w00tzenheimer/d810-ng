@@ -142,7 +142,7 @@ def plan_dag_authoritative_frontier_closure(
     dispatcher_serial: int,
     block_refs_by_serial: Mapping[int, NativeBlockRef | LogicalBlockRef],
     condition_chain_blocks: set[int] | frozenset[int] | tuple[int, ...] = (),
-    range_interval_rows: tuple[object, ...] | list[object] | None = None,
+    range_interval_rows: tuple[object, ...] | list[object],
     max_iterations: int = 32,
 ) -> FrontierClosureResult:
     """Close projected CFG semantic-SCC leaks using only DAG-proven edges.
@@ -188,17 +188,7 @@ def plan_dag_authoritative_frontier_closure(
 
     frontier_blocks = {int(dispatcher_serial)}
     frontier_blocks.update(int(block) for block in condition_chain_blocks)
-    if range_interval_rows is None:
-        interval_rows = _load_latest_range_interval_rows(flow_graph)
-        if interval_rows:
-            logger.info(
-                "DAG_FRONTIER_CLOSURE: using DB fallback for range interval "
-                "frontier proof rows=%d func_ea=0x%x",
-                len(interval_rows),
-                int(getattr(flow_graph, "func_ea", 0) or 0),
-            )
-    else:
-        interval_rows = _coerce_range_interval_rows(range_interval_rows)
+    interval_rows = _coerce_range_interval_rows(range_interval_rows)
 
     current_modifications = list(modifications)
     projected = _project(
@@ -1801,65 +1791,6 @@ def _parse_int(value: object) -> int:
     if isinstance(value, str):
         return int(value, 0)
     return int(value)  # type: ignore[arg-type]
-
-
-def _load_latest_range_interval_rows(
-    flow_graph: object,
-) -> tuple[_RangeIntervalFrontierRow, ...]:
-    try:
-        from d810.core.observability import get_active_diag_conn
-    except Exception:
-        return ()
-    func_ea = int(getattr(flow_graph, "func_ea", 0) or 0)
-    try:
-        conn = get_active_diag_conn(func_ea)
-    except Exception:
-        return ()
-    if conn is None:
-        return ()
-    func_hex = f"0x{func_ea & 0xFFFFFFFFFFFFFFFF:016x}"
-    try:
-        row = conn.execute(
-            """
-            SELECT r.snapshot_id
-            FROM condition_chain_interval_dispatcher_rows r
-            JOIN snapshots s ON s.id = r.snapshot_id
-            WHERE s.func_ea_hex = ?
-            GROUP BY r.snapshot_id
-            ORDER BY r.snapshot_id DESC
-            LIMIT 1
-            """,
-            (func_hex,),
-        ).fetchone()
-        if row is None and func_ea == 0:
-            row = conn.execute(
-                "SELECT snapshot_id FROM condition_chain_interval_dispatcher_rows "
-                "GROUP BY snapshot_id ORDER BY snapshot_id DESC LIMIT 1"
-            ).fetchone()
-        if row is None:
-            return ()
-        snapshot_id = int(row[0])
-        rows = conn.execute(
-            """
-            SELECT snapshot_id, row_index, lo_i64, hi_i64, target_block
-            FROM condition_chain_interval_dispatcher_rows
-            WHERE snapshot_id = ?
-            ORDER BY row_index
-            """,
-            (snapshot_id,),
-        ).fetchall()
-    except Exception:
-        return ()
-    return tuple(
-        _RangeIntervalFrontierRow(
-            snapshot_id=int(row[0]),
-            row_index=int(row[1]),
-            lo=int(row[2]),
-            hi=int(row[3]),
-            target_block=int(row[4]),
-        )
-        for row in rows
-    )
 
 
 def _replace_or_add_redirect(
