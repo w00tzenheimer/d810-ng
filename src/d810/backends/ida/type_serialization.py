@@ -87,5 +87,12 @@ def apply_serialized_tinfo(ea: int, parts: SerializedTinfoParts | None) -> bool:
     else:
         tif = deserialize_tinfo(parts)
         if not ida_typeinf.apply_tinfo(int(ea), tif, ida_typeinf.TINFO_DEFINITE):
-            return False
+            # ``apply_tinfo`` can reject an existing structured data item even
+            # when the same exact tinfo is valid.  ``set_tinfo`` is IDA's
+            # public direct metadata setter for that narrow case.  Exact
+            # serialized read-back below remains the acceptance criterion.
+            ida_nalt.set_tinfo(int(ea), tif)
+            # Re-apply once so IDA refreshes canonical metadata before the
+            # exact read-back check.
+            ida_typeinf.apply_tinfo(int(ea), tif, ida_typeinf.TINFO_DEFINITE)
     return capture_serialized_tinfo(int(ea)) == parts
