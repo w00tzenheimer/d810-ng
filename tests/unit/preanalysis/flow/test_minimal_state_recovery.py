@@ -383,6 +383,60 @@ def _stop(serial, preds) -> BlockSnapshot:
     )
 
 
+def test_current_u32_router_rejects_bare_unknown_shell_before_projection() -> None:
+    """A raw UNKNOWN must not disappear into an empty projected vendor shell."""
+    comparison_serial = 10
+    graph = FlowGraph(
+        {
+            comparison_serial: _blk(
+                comparison_serial,
+                (11, 12),
+                (),
+                (
+                    InsnSnapshot(
+                        opcode=0xDE,
+                        ea=0x180001000,
+                        operands=(),
+                        kind=InsnKind.UNKNOWN,
+                    ),
+                    _jz_stack_const(
+                        0x180001004,
+                        _STATE_OFF,
+                        0x12345678,
+                        11,
+                    ),
+                ),
+                ea=0x180001000,
+            ),
+            11: _stop(11, (comparison_serial,)),
+            12: _stop(12, (comparison_serial,)),
+        },
+        entry_serial=comparison_serial,
+        func_ea=0x180001000,
+    )
+    identities = minimal_state_recovery.expected_u32_state_identities(
+        state_var_stkoff=_STATE_OFF,
+        state_var_reg=None,
+    )
+
+    assert (
+        minimal_state_recovery._current_u32_route_comparison(
+            graph,
+            comparison_serial,
+            expected_identities=identities,
+        )
+        is None
+    )
+    assert (
+        minimal_state_recovery.build_current_u32_decision_forest(
+            graph,
+            comparison_serial,
+            expected_identities=identities,
+        )
+        is None
+    )
+
+
 def test_bound_decision_dag_route_replays_reciprocal_internal_alias_edge() -> None:
     dag = DecisionDag(
         32,

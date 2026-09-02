@@ -1493,6 +1493,15 @@ def _current_u32_route_comparison(
         )
     ):
         return None
+    # Projection represents a bare raw UNKNOWN as an empty VENDOR shell.  That
+    # is not positive router evidence: the raw branch is validated below and
+    # only a raw NOP may otherwise be ignored.  Fail closed so an unmodelled
+    # prefix cannot become disposable dispatcher plumbing.
+    if any(
+        instruction is not raw_branch and instruction.kind is InsnKind.UNKNOWN
+        for instruction in raw_instructions
+    ):
+        return None
 
     instructions = InstructionProjection.from_block(block)
     branches = tuple(
