@@ -1627,7 +1627,10 @@ def test_detached_component_attachment_carries_sealed_corridor_into_transaction(
         exact_state_effect_exclusions=(exclusion,),
         dispatcher_entry_serial=1,
         dispatcher_member_serials=(0, 1),
-        authoritative_handler_serials=(2, 3),
+        # Route selection alone retains handler 3.  The detached-component
+        # forecast is the typed source authority for dead handler 2; proposal
+        # construction must normalize both views before minting the claim.
+        authoritative_handler_serials=(3,),
         state_identity=proposal.plan_inputs.state_identity,
         use_def_witness=replace(
             proposal.use_def_witness,
@@ -1640,6 +1643,9 @@ def test_detached_component_attachment_carries_sealed_corridor_into_transaction(
 
     attached_proposal = attached.unflatten_proposal
     assert attached_proposal is not None
+    assert {
+        item.block_ref for item in attached_proposal.plan_inputs.authoritative_handlers
+    } == {refs[2], refs[3]}
     claims = tuple(
         claim for claim in attached_proposal.claims
         if type(claim) is model.DetachedDeadHandlerComponentClaim

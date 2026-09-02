@@ -1878,6 +1878,33 @@ def _entry_liveness_route_proof_rejection_detail(
     return None
 
 
+def _authoritative_handler_serials_with_retirement_forecast(
+    authoritative_handler_serials,
+    dispatcher_removal_forecast,
+) -> tuple[int, ...]:
+    """Normalize route and retirement handler evidence into one catalogue.
+
+    Route selection proves live delivery targets.  A detached dead-handler
+    claim necessarily names source handlers that no selected route reaches;
+    its exact typed forecast is therefore the authority that contributes those
+    additional source obligations.  The transaction still rebinds every
+    forecast anchor against the immutable source and candidate inventories.
+    """
+
+    serials = {int(serial) for serial in authoritative_handler_serials}
+    if dispatcher_removal_forecast is None:
+        return tuple(sorted(serials))
+    if type(dispatcher_removal_forecast) is not DispatcherCorridorCoverage:
+        raise TypeError("dispatcher removal forecast must be corridor coverage")
+    detached = dispatcher_removal_forecast.detached_dead_handler_component
+    if detached is not None:
+        serials.update(
+            int(anchor.serial)
+            for anchor in (*detached.dead_handlers, *detached.retained_handlers)
+        )
+    return tuple(sorted(serials))
+
+
 def attach_typed_proposal(
     plan: PatchPlan,
     *,
@@ -1908,6 +1935,12 @@ def attach_typed_proposal(
     # canonical occurrence sequence.
     selected_route_proof_ids = tuple(selected_route_proof_ids or ())
     source_refs_by_serial = dict(block_refs_by_serial)
+    authoritative_handler_serials = (
+        _authoritative_handler_serials_with_retirement_forecast(
+            authoritative_handler_serials,
+            dispatcher_removal_forecast,
+        )
+    )
     proposal = producer_api.build_proposal(
         plan_id=plan.plan_id,
         source=source,
