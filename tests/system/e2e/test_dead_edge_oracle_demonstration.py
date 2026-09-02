@@ -706,6 +706,12 @@ class TestDeadEdgeOracleDemonstration:
                 assert attempt.status is ExecutionAttemptStatus.ABSTAINED
                 assert attempt.reason_code == "NO_PROVEN_DEAD_EDGES"
                 assert discovery_suppression == [True]
+                state.manager.observe_host_decompile_result(
+                    func_ea,
+                    cfunc,
+                    None,
+                    source="dead_edge_oracle_demonstration",
+                )
                 assert (
                     state.manager.decompilation_lifecycle.current_session(func_ea)
                     is None

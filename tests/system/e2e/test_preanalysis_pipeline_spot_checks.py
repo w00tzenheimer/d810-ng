@@ -58,6 +58,12 @@ def known_flattened_preanalysis():
                 pytest.fail(f"Known flattened fixture function {name!r} is absent")
             cfunc = idaapi.decompile(func_ea, flags=idaapi.DECOMP_NO_CACHE)
             assert cfunc is not None, f"Failed to decompile {name} for preanalysis"
+            state.manager.observe_host_decompile_result(
+                func_ea,
+                cfunc,
+                None,
+                source="preanalysis_pipeline_spot_checks",
+            )
 
         db_path = state.manager.analysis_db
         assert db_path is not None, "Preanalysis runtime did not expose a database"

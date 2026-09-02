@@ -64,6 +64,12 @@ class TestFunctionInfoLogging:
                     None,
                     idaapi.DECOMP_NO_CACHE,
                 )
+                state.manager.observe_host_decompile_result(
+                    function_ea,
+                    cfunc,
+                    None,
+                    source="function_info_logging",
+                )
             finally:
                 for target_logger in loggers:
                     target_logger.removeHandler(handler)

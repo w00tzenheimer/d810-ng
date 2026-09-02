@@ -659,6 +659,18 @@ class DecompilationLifecycleCoordinator:
         session = self.current_session(function_ea)
         if session is None or not self._active_sessions:
             return False
+        # The caller publishes a host outcome only after its top-level
+        # decompile has returned.  A same-session borrowed activation can
+        # nevertheless survive an auxiliary Hex-Rays callback that did not
+        # receive a matching structural event.  It no longer owns live work at
+        # this boundary, so drain only those borrowed frames before matching
+        # the retained top-level owner.
+        while (
+            self._active_sessions
+            and self._active_sessions[-1].session is session
+            and not self._active_sessions[-1].owns_session
+        ):
+            self.finish_hexrays_session()
         activation = self._active_sessions[-1]
         if activation.session is not session or not activation.owns_session:
             return False

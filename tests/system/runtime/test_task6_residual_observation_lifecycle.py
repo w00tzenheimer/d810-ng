@@ -72,7 +72,7 @@ def test_full_cleanup_finishes_session_before_closing_execution_journal(
     manager = D810Manager(log_dir=tmp_path)
     order: list[str] = []
     manager.decompilation_lifecycle = SimpleNamespace(
-        finish_hexrays_session=lambda: order.append("finish")
+        drain_active_sessions=lambda *, source: order.append(f"drain:{source}")
     )
     manager._native_patch_execution_journal = SimpleNamespace(
         close=lambda: order.append("journal")
@@ -81,7 +81,7 @@ def test_full_cleanup_finishes_session_before_closing_execution_journal(
     errors = manager.stop(full_cleanup=True)
 
     assert errors == ()
-    assert order == ["finish", "journal"]
+    assert order == ["drain:plugin_stop", "journal"]
 
 
 def test_partial_construction_unwinds_capability(monkeypatch, tmp_path: Path) -> None:
