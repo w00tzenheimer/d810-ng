@@ -201,6 +201,7 @@ def _disc(entry, stkoff, init=0):
         var_size=4,
         state_mop=_stk(stkoff),
         initial_state=init,
+        initial_state_write_witness=None,
     )
 
 

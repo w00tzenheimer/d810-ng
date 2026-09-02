@@ -2907,6 +2907,20 @@ class TestUnflattenBoundedRerunGate:
         scheduler = object()
         family = _Family()
         fact_view = SimpleNamespace(active_observations=("state",))
+        flow_graph = SimpleNamespace(blocks={})
+        native_preanalysis = NativePreanalysisSessionState(evidence_generation=5)
+        resolver_state = ResolverSessionState(
+            native_preanalysis=native_preanalysis,
+            native_key=NATIVE_KEY,
+            identity_index=MbaBlockIdentityIndex.from_flow_graph(
+                generation=ida_hexrays.MMAT_GLBOPT1,
+                evidence_generation=native_preanalysis.evidence_generation,
+                maturity=ida_hexrays.MMAT_GLBOPT1,
+                native_key=NATIVE_KEY,
+                flow_graph=flow_graph,
+                session_id="live-pipeline-input-facts",
+            ),
+        )
         monkeypatch.setattr(
             indirect_jump_labels,
             "is_materialized_indirect_dispatcher",
@@ -2931,7 +2945,7 @@ class TestUnflattenBoundedRerunGate:
             unflat_mod,
             "lift_function",
             lambda mba, maturity: SimpleNamespace(
-                flow_graph=SimpleNamespace(blocks={}),
+                flow_graph=flow_graph,
                 func_ea=int(mba.entry_ea),
                 live_source=mba,
             ),
@@ -2984,10 +2998,7 @@ class TestUnflattenBoundedRerunGate:
             semantic_native_body_materializer=lambda: materializer,
             native_cfg_freeze_observer=lambda: None,
         )
-        rule.current_resolver_session_state = lambda: ResolverSessionState(
-            native_preanalysis=NativePreanalysisSessionState(),
-            native_key=NATIVE_KEY,
-        )
+        rule.current_resolver_session_state = lambda: resolver_state
         rule.set_pass_scheduler(scheduler)
         rule._union_maturities_cache = frozenset({ida_hexrays.MMAT_GLBOPT1})
 
@@ -3001,8 +3012,6 @@ class TestUnflattenBoundedRerunGate:
         assert captured["semantic_native_body_materializer"] is materializer
         assert captured["input_facts"] is fact_view
         assert captured["prepared_input_facts"] is fact_view
-        from d810.hexrays.ir.mba_identity_index import MbaBlockIdentityIndex
-
         current_identity_index = captured["analysis_seeds"][
             "current_block_identity_index"
         ]
