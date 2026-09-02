@@ -229,8 +229,17 @@ from d810.passes.state_machine_spine import (
 from d810.transforms.canonical_semantic_fragment import (
     CanonicalSemanticFragmentRejected,
 )
+from d810.transforms.plan import PatchPlan
+from d810.transforms.unflatten_authority.ids import authority_id
+from d810.transforms.unflatten_authority.proposal import (
+    canonical_patch_step_descriptors,
+)
 from d810.transforms.minimal_unflatten_emit import (
     TERMINAL_CARRIER_CONVERGENCE_METADATA,
+)
+from d810.hexrays.ir.current_identity_seed import (
+    current_materialized_lowering_identity,
+    refresh_current_identity_index_for_mba,
 )
 from d810.transforms.state_machine_unflatten import lower_to_direct_graph
 
@@ -1185,6 +1194,35 @@ def _effective_native_specs(configured_specs, family):
     return native_specs
 
 
+def _canonical_patch_attempt_digest(plan: object) -> str | None:
+    """Seal the exact authority plus executable patch inventory for scheduling."""
+    if type(plan) is not PatchPlan or plan.unflatten_proposal is None:
+        return None
+    descriptors = canonical_patch_step_descriptors(plan)
+    return authority_id((
+        "unflatten.patch-attempt.v1",
+        authority_id(plan.unflatten_proposal),
+        tuple(
+            (
+                descriptor.step_index,
+                descriptor.step_digest,
+                descriptor.new_block_spec_digests,
+            )
+            for descriptor in descriptors
+        ),
+    ))
+
+
+def _patch_failure_code(failure: object) -> str:
+    """Return a deterministic typed preflight outcome without rendering payloads."""
+    verdict = getattr(failure, "unflatten_verdict", None)
+    reason = getattr(verdict, "reason", None)
+    value = getattr(reason, "value", None)
+    if isinstance(value, str) and value:
+        return value
+    return type(failure).__qualname__
+
+
 class StateMachineCffUnflattener(ComposedUnflatteningRule):
     """unflatten state-machine-CFF entry — the production CFF unflattener (M2 cutover, llr-ibpi).
 
@@ -1360,6 +1398,36 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
         """Mark ``func_ea`` terminal — recovery found no dispatcher (graph fully unflattened)."""
         self._unflat_done_eas.add(func_ea)
 
+    def _take_dispatcher_candidate_exclusions(
+        self,
+        *,
+        func_ea: int,
+        maturity: IRMaturity,
+        graph_fingerprint: str,
+        rejected_plan_deferral_enabled: bool,
+    ) -> tuple[frozenset, frozenset, frozenset]:
+        """Return durable, one-callback, and combined candidate exclusions.
+
+        Rejected-plan deferrals are deliberately consumed here, at the exact
+        resolver-callback boundary.  They therefore expose an alternate
+        candidate for one callback without turning a rejected plan into a
+        durable dispatcher-identity veto.
+        """
+        ordinary = self._dispatcher_progress.excluded_identities(
+            func_ea,
+            maturity,
+            graph_fingerprint,
+        )
+        pending = self._dispatcher_progress.take_rejected_plan_deferrals(
+            func_ea,
+            maturity,
+        )
+        # A deferral belongs to the immediately following resolver callback.
+        # Profiles that prohibit fallback discard it instead of preserving a
+        # stale veto for some later, semantically different callback.
+        transient = pending if rejected_plan_deferral_enabled else frozenset()
+        return ordinary, transient, frozenset(ordinary | transient)
+
     def _finalize_dispatcher_round(
         self,
         *,
@@ -1368,6 +1436,8 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
         graph_fingerprint: str,
         prelim: object | None,
         excluded_identities: frozenset,
+        transient_deferred_identities: frozenset = frozenset(),
+        rejected_plan_deferral_enabled: bool = True,
         family: object | None,
         backend: object,
     ) -> None:
@@ -1391,23 +1461,39 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                     identity,
                 )
                 return
-            # Clean no-ops can be fenced across graph churn; rejected plans
-            # remain exact-graph no-progress unless the typed preflight fence
-            # above proves them stable.
-            if patch_failure is None:
-                self._dispatcher_progress.record_clean_noop(
-                    func_ea,
-                    maturity,
-                    graph_fingerprint,
-                    identity,
+            # A rejected transaction belongs to one canonical plan attempt,
+            # never to the dispatcher identity or topology epoch.
+            if patch_failure is not None:
+                attempt_digest = _canonical_patch_attempt_digest(
+                    getattr(backend, "last_patch_plan", None)
                 )
-            else:
-                self._dispatcher_progress.record_no_progress(
-                    func_ea,
-                    maturity,
-                    graph_fingerprint,
+                failure_code = _patch_failure_code(patch_failure)
+                if attempt_digest is not None and rejected_plan_deferral_enabled:
+                    self._dispatcher_progress.record_rejected_plan(
+                        func_ea,
+                        maturity,
+                        identity,
+                        attempt_digest,
+                        failure_code,
+                    )
+                logger.debug(
+                    "UNFLAT_CANDIDATE_REJECTED func=0x%x maturity=%s "
+                    "identity=%s graph=%s attempt=%s failure_code=%s failure=%r",
+                    int(func_ea),
+                    maturity.name,
                     identity,
+                    graph_fingerprint,
+                    attempt_digest,
+                    failure_code,
+                    patch_failure,
                 )
+                return
+            self._dispatcher_progress.record_clean_noop(
+                func_ea,
+                maturity,
+                graph_fingerprint,
+                identity,
+            )
             excluded_next = identity in self._dispatcher_progress.excluded_identities(
                 func_ea, maturity, graph_fingerprint
             )
@@ -1421,16 +1507,6 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                 graph_fingerprint,
                 excluded_next,
             )
-            if patch_failure is not None:
-                logger.debug(
-                    "UNFLAT_CANDIDATE_REJECTED func=0x%x maturity=%s "
-                    "identity=%s graph=%s failure=%r",
-                    int(func_ea),
-                    maturity.name,
-                    identity,
-                    graph_fingerprint,
-                    patch_failure,
-                )
             return
 
         # A selected/recovered dispatcher without the new provenance remains
@@ -1440,6 +1516,16 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
             return
         # Filtered recovery finding nothing means only "all candidates for this
         # exact graph are stalled", not that the function is dispatcher-free.
+        if transient_deferred_identities:
+            logger.debug(
+                "UNFLAT_CANDIDATE_DEFERRED_NO_ALTERNATIVE func=0x%x "
+                "maturity=%s graph=%s deferred=%s",
+                int(func_ea),
+                maturity.name,
+                graph_fingerprint,
+                tuple(sorted(transient_deferred_identities, key=repr)),
+            )
+            return
         if excluded_identities:
             self._dispatcher_progress.record_exhausted(
                 func_ea,
@@ -2014,6 +2100,13 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
         if not proceed:
             return 0
         func_ea: int = int(mba.entry_ea)
+        materialized_computed_goto_profile = bool(
+            _is_indirect
+            or (
+                resolver_state is not None
+                and is_computed_goto_materialized(resolver_state)
+            )
+        )
 
         source = lift_function(mba, maturity=mba.maturity)
         portable_maturity = ida_maturity_to_ir(int(mba.maturity))
@@ -2024,10 +2117,20 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
             graph_fingerprint,
         ):
             return 0
-        excluded_dispatcher_identities = self._dispatcher_progress.excluded_identities(
-            func_ea,
-            portable_maturity,
-            graph_fingerprint,
+        rejected_plan_deferral_enabled = not (
+            _is_indirect
+            or canonical_composition_ready
+            or materialized_computed_goto_profile
+        )
+        (
+            ordinary_excluded_dispatcher_identities,
+            transient_deferred_dispatcher_identities,
+            excluded_dispatcher_identities,
+        ) = self._take_dispatcher_candidate_exclusions(
+            func_ea=func_ea,
+            maturity=portable_maturity,
+            graph_fingerprint=graph_fingerprint,
+            rejected_plan_deferral_enabled=rejected_plan_deferral_enabled,
         )
         if excluded_dispatcher_identities:
             logger.debug(
@@ -2041,15 +2144,8 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                         key=repr,
                     )
                 ),
-            )
-        self._register_dispatcher_resolvers(mba)
-        materialized_computed_goto_profile = bool(
-            _is_indirect
-            or (
-                resolver_state is not None
-                and is_computed_goto_materialized(resolver_state)
-            )
         )
+        self._register_dispatcher_resolvers(mba)
         (
             fact_view,
             prelim,
@@ -2116,6 +2212,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
             if flow_context is None
             else flow_context.semantic_native_body_materializer()
         )
+
         backend = HexRaysMutationBackend(
             mutation_gateway=mutation_gateway,
             semantic_native_body_materializer=(semantic_native_body_materializer),
@@ -2256,7 +2353,9 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
             maturity=portable_maturity,
             graph_fingerprint=graph_fingerprint,
             prelim=prelim,
-            excluded_identities=excluded_dispatcher_identities,
+            excluded_identities=ordinary_excluded_dispatcher_identities,
+            transient_deferred_identities=transient_deferred_dispatcher_identities,
+            rejected_plan_deferral_enabled=rejected_plan_deferral_enabled,
             family=family,
             backend=backend,
         )
@@ -2586,6 +2685,10 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                     live_handler_evidence,
                 ):
                     resolver_state.invalidate_current_mba_binding()
+                    # The local alias is now stale too.  Do not rebuild a
+                    # typed lowering catalogue from the MBA that produced the
+                    # newer evidence; wait for its generated replacement.
+                    current_identity_index = None
                 materialized_indirect_transfers = resolver_state.materialized_transfers
         mutation_materialized_indirect_transfers = (
             mutation_authoritative_materialized_transfers(
@@ -2660,20 +2763,47 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                 for instruction in block.insn_snapshots
             )
         }
-        if current_identity_index is None and isinstance(
-            resolver_state, ResolverSessionState
+        if (
+            isinstance(resolver_state, ResolverSessionState)
+            and isinstance(current_identity_index, MbaBlockIdentityIndex)
         ):
-            current_generation = int(getattr(mba, "maturity", 0) or 0)
-            current_identity_index = MbaBlockIdentityIndex.from_flow_graph(
-                generation=current_generation,
+            prior_identity_index = current_identity_index
+            # The source CFG remains in the resolver's exact transaction
+            # domain, but its provider stage is the live MBA - not whichever
+            # stage first produced the resolver index.  A stale stage here
+            # would publish a plan the manager-owned gateway cannot adopt.
+            current_identity_index = refresh_current_identity_index_for_mba(
+                current_identity_index,
+                source.flow_graph,
                 native_key=resolver_state.native_key,
-                evidence_generation=current_generation,
-                flow_graph=source.flow_graph,
-                session_id=(
-                    f"callback:{int(getattr(mba, 'entry_ea', 0) or 0):X}:"
-                    f"{current_generation}"
-                ),
+                evidence_generation=int(resolver_state.evidence_generation),
+                current_maturity=int(mba.maturity),
                 imported_native_eas_by_serial=imported_native_eas_by_serial,
+            )
+            # The coordinator may reuse this resolver binding while preopt
+            # union import is active.  Install the refreshed stage so its
+            # next gateway has exactly the same source authority; binding
+            # failure is deliberately allowed to abort this recovery path.
+            resolver_state.bind_current_mba(current_identity_index)
+            if prior_identity_index is not None and prior_identity_index is not current_identity_index:
+                logger.info(
+                    "unflat rebuilt stale resolver identity seed: source_blocks=%d "
+                    "stale_refs=%d current_refs=%d",
+                    len(source.flow_graph.blocks),
+                    len(prior_identity_index.plan_refs_by_serial()),
+                    len(current_identity_index.plan_refs_by_serial()),
+                )
+        materialized_lowering_identity = current_materialized_lowering_identity(
+            current_identity_index
+        )
+        if (
+            materialized_computed_goto_profile
+            and materialized_indirect_transfers
+            and materialized_lowering_identity is None
+        ):
+            logger.debug(
+                "unflat: deferring materialized lowering without a current "
+                "MBA identity binding"
             )
         native_origin_eas_by_serial = {
             int(block.serial): frozenset(
@@ -2710,6 +2840,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
             native_carrier_consumer_serials_by_load_ea[load_ea] = consumer_serial
         if (
             materialized_computed_goto_profile
+            and materialized_lowering_identity is not None
             and materialized_state_var_reg is not None
             and materialized_indirect_transfers
         ):
@@ -2732,7 +2863,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                 _unique_materialized_handler_region_identities(
                     materialized_indirect_transfers,
                     equality_target_eas,
-                    native_key=current_identity_index.native_key,
+                    native_key=materialized_lowering_identity.native_key,
                 )
             )
 
@@ -2836,6 +2967,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
             prelim is not None
             and prelim.dispatch_map is not None
             and prelim.dispatcher_block_serial is not None
+            and materialized_lowering_identity is not None
             and materialized_state_var_reg is not None
             and materialized_indirect_transfers
         ):
@@ -3373,6 +3505,8 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                         conditional_bridges,
                     ):
                         resolver_state.invalidate_current_mba_binding()
+                        current_identity_index = None
+                        materialized_lowering_identity = None
                     materialized_indirect_transfers = (
                         resolver_state.materialized_transfers
                     )
@@ -3391,7 +3525,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
         if (
             materialized_computed_goto_profile
             and isinstance(resolver_state, ResolverSessionState)
-            and current_identity_index is not None
+            and materialized_lowering_identity is not None
         ):
             if (
                 not imported_instruction_origins

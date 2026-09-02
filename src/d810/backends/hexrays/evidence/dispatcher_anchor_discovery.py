@@ -37,7 +37,11 @@ from __future__ import annotations
 
 import ida_hexrays
 
-from d810.analyses.control_flow.dispatcher_resolution import StateDispatcherMap
+from d810.analyses.control_flow.dispatcher_resolution import (
+    InitialStateWriteWitness,
+    StateDispatcherMap,
+    StorageIdentityKind,
+)
 from d810.analyses.control_flow.machine_recovery_engine import DispatcherAnchors
 from d810.backends.hexrays.evidence.emulation_dispatcher_resolver import (
     EmulationDispatcherResolver,
@@ -94,10 +98,37 @@ def _jtbl_selector_stkoff(
     return _resolve_mop_to_stkoff(mba, entry_blk.tail.l)
 
 
+def _compatible_initial_witness(
+    witness: InitialStateWriteWitness | None,
+    *,
+    entry: int | None,
+    stkoff: int | None,
+    initial_states: tuple[int, ...],
+) -> InitialStateWriteWitness | None:
+    """Keep only a witness owned by these exact selected anchor coordinates."""
+    if witness is None:
+        return None
+    if (
+        type(witness) is not InitialStateWriteWitness
+        or entry is None
+        or stkoff is None
+        or len(initial_states) != 1
+        or witness.state_identity.kind is not StorageIdentityKind.STACK
+        or int(witness.dispatcher_entry_serial) != int(entry)
+        or int(witness.state_identity.offset) != int(stkoff)
+        or (int(witness.normalized_state) & 0xFFFFFFFF)
+        != (int(initial_states[0]) & 0xFFFFFFFF)
+    ):
+        return None
+    return witness
+
+
 def discover_anchors(
     mba: ida_hexrays.mba_t,
     graph: FlowGraph,
     prelim: StateDispatcherMap | None,
+    *,
+    shared_anchors: DispatcherAnchors | None = None,
 ) -> DispatcherAnchors | None:
     """Selector-anchored :class:`DispatcherAnchors` for the concolic engine.
 
@@ -116,6 +147,12 @@ def discover_anchors(
     stkoff: int | None = None
     lvar_idx: int | None = None
     initial_states: tuple[int, ...] = ()
+    disc = None
+    shared_witness = (
+        shared_anchors.initial_state_write_witness
+        if type(shared_anchors) is DispatcherAnchors
+        else None
+    )
 
     if prelim is not None:
         entry = (
@@ -172,10 +209,20 @@ def discover_anchors(
     if entry is None:
         return None
 
+    witness = _compatible_initial_witness(
+        shared_witness, entry=entry, stkoff=stkoff, initial_states=initial_states,
+    )
+    if witness is None and disc is not None:
+        witness = _compatible_initial_witness(
+            disc.initial_state_write_witness,
+            entry=entry, stkoff=stkoff, initial_states=initial_states,
+        )
+
     return DispatcherAnchors(
         dispatcher_entry_block=int(entry),
         state_var_stkoff=stkoff,
         state_var_lvar_idx=lvar_idx,
         initial_states=initial_states,
+        initial_state_write_witness=witness,
         live_mba=mba,
     )

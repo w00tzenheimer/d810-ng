@@ -65,6 +65,7 @@ class HexRaysMutationBackend:
         self._committed_fragment_operation_count = 0
         self._last_patch_execution: object | None = None
         self._last_patch_failure: Exception | None = None
+        self._last_patch_plan: PatchPlan | None = None
         # One immutable-ish receipt reference for the *most recent* backend
         # call.  Portable provenance observers may summarize it, but never use
         # it as permission to replay or authorize a later mutation.
@@ -96,6 +97,11 @@ class HexRaysMutationBackend:
     @property
     def last_patch_failure(self) -> Exception | None:
         return self._last_patch_failure
+
+    @property
+    def last_patch_plan(self) -> PatchPlan | None:
+        """Return the exact PatchPlan from the latest patch attempt."""
+        return self._last_patch_plan
 
     @property
     def last_mutation_receipt(self) -> object | None:
@@ -142,6 +148,11 @@ class HexRaysMutationBackend:
     ) -> FlowGraph | object:
         """The sole live transaction entry point for PatchPlan and FragmentPlan."""
         self._last_mutation_receipt = None
+        # Attempt observations are exact-call state.  A later FragmentPlan or
+        # rejected type must never expose the preceding PatchPlan as current.
+        self._last_patch_execution = None
+        self._last_patch_failure = None
+        self._last_patch_plan = None
         if isinstance(rewrite_plan, FragmentPlan):
             if not isinstance(
                 publication_profile,
@@ -211,6 +222,7 @@ class HexRaysMutationBackend:
         )
         self._last_patch_execution = None
         self._last_patch_failure = None
+        self._last_patch_plan = rewrite_plan
         try:
             self._last_patch_execution = execute_patch_transaction(
                 self._mutation_gateway,

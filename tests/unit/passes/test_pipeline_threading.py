@@ -842,6 +842,39 @@ def test_lower_state_machine_does_not_forward_unbound_canonical_candidate(monkey
     assert captured["canonical"] is None
 
 
+def test_lower_state_machine_keeps_recovered_dispatch_targets_out_of_caller_authority(
+    monkeypatch,
+):
+    """Discovery rows are recovered candidates, never caller authority claims."""
+
+    captured = {}
+    am = AnalysisManager(_chain_graph(), input_facts=_input_facts())
+    _install_current_identity_index(am)
+    ctx = _ctx(am.graph, am.view())
+    RecoverDispatcher().run(ctx)
+    RecoverStateTransitions().run(ctx)
+    PlanSemanticRegions().run(ctx)
+    recovery = am.get_analysis("recover_dispatcher")
+    recovered_targets = frozenset(
+        int(row.target_block)
+        for row in recovery.dispatch_map.rows
+        if row.is_handler_row
+    )
+    explicit = frozenset({0x7FFF})
+    am.put_analysis("authoritative_handler_serials", explicit)
+
+    def capture(*_args, **kwargs):
+        captured.update(kwargs)
+        return PatchPlan()
+
+    monkeypatch.setattr(state_machine_module, "emit_minimal_unflatten", capture)
+
+    LowerStateMachine().run(ctx)
+
+    assert captured["authoritative_handler_serials"] == explicit
+    assert captured["recovered_dispatch_map_handler_serials"] == recovered_targets
+
+
 def _typed_pipeline_plan() -> PatchPlan:
     source, proposal, _exclusion, refs = exact_fixture()
     template = PatchPlan(

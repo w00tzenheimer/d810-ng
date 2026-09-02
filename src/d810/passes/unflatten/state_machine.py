@@ -44,6 +44,16 @@ from d810.analyses.control_flow.branch_witness_provider import (
     build_static_equality_chain_witness_map,
 )
 from d810.analyses.control_flow.route_predicate import DecisionDag, RouteComparison
+from d810.analyses.control_flow.condition_chain_model import (
+    ConditionChainHandlerEntry,
+    ConditionChainRouteEndpoint,
+    ConditionChainRouteEndpointKind,
+    ConditionChainRouteEvidence,
+    ConditionChainRouteProvenance,
+)
+from d810.analyses.control_flow.logical_route_endpoint import (
+    is_exact_logical_function_exit_shape,
+)
 from d810.analyses.control_flow.dispatcher_discovery_facts import (
     PREDECESSOR_DISPATCHER_TARGET_FACT_TYPE,
     collect_state_dispatcher_discovery_fact_observations,
@@ -117,6 +127,7 @@ from d810.ir.block_identity import (
     stable_block_identity_from_snapshot,
 )
 from d810.ir.flowgraph import FlowGraph, OperandKind
+from d810.ir.storage_identity import StorageIdentity, StorageIdentityKind
 from d810.ir.maturity import MaturityEnvelope
 from d810.ir.semantics import PredicateKind
 from d810.capabilities.branch_witness import BranchWitnessCapability
@@ -184,6 +195,12 @@ def _typed_or_empty_unflatten_plan(plan: PatchPlan) -> PatchPlan:
         else:
             rejection = validation
 
+    if logger.info_on:
+        logger.info(
+            "unflat typed plan publication abstained: reason=%s detail=%s",
+            rejection.reason.value,
+            rejection.detail_code,
+        )
 
     return PatchPlan(
         plan_id=plan.plan_id,
@@ -957,6 +974,108 @@ def _make_live_block_for(live_function):
     return _live_block_for
 
 
+def _build_condition_chain_route_evidence(
+    *,
+    flow_graph: FlowGraph,
+    range_evidence: object | None,
+    current_identity_index: object | None,
+    state_var_stkoff: int | None,
+    state_var_reg: int | None,
+    folded: bool,
+    source_generation: int,
+) -> ConditionChainRouteEvidence | None:
+    """Freeze one current condition-chain proposal before lowering."""
+    dag = None if range_evidence is None else getattr(range_evidence, "decision_dag", None)
+    if not isinstance(dag, DecisionDag) or not dag.nodes:
+        return None
+    if state_var_stkoff is not None:
+        state_identity = StorageIdentity(StorageIdentityKind.STACK, int(state_var_stkoff))
+    elif state_var_reg is not None:
+        state_identity = StorageIdentity(StorageIdentityKind.REGISTER, int(state_var_reg))
+    else:
+        return None
+    interval_dispatcher = None if range_evidence is None else getattr(range_evidence, "dispatcher", None)
+    rows = ()
+    if not folded:
+        raw_rows = getattr(interval_dispatcher, "_rows", None)
+        if raw_rows is None:
+            return None
+        try:
+            rows = tuple(sorted((int(row.lo), int(row.hi), int(row.target)) for row in raw_rows))
+        except (AttributeError, TypeError, ValueError):
+            return None
+    refs_for_serial = getattr(current_identity_index, "plan_refs_by_serial", None)
+    if not callable(refs_for_serial):
+        return None
+    refs = refs_for_serial()
+    endpoint_serials = {target for _lo, _hi, target in rows}
+    default_target = (
+        None if interval_dispatcher is None
+        else getattr(interval_dispatcher, "default_target", None)
+    )
+    if default_target is not None:
+        try:
+            endpoint_serials.add(int(default_target))
+        except (TypeError, ValueError):
+            return None
+    if not endpoint_serials:
+        endpoint_serials = {
+            int(target)
+            for comparison in dag.nodes.values()
+            for target in (comparison.true_target, comparison.false_target)
+            if int(target) not in dag.nodes and int(target) not in dag.aliases
+        }
+    endpoints = []
+    entries = []
+    for serial in sorted(endpoint_serials):
+        ref = refs.get(int(serial))
+        identity = getattr(ref, "identity", None)
+        if isinstance(identity, StableBlockIdentity):
+            endpoints.append(
+                ConditionChainRouteEndpoint(
+                    int(serial), ConditionChainRouteEndpointKind.NATIVE, identity,
+                )
+            )
+            entries.append(ConditionChainHandlerEntry(int(serial), identity))
+            continue
+        block = flow_graph.get_block(int(serial))
+        if not is_exact_logical_function_exit_shape(block):
+            return None
+        session_id = getattr(ref, "session_id", None)
+        proxy_token = getattr(ref, "proxy_token", None)
+        version = getattr(ref, "version", None)
+        try:
+            endpoints.append(
+                ConditionChainRouteEndpoint(
+                    int(serial), ConditionChainRouteEndpointKind.FUNCTION_EXIT,
+                    logical_session_id=session_id,
+                    logical_proxy_token=proxy_token,
+                    logical_version=version,
+                )
+            )
+        except (TypeError, ValueError):
+            return None
+    if not endpoints:
+        return None
+    try:
+        return ConditionChainRouteEvidence(
+            decision_dag=dag,
+            interval_rows=rows,
+            default_target_serial=default_target,
+            endpoints=tuple(endpoints),
+            handler_entries=tuple(entries),
+            state_identity=state_identity,
+            provenance=(
+                ConditionChainRouteProvenance.FOLDED
+                if folded
+                else ConditionChainRouteProvenance.EXTRACTED
+            ),
+            source_generation=int(source_generation),
+        )
+    except (TypeError, ValueError):
+        return None
+
+
 def _resolve_initial_state(range_evidence, recovery) -> int | None:
     """Resolve the dispatcher's initial state for the entry bridge.
 
@@ -1101,7 +1220,14 @@ class RecoverDispatcher(PipelinePass):
                 if machine is not None and context.graph is not None
                 else None
             )
-            recovery = recovery_from_graph(context.graph, dispatch_map)
+            recovery = recovery_from_graph(
+                context.graph,
+                dispatch_map,
+                initial_state_write_witness=(
+                    getattr(machine, "initial_state_write_witness", None)
+                    if machine is not None else None
+                ),
+            )
             _publish(context, "recovered_machine", machine)
             analysis_outputs = {"recovered_machine": machine}
         else:
@@ -2991,6 +3117,13 @@ class LowerStateMachine(PipelinePass):
                     _analysis(context, "authoritative_handler_serials", ()) or ()
                 )
             )
+            recovered_dispatch_map_handler_serials = frozenset(
+                int(row.target_block)
+                for row in getattr(
+                    getattr(recovery, "dispatch_map", None), "rows", ()
+                )
+                if row.is_handler_row
+            )
             missing_materialized_handler_targets = tuple(
                 (int(state), int(target_ea))
                 for state, target_ea in (
@@ -3046,6 +3179,22 @@ class LowerStateMachine(PipelinePass):
                 | folded_handler_serials
                 if dmap is not None and condition_chain_dag is not None
                 else frozenset()
+            )
+            condition_chain_route_evidence = _build_condition_chain_route_evidence(
+                flow_graph=context.graph,
+                range_evidence=range_evidence,
+                current_identity_index=current_block_identity_index,
+                state_var_stkoff=state_var_stkoff,
+                state_var_reg=state_var_reg,
+                folded=(
+                    folded_constant_equality_dag is not None
+                    and condition_chain_dag is folded_constant_equality_dag
+                ),
+                source_generation=(
+                    0
+                    if current_block_identity_index is None
+                    else int(current_block_identity_index.generation)
+                ),
             )
             carrier_vd_stkoff_candidates: dict[int, set[int]] = {}
             if live_function is not None:
@@ -3207,6 +3356,10 @@ class LowerStateMachine(PipelinePass):
                 dispatcher_entry_serial=int(dispatcher_entry),
                 pre_header_serial=getattr(range_evidence, "pre_header_serial", None),
                 initial_state=initial_state,
+                initial_state_write_witness=(
+                    getattr(recovery, "initial_state_write_witness", None)
+                ),
+                state_dispatcher_map=getattr(recovery, "dispatch_map", None),
                 native_bound_transition_routes=native_bound_transition_routes,
                 is_indirect=is_indirect,
                 fact_view=getattr(context, "facts", None),
@@ -3240,9 +3393,11 @@ class LowerStateMachine(PipelinePass):
                     state_carrier_vd_stkoffs_by_store_ea
                 ),
                 materialized_computed_goto_profile=(materialized_computed_goto_profile),
-                condition_chain_dag=condition_chain_dag,
-                condition_chain_handlers=condition_chain_handlers,
+                condition_chain_route_evidence=condition_chain_route_evidence,
                 authoritative_handler_serials=authoritative_handler_serials,
+                recovered_dispatch_map_handler_serials=(
+                    recovered_dispatch_map_handler_serials
+                ),
                 missing_materialized_handler_targets=(
                     missing_materialized_handler_targets
                 ),

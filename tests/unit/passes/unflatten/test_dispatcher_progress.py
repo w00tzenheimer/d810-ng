@@ -118,61 +118,62 @@ def test_clean_noop_exhaustion_is_maturity_scoped():
     assert not ledger.is_maturity_exhausted(0x401000, _MAT2)
 
 
-def test_repeated_preflight_failure_excludes_candidate_across_graph_drift():
+def test_repeated_rejected_plan_exhausts_only_that_attempt_digest():
     ledger = DispatcherProgressLedger(stall_threshold=2)
 
-    ledger.record_preflight_failure(0x401000, _MAT, _OUTER, "failure-a")
+    ledger.record_rejected_plan(0x401000, _MAT, _OUTER, "attempt-a", "failure-a")
+    assert not ledger.is_rejected_plan_exhausted(
+        0x401000, _MAT, _OUTER, "attempt-a"
+    )
+
+    ledger.record_rejected_plan(0x401000, _MAT, _OUTER, "attempt-a", "failure-a")
+
+    assert ledger.is_rejected_plan_exhausted(
+        0x401000, _MAT, _OUTER, "attempt-a"
+    )
+    assert not ledger.is_rejected_plan_exhausted(
+        0x401000, _MAT, _OUTER, "attempt-b"
+    )
     assert ledger.excluded_identities(0x401000, _MAT, "graph-a") == frozenset()
 
-    ledger.record_preflight_failure(0x401000, _MAT, _OUTER, "failure-a")
 
-    assert ledger.excluded_identities(0x401000, _MAT, "graph-b") == frozenset(
-        {_OUTER}
+def test_rejected_plan_deferral_is_one_shot_and_maturity_scoped():
+    ledger = DispatcherProgressLedger(stall_threshold=2)
+    ledger.record_rejected_plan(0x401000, _MAT, _OUTER, "attempt-a", "failure-a")
+    ledger.record_rejected_plan(0x401000, _MAT, _OUTER, "attempt-a", "failure-a")
+    ledger.record_rejected_plan(0x401000, _MAT2, _OUTER, "attempt-a", "failure-a")
+    ledger.record_rejected_plan(0x401000, _MAT2, _OUTER, "attempt-a", "failure-a")
+
+    assert ledger.take_rejected_plan_deferrals(0x401000, _MAT) == frozenset({_OUTER})
+    assert ledger.take_rejected_plan_deferrals(0x401000, _MAT) == frozenset()
+    assert ledger.take_rejected_plan_deferrals(0x401000, _MAT2) == frozenset({_OUTER})
+    assert ledger.excluded_identities(0x401000, _MAT, "graph-a") == frozenset()
+
+
+def test_distinct_rejected_plan_failure_codes_do_not_combine():
+    ledger = DispatcherProgressLedger(stall_threshold=2)
+
+    ledger.record_rejected_plan(0x401000, _MAT, _OUTER, "attempt-a", "failure-a")
+    ledger.record_rejected_plan(0x401000, _MAT, _OUTER, "attempt-a", "failure-b")
+
+    assert not ledger.is_rejected_plan_exhausted(
+        0x401000, _MAT, _OUTER, "attempt-a"
     )
 
 
-def test_distinct_preflight_failures_do_not_combine_into_exclusion():
+def test_committed_progress_clears_rejected_plan_fence():
     ledger = DispatcherProgressLedger(stall_threshold=2)
-
-    ledger.record_preflight_failure(0x401000, _MAT, _OUTER, "failure-a")
-    ledger.record_preflight_failure(0x401000, _MAT, _OUTER, "failure-b")
-
-    assert ledger.excluded_identities(0x401000, _MAT, "graph-a") == frozenset()
-
-
-def test_committed_progress_clears_stable_preflight_failure_fence():
-    ledger = DispatcherProgressLedger(stall_threshold=2)
-    ledger.record_preflight_failure(0x401000, _MAT, _OUTER, "failure-a")
-    ledger.record_preflight_failure(0x401000, _MAT, _OUTER, "failure-a")
-    assert ledger.excluded_identities(0x401000, _MAT, "graph-a") == frozenset(
-        {_OUTER}
+    ledger.record_rejected_plan(0x401000, _MAT, _OUTER, "attempt-a", "failure-a")
+    ledger.record_rejected_plan(0x401000, _MAT, _OUTER, "attempt-a", "failure-a")
+    assert ledger.is_rejected_plan_exhausted(
+        0x401000, _MAT, _OUTER, "attempt-a"
     )
 
     ledger.record_progress(0x401000, _MAT, _OUTER)
 
-    assert ledger.excluded_identities(0x401000, _MAT, "graph-b") == frozenset()
-
-
-def test_stable_preflight_exhaustion_survives_graph_drift_but_not_maturity_drift():
-    ledger = DispatcherProgressLedger(stall_threshold=2)
-    ledger.record_preflight_failure(0x401000, _MAT, _OUTER, "failure-a")
-    ledger.record_preflight_failure(0x401000, _MAT, _OUTER, "failure-a")
-
-    excluded = ledger.excluded_identities(0x401000, _MAT, "graph-a")
-    assert ledger.all_excluded_by_stable_preflight_failure(
-        0x401000, _MAT, excluded
+    assert not ledger.is_rejected_plan_exhausted(
+        0x401000, _MAT, _OUTER, "attempt-a"
     )
-    ledger.record_exhausted(
-        0x401000,
-        _MAT,
-        "graph-a",
-        stable_preflight_failure=True,
-    )
-
-    assert ledger.is_exhausted(0x401000, _MAT, "graph-b")
-    assert ledger.is_maturity_exhausted(0x401000, _MAT)
-    assert not ledger.is_exhausted(0x401000, _MAT2, "graph-b")
-    assert not ledger.is_maturity_exhausted(0x401000, _MAT2)
 
 
 def test_exact_graph_exhaustion_does_not_become_maturity_wide():

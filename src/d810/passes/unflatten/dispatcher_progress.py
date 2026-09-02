@@ -12,7 +12,8 @@ from d810.ir.maturity import IRMaturity
 
 
 _AttemptKey = tuple[int, IRMaturity, str, DispatcherCandidateIdentity]
-_PreflightFailureKey = tuple[int, IRMaturity, DispatcherCandidateIdentity, str]
+_RejectedPlanKey = tuple[int, IRMaturity, DispatcherCandidateIdentity, str, str]
+_RejectedPlanDeferralKey = tuple[int, IRMaturity]
 _CandidateKey = tuple[int, IRMaturity, DispatcherCandidateIdentity]
 _GraphKey = tuple[int, IRMaturity, str]
 _MaturityKey = tuple[int, IRMaturity]
@@ -50,20 +51,22 @@ class DispatcherProgressLedger:
 
     Ordinary no-progress attempts remain graph-scoped: a Hex-Rays rewrite or
     optimizer change therefore makes the candidate eligible again.  Clean
-    no-ops additionally use a bounded distinct-fingerprint fence, while
-    preflight failures use their stable failure fingerprint so repeated
-    rejection cannot evade the fence through graph churn.
+    no-ops additionally use a bounded distinct-fingerprint fence.  Rejected
+    PatchPlans are fenced separately by their canonical attempt digest: they
+    do not become topology or candidate exclusions.
     """
 
     stall_threshold: int = 2
     clean_noop_graph_threshold: int = 3
     _no_progress_counts: dict[_AttemptKey, int] = field(default_factory=dict)
-    _preflight_failure_counts: dict[_PreflightFailureKey, int] = field(
+    _rejected_plan_counts: dict[_RejectedPlanKey, int] = field(
         default_factory=dict
     )
+    _rejected_plan_deferrals: dict[
+        _RejectedPlanDeferralKey, set[DispatcherCandidateIdentity]
+    ] = field(default_factory=dict)
     _clean_noop_graphs: dict[_CandidateKey, set[str]] = field(default_factory=dict)
     _exhausted_graphs: set[_GraphKey] = field(default_factory=set)
-    _stable_preflight_exhausted: set[_MaturityKey] = field(default_factory=set)
     _cross_graph_clean_noop_exhausted: set[_MaturityKey] = field(
         default_factory=set
     )
@@ -112,23 +115,64 @@ class DispatcherProgressLedger:
         if len(fingerprints) < self.clean_noop_graph_threshold:
             fingerprints.add(graph_fingerprint)
 
-    def record_preflight_failure(
+    def record_rejected_plan(
         self,
         func_ea: int,
         maturity: IRMaturity,
         identity: DispatcherCandidateIdentity,
+        attempt_digest: str,
         failure_fingerprint: str,
     ) -> None:
-        """Fence a stable clean rejection independently of graph churn."""
+        """Record one rejected canonical plan without excluding its candidate."""
         key = (
             int(func_ea),
             maturity,
             identity,
+            str(attempt_digest),
             str(failure_fingerprint),
         )
-        self._preflight_failure_counts[key] = (
-            self._preflight_failure_counts.get(key, 0) + 1
+        count = self._rejected_plan_counts.get(key, 0) + 1
+        self._rejected_plan_counts[key] = count
+        # Queue once per completed threshold interval.  Taking the deferral
+        # removes it immediately; another identical rejection sequence may
+        # later queue one more alternate-candidate round.
+        if count % self.stall_threshold == 0:
+            self._rejected_plan_deferrals.setdefault(
+                (int(func_ea), maturity), set()
+            ).add(identity)
+
+    def is_rejected_plan_exhausted(
+        self,
+        func_ea: int,
+        maturity: IRMaturity,
+        identity: DispatcherCandidateIdentity,
+        attempt_digest: str,
+    ) -> bool:
+        """Return whether this exact rejected plan reached the retry fence."""
+        return any(
+            count >= self.stall_threshold
+            for (
+                candidate_func,
+                candidate_maturity,
+                candidate_identity,
+                candidate_attempt_digest,
+                _failure,
+            ), count in self._rejected_plan_counts.items()
+            if candidate_func == int(func_ea)
+            and candidate_maturity is maturity
+            and candidate_identity == identity
+            and candidate_attempt_digest == str(attempt_digest)
         )
+
+    def take_rejected_plan_deferrals(
+        self,
+        func_ea: int,
+        maturity: IRMaturity,
+    ) -> frozenset[DispatcherCandidateIdentity]:
+        """Consume one callback's transient alternate-candidate deferrals."""
+        return frozenset(self._rejected_plan_deferrals.pop(
+            (int(func_ea), maturity), set()
+        ))
 
     def record_progress(
         self,
@@ -145,9 +189,9 @@ class DispatcherProgressLedger:
                 and key[3] == identity
             )
         }
-        self._preflight_failure_counts = {
+        self._rejected_plan_counts = {
             key: count
-            for key, count in self._preflight_failure_counts.items()
+            for key, count in self._rejected_plan_counts.items()
             if not (
                 key[0] == int(func_ea)
                 and key[1] is maturity
@@ -155,7 +199,12 @@ class DispatcherProgressLedger:
             )
         }
         self._clean_noop_graphs.pop((int(func_ea), maturity, identity), None)
-        self._stable_preflight_exhausted.discard((int(func_ea), maturity))
+        deferral_key = (int(func_ea), maturity)
+        pending = self._rejected_plan_deferrals.get(deferral_key)
+        if pending is not None:
+            pending.discard(identity)
+            if not pending:
+                self._rejected_plan_deferrals.pop(deferral_key, None)
         self._cross_graph_clean_noop_exhausted.discard((int(func_ea), maturity))
 
     def excluded_identities(
@@ -173,14 +222,6 @@ class DispatcherProgressLedger:
             and fingerprint == str(graph_fingerprint)
             and count >= self.stall_threshold
         }
-        excluded.update(
-            identity
-            for (candidate_func, candidate_maturity, identity, _failure), count
-            in self._preflight_failure_counts.items()
-            if candidate_func == int(func_ea)
-            and candidate_maturity is maturity
-            and count >= self.stall_threshold
-        )
         excluded.update(
             identity
             for (candidate_func, candidate_maturity, identity), fingerprints
@@ -209,45 +250,17 @@ class DispatcherProgressLedger:
             and len(fingerprints) >= self.clean_noop_graph_threshold
         }
 
-    def all_excluded_by_stable_preflight_failure(
-        self,
-        func_ea: int,
-        maturity: IRMaturity,
-        identities: frozenset[DispatcherCandidateIdentity],
-    ) -> bool:
-        """Return whether every filtered candidate has a stable clean fence.
-
-        A function/maturity can be considered exhausted across graph churn only
-        when filtered recovery has no candidate left and every candidate it
-        filtered was independently fenced by the same stable failure policy.
-        Exact-graph no-progress exclusions deliberately do not qualify.
-        """
-        if not identities:
-            return False
-        stable_excluded = {
-            identity
-            for (candidate_func, candidate_maturity, identity, _failure), count
-            in self._preflight_failure_counts.items()
-            if candidate_func == int(func_ea)
-            and candidate_maturity is maturity
-            and count >= self.stall_threshold
-        }
-        return identities <= stable_excluded
-
     def record_exhausted(
         self,
         func_ea: int,
         maturity: IRMaturity,
         graph_fingerprint: str,
         *,
-        stable_preflight_failure: bool = False,
         cross_graph_clean_noop: bool = False,
     ) -> None:
-        if stable_preflight_failure:
-            self._stable_preflight_exhausted.add((int(func_ea), maturity))
         if cross_graph_clean_noop:
             self._cross_graph_clean_noop_exhausted.add((int(func_ea), maturity))
-        if not stable_preflight_failure and not cross_graph_clean_noop:
+        if not cross_graph_clean_noop:
             self._exhausted_graphs.add(
                 (int(func_ea), maturity, str(graph_fingerprint))
             )
@@ -259,8 +272,7 @@ class DispatcherProgressLedger:
         graph_fingerprint: str,
     ) -> bool:
         return (
-            (int(func_ea), maturity) in self._stable_preflight_exhausted
-            or (int(func_ea), maturity) in self._cross_graph_clean_noop_exhausted
+            (int(func_ea), maturity) in self._cross_graph_clean_noop_exhausted
             or (
                 int(func_ea),
                 maturity,
@@ -272,13 +284,12 @@ class DispatcherProgressLedger:
         """Return whether a graph-independent fence exhausted this maturity.
 
         This graph-independent query lets the live callback exit before it
-        rebuilds another portable graph snapshot.  Exact-graph exhaustion is
+        rebuilds another portable graph snapshot. Exact-graph exhaustion is
         intentionally omitted because a changed graph may make that candidate
         eligible again.
         """
         return (
-            (int(func_ea), maturity) in self._stable_preflight_exhausted
-            or (int(func_ea), maturity) in self._cross_graph_clean_noop_exhausted
+            (int(func_ea), maturity) in self._cross_graph_clean_noop_exhausted
         )
 
     def reset_function(self, func_ea: int) -> None:
@@ -287,9 +298,14 @@ class DispatcherProgressLedger:
             for key, count in self._no_progress_counts.items()
             if key[0] != int(func_ea)
         }
-        self._preflight_failure_counts = {
+        self._rejected_plan_counts = {
             key: count
-            for key, count in self._preflight_failure_counts.items()
+            for key, count in self._rejected_plan_counts.items()
+            if key[0] != int(func_ea)
+        }
+        self._rejected_plan_deferrals = {
+            key: identities
+            for key, identities in self._rejected_plan_deferrals.items()
             if key[0] != int(func_ea)
         }
         self._clean_noop_graphs = {
@@ -300,9 +316,6 @@ class DispatcherProgressLedger:
         self._exhausted_graphs = {
             key for key in self._exhausted_graphs if key[0] != int(func_ea)
         }
-        self._stable_preflight_exhausted = {
-            key for key in self._stable_preflight_exhausted if key[0] != int(func_ea)
-        }
         self._cross_graph_clean_noop_exhausted = {
             key
             for key in self._cross_graph_clean_noop_exhausted
@@ -311,10 +324,10 @@ class DispatcherProgressLedger:
 
     def reset_all(self) -> None:
         self._no_progress_counts.clear()
-        self._preflight_failure_counts.clear()
+        self._rejected_plan_counts.clear()
+        self._rejected_plan_deferrals.clear()
         self._clean_noop_graphs.clear()
         self._exhausted_graphs.clear()
-        self._stable_preflight_exhausted.clear()
         self._cross_graph_clean_noop_exhausted.clear()
 
 

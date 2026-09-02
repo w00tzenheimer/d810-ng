@@ -1583,6 +1583,7 @@ def test_early_transaction_failure_mints_attempt_id(monkeypatch) -> None:
 
     with pytest.raises(RuntimeError, match="early transaction setup failure"):
         backend.apply(plan, live_source=SimpleNamespace(qty=cfg.num_blocks))
+    assert backend.last_patch_plan is plan
 
 def test_apply_lowers_plan_when_reachability_is_preserved() -> None:
     cfg = _make_cfg(
@@ -2264,7 +2265,7 @@ def _assert_typed_effect_cell(
     *,
     ea: int,
     state: authority_model.ObligationState | tuple[authority_model.ObligationState, ...],
-    rule: authority_model.UnflattenJustificationRule,
+    rule: authority_model.UnflattenJustificationRule | None,
 ) -> None:
     subject = _typed_effect_subject(case, ea)
     key = authority_model.ObligationKey(
@@ -2273,6 +2274,10 @@ def _assert_typed_effect_cell(
     cell = next(cell for cell in case.obligation_index.cells if cell.key == key)
     expected_states = (state,) if type(state) is authority_model.ObligationState else state
     assert cell.state in expected_states
+    if rule is None:
+        assert cell.supporting_justification_ids == ()
+        assert cell.refuting_justification_ids == ()
+        return
     justification_ids = (
         cell.supporting_justification_ids + cell.refuting_justification_ids
     )
@@ -3318,6 +3323,68 @@ def test_backend_canonical_projected_prepare_exception_is_decisive(monkeypatch) 
     assert backend.last_patch_execution is None
 
 
+def test_backend_rejected_projected_handler_authority_never_applies(caplog) -> None:
+    """The real projected handler-delivery gate stops before backend lowering."""
+    pre_cfg, plan = _typed_local_alias_fixture()
+    original = plan.unflatten_proposal
+    refs = {serial: ref for ref, serial in plan.source_coordinates}
+    from d810.transforms.unflatten_authority import producer_api
+
+    # The route redirects entry block 0 around dispatcher block 1.  Rebuild the
+    # real proposal with that native block as an authoritative handler: source
+    # binding succeeds, route realization succeeds, and only the projected
+    # physical-delivery obligation can reject the exact plan/projection pair.
+    proposal = producer_api.build_proposal(
+        plan_id=original.plan_id,
+        source=pre_cfg,
+        block_refs_by_serial=refs,
+        source_generation=original.source_identity_catalog.generation,
+        canonical_route_evidence=original.route_evidence,
+        selected_route_proof_ids=tuple(
+            proof.proof_id for proof in original.route_evidence.route_proofs
+        ),
+        exact_state_effect_exclusions=(),
+        dispatcher_entry_serial=1,
+        dispatcher_member_serials=(0, 1),
+        authoritative_handler_serials=(1,),
+        state_identity=original.plan_inputs.state_identity,
+        use_def_witness=original.use_def_witness,
+    )
+    plan = replace(plan, unflatten_proposal=proposal)
+    backend = _typed_alias_backend(pre_cfg, plan, pre_cfg)
+
+    result = backend.apply(
+        plan, live_source=SimpleNamespace(qty=pre_cfg.num_blocks),
+    )
+
+    assert result is pre_cfg
+    assert backend.last_patch_execution is None
+    assert isinstance(backend.last_patch_failure, PatchTransactionPreflightRejected)
+    verdict = backend.last_patch_failure.unflatten_verdict
+    assert verdict is not None
+    assert verdict.accepted is False
+    assert verdict.reason is authority_model.UnflattenAuthorityReason.OBLIGATION_VIOLATED
+    assert len(verdict.failed_obligations) == 1
+    failed = verdict.failed_obligations[0]
+    assert failed.key.dimension is authority_model.SafetyDimension.HANDLER_REACHABILITY
+    assert failed.key.subject.role is authority_model.SemanticSubjectRole.AUTHORITATIVE_HANDLER
+    assert failed.key.subject.anchor_ea == 0x2000
+    assert backend.last_patch_failure.unflatten_verdict is verdict
+    assert backend._translator.lower_calls == []
+    delivery_rows = tuple(
+        record.getMessage()
+        for record in caplog.records
+        if "projected handler delivery violation" in record.getMessage()
+    )
+    assert delivery_rows == (
+        "projected handler delivery violation: anchor=0x2000 "
+        "source_serial=1 source_pred=((0,),) source_succ=((3,),) "
+        "projected_serial=1 projected_pred=((),) projected_incoming=() "
+        "projected_succ=((3,),) entry_serial=0 physically_reachable=False "
+        "semantic_reachable=False normalized_states=() claims=() route_rows=()",
+    )
+
+
 def test_backend_malformed_projected_canonical_prepare_is_decisive(monkeypatch) -> None:
     pre_cfg, plan = _typed_local_alias_fixture()
     backend = _typed_alias_backend(pre_cfg, plan, pre_cfg)
@@ -3950,15 +4017,17 @@ def test_backend_rejects_typed_local_alias_unreachable_owner() -> None:
     _assert_typed_effect_cell(
         verdict.safety_case,
         ea=0x4000,
-        state=authority_model.ObligationState.SATISFIED,
-        rule=authority_model.UnflattenJustificationRule.LOCAL_ALIAS_SCALARIZATION_PROVEN,
+        state=authority_model.ObligationState.UNPROVEN,
+        rule=None,
     )
     ledger = verdict.loss_ledger
     assert ledger is not None
-    assert any(
-        row.kind is authority_model.SemanticLossKind.LOCAL_ALIAS_SCALARIZATION
-        for row in ledger.rows
+    lost_owner_rows = tuple(
+        row for row in ledger.rows
+        if row.source_subject.anchor_ea == 0x4000
     )
+    assert len(lost_owner_rows) == 1
+    assert lost_owner_rows[0].kind is authority_model.SemanticLossKind.UNCLASSIFIED
 
 
 @pytest.mark.parametrize(
@@ -4529,6 +4598,52 @@ def test_publish_fragment_uses_independent_receipt_backed_gateway() -> None:
     assert translator.lift_count == 1
     assert backend.committed_current_mba_identity_binding() is snapshot
     assert backend.committed_fragment_operation_count == 260
+
+
+def test_apply_clears_patch_attempt_observations_for_non_patch_calls() -> None:
+    cfg = _make_cfg([(0, 1)], stop_serials=(1,))
+    snapshot = _current_mba_identity_binding()
+
+    class _Gateway:
+        def new_transaction(self):
+            return self
+
+        def execute_patch_transaction(
+            self,
+            _fragment_backend,
+            _fragment_plan,
+            _publication_profile,
+        ):
+            return SimpleNamespace(
+                current_mba_identity_binding=snapshot,
+                operation_count=1,
+            )
+
+    backend = HexRaysMutationBackend(
+        mutation_gateway=_Gateway(),
+        translator=_FakeTranslator(cfg),
+        fragment_backend_factory=lambda *_args: object(),
+    )
+    backend._last_patch_execution = object()
+    backend._last_patch_failure = RuntimeError("stale failure")
+    backend._last_patch_plan = object()
+
+    backend.apply(_fragment_plan(), live_source=object())
+
+    assert backend.last_patch_execution is None
+    assert backend.last_patch_failure is None
+    assert backend.last_patch_plan is None
+
+    backend._last_patch_execution = object()
+    backend._last_patch_failure = RuntimeError("stale failure")
+    backend._last_patch_plan = object()
+
+    with pytest.raises(TypeError, match="requires a typed plan"):
+        backend.apply(object(), live_source=object())
+
+    assert backend.last_patch_execution is None
+    assert backend.last_patch_failure is None
+    assert backend.last_patch_plan is None
 
 
 def test_publish_generated_fragment_never_lifts_graph_free_mba() -> None:

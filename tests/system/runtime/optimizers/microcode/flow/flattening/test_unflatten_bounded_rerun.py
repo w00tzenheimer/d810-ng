@@ -1376,6 +1376,80 @@ def test_materialized_recovery_builds_portable_entry_route_evidence(
     assert seeds["materialized_handler_by_state"] == {}
 
 
+def test_materialized_recovery_defers_after_current_mba_binding_is_invalidated(
+    monkeypatch,
+) -> None:
+    """A materialized transfer cannot lower through an absent identity index."""
+    transfer = MaterializedIndirectTransfer(
+        source_jmp_ea=0x40D348,
+        source_block_ea=0x40D348,
+        materialized_anchor_eas=(0x40D348,),
+        target_eas=(0x40EAA7,),
+        selector_state_constant=0x699BC698,
+        selector_state_var_reg=28,
+        resolver_kind="static_handler_entry_route",
+    )
+    native_preanalysis = NativePreanalysisSessionState()
+    resolver_state = ResolverSessionState(
+        native_preanalysis=native_preanalysis,
+        native_key=NATIVE_KEY,
+        identity_index=None,
+    )
+    resolver_state.native_preanalysis.merge_native_facts(
+        resolver_state.native_key, transfers=(transfer,)
+    )
+
+    monkeypatch.setattr(unflattener, "recover_dispatcher", lambda *_a, **_kw: None)
+    monkeypatch.setattr(
+        unflattener,
+        "_resolver_native_state_register",
+        lambda *_a, **_kw: 28,
+    )
+    monkeypatch.setattr(
+        unflattener,
+        "materialized_state_register_candidates",
+        lambda _transfers: frozenset({28}),
+    )
+    monkeypatch.setattr(
+        unflattener,
+        "unique_materialized_state_register",
+        lambda _transfers: 28,
+    )
+    monkeypatch.setattr(
+        unflattener,
+        "imported_detached_snippet_direct_boundary_evidence",
+        lambda _mba: (),
+    )
+    monkeypatch.setattr(
+        unflattener,
+        "imported_detached_snippet_conditional_boundary_evidence",
+        lambda _mba: (),
+    )
+    monkeypatch.setattr(
+        unflattener,
+        "recognize_residual_entry_bridge",
+        lambda _mba: None,
+    )
+
+    rule = StateMachineCffUnflattener.__new__(StateMachineCffUnflattener)
+    rule.config = {}
+    rule.flow_context = None
+    rule.current_resolver_session_state = lambda: resolver_state
+    rule._pass_manager = SimpleNamespace(facts_for=lambda *_a, **_kw: SimpleNamespace())
+    flow_graph = SimpleNamespace(blocks={}, get_block=lambda _serial: None)
+    mba = SimpleNamespace(entry_ea=_EA, maturity=ida_hexrays.MMAT_CALLS)
+
+    _fact_view, _prelim, _range, seeds, _facts = rule._build_recovery_evidence(
+        mba,
+        SimpleNamespace(flow_graph=flow_graph),
+        materialized_computed_goto_profile=True,
+    )
+
+    assert seeds["current_block_identity_index"] is None
+    assert seeds["materialized_state_routes"] == ()
+    assert seeds["materialized_handler_by_state"] == {}
+
+
 def test_materialized_handler_region_identity_survives_missing_entry_ea() -> None:
     state = 0x08DF7433
     transfers = (
@@ -1705,8 +1779,8 @@ def test_repeated_identical_noop_dispatcher_round_becomes_exact_exclusion() -> N
     assert _EA not in rule._unflat_done_eas
 
 
-def test_repeated_identical_rejected_dispatcher_round_becomes_exact_exclusion() -> None:
-    """A stable fail-closed preflight cannot justify 64 identical retries."""
+def test_repeated_rejected_dispatcher_round_exhausts_only_exact_attempt(monkeypatch) -> None:
+    """A rejected attempt fence does not become a candidate exclusion."""
     rule = _fresh_rule()
     identity = _outer_dispatcher_identity()
     prelim = SimpleNamespace(
@@ -1715,8 +1789,15 @@ def test_repeated_identical_rejected_dispatcher_round_becomes_exact_exclusion() 
     )
     backend = SimpleNamespace(
         last_patch_execution=None,
-        last_patch_failure=SimpleNamespace(reason="projected reachability rejected"),
+        last_patch_failure=SimpleNamespace(unflatten_verdict=None),
+        last_patch_plan=object(),
+        last_patch_attempt_skipped=False,
         committed_fragment_operation_count=0,
+    )
+    monkeypatch.setattr(
+        unflattener,
+        "_canonical_patch_attempt_digest",
+        lambda _plan: "attempt-a",
     )
 
     for _ in range(2):
@@ -1730,10 +1811,160 @@ def test_repeated_identical_rejected_dispatcher_round_becomes_exact_exclusion() 
             backend=backend,
         )
 
+    assert rule._dispatcher_progress.is_rejected_plan_exhausted(
+        _EA, _IR_MAT, identity, "attempt-a"
+    )
+    assert not rule._dispatcher_progress.is_rejected_plan_exhausted(
+        _EA, _IR_MAT, identity, "attempt-b"
+    )
     assert rule._dispatcher_progress.excluded_identities(
         _EA, _IR_MAT, "graph-rejected"
-    ) == frozenset({identity})
+    ) == frozenset()
     assert _EA not in rule._unflat_done_eas
+
+
+def test_rejected_plan_defers_candidate_for_exactly_one_resolver_callback(
+    monkeypatch,
+) -> None:
+    rule = _fresh_rule()
+    primary = _outer_dispatcher_identity()
+    alternate = DispatcherCandidateIdentity(
+        resolver_name="condition_chain",
+        router_kind=RouterKind.CONDITION_CHAIN,
+        table_provenance=None,
+        dispatcher_entry_ea=0x7FF856533B40,
+        state_location_kind="stack",
+        state_location_value=0xC,
+    )
+    prelim = SimpleNamespace(
+        dispatcher_block_serial=7,
+        candidate_identity=primary,
+    )
+    backend = SimpleNamespace(
+        last_patch_execution=None,
+        last_patch_failure=SimpleNamespace(unflatten_verdict=None),
+        last_patch_plan=object(),
+        committed_fragment_operation_count=0,
+    )
+    monkeypatch.setattr(
+        unflattener,
+        "_canonical_patch_attempt_digest",
+        lambda _plan: "attempt-a",
+    )
+
+    for _ in range(2):
+        rule._finalize_dispatcher_round(
+            func_ea=_EA,
+            maturity=_IR_MAT,
+            graph_fingerprint="graph-rejected",
+            prelim=prelim,
+            excluded_identities=frozenset(),
+            family=SimpleNamespace(name="hodur"),
+            backend=backend,
+        )
+
+    ordinary, transient, combined = rule._take_dispatcher_candidate_exclusions(
+        func_ea=_EA,
+        maturity=_IR_MAT,
+        graph_fingerprint="graph-rejected",
+        rejected_plan_deferral_enabled=True,
+    )
+    candidates = (primary, alternate)
+    selected = next(candidate for candidate in candidates if candidate not in combined)
+
+    assert ordinary == frozenset()
+    assert transient == frozenset({primary})
+    assert selected == alternate
+
+    ordinary, transient, combined = rule._take_dispatcher_candidate_exclusions(
+        func_ea=_EA,
+        maturity=_IR_MAT,
+        graph_fingerprint="graph-rejected",
+        rejected_plan_deferral_enabled=True,
+    )
+    selected = next(candidate for candidate in candidates if candidate not in combined)
+
+    assert ordinary == frozenset()
+    assert transient == frozenset()
+    assert selected == primary
+
+
+def test_disabled_fallback_callback_discards_pending_rejected_plan_deferral() -> None:
+    rule = _fresh_rule()
+    identity = _outer_dispatcher_identity()
+    for _ in range(2):
+        rule._dispatcher_progress.record_rejected_plan(
+            _EA,
+            _IR_MAT,
+            identity,
+            "attempt-a",
+            "failure-a",
+        )
+
+    _ordinary, transient, combined = rule._take_dispatcher_candidate_exclusions(
+        func_ea=_EA,
+        maturity=_IR_MAT,
+        graph_fingerprint="graph-disabled",
+        rejected_plan_deferral_enabled=False,
+    )
+    assert transient == frozenset()
+    assert combined == frozenset()
+
+    _ordinary, transient, combined = rule._take_dispatcher_candidate_exclusions(
+        func_ea=_EA,
+        maturity=_IR_MAT,
+        graph_fingerprint="graph-enabled-later",
+        rejected_plan_deferral_enabled=True,
+    )
+    assert transient == frozenset()
+    assert combined == frozenset()
+
+
+def test_committed_round_clears_prior_clean_noop_candidate_fence() -> None:
+    """A later complete plan reopens and clears an exact clean-noop fence."""
+    rule = _fresh_rule()
+    identity = _outer_dispatcher_identity()
+    prelim = SimpleNamespace(
+        dispatcher_block_serial=7,
+        candidate_identity=identity,
+    )
+    noop_backend = SimpleNamespace(
+        last_patch_execution=None,
+        last_patch_failure=None,
+        committed_fragment_operation_count=0,
+    )
+    for _ in range(2):
+        rule._finalize_dispatcher_round(
+            func_ea=_EA,
+            maturity=_IR_MAT,
+            graph_fingerprint="graph-progress",
+            prelim=prelim,
+            excluded_identities=frozenset(),
+            family=SimpleNamespace(name="hodur"),
+            backend=noop_backend,
+        )
+    assert rule._dispatcher_progress.excluded_identities(
+        _EA, _IR_MAT, "graph-progress"
+    ) == frozenset({identity})
+
+    committed_backend = SimpleNamespace(
+        last_patch_execution=SimpleNamespace(applied_count=1),
+        last_patch_failure=None,
+        committed_fragment_operation_count=0,
+    )
+    rule._finalize_dispatcher_round(
+        func_ea=_EA,
+        maturity=_IR_MAT,
+        graph_fingerprint="graph-progress",
+        prelim=prelim,
+        excluded_identities=frozenset(),
+        family=SimpleNamespace(name="hodur"),
+        backend=committed_backend,
+    )
+
+    assert rule._dispatcher_progress.excluded_identities(
+        _EA, _IR_MAT, "graph-progress"
+    ) == frozenset()
 
 
 def test_all_excluded_candidates_exhaust_only_the_exact_graph() -> None:

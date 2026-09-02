@@ -51,6 +51,7 @@ from d810.analyses.control_flow.concolic_machine_walk import (
 )
 from d810.capabilities.dispatcher import RouterKind
 from d810.analyses.control_flow.emulated_state_walk import DEFAULT_MAX_STATES
+from d810.analyses.control_flow.dispatcher_resolution import StorageIdentityKind
 from d810.analyses.control_flow.machine_recovery_engine import DispatcherAnchors
 from d810.analyses.control_flow.recovered_machine import (
     MachineRow,
@@ -730,12 +731,27 @@ class ConcolicEmulationEngine:
             initial = self._recover_initial_state_preheader(graph, entry, int(stkoff))
         if initial is None:
             return None
+        witness = anchors.initial_state_write_witness
+        if (
+            witness is not None
+            and (
+                int(witness.dispatcher_entry_serial) != int(entry)
+                or witness.state_identity.kind is not StorageIdentityKind.STACK
+                or int(witness.state_identity.offset) != int(stkoff)
+                or (int(witness.normalized_state) & 0xFFFFFFFF)
+                != (int(initial) & 0xFFFFFFFF)
+            )
+        ):
+            # Alias retargeting changes the selected scalar coordinate; a
+            # witness for the old coordinate must never cross that boundary.
+            witness = None
         return _Discovery(
             stkoff=int(stkoff),
             var_size=int(var_size or 4),
             state_mop=state_mop,
             entry=int(entry),
             initial_state=int(initial),
+            initial_state_write_witness=witness,
         )
 
     def _recover_initial_state_preheader(
@@ -899,4 +915,5 @@ class ConcolicEmulationEngine:
             soundness=Soundness.EXACT_BOUNDED,
             confidence=float(len(rows)),
             provenance=prov.as_tuple(),
+            initial_state_write_witness=disc.initial_state_write_witness,
         )

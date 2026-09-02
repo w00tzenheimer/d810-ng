@@ -124,7 +124,21 @@ class HexRaysMachineRecoveryEnginesCapability:
         """The concolic engine's FULL ``RecoveredMachine`` (memoized), or ``None``."""
         if not self.concolic_enabled:
             return None
-        key = id(graph)
+        witness = (
+            anchors.initial_state_write_witness
+            if type(anchors) is DispatcherAnchors
+            else None
+        )
+        # A graph object may be reused while recovery anchors change.  The
+        # exact selected witness is part of the immutable carrier identity.
+        key = (
+            id(graph),
+            None if anchors is None else anchors.dispatcher_entry_block,
+            None if anchors is None else anchors.state_var_stkoff,
+            None if anchors is None else anchors.state_var_lvar_idx,
+            None if anchors is None else anchors.initial_states,
+            witness,
+        )
         if key in self._cache:
             return self._cache[key]
         machine = self._recover_concolic(graph, anchors)
@@ -146,7 +160,9 @@ class HexRaysMachineRecoveryEnginesCapability:
             prelim = build_dispatch_map_any_kind(
                 graph, min_state_constant=self.min_state_constant
             )
-            sel_anchors = discover_anchors(self.mba, graph, prelim)
+            sel_anchors = discover_anchors(
+                self.mba, graph, prelim, shared_anchors=anchors,
+            )
             if sel_anchors is None:
                 sel_anchors = anchors
             if logger.debug_on and sel_anchors is not None:
@@ -209,5 +225,6 @@ class HexRaysMachineRecoveryEnginesCapability:
             state_var_stkoff=int(disc.stkoff),
             state_var_lvar_idx=None,
             initial_states=(int(disc.initial_state),),
+            initial_state_write_witness=disc.initial_state_write_witness,
             live_mba=self.mba,
         )
