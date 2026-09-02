@@ -20,8 +20,10 @@ import enum
 
 from d810.capabilities.dispatcher import RouterKind, TableProvenance
 from d810.analyses.control_flow.dispatcher_resolution import (
+    InitialStateWriteWitness,
     StateDispatcherMap,
     StateDispatcherRow,
+    StorageIdentityKind,
 )
 
 __all__ = [
@@ -179,6 +181,24 @@ class RecoveredMachine:
     # carried through verbatim so to_state_dispatcher_map round-trips byte-identically
     default_target_block: int | None = None
     default_row_kind: str | None = None
+    initial_state_write_witness: InitialStateWriteWitness | None = None
+
+    def __post_init__(self) -> None:
+        witness = self.initial_state_write_witness
+        if witness is None:
+            return
+        if type(witness) is not InitialStateWriteWitness:
+            raise TypeError("recovered machine initial witness must be closed")
+        if (
+            self.dispatcher_entry_block is None
+            or self.state_var_stkoff is None
+            or len(self.initial_states) != 1
+            or witness.state_identity.kind is not StorageIdentityKind.STACK
+            or int(witness.dispatcher_entry_serial) != int(self.dispatcher_entry_block)
+            or int(witness.state_identity.offset) != int(self.state_var_stkoff)
+            or int(witness.normalized_state) != (int(self.initial_states[0]) & 0xFFFFFFFF)
+        ):
+            raise ValueError("recovered machine initial witness is foreign to selected machine")
 
     # ---- adapters (the load-bearing P1 deliverable) ----
 
@@ -190,6 +210,7 @@ class RecoveredMachine:
         soundness: Soundness = Soundness.PATTERN,
         confidence: float = 1.0,
         provenance: tuple[str, ...] = (),
+        initial_state_write_witness: InitialStateWriteWitness | None = None,
     ) -> "RecoveredMachine":
         """Lift a ``StateDispatcherMap`` (today's k=1 PATTERN result) into the contract.
 
@@ -230,6 +251,7 @@ class RecoveredMachine:
             provenance=provenance,
             default_target_block=dmap.default_target_block,
             default_row_kind=dmap.default_row_kind,
+            initial_state_write_witness=initial_state_write_witness,
         )
 
     def to_state_dispatcher_map(self) -> StateDispatcherMap:

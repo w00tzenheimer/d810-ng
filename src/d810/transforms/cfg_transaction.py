@@ -12,7 +12,7 @@ import hashlib
 from uuid import uuid4
 
 from d810.core.typing import Protocol, TypeAlias
-from d810.ir.block_identity import StableBlockIdentity
+from d810.ir.block_identity import NativeBlockRef
 from d810.ir.flowgraph import FlowGraph
 
 
@@ -94,17 +94,6 @@ class PlanInsnRef:
         if not isinstance(self.block, PlanBlockRef):
             raise TypeError("block must be a PlanBlockRef")
         _require_identifier(self.local_instruction_id, "local_instruction_id")
-
-
-@dataclass(frozen=True, slots=True)
-class NativeBlockRef:
-    """Portable cross-snapshot identity for a native-derived block."""
-
-    identity: StableBlockIdentity
-
-    def __post_init__(self) -> None:
-        if not isinstance(self.identity, StableBlockIdentity):
-            raise TypeError("identity must be a StableBlockIdentity")
 
 
 @dataclass(frozen=True, slots=True)

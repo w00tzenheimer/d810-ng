@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from d810.core.typing import Protocol, runtime_checkable
 from d810.ir.flowgraph import FlowGraph
 from d810.analyses.control_flow.recovered_machine import RecoveredMachine
+from d810.analyses.control_flow.dispatcher_resolution import InitialStateWriteWitness
 
 __all__ = ["DispatcherAnchors", "MachineRecoveryEngine"]
 
@@ -38,6 +39,7 @@ class DispatcherAnchors:
     state_var_stkoff: int | None = None
     state_var_lvar_idx: int | None = None
     initial_states: tuple[int, ...] = ()
+    initial_state_write_witness: InitialStateWriteWitness | None = None
     live_mba: object | None = None
 
 

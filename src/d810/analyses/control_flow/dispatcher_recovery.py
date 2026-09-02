@@ -42,6 +42,7 @@ from d810.capabilities.dispatcher import RouterKind, TableProvenance
 from d810.analyses.control_flow.dispatcher_resolution import (
     DispatcherCandidateIdentity,
     DispatcherResolution,
+    InitialStateWriteWitness,
     ResolverCandidate,
     StateDispatcherMap,
     StateDispatcherRow,
@@ -227,6 +228,7 @@ class DispatcherRecovery:
     state_var_reg: int | None = None
     dispatch_map: StateDispatcherMap | None = None
     candidate_identity: DispatcherCandidateIdentity | None = None
+    initial_state_write_witness: InitialStateWriteWitness | None = None
 
 
 def recovery_from_graph(
@@ -234,6 +236,7 @@ def recovery_from_graph(
     dispatch_map: StateDispatcherMap | None = None,
     *,
     candidate_identity: DispatcherCandidateIdentity | None = None,
+    initial_state_write_witness: InitialStateWriteWitness | None = None,
 ) -> DispatcherRecovery:
     """Build the portable recovery view owned by dispatcher analysis.
 
@@ -260,6 +263,7 @@ def recovery_from_graph(
         state_var_reg=getattr(dispatch_map, "state_var_reg", None),
         dispatch_map=dispatch_map,
         candidate_identity=candidate_identity,
+        initial_state_write_witness=initial_state_write_witness,
     )
 
 
@@ -1404,11 +1408,51 @@ def resolve_dispatcher_any_kind(
         default_dispatcher_resolvers(min_state_constant=min_state_constant)
         + extra_dispatcher_resolvers()
     )
-    return resolve_dispatcher(
+    selected = resolve_dispatcher(
         graph,
         resolvers,
         excluded_identities=excluded_identities,
     )
+    if selected is None or selected.initial_state_write_witness is not None:
+        return selected
+    # Ranking chooses the map owner. A lower-ranked backend provider may carry
+    # a recovery-owned feasible entry witness, but it may transfer that premise
+    # only when it proves the *same* dispatcher state relation. This retains a
+    # single selected map while preventing a scalar witness from being attached
+    # to a foreign dispatcher shape.
+    selected_map = selected.dispatcher_map
+    for resolver in extra_dispatcher_resolvers():
+        candidate = resolver.accepts(graph)
+        if candidate is None:
+            continue
+        supplemental = resolver.resolve(graph, candidate)
+        if supplemental is None or supplemental.initial_state_write_witness is None:
+            continue
+        supplemental_map = supplemental.dispatcher_map
+        witness = supplemental.initial_state_write_witness
+        if (
+            int(supplemental_map.dispatcher_entry_block)
+            != int(selected_map.dispatcher_entry_block)
+            or supplemental_map.state_var_stkoff != selected_map.state_var_stkoff
+            or supplemental_map.state_var_reg != selected_map.state_var_reg
+            or supplemental_map.state_to_handler() != selected_map.state_to_handler()
+            or int(witness.dispatcher_entry_serial)
+            != int(selected_map.dispatcher_entry_block)
+        ):
+            continue
+        if (
+            selected_map.initial_state is not None
+            and int(selected_map.initial_state) != int(supplemental_map.initial_state)
+        ):
+            continue
+        return replace(
+            selected,
+            dispatcher_map=replace(
+                selected_map, initial_state=int(supplemental_map.initial_state),
+            ),
+            initial_state_write_witness=witness,
+        )
+    return selected
 
 
 def recover_dispatcher(
@@ -1454,4 +1498,5 @@ def recover_dispatcher(
         graph,
         dmap,
         candidate_identity=candidate_identity,
+        initial_state_write_witness=resolution.initial_state_write_witness,
     )

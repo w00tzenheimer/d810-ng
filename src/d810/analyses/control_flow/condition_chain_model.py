@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import deque
 from dataclasses import dataclass
 from dataclasses import field
+from enum import Enum
 from d810.core.typing import Dict
 from d810.core.typing import Iterator
 from d810.core.typing import Optional
@@ -10,8 +11,146 @@ from d810.core.typing import Set
 from d810.core.typing import Tuple
 from d810.analyses.control_flow.interval_map import IntervalDispatcher
 from d810.analyses.control_flow.route_predicate import DecisionDag
+from d810.ir.block_identity import StableBlockIdentity
 from d810.ir.flowgraph import FlowGraph
+from d810.ir.storage_identity import StorageIdentity
 
+
+class ConditionChainRouteProvenance(Enum):
+    """Origin of the one condition-chain route proposal."""
+
+    EXTRACTED = "extracted"
+    FOLDED = "folded"
+
+
+class ConditionChainRouteEndpointKind(Enum):
+    """Exact endpoint roles in a frozen condition-chain partition."""
+
+    NATIVE = "native"
+    FUNCTION_EXIT = "function_exit"
+
+
+@dataclass(frozen=True, slots=True)
+class ConditionChainRouteEndpoint:
+    """One interval-target coordinate, native or the exact logical exit."""
+
+    serial: int
+    kind: ConditionChainRouteEndpointKind
+    native_identity: StableBlockIdentity | None = None
+    logical_session_id: str | None = None
+    logical_proxy_token: str | None = None
+    logical_version: int | None = None
+
+    def __post_init__(self) -> None:
+        if type(self.serial) is not int or self.serial < 0:
+            raise ValueError("condition-chain endpoint serial must be non-negative")
+        if type(self.kind) is not ConditionChainRouteEndpointKind:
+            raise TypeError("condition-chain endpoint requires typed kind")
+        if self.kind is ConditionChainRouteEndpointKind.NATIVE:
+            if not isinstance(self.native_identity, StableBlockIdentity):
+                raise TypeError("native condition-chain endpoint requires stable identity")
+            if any(value is not None for value in (
+                self.logical_session_id, self.logical_proxy_token, self.logical_version,
+            )):
+                raise ValueError("native condition-chain endpoint cannot carry logical identity")
+            return
+        if self.native_identity is not None:
+            raise ValueError("logical condition-chain endpoint cannot carry native identity")
+        if (
+            type(self.logical_session_id) is not str
+            or not self.logical_session_id
+            or type(self.logical_proxy_token) is not str
+            or not self.logical_proxy_token
+            or type(self.logical_version) is not int
+            or self.logical_version < 0
+        ):
+            raise ValueError("logical condition-chain endpoint requires exact logical identity")
+
+
+@dataclass(frozen=True, slots=True)
+class ConditionChainHandlerEntry:
+    """One local handler coordinate bound to its stable source identity."""
+
+    serial: int
+    identity: StableBlockIdentity
+
+    def __post_init__(self) -> None:
+        if type(self.serial) is not int or self.serial < 0:
+            raise ValueError("condition-chain handler serial must be non-negative")
+        if not isinstance(self.identity, StableBlockIdentity):
+            raise TypeError("condition-chain handler requires stable identity")
+
+
+@dataclass(frozen=True, slots=True)
+class ConditionChainRouteEvidence:
+    """Frozen proposal joining one DAG, rows, handlers, and state namespace.
+
+    It is proposal-only: the emitter rebinds its local serials to the current
+    graph before using rows for replay.  Handler entries never grant final
+    delivery authority.
+    """
+
+    decision_dag: DecisionDag
+    interval_rows: tuple[tuple[int, int, int], ...]
+    default_target_serial: int | None
+    endpoints: tuple[ConditionChainRouteEndpoint, ...]
+    handler_entries: tuple[ConditionChainHandlerEntry, ...]
+    state_identity: StorageIdentity
+    provenance: ConditionChainRouteProvenance
+    source_generation: int
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.decision_dag, DecisionDag):
+            raise TypeError("condition-chain route evidence requires a decision DAG")
+        if not isinstance(self.state_identity, StorageIdentity):
+            raise TypeError("condition-chain route evidence requires state identity")
+        if not isinstance(self.provenance, ConditionChainRouteProvenance):
+            raise TypeError("condition-chain route evidence requires provenance")
+        if type(self.source_generation) is not int or self.source_generation < 0:
+            raise ValueError("condition-chain route evidence requires source generation")
+        rows = tuple((int(lo), int(hi), int(target)) for lo, hi, target in self.interval_rows)
+        if any(lo < 0 or hi <= lo or target < 0 for lo, hi, target in rows):
+            raise ValueError("condition-chain interval row is invalid")
+        if tuple(sorted(rows)) != rows or len(set(rows)) != len(rows):
+            raise ValueError("condition-chain interval rows must be canonical")
+        entries = tuple(self.handler_entries)
+        endpoints = tuple(self.endpoints)
+        if not endpoints or any(type(endpoint) is not ConditionChainRouteEndpoint for endpoint in endpoints):
+            raise TypeError("condition-chain route evidence requires typed endpoints")
+        if len({endpoint.serial for endpoint in endpoints}) != len(endpoints):
+            raise ValueError("condition-chain endpoints must be unique")
+        if not entries or any(type(entry) is not ConditionChainHandlerEntry for entry in entries):
+            raise TypeError("condition-chain route evidence requires typed handlers")
+        if len({entry.serial for entry in entries}) != len(entries):
+            raise ValueError("condition-chain handler entries must be unique")
+        interval_targets = {target for _lo, _hi, target in rows}
+        endpoint_by_serial = {endpoint.serial: endpoint for endpoint in endpoints}
+        if not interval_targets.issubset(endpoint_by_serial):
+            raise ValueError("condition-chain interval targets require typed endpoints")
+        native_interval_targets = {
+            serial
+            for serial in interval_targets
+            if endpoint_by_serial[serial].kind is ConditionChainRouteEndpointKind.NATIVE
+        }
+        if not native_interval_targets.issubset({entry.serial for entry in entries}):
+            raise ValueError("condition-chain native interval targets require typed handlers")
+        for entry in entries:
+            endpoint = endpoint_by_serial.get(entry.serial)
+            if (
+                endpoint is None
+                or endpoint.kind is not ConditionChainRouteEndpointKind.NATIVE
+                or endpoint.native_identity != entry.identity
+            ):
+                raise ValueError("condition-chain handler must match native endpoint")
+        if self.provenance is ConditionChainRouteProvenance.FOLDED and rows:
+            raise ValueError("folded condition-chain evidence cannot borrow interval rows")
+        if self.default_target_serial is not None and int(self.default_target_serial) < 0:
+            raise ValueError("condition-chain default target must be non-negative")
+        object.__setattr__(self, "interval_rows", rows)
+        object.__setattr__(self, "endpoints", tuple(sorted(endpoints, key=lambda item: item.serial)))
+        object.__setattr__(self, "handler_entries", tuple(sorted(entries, key=lambda entry: entry.serial)))
+        if self.default_target_serial is not None:
+            object.__setattr__(self, "default_target_serial", int(self.default_target_serial))
 
 @dataclass(frozen=True)
 class ConditionChainNodeEntry:

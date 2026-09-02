@@ -8,6 +8,7 @@ import hashlib
 import pytest
 
 from d810.ir.flowgraph import FlowGraph
+from d810.ir.block_identity import NativeBlockRef as IrNativeBlockRef
 from d810.transforms.cfg_transaction import (
     BoundCfgTransaction,
     CfgGenerationPoisoned,
@@ -149,6 +150,11 @@ def test_plan_local_refs_are_nominal_and_replay_stable() -> None:
     assert len({ref for ref, _digest in creation_intents}) == 2
     assert first != second
     assert first == PlanBlockRef("plan-1", "block-a")
+
+
+def test_native_block_ref_is_the_ir_identity_carrier_reexported_by_transactions() -> None:
+    """Analysis and transactions share one lower-layer native block-ref type."""
+    assert NativeBlockRef is IrNativeBlockRef
 
 
 def test_attempt_identity_binds_plan_session_generation_and_attempt() -> None:

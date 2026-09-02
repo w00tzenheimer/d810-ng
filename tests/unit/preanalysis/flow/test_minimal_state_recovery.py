@@ -71,7 +71,10 @@ from d810.ir.flowgraph import (
     OperandKind,
 )
 from d810.ir.expressions import ValueOpKind
-from d810.ir.semantics import CallKind, PredicateKind
+from d810.ir.block_identity import NativeBlockRef, NativeEaInterval, StableBlockIdentity
+from d810.ir.instructions import Instruction, InstructionControl
+from d810.core.native_preanalysis_key import NativePreanalysisKey
+from d810.ir.semantics import CallKind, ControlTransferKind, PredicateKind
 from d810.ir.storage_identity import StorageIdentity, StorageIdentityKind
 from d810.ir.varnode import Space, Varnode
 
@@ -90,6 +93,75 @@ _OPCODE_VALUES = {"m_mov": _OP_MOV, "m_xor": _OP_XOR, "m_stx": _OP_STORE}
 _MOP_NAMES = {_T_NUM: "mop_n", _T_STK: "mop_S", _T_REG: "mop_r"}
 _MOP_VALUES = {"mop_n": _T_NUM, "mop_S": _T_STK, "mop_r": _T_REG}
 _STATE_OFF = 0x64
+
+
+def _replay_leaf_catalog(graph: FlowGraph, serial: int):
+    """Bind one synthetic leaf exactly as production current-DAG replay does."""
+    return _replay_interval_catalog(
+        graph,
+        IntervalDispatcher([IntervalRow(0, 1, serial)], compute_default=False),
+    )
+
+
+def _replay_interval_catalog(
+    graph: FlowGraph,
+    dispatcher: IntervalDispatcher,
+):
+    """Bind every interval endpoint to a valid synthetic native identity.
+
+    A few recovery fixtures deliberately place a defining instruction just
+    before their block's nominal start EA.  The test identity must include
+    that real snapshot EA; production identities are built from the native
+    block intervals and do not make this synthetic-fixture compromise.
+    """
+    key = NativePreanalysisKey(
+        "minimal-state-recovery-leaf", "x86", 64, 0,
+        "a" * 64, "b" * 64, "c" * 64,
+    )
+    refs: dict[int, NativeBlockRef] = {}
+    for item_serial, block in graph.blocks.items():
+        instruction_eas = tuple(int(insn.ea) for insn in block.insn_snapshots)
+        start_ea = min((int(block.start_ea), *instruction_eas))
+        end_ea = max((int(block.start_ea) + 0x20, *(ea + 1 for ea in instruction_eas)))
+        refs[item_serial] = NativeBlockRef(StableBlockIdentity.from_intervals(
+            (NativeEaInterval(start_ea, end_ea),),
+            native_key=key,
+            exact_instruction_eas=instruction_eas,
+        ))
+    catalogue = minimal_state_recovery.IntervalHandlerLeafReplayCatalog.bind(
+        graph, dispatcher, block_refs_by_serial=refs, generation=0,
+    )
+    return catalogue, refs, dispatcher
+
+
+def _resolve_with_sealed_interval_catalog(
+    transitions: tuple[StateWriteTransition, ...],
+    graph: FlowGraph,
+    dispatcher: object,
+    transfers: tuple[MaterializedIndirectTransfer, ...],
+    **kwargs: object,
+) -> tuple[StateWriteTransition, ...]:
+    """Exercise reconciliation with the same bound source authority as production."""
+    sealed_dispatcher = (
+        dispatcher
+        if type(dispatcher) is IntervalDispatcher
+        else getattr(dispatcher, "_interval", None)
+    )
+    if type(sealed_dispatcher) is not IntervalDispatcher:
+        return ()
+    catalogue, refs, _ = _replay_interval_catalog(graph, sealed_dispatcher)
+    if catalogue is None:
+        return ()
+    return resolve_materialized_indirect_transfer_targets(
+        transitions,
+        graph,
+        dispatcher,
+        transfers,
+        replay_leaf_catalog=catalogue,
+        block_refs_by_serial=refs,
+        source_generation=0,
+        **kwargs,
+    )
 
 
 def _eval_seams() -> MicrocodeEvalSeams:
@@ -1513,6 +1585,194 @@ def _dispatcher(
     return IntervalDispatcher(rows)
 
 
+def test_partition_switch_attachment_uses_only_wrapper_and_direct_table_successor(
+    monkeypatch,
+) -> None:
+    """A wrapper must not discover an unrelated compatible switch elsewhere."""
+    state = StorageIdentity(StorageIdentityKind.STACK, _STATE_OFF)
+    conditional = InsnSnapshot(
+        opcode=0, ea=0x1014, operands=(), kind=InsnKind.COND_JUMP,
+        control_transfer_kind=ControlTransferKind.CONDITIONAL_BRANCH,
+        branch_predicate=PredicateKind.EQ, is_conditional_jump=True,
+        l=_reg(3), r=_num(0), d=MopSnapshot(kind=OperandKind.BLOCK, block_ref=3),
+    )
+    graph = FlowGraph(
+        blocks={
+            1: _blk(1, (2, 3), (), (_mov(0x1010, _num(7), _reg(8)), conditional)),
+            2: _blk(2, (3,), (), (_mov(0x1020, _num(9), _reg(8)),)),
+            3: _blk(3, (9,), (1, 2), (_mov(0x1030, _reg(8), _stk(_STATE_OFF)),)),
+            8: _blk(8, (9,), (3,), ()),
+            9: _blk(9, (20, 21), (3, 8), ()),
+            20: _blk(20, (), (9,), ()), 21: _blk(21, (), (9,), ()),
+            99: _blk(99, (), (), ()),
+        }, entry_serial=1, func_ea=0x1000,
+    )
+    branch_witness = minimal_state_recovery.StatePartitionConditionalEdgeWitness(
+        0x1014,
+        minimal_state_recovery.instruction_projection_without_block_references(conditional),
+        minimal_state_recovery.SemanticEdgeRole.CONDITIONAL_TAKEN, 2,
+    )
+    group = minimal_state_recovery.StatePartitionGroupWitness(
+        "partition-group:wrapper", 3, 0x1030, state,
+        (
+            minimal_state_recovery.StatePartitionMemberWitness(1, 3, state, 7, branch_witness),
+            minimal_state_recovery.StatePartitionMemberWitness(2, 3, state, 9),
+        ),
+    )
+    rows = tuple(
+        StateWriteTransition(owner, value, target, False, None, via_block=3,
+            proof=TransitionProof("region_partitioned_fixpoint", "predecessor_partitioned", True),
+            partition_witness=group)
+        for owner, value, target in ((1, 7, 20), (2, 9, 21))
+    )
+    exact = SwitchTableResult(
+        build_state_dispatcher_map_from_cases([(7, 20), (9, 21)], 9, frozenset({9}), _STATE_OFF),
+        Varnode(Space.STACK, _STATE_OFF, 4),
+    )
+    calls: list[int] = []
+    def table_at(_graph, serial):
+        calls.append(int(serial))
+        return exact if int(serial) in {9, 99} else None
+    monkeypatch.setattr(minimal_state_recovery, "analyze_switch_table_at_dispatcher", table_at)
+
+    attached = minimal_state_recovery._attach_partition_switch_table_route_facts(
+        rows, graph, dispatcher_serial=8, state_var_stkoff=_STATE_OFF, state_var_reg=None,
+    )
+
+    assert all(row.semantic_route_fact is not None for row in attached)
+    assert calls == [8, 9]
+
+    bad_role = replace(
+        branch_witness, edge_role=minimal_state_recovery.SemanticEdgeRole.CONDITIONAL_FALLTHROUGH,
+    )
+    bad_group = replace(
+        group,
+        members=(replace(group.members[0], conditional_edge=bad_role), group.members[1]),
+    )
+    assert all(
+        row.semantic_route_fact is None
+        for row in minimal_state_recovery._attach_partition_switch_table_route_facts(
+            tuple(replace(row, partition_witness=bad_group) for row in rows), graph,
+            dispatcher_serial=8, state_var_stkoff=_STATE_OFF, state_var_reg=None,
+        )
+    )
+    changed_branch = replace(conditional, branch_predicate=PredicateKind.NE)
+    changed_graph = FlowGraph(
+        blocks={**graph.blocks, 1: replace(graph.blocks[1], insn_snapshots=(
+            graph.blocks[1].insn_snapshots[0], changed_branch,
+        ))}, entry_serial=graph.entry_serial, func_ea=graph.func_ea,
+    )
+    assert all(
+        row.semantic_route_fact is None
+        for row in minimal_state_recovery._attach_partition_switch_table_route_facts(
+            rows, changed_graph, dispatcher_serial=8,
+            state_var_stkoff=_STATE_OFF, state_var_reg=None,
+        )
+    )
+    assert all(
+        row.semantic_route_fact is None
+        for row in minimal_state_recovery._attach_partition_switch_table_route_facts(
+            rows[:1], graph, dispatcher_serial=8,
+            state_var_stkoff=_STATE_OFF, state_var_reg=None,
+        )
+    )
+
+
+@pytest.mark.parametrize("path,state", (((2, 3), 7), ((1, 3), 9)))
+def test_transition_arm_rejects_partition_member_mismatch(
+    path: tuple[int, int], state: int,
+) -> None:
+    witness = minimal_state_recovery.StatePartitionGroupWitness(
+        "partition-group:arm-consistency", 3, 0x1030,
+        StorageIdentity(StorageIdentityKind.STACK, _STATE_OFF),
+        (
+            minimal_state_recovery.StatePartitionMemberWitness(
+                1, 3, StorageIdentity(StorageIdentityKind.STACK, _STATE_OFF), 7,
+            ),
+        ),
+    )
+    with pytest.raises(ValueError, match="partition arm"):
+        TransitionArm(
+            next_state=state, target_handler=20, is_return=False,
+            branch_block=None, write_block=3, exit_block=3,
+            ordered_path=path, partition_witness=witness,
+        )
+
+
+def test_partition_switch_attachment_seals_wrapper_dag_handoff(monkeypatch) -> None:
+    """A partition may reach its exact table only through the typed DAG root."""
+    state = StorageIdentity(StorageIdentityKind.STACK, _STATE_OFF)
+    branch = InsnSnapshot(
+        opcode=0, ea=0x1080, operands=(), kind=InsnKind.COND_JUMP,
+        control_transfer_kind=ControlTransferKind.CONDITIONAL_BRANCH,
+        branch_predicate=PredicateKind.EQ, is_conditional_jump=True,
+        l=_stk(_STATE_OFF), r=_num(7), d=MopSnapshot(kind=OperandKind.BLOCK, block_ref=9),
+    )
+    graph = FlowGraph(
+        blocks={
+            1: _blk(1, (6,), (), (_mov(0x1010, _num(7), _reg(8)),)),
+            6: _blk(6, (8,), (1,), (_mov(0x1060, _reg(8), _stk(_STATE_OFF)),)),
+            8: _blk(8, (97, 9), (6,), (branch,)),
+            9: _blk(9, (20,), (8,), ()),
+            20: _blk(20, (), (9,), ()),
+            97: _blk(97, (), (8,), ()),
+        }, entry_serial=1, func_ea=0x1000,
+    )
+    group = minimal_state_recovery.StatePartitionGroupWitness(
+        "partition-group:dag-handoff", 6, 0x1060, state,
+        (minimal_state_recovery.StatePartitionMemberWitness(1, 6, state, 7),),
+    )
+    row = StateWriteTransition(
+        1, 7, 20, False, None, via_block=6,
+        proof=TransitionProof("region_partitioned_fixpoint", "predecessor_partitioned", True),
+        partition_witness=group,
+    )
+    table = SwitchTableResult(
+        build_state_dispatcher_map_from_cases([(7, 20)], 9, frozenset({9}), _STATE_OFF),
+        Varnode(Space.STACK, _STATE_OFF, 4),
+    )
+    monkeypatch.setattr(
+        minimal_state_recovery, "analyze_switch_table_at_dispatcher",
+        lambda _graph, serial: table if int(serial) == 9 else None,
+    )
+    dag = DecisionDag(32, {8: RouteComparison(8, "jz", 7, 9, 97)}, root=8)
+    attached = minimal_state_recovery._attach_partition_switch_table_route_facts(
+        (row,), graph, dispatcher_serial=8, state_var_stkoff=_STATE_OFF,
+        state_var_reg=None, condition_chain_dag=dag,
+    )
+    fact = attached[0].semantic_route_fact
+    assert fact is not None
+    assert fact.partition_switch_table_witness is None
+    assert fact.decision_dag_witness is not None
+    assert fact.decision_dag_witness.handoff_dispatcher_serial == 9
+
+
+def test_partition_handoff_dag_does_not_enable_general_reconciliation(monkeypatch) -> None:
+    """The rebuilt handoff DAG is attachment-only, not route reconciliation input."""
+    graph = FlowGraph(
+        blocks={1: _blk(1, (), (), ())}, entry_serial=1, func_ea=0x1000,
+    )
+    transition = StateWriteTransition(1, 7, 1, False, None)
+    handoff = DecisionDag(32, {1: RouteComparison(1, "jz", 7, 1, 1)}, root=1)
+    seen: list[DecisionDag | None] = []
+    monkeypatch.setattr(
+        minimal_state_recovery, "_attach_partition_switch_table_route_facts",
+        lambda transitions, _graph, **kwargs: (
+            seen.append(kwargs["condition_chain_dag"]) or transitions
+        ),
+    )
+    monkeypatch.setattr(
+        minimal_state_recovery, "_reconcile_transition_routes_with_decision_dag",
+        lambda *_args, **_kwargs: pytest.fail("general reconciliation must stay skipped"),
+    )
+    assert minimal_state_recovery.resolve_materialized_indirect_transfer_targets(
+        (transition,), graph, object(), (), condition_chain_dag=None,
+        partition_handoff_dag=handoff, switch_table_dispatcher_serial=1,
+        state_var_stkoff=_STATE_OFF,
+    ) == (transition,)
+    assert seen == [handoff]
+
+
 class _DualRouteDispatcher:
     """Test router carrying independently recoverable exact/range evidence.
 
@@ -1546,6 +1806,27 @@ class _DualRouteDispatcher:
         # This is the legacy precedence behavior the shared resolver must not
         # trust when the exact and interval providers disagree.
         return self.resolve_target(state)
+
+    def all_targets(self) -> set[int]:
+        return self._interval.all_targets()
+
+
+class _RangeFallbackOnlyDispatcher:
+    """Legacy adapter whose generic resolver performs interval fallback.
+
+    This is deliberately *not* an exact-route provider.  It models the
+    production compatibility adapters that expose ``resolve_target`` even
+    though that method may select an interval/default endpoint.
+    """
+
+    def __init__(self, rows: tuple[IntervalRow, ...]) -> None:
+        self._interval = IntervalDispatcher(list(rows), compute_default=False)
+
+    def resolve_target(self, state: int) -> int | None:
+        return self._interval.lookup(int(state) & 0xFFFFFFFF)
+
+    def lookup_row(self, state: int) -> IntervalRow | None:
+        return self._interval.lookup_row(int(state) & 0xFFFFFFFF)
 
     def all_targets(self) -> set[int]:
         return self._interval.all_targets()
@@ -5882,7 +6163,7 @@ def test_u32_state_router_abstains_when_structural_fallback_identity_is_not_stat
 def test_current_u32_decision_forest_extends_only_through_exact_xdu_namespace_bridge(
     bridge_mode: str,
 ) -> None:
-    """A current-only child is admitted only by its parent's exact XDU bridge."""
+    """A foreign current-only two-way child needs its parent's exact XDU bridge."""
     stack = StorageIdentity(StorageIdentityKind.STACK, 52)
     xdu = InsnSnapshot(
         opcode=0, ea=0x1300, operands=(), kind=InsnKind.XDU,
@@ -5918,13 +6199,10 @@ def test_current_u32_decision_forest_extends_only_through_exact_xdu_namespace_br
         graph, 3, expected_identities=frozenset({stack}), reference_dag=reference,
     )
 
-    if bridge_mode != "missing":
-        # A bridge that cannot establish its expected child namespace, or
-        # whose child edge is not reciprocal, rejects the current forest.
-        assert forest is None
-        return
-    assert forest is not None
-    assert set(forest.nodes) == {3}
+    # Without a bridge, the child is visibly a two-way comparison in another
+    # namespace and cannot be treated as a leaf. A malformed bridge or a
+    # non-reciprocal bridge edge is equally contradictory.
+    assert forest is None
 
 
 def test_current_u32_decision_forest_routes_through_exact_xdu_namespace_bridge() -> None:
@@ -5968,6 +6246,51 @@ def test_current_u32_decision_forest_routes_through_exact_xdu_namespace_bridge()
         graph, forest, 7, entry_serial=3,
     )
     assert routed == (7, (3, 4))
+
+
+def test_current_u32_decision_forest_routes_through_same_namespace_comparisons() -> None:
+    """A current-only U32 forest follows exact reciprocal stack comparisons."""
+    state = StorageIdentity(StorageIdentityKind.STACK, 52)
+
+    def comparison(ea: int, constant: int, target: int) -> InsnSnapshot:
+        return InsnSnapshot(
+            opcode=_OP_JZ,
+            ea=ea,
+            operands=(),
+            kind=InsnKind.COND_JUMP,
+            l=MopSnapshot(kind=OperandKind.STACK, size=4, stkoff=52),
+            r=MopSnapshot(kind=OperandKind.NUMBER, size=4, value=constant),
+            d=MopSnapshot(kind=OperandKind.BLOCK, block_ref=target),
+            branch_predicate=PredicateKind.EQ,
+            is_conditional_jump=True,
+        )
+
+    graph = FlowGraph(
+        {
+            3: _blk(3, (4, 6), (), (comparison(0x1300, 0, 4),), ea=0x1300),
+            4: _blk(4, (7, 8), (3,), (comparison(0x1400, 1, 7),), ea=0x1400),
+            6: _stop(6, (3,)),
+            7: _stop(7, (4,)),
+            8: _stop(8, (4,)),
+        },
+        entry_serial=3,
+        func_ea=0x1300,
+    )
+
+    forest = minimal_state_recovery.build_current_u32_decision_forest(
+        graph,
+        3,
+        expected_identities=frozenset({state}),
+    )
+
+    assert forest is not None
+    assert set(forest.nodes) == {3, 4}
+    assert minimal_state_recovery.route_current_u32_decision_forest(
+        graph,
+        forest,
+        0,
+        entry_serial=3,
+    ) == (8, (3, 4))
 
 
 @pytest.mark.parametrize("mode", ("wrong_xdu", "edge_drift", "overlap_drift"))
@@ -6282,6 +6605,147 @@ def test_reconciliation_rejects_conflicting_provider_for_ordinary_multisucc_leaf
     assert resolved == ()
 
 
+def _sealed_interval_reconciliation_graph() -> FlowGraph:
+    """One ordinary non-table DAG leaf for sealed interval reconciliation."""
+    branch = InsnSnapshot(
+        opcode=0, ea=0x1300, operands=(), kind=InsnKind.COND_JUMP,
+        l=MopSnapshot(kind=OperandKind.STACK, size=4, stkoff=52),
+        r=MopSnapshot(kind=OperandKind.NUMBER, size=4, value=0),
+        d=MopSnapshot(kind=OperandKind.BLOCK, block_ref=3),
+        branch_predicate=PredicateKind.EQ, is_conditional_jump=True,
+    )
+    return FlowGraph(
+        {
+            1: _blk(1, (2,), (), (_mov(0x1200, _num(0), _stk(52)),), ea=0x1200),
+            2: _blk(2, (3, 5), (1,), (branch,), ea=0x1300),
+            3: _blk(3, (4, 6), (2,), (), ea=0x1400),
+            4: _blk(4, (), (3,), (), ea=0x1500),
+            6: _blk(6, (), (3,), (), ea=0x1600),
+            5: _stop(5, (2,)),
+        }, entry_serial=1, func_ea=0x1200,
+    )
+
+
+def test_reconciliation_uses_sealed_interval_leaf_over_swapped_raw_row() -> None:
+    """A post-bind raw interval row cannot select or veto the sealed DAG leaf."""
+    graph = _sealed_interval_reconciliation_graph()
+    catalogue, refs, _sealed_dispatcher = _replay_leaf_catalog(graph, 3)
+    raw_dispatcher = _DualRouteDispatcher(
+        exact_targets={}, interval_rows=(IntervalRow(0, 1, 4),),
+    )
+
+    resolved = resolve_materialized_indirect_transfer_targets(
+        (replace(_coarse_transition(1, 0, 3), via_block=2),),
+        graph,
+        raw_dispatcher,
+        (),
+        condition_chain_dag=DecisionDag(
+            32, {2: RouteComparison(2, "jz", 0, 3, 5)}, root=2,
+        ),
+        condition_chain_handlers=frozenset({3, 4}),
+        replay_leaf_catalog=catalogue,
+        block_refs_by_serial=refs,
+        source_generation=0,
+        state_var_stkoff=52,
+    )
+
+    assert len(resolved) == 1
+    assert resolved[0].target_handler == 3
+
+
+def test_reconciliation_does_not_treat_range_fallback_resolver_as_exact_evidence() -> None:
+    """A generic range fallback cannot veto the sealed interval authority."""
+    graph = _sealed_interval_reconciliation_graph()
+    catalogue, refs, _sealed_dispatcher = _replay_leaf_catalog(graph, 3)
+    range_fallback = _RangeFallbackOnlyDispatcher((IntervalRow(0, 1, 4),))
+
+    resolved = resolve_materialized_indirect_transfer_targets(
+        (replace(_coarse_transition(1, 0, 3), via_block=2),),
+        graph,
+        range_fallback,
+        (),
+        condition_chain_dag=DecisionDag(
+            32, {2: RouteComparison(2, "jz", 0, 3, 5)}, root=2,
+        ),
+        condition_chain_handlers=frozenset({3, 4}),
+        replay_leaf_catalog=catalogue,
+        block_refs_by_serial=refs,
+        source_generation=0,
+        state_var_stkoff=52,
+    )
+
+    assert len(resolved) == 1
+    assert resolved[0].target_handler == 3
+
+
+def test_reconciliation_uses_sealed_default_over_swapped_raw_row() -> None:
+    """The sealed default, like a sealed interval, ignores a mutable raw row."""
+    graph = _sealed_interval_reconciliation_graph()
+    catalogue, refs, _sealed_dispatcher = _replay_leaf_catalog(graph, 3)
+    full_rows = ((1, 2, 3),)
+    catalogue = replace(
+        catalogue,
+        full_interval_rows=full_rows,
+        default_target_serial=3,
+        topology_epoch=minimal_state_recovery.IntervalHandlerLeafReplayCatalog._topology_epoch(
+            catalogue.source_fingerprint,
+            catalogue.generation,
+            catalogue.bindings,
+            full_rows,
+            3,
+            catalogue.non_replay_endpoint_serials,
+        ),
+    )
+    raw_dispatcher = _DualRouteDispatcher(
+        exact_targets={}, interval_rows=(IntervalRow(0, 1, 4),), default_target=4,
+    )
+
+    resolved = resolve_materialized_indirect_transfer_targets(
+        (replace(_coarse_transition(1, 0, 3), via_block=2),),
+        graph,
+        raw_dispatcher,
+        (),
+        condition_chain_dag=DecisionDag(
+            32, {2: RouteComparison(2, "jz", 0, 3, 5)}, root=2,
+        ),
+        condition_chain_handlers=frozenset({3, 4}),
+        replay_leaf_catalog=catalogue,
+        block_refs_by_serial=refs,
+        source_generation=0,
+        state_var_stkoff=52,
+    )
+
+    assert len(resolved) == 1
+    assert resolved[0].target_handler == 3
+
+
+def test_reconciliation_rejects_typed_exact_receipt_conflict_against_sealed_interval() -> None:
+    """Typed exact evidence may corroborate a catalogue, never override it."""
+    graph = _sealed_interval_reconciliation_graph()
+    catalogue, refs, _sealed_dispatcher = _replay_leaf_catalog(graph, 3)
+    raw_dispatcher = _DualRouteDispatcher(exact_targets={0: 4}, interval_rows=())
+
+    resolved = resolve_materialized_indirect_transfer_targets(
+        (replace(_coarse_transition(1, 0, 3), via_block=2),),
+        graph,
+        raw_dispatcher,
+        (),
+        condition_chain_dag=DecisionDag(
+            32, {2: RouteComparison(2, "jz", 0, 3, 5)}, root=2,
+        ),
+        condition_chain_handlers=frozenset({3, 4}),
+        replay_leaf_catalog=catalogue,
+        block_refs_by_serial=refs,
+        source_generation=0,
+        state_var_stkoff=52,
+        exact_u32_route_receipt=(
+            minimal_state_recovery.ExactU32DispatcherRouteReceipt(((0, 4),))
+        ),
+    )
+
+    assert resolved == ()
+
+
 def test_reconciliation_does_not_mint_switch_handoff_when_provider_target_is_leaf() -> None:
     """A multi-successor DAG leaf is not a table handoff merely by fan-out."""
     branch = InsnSnapshot(
@@ -6301,6 +6765,8 @@ def test_reconciliation_does_not_mint_switch_handoff_when_provider_target_is_lea
             5: _stop(5, (2,)),
         }, entry_serial=1, func_ea=0x1200,
     )
+    catalogue, refs, _ = _replay_leaf_catalog(graph, 3)
+    assert catalogue is not None
     resolved = resolve_materialized_indirect_transfer_targets(
         (replace(_coarse_transition(1, 0, 3), via_block=2),), graph,
         _DualRouteDispatcher(exact_targets={0: 3}, interval_rows=()), (),
@@ -6308,6 +6774,9 @@ def test_reconciliation_does_not_mint_switch_handoff_when_provider_target_is_lea
             32, {2: RouteComparison(2, "jz", 0, 3, 5)}, root=2,
         ),
         condition_chain_handlers=frozenset({3}), state_var_stkoff=52,
+        replay_leaf_catalog=catalogue,
+        block_refs_by_serial=refs,
+        source_generation=0,
     )
     assert len(resolved) == 1
     fact = resolved[0].semantic_route_fact
@@ -6431,6 +6900,542 @@ def test_current_forest_accepts_exact_reciprocal_goto_alias_to_stop() -> None:
         reference_dag=reference,
     )
     assert rejected.status is minimal_state_recovery._CurrentU32DecisionForestStatus.INVALID
+
+
+def test_current_forest_admits_only_an_explicit_non_state_handler_leaf() -> None:
+    """A proven handler may branch semantically without extending the state DAG."""
+
+    state = StorageIdentity(StorageIdentityKind.STACK, 52)
+    state_branch = _jz_stack_const(0x1600, 52, 7, 2)
+    handler_branch = InsnSnapshot(
+        opcode=_OP_JZ,
+        ea=0x1610,
+        operands=(),
+        l=MopSnapshot(kind=OperandKind.REGISTER, size=4, reg=8),
+        r=MopSnapshot(kind=OperandKind.NUMBER, size=4, value=1),
+        d=MopSnapshot(kind=OperandKind.BLOCK, block_ref=4),
+        kind=InsnKind.EQUALITY_JUMP,
+        branch_predicate=PredicateKind.EQ,
+        is_conditional_jump=True,
+        control_transfer_kind=ControlTransferKind.CONDITIONAL_BRANCH,
+    )
+    graph = FlowGraph(
+        {
+            1: _blk(1, (2, 3), (), (state_branch,), ea=0x1600),
+            2: _blk(2, (4, 5), (1,), (handler_branch,), ea=0x1610),
+            3: _stop(3, (1,)),
+            4: _stop(4, (2,)),
+            5: _stop(5, (2,)),
+        },
+        entry_serial=1,
+        func_ea=0x1600,
+    )
+    reference = DecisionDag(
+        32,
+        {1: RouteComparison(1, "jz", 7, 2, 3)},
+        root=1,
+    )
+    catalogue, refs, dispatcher = _replay_leaf_catalog(graph, 2)
+
+    unlisted = minimal_state_recovery._observe_current_u32_decision_forest(
+        graph,
+        1,
+        expected_identities=frozenset({state}),
+        reference_dag=reference,
+    )
+    listed = minimal_state_recovery._observe_current_u32_decision_forest(
+        graph,
+        1,
+        expected_identities=frozenset({state}),
+        reference_dag=reference,
+        permitted_non_state_handler_leaf_catalog=catalogue,
+        block_refs_by_serial=refs,
+        dispatcher=dispatcher,
+    )
+    stateful_leaf = FlowGraph(
+        {
+            **graph.blocks,
+            2: replace(
+                graph.blocks[2],
+                insn_snapshots=(
+                    replace(
+                        handler_branch,
+                        l=MopSnapshot(
+                            kind=OperandKind.STACK,
+                            size=4,
+                            stkoff=52,
+                        ),
+                    ),
+                ),
+            ),
+        },
+        entry_serial=graph.entry_serial,
+        func_ea=graph.func_ea,
+    )
+    listed_stateful = minimal_state_recovery._observe_current_u32_decision_forest(
+        stateful_leaf,
+        1,
+        expected_identities=frozenset({state}),
+        reference_dag=reference,
+        permitted_non_state_handler_leaf_catalog=catalogue,
+        block_refs_by_serial=refs,
+        dispatcher=dispatcher,
+    )
+
+    assert unlisted.status is minimal_state_recovery._CurrentU32DecisionForestStatus.INVALID
+    assert listed.status is minimal_state_recovery._CurrentU32DecisionForestStatus.VALID
+    assert listed_stateful.status is minimal_state_recovery._CurrentU32DecisionForestStatus.INVALID
+
+    bridged_handler_branch = replace(
+        handler_branch,
+        l=MopSnapshot(kind=OperandKind.REGISTER, size=4, reg=0),
+    )
+    exact_xdu = InsnSnapshot(
+        opcode=0,
+        ea=0x1700,
+        operands=(),
+        l=MopSnapshot(kind=OperandKind.STACK, size=4, stkoff=52),
+        d=MopSnapshot(kind=OperandKind.REGISTER, size=8, reg=0),
+        kind=InsnKind.XDU,
+    )
+    bridged_leaf = FlowGraph(
+        {
+            1: _blk(1, (2, 3), (), (exact_xdu, state_branch), ea=0x1700),
+            2: _blk(2, (4, 5), (1,), (bridged_handler_branch,), ea=0x1710),
+            3: _stop(3, (1,)),
+            4: _stop(4, (2,)),
+            5: _stop(5, (2,)),
+        },
+        entry_serial=1,
+        func_ea=0x1700,
+    )
+    listed_bridged_stateful = minimal_state_recovery._observe_current_u32_decision_forest(
+        bridged_leaf,
+        1,
+        expected_identities=frozenset({state}),
+        reference_dag=reference,
+        permitted_non_state_handler_leaf_catalog=catalogue,
+        block_refs_by_serial=refs,
+        dispatcher=dispatcher,
+    )
+
+    assert listed_bridged_stateful.status is minimal_state_recovery._CurrentU32DecisionForestStatus.INVALID
+def test_current_forest_accepts_call_result_overwriting_the_state_register() -> None:
+    """A branch over a call result is semantic even when it reuses the state register."""
+
+    state = StorageIdentity(StorageIdentityKind.REGISTER, 8)
+    root_branch = InsnSnapshot(
+        opcode=_OP_JZ,
+        ea=0x1900,
+        operands=(),
+        l=MopSnapshot(kind=OperandKind.REGISTER, size=4, reg=8),
+        r=MopSnapshot(kind=OperandKind.NUMBER, size=4, value=7),
+        d=MopSnapshot(kind=OperandKind.BLOCK, block_ref=2),
+        kind=InsnKind.EQUALITY_JUMP,
+        branch_predicate=PredicateKind.EQ,
+        is_conditional_jump=True,
+        control_transfer_kind=ControlTransferKind.CONDITIONAL_BRANCH,
+    )
+    nested_call = MopSnapshot(
+        kind=OperandKind.SUBINSN,
+        size=4,
+        sub_kind=InsnKind.CALL,
+    )
+    call_result_move = _mov(
+        0x1910,
+        nested_call,
+        MopSnapshot(kind=OperandKind.REGISTER, size=4, reg=8),
+    )
+    semantic_branch = InsnSnapshot(
+        opcode=_OP_JZ,
+        ea=0x1914,
+        operands=(),
+        l=MopSnapshot(kind=OperandKind.REGISTER, size=4, reg=8),
+        r=MopSnapshot(kind=OperandKind.STACK, size=8, stkoff=208),
+        d=MopSnapshot(kind=OperandKind.BLOCK, block_ref=4),
+        kind=InsnKind.COND_JUMP,
+        branch_predicate=PredicateKind.UGE,
+        is_conditional_jump=True,
+        control_transfer_kind=ControlTransferKind.CONDITIONAL_BRANCH,
+    )
+    graph = FlowGraph(
+        {
+            1: _blk(1, (2, 3), (), (root_branch,), ea=0x1900),
+            2: _blk(2, (4, 5), (1,), (call_result_move, semantic_branch), ea=0x1910),
+            3: _stop(3, (1,)),
+            4: _stop(4, (2,)),
+            5: _stop(5, (2,)),
+        },
+        entry_serial=1,
+        func_ea=0x1900,
+    )
+    reference = DecisionDag(
+        32,
+        {1: RouteComparison(1, "jz", 7, 2, 3)},
+        root=1,
+    )
+    catalogue, refs, dispatcher = _replay_leaf_catalog(graph, 2)
+
+    observed = minimal_state_recovery._observe_current_u32_decision_forest(
+        graph,
+        1,
+        expected_identities=frozenset({state}),
+        reference_dag=reference,
+        permitted_non_state_handler_leaf_catalog=catalogue,
+        block_refs_by_serial=refs,
+        dispatcher=dispatcher,
+    )
+
+    assert observed.status is minimal_state_recovery._CurrentU32DecisionForestStatus.VALID
+
+
+@pytest.mark.parametrize(
+    "mode",
+    ("wide_direct_call", "direct_active_call", "pre_kill_use"),
+)
+def test_call_result_semantic_leaf_requires_explicit_u32_carrier_kill(
+    mode: str,
+) -> None:
+    """Only CALL-temp -> MOVE(active.u32) may kill the incoming carrier."""
+
+    active = Varnode(Space.REGISTER, 0, 4)
+    active_wide = Varnode(Space.REGISTER, 0, 8)
+    call_temp = Varnode(Space.REGISTER, 9, 4)
+    side_value = Varnode(Space.REGISTER, 10, 4)
+    stack = Varnode(Space.STACK, 208, 8)
+    call_result = Instruction(
+        operation=ValueOpKind.MOVE,
+        result=active_wide if mode == "wide_direct_call" else active if mode == "direct_active_call" else call_temp,
+        attrs={"nested_sub_kind": InsnKind.CALL.value},
+    )
+    explicit_kill = Instruction(
+        operation=ValueOpKind.MOVE,
+        inputs=(call_temp,),
+        result=active,
+    )
+    pre_kill_use = Instruction(
+        operation=ValueOpKind.MOVE,
+        inputs=(active,),
+        result=side_value,
+    )
+    predicate = Instruction(
+        operation=ValueOpKind.MOVE,
+        inputs=(active_wide if mode == "wide_direct_call" else active, stack),
+        control=InstructionControl(predicate=PredicateKind.UGE),
+    )
+    instructions = (
+        (call_result, predicate)
+        if mode in {"wide_direct_call", "direct_active_call"}
+        else (pre_kill_use, call_result, explicit_kill, predicate)
+    )
+
+    assert not minimal_state_recovery._is_call_result_overwrite_semantic_leaf(
+        instructions,
+        expected_state_identities=frozenset(
+            {StorageIdentity(StorageIdentityKind.REGISTER, 0)}
+        ),
+        expected_state_width=8 if mode == "wide_direct_call" else 4,
+    )
+
+
+@pytest.mark.parametrize("expected_width", (4, 8))
+def test_call_result_semantic_leaf_requires_exact_bridge_carrier_width(
+    expected_width: int,
+) -> None:
+    """The exact bridge-result width, not a literal U32 rule, is authoritative."""
+
+    active = Varnode(Space.REGISTER, 0, 8)
+    call_temp = Varnode(Space.REGISTER, 9, 8)
+    stack = Varnode(Space.STACK, 208, 8)
+    instructions = (
+        Instruction(
+            operation=ValueOpKind.MOVE,
+            result=call_temp,
+            attrs={"nested_sub_kind": InsnKind.CALL.value},
+        ),
+        Instruction(
+            operation=ValueOpKind.MOVE,
+            inputs=(call_temp,),
+            result=active,
+        ),
+        Instruction(
+            operation=ValueOpKind.MOVE,
+            inputs=(active, stack),
+            control=InstructionControl(predicate=PredicateKind.UGE),
+        ),
+    )
+
+    accepted = minimal_state_recovery._is_call_result_overwrite_semantic_leaf(
+        instructions,
+        expected_state_identities=frozenset(
+            {StorageIdentity(StorageIdentityKind.REGISTER, 0)}
+        ),
+        expected_state_width=expected_width,
+    )
+
+    assert accepted is (expected_width == 8)
+
+
+@pytest.mark.parametrize("overwrite_width", (8, 4))
+def test_call_result_semantic_leaf_rejects_overwritten_call_temp(
+    overwrite_width: int,
+) -> None:
+    """A later exact or width-alias write kills CALL reaching provenance."""
+
+    active = Varnode(Space.REGISTER, 0, 8)
+    call_temp = Varnode(Space.REGISTER, 9, 8)
+    overwritten_temp = Varnode(Space.REGISTER, 9, overwrite_width)
+    stack = Varnode(Space.STACK, 208, 8)
+    instructions = (
+        Instruction(
+            operation=ValueOpKind.MOVE,
+            result=call_temp,
+            attrs={"nested_sub_kind": InsnKind.CALL.value},
+        ),
+        Instruction(
+            operation=ValueOpKind.MOVE,
+            inputs=(Varnode(Space.CONST, 1, overwrite_width),),
+            result=overwritten_temp,
+        ),
+        Instruction(
+            operation=ValueOpKind.MOVE,
+            inputs=(call_temp,),
+            result=active,
+        ),
+        Instruction(
+            operation=ValueOpKind.MOVE,
+            inputs=(active, stack),
+            control=InstructionControl(predicate=PredicateKind.UGE),
+        ),
+    )
+
+    assert not minimal_state_recovery._is_call_result_overwrite_semantic_leaf(
+        instructions,
+        expected_state_identities=frozenset(
+            {StorageIdentity(StorageIdentityKind.REGISTER, 0)}
+        ),
+        expected_state_width=8,
+    )
+
+
+@pytest.mark.parametrize(
+    ("mode", "expected_status"),
+    (
+        ("exact_bridge", minimal_state_recovery._CurrentU32DecisionForestStatus.VALID),
+        ("exact_bridged_u64_call", minimal_state_recovery._CurrentU32DecisionForestStatus.VALID),
+        ("missing_bridge", minimal_state_recovery._CurrentU32DecisionForestStatus.INVALID),
+        ("unrelated_bridge", minimal_state_recovery._CurrentU32DecisionForestStatus.INVALID),
+        ("wrong_bridge", minimal_state_recovery._CurrentU32DecisionForestStatus.INVALID),
+        ("stale_predecessor", minimal_state_recovery._CurrentU32DecisionForestStatus.INVALID),
+        ("state_use_before_kill", minimal_state_recovery._CurrentU32DecisionForestStatus.INVALID),
+        ("call_into_other_identity", minimal_state_recovery._CurrentU32DecisionForestStatus.INVALID),
+        ("later_overwrite", minimal_state_recovery._CurrentU32DecisionForestStatus.INVALID),
+    ),
+)
+def test_current_forest_requires_exact_bridge_lineage_for_reference_semantic_leaf(
+    mode: str,
+    expected_status: object,
+) -> None:
+    """Only the exact XDU path may authorize a nonreference semantic leaf."""
+
+    state = StorageIdentity(StorageIdentityKind.STACK, 52)
+    xdu = InsnSnapshot(
+        opcode=0,
+        ea=0x1B00,
+        operands=(),
+        kind=InsnKind.XDU,
+        l=MopSnapshot(kind=OperandKind.STACK, size=4, stkoff=52),
+        d=MopSnapshot(
+            kind=OperandKind.REGISTER,
+            size=8,
+            reg=1 if mode == "wrong_bridge" else 0,
+        ),
+    )
+    root_branch = _jz_stack_const(0x1B04, 52, 7, 2)
+    leaf_branch = InsnSnapshot(
+        opcode=_OP_JZ,
+        ea=0x1B10,
+        operands=(),
+        l=MopSnapshot(
+            kind=OperandKind.REGISTER,
+            size=8 if mode == "exact_bridged_u64_call" else 4,
+            reg=(
+                9
+                if mode == "call_into_other_identity"
+                else 0
+                if mode
+                in {
+                    "wrong_bridge",
+                    "state_use_before_kill",
+                    "later_overwrite",
+                    "exact_bridged_u64_call",
+                }
+                else 8
+            ),
+        ),
+        r=(
+            MopSnapshot(kind=OperandKind.NUMBER, size=4, value=7)
+            if mode == "wrong_bridge"
+            else MopSnapshot(kind=OperandKind.STACK, size=8, stkoff=208)
+        ),
+        d=MopSnapshot(kind=OperandKind.BLOCK, block_ref=4),
+        kind=InsnKind.COND_JUMP,
+        branch_predicate=PredicateKind.UGE,
+        is_conditional_jump=True,
+        control_transfer_kind=ControlTransferKind.CONDITIONAL_BRANCH,
+    )
+    root_instructions = (
+        (root_branch,)
+        if mode in {"missing_bridge", "unrelated_bridge"}
+        else (xdu, root_branch)
+    )
+    nested_call = MopSnapshot(
+        kind=OperandKind.SUBINSN,
+        size=4,
+        sub_kind=InsnKind.CALL,
+    )
+    call_result_move = _mov(
+        0x1B0C,
+        nested_call,
+        MopSnapshot(
+            kind=OperandKind.REGISTER,
+            size=8 if mode == "exact_bridged_u64_call" else 4,
+            reg=9 if mode == "call_into_other_identity" else 0,
+        ),
+    )
+    later_overwrite = _mov(
+        0x1B0E,
+        MopSnapshot(kind=OperandKind.NUMBER, size=4, value=1),
+        MopSnapshot(kind=OperandKind.REGISTER, size=4, reg=0),
+    )
+    target_instructions = (
+        (xdu, leaf_branch)
+        if mode == "unrelated_bridge"
+        else (call_result_move, leaf_branch)
+        if mode == "call_into_other_identity"
+        else (call_result_move, later_overwrite, leaf_branch)
+        if mode == "later_overwrite"
+        else (call_result_move, leaf_branch)
+        if mode == "exact_bridged_u64_call"
+        else (leaf_branch,)
+    )
+    graph = FlowGraph(
+        {
+            1: _blk(1, (2, 3), (), root_instructions, ea=0x1B00),
+            2: _blk(
+                2,
+                (4, 5),
+                () if mode == "stale_predecessor" else (1,),
+                target_instructions,
+                ea=0x1B10,
+            ),
+            3: _stop(3, (1,)),
+            4: _stop(4, (2,)),
+            5: _stop(5, (2,)),
+        },
+        entry_serial=1,
+        func_ea=0x1B00,
+    )
+    reference = DecisionDag(
+        32,
+        {1: RouteComparison(1, "jz", 7, 2, 3)},
+        root=1,
+    )
+    catalogue, refs, dispatcher = _replay_leaf_catalog(graph, 2)
+
+    observed = minimal_state_recovery._observe_current_u32_decision_forest(
+        graph,
+        1,
+        expected_identities=frozenset({state}),
+        reference_dag=reference,
+    )
+
+    assert observed.status is expected_status
+
+
+@pytest.mark.parametrize(
+    "mode",
+    ("use_before_redefinition", "unrelated_definition", "wrong_size_definition"),
+)
+def test_current_forest_rejects_unproven_call_result_state_register_reuse(
+    mode: str,
+) -> None:
+    """Only the ordered call-result definition of the compared register is semantic."""
+
+    state = StorageIdentity(StorageIdentityKind.REGISTER, 8)
+    root_branch = InsnSnapshot(
+        opcode=_OP_JZ,
+        ea=0x1A00,
+        operands=(),
+        l=MopSnapshot(kind=OperandKind.REGISTER, size=4, reg=8),
+        r=MopSnapshot(kind=OperandKind.NUMBER, size=4, value=7),
+        d=MopSnapshot(kind=OperandKind.BLOCK, block_ref=2),
+        kind=InsnKind.EQUALITY_JUMP,
+        branch_predicate=PredicateKind.EQ,
+        is_conditional_jump=True,
+        control_transfer_kind=ControlTransferKind.CONDITIONAL_BRANCH,
+    )
+    nested_call = MopSnapshot(
+        kind=OperandKind.SUBINSN,
+        size=4,
+        sub_kind=InsnKind.CALL,
+    )
+    call_result_move = _mov(
+        0x1A10,
+        nested_call,
+        MopSnapshot(
+            kind=OperandKind.REGISTER,
+            size=8 if mode == "wrong_size_definition" else 4,
+            reg=9 if mode == "unrelated_definition" else 8,
+        ),
+    )
+    semantic_branch = InsnSnapshot(
+        opcode=_OP_JZ,
+        ea=0x1A14,
+        operands=(),
+        l=MopSnapshot(kind=OperandKind.REGISTER, size=4, reg=8),
+        r=MopSnapshot(kind=OperandKind.STACK, size=8, stkoff=208),
+        d=MopSnapshot(kind=OperandKind.BLOCK, block_ref=4),
+        kind=InsnKind.COND_JUMP,
+        branch_predicate=PredicateKind.UGE,
+        is_conditional_jump=True,
+        control_transfer_kind=ControlTransferKind.CONDITIONAL_BRANCH,
+    )
+    target_instructions = (
+        (semantic_branch, call_result_move)
+        if mode == "use_before_redefinition"
+        else (call_result_move, semantic_branch)
+    )
+    graph = FlowGraph(
+        {
+            1: _blk(1, (2, 3), (), (root_branch,), ea=0x1A00),
+            2: _blk(2, (4, 5), (1,), target_instructions, ea=0x1A10),
+            3: _stop(3, (1,)),
+            4: _stop(4, (2,)),
+            5: _stop(5, (2,)),
+        },
+        entry_serial=1,
+        func_ea=0x1A00,
+    )
+    reference = DecisionDag(
+        32,
+        {1: RouteComparison(1, "jz", 7, 2, 3)},
+        root=1,
+    )
+    catalogue, refs, dispatcher = _replay_leaf_catalog(graph, 2)
+    assert catalogue is not None
+
+    observed = minimal_state_recovery._observe_current_u32_decision_forest(
+        graph,
+        1,
+        expected_identities=frozenset({state}),
+        reference_dag=reference,
+        permitted_non_state_handler_leaf_catalog=catalogue,
+        block_refs_by_serial=refs,
+        dispatcher=dispatcher,
+    )
+
+    assert observed.status is minimal_state_recovery._CurrentU32DecisionForestStatus.INVALID
 
 
 def test_current_forest_accepts_exact_reciprocal_goto_alias_back_to_root() -> None:
@@ -10975,7 +11980,7 @@ def _resolve_candidate_scoped_prefix(
         dispatcher_region_serials=frozenset({15}),
         include_multi_entry_back_edges=True,
     )
-    return resolve_materialized_indirect_transfer_targets(
+    return _resolve_with_sealed_interval_catalog(
         recovered,
         graph,
         router,
@@ -12096,7 +13101,7 @@ def test_candidate_prefix_reconciliation_filters_only_physical_feeder_arm(
     )
     assert observation.authority is not None
 
-    resolved = resolve_materialized_indirect_transfer_targets(
+    resolved = _resolve_with_sealed_interval_catalog(
         _candidate_prefix_partitioned_transitions(),
         graph,
         _candidate_prefix_partitioned_dispatcher(),
@@ -12144,7 +13149,7 @@ def test_candidate_prefix_exact_transform_omits_untrusted_alternate_hint(
         proof=replace(alternate.proof, trusted=False),
     )
 
-    resolved = resolve_materialized_indirect_transfer_targets(
+    resolved = _resolve_with_sealed_interval_catalog(
         tuple(transitions),
         graph,
         _candidate_prefix_partitioned_dispatcher(),
@@ -12197,7 +13202,7 @@ def test_candidate_prefix_omits_untrusted_alternate_before_feeder_bypass_proof(
         proof=replace(alternate.proof, trusted=False),
     )
 
-    resolved = resolve_materialized_indirect_transfer_targets(
+    resolved = _resolve_with_sealed_interval_catalog(
         (alternate, direct),
         graph,
         _candidate_prefix_partitioned_dispatcher(),
@@ -12242,7 +13247,7 @@ def test_candidate_prefix_selected_carrier_preserves_semantic_feeder_body(
     )
     assert observation.authority is not None
     _alternate, selected, direct, *_rest = _candidate_prefix_partitioned_transitions()
-    resolved = resolve_materialized_indirect_transfer_targets(
+    resolved = _resolve_with_sealed_interval_catalog(
         (selected, direct),
         graph,
         _candidate_prefix_partitioned_dispatcher(),
@@ -12311,7 +13316,7 @@ def test_selected_carrier_preserves_pure_stack_read_feeder_suffix(
     )
     assert observation.authority is not None
     _alternate, selected, direct, *_rest = _candidate_prefix_partitioned_transitions()
-    resolved = resolve_materialized_indirect_transfer_targets(
+    resolved = _resolve_with_sealed_interval_catalog(
         (selected, direct),
         graph,
         _candidate_prefix_partitioned_dispatcher(),
@@ -12403,7 +13408,7 @@ def test_selected_carrier_preserves_post_state_setup_corridor(_seam) -> None:
     assert observation.authority is not None
     _alternate, selected, direct, *_rest = _candidate_prefix_partitioned_transitions()
 
-    resolved = resolve_materialized_indirect_transfer_targets(
+    resolved = _resolve_with_sealed_interval_catalog(
         (selected, direct),
         graph,
         _candidate_prefix_partitioned_dispatcher(),
@@ -12537,7 +13542,7 @@ def test_candidate_prefix_reconciliation_replays_each_exact_feeder_kind(
     )
     assert observation.authority is not None
 
-    resolved = resolve_materialized_indirect_transfer_targets(
+    resolved = _resolve_with_sealed_interval_catalog(
         _candidate_prefix_partitioned_transitions(),
         candidate,
         _candidate_prefix_partitioned_dispatcher(),

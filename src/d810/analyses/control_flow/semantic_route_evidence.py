@@ -110,6 +110,7 @@ class SemanticRouteProofKind(str, Enum):
     STATE_CHOICE = "state_choice"
     BOOTSTRAP = "bootstrap"
     TERMINAL_RETURN = "terminal_return"
+    TERMINAL_DELIVERY = "terminal_delivery"
 
 
 class SemanticPredicateKind(str, Enum):
@@ -592,13 +593,42 @@ class StatePartitionMemberWitness:
     feeder_serial: int
     state_identity: StorageIdentity
     state_constant: int
+    conditional_edge: "StatePartitionConditionalEdgeWitness | None" = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.state_identity, StorageIdentity):
             raise TypeError("partition member requires state identity")
+        if self.conditional_edge is not None and not isinstance(
+            self.conditional_edge, StatePartitionConditionalEdgeWitness,
+        ):
+            raise TypeError("partition member conditional edge requires typed witness")
         object.__setattr__(self, "owner_serial", int(self.owner_serial))
         object.__setattr__(self, "feeder_serial", int(self.feeder_serial))
         object.__setattr__(self, "state_constant", int(self.state_constant) & 0xFFFFFFFF)
+
+
+@dataclass(frozen=True, slots=True)
+class StatePartitionConditionalEdgeWitness:
+    """Raw final-branch witness for a selected two-way partition owner edge."""
+
+    transfer_instruction_ea: int
+    transfer_instruction: InsnRecord
+    edge_role: SemanticEdgeRole
+    sibling_serial: int
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.transfer_instruction, InsnRecord):
+            raise TypeError("partition conditional edge requires instruction projection")
+        if self.edge_role not in {
+            SemanticEdgeRole.CONDITIONAL_TAKEN,
+            SemanticEdgeRole.CONDITIONAL_FALLTHROUGH,
+        }:
+            raise SemanticRouteEvidenceRejected("partition conditional edge requires branch role")
+        object.__setattr__(
+            self, "transfer_instruction_ea",
+            _native_ea(self.transfer_instruction_ea, "partition conditional transfer"),
+        )
+        object.__setattr__(self, "sibling_serial", int(self.sibling_serial))
 
 
 @dataclass(frozen=True, slots=True)
@@ -626,6 +656,68 @@ class StatePartitionGroupWitness:
         object.__setattr__(self, "feeder_serial", int(self.feeder_serial))
         object.__setattr__(self, "feeder_instruction_ea", _native_ea(self.feeder_instruction_ea, "partition feeder write"))
         object.__setattr__(self, "members", members)
+
+
+@dataclass(frozen=True, slots=True)
+class SemanticPartitionMemberReplacementWitness:
+    """Explicit substitution of one partition member by an exact fact family."""
+
+    group_id: str
+    owner_serial: int
+    state_identity: StorageIdentity
+    state_constant: int
+    target_serial: int
+    group: StatePartitionGroupWitness
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.state_identity, StorageIdentity):
+            raise TypeError("partition replacement requires state identity")
+        if not isinstance(self.group, StatePartitionGroupWitness):
+            raise TypeError("partition replacement requires its immutable group")
+        if int(self.owner_serial) < 0 or int(self.target_serial) < 0:
+            raise SemanticRouteEvidenceRejected(
+                "partition replacement requires non-negative serials"
+            )
+        object.__setattr__(
+            self, "group_id", _identifier(self.group_id, "partition replacement group id"),
+        )
+        object.__setattr__(self, "owner_serial", int(self.owner_serial))
+        object.__setattr__(self, "target_serial", int(self.target_serial))
+        object.__setattr__(self, "state_constant", int(self.state_constant) & 0xFFFFFFFF)
+        if (
+            self.group_id != self.group.group_id
+            or self.state_identity != self.group.state_identity
+            or len(tuple(
+                member
+                for member in self.group.members
+                if int(member.owner_serial) == int(self.owner_serial)
+                and int(member.state_constant) == int(self.state_constant)
+            )) != 1
+        ):
+            raise SemanticRouteEvidenceRejected(
+                "partition replacement does not match its immutable group"
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class StatePartitionSwitchTableWitness:
+    """Exact raw switch-table delivery for one complete partition member."""
+
+    dispatcher_serial: int
+    state_identity: StorageIdentity
+    state_constant: int
+    target_serial: int
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.state_identity, StorageIdentity):
+            raise TypeError("partition switch-table witness requires state identity")
+        if int(self.dispatcher_serial) < 0 or int(self.target_serial) < 0:
+            raise SemanticRouteEvidenceRejected(
+                "partition switch-table witness requires non-negative serials"
+            )
+        object.__setattr__(self, "dispatcher_serial", int(self.dispatcher_serial))
+        object.__setattr__(self, "target_serial", int(self.target_serial))
+        object.__setattr__(self, "state_constant", int(self.state_constant) & 0xFFFFFFFF)
 
 
 @dataclass(frozen=True, slots=True)
@@ -702,15 +794,62 @@ def prove_partitioned_state_member(
     """
     owner = flow_graph.get_block(int(member.owner_serial))
     feeder = flow_graph.get_block(int(member.feeder_serial))
-    if (
-        owner is None
-        or feeder is None
-        or tuple(int(item) for item in owner.succs) != (int(member.feeder_serial),)
-        or int(member.owner_serial) not in tuple(int(item) for item in feeder.preds)
+    if owner is None or feeder is None or int(member.owner_serial) not in tuple(
+        int(item) for item in feeder.preds
     ):
         return False
+    conditional = member.conditional_edge
+    delivery_graph = flow_graph
+    if conditional is None:
+        if tuple(int(item) for item in owner.succs) != (int(member.feeder_serial),):
+            return False
+    else:
+        successors = tuple(int(item) for item in owner.succs)
+        tail = owner.tail
+        if (
+            len(successors) != 2
+            or int(member.feeder_serial) not in successors
+            or int(conditional.sibling_serial) not in successors
+            or int(conditional.sibling_serial) == int(member.feeder_serial)
+            or tail is None
+            or int(tail.native_ea or tail.ea) != int(conditional.transfer_instruction_ea)
+            or instruction_projection_without_block_references(tail)
+            != conditional.transfer_instruction
+        ):
+            return False
+        control = project_instruction(tail).control
+        if (
+            control is None
+            or control.transfer is not ControlTransferKind.CONDITIONAL_BRANCH
+            or control.target not in successors
+        ):
+            return False
+        selected_role = (
+            SemanticEdgeRole.CONDITIONAL_TAKEN
+            if int(control.target) == int(member.feeder_serial)
+            else SemanticEdgeRole.CONDITIONAL_FALLTHROUGH
+        )
+        if selected_role is not conditional.edge_role:
+            return False
+        if int(control.target) == int(conditional.sibling_serial) and selected_role is SemanticEdgeRole.CONDITIONAL_TAKEN:
+            return False
+        # The existing exact-carrier proof remains authoritative for the value.
+        # Replay it against the owner prefix only; the actual final conditional is
+        # separately sealed above, so it cannot hide a mutation after the carrier.
+        delivery_graph = FlowGraph(
+            blocks={
+                **flow_graph.blocks,
+                int(member.owner_serial): replace(
+                    owner,
+                    succs=(int(member.feeder_serial),),
+                    insn_snapshots=tuple(owner.insn_snapshots[:-1]),
+                ),
+            },
+            entry_serial=int(flow_graph.entry_serial),
+            func_ea=int(flow_graph.func_ea),
+        )
     if not prove_exact_u32_state_delivery(
-        flow_graph,
+        delivery_graph,
         int(member.owner_serial),
         int(member.feeder_serial),
         feeder_instruction_ea=int(feeder_instruction_ea),
@@ -772,6 +911,8 @@ class SemanticRouteFact:
     transform_witness: ExactStateTransformFeeder | None = None
     carrier_witness: ExactCarrierStateWrite | None = None
     partition_witness: StatePartitionGroupWitness | None = None
+    partition_member_replacement: SemanticPartitionMemberReplacementWitness | None = None
+    partition_switch_table_witness: StatePartitionSwitchTableWitness | None = None
     decision_dag_witness: "DecisionDagRouteWitness | None" = None
     bootstrap_witness: SemanticBootstrapRouteWitness | None = None
     recovered_state_write: SemanticRecoveredStateWriteWitness | None = None
@@ -815,6 +956,26 @@ class SemanticRouteFact:
         object.__setattr__(self, "path_edges", edges)
         if self.fact_id is not None:
             object.__setattr__(self, "fact_id", _identifier(self.fact_id, "semantic route fact id"))
+        replacement = self.partition_member_replacement
+        if replacement is not None:
+            if self.kind not in {
+                SemanticRouteFactKind.DECISION_DAG,
+                SemanticRouteFactKind.DISPATCHER_MAP,
+                SemanticRouteFactKind.NATIVE_BOUND,
+                SemanticRouteFactKind.STATE_CARRIER,
+            }:
+                raise TypeError(
+                    "only exact decision-DAG, dispatcher-map, native-bound, or state-carrier facts "
+                    "may replace a partition member"
+                )
+            if (
+                int(replacement.owner_serial) != int(self.owner_serial)
+                or int(replacement.state_constant) != int(self.state_constant)
+                or int(replacement.target_serial) != int(self.target_serial)
+            ):
+                raise SemanticRouteEvidenceRejected(
+                    "partition replacement does not match its route fact"
+                )
         if self.kind is SemanticRouteFactKind.STATE_TRANSFORM:
             if not isinstance(self.transform_witness, ExactStateTransformFeeder):
                 raise TypeError("state-transform route fact requires its typed witness")
@@ -855,8 +1016,26 @@ class SemanticRouteFact:
                 or int(member[0].state_constant) != int(self.state_constant)
             ):
                 raise SemanticRouteEvidenceRejected("state-partition fact does not match group witness")
+            table = self.partition_switch_table_witness
+            if table is not None and (
+                table.state_identity != self.partition_witness.state_identity
+                or int(table.state_constant) != int(self.state_constant)
+                or int(table.target_serial) != int(self.target_serial)
+            ):
+                raise SemanticRouteEvidenceRejected(
+                    "state-partition fact does not match switch-table witness"
+                )
+            if table is not None and self.decision_dag_witness is not None:
+                raise SemanticRouteEvidenceRejected(
+                    "state-partition fact cannot carry direct and DAG table authority"
+                )
         elif self.partition_witness is not None:
             raise TypeError("only a state-partition fact may carry a partition witness")
+        if (
+            self.partition_switch_table_witness is not None
+            and self.kind is not SemanticRouteFactKind.STATE_PARTITION
+        ):
+            raise TypeError("only a state-partition fact may carry a switch-table witness")
         if self.kind is SemanticRouteFactKind.BOOTSTRAP:
             if not isinstance(self.bootstrap_witness, SemanticBootstrapRouteWitness):
                 raise TypeError("bootstrap route fact requires its typed witness")
@@ -903,6 +1082,35 @@ class SemanticRouteFact:
             SemanticRouteFactKind.BOOTSTRAP,
         }:
             raise TypeError("only a decision-DAG fact may carry a DAG witness")
+
+
+def semantic_route_proof_kind_for_fact(
+    fact: SemanticRouteFact,
+) -> SemanticRouteProofKind:
+    """Return the one canonical proof family represented by a route fact."""
+
+    if type(fact) is not SemanticRouteFact:
+        raise TypeError("route proof-kind classification requires an exact fact")
+    if fact.kind is SemanticRouteFactKind.DECISION_DAG:
+        physical = fact.physical_state_write
+        if (
+            type(physical) is SemanticPhysicalStateWriteWitness
+            and type(physical.guarded_selection)
+            is SemanticPhysicalGuardSelectionWitness
+        ):
+            return SemanticRouteProofKind.STATE_ASSIGNMENT
+        return SemanticRouteProofKind.STATE_DAG
+    expected = {
+        SemanticRouteFactKind.DISPATCHER_MAP: SemanticRouteProofKind.STATE_ASSIGNMENT,
+        SemanticRouteFactKind.NATIVE_BOUND: SemanticRouteProofKind.STATE_ASSIGNMENT,
+        SemanticRouteFactKind.STATE_TRANSFORM: SemanticRouteProofKind.STATE_TRANSFORM,
+        SemanticRouteFactKind.STATE_CARRIER: SemanticRouteProofKind.STATE_CARRIER,
+        SemanticRouteFactKind.STATE_PARTITION: SemanticRouteProofKind.STATE_PARTITION,
+        SemanticRouteFactKind.BOOTSTRAP: SemanticRouteProofKind.BOOTSTRAP,
+    }.get(fact.kind)
+    if expected is None:
+        raise ValueError("route fact kind has no canonical proof family")
+    return expected
 
 
 @dataclass(frozen=True, slots=True)
@@ -1016,6 +1224,7 @@ class CanonicalRouteBindingStage(str, Enum):
     CONDITIONAL_ROUTE = "conditional_route"
     DIRECT_ROUTE = "direct_route"
     TERMINAL_RETURN = "terminal_return"
+    TERMINAL_DELIVERY = "terminal_delivery"
 
 
 def _identifier(value: str, description: str) -> str:
@@ -2160,6 +2369,41 @@ class SemanticPartitionMemberProof:
     owner_identity: StableBlockIdentity
     owner_anchor_ea: int
     state_constant: int
+    conditional_edge: "SemanticPartitionConditionalEdgeProof | None" = None
+
+
+@dataclass(frozen=True, slots=True)
+class SemanticPartitionConditionalEdgeProof:
+    """Stable final conditional transfer bound to one selected feeder edge."""
+
+    transfer_instruction_ea: int
+    transfer_instruction: InsnRecord
+    edge_role: SemanticEdgeRole
+    sibling_identity: StableBlockIdentity
+    sibling_anchor_ea: int
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.transfer_instruction, InsnRecord):
+            raise TypeError("partition conditional proof requires instruction projection")
+        if self.edge_role not in {
+            SemanticEdgeRole.CONDITIONAL_TAKEN,
+            SemanticEdgeRole.CONDITIONAL_FALLTHROUGH,
+        }:
+            raise SemanticRouteEvidenceRejected("partition conditional proof requires branch role")
+        if not isinstance(self.sibling_identity, StableBlockIdentity):
+            raise TypeError("partition conditional proof requires sibling identity")
+        transfer_ea = _native_ea(
+            self.transfer_instruction_ea, "partition conditional transfer",
+        )
+        sibling_anchor = _native_ea(
+            self.sibling_anchor_ea, "partition conditional sibling anchor",
+        )
+        if not self.sibling_identity.native_ranges.contains(sibling_anchor):
+            raise SemanticRouteEvidenceRejected(
+                "partition conditional sibling anchor is outside identity"
+            )
+        object.__setattr__(self, "transfer_instruction_ea", transfer_ea)
+        object.__setattr__(self, "sibling_anchor_ea", sibling_anchor)
 
 
 @dataclass(frozen=True, slots=True)
@@ -2180,6 +2424,19 @@ class SemanticStatePartitionProof:
         owners = tuple(item.owner_identity for item in members)
         if len(set(owners)) != len(owners):
             raise SemanticRouteEvidenceRejected("state partition has duplicate owners")
+        for member in members:
+            edge = member.conditional_edge
+            if edge is None:
+                continue
+            if (
+                edge.sibling_identity.native_key != member.owner_identity.native_key
+                or not member.owner_identity.native_ranges.contains(
+                    int(edge.transfer_instruction_ea)
+                )
+            ):
+                raise SemanticRouteEvidenceRejected(
+                    "state partition conditional edge crosses owner identity"
+                )
         if not self.feeder_identity.native_ranges.contains(int(self.feeder_anchor_ea)):
             raise SemanticRouteEvidenceRejected("state partition feeder anchor is outside identity")
         if not self.feeder_identity.native_ranges.contains(int(self.feeder_instruction_ea)):
@@ -2199,12 +2456,70 @@ class SemanticStatePartitionProof:
         object.__setattr__(self, "feeder_instruction_ea", _native_ea(self.feeder_instruction_ea, "state partition write"))
 
 
+@dataclass(frozen=True, slots=True)
+class SemanticStatePartitionSwitchTableProof:
+    """Stable exact switch-table delivery paired with a partition member."""
+
+    dispatcher_identity: StableBlockIdentity
+    dispatcher_anchor_ea: int
+    target_identity: StableBlockIdentity
+    target_anchor_ea: int
+    state_identity: StorageIdentity
+    state_constant: int
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.dispatcher_identity, StableBlockIdentity) or not isinstance(
+            self.target_identity, StableBlockIdentity
+        ):
+            raise TypeError("partition switch-table proof requires stable identities")
+        if self.dispatcher_identity.native_key != self.target_identity.native_key:
+            raise SemanticRouteEvidenceRejected(
+                "partition switch-table proof crosses native keys"
+            )
+        if not isinstance(self.state_identity, StorageIdentity):
+            raise TypeError("partition switch-table proof requires state identity")
+        dispatcher_anchor = _native_ea(
+            self.dispatcher_anchor_ea, "partition switch-table dispatcher anchor",
+        )
+        target_anchor = _native_ea(
+            self.target_anchor_ea, "partition switch-table target anchor",
+        )
+        if (
+            not self.dispatcher_identity.native_ranges.contains(dispatcher_anchor)
+            or not self.target_identity.native_ranges.contains(target_anchor)
+        ):
+            raise SemanticRouteEvidenceRejected(
+                "partition switch-table anchor is outside its identity"
+            )
+        object.__setattr__(self, "dispatcher_anchor_ea", dispatcher_anchor)
+        object.__setattr__(self, "target_anchor_ea", target_anchor)
+        object.__setattr__(self, "state_constant", int(self.state_constant) & 0xFFFFFFFF)
+
+
 def _canonical_partition_group_id(
     feeder: StableBlockIdentity,
     feeder_instruction_ea: int,
     state_identity: StorageIdentity,
     members: tuple[SemanticPartitionMemberProof, ...],
 ) -> str:
+    def stable_value(value: object) -> object:
+        """JSON-stable representation of a typed portable instruction witness."""
+        if isinstance(value, Enum):
+            return value.value
+        if is_dataclass(value) and not isinstance(value, type):
+            return {
+                field.name: stable_value(getattr(value, field.name))
+                for field in fields(value)
+            }
+        if isinstance(value, Mapping):
+            return {
+                str(key): stable_value(item)
+                for key, item in sorted(value.items(), key=lambda item: str(item[0]))
+            }
+        if isinstance(value, tuple):
+            return tuple(stable_value(item) for item in value)
+        return value
+
     def stable_identity_payload(identity: StableBlockIdentity) -> dict[str, object]:
         return {
             "native_key": identity.native_key.to_dict(),
@@ -2234,6 +2549,13 @@ def _canonical_partition_group_id(
                 stable_identity_payload(member.owner_identity),
                 int(member.owner_anchor_ea),
                 int(member.state_constant),
+                None if member.conditional_edge is None else (
+                    int(member.conditional_edge.transfer_instruction_ea),
+                    stable_value(member.conditional_edge.transfer_instruction),
+                    member.conditional_edge.edge_role.value,
+                    stable_identity_payload(member.conditional_edge.sibling_identity),
+                    int(member.conditional_edge.sibling_anchor_ea),
+                ),
             )
             for member in sorted(members, key=lambda item: stable_identity_sort_key(item.owner_identity))
         ),
@@ -2383,6 +2705,114 @@ class SemanticStateTransformProof:
 
 
 @dataclass(frozen=True, slots=True)
+class SemanticReturnValueTransportProof:
+    """Exact native return-value transport immediately after an outer DAG leaf."""
+
+    exit_entry: SemanticCorridorPoint
+    move_instruction: InsnRecord
+    move_source_identity: StorageIdentity
+    move_source_width: int
+    move_destination_identity: StorageIdentity
+    move_destination_width: int
+    carrier: SemanticCorridorPoint
+    carrier_instruction: InsnRecord
+    carrier_source_identity: StorageIdentity
+    carrier_source_width: int
+    carrier_result_width: int
+    logical_exit: SemanticLogicalDagEndpoint
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.exit_entry) is not SemanticCorridorPoint
+            or type(self.carrier) is not SemanticCorridorPoint
+            or type(self.move_instruction) is not InsnRecord
+            or type(self.carrier_instruction) is not InsnRecord
+            or type(self.logical_exit) is not SemanticLogicalDagEndpoint
+            or not all(isinstance(item, StorageIdentity) for item in (
+                self.move_source_identity, self.move_destination_identity,
+                self.carrier_source_identity,
+            ))
+            or type(self.move_source_width) is not int
+            or type(self.move_destination_width) is not int
+            or type(self.carrier_source_width) is not int
+            or type(self.carrier_result_width) is not int
+        ):
+            raise TypeError("return-value transport requires exact typed coordinates")
+        if self.exit_entry.identity.native_key != self.carrier.identity.native_key:
+            raise SemanticRouteEvidenceRejected("return-value transport crosses native keys")
+        move = self.move_instruction
+        if (
+            move.kind is not InsnKind.MOV
+            or not self.exit_entry.identity.native_ranges.contains(int(move.native_ea or move.ea))
+            or move.l is None or move.d is None
+            or int(move.l.size) != 4
+            or storage_identity_from_mop_snapshot(move.l) != self.move_source_identity
+            or storage_identity_from_mop_snapshot(move.d) != self.move_destination_identity
+            or int(move.l.size) != int(self.move_source_width)
+            or int(move.d.size) != int(self.move_destination_width)
+            or self.move_source_width != 4 or self.move_destination_width != 4
+        ):
+            raise SemanticRouteEvidenceRejected("return-value transport requires exact U32 MOV")
+        carrier = self.carrier_instruction
+        if (
+            carrier.kind is not InsnKind.XDU
+            or not self.carrier.identity.native_ranges.contains(int(carrier.native_ea or carrier.ea))
+            or carrier.l is None or carrier.d is None
+            or storage_identity_from_mop_snapshot(carrier.l) != self.carrier_source_identity
+            or int(carrier.l.size) != int(self.carrier_source_width)
+            or int(carrier.d.size) != int(self.carrier_result_width)
+            or self.carrier_source_width != 4 or self.carrier_result_width != 8
+        ):
+            raise SemanticRouteEvidenceRejected("return-value transport requires exact U32-to-U64 XDU")
+        if self.carrier_source_identity != self.move_destination_identity:
+            raise SemanticRouteEvidenceRejected("return-value transport XDU must consume MOV destination")
+
+
+@dataclass(frozen=True, slots=True)
+class SemanticTerminalDeliveryProof:
+    """Sealed outer-state loop-guard route and its native return transport."""
+
+    state_write_instruction: InsnRecord
+    state_identity: StorageIdentity
+    width: int
+    state_constant: int
+    outer_state_dag: SemanticStateDagProof
+    exit_entry: SemanticCorridorPoint
+    return_transport: SemanticReturnValueTransportProof
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.state_write_instruction) is not InsnRecord
+            or not isinstance(self.state_identity, StorageIdentity)
+            or type(self.outer_state_dag) is not SemanticStateDagProof
+            or type(self.exit_entry) is not SemanticCorridorPoint
+            or type(self.return_transport) is not SemanticReturnValueTransportProof
+            or type(self.width) is not int
+            or self.width != 4
+            or type(self.state_constant) is not int
+            or not 0 <= self.state_constant <= 0xFFFFFFFF
+        ):
+            raise TypeError("loop-guard terminal delivery requires typed U32 evidence")
+        write = self.state_write_instruction
+        if (
+            write.kind is not InsnKind.MOV
+            or write.l is None or write.d is None
+            or write.l.kind is not OperandKind.NUMBER
+            or write.l.value is None
+            or int(write.l.size) != 4
+            or storage_identity_from_mop_snapshot(write.d) != self.state_identity
+            or int(write.d.size) != 4
+            or (int(write.l.value) & 0xFFFFFFFF) != int(self.state_constant)
+            or self.outer_state_dag.witness.state_identity != self.state_identity
+            or self.outer_state_dag.witness.state_constant != int(self.state_constant)
+            or self.outer_state_dag.target_identity != self.exit_entry.identity
+            or self.outer_state_dag.target_anchor_ea != self.exit_entry.anchor_ea
+            or self.return_transport.exit_entry != self.exit_entry
+        ):
+            raise SemanticRouteEvidenceRejected("loop-guard terminal delivery evidence disagrees")
+
+
+@dataclass(frozen=True, slots=True)
 class SemanticRouteProof:
     """One complete state-machine route proof in stable native coordinates."""
 
@@ -2400,11 +2830,13 @@ class SemanticRouteProof:
     state_transform: SemanticStateTransformProof | None = None
     state_carrier: SemanticStateCarrierProof | None = None
     state_partition: SemanticStatePartitionProof | None = None
+    state_partition_switch_table: SemanticStatePartitionSwitchTableProof | None = None
     state_dag: SemanticStateDagProof | None = None
     bootstrap: SemanticBootstrapProof | None = None
     predicate: SemanticPredicateProof | None = None
     carriers: tuple[SemanticCarrierProof, ...] = ()
     terminal_return_carrier: TerminalReturnCarrierEvidence | None = None
+    terminal_delivery: SemanticTerminalDeliveryProof | None = None
     diagnostic_provenance: tuple[tuple[str, str], ...] = ()
 
     def __post_init__(self) -> None:
@@ -2499,6 +2931,12 @@ class SemanticRouteProof:
                 raise SemanticRouteEvidenceRejected(
                     "semantic terminal-return carrier belongs to another native key"
                 )
+        terminal_delivery = self.terminal_delivery
+        if terminal_delivery is not None:
+            if not isinstance(terminal_delivery, SemanticTerminalDeliveryProof):
+                raise TypeError("semantic terminal delivery has the wrong type")
+            if terminal_delivery.exit_entry.identity.native_key != native_key:
+                raise SemanticRouteEvidenceRejected("semantic terminal delivery belongs to another native key")
         if self.shape is SemanticRouteShape.DIRECT:
             if roles != (SemanticEdgeRole.DIRECT,):
                 raise SemanticRouteEvidenceRejected(
@@ -2646,6 +3084,16 @@ class SemanticRouteProof:
                 raise SemanticRouteEvidenceRejected("semantic route state partition belongs to another native key")
             if any(item.owner_identity.native_key != native_key for item in state_partition.members):
                 raise SemanticRouteEvidenceRejected("semantic route partition owner belongs to another native key")
+        partition_switch_table = self.state_partition_switch_table
+        if partition_switch_table is not None:
+            if not isinstance(
+                partition_switch_table, SemanticStatePartitionSwitchTableProof,
+            ):
+                raise TypeError("semantic route partition switch-table has the wrong type")
+            if partition_switch_table.dispatcher_identity.native_key != native_key:
+                raise SemanticRouteEvidenceRejected(
+                    "semantic route partition switch-table belongs to another native key"
+                )
         state_dag = self.state_dag
         if state_dag is not None:
             if not isinstance(state_dag, SemanticStateDagProof):
@@ -2703,19 +3151,34 @@ class SemanticRouteProof:
                 or state_transform is not None
                 or state_carrier is not None
                 or state_write is not None
-                or state_dag is None
+                or (state_dag is None) == (partition_switch_table is None)
                 or self.source_owner_identity is None
                 or member is None
                 or len(destinations) != 1
                 or self.source_identity != state_partition.feeder_identity
                 or self.source_anchor_ea != state_partition.feeder_instruction_ea
                 or destinations[0].state_constant != member.state_constant
-                or self.source_identity != state_dag.source_identity
-                or destinations[0].target_identity != state_dag.target_identity
-                or destinations[0].target_anchor_ea != state_dag.target_anchor_ea
-                or state_partition.state_identity != state_dag.witness.state_identity
-                or member.state_constant != state_dag.witness.state_constant
-                or destinations[0].state_constant != state_dag.witness.state_constant
+                or (
+                    state_dag is not None
+                    and (
+                        self.source_identity != state_dag.source_identity
+                        or destinations[0].target_identity != state_dag.target_identity
+                        or destinations[0].target_anchor_ea != state_dag.target_anchor_ea
+                        or state_partition.state_identity != state_dag.witness.state_identity
+                        or member.state_constant != state_dag.witness.state_constant
+                        or destinations[0].state_constant != state_dag.witness.state_constant
+                    )
+                )
+                or (
+                    partition_switch_table is not None
+                    and (
+                        partition_switch_table.state_identity != state_partition.state_identity
+                        or int(partition_switch_table.state_constant) != int(member.state_constant)
+                        or partition_switch_table.target_identity != destinations[0].target_identity
+                        or int(partition_switch_table.target_anchor_ea)
+                        != int(destinations[0].target_anchor_ea)
+                    )
+                )
             ):
                 raise SemanticRouteEvidenceRejected("state partition requires its exact group witness")
         elif self.proof_kind is SemanticRouteProofKind.STATE_DAG:
@@ -2790,6 +3253,10 @@ class SemanticRouteProof:
                 )
             if state_partition is not None:
                 raise SemanticRouteEvidenceRejected("only a state-partition route may carry partition evidence")
+            if partition_switch_table is not None:
+                raise SemanticRouteEvidenceRejected(
+                    "only a state-partition route may carry switch-table evidence"
+                )
         if self.proof_kind is SemanticRouteProofKind.STATE_ASSIGNMENT:
             if state_write is None:
                 raise SemanticRouteEvidenceRejected(
@@ -2855,6 +3322,40 @@ class SemanticRouteProof:
                 raise SemanticRouteEvidenceRejected(
                     "terminal-return carrier must match its route, target, and state write"
                 )
+        elif self.proof_kind is SemanticRouteProofKind.TERMINAL_DELIVERY:
+            destination = destinations[0] if len(destinations) == 1 else None
+            if type(terminal_delivery) is not SemanticTerminalDeliveryProof:
+                raise SemanticRouteEvidenceRejected("terminal delivery requires its typed outer proof")
+            dag = terminal_delivery.outer_state_dag
+            if (
+                self.shape is not SemanticRouteShape.DIRECT
+                or destination is None
+                or not destination.terminal
+                or state_write is None
+                or self.source_owner_identity is None
+                or self.source_owner_identity != dag.source_identity
+                or self.source_owner_anchor_ea != dag.source_anchor_ea
+                or self.source_identity != dag.entry_identity
+                or self.source_anchor_ea != dag.entry_anchor_ea
+                or destination.target_identity != terminal_delivery.exit_entry.identity
+                or destination.target_anchor_ea != terminal_delivery.exit_entry.anchor_ea
+                or destination.state_constant != terminal_delivery.state_constant
+                or state_write.identity != dag.source_identity
+                or state_write.instruction_ea != int(
+                    terminal_delivery.state_write_instruction.native_ea
+                    or terminal_delivery.state_write_instruction.ea
+                )
+                or state_write.state_variable != terminal_delivery.state_identity
+                or state_write.width != terminal_delivery.width
+                or state_write.state_constant != terminal_delivery.state_constant
+            ):
+                raise SemanticRouteEvidenceRejected(
+                    "loop-guard terminal delivery requires exact outer DAG and exit entry"
+                )
+        elif terminal_delivery is not None:
+            raise SemanticRouteEvidenceRejected(
+                "only a terminal-delivery route may carry terminal delivery evidence"
+            )
         elif terminal_return_carrier is not None:
             raise SemanticRouteEvidenceRejected(
                 "only a terminal-return route may carry return semantics"
@@ -3734,17 +4235,100 @@ def build_canonical_semantic_evidence(
         if fact.kind is SemanticRouteFactKind.STATE_PARTITION
         and fact.partition_witness is not None
     )
-    for group in {
-        fact.partition_witness for fact in partition_facts
-        if fact.partition_witness is not None
-    }:
-        group_owners = {
-            int(fact.owner_serial)
-            for fact in partition_facts
-            if fact.partition_witness is not None
+    partition_groups_by_id: dict[str, StatePartitionGroupWitness] = {}
+    for fact in partition_facts:
+        group = fact.partition_witness
+        if group is None:
+            continue
+        prior = partition_groups_by_id.setdefault(group.group_id, group)
+        if prior != group:
+            return result_abstention(
+                CanonicalSemanticEvidenceProductionReason.PARTITION_GROUP_INCOMPLETE,
+                CanonicalSemanticEvidenceProductionStage.GROUP,
+            )
+    replacement_facts = tuple(
+        fact for fact in facts
+        if fact.partition_member_replacement is not None
+    )
+    for fact in replacement_facts:
+        replacement = fact.partition_member_replacement
+        assert replacement is not None
+        group = partition_groups_by_id.setdefault(
+            replacement.group_id,
+            replacement.group,
+        )
+        if (
+            group != replacement.group
+            or replacement.state_identity != group.state_identity
+            or replacement.state_identity != context.state_identity
+        ):
+            return result_abstention(
+                CanonicalSemanticEvidenceProductionReason.PARTITION_GROUP_INCOMPLETE,
+                CanonicalSemanticEvidenceProductionStage.GROUP,
+            )
+        member = tuple(
+            item for item in group.members
+            if int(item.owner_serial) == int(replacement.owner_serial)
+        )
+        if (
+            len(member) != 1
+            or int(member[0].state_constant) != int(replacement.state_constant)
+            or int(fact.owner_serial) != int(replacement.owner_serial)
+            or int(fact.state_constant) != int(replacement.state_constant)
+            or int(fact.target_serial) != int(replacement.target_serial)
+        ):
+            return result_abstention(
+                CanonicalSemanticEvidenceProductionReason.PARTITION_GROUP_INCOMPLETE,
+                CanonicalSemanticEvidenceProductionStage.GROUP,
+            )
+    for group in partition_groups_by_id.values():
+        if not any(
+            fact.kind is SemanticRouteFactKind.STATE_PARTITION
+            and fact.partition_witness is not None
             and fact.partition_witness.group_id == group.group_id
+            for fact in facts
+        ):
+            return result_abstention(
+                CanonicalSemanticEvidenceProductionReason.PARTITION_GROUP_INCOMPLETE,
+                CanonicalSemanticEvidenceProductionStage.GROUP,
+            )
+        group_members = {
+            (int(item.owner_serial), int(item.state_constant))
+            for item in group.members
         }
-        if group_owners != {int(item.owner_serial) for item in group.members}:
+        # A partition witness is an atomic certificate for every member edge,
+        # not a requirement that every member retain the STATE_PARTITION fact
+        # family.  Final route selection may replace an individual member with
+        # a source-bound exact route fact from a stronger producer family.  It
+        # still closes the same owner/state member of this immutable group.
+        # Count that canonical fact here while retaining the requirement that
+        # all members are represented exactly once in the final fact stream.
+        group_coverage: dict[tuple[int, int], list[SemanticRouteFact]] = {}
+        for fact in facts:
+            member_key = (int(fact.owner_serial), int(fact.state_constant))
+            if member_key not in group_members:
+                continue
+            if (
+                fact.kind is SemanticRouteFactKind.STATE_PARTITION
+                and (
+                    fact.partition_witness is None
+                    or fact.partition_witness.group_id != group.group_id
+                )
+            ):
+                continue
+            if (
+                fact.kind is not SemanticRouteFactKind.STATE_PARTITION
+                and (
+                    fact.partition_member_replacement is None
+                    or fact.partition_member_replacement.group_id != group.group_id
+                )
+            ):
+                continue
+            group_coverage.setdefault(member_key, []).append(fact)
+        if (
+            set(group_coverage) != group_members
+            or any(len(member_facts) != 1 for member_facts in group_coverage.values())
+        ):
             return result_abstention(
                 CanonicalSemanticEvidenceProductionReason.PARTITION_GROUP_INCOMPLETE,
                 CanonicalSemanticEvidenceProductionStage.GROUP,
@@ -3760,6 +4344,58 @@ def build_canonical_semantic_evidence(
             CanonicalSemanticEvidenceProductionReason.NATIVE_BOUND_SOURCE_ASSIGNMENT_INVALID,
             CanonicalSemanticEvidenceProductionStage.GROUP,
         )
+
+    def stable_partition_proof(
+        group: StatePartitionGroupWitness,
+    ) -> SemanticStatePartitionProof:
+        """Project an immutable raw group into the canonical binding surface."""
+
+        feeder = identities.get(int(group.feeder_serial))
+        if feeder is None:
+            abstain(CanonicalSemanticEvidenceProductionReason.PARTITION_IDENTITY_MISSING)
+        try:
+            members = tuple(
+                SemanticPartitionMemberProof(
+                    owner_identity=identities[int(member.owner_serial)],
+                    owner_anchor_ea=stable_block_identity_semantic_anchor(
+                        identities[int(member.owner_serial)],
+                    ),
+                    state_constant=int(member.state_constant),
+                    conditional_edge=(
+                        None
+                        if member.conditional_edge is None
+                        else SemanticPartitionConditionalEdgeProof(
+                            transfer_instruction_ea=member.conditional_edge.transfer_instruction_ea,
+                            transfer_instruction=member.conditional_edge.transfer_instruction,
+                            edge_role=member.conditional_edge.edge_role,
+                            sibling_identity=identities[
+                                int(member.conditional_edge.sibling_serial)
+                            ],
+                            sibling_anchor_ea=stable_block_identity_semantic_anchor(
+                                identities[int(member.conditional_edge.sibling_serial)]
+                            ),
+                        )
+                    ),
+                )
+                for member in group.members
+            )
+        except KeyError:
+            abstain(CanonicalSemanticEvidenceProductionReason.PARTITION_IDENTITY_MISSING)
+        proof = SemanticStatePartitionProof(
+            group_id=_canonical_partition_group_id(
+                feeder,
+                group.feeder_instruction_ea,
+                group.state_identity,
+                members,
+            ),
+            feeder_identity=feeder,
+            feeder_anchor_ea=stable_block_identity_semantic_anchor(feeder),
+            feeder_instruction_ea=group.feeder_instruction_ea,
+            state_identity=group.state_identity,
+            members=members,
+        )
+        return proof
+
     try:
         for fact in facts:
             active_fact = fact
@@ -3971,6 +4607,19 @@ def build_canonical_semantic_evidence(
                         owner_identity=identities[int(item.owner_serial)],
                         owner_anchor_ea=stable_block_identity_semantic_anchor(identities[int(item.owner_serial)]),
                         state_constant=int(item.state_constant),
+                        conditional_edge=(
+                            None if item.conditional_edge is None else (
+                                SemanticPartitionConditionalEdgeProof(
+                                    transfer_instruction_ea=item.conditional_edge.transfer_instruction_ea,
+                                    transfer_instruction=item.conditional_edge.transfer_instruction,
+                                    edge_role=item.conditional_edge.edge_role,
+                                    sibling_identity=identities[int(item.conditional_edge.sibling_serial)],
+                                    sibling_anchor_ea=stable_block_identity_semantic_anchor(
+                                        identities[int(item.conditional_edge.sibling_serial)]
+                                    ),
+                                )
+                            )
+                        ),
                     )
                     for item in witness.members
                 )
@@ -3989,7 +4638,63 @@ def build_canonical_semantic_evidence(
                 )
                 raw_dag = fact.decision_dag_witness
                 if raw_dag is None:
-                    abstain(CanonicalSemanticEvidenceProductionReason.PARTITION_MISSING_DECISION_DAG)
+                    table_witness = fact.partition_switch_table_witness
+                    dispatcher = (
+                        None
+                        if table_witness is None
+                        else identities.get(int(table_witness.dispatcher_serial))
+                    )
+                    if (
+                        table_witness is None
+                        or dispatcher is None
+                        or table_witness.state_identity != witness.state_identity
+                        or int(table_witness.state_constant)
+                        != int(member.state_constant)
+                        or int(table_witness.target_serial) != int(fact.target_serial)
+                    ):
+                        abstain(CanonicalSemanticEvidenceProductionReason.PARTITION_MISSING_DECISION_DAG)
+                    dispatcher_anchor = stable_block_identity_semantic_anchor(
+                        dispatcher,
+                    )
+                    switch_proof = SemanticStatePartitionSwitchTableProof(
+                        dispatcher_identity=dispatcher,
+                        dispatcher_anchor_ea=dispatcher_anchor,
+                        target_identity=target,
+                        target_anchor_ea=int(target_anchor),
+                        state_identity=table_witness.state_identity,
+                        state_constant=int(table_witness.state_constant),
+                    )
+                    append_proof(
+                        SemanticRouteProof(
+                            proof_id=_canonical_partition_proof_id(
+                                partition_proof.group_id,
+                                owner,
+                                target,
+                                witness.state_identity,
+                                member.state_constant,
+                            ),
+                            atomic_group_id=context.atomic_group_id,
+                            proof_kind=SemanticRouteProofKind.STATE_PARTITION,
+                            shape=SemanticRouteShape.DIRECT,
+                            source_identity=feeder,
+                            source_anchor_ea=witness.feeder_instruction_ea,
+                            source_owner_identity=owner,
+                            source_owner_anchor_ea=owner_anchor,
+                            delivery_region=NativeEaInterval(
+                                feeder_interval.start_ea,
+                                feeder_interval.end_ea,
+                            ),
+                            destinations=(SemanticRouteDestination(
+                                role=SemanticEdgeRole.DIRECT,
+                                state_constant=int(member.state_constant),
+                                target_identity=target,
+                                target_anchor_ea=target_anchor,
+                            ),),
+                            state_partition=partition_proof,
+                            state_partition_switch_table=switch_proof,
+                        )
+                    )
+                    continue
                 if raw_dag.state_identity != context.state_identity:
                     abstain(CanonicalSemanticEvidenceProductionReason.DECISION_DAG_STATE_IDENTITY_MISMATCH)
                 stable_partition_dag = _stable_dag_witness_from_raw(
@@ -4214,6 +4919,13 @@ def build_canonical_semantic_evidence(
                         for identity, anchor in anchors
                     ),
                 )
+                replacement_partition = (
+                    None
+                    if fact.partition_member_replacement is None
+                    else stable_partition_proof(
+                        fact.partition_member_replacement.group,
+                    )
+                )
                 append_proof(
                     SemanticRouteProof(
                         proof_id=(
@@ -4246,6 +4958,7 @@ def build_canonical_semantic_evidence(
                             ),
                         ),
                         state_carrier=carrier_proof,
+                        state_partition=replacement_partition,
                     )
                 )
                 continue
@@ -4478,6 +5191,13 @@ def build_canonical_semantic_evidence(
                         owner, int(owner_anchor),
                     ),
                 )
+                replacement_partition = (
+                    None
+                    if fact.partition_member_replacement is None
+                    else stable_partition_proof(
+                        fact.partition_member_replacement.group,
+                    )
+                )
                 append_proof(
                     SemanticRouteProof(
                         proof_id=(
@@ -4512,6 +5232,7 @@ def build_canonical_semantic_evidence(
                         ),
                         state_write=state_write,
                         state_dag=dag_proof,
+                        state_partition=replacement_partition,
                     )
                 )
                 continue
@@ -4903,6 +5624,54 @@ def build_canonical_semantic_evidence(
                 )
             diagnostic_proofs: list[SemanticRouteProof] = []
             for proof, fact in zip(proofs, proof_facts):
+                replacement = fact.partition_member_replacement
+                if replacement is not None:
+                    expected_owner = identities.get(int(replacement.owner_serial))
+                    expected_target = identities.get(int(replacement.target_serial))
+                    expected_owner_anchor = fact.owner_anchor_ea
+                    expected_target_anchor = fact.target_anchor_ea
+                    matching_destinations = tuple(
+                        destination
+                        for destination in proof.destinations
+                        if (
+                            int(destination.state_constant)
+                            == int(replacement.state_constant)
+                            and destination.target_identity == expected_target
+                            and int(destination.target_anchor_ea)
+                            == int(expected_target_anchor)
+                        )
+                    )
+                    state_identity = (
+                        proof.state_write.state_variable
+                        if proof.state_write is not None
+                        else (
+                            proof.state_carrier.state_identity
+                            if proof.state_carrier is not None
+                            else None
+                        )
+                    )
+                    owner_matches = (
+                        proof.source_owner_identity == expected_owner
+                        and int(proof.source_owner_anchor_ea or -1)
+                        == int(expected_owner_anchor)
+                    ) or (
+                        proof.source_owner_identity is None
+                        and proof.source_identity == expected_owner
+                        and int(proof.source_anchor_ea) == int(expected_owner_anchor)
+                    )
+                    if (
+                        expected_owner is None
+                        or expected_target is None
+                        or expected_owner_anchor is None
+                        or expected_target_anchor is None
+                        or state_identity != replacement.state_identity
+                        or not owner_matches
+                        or len(matching_destinations) != 1
+                    ):
+                        return result_abstention(
+                            CanonicalSemanticEvidenceProductionReason.PARTITION_GROUP_INCOMPLETE,
+                            CanonicalSemanticEvidenceProductionStage.GROUP,
+                        )
                 provenance = tuple(
                     item
                     for item in proof.diagnostic_provenance
@@ -5172,6 +5941,15 @@ class BoundSemanticStatePartition:
 
 
 @dataclass(frozen=True, slots=True)
+class BoundSemanticStatePartitionSwitchTable:
+    """A partition member's exact rebound physical switch-table row."""
+
+    evidence: SemanticStatePartitionSwitchTableProof
+    dispatcher: BoundSemanticBlock
+    target: BoundSemanticBlock
+
+
+@dataclass(frozen=True, slots=True)
 class BoundSemanticRoute:
     """One route proof fully rebound into the current normalized graph."""
 
@@ -5183,6 +5961,7 @@ class BoundSemanticRoute:
     state_transform: BoundSemanticStateTransform | None = None
     state_carrier: BoundSemanticStateCarrier | None = None
     state_partition: BoundSemanticStatePartition | None = None
+    state_partition_switch_table: BoundSemanticStatePartitionSwitchTable | None = None
     state_dag: BoundSemanticStateDag | None = None
     bootstrap: BoundSemanticBootstrap | None = None
     predicate: BoundSemanticPredicate | None = None
@@ -6203,6 +6982,7 @@ def _validate_direct_route(
         SemanticRouteProofKind.STATE_PARTITION,
         SemanticRouteProofKind.STATE_DAG,
         SemanticRouteProofKind.BOOTSTRAP,
+        SemanticRouteProofKind.TERMINAL_DELIVERY,
     }:
         return True
     state_write = proof.state_write
@@ -6754,30 +7534,11 @@ def _validate_state_dag(
     handoff = dag.evidence.switch_handoff
     if handoff is not None:
         dispatcher = dag.switch_handoff_dispatcher
-        if dispatcher is None:
-            return False
-        table = analyze_switch_table_at_dispatcher(graph, int(dispatcher.serial))
-        if table is None:
-            return False
-        state_var = table.state_var_operand
-        if (
-            int(table.state_dispatcher_map.dispatcher_entry_block)
-            != int(dispatcher.serial)
-            or handoff.state_identity.kind is not StorageIdentityKind.STACK
-            or int(state_var.offset) != int(handoff.state_identity.offset)
-            or int(state_var.size) != 4
-            or table.state_dispatcher_map.resolve_target(
-                int(handoff.state_constant)
-            ) != int(dag.target.serial)
-        ):
-            return False
-        dispatcher_block = graph.get_block(int(dispatcher.serial))
-        target_block = graph.get_block(int(dag.target.serial))
-        if (
-            dispatcher_block is None
-            or target_block is None
-            or int(dag.target.serial) not in dispatcher_block.succs
-            or int(dispatcher.serial) not in target_block.preds
+        if dispatcher is None or not _validate_exact_u32_switch_row(
+            graph, dispatcher_serial=int(dispatcher.serial),
+            target_serial=int(dag.target.serial),
+            state_identity=handoff.state_identity,
+            state_constant=int(handoff.state_constant),
         ):
             return False
     return True
@@ -6946,11 +7707,33 @@ def _validate_state_partition(
         member = by_identity.get(owner.identity)
         if member is None:
             return False
+        conditional_edge = None
+        if member.conditional_edge is not None:
+            edge = member.conditional_edge
+            sibling_serials = tuple(
+                int(serial)
+                for serial, block in graph.blocks.items()
+                if (
+                    (identity := stable_block_identity_from_snapshot(
+                        block, native_key=edge.sibling_identity.native_key,
+                    )) == edge.sibling_identity
+                    and identity.native_ranges.contains(int(edge.sibling_anchor_ea))
+                )
+            )
+            if len(sibling_serials) != 1:
+                return False
+            conditional_edge = StatePartitionConditionalEdgeWitness(
+                transfer_instruction_ea=edge.transfer_instruction_ea,
+                transfer_instruction=edge.transfer_instruction,
+                edge_role=edge.edge_role,
+                sibling_serial=sibling_serials[0],
+            )
         witness = StatePartitionMemberWitness(
             owner_serial=int(owner.serial),
             feeder_serial=int(partition.feeder.serial),
             state_identity=evidence.state_identity,
             state_constant=int(member.state_constant),
+            conditional_edge=conditional_edge,
         )
         if not prove_partitioned_state_member(
             graph,
@@ -6972,6 +7755,75 @@ def _validate_state_partition(
     return True
 
 
+def _validate_state_partition_switch_table(
+    graph: FlowGraph,
+    partition: BoundSemanticStatePartition,
+    table_route: BoundSemanticStatePartitionSwitchTable,
+) -> bool:
+    """Replay the sealed physical switch row, never a compatibility resolver."""
+    evidence = table_route.evidence
+    if (
+        evidence.state_identity != partition.evidence.state_identity
+        or table_route.target.identity != evidence.target_identity
+        or table_route.dispatcher.identity != evidence.dispatcher_identity
+    ):
+        return False
+    feeder = graph.get_block(int(partition.feeder.serial))
+    dispatcher = graph.get_block(int(table_route.dispatcher.serial))
+    target = graph.get_block(int(table_route.target.serial))
+    if (
+        feeder is None
+        or dispatcher is None
+        or target is None
+        or tuple(int(item) for item in feeder.succs)
+        != (int(table_route.dispatcher.serial),)
+        or int(partition.feeder.serial) not in dispatcher.preds
+        or int(table_route.target.serial) not in dispatcher.succs
+        or int(table_route.dispatcher.serial) not in target.preds
+    ):
+        return False
+    return _validate_exact_u32_switch_row(
+        graph, dispatcher_serial=int(table_route.dispatcher.serial),
+        target_serial=int(table_route.target.serial),
+        state_identity=evidence.state_identity,
+        state_constant=int(evidence.state_constant),
+    )
+
+
+def _validate_exact_u32_switch_row(
+    graph: FlowGraph,
+    *,
+    dispatcher_serial: int,
+    target_serial: int,
+    state_identity: StorageIdentity,
+    state_constant: int,
+) -> bool:
+    """Replay one physical U32 table row and its executable edge exactly."""
+    dispatcher = graph.get_block(int(dispatcher_serial))
+    target = graph.get_block(int(target_serial))
+    table = analyze_switch_table_at_dispatcher(graph, int(dispatcher_serial))
+    if dispatcher is None or target is None or table is None:
+        return False
+    state_var = table.state_var_operand
+    rows = tuple(
+        row for row in table.state_dispatcher_map.rows
+        if (row.is_handler_row or row.is_dispatcher_self_loop)
+        and int(row.state_const) == (int(state_constant) & 0xFFFFFFFF)
+    )
+    return bool(
+        int(table.state_dispatcher_map.dispatcher_entry_block) == int(dispatcher_serial)
+        and state_identity.kind is StorageIdentityKind.STACK
+        and state_var.space is Space.STACK
+        and int(state_var.offset) == int(state_identity.offset)
+        and int(state_var.size) == 4
+        and len(rows) == 1
+        and int(rows[0].target_block) == int(target_serial)
+        and table.state_dispatcher_map.resolve_target(int(state_constant)) == int(target_serial)
+        and int(target_serial) in dispatcher.succs
+        and int(dispatcher_serial) in target.preds
+    )
+
+
 def _validate_terminal_return_carrier(
     graph: FlowGraph,
     index: _BoundBlockIndex,
@@ -6980,6 +7832,10 @@ def _validate_terminal_return_carrier(
 ) -> bool:
     carrier = proof.terminal_return_carrier
     if carrier is None or len(destinations) != 1:
+        logger.warning(
+            "UNFLAT_TERMINAL_RETURN_BIND_REJECT proof=%s stage=shape source=0x%X destinations=%d",
+            proof.proof_id, proof.source_anchor_ea, len(destinations),
+        )
         return False
     capture = _unique_bound_block(
         index,
@@ -6992,6 +7848,12 @@ def _validate_terminal_return_carrier(
         carrier.request.terminal_target_ea,
     )
     if capture is None or terminal is None:
+        logger.warning(
+            "UNFLAT_TERMINAL_RETURN_BIND_REJECT proof=%s stage=identity source=0x%X capture=%s terminal=%s",
+            proof.proof_id, proof.source_anchor_ea,
+            None if capture is None else capture.serial,
+            None if terminal is None else terminal.serial,
+        )
         return False
     capture_block = graph.get_block(capture.serial)
     terminal_block = graph.get_block(terminal.serial)
@@ -7005,6 +7867,12 @@ def _validate_terminal_return_carrier(
         or carrier_instruction.result is None
         or int(carrier_instruction.result.size) != int(carrier.return_width)
     ):
+        logger.warning(
+            "UNFLAT_TERMINAL_RETURN_BIND_REJECT proof=%s stage=carrier source=0x%X destination=0x%X capture=%d carrier_ea=0x%X snapshot=%r instruction=%r",
+            proof.proof_id, proof.source_anchor_ea,
+            destinations[0].evidence.target_anchor_ea, capture.serial,
+            carrier.carrier_ea, carrier_snapshot, carrier_instruction,
+        )
         return False
     source = carrier.source
     source_matches = tuple()
@@ -7029,6 +7897,13 @@ def _validate_terminal_return_carrier(
             and int(item.offset) == int(source.constant)
         )
     if not source_matches or int(source_matches[0].size) != int(source.width):
+        logger.warning(
+            "UNFLAT_TERMINAL_RETURN_BIND_REJECT proof=%s stage=source source=0x%X destination=0x%X kind=%s matches=%s expected_width=%d",
+            proof.proof_id, proof.source_anchor_ea,
+            destinations[0].evidence.target_anchor_ea, source.kind.value,
+            tuple((item.space.value, item.offset, item.size) for item in source_matches),
+            source.width,
+        )
         return False
     return_snapshot = _snapshot_at(terminal_block, carrier.terminal_return_ea)
     return_instruction = _instruction_at(terminal_block, carrier.terminal_return_ea)
@@ -7037,8 +7912,13 @@ def _validate_terminal_return_carrier(
         for ea in carrier.corridor_instruction_eas
     )
     if any(point is None for point in corridor_points):
+        logger.warning(
+            "UNFLAT_TERMINAL_RETURN_BIND_REJECT proof=%s stage=corridor source=0x%X destination=0x%X corridor=%s",
+            proof.proof_id, proof.source_anchor_ea,
+            destinations[0].evidence.target_anchor_ea, carrier.corridor_instruction_eas,
+        )
         return False
-    return bool(
+    accepted = bool(
         return_snapshot is not None
         and return_instruction is not None
         and return_snapshot.kind is InsnKind.RET
@@ -7049,8 +7929,105 @@ def _validate_terminal_return_carrier(
             tuple(point for point in corridor_points if point is not None),
         )
     )
+    if not accepted:
+        logger.warning(
+            "UNFLAT_TERMINAL_RETURN_BIND_REJECT proof=%s stage=return source=0x%X destination=0x%X terminal=%d return_snapshot=%r return_instruction=%r corridor=%s",
+            proof.proof_id, proof.source_anchor_ea,
+            destinations[0].evidence.target_anchor_ea, terminal.serial,
+            return_snapshot, return_instruction,
+            tuple(None if point is None else point.serial for point in corridor_points),
+        )
+    return accepted
 
 
+def _validate_terminal_delivery(
+    graph: FlowGraph,
+    index: _BoundBlockIndex,
+    proof: SemanticRouteProof,
+) -> bool:
+    """Replay the sealed state -> dispatcher -> XDU -> logical-exit premise."""
+    delivery = proof.terminal_delivery
+    state_write = proof.state_write
+    if isinstance(delivery, SemanticTerminalDeliveryProof):
+        dag = delivery.outer_state_dag
+        dag_source = _unique_bound_block(index, dag.source_identity, dag.source_anchor_ea)
+        dag_target = _unique_bound_block(index, dag.target_identity, dag.target_anchor_ea)
+        dag_entry = _unique_bound_block(index, dag.entry_identity, dag.entry_anchor_ea)
+        source_to_entry = tuple(_bound_corridor_point(index, point) for point in dag.source_to_entry_corridor)
+        path = tuple(_bound_corridor_point(index, point) for point in dag.path)
+        if (
+            state_write is None
+            or dag_source is None or dag_target is None or dag_entry is None
+            or any(point is None for point in source_to_entry)
+            or any(point is None for point in path)
+        ):
+            return False
+        bound_dag = BoundSemanticStateDag(
+            dag,
+            dag_source,
+            dag_target,
+            dag_entry,
+            tuple(point for point in source_to_entry if point is not None),
+            tuple(point for point in path if point is not None),
+        )
+        # ``RouteComparison`` normalizes JZ/JNZ opcode spellings; terminal
+        # delivery also seals the physical EQ polarity at every router node.
+        for comparison, node in zip(dag.witness.comparisons, bound_dag.path):
+            block = graph.get_block(node.serial)
+            branches = () if block is None else tuple(
+                snapshot for snapshot in block.insn_snapshots
+                if snapshot.kind in {InsnKind.COND_JUMP, InsnKind.EQUALITY_JUMP}
+            )
+            if (
+                len(branches) != 1
+                or branches[0].branch_predicate is not PredicateKind.EQ
+                or comparison.operation != "jz"
+            ):
+                return False
+        if not _validate_state_dag(graph, index, proof, bound_dag):
+            return False
+        source = _unique_bound_block(index, proof.source_identity, proof.source_anchor_ea)
+        owner = _unique_bound_block(index, proof.source_owner_identity, int(proof.source_owner_anchor_ea or 0))
+        transport = delivery.return_transport
+        exit_block = _unique_bound_block(index, transport.exit_entry.identity, transport.exit_entry.anchor_ea)
+        carrier = _unique_bound_block(index, transport.carrier.identity, transport.carrier.anchor_ea)
+        endpoint = graph.get_block(int(transport.logical_exit.serial))
+        owner_block = None if owner is None else graph.get_block(owner.serial)
+        source_block = None if source is None else graph.get_block(source.serial)
+        move_ea = int(transport.move_instruction.native_ea or transport.move_instruction.ea)
+        carrier_ea = int(transport.carrier_instruction.native_ea or transport.carrier_instruction.ea)
+        exit_snapshot = None if exit_block is None else _snapshot_at(graph.get_block(exit_block.serial), move_ea)
+        carrier_snapshot = None if carrier is None else _snapshot_at(graph.get_block(carrier.serial), carrier_ea)
+        state_snapshot = None if owner is None else _snapshot_at(owner_block, state_write.instruction_ea)
+        if (
+            source is None or owner is None or exit_block is None or carrier is None
+            or source_block is None or owner_block is None
+            or state_snapshot is None
+            or _instruction_projection(state_snapshot) != delivery.state_write_instruction
+            or exit_snapshot is None
+            or _instruction_projection(exit_snapshot) != transport.move_instruction
+            or carrier_snapshot is None
+            or _instruction_projection(carrier_snapshot) != transport.carrier_instruction
+            or int(source.serial) != int(dag_entry.serial)
+            or int(owner.serial) != int(dag_source.serial)
+            or int(exit_block.serial) != int(dag_target.serial)
+            or tuple(int(item) for item in owner_block.succs) != (int(source.serial),)
+            or tuple(int(item) for item in source_block.preds) != (int(owner.serial),)
+            or tuple(int(item) for item in graph.get_block(exit_block.serial).succs) != (int(carrier.serial),)
+            or int(exit_block.serial) not in tuple(
+                int(item) for item in graph.get_block(carrier.serial).preds
+            )
+            or not _is_exact_logical_function_exit(endpoint)
+            or tuple(int(item) for item in graph.get_block(carrier.serial).succs) != (int(endpoint.serial),)
+            or tuple(int(item) for item in endpoint.preds) != (int(carrier.serial),)
+        ):
+            return False
+        matching_moves = tuple(
+            snapshot for snapshot in graph.get_block(exit_block.serial).insn_snapshots
+            if snapshot.d is not None
+            and storage_identity_from_mop_snapshot(snapshot.d) == transport.move_destination_identity
+        )
+        return len(matching_moves) == 1
 def _validate_conditional_route(
     graph: FlowGraph,
     index: _BoundBlockIndex,
@@ -7352,6 +8329,30 @@ def _bind_canonical_route(
         if not _validate_state_partition(graph, bound_state_partition):
             return failure(CanonicalRouteBindingStage.STATE_PARTITION)
 
+    bound_partition_switch_table = None
+    if proof.state_partition_switch_table is not None:
+        table_route = proof.state_partition_switch_table
+        dispatcher = _unique_bound_block(
+            index, table_route.dispatcher_identity,
+            table_route.dispatcher_anchor_ea,
+        )
+        target = _unique_bound_block(
+            index, table_route.target_identity, table_route.target_anchor_ea,
+        )
+        if (
+            bound_state_partition is None
+            or dispatcher is None
+            or target is None
+        ):
+            return failure(CanonicalRouteBindingStage.STATE_PARTITION)
+        bound_partition_switch_table = BoundSemanticStatePartitionSwitchTable(
+            table_route, dispatcher, target,
+        )
+        if not _validate_state_partition_switch_table(
+            graph, bound_state_partition, bound_partition_switch_table,
+        ):
+            return failure(CanonicalRouteBindingStage.STATE_PARTITION)
+
     bound_state_dag = None
     if proof.state_dag is not None:
         dag = proof.state_dag
@@ -7414,12 +8415,17 @@ def _bind_canonical_route(
         state_transform=bound_transform,
         state_carrier=bound_state_carrier,
         state_partition=bound_state_partition,
+        state_partition_switch_table=bound_partition_switch_table,
         state_dag=bound_state_dag,
         bootstrap=bound_bootstrap,
         predicate=bound_predicate,
         carriers=tuple(bound_carriers),
     )
-    if not _validate_bound_physical_delivery(graph, index, proof, source):
+    is_loop_guard_terminal_delivery = bool(
+        proof.proof_kind is SemanticRouteProofKind.TERMINAL_DELIVERY
+        and isinstance(proof.terminal_delivery, SemanticTerminalDeliveryProof)
+    )
+    if not is_loop_guard_terminal_delivery and not _validate_bound_physical_delivery(graph, index, proof, source):
         return failure(CanonicalRouteBindingStage.STATE_WRITE)
     if proof.shape is SemanticRouteShape.CONDITIONAL:
         if bound_predicate is None or not _validate_conditional_route(
@@ -7433,7 +8439,7 @@ def _bind_canonical_route(
             tuple(bound_carriers),
         ):
             return failure(CanonicalRouteBindingStage.CONDITIONAL_ROUTE)
-    else:
+    elif not is_loop_guard_terminal_delivery:
         if state_write_block is not None:
             if not _validate_state_write(
                 graph, proof, state_write_block, source_owner,
@@ -7457,6 +8463,10 @@ def _bind_canonical_route(
         graph, index, proof, tuple(bound_destinations),
     ):
         return failure(CanonicalRouteBindingStage.TERMINAL_RETURN)
+    if proof.proof_kind is SemanticRouteProofKind.TERMINAL_DELIVERY and not _validate_terminal_delivery(
+        graph, index, proof,
+    ):
+        return failure(CanonicalRouteBindingStage.TERMINAL_DELIVERY)
     return bound_route
 
 
@@ -8010,6 +9020,8 @@ __all__ = [
     "BoundSemanticRouteDestination",
     "BoundSemanticStateTransform",
     "BoundSemanticStateCarrier",
+    "BoundSemanticStatePartition",
+    "BoundSemanticStatePartitionSwitchTable",
     "BoundSemanticBootstrap",
     "CanonicalSemanticEvidence",
     "CanonicalSemanticEvidenceProductionContext",
@@ -8045,6 +9057,7 @@ __all__ = [
     "SemanticRouteProof",
     "SemanticRouteFact",
     "SemanticRouteFactKind",
+    "semantic_route_proof_kind_for_fact",
     "SemanticPhysicalDeliveryMember",
     "SemanticPhysicalDeliveryProof",
     "SemanticPhysicalWriteByteOrder",
@@ -8054,8 +9067,19 @@ __all__ = [
     "SemanticRouteProofKind",
     "SemanticRouteShape",
     "SemanticStateWriteProof",
+    "SemanticTerminalDeliveryProof",
+    "SemanticReturnValueTransportProof",
     "SemanticStateTransformProof",
     "SemanticStateCarrierProof",
+    "SemanticStatePartitionProof",
+    "SemanticStatePartitionSwitchTableProof",
+    "SemanticPartitionConditionalEdgeProof",
+    "SemanticPartitionMemberProof",
+    "SemanticPartitionMemberReplacementWitness",
+    "StatePartitionGroupWitness",
+    "StatePartitionConditionalEdgeWitness",
+    "StatePartitionMemberWitness",
+    "StatePartitionSwitchTableWitness",
     "SemanticStateWriteDeliveryKind",
     "bind_canonical_semantic_evidence",
     "bind_canonical_semantic_evidence_result",

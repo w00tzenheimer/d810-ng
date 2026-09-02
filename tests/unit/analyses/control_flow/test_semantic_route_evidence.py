@@ -60,6 +60,8 @@ from d810.analyses.control_flow.semantic_route_evidence import (
     SemanticStateDagProof,
     SemanticStatePartitionProof,
     SemanticPartitionMemberProof,
+    SemanticPartitionMemberReplacementWitness,
+    StatePartitionConditionalEdgeWitness,
     StatePartitionMemberWitness,
     StatePartitionGroupWitness,
     assess_canonical_route,
@@ -1180,7 +1182,8 @@ def test_dispatcher_map_fact_mints_canonical_state_assignment() -> None:
     assert proof.state_write is not None
     assert proof.state_write.state_variable == state
     assert proof.diagnostic_provenance == (("fact_kind", "dispatcher_map"),)
-    assert bind_canonical_semantic_evidence(graph, evidence) is not None
+    binding = bind_canonical_semantic_evidence_result(graph, evidence)
+    assert binding.bound_evidence is not None, binding.failures
 
 
 def test_native_bound_producer_binds_exact_physical_carrier_write() -> None:
@@ -2854,6 +2857,197 @@ def _identity(ea: int) -> StableBlockIdentity:
     )
 
 
+def _loop_guard_terminal_delivery_fixture() -> tuple[FlowGraph, CanonicalSemanticEvidence]:
+    """One physical outer-state route ending in MOV/XDU/logical STOP."""
+    outer = StorageIdentity(StorageIdentityKind.STACK, 24)
+    ret_source = StorageIdentity(StorageIdentityKind.STACK, 12)
+    ret_copy = StorageIdentity(StorageIdentityKind.STACK, 36)
+
+    def eq(ea: int, constant: int, target: int) -> InsnSnapshot:
+        return InsnSnapshot(
+            opcode=44, ea=ea, operands=(), kind=InsnKind.EQUALITY_JUMP,
+            l=MopSnapshot(kind=OperandKind.STACK, size=4, stkoff=24),
+            r=MopSnapshot(kind=OperandKind.NUMBER, size=4, value=constant),
+            d=MopSnapshot(kind=OperandKind.BLOCK, block_ref=target),
+            branch_predicate=PredicateKind.EQ, is_conditional_jump=True,
+            control_transfer_kind=ControlTransferKind.CONDITIONAL_BRANCH,
+            compare_width=4,
+        )
+    write = InsnSnapshot(
+        opcode=0, ea=0x2300, operands=(), kind=InsnKind.MOV,
+        l=MopSnapshot(kind=OperandKind.NUMBER, size=4, value=9),
+        d=MopSnapshot(kind=OperandKind.STACK, size=4, stkoff=24),
+    )
+    move = InsnSnapshot(
+        opcode=0, ea=0x2404, operands=(), kind=InsnKind.MOV,
+        l=MopSnapshot(kind=OperandKind.STACK, size=4, stkoff=12),
+        d=MopSnapshot(kind=OperandKind.STACK, size=4, stkoff=36),
+    )
+    xdu = InsnSnapshot(
+        opcode=0, ea=0x2504, operands=(), kind=InsnKind.XDU,
+        l=MopSnapshot(kind=OperandKind.STACK, size=4, stkoff=36),
+        d=MopSnapshot(kind=OperandKind.REGISTER, size=8, reg=0),
+    )
+    sibling_move = InsnSnapshot(
+        opcode=0, ea=0x1504, operands=(), kind=InsnKind.MOV,
+        l=MopSnapshot(kind=OperandKind.NUMBER, size=4, value=0xFFFFFFFF),
+        d=MopSnapshot(kind=OperandKind.STACK, size=4, stkoff=36),
+    )
+    blocks = {
+        2: BlockSnapshot(2, 2, (3, 6), (23,), 0, 0x1200, (eq(0x1204, 0, 6),)),
+        3: BlockSnapshot(3, 2, (4, 9), (2,), 0, 0x1300, (eq(0x1304, 1, 9),)),
+        4: BlockSnapshot(4, 2, (5, 24), (3,), 0, 0x1400, (eq(0x1404, 9, 24),)),
+        5: BlockSnapshot(5, 1, (25,), (4,), 0, 0x1500, (sibling_move,)),
+        6: BlockSnapshot(6, 0, (), (2,), 0, 0x1600, ()),
+        9: BlockSnapshot(9, 0, (), (3,), 0, 0x1900, ()),
+        23: BlockSnapshot(23, 1, (2,), (), 0, 0x2300, (write,)),
+        24: BlockSnapshot(24, 1, (25,), (4,), 0, 0x2400, (move,)),
+        25: BlockSnapshot(25, 1, (26,), (24, 5), 0, 0x2500, (xdu,)),
+        26: BlockSnapshot(26, 0, (), (25,), 0, 0xFFFFFFFFFFFFFFFF, (), BlockKind.STOP),
+    }
+    graph = FlowGraph(blocks, entry_serial=23, func_ea=0x1000)
+    identities = {
+        serial: route_evidence.stable_block_identity_from_snapshot(block, native_key=NATIVE_KEY)
+        for serial, block in blocks.items() if serial != 26
+    }
+    assert all(identity is not None for identity in identities.values())
+    point = lambda serial, ea: SemanticCorridorPoint(identities[serial], ea)
+    witness = SemanticDecisionDagWitness(
+        outer, 9, point(2, 0x1200),
+        (point(2, 0x1200), point(3, 0x1300), point(4, 0x1400)),
+        (
+            SemanticDagComparison(point(2, 0x1200), "jz", 0, point(6, 0x1600), point(3, 0x1300), outer),
+            SemanticDagComparison(point(3, 0x1300), "jz", 1, point(9, 0x1900), point(4, 0x1400), outer),
+            SemanticDagComparison(point(4, 0x1400), "jz", 9, point(24, 0x2400), point(5, 0x1500), outer),
+        ), (),
+    )
+    dag = SemanticStateDagProof(
+        witness, identities[23], 0x2300, identities[24], 0x2400,
+        identities[2], 0x1200, (point(23, 0x2300), point(2, 0x1200)),
+        witness.path,
+    )
+    logical_exit = SemanticLogicalDagEndpoint(
+        SemanticDagEndpointKind.FUNCTION_EXIT, 26, "test", "stop", 1,
+    )
+    transport = route_evidence.SemanticReturnValueTransportProof(
+        point(24, 0x2400), route_evidence._instruction_projection(move), ret_source, 4,
+        ret_copy, 4, point(25, 0x2500), route_evidence._instruction_projection(xdu),
+        ret_copy, 4, 8, logical_exit,
+    )
+    delivery = route_evidence.SemanticTerminalDeliveryProof(
+        route_evidence._instruction_projection(write), outer, 4, 9, dag,
+        point(24, 0x2400), transport,
+    )
+    state_write = SemanticStateWriteProof(
+        identities[23], 0x2300, outer, 4, 9, (0x2300,), None, (),
+    )
+    proof = SemanticRouteProof(
+        proof_id="pending", atomic_group_id="pending",
+        proof_kind=SemanticRouteProofKind.TERMINAL_DELIVERY,
+        shape=SemanticRouteShape.DIRECT,
+        source_identity=identities[2], source_anchor_ea=0x1200,
+        source_owner_identity=identities[23], source_owner_anchor_ea=0x2300,
+        delivery_region=NativeEaInterval(0x1200, 0x1201),
+        destinations=(SemanticRouteDestination(SemanticEdgeRole.DIRECT, 9, identities[24], 0x2400, terminal=True),),
+        state_write=state_write, terminal_delivery=delivery,
+    )
+    return graph, _evidence(proof)
+
+
+def test_loop_guard_terminal_delivery_binds_outer_dag_and_transport() -> None:
+    graph, evidence = _loop_guard_terminal_delivery_fixture()
+    assert bind_canonical_semantic_evidence(graph, evidence) is not None
+
+
+@pytest.mark.parametrize("drift_kind", ("opcode", "constant_width"))
+def test_loop_guard_terminal_delivery_constructor_rejects_non_u32_mov(
+    drift_kind: str,
+) -> None:
+    _graph, evidence = _loop_guard_terminal_delivery_fixture()
+    delivery = evidence.route_proofs[0].terminal_delivery
+    assert delivery is not None
+    write = delivery.state_write_instruction
+    if drift_kind == "opcode":
+        drifted_write = replace(write, kind=InsnKind.VALUE)
+    else:
+        assert write.l is not None
+        drifted_write = replace(write, l=replace(write.l, size=8))
+    with pytest.raises(
+        SemanticRouteEvidenceRejected,
+        match="loop-guard terminal delivery evidence disagrees",
+    ):
+        replace(delivery, state_write_instruction=drifted_write)
+
+
+@pytest.mark.parametrize(
+    "drift_kind",
+    (
+        "outer_write_storage",
+        "outer_write_constant",
+        "outer_write_width",
+        "comparison_constant",
+        "comparison_polarity",
+        "comparison_target",
+        "transport_move_source",
+        "transport_move_destination",
+        "transport_move_width",
+        "transport_extra_writer",
+        "selected_edge_nonreciprocal",
+        "carrier_xdu_width",
+        "carrier_xdu_source",
+        "carrier_successor",
+        "logical_exit_predecessor",
+    ),
+)
+def test_loop_guard_terminal_delivery_rejects_bound_component_drift(drift_kind: str) -> None:
+    graph, evidence = _loop_guard_terminal_delivery_fixture()
+    blocks = dict(graph.blocks)
+    if drift_kind == "outer_write_storage":
+        block = blocks[23]
+        blocks[23] = replace(block, insn_snapshots=(replace(block.insn_snapshots[0], d=MopSnapshot(kind=OperandKind.STACK, size=4, stkoff=25)),))
+    elif drift_kind == "outer_write_constant":
+        block = blocks[23]
+        blocks[23] = replace(block, insn_snapshots=(replace(block.insn_snapshots[0], l=MopSnapshot(kind=OperandKind.NUMBER, size=4, value=8)),))
+    elif drift_kind == "outer_write_width":
+        block = blocks[23]
+        blocks[23] = replace(block, insn_snapshots=(replace(block.insn_snapshots[0], d=MopSnapshot(kind=OperandKind.STACK, size=8, stkoff=24)),))
+    elif drift_kind == "comparison_constant":
+        block = blocks[4]
+        blocks[4] = replace(block, insn_snapshots=(replace(block.insn_snapshots[0], r=MopSnapshot(kind=OperandKind.NUMBER, size=4, value=8)),))
+    elif drift_kind == "comparison_polarity":
+        block = blocks[4]
+        blocks[4] = replace(block, insn_snapshots=(replace(block.insn_snapshots[0], branch_predicate=PredicateKind.NE),))
+    elif drift_kind == "comparison_target":
+        block = blocks[4]
+        blocks[4] = replace(block, insn_snapshots=(replace(block.insn_snapshots[0], d=MopSnapshot(kind=OperandKind.BLOCK, block_ref=5)),))
+    elif drift_kind == "transport_move_source":
+        block = blocks[24]
+        blocks[24] = replace(block, insn_snapshots=(replace(block.insn_snapshots[0], l=MopSnapshot(kind=OperandKind.STACK, size=4, stkoff=16)),))
+    elif drift_kind == "transport_move_destination":
+        block = blocks[24]
+        blocks[24] = replace(block, insn_snapshots=(replace(block.insn_snapshots[0], d=MopSnapshot(kind=OperandKind.STACK, size=4, stkoff=40)),))
+    elif drift_kind == "transport_move_width":
+        block = blocks[24]
+        blocks[24] = replace(block, insn_snapshots=(replace(block.insn_snapshots[0], d=MopSnapshot(kind=OperandKind.STACK, size=8, stkoff=36)),))
+    elif drift_kind == "transport_extra_writer":
+        block = blocks[24]
+        blocks[24] = replace(block, insn_snapshots=(*block.insn_snapshots, InsnSnapshot(opcode=0, ea=0x2408, operands=(), kind=InsnKind.MOV, l=MopSnapshot(kind=OperandKind.NUMBER, size=4, value=0), d=MopSnapshot(kind=OperandKind.STACK, size=4, stkoff=36))))
+    elif drift_kind == "selected_edge_nonreciprocal":
+        blocks[25] = replace(blocks[25], preds=(5,))
+    elif drift_kind == "carrier_xdu_width":
+        block = blocks[25]
+        blocks[25] = replace(block, insn_snapshots=(replace(block.insn_snapshots[0], d=MopSnapshot(kind=OperandKind.REGISTER, size=4, reg=0)),))
+    elif drift_kind == "carrier_xdu_source":
+        block = blocks[25]
+        blocks[25] = replace(block, insn_snapshots=(replace(block.insn_snapshots[0], l=MopSnapshot(kind=OperandKind.STACK, size=4, stkoff=40)),))
+    elif drift_kind == "carrier_successor":
+        blocks[25] = replace(blocks[25], succs=())
+    else:
+        blocks[26] = replace(blocks[26], preds=())
+    drifted = FlowGraph(blocks, graph.entry_serial, graph.func_ea)
+    assert bind_canonical_semantic_evidence(drifted, evidence) is None
+
+
 def _proof() -> SemanticRouteProof:
     source = _identity(0x1100)
     return SemanticRouteProof(
@@ -3131,6 +3325,78 @@ def _partition_graph() -> FlowGraph:
     )
 
 
+def _conditional_partition_graph(*, predicate: PredicateKind = PredicateKind.EQ) -> FlowGraph:
+    """Exact carrier owner selects the shared feeder with its final branch."""
+    base = _partition_graph()
+    owner = base.blocks[1]
+    branch = InsnSnapshot(
+        opcode=0, ea=0x1104, operands=(), kind=InsnKind.COND_JUMP,
+        control_transfer_kind=ControlTransferKind.CONDITIONAL_BRANCH,
+        branch_predicate=predicate, is_conditional_jump=True,
+        l=MopSnapshot(kind=OperandKind.REGISTER, size=4, reg=3),
+        r=MopSnapshot(kind=OperandKind.NUMBER, size=4, value=0),
+        d=MopSnapshot(kind=OperandKind.BLOCK, block_ref=2),
+    )
+    feeder = replace(base.blocks[2], succs=(4,))
+    sibling = _block(3, 0x1300, succs=(), preds=(1,))
+    comparison = _block(4, 0x1400, succs=(), preds=(2,))
+    return FlowGraph(
+        blocks={
+            1: replace(owner, succs=(3, 2), insn_snapshots=(*owner.insn_snapshots, branch)),
+            2: feeder,
+            3: sibling,
+            4: comparison,
+        },
+        entry_serial=1,
+        func_ea=0x1000,
+    )
+
+
+def test_partition_prover_accepts_sealed_conditional_owner_edge() -> None:
+    graph = _conditional_partition_graph()
+    tail = graph.blocks[1].tail
+    assert tail is not None
+    member = StatePartitionMemberWitness(
+        owner_serial=1, feeder_serial=2,
+        state_identity=StorageIdentity(StorageIdentityKind.STACK, 0x40),
+        state_constant=7,
+        conditional_edge=StatePartitionConditionalEdgeWitness(
+            0x1104, route_evidence.instruction_projection_without_block_references(tail),
+            SemanticEdgeRole.CONDITIONAL_TAKEN, 3,
+        ),
+    )
+    assert prove_partitioned_state_member(
+        graph, member, feeder_instruction_ea=0x1200,
+        state_var_stkoff=0x40, state_var_reg=None,
+    )
+
+
+@pytest.mark.parametrize("drift", ("sibling", "role", "predicate", "transfer"))
+def test_partition_prover_rejects_conditional_owner_witness_drift(drift: str) -> None:
+    graph = _conditional_partition_graph()
+    tail = graph.blocks[1].tail
+    assert tail is not None
+    witness = StatePartitionConditionalEdgeWitness(
+        0x1104, route_evidence.instruction_projection_without_block_references(tail),
+        SemanticEdgeRole.CONDITIONAL_TAKEN, 3,
+    )
+    if drift == "sibling":
+        witness = replace(witness, sibling_serial=4)
+    elif drift == "role":
+        witness = replace(witness, edge_role=SemanticEdgeRole.CONDITIONAL_FALLTHROUGH)
+    elif drift == "predicate":
+        graph = _conditional_partition_graph(predicate=PredicateKind.NE)
+    else:
+        witness = replace(witness, transfer_instruction_ea=0x1108)
+    member = StatePartitionMemberWitness(
+        1, 2, StorageIdentity(StorageIdentityKind.STACK, 0x40), 7, witness,
+    )
+    assert not prove_partitioned_state_member(
+        graph, member, feeder_instruction_ea=0x1200,
+        state_var_stkoff=0x40, state_var_reg=None,
+    )
+
+
 def test_partition_prover_derives_owner_out_maps_from_immutable_graph() -> None:
     graph, _evidence = _composite_partition_evidence()
     forged = StatePartitionMemberWitness(
@@ -3201,6 +3467,69 @@ def test_partition_group_rejects_incomplete_sibling_set() -> None:
         tuple(identities.items()),
     )
     result = build_canonical_semantic_evidence((fact,), context)
+    assert result.abstention is not None
+    assert result.abstention.reason.value == "partition_group_incomplete"
+
+
+def test_partition_group_with_conditional_edge_is_compared_by_group_id() -> None:
+    """Instruction projections may contain mappings and are not hash keys."""
+    graph = _conditional_partition_graph()
+    tail = graph.blocks[1].tail
+    assert tail is not None
+    state = StorageIdentity(StorageIdentityKind.STACK, 0x40)
+    member = StatePartitionMemberWitness(
+        owner_serial=1,
+        feeder_serial=2,
+        state_identity=state,
+        state_constant=7,
+        conditional_edge=StatePartitionConditionalEdgeWitness(
+            0x1104,
+            route_evidence.instruction_projection_without_block_references(tail),
+            SemanticEdgeRole.CONDITIONAL_TAKEN,
+            3,
+        ),
+    )
+    sibling = StatePartitionMemberWitness(
+        owner_serial=3,
+        feeder_serial=2,
+        state_identity=state,
+        state_constant=9,
+    )
+    group = StatePartitionGroupWitness(
+        group_id="partition-group:conditional-shared-feeder",
+        feeder_serial=2,
+        feeder_instruction_ea=0x1200,
+        state_identity=state,
+        members=(member, sibling),
+    )
+    fact = SemanticRouteFact(
+        SemanticRouteFactKind.STATE_PARTITION,
+        owner_serial=1,
+        source_serial=2,
+        source_instruction_ea=0x1200,
+        state_constant=7,
+        target_serial=4,
+        owner_anchor_ea=0x1100,
+        target_anchor_ea=0x1400,
+        path_serials=(1, 2),
+        path_edges=((1, 2),),
+        partition_witness=group,
+    )
+    identities = {
+        serial: _identity(int(block.start_ea))
+        for serial, block in graph.blocks.items()
+    }
+    context = CanonicalSemanticEvidenceProductionContext(
+        NATIVE_KEY,
+        0,
+        "canonical-semantic:conditional-partition",
+        state,
+        tuple(graph.blocks.values()),
+        tuple(identities.items()),
+    )
+
+    result = build_canonical_semantic_evidence((fact,), context)
+
     assert result.abstention is not None
     assert result.abstention.reason.value == "partition_group_incomplete"
 
@@ -4805,17 +5134,41 @@ def test_ordinary_decision_dag_accepts_serial_permutation() -> None:
     assert bind_canonical_semantic_evidence(shifted_graph, evidence) is not None
 
 
-def test_shared_writer_owner_specific_states_bind_as_partition_composite() -> None:
+def test_partition_producer_accepts_exact_cross_family_member_closure() -> None:
     graph, _composite = _composite_partition_evidence()
+    branch = InsnSnapshot(
+        opcode=0,
+        ea=0x1304,
+        native_ea=0x1304,
+        operands=(),
+        l=MopSnapshot(kind=OperandKind.REGISTER, size=4, reg=3),
+        r=MopSnapshot(kind=OperandKind.NUMBER, size=4, value=0),
+        d=MopSnapshot(kind=OperandKind.BLOCK, block_ref=2),
+        kind=InsnKind.COND_JUMP,
+        control_transfer_kind=ControlTransferKind.CONDITIONAL_BRANCH,
+        branch_predicate=PredicateKind.EQ,
+        is_conditional_jump=True,
+    )
     graph = FlowGraph(
         {
             **graph.blocks,
+            0: BlockSnapshot(
+                serial=0,
+                block_type=2,
+                succs=(1, 3),
+                preds=(),
+                flags=0,
+                start_ea=0x1000,
+                insn_snapshots=(),
+            ),
+            1: replace(graph.blocks[1], preds=(0,)),
             2: replace(graph.blocks[2], preds=(1, 3)),
+            5: replace(graph.blocks[5], preds=(2, 7)),
             3: BlockSnapshot(
                 serial=3,
                 block_type=1,
-                succs=(2,),
-                preds=(),
+                succs=(7, 2),
+                preds=(0,),
                 flags=0,
                 start_ea=0x1300,
                 insn_snapshots=(
@@ -4824,21 +5177,46 @@ def test_shared_writer_owner_specific_states_bind_as_partition_composite() -> No
                         ea=0x1300,
                         native_ea=0x1300,
                         operands=(),
-                        l=MopSnapshot(kind=OperandKind.NUMBER, size=8, value=9),
-                        d=MopSnapshot(kind=OperandKind.REGISTER, size=8, reg=16),
+                        l=MopSnapshot(kind=OperandKind.NUMBER, size=4, value=9),
+                        d=MopSnapshot(kind=OperandKind.REGISTER, size=4, reg=16),
+                        kind=InsnKind.MOV,
+                        value_op_kind=ValueOpKind.MOVE,
+                    ),
+                    branch,
+                ),
+            ),
+            7: BlockSnapshot(
+                serial=7,
+                block_type=1,
+                succs=(5,),
+                preds=(3,),
+                flags=0,
+                start_ea=0x1700,
+                insn_snapshots=(
+                    InsnSnapshot(
+                        opcode=0,
+                        ea=0x1700,
+                        native_ea=0x1700,
+                        operands=(),
+                        l=MopSnapshot(kind=OperandKind.NUMBER, size=4, value=9),
+                        d=MopSnapshot(kind=OperandKind.STACK, size=4, stkoff=0x40),
                         kind=InsnKind.MOV,
                         value_op_kind=ValueOpKind.MOVE,
                     ),
                 ),
             ),
         },
-        graph.entry_serial,
+        0,
         graph.func_ea,
     )
     identities = {
-        serial: _identity(int(block.start_ea))
+        serial: route_evidence.stable_block_identity_from_snapshot(
+            block, native_key=NATIVE_KEY,
+        )
         for serial, block in graph.blocks.items()
+        if serial != 0
     }
+    assert all(identity is not None for identity in identities.values())
     state_identity = StorageIdentity(StorageIdentityKind.STACK, 0x40)
 
     group = StatePartitionGroupWitness(
@@ -4847,9 +5225,28 @@ def test_shared_writer_owner_specific_states_bind_as_partition_composite() -> No
         0x1200,
         state_identity,
         (
-            StatePartitionMemberWitness(1, 2, state_identity, 7),
-            StatePartitionMemberWitness(3, 2, state_identity, 9),
+                StatePartitionMemberWitness(1, 2, state_identity, 7),
+                StatePartitionMemberWitness(
+                    3,
+                    2,
+                    state_identity,
+                    9,
+                    StatePartitionConditionalEdgeWitness(
+                        0x1304,
+                        route_evidence.instruction_projection_without_block_references(branch),
+                        SemanticEdgeRole.CONDITIONAL_TAKEN,
+                        7,
+                    ),
+                ),
         ),
+    )
+    assert prove_partitioned_state_member(
+        graph, group.members[0], feeder_instruction_ea=0x1200,
+        state_var_stkoff=0x40, state_var_reg=None,
+    )
+    assert prove_partitioned_state_member(
+        graph, group.members[1], feeder_instruction_ea=0x1200,
+        state_var_stkoff=0x40, state_var_reg=None,
     )
 
     def fact(owner: int, state: int, target: int, other_target: int) -> SemanticRouteFact:
@@ -4886,40 +5283,124 @@ def test_shared_writer_owner_specific_states_bind_as_partition_composite() -> No
         tuple(graph.blocks.values()),
         tuple(identities.items()),
     )
+    partition_member = fact(1, 7, 6, 4)
+    stronger_sibling = SemanticRouteFact(
+        SemanticRouteFactKind.DECISION_DAG,
+        3,
+        7,
+        0x1700,
+        9,
+        4,
+        int(graph.blocks[3].start_ea),
+        int(graph.blocks[4].start_ea),
+        (3, 7),
+        ((3, 7),),
+        decision_dag_witness=DecisionDagRouteWitness(
+            state_identity,
+            9,
+            5,
+            0x1500,
+            (5,),
+            (0x1500,),
+            (
+                DecisionDagComparisonWitness(
+                    5,
+                    RouteComparison(5, "jz", 7, 6, 4),
+                    state_identity,
+                ),
+            ),
+            (),
+        ),
+        partition_member_replacement=SemanticPartitionMemberReplacementWitness(
+            group.group_id, 3, state_identity, 9, 4, group,
+        ),
+    )
     evidence = _accepted(build_canonical_semantic_evidence(
-        (fact(1, 7, 6, 4), fact(3, 9, 4, 6)),
-        context,
+        (partition_member, stronger_sibling), context,
     ))
     assert {proof.proof_kind for proof in evidence.route_proofs} == {
         SemanticRouteProofKind.STATE_PARTITION,
+        SemanticRouteProofKind.STATE_DAG,
     }
-    assert bind_canonical_semantic_evidence(graph, evidence) is not None
+    binding = bind_canonical_semantic_evidence_result(graph, evidence)
+    assert binding.bound_evidence is not None, binding.failures
 
-    drifted_owner = replace(
-        graph.blocks[3],
-        insn_snapshots=(
-            replace(
-                graph.blocks[3].insn_snapshots[0],
-                l=MopSnapshot(kind=OperandKind.NUMBER, size=8, value=10),
+    feeder_instruction = graph.blocks[2].insn_snapshots[0]
+    feeder_drift = FlowGraph(
+        {
+            **graph.blocks,
+            2: replace(
+                graph.blocks[2],
+                insn_snapshots=(replace(
+                    feeder_instruction,
+                    l=MopSnapshot(kind=OperandKind.REGISTER, size=4, reg=17),
+                ),),
             ),
+        },
+        graph.entry_serial,
+        graph.func_ea,
+    )
+    assert bind_canonical_semantic_evidence(feeder_drift, evidence) is None
+    replacement_source = graph.blocks[7].insn_snapshots[0]
+    replacement_drift = FlowGraph(
+        {
+            **graph.blocks,
+            7: replace(
+                graph.blocks[7],
+                insn_snapshots=(replace(
+                    replacement_source,
+                    l=MopSnapshot(kind=OperandKind.NUMBER, size=4, value=8),
+                ),),
+            ),
+        },
+        graph.entry_serial,
+        graph.func_ea,
+    )
+    assert bind_canonical_semantic_evidence(replacement_drift, evidence) is None
+
+    def assert_incomplete(candidate_facts: tuple[SemanticRouteFact, ...]) -> None:
+        result = build_canonical_semantic_evidence(candidate_facts, context)
+        assert result.abstention is not None
+        assert result.abstention.reason is CanonicalSemanticEvidenceProductionReason.PARTITION_GROUP_INCOMPLETE
+
+    with pytest.raises(SemanticRouteEvidenceRejected, match="immutable group"):
+        replace(
+            stronger_sibling.partition_member_replacement,
+            group_id="partition-group:wrong",
+        )
+    with pytest.raises(SemanticRouteEvidenceRejected, match="immutable group"):
+        replace(
+            stronger_sibling.partition_member_replacement,
+            state_identity=StorageIdentity(StorageIdentityKind.STACK, 0x44),
+        )
+    assert_incomplete((
+        partition_member,
+        stronger_sibling,
+        replace(stronger_sibling, fact_id="partition-member:duplicate"),
+    ))
+    all_replaced_member = replace(
+        stronger_sibling,
+        owner_serial=1,
+        state_constant=7,
+        target_serial=6,
+        owner_anchor_ea=int(graph.blocks[1].start_ea),
+        target_anchor_ea=int(graph.blocks[6].start_ea),
+        path_serials=(1, 7),
+        path_edges=((1, 7),),
+        decision_dag_witness=DecisionDagRouteWitness(
+            state_identity, 7, 5, 0x1500, (5,), (0x1500,),
+            (DecisionDagComparisonWitness(
+                5, RouteComparison(5, "jz", 7, 6, 4), state_identity,
+            ),),
+            (),
+        ),
+        partition_member_replacement=SemanticPartitionMemberReplacementWitness(
+            group.group_id, 1, state_identity, 7, 6, group,
         ),
     )
-    assert bind_canonical_semantic_evidence(
-        FlowGraph(
-            {**graph.blocks, 3: drifted_owner},
-            graph.entry_serial,
-            graph.func_ea,
-        ),
-        evidence,
-    ) is None
-    assert bind_canonical_semantic_evidence(
-        FlowGraph(
-            {**graph.blocks, 2: replace(graph.blocks[2], preds=(1,))},
-            graph.entry_serial,
-            graph.func_ea,
-        ),
-        evidence,
-    ) is None
+    assert_incomplete((all_replaced_member, stronger_sibling))
+    with pytest.raises(TypeError, match="only exact decision-DAG"):
+        replace(stronger_sibling, kind=SemanticRouteFactKind.STATE_TRANSFORM)
 
 
 def test_carrier_only_wide_projection_cannot_claim_target_without_partition_dag() -> None:
@@ -5188,7 +5669,7 @@ def test_current_u32_route_comparison_accepts_only_exact_plain_xdu_prefix() -> N
                     serial=3,
                     block_type=2,
                     succs=(4, 5),
-                    preds=(),
+                    preds=(0,),
                     flags=0,
                     start_ea=0x1300,
                     insn_snapshots=(*prefix, branch),

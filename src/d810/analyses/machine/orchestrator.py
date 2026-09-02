@@ -145,6 +145,7 @@ def _anchors_from_recovery(recovery, graph: FlowGraph) -> DispatcherAnchors:
         if dmap is not None
         else None,
         initial_states=initial_states,
+        initial_state_write_witness=getattr(recovery, "initial_state_write_witness", None),
     )
 
 
@@ -436,6 +437,7 @@ def recover_machine(
                 dmap,
                 soundness=Soundness.PATTERN,
                 provenance=("reduced_product_anchor",),
+                initial_state_write_witness=getattr(recovery, "initial_state_write_witness", None),
             )
         )
     else:

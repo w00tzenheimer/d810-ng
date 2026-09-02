@@ -16,6 +16,7 @@ def test_exposes_the_portable_block_identity_contract() -> None:
         "NativeEaInterval",
         "NativeEaIntervalSet",
         "StableBlockIdentity",
+        "NativeBlockRef",
         "CurrentMbaBlockIdentityBinding",
         "CurrentMbaIdentityBindingSnapshot",
         "MbaBlockHandle",

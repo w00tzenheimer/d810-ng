@@ -60,6 +60,7 @@ from d810.analyses.control_flow.concrete_state_route import (
     ConcreteStateRoute,
     resolve_concrete_state_route,
 )
+from d810.analyses.control_flow.interval_map import IntervalDispatcher
 from d810.analyses.control_flow.graph_checks import reachable_from_adjacency
 from d810.analyses.control_flow.logical_route_endpoint import (
     is_exact_logical_function_exit_shape,
@@ -101,6 +102,8 @@ from d810.analyses.control_flow.semantic_route_evidence import (
     SemanticRouteFactKind,
     StatePartitionGroupWitness,
     StatePartitionMemberWitness,
+    StatePartitionConditionalEdgeWitness,
+    StatePartitionSwitchTableWitness,
     prove_semantic_physical_guard_selection,
     prove_partitioned_state_member,
 )
@@ -133,7 +136,11 @@ from d810.ir.flowgraph import (
     MopSnapshot,
     OperandKind,
 )
-from d810.ir.graph_fingerprint import _instruction_projection
+from d810.ir.graph_fingerprint import (
+    _instruction_projection,
+    instruction_projection_without_block_references,
+    portable_graph_fingerprint,
+)
 from d810.ir.insn_projection import (
     InstructionProjection,
     is_effect_free_operand_tree,
@@ -150,7 +157,9 @@ from d810.ir.insn_projection import (
 from d810.ir.expressions import ValueOpKind
 from d810.ir.instructions import Instruction
 from d810.ir.locations import WeakStackSlot
+from d810.ir.block_identity import NativeBlockRef
 from d810.ir.semantics import ControlTransferKind, PredicateKind
+from d810.ir.semantic_edge import SemanticEdgeRole
 from d810.ir.storage_identity import (
     StorageIdentity,
     StorageIdentityKind,
@@ -230,6 +239,7 @@ __all__ = [
     "CandidatePrefixObservation",
     "CandidatePrefixStatus",
     "CandidateScopedPrefixAuthority",
+    "ExactU32DispatcherRouteReceipt",
     "TransitionArm",
     "HandlerTransition",
     "recover_handler_transitions",
@@ -248,11 +258,49 @@ __all__ = [
     "observe_candidate_scoped_prefix_authority",
     "collect_candidate_prefix_alternate_corridor_proofs",
     "build_current_u32_decision_forest",
+    "IntervalHandlerLeafReplayBinding",
+    "IntervalHandlerLeafReplayCatalog",
     "route_current_u32_decision_forest",
     "validate_candidate_prefix_alternate_corridor_proof",
     "diff_back_edge_transitions",
     "diff_back_edge_transitions_partitioned",
 ]
+
+
+@dataclass(frozen=True, slots=True)
+class ExactU32DispatcherRouteReceipt:
+    """Explicit, immutable exact-state evidence for a dispatcher relation.
+
+    ``resolve_target`` is a compatibility method, not an authority capability:
+    some adapters use it to perform interval/default fallback.  Consumers that
+    already hold a sealed interval catalogue may accept an exact corroboration
+    only through this typed receipt, whose rows are exact U32 state bindings.
+    """
+
+    rows: tuple[tuple[int, int], ...]
+
+    def __post_init__(self) -> None:
+        rows = tuple(self.rows)
+        if not rows or any(
+            type(state) is not int
+            or type(target) is not int
+            or not 0 <= state <= 0xFFFFFFFF
+            or target < 0
+            for state, target in rows
+        ):
+            raise ValueError("exact dispatcher receipt requires U32 state rows")
+        if len({state for state, _target in rows}) != len(rows):
+            raise ValueError("exact dispatcher receipt repeats a state")
+        object.__setattr__(self, "rows", tuple(sorted(rows)))
+
+    def target_for_u32_state(self, state: int) -> int | None:
+        """Return a receipt-bound exact target, never a range/default route."""
+        if type(state) is not int or not 0 <= state <= 0xFFFFFFFF:
+            return None
+        for row_state, target in self.rows:
+            if row_state == state:
+                return target
+        return None
 
 #: The oracle that resolves a back-edge next-state after the S4 C3 flip: the sound
 #: region-partitioned multi-cell constant fixpoint (run_snapshot_constant_fixpoint).
@@ -830,8 +878,12 @@ def _is_completed_semantic_route_fact(fact: SemanticRouteFact) -> bool:
     if fact.kind is SemanticRouteFactKind.STATE_CARRIER:
         return isinstance(fact.carrier_witness, ExactCarrierStateWrite)
     if fact.kind is SemanticRouteFactKind.STATE_PARTITION:
-        return isinstance(fact.partition_witness, StatePartitionGroupWitness) and isinstance(
-            fact.decision_dag_witness, DecisionDagRouteWitness
+        return isinstance(fact.partition_witness, StatePartitionGroupWitness) and (
+            isinstance(fact.decision_dag_witness, DecisionDagRouteWitness)
+            or isinstance(
+                fact.partition_switch_table_witness,
+                StatePartitionSwitchTableWitness,
+            )
         )
     if fact.kind is SemanticRouteFactKind.BOOTSTRAP:
         return isinstance(fact.bootstrap_witness, SemanticBootstrapRouteWitness) and isinstance(
@@ -2906,12 +2958,254 @@ class _CurrentU32DecisionForestObservation:
     decision_dag: DecisionDag | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class IntervalHandlerLeafReplayBinding:
+    """One replay-only interval leaf, bound to its native source identity."""
+
+    serial: int
+    block_ref: NativeBlockRef
+    interval_rows: tuple[tuple[int, int], ...]
+
+    def __post_init__(self) -> None:
+        if type(self.serial) is not int or self.serial < 0:
+            raise ValueError("interval handler leaf serial must be non-negative")
+        if type(self.block_ref) is not NativeBlockRef:
+            raise TypeError("interval handler leaf requires a NativeBlockRef")
+        rows = tuple(self.interval_rows)
+        if not rows or any(
+            type(row) is not tuple
+            or len(row) != 2
+            or type(row[0]) is not int
+            or type(row[1]) is not int
+            or not 0 <= int(row[0]) < int(row[1]) <= 0x1_0000_0000
+            for row in rows
+        ):
+            raise ValueError("interval handler leaf requires exact U32 interval rows")
+        if len(set(rows)) != len(rows):
+            raise ValueError("interval handler leaf rows must be unique")
+        object.__setattr__(self, "interval_rows", tuple(sorted(rows)))
+
+
+@dataclass(frozen=True, slots=True)
+class IntervalHandlerLeafReplayCatalog:
+    """Immutable, source-bound authority for current-DAG semantic leaves.
+
+    This catalogue is deliberately replay-only.  It carries native identity,
+    graph fingerprint, topology epoch, generation, and the exact normalized
+    interval rows which admitted each leaf.  It cannot become final handler
+    authority: consumers receive only a revalidated membership view for the
+    current portable graph.
+    """
+
+    source_fingerprint: str
+    topology_epoch: str
+    generation: int
+    bindings: tuple[IntervalHandlerLeafReplayBinding, ...]
+    full_interval_rows: tuple[tuple[int, int, int], ...] = ()
+    default_target_serial: int | None = None
+    non_replay_endpoint_serials: tuple[int, ...] = ()
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.source_fingerprint) is not str
+            or not self.source_fingerprint.startswith("sha256:")
+            or type(self.topology_epoch) is not str
+            or not self.topology_epoch.startswith("sha256:")
+        ):
+            raise ValueError("interval handler leaf catalogue requires exact fingerprints")
+        if type(self.generation) is not int or self.generation < 0:
+            raise ValueError("interval handler leaf catalogue generation must be non-negative")
+        bindings = tuple(self.bindings)
+        if not bindings or any(type(item) is not IntervalHandlerLeafReplayBinding for item in bindings):
+            raise TypeError("interval handler leaf catalogue requires typed bindings")
+        if len({item.serial for item in bindings}) != len(bindings):
+            raise ValueError("interval handler leaf catalogue must not repeat a serial")
+        rows = tuple((int(lo), int(hi), int(target)) for lo, hi, target in self.full_interval_rows)
+        if rows and (
+            tuple(sorted(rows)) != rows
+            or any(lo < 0 or hi <= lo or target < 0 for lo, hi, target in rows)
+        ):
+            raise ValueError("interval handler leaf catalogue requires canonical full rows")
+        non_replay = tuple(int(serial) for serial in self.non_replay_endpoint_serials)
+        if len(set(non_replay)) != len(non_replay):
+            raise ValueError("interval handler leaf catalogue repeats non-replay endpoint")
+        if set(non_replay) & {item.serial for item in bindings}:
+            raise ValueError("replay and logical endpoints must be disjoint")
+        default_target = self.default_target_serial
+        if default_target is not None:
+            if type(default_target) is not int or default_target < 0:
+                raise ValueError("interval handler leaf catalogue default must be a serial")
+        object.__setattr__(self, "bindings", tuple(sorted(bindings, key=lambda item: item.serial)))
+        object.__setattr__(self, "full_interval_rows", rows)
+        object.__setattr__(self, "default_target_serial", default_target)
+        object.__setattr__(self, "non_replay_endpoint_serials", tuple(sorted(non_replay)))
+
+    @staticmethod
+    def _topology_epoch(
+        source_fingerprint: str,
+        generation: int,
+        bindings: tuple[IntervalHandlerLeafReplayBinding, ...],
+        full_interval_rows: tuple[tuple[int, int, int], ...] = (),
+        default_target_serial: int | None = None,
+        non_replay_endpoint_serials: tuple[int, ...] = (),
+    ) -> str:
+        payload = (
+            source_fingerprint,
+            generation,
+            tuple(
+                (item.serial, item.block_ref.identity, item.interval_rows)
+                for item in bindings
+            ),
+            full_interval_rows,
+            default_target_serial,
+            non_replay_endpoint_serials,
+        )
+        encoded = repr(payload).encode("utf-8")
+        return "sha256:" + hashlib.sha256(encoded).hexdigest()
+
+    @classmethod
+    def bind(
+        cls,
+        flow_graph: FlowGraph,
+        dispatcher: IntervalDispatcher,
+        *,
+        block_refs_by_serial: Mapping[int, NativeBlockRef],
+        generation: int,
+    ) -> "IntervalHandlerLeafReplayCatalog | None":
+        """Bind all normalized interval targets to this exact source graph."""
+        if type(flow_graph) is not FlowGraph or type(dispatcher) is not IntervalDispatcher:
+            return None
+        if type(generation) is not int or generation < 0:
+            return None
+        by_target: dict[int, list[tuple[int, int]]] = {}
+        full_rows: list[tuple[int, int, int]] = []
+        for row in getattr(dispatcher, "_rows", ()):
+            try:
+                target = int(row.target)
+                interval = (int(row.lo), int(row.hi))
+            except (AttributeError, TypeError, ValueError):
+                return None
+            if target < 0 or interval[0] < 0 or interval[1] <= interval[0]:
+                return None
+            by_target.setdefault(target, []).append(interval)
+            full_rows.append((interval[0], interval[1], target))
+        try:
+            default = dispatcher.default_target
+        except (AttributeError, TypeError, ValueError):
+            return None
+        if default is not None and (type(default) is not int or default < 0):
+            return None
+        if not by_target:
+            return None
+        bindings: list[IntervalHandlerLeafReplayBinding] = []
+        for serial, rows in sorted(by_target.items()):
+            block = flow_graph.get_block(serial)
+            block_ref = block_refs_by_serial.get(serial)
+            if block is None or type(block_ref) is not NativeBlockRef:
+                return None
+            try:
+                bindings.append(
+                    IntervalHandlerLeafReplayBinding(
+                        serial, block_ref, tuple(rows),
+                    )
+                )
+            except (TypeError, ValueError):
+                return None
+        try:
+            source_fingerprint = portable_graph_fingerprint(flow_graph)
+        except (TypeError, ValueError, OverflowError):
+            # A source-bound authority cannot be minted for malformed portable
+            # topology.  Binding is an admission boundary, so reject rather
+            # than surfacing a graph-fingerprint exception to a caller.
+            return None
+        bound = tuple(bindings)
+        return cls(
+            source_fingerprint,
+            cls._topology_epoch(
+                source_fingerprint,
+                generation,
+                bound,
+                tuple(full_rows),
+                default,
+            ),
+            generation,
+            bound,
+            tuple(full_rows),
+            default,
+        )
+
+    def resolve_exact_u32_target(self, state: int) -> int | None:
+        """Return the sole sealed interval/default route for one U32 state.
+
+        This is intentionally a query on the immutable catalogue rather than
+        a replay of a caller's dispatcher.  A caller may still use its live
+        dispatcher as structural input, but it cannot choose the semantic
+        interval or default endpoint after the catalogue has been sealed.
+        """
+        if type(state) is not int or not 0 <= state <= 0xFFFFFFFF:
+            return None
+        endpoints = {
+            *self.non_replay_endpoint_serials,
+            *(item.serial for item in self.bindings),
+        }
+        # Treat an internally inconsistent/tampered catalogue as no route.
+        # Revalidation catches the same condition at the membership boundary;
+        # the query defends consumers that use it before that view is exposed.
+        if not {target for _lo, _hi, target in self.full_interval_rows}.issubset(endpoints):
+            return None
+        for lo, hi, target in self.full_interval_rows:
+            if lo <= state < hi:
+                return target
+        return (
+            self.default_target_serial
+            if self.default_target_serial in endpoints
+            else None
+        )
+
+    def revalidated_leaf_serials(
+        self,
+        flow_graph: FlowGraph,
+        *,
+        block_refs_by_serial: Mapping[int, NativeBlockRef],
+        generation: int,
+    ) -> frozenset[int] | None:
+        """Return replay leaves only after exact source, row, and epoch replay."""
+        if type(flow_graph) is not FlowGraph:
+            return None
+        if type(generation) is not int or generation != self.generation:
+            return None
+        if portable_graph_fingerprint(flow_graph) != self.source_fingerprint:
+            return None
+        if self.topology_epoch != self._topology_epoch(
+            self.source_fingerprint,
+            self.generation,
+            self.bindings,
+            self.full_interval_rows,
+            self.default_target_serial,
+            self.non_replay_endpoint_serials,
+        ):
+            return None
+        for binding in self.bindings:
+            if block_refs_by_serial.get(binding.serial) != binding.block_ref:
+                return None
+            if flow_graph.get_block(binding.serial) is None:
+                return None
+        endpoints = {*self.non_replay_endpoint_serials, *(item.serial for item in self.bindings)}
+        if self.full_interval_rows and not {target for _lo, _hi, target in self.full_interval_rows}.issubset(endpoints):
+            return None
+        return frozenset(item.serial for item in self.bindings)
+
+
 def _observe_current_u32_decision_forest(
     flow_graph: FlowGraph,
     entry_serial: int,
     *,
     expected_identities: frozenset[StorageIdentity],
     reference_dag: DecisionDag | None = None,
+    permitted_non_state_handler_leaf_catalog: IntervalHandlerLeafReplayCatalog | None = None,
+    block_refs_by_serial: Mapping[int, NativeBlockRef] | None = None,
+    dispatcher: IntervalDispatcher | None = None,
+    source_generation: int = 0,
 ) -> _CurrentU32DecisionForestObservation:
     """Rebuild one bounded pure U32 comparison forest from the current CFG.
 
@@ -2922,6 +3216,27 @@ def _observe_current_u32_decision_forest(
     stable instructions and reciprocal edges before the existing
     :class:`DecisionDag` evaluator is used.
     """
+
+    permitted_non_state_handler_leaf_serials: frozenset[int] = frozenset()
+    if permitted_non_state_handler_leaf_catalog is not None:
+        if (
+            type(permitted_non_state_handler_leaf_catalog)
+            is not IntervalHandlerLeafReplayCatalog
+            or block_refs_by_serial is None
+        ):
+            return _CurrentU32DecisionForestObservation(
+                _CurrentU32DecisionForestStatus.INVALID
+            )
+        revalidated = permitted_non_state_handler_leaf_catalog.revalidated_leaf_serials(
+            flow_graph,
+            block_refs_by_serial=block_refs_by_serial,
+            generation=source_generation,
+        )
+        if revalidated is None:
+            return _CurrentU32DecisionForestObservation(
+                _CurrentU32DecisionForestStatus.INVALID
+            )
+        permitted_non_state_handler_leaf_serials = revalidated
 
     root_identities: list[StorageIdentity] = []
     for identity in expected_identities:
@@ -2991,23 +3306,36 @@ def _observe_current_u32_decision_forest(
             _CurrentU32DecisionForestStatus.INVALID
         )
 
-    pending = [(int(entry_serial), root_identities[0])]
+    pending = [(int(entry_serial), root_identities[0], False, 4)]
     comparisons: dict[int, RouteComparison] = {}
     aliases: dict[int, int] = {}
-    namespaces: dict[int, StorageIdentity] = {}
-    visited: set[tuple[int, StorageIdentity]] = set()
+    namespaces: dict[int, tuple[StorageIdentity, int]] = {}
+    visited: set[tuple[int, StorageIdentity, bool, int]] = set()
     while pending:
-        serial, expected_identity = pending.pop()
+        (
+            serial,
+            expected_identity,
+            entered_via_exact_xdu_bridge,
+            active_carrier_width,
+        ) = pending.pop()
         serial = int(serial)
-        visit = (serial, expected_identity)
+        visit = (
+            serial,
+            expected_identity,
+            entered_via_exact_xdu_bridge,
+            active_carrier_width,
+        )
         if visit in visited:
             continue
         prior_identity = namespaces.get(serial)
-        if prior_identity is not None and prior_identity != expected_identity:
+        if prior_identity is not None and prior_identity != (
+            expected_identity,
+            active_carrier_width,
+        ):
             return _CurrentU32DecisionForestObservation(
                 _CurrentU32DecisionForestStatus.INVALID
             )
-        namespaces[serial] = expected_identity
+        namespaces[serial] = (expected_identity, active_carrier_width)
         visited.add(visit)
         if len(visited) > _MAX_DIRECT_ENTRY_ROUTE_COMPARISONS:
             return _CurrentU32DecisionForestObservation(
@@ -3059,7 +3387,14 @@ def _observe_current_u32_decision_forest(
                         _CurrentU32DecisionForestStatus.INVALID
                     )
                 aliases[serial] = int(alias_target)
-                pending.append((int(alias_target), expected_identity))
+                pending.append(
+                    (
+                        int(alias_target),
+                        expected_identity,
+                        entered_via_exact_xdu_bridge,
+                        active_carrier_width,
+                    )
+                )
                 continue
             if expected_alias is not None:
                 # As for a claimed comparison node above, the live native DAG
@@ -3124,10 +3459,14 @@ def _observe_current_u32_decision_forest(
             target_identity = (
                 bridge.result_identity if bridge is not None else current_identity
             )
+            target_carrier_width = (
+                bridge.result_width if bridge is not None else active_carrier_width
+            )
+            target_entered_via_exact_xdu_bridge = bool(
+                entered_via_exact_xdu_bridge or bridge is not None
+            )
             if not is_reference_node:
                 target_block = flow_graph.get_block(target)
-                if bridge is None:
-                    continue
                 source_block = _stable_flow_block(flow_graph, serial)
                 if (
                     source_block is None
@@ -3138,18 +3477,71 @@ def _observe_current_u32_decision_forest(
                     return _CurrentU32DecisionForestObservation(
                         _CurrentU32DecisionForestStatus.INVALID
                     )
+                # A handler-leaf allowance authorizes only a semantic leaf:
+                # it must not mask an unmodeled state-router, even if that
+                # router happens to be portable enough to parse below.
+                if (
+                    target in permitted_non_state_handler_leaf_serials
+                    and _raw_branch_mentions_state_identity(
+                        target_block,
+                        frozenset({target_identity}),
+                    )
+                    and not _is_call_result_overwrite_semantic_leaf(
+                        InstructionProjection.from_block(target_block),
+                        expected_state_identities=frozenset({target_identity}),
+                        expected_state_width=target_carrier_width,
+                    )
+                ):
+                    return _CurrentU32DecisionForestObservation(
+                        _CurrentU32DecisionForestStatus.INVALID
+                    )
                 child = _current_u32_route_comparison(
                     flow_graph,
                     target,
                     expected_identities=frozenset({target_identity}),
                 )
                 if child is None:
-                    if target_block is not None and len(tuple(target_block.succs)) == 2:
+                    permitted_non_state_handler_leaf = bool(
+                        target in permitted_non_state_handler_leaf_serials
+                        and (
+                            not _raw_branch_mentions_state_identity(
+                                target_block,
+                                frozenset({target_identity}),
+                            )
+                            or _is_call_result_overwrite_semantic_leaf(
+                                InstructionProjection.from_block(target_block),
+                                expected_state_identities=frozenset({target_identity}),
+                                expected_state_width=target_carrier_width,
+                            )
+                        )
+                    )
+                    reference_owned_bridged_semantic_leaf = bool(
+                        selected is not None
+                        and target_entered_via_exact_xdu_bridge
+                        and _is_ordered_non_state_semantic_branch_leaf(
+                            target_block,
+                            expected_state_identities=frozenset({target_identity}),
+                            expected_state_width=target_carrier_width,
+                        )
+                    )
+                    if (
+                        target_block is not None
+                        and len(tuple(target_block.succs)) == 2
+                        and not permitted_non_state_handler_leaf
+                        and not reference_owned_bridged_semantic_leaf
+                    ):
                         return _CurrentU32DecisionForestObservation(
                             _CurrentU32DecisionForestStatus.INVALID
                         )
                     continue
-            pending.append((target, target_identity))
+            pending.append(
+                (
+                    target,
+                    target_identity,
+                    target_entered_via_exact_xdu_bridge,
+                    target_carrier_width,
+                )
+            )
 
     if int(entry_serial) not in {*comparisons, *aliases}:
         return _CurrentU32DecisionForestObservation(
@@ -3190,6 +3582,10 @@ def build_current_u32_decision_forest(
     *,
     expected_identities: frozenset[StorageIdentity],
     reference_dag: DecisionDag | None = None,
+    permitted_non_state_handler_leaf_catalog: IntervalHandlerLeafReplayCatalog | None = None,
+    block_refs_by_serial: Mapping[int, NativeBlockRef] | None = None,
+    dispatcher: IntervalDispatcher | None = None,
+    source_generation: int = 0,
 ) -> DecisionDag | None:
     """Compatibility wrapper around the detailed current-forest observation."""
     observation = _observe_current_u32_decision_forest(
@@ -3197,6 +3593,12 @@ def build_current_u32_decision_forest(
         entry_serial,
         expected_identities=expected_identities,
         reference_dag=reference_dag,
+        permitted_non_state_handler_leaf_catalog=(
+            permitted_non_state_handler_leaf_catalog
+        ),
+        block_refs_by_serial=block_refs_by_serial,
+        dispatcher=dispatcher,
+        source_generation=source_generation,
     )
     return observation.decision_dag if observation.status is _CurrentU32DecisionForestStatus.VALID else None
 def _observe_direct_internal_decision_dag_entry(
@@ -3262,14 +3664,38 @@ def _observe_direct_internal_decision_dag_entry(
     ):
         return _DirectDecisionDagEntryObservation(True)
 
-    route_forest = _current_u32_route_forest_entry(
+    semantic_leaf_serials = frozenset(
+        int(target)
+        for target in (int(current[0].true_target), int(current[0].false_target))
+        if _is_semantic_internal_route_leaf(
+            flow_graph.get_block(int(target)),
+            expected_state_identities=expected_identities,
+        )
+    )
+    route_forest = build_current_u32_decision_forest(
         flow_graph,
         entry_serial,
-        decision_dag,
         expected_identities=expected_identities,
+        reference_dag=decision_dag,
     )
     if route_forest is None:
-        return _DirectDecisionDagEntryObservation(True)
+        # This direct source edge is already bound below to one trusted state
+        # assignment and a reciprocal physical entry.  A sibling branch over a
+        # disjoint program identity is a semantic endpoint, not an unmodeled
+        # state-router.  Keep the exact current entry comparison as the route
+        # forest instead of requiring it to be an interval-admitted handler.
+        # The generic forest deliberately remains stricter for root-scoped
+        # replay, where this source-edge receipt does not exist.
+        if not semantic_leaf_serials:
+            return _DirectDecisionDagEntryObservation(True)
+        try:
+            route_forest = DecisionDag(
+                32,
+                {entry_serial: current[0]},
+                root=entry_serial,
+            )
+        except (AttributeError, KeyError, TypeError, ValueError, OverflowError):
+            return _DirectDecisionDagEntryObservation(True)
     comparison, state_identity, entry_ea, branch_ea = current
 
     projected = InstructionProjection.from_block(source)
@@ -3318,10 +3744,165 @@ def _observe_direct_internal_decision_dag_entry(
     )
 
 
+def _is_ordered_non_state_semantic_branch_leaf(
+    block: BlockSnapshot | None,
+    *,
+    expected_state_identities: frozenset[StorageIdentity],
+    expected_state_width: int,
+) -> bool:
+    """Prove a live conditional is semantic rather than a state-router leaf.
+
+    This is intentionally limited to the comparison use itself.  A predicate
+    must either consume an exact locally propagated nested-call result or use
+    only identities disjoint from the active state namespace; earlier effects
+    alone never authorize a state-bearing branch.
+    """
+
+    if block is None:
+        return False
+    instructions = InstructionProjection.from_block(block)
+    if _is_call_result_overwrite_semantic_leaf(
+        instructions,
+        expected_state_identities=expected_state_identities,
+        expected_state_width=expected_state_width,
+    ):
+        return True
+    # A nested CALL can redefine the physical carrier namespace.  When one is
+    # present, a disjoint predicate alone cannot establish that the incoming
+    # state was killed: require the exact active-identity reaching definition.
+    if any(
+        instruction.attrs.get("nested_sub_kind") == InsnKind.CALL.value
+        for instruction in instructions
+    ):
+        return False
+    for instruction in instructions:
+        control = instruction.control
+        if control is None or control.predicate is None:
+            continue
+        operand_identities = frozenset(
+            identity
+            for operand in instruction.inputs
+            if (identity := storage_identity_from_varnode(operand)) is not None
+        )
+        is_u32_storage_predicate = bool(
+            any(
+                operand.size == 4
+                and storage_identity_from_varnode(operand) is not None
+                for operand in instruction.inputs
+            )
+            and any(
+                operand.space is Space.CONST and operand.size == 4
+                for operand in instruction.inputs
+            )
+        )
+        if (
+            operand_identities
+            and operand_identities.isdisjoint(expected_state_identities)
+            and not is_u32_storage_predicate
+        ):
+            return True
+    return False
+
+
+def _is_call_result_overwrite_semantic_leaf(
+    instructions: tuple[Instruction, ...],
+    *,
+    expected_state_identities: frozenset[StorageIdentity],
+    expected_state_width: int,
+) -> bool:
+    """Prove a branch consumes a nested-call result that overwrote a carrier.
+
+    Register identity is only a physical namespace.  A nested call can define
+    the same register that carried the dispatcher state on entry; a subsequent
+    predicate over that *new* definition is ordinary program control, not a
+    second state router.  The provenance chain is deliberately exact: nested
+    call producer -> move into the compared register -> conditional consumer.
+    """
+
+    call_result_values: set[Varnode] = set()
+    active_state_call_result: Varnode | None = None
+    for instruction in instructions:
+        control = instruction.control
+        if control is not None and control.predicate is not None:
+            state_inputs = tuple(
+                value
+                for value in instruction.inputs
+                if storage_identity_from_varnode(value) in expected_state_identities
+            )
+            if state_inputs:
+                return bool(
+                    active_state_call_result is not None
+                    and active_state_call_result.size == expected_state_width
+                    and active_state_call_result in instruction.inputs
+                    and all(value == active_state_call_result for value in state_inputs)
+                )
+        elif (
+            active_state_call_result is None
+            and any(
+                storage_identity_from_varnode(value) in expected_state_identities
+                for value in instruction.inputs
+            )
+        ):
+            # The incoming carrier is still live.  Any ordinary use before the
+            # explicit CALL-result MOVE makes the leaf state-bearing.
+            return False
+        if instruction.result is not None:
+            result_identity = storage_identity_from_varnode(instruction.result)
+            call_result_values = {
+                value
+                for value in call_result_values
+                if value != instruction.result
+                and (
+                    result_identity is None
+                    or storage_identity_from_varnode(value) != result_identity
+                )
+            }
+        if (
+            instruction.attrs.get("nested_sub_kind") == InsnKind.CALL.value
+            and instruction.result is not None
+        ):
+            call_result_values.add(instruction.result)
+            if (
+                storage_identity_from_varnode(instruction.result)
+                in expected_state_identities
+            ):
+                # A CALL cannot establish the proof directly.  The call must
+                # first materialize a result, then an explicit U32 MOVE must
+                # kill the active carrier namespace.
+                active_state_call_result = None
+            continue
+        if (
+            instruction.operation is ValueOpKind.MOVE
+            and instruction.result is not None
+            and len(instruction.inputs) == 1
+            and instruction.inputs[0] in call_result_values
+        ):
+            if (
+                storage_identity_from_varnode(instruction.result)
+                in expected_state_identities
+                and instruction.result.size == expected_state_width
+            ):
+                active_state_call_result = instruction.result
+            elif (
+                storage_identity_from_varnode(instruction.result)
+                in expected_state_identities
+            ):
+                active_state_call_result = None
+            continue
+        if (
+            instruction.result is not None
+            and storage_identity_from_varnode(instruction.result)
+            in expected_state_identities
+        ):
+            active_state_call_result = None
+    return False
+
+
 def _is_semantic_internal_route_leaf(
     block: BlockSnapshot | None,
     *,
     expected_state_identities: frozenset[StorageIdentity],
+    expected_state_width: int = 4,
 ) -> bool:
     """Recognize an explicit semantic boundary below a physical route forest.
 
@@ -3336,7 +3917,14 @@ def _is_semantic_internal_route_leaf(
 
     if block is None:
         return False
-    for instruction in InstructionProjection.from_block(block):
+    instructions = InstructionProjection.from_block(block)
+    if _is_call_result_overwrite_semantic_leaf(
+        instructions,
+        expected_state_identities=expected_state_identities,
+        expected_state_width=expected_state_width,
+    ):
+        return True
+    for instruction in instructions:
         if instruction.effects or instruction.memory is not None:
             return True
         control = instruction.control
@@ -3760,6 +4348,44 @@ def _dispatcher_provider_targets(
     return frozenset(targets), frozenset(sources)
 
 
+def _sealed_interval_provider_target(
+    catalogue: IntervalHandlerLeafReplayCatalog,
+    state: int,
+) -> int | None:
+    """Resolve one interval/default endpoint from the immutable replay catalogue.
+
+    The catalogue, rather than a live dispatcher row, owns the normalized
+    interval/default decision after binding.  Its query rechecks that every
+    referenced endpoint belongs to its sealed typed bindings before returning
+    a target.
+    """
+
+    if type(catalogue) is not IntervalHandlerLeafReplayCatalog:
+        return None
+    return catalogue.resolve_exact_u32_target(int(state) & 0xFFFFFFFF)
+
+
+def _receipt_exact_dispatcher_target(
+    receipt: ExactU32DispatcherRouteReceipt | None,
+    state: int,
+) -> tuple[bool, int | None] | None:
+    """Read optional typed *exact* evidence solely for a conflict check.
+
+    The receipt is deliberately a distinct nominal capability.  Do not infer
+    exactness from a dispatcher's ``resolve_target`` method: compatibility
+    adapters may implement that method with interval/default fallback.
+    """
+    if receipt is None:
+        return False, None
+    if type(receipt) is not ExactU32DispatcherRouteReceipt:
+        return None
+    normalized = int(state) & 0xFFFFFFFF
+    target = receipt.target_for_u32_state(normalized)
+    if target is None:
+        return True, None
+    return True, int(target)
+
+
 def _reject_decision_dag_reconciliation(
     reason: str,
     flow_graph: FlowGraph,
@@ -3909,6 +4535,41 @@ def _current_snapshot_route_fact_for_transition(
         and carrier_proof is None
     ):
         return prior
+    prior_partition_delivery = bool(
+        isinstance(prior, SemanticRouteFact)
+        and prior.kind is SemanticRouteFactKind.STATE_PARTITION
+        and (
+            isinstance(prior.partition_switch_table_witness, StatePartitionSwitchTableWitness)
+            or isinstance(prior.decision_dag_witness, DecisionDagRouteWitness)
+        )
+    )
+    if (
+        prior_partition_delivery
+        and transition.partition_witness == prior.partition_witness
+        and transition.next_state is not None
+        and transition.target_handler is not None
+        and int(prior.state_constant) == (int(transition.next_state) & 0xFFFFFFFF)
+        and int(prior.target_serial) == int(transition.target_handler)
+        and (
+            (
+                isinstance(prior.partition_switch_table_witness, StatePartitionSwitchTableWitness)
+                and prior.partition_switch_table_witness.state_identity == state_identity
+                and int(prior.partition_switch_table_witness.state_constant) == int(transition.next_state)
+                and int(prior.partition_switch_table_witness.target_serial) == int(transition.target_handler)
+            )
+            or (
+                isinstance(prior.decision_dag_witness, DecisionDagRouteWitness)
+                and prior.decision_dag_witness.state_identity == state_identity
+                and int(prior.decision_dag_witness.state_constant) == int(transition.next_state)
+                and prior.decision_dag_witness.handoff_dispatcher_serial is not None
+            )
+        )
+        and prior.transform_witness is None
+        and prior.carrier_witness is None
+        and transform_proof is None
+        and carrier_proof is None
+    ):
+        return prior
     return _semantic_route_fact_for_transition(
         transition,
         route,
@@ -3959,9 +4620,13 @@ def _reconcile_transition_routes_with_decision_dag(
     materialized_state_routes: tuple[MaterializedStateRoute, ...],
     *,
     condition_chain_handlers: frozenset[int],
+    replay_leaf_catalog: IntervalHandlerLeafReplayCatalog | None = None,
+    block_refs_by_serial: Mapping[int, NativeBlockRef] | None = None,
+    source_generation: int = 0,
     state_var_stkoff: int | None,
     state_var_reg: int | None,
     candidate_prefix_authority: CandidateScopedPrefixAuthority | None = None,
+    exact_u32_route_receipt: ExactU32DispatcherRouteReceipt | None = None,
 ) -> tuple[StateWriteTransition, ...] | None:
     """Recompute each concrete route from immutable source/DAG evidence."""
 
@@ -3973,6 +4638,10 @@ def _reconcile_transition_routes_with_decision_dag(
             state_var_reg=state_var_reg,
         ),
         reference_dag=decision_dag,
+        permitted_non_state_handler_leaf_catalog=replay_leaf_catalog,
+        block_refs_by_serial=block_refs_by_serial,
+        dispatcher=(dispatcher if type(dispatcher) is IntervalDispatcher else None),
+        source_generation=source_generation,
     )
     if current_forest_observation.status is _CurrentU32DecisionForestStatus.INVALID:
         return None
@@ -4454,18 +5123,56 @@ def _reconcile_transition_routes_with_decision_dag(
         )
         exact_switch_handoff = False
         if not physical_route_forest:
-            provider = _dispatcher_provider_targets(
-                dispatcher,
-                state,
-                condition_chain_handlers=condition_chain_handlers,
-            )
-            if provider is None:
-                return _reject_decision_dag_reconciliation(
-                    "dispatcher_provider_conflict",
-                    flow_graph,
-                    effective,
+            if replay_leaf_catalog is not None:
+                sealed_target = _sealed_interval_provider_target(
+                    replay_leaf_catalog,
+                    state,
                 )
-            provider_targets, provider_sources = provider
+                if sealed_target is None:
+                    return _reject_decision_dag_reconciliation(
+                        "sealed_interval_provider_missing",
+                        flow_graph,
+                        effective,
+                    )
+                receipt_exact = _receipt_exact_dispatcher_target(
+                    exact_u32_route_receipt,
+                    state,
+                )
+                if receipt_exact is None:
+                    return _reject_decision_dag_reconciliation(
+                        "exact_route_receipt_malformed",
+                        flow_graph,
+                        effective,
+                    )
+                _receipt_exact_available, receipt_exact_target = receipt_exact
+                if (
+                    receipt_exact_target is not None
+                    and int(receipt_exact_target) != int(sealed_target)
+                ):
+                    return _reject_decision_dag_reconciliation(
+                        "exact_route_receipt_disagreement",
+                        flow_graph,
+                        effective,
+                    )
+                provider_targets = frozenset({int(sealed_target)})
+                # Retain the established provenance spelling while moving its
+                # selector to the sealed catalogue; tests and diagnostics can
+                # therefore distinguish interval authority without mistaking
+                # a mutable raw row for its source.
+                provider_sources = frozenset({"interval"})
+            else:
+                provider = _dispatcher_provider_targets(
+                    dispatcher,
+                    state,
+                    condition_chain_handlers=condition_chain_handlers,
+                )
+                if provider is None:
+                    return _reject_decision_dag_reconciliation(
+                        "dispatcher_provider_conflict",
+                        flow_graph,
+                        effective,
+                    )
+                provider_targets, provider_sources = provider
             route_leaf = flow_graph.get_block(int(route.target))
             provider_target = (
                 next(iter(provider_targets))
@@ -4743,6 +5450,204 @@ def _reconcile_transition_routes_with_decision_dag(
 
 
 
+def _attach_partition_switch_table_route_facts(
+    transitions: tuple[StateWriteTransition, ...],
+    flow_graph: FlowGraph,
+    *,
+    dispatcher_serial: int,
+    state_var_stkoff: int | None,
+    state_var_reg: int | None,
+    condition_chain_dag: DecisionDag | None = None,
+) -> tuple[StateWriteTransition, ...]:
+    """Mint partition facts only from one exact physical switch-table map.
+
+    This is the no-decision-DAG route family.  It deliberately requires the
+    complete predecessor group, an exact U32 table row, and reciprocal source,
+    feeder, dispatcher, and target topology before it can attach authority.
+    """
+    if state_var_stkoff is None or state_var_reg is not None:
+        return transitions
+    def exact_table_at(serial: int):
+        table = analyze_switch_table_at_dispatcher(flow_graph, int(serial))
+        if (
+            table is None
+            or table.state_var_operand.space is not Space.STACK
+            or int(table.state_var_operand.offset) != int(state_var_stkoff)
+            or int(table.state_var_operand.size) != 4
+            or int(table.state_dispatcher_map.dispatcher_entry_block) != int(serial)
+        ):
+            return None
+        return table
+
+    table = exact_table_at(int(dispatcher_serial))
+    if table is None:
+        anchor = flow_graph.get_block(int(dispatcher_serial))
+        candidate_serials = () if anchor is None else tuple(
+            sorted({int(dispatcher_serial), *(int(item) for item in anchor.succs)})
+        )
+        candidates = tuple(
+            (serial, candidate)
+            for serial in candidate_serials
+            if serial != int(dispatcher_serial)
+            if (candidate := exact_table_at(serial)) is not None
+        )
+        if len(candidates) != 1:
+            return transitions
+        dispatcher_serial, table = candidates[0]
+    if table is None:
+        return transitions
+    by_group: dict[str, list[StateWriteTransition]] = {}
+    for transition in transitions:
+        witness = transition.partition_witness
+        proof = transition.proof
+        if (
+            witness is None
+            or proof is None
+            or not proof.trusted
+            or proof.oracle_kind != _FIXPOINT_ORACLE
+            or proof.kind != "predecessor_partitioned"
+        ):
+            continue
+        by_group.setdefault(witness.group_id, []).append(transition)
+    facts_by_owner: dict[int, SemanticRouteFact] = {}
+    for grouped in by_group.values():
+        witness = grouped[0].partition_witness
+        assert witness is not None
+        if any(item.partition_witness != witness for item in grouped):
+            continue
+        by_owner = {int(item.write_block): item for item in grouped}
+        if len(by_owner) != len(grouped) or set(by_owner) != {
+            int(member.owner_serial) for member in witness.members
+        }:
+            continue
+        feeder = flow_graph.get_block(int(witness.feeder_serial))
+        dispatcher = flow_graph.get_block(int(dispatcher_serial))
+        if feeder is None or dispatcher is None:
+            continue
+        direct_table = (
+            tuple(int(item) for item in feeder.succs) == (int(dispatcher_serial),)
+            and int(witness.feeder_serial) in dispatcher.preds
+        )
+        handoff_root = None if condition_chain_dag is None else flow_graph.get_block(
+            int(condition_chain_dag.root)
+        )
+        handoff = (
+            not direct_table
+            and handoff_root is not None
+            and tuple(int(item) for item in feeder.succs)
+            == (int(condition_chain_dag.root),)
+            and int(witness.feeder_serial) in handoff_root.preds
+        )
+        if not direct_table and not handoff:
+            continue
+        complete = True
+        for member in witness.members:
+            transition = by_owner[int(member.owner_serial)]
+            owner = flow_graph.get_block(int(transition.write_block))
+            target = (
+                None if transition.target_handler is None
+                else flow_graph.get_block(int(transition.target_handler))
+            )
+            exact_rows = tuple(
+                row
+                for row in table.state_dispatcher_map.rows
+                if (row.is_handler_row or row.is_dispatcher_self_loop)
+                and int(row.state_const) == int(member.state_constant)
+            )
+            expected_target = table.state_dispatcher_map.resolve_target(
+                int(member.state_constant),
+            )
+            route = None
+            if handoff:
+                route = _route_u32_state_through_decision_dag(
+                    int(member.state_constant), flow_graph, condition_chain_dag,
+                    state_var_stkoff=state_var_stkoff, state_var_reg=state_var_reg,
+                    via_block=int(witness.feeder_serial),
+                    entry_serial=int(condition_chain_dag.root),
+                )
+            member_proven = prove_partitioned_state_member(
+                flow_graph, member, feeder_instruction_ea=int(witness.feeder_instruction_ea),
+                state_var_stkoff=int(state_var_stkoff), state_var_reg=None,
+            )
+            if (
+                owner is None
+                or target is None
+                or transition.via_block is None
+                or int(transition.via_block) != int(witness.feeder_serial)
+                or transition.next_state is None
+                or int(transition.next_state) != int(member.state_constant)
+                or len(exact_rows) != 1
+                or int(exact_rows[0].target_block) != int(transition.target_handler)
+                or expected_target is None
+                or int(expected_target) != int(transition.target_handler)
+                or int(transition.write_block) not in feeder.preds
+                or int(transition.target_handler) not in dispatcher.succs
+                or int(dispatcher_serial) not in target.preds
+                or (
+                    handoff and (
+                        route is None
+                        or int(route.target) != int(dispatcher_serial)
+                        or int(dispatcher_serial) not in route.certified_targets
+                        or route.entry_serial != int(condition_chain_dag.root)
+                        or not route.path_serials
+                        or len(route.path_serials) != len(route.path_anchors)
+                    )
+                )
+                or not member_proven
+            ):
+                complete = False
+                break
+        if not complete:
+            continue
+        for member in witness.members:
+            transition = by_owner[int(member.owner_serial)]
+            owner = flow_graph.get_block(int(transition.write_block))
+            target = flow_graph.get_block(int(transition.target_handler))
+            assert owner is not None and target is not None
+            facts_by_owner[int(transition.write_block)] = SemanticRouteFact(
+                kind=SemanticRouteFactKind.STATE_PARTITION,
+                owner_serial=int(transition.write_block),
+                source_serial=int(witness.feeder_serial),
+                source_instruction_ea=int(witness.feeder_instruction_ea),
+                state_constant=int(member.state_constant),
+                target_serial=int(transition.target_handler),
+                owner_anchor_ea=int(owner.native_start_ea or owner.start_ea),
+                target_anchor_ea=int(target.native_start_ea or target.start_ea),
+                path_serials=(int(transition.write_block), int(witness.feeder_serial)),
+                path_edges=((int(transition.write_block), int(witness.feeder_serial)),),
+                partition_witness=witness,
+                partition_switch_table_witness=(
+                    StatePartitionSwitchTableWitness(
+                        dispatcher_serial=int(dispatcher_serial),
+                        state_identity=witness.state_identity,
+                        state_constant=int(member.state_constant),
+                        target_serial=int(transition.target_handler),
+                    ) if direct_table else None
+                ),
+                decision_dag_witness=(
+                    None if not handoff else DecisionDagRouteWitness(
+                        state_identity=witness.state_identity,
+                        state_constant=int(member.state_constant),
+                        entry_serial=int(route.entry_serial),
+                        entry_anchor_ea=int(route.path_anchors[0]),
+                        path_serials=tuple(int(item) for item in route.path_serials),
+                        path_anchors=tuple(int(item) for item in route.path_anchors),
+                        comparisons=_evidence_route_comparisons(route, witness.state_identity),
+                        aliases=tuple(route.aliases), bridges=tuple(route.bridges),
+                        handoff_dispatcher_serial=int(dispatcher_serial),
+                        handoff_dispatcher_anchor_ea=int(
+                            dispatcher.native_start_ea or dispatcher.start_ea
+                        ),
+                    )
+                ),
+            )
+    return tuple(
+        transition if (fact := facts_by_owner.get(int(transition.write_block))) is None
+        else _attach_current_snapshot_route_fact(transition, fact)
+        for transition in transitions
+    )
+
+
 def resolve_materialized_indirect_transfer_targets(
     transitions: tuple[StateWriteTransition, ...],
     flow_graph: FlowGraph,
@@ -4751,10 +5656,16 @@ def resolve_materialized_indirect_transfer_targets(
     *,
     materialized_state_routes: tuple[MaterializedStateRoute, ...] = (),
     condition_chain_dag: DecisionDag | None = None,
+    partition_handoff_dag: DecisionDag | None = None,
+    switch_table_dispatcher_serial: int | None = None,
     condition_chain_handlers: frozenset[int] = frozenset(),
+    replay_leaf_catalog: IntervalHandlerLeafReplayCatalog | None = None,
+    block_refs_by_serial: Mapping[int, NativeBlockRef] | None = None,
+    source_generation: int = 0,
     state_var_stkoff: int | None = None,
     state_var_reg: int | None = None,
     candidate_prefix_authority: CandidateScopedPrefixAuthority | None = None,
+    exact_u32_route_receipt: ExactU32DispatcherRouteReceipt | None = None,
 ) -> tuple[StateWriteTransition, ...]:
     """Reconnect concrete router misses using resolver-materialization proof.
 
@@ -4764,6 +5675,23 @@ def resolve_materialized_indirect_transfer_targets(
     and maps uniquely onto this FlowGraph.  Every other transition is returned
     byte-identically, including unresolved and terminal transitions.
     """
+    # Preserve the exact physical table proof before decision-DAG reconciliation
+    # normalizes route rows.  Reconciliation may replace the provisional
+    # partition classification, but it must carry this already-bound producer
+    # fact forward rather than recreate a second authority stream later.
+    if switch_table_dispatcher_serial is not None:
+        transitions = _attach_partition_switch_table_route_facts(
+            transitions,
+            flow_graph,
+            dispatcher_serial=int(switch_table_dispatcher_serial),
+            state_var_stkoff=state_var_stkoff,
+            state_var_reg=state_var_reg,
+            condition_chain_dag=(
+                partition_handoff_dag
+                if partition_handoff_dag is not None
+                else condition_chain_dag
+            ),
+        )
     if condition_chain_dag is not None and condition_chain_dag.nodes:
         reconciled = _reconcile_transition_routes_with_decision_dag(
             transitions,
@@ -4772,9 +5700,13 @@ def resolve_materialized_indirect_transfer_targets(
             condition_chain_dag,
             materialized_state_routes,
             condition_chain_handlers=condition_chain_handlers,
+            replay_leaf_catalog=replay_leaf_catalog,
+            block_refs_by_serial=block_refs_by_serial,
+            source_generation=source_generation,
             state_var_stkoff=state_var_stkoff,
             state_var_reg=state_var_reg,
             candidate_prefix_authority=candidate_prefix_authority,
+            exact_u32_route_receipt=exact_u32_route_receipt,
         )
         if reconciled is None:
             materialized_midtree_refinement = bool(
@@ -6525,13 +7457,42 @@ def _partition_group_witness(
     members: list[StatePartitionMemberWitness] = []
     for owner_serial, state in sorted(edge_states.items()):
         owner = ctx.flow_graph.get_block(int(owner_serial))
-        if owner is None or tuple(int(item) for item in owner.succs) != (int(feeder_serial),):
+        if owner is None:
             return None
+        successors = tuple(int(item) for item in owner.succs)
+        conditional_edge = None
+        if successors != (int(feeder_serial),):
+            tail = owner.tail
+            instruction = None if tail is None else project_instruction(tail)
+            control = None if instruction is None else instruction.control
+            if (
+                len(successors) != 2
+                or int(feeder_serial) not in successors
+                or tail is None
+                or control is None
+                or control.transfer is not ControlTransferKind.CONDITIONAL_BRANCH
+                or control.target is None
+                or int(control.target) not in successors
+            ):
+                return None
+            conditional_edge = StatePartitionConditionalEdgeWitness(
+                transfer_instruction_ea=int(tail.native_ea or tail.ea),
+                transfer_instruction=instruction_projection_without_block_references(tail),
+                edge_role=(
+                    SemanticEdgeRole.CONDITIONAL_TAKEN
+                    if int(control.target) == int(feeder_serial)
+                    else SemanticEdgeRole.CONDITIONAL_FALLTHROUGH
+                ),
+                sibling_serial=next(
+                    item for item in successors if item != int(feeder_serial)
+                ),
+            )
         member = StatePartitionMemberWitness(
             owner_serial=int(owner_serial),
             feeder_serial=int(feeder_serial),
             state_identity=state_identity,
             state_constant=int(state),
+            conditional_edge=conditional_edge,
         )
         if not prove_partitioned_state_member(
             ctx.flow_graph,
@@ -8173,6 +9134,31 @@ class TransitionArm:
     exit_block: int | None  # last block of the scanned path (the boundary)
     ordered_path: tuple[int, ...] = ()  # handler-local blocks visited (entry..exit)
     source_keyed_block: int | None = None  # exact route owner in this snapshot
+    partition_witness: StatePartitionGroupWitness | None = None
+
+    def __post_init__(self) -> None:
+        witness = self.partition_witness
+        if witness is None:
+            return
+        path = tuple(int(item) for item in self.ordered_path)
+        if (
+            self.next_state is None
+            or self.write_block is None
+            or len(path) < 2
+            or path[-1] != int(self.write_block)
+            or int(self.write_block) != int(witness.feeder_serial)
+        ):
+            raise ValueError("partition arm lacks exact owner-to-feeder path")
+        members = tuple(
+            member
+            for member in witness.members
+            if int(member.owner_serial) == path[-2]
+        )
+        if (
+            len(members) != 1
+            or int(members[0].state_constant) != (int(self.next_state) & 0xFFFFFFFF)
+        ):
+            raise ValueError("partition arm disagrees with its selected member")
 
 
 @dataclass(frozen=True, slots=True)
@@ -8400,6 +9386,98 @@ def _classify_arm(
     )
 
 
+def _handler_arm_partition_witness(
+    flow_graph: FlowGraph,
+    arms: tuple[TransitionArm, ...],
+    *,
+    state_var_stkoff: int | None,
+    state_var_reg: int | None,
+) -> StatePartitionGroupWitness | None:
+    """Seal one complete shared-feeder arm partition without recomputing states."""
+    if len(arms) < 2 or (state_var_stkoff is None) == (state_var_reg is None):
+        return None
+    feeder_serials = {arm.write_block for arm in arms}
+    if len(feeder_serials) != 1 or None in feeder_serials:
+        return None
+    feeder_serial = int(next(iter(feeder_serials)))
+    feeder = flow_graph.get_block(feeder_serial)
+    if feeder is None:
+        return None
+    identity = StorageIdentity(
+        StorageIdentityKind.STACK if state_var_stkoff is not None else StorageIdentityKind.REGISTER,
+        int(state_var_stkoff if state_var_stkoff is not None else state_var_reg),
+    )
+    writes = tuple(
+        int(snapshot.native_ea or snapshot.ea)
+        for snapshot in feeder.insn_snapshots
+        if (instruction := project_instruction(snapshot)).result is not None
+        and storage_identity_from_varnode(instruction.result) == identity
+        and int(instruction.result.size) == 4
+    )
+    if len(writes) != 1:
+        return None
+    members: list[StatePartitionMemberWitness] = []
+
+    def conditional_edge_for(
+        owner: BlockSnapshot,
+        feeder_serial: int,
+    ) -> StatePartitionConditionalEdgeWitness | None:
+        """Seal the selected owner->feeder branch without inferring polarity."""
+        successors = tuple(int(item) for item in owner.succs)
+        if len(successors) != 2 or int(feeder_serial) not in successors:
+            return None
+        tail = owner.tail
+        if tail is None:
+            return None
+        instruction = project_instruction(tail)
+        control = instruction.control
+        if (
+            control is None
+            or control.transfer is not ControlTransferKind.CONDITIONAL_BRANCH
+            or control.target is None
+            or int(control.target) not in successors
+        ):
+            return None
+        sibling = next(item for item in successors if item != int(feeder_serial))
+        role = (
+            SemanticEdgeRole.CONDITIONAL_TAKEN
+            if int(control.target) == int(feeder_serial)
+            else SemanticEdgeRole.CONDITIONAL_FALLTHROUGH
+        )
+        return StatePartitionConditionalEdgeWitness(
+            transfer_instruction_ea=int(tail.native_ea or tail.ea),
+            transfer_instruction=instruction_projection_without_block_references(tail),
+            edge_role=role,
+            sibling_serial=int(sibling),
+        )
+
+    for arm in arms:
+        if arm.next_state is None or len(arm.ordered_path) < 2 or arm.ordered_path[-1] != feeder_serial:
+            return None
+        owner_serial = int(arm.ordered_path[-2])
+        owner = flow_graph.get_block(owner_serial)
+        if owner is None:
+            return None
+        successors = tuple(int(item) for item in owner.succs)
+        conditional_edge = (
+            conditional_edge_for(owner, feeder_serial)
+            if len(successors) == 2
+            else None
+        )
+        if successors != (feeder_serial,) and conditional_edge is None:
+            return None
+        members.append(StatePartitionMemberWitness(
+            owner_serial, feeder_serial, identity, int(arm.next_state), conditional_edge,
+        ))
+    if {int(item.owner_serial) for item in members} != {int(item) for item in feeder.preds}:
+        return None
+    payload = (feeder_serial, writes[0], identity.kind.value, int(identity.offset), tuple((item.owner_serial, item.state_constant) for item in members))
+    return StatePartitionGroupWitness(
+        "partition-group:sha256:" + hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest(),
+        feeder_serial, writes[0], identity, tuple(members),
+    )
+
+
 def recover_handler_transitions(
     flow_graph,
     dispatcher,
@@ -8531,8 +9609,18 @@ def recover_handler_transitions(
                     write_block=arms[0].write_block,
                     exit_block=arms[0].exit_block,
                     ordered_path=arms[0].ordered_path,
+                    source_keyed_block=arms[0].source_keyed_block,
+                    partition_witness=arms[0].partition_witness,
                 ),
             )
+        partition = _handler_arm_partition_witness(
+            flow_graph,
+            arms,
+            state_var_stkoff=state_var_stkoff,
+            state_var_reg=state_var_reg,
+        )
+        if partition is not None:
+            arms = tuple(replace(arm, partition_witness=partition) for arm in arms)
         results.append(
             HandlerTransition(
                 handler=int(handler),

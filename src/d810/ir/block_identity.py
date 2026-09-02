@@ -240,6 +240,21 @@ class StableBlockIdentity:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class NativeBlockRef:
+    """Portable cross-snapshot reference to one native-derived block.
+
+    This is an IR identity carrier rather than transaction authority: analyses
+    and CFG transactions must therefore share this exact lower-layer type.
+    """
+
+    identity: StableBlockIdentity
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.identity, StableBlockIdentity):
+            raise TypeError("identity must be a StableBlockIdentity")
+
+
 def stable_block_identity_semantic_anchor(
     identity: StableBlockIdentity,
 ) -> int:

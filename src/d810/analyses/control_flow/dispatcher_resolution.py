@@ -14,6 +14,122 @@ from d810.analyses.control_flow.comparison_dispatcher_model import (
     route_via_interval_sets,
 )
 from d810.capabilities.dispatcher import RouterKind, TableProvenance
+from d810.ir.flowgraph import InsnKind
+from d810.ir.graph_fingerprint import InsnRecord
+from d810.ir.storage_identity import StorageIdentity, StorageIdentityKind
+
+
+@dataclass(frozen=True, slots=True)
+class InitialStateWriteWitness:
+    """The single physical write selected by initial-state recovery.
+
+    This is recovery evidence, not a route allowance.  It retains the stable
+    source coordinates which older recovery collapsed into ``initial_state``.
+    Consumers must rebind this exact write; they must not rediscover one by
+    scanning an arbitrary prologue corridor.
+    """
+
+    source_block_serial: int
+    source_instruction: InsnRecord
+    state_identity: StorageIdentity
+    width: int
+    normalized_state: int
+    dispatcher_entry_serial: int
+    redirect_predecessor_serial: int
+    delivery_path_serials: tuple[int, ...]
+    delivery_path_edges: tuple[tuple[int, int], ...]
+    # Optional closure for a preheader write whose feasibility depends on a
+    # second selector value and the exact conditional edge into the dispatcher.
+    # All fields are present together or absent together; older direct P/D
+    # witnesses intentionally use the latter form.
+    selector_instruction: InsnRecord | None = None
+    selector_identity: StorageIdentity | None = None
+    selector_width: int | None = None
+    selector_value: int | None = None
+    comparison_instruction: InsnRecord | None = None
+    comparison_identity: StorageIdentity | None = None
+    comparison_constant: int | None = None
+    comparison_true_target_serial: int | None = None
+    comparison_false_target_serial: int | None = None
+    comparison_selected_target_serial: int | None = None
+
+    def __post_init__(self) -> None:
+        if int(self.source_block_serial) < 0 or int(self.dispatcher_entry_serial) < 0:
+            raise ValueError("initial-state write source serial must be non-negative")
+        if type(self.source_instruction) is not InsnRecord:
+            raise TypeError("initial-state write requires exact InsnRecord")
+        if not isinstance(self.state_identity, StorageIdentity):
+            raise TypeError("initial-state write requires typed storage identity")
+        if self.state_identity.kind is not StorageIdentityKind.STACK or int(self.width) != 4:
+            raise ValueError("initial-state write requires a U32 stack state slot")
+        source_ea = int(self.source_instruction.native_ea or self.source_instruction.ea)
+        if not 0 < source_ea < 0xFFFFFFFFFFFFFFFF:
+            raise ValueError("initial-state write instruction must have a native EA")
+        dest = self.source_instruction.d
+        if self.source_instruction.kind not in {InsnKind.MOV, InsnKind.STORE}:
+            raise ValueError("initial-state write requires MOV or STORE")
+        if dest is None or dest.stkoff != int(self.state_identity.offset) or int(dest.size) != 4:
+            raise ValueError("initial-state write destination differs from typed state slot")
+        serials = tuple(int(item) for item in self.delivery_path_serials)
+        edges = tuple((int(left), int(right)) for left, right in self.delivery_path_edges)
+        if (
+            not serials
+            or serials[0] != int(self.source_block_serial)
+            or serials[-1] != int(self.dispatcher_entry_serial)
+            or len(serials) < 2
+            or serials[-2] != int(self.redirect_predecessor_serial)
+            or len(set(serials)) != len(serials)
+            or len(edges) != len(serials) - 1
+            or tuple(left for left, _ in edges) != serials[:-1]
+            or tuple(right for _, right in edges) != serials[1:]
+        ):
+            raise ValueError("initial-state write requires one exact W-to-dispatcher corridor")
+        object.__setattr__(self, "source_block_serial", int(self.source_block_serial))
+        object.__setattr__(self, "dispatcher_entry_serial", int(self.dispatcher_entry_serial))
+        object.__setattr__(self, "redirect_predecessor_serial", int(self.redirect_predecessor_serial))
+        object.__setattr__(self, "width", 4)
+        object.__setattr__(self, "normalized_state", int(self.normalized_state) & 0xFFFFFFFF)
+        object.__setattr__(self, "delivery_path_serials", serials)
+        object.__setattr__(self, "delivery_path_edges", edges)
+        selector_values = (
+            self.selector_instruction, self.selector_identity, self.selector_width,
+            self.selector_value, self.comparison_instruction, self.comparison_identity,
+            self.comparison_constant, self.comparison_true_target_serial,
+            self.comparison_false_target_serial, self.comparison_selected_target_serial,
+        )
+        if any(value is not None for value in selector_values):
+            if any(value is None for value in selector_values):
+                raise ValueError("feasible entry witness selector closure is incomplete")
+            if (
+                type(self.selector_instruction) is not InsnRecord
+                or not isinstance(self.selector_identity, StorageIdentity)
+                or int(self.selector_width) != 4
+                or type(self.comparison_instruction) is not InsnRecord
+                or self.comparison_identity != self.selector_identity
+                or int(self.comparison_selected_target_serial)
+                != int(self.dispatcher_entry_serial)
+                or int(self.comparison_selected_target_serial) not in {
+                    int(self.comparison_true_target_serial),
+                    int(self.comparison_false_target_serial),
+                }
+            ):
+                raise ValueError("feasible entry witness selector closure is invalid")
+            selector_dest = self.selector_instruction.d
+            if (
+                self.selector_instruction.kind not in {InsnKind.MOV, InsnKind.STORE}
+                or selector_dest is None
+                or selector_dest.stkoff != int(self.selector_identity.offset)
+                or int(selector_dest.size) != 4
+                or int(self.selector_instruction.native_ea or self.selector_instruction.ea) <= 0
+                or int(self.comparison_instruction.native_ea or self.comparison_instruction.ea) <= 0
+            ):
+                raise ValueError("feasible entry witness selector operation drifted")
+            object.__setattr__(self, "selector_width", 4)
+            object.__setattr__(self, "selector_value", int(self.selector_value) & 0xFFFFFFFF)
+            object.__setattr__(self, "comparison_constant", int(self.comparison_constant) & 0xFFFFFFFF)
+            object.__setattr__(self, "comparison_true_target_serial", int(self.comparison_true_target_serial))
+            object.__setattr__(self, "comparison_false_target_serial", int(self.comparison_false_target_serial))
+            object.__setattr__(self, "comparison_selected_target_serial", int(self.comparison_selected_target_serial))
 
 
 @dataclass(frozen=True, slots=True)
@@ -172,10 +288,12 @@ class DispatcherResolution:
     confidence: float
     table_provenance: TableProvenance | None = None
     ranking_reason: tuple[str, ...] = ()
+    initial_state_write_witness: InitialStateWriteWitness | None = None
 
 
 __all__ = [
     "DispatcherCandidateIdentity",
+    "InitialStateWriteWitness",
     "DispatcherResolution",
     "ResolverCandidate",
     "StateDispatcherMap",
