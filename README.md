@@ -233,6 +233,64 @@ maturities; the current graph decides whether that evidence is still coherent.
 The diagnostic SQLite database may mirror the same events for inspection, but
 it is never queried as the authority for the rewrite.
 
+### Semantic Unflattening Authority
+
+The important change is that the transaction now owns the semantic verdict. This is more than a shared data model.
+
+The authority flow is now:
+
+```text
+typed planner proposals
+        |
+        v
+source + projected graph binding
+        |
+        v
+PreparedUnflattenAuthority
+        |
+        v
+BoundUnflattenAuthority stored on transaction
+        |
+        +--> effect preservation
+        +--> dispatcher-removal validation
+        +--> entry/handler reachability
+        +--> terminal validation
+        +--> coverage validation
+        |
+        v
+observed graph revalidation
+        |
+        v
+commit receipt
+```
+
+What is centralized:
+
+- Canonical graph identity: native/logical endpoints, stable block identities, graph fingerprints, snapshots, generations, and transaction bindings.
+- Route evidence: typed route proofs, state transforms, carriers, conditional arms, logical exits, detached handlers, and entry-liveness evidence.
+- Semantic-loss classification: structural loss is classified into typed categories such as retired infrastructure, exact infeasible effect, terminal-cycle break, equivalent route, or forbidden loss.
+- Allowance authority: effect exclusions, corridor/retirement allowances, logical endpoint allowances, and handler-delivery allowances are validated once and represented as typed receipts—not naked serial sets.
+- Safety evaluation: one `SemanticSafetyCase` and one `UnflattenAuthorityVerdict` drive all transaction safety gates.
+- Projected/observed comparison: observed loss is represented as a typed delta against the projected ledger instead of being reconstructed as a raw structural-set comparison.
+- Diagnostics: phase observations, authority IDs, case IDs, ledger IDs, evidence IDs, fingerprints, timings, and failure reasons are tied to the same canonical authority object.
+- Boundary enforcement: the transaction consumes the narrow authority facade in [`unflatten_authority_facade.py`](src/d810/transforms/unflatten_authority_facade.py), while ast-grep and import-linter rules prohibit direct validator calls, raw metadata parsing, naked allowance sets, and stringly proof plumbing.
+
+The core implementation lives in the authority package’s transaction API and models: [`transaction_api.py`](src/d810/transforms/unflatten_authority/transaction_api.py#L5246), [`model.py`](src/d810/transforms/unflatten_authority/model.py#L5164), and [`patch_transaction.py`](src/d810/hexrays/mutation/patch_transaction.py#L430).
+
+What remains separate by design:
+
+- MBA/Z3 certification.
+- CoBRA/Egglog proof systems.
+- Native patch execution and mutation receipts.
+- Individual route-discovery algorithms.
+- Exact backend-operation lineage, which was intentionally deferred as observability work.
+
+So the consolidation boundary is specifically:
+
+> unflattening route evidence -> planning -> transaction-owned semantic safety -> observed validation -> commit
+
+The original fragmentation bug—one gate honoring an exclusion receipt while another independently recomputed structural loss—should no longer be possible within that path because every gate consumes the same bound authority and semantic-loss ledger.
+
 The committed MASM acceptance fixture
 [`Eid_ShowErrorAndTerminateProcess.asm`](samples/src/masm/Eid_ShowErrorAndTerminateProcess.asm)
 exercises two such routes and
