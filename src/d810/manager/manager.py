@@ -39,7 +39,6 @@ from d810.backends.ast.z3 import Z3MopProver
 from d810.backends.hexrays.registration import (
     ensure_hexrays_fact_lifter_registered,
 )
-from d810.diagnostics.post_d810_handoff import detect_post_d810_handoff_violations
 from d810.diagnostics.deobfuscation_case_repository import (
     DeobfuscationCaseRepository,
     SqliteCaseDiagnosticReader,
@@ -2620,7 +2619,6 @@ class D810Manager:
                 preanalysis_runtime=self._preanalysis_runtime,
                 block_optimizer=self.block_optimizer,
                 maturity_name_provider=_maturity_name,
-                handoff_detector=detect_post_d810_handoff_violations,
                 global_const_observer=GlobalConstObserver(
                     preparation_options=self._constant_preparation_options,
                     database_identity=database_identity,
@@ -2677,14 +2675,6 @@ class D810Manager:
         snapshot: typing.Any = None,
     ) -> None:
         self._ensure_post_d810_runtime().probe_glbopt_dce(mba, maturity, snapshot)
-
-    def validate_post_d810_handoff(
-        self,
-        mba: typing.Any,
-        maturity: int,
-        snapshot: typing.Any = None,
-    ) -> None:
-        self._ensure_post_d810_runtime().validate_handoff(mba, maturity, snapshot)
 
     def start(self):
         if self._started:
@@ -4561,10 +4551,6 @@ class D810Manager:
         self.event_emitter.on(
             DecompilationEvent.POST_D810_CAPTURE,
             self._ensure_post_d810_runtime().attach_rendered_program,
-        )
-        self.event_emitter.on(
-            DecompilationEvent.POST_D810_CAPTURE,
-            self._ensure_post_d810_runtime().validate_handoff,
         )
         self.event_emitter.on(
             DecompilationEvent.POST_D810_CAPTURE,

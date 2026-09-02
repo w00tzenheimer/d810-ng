@@ -313,7 +313,11 @@ def register_snapshot_id_resolver(
 
 
 def resolve_snapshot_id_for(snap: "SnapshotRef") -> int | None:
-    "Return the SQLite ``snapshots.id`` bound to ``snap``, or ``None``.\n\n    Used by behavior bridges (e.g. the selected-alternate-edge override\n    in ``preanalysis.flow``) and read-driven decision logic (e.g.\n    ``manager.validate_post_d810_handoff``) that need the row id to\n    issue a follow-up SQL query.\n"
+    """Return the SQLite ``snapshots.id`` bound to ``snap``, or ``None``.
+
+    Used by behavior bridges (for example the selected-alternate-edge override
+    in ``preanalysis.flow``) that need the row id to issue a follow-up SQL query.
+    """
     _ensure_backend_loaded()
     resolver = _snapshot_id_resolver
     if resolver is None:

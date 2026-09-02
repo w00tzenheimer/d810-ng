@@ -54,7 +54,6 @@ class HexRaysPostD810Runtime:
     block_optimizer: Any
     settings_provider: Callable[[], Any] = get_settings
     maturity_name_provider: Callable[[int], str] = _default_maturity_name
-    handoff_detector: Callable[..., Any] | None = None
     environ: Mapping[str, str] | None = None
     global_const_observer: Any | None = None
     mba_generation_provider: Callable[[int], int] | None = None
@@ -337,47 +336,3 @@ class HexRaysPostD810Runtime:
             self._maturity_name(int(maturity)),
             report,
         )
-
-    def validate_handoff(
-        self,
-        mba: Any,
-        maturity: int,
-        snapshot: Any = None,
-    ) -> None:
-        """Log diagnostic violations when post-D810 compaction orphans live uses."""
-        if snapshot is None:
-            return
-        if self.handoff_detector is None:
-            return
-        try:
-            from d810.core.observability import (
-                get_active_diag_conn,
-                resolve_snapshot_id_for,
-            )
-
-            diag_db = get_active_diag_conn(int(getattr(mba, "entry_ea", 0) or 0))
-            snapshot_id = resolve_snapshot_id_for(snapshot)
-            if diag_db is None or snapshot_id is None:
-                return
-            violations = self.handoff_detector(
-                diag_db,
-                func_ea_i64=int(getattr(mba, "entry_ea", 0) or 0),
-                maturity_name=self._maturity_name(int(maturity)),
-                post_snapshot_id=int(snapshot_id),
-            )
-            for violation in violations:
-                missing_offsets = ", ".join(
-                    f"0x{offset:X}" for offset in violation.missing_def_offsets
-                )
-                logger.warning(
-                    "post_d810 handoff invalid for %s: snapshot %d -> %d left live uses "
-                    "without defs for offsets [%s]; uses=%s defs=%s",
-                    violation.bundle_name,
-                    violation.pre_snapshot_id,
-                    violation.post_snapshot_id,
-                    missing_offsets,
-                    list(violation.use_sites),
-                    list(violation.def_sites),
-                )
-        except Exception:
-            logger.debug("post_d810 handoff validation failed", exc_info=True)

@@ -4,6 +4,7 @@ from __future__ import annotations
 from d810.core.diag import create_diag_database, diag_models_on
 
 import json
+import sqlite3
 import subprocess
 import sys
 from pathlib import Path
@@ -37,6 +38,10 @@ from d810.analyses.value_flow.facts import (
 from tests.unit.core.diag.fixtures import create_sub_7ffd_scenario
 
 
+HANDOFF_FUNC_EA_I64 = 0x180012B60
+HANDOFF_FUNC_EA_HEX = "0x0000000180012B60"
+
+
 @pytest.fixture()
 def loaded_db_path(tmp_path: Path) -> Path:
     """Create a temporary SQLite DB pre-loaded with the sub_7FFD scenario."""
@@ -45,6 +50,211 @@ def loaded_db_path(tmp_path: Path) -> Path:
     with diag_models_on(db):
         create_sub_7ffd_scenario(db.connection())
     db.close()
+    return db_path
+
+
+def _seed_snapshot(
+    conn: sqlite3.Connection,
+    *,
+    snapshot_id: int,
+    label: str,
+    phase: str,
+    block_count: int,
+) -> None:
+    conn.execute(
+        """
+        INSERT INTO snapshots
+            (id, label, func_ea_hex, func_ea_i64, maturity, phase, block_count, timestamp)
+        VALUES (?, ?, ?, ?, 'MMAT_GLBOPT1', ?, ?, 0.0)
+        """,
+        (snapshot_id, label, HANDOFF_FUNC_EA_HEX, HANDOFF_FUNC_EA_I64, phase, block_count),
+    )
+
+
+def _seed_block(
+    conn: sqlite3.Connection,
+    *,
+    snapshot_id: int,
+    serial: int,
+) -> None:
+    conn.execute(
+        """
+        INSERT INTO blocks
+            (snapshot_id, serial, block_type, type_name, start_ea_hex, start_ea_i64,
+             end_ea_hex, end_ea_i64, nsucc, npred, succs, preds, insn_count, meta)
+        VALUES (?, ?, 1, 'BLT_1WAY', NULL, NULL, NULL, NULL, 1, 1, '[0]', '[0]', 1, NULL)
+        """,
+        (snapshot_id, serial),
+    )
+
+
+def _seed_instruction(
+    conn: sqlite3.Connection,
+    *,
+    snapshot_id: int,
+    block_serial: int,
+    insn_index: int,
+    dstr: str,
+    dest_stkoff: int | None = None,
+    src_l_stkoff: int | None = None,
+    src_r_stkoff: int | None = None,
+) -> None:
+    conn.execute(
+        """
+        INSERT INTO instructions
+            (snapshot_id, block_serial, insn_index, ea_hex, ea_i64, opcode,
+             opcode_name, iprops, is_assert, dest_type, dest_stkoff, dest_size,
+             src_l_type, src_l_stkoff,
+             src_l_value_hex, src_l_value_i64, src_r_type, src_r_stkoff,
+             src_r_value_hex, src_r_value_i64, dstr, meta)
+        VALUES (?, ?, ?, '0x0', 0, 4, 'm_mov', 0, 0,
+                CASE WHEN ? IS NULL THEN NULL ELSE 'mop_S' END, ?, 8,
+                CASE WHEN ? IS NULL THEN NULL ELSE 'mop_S' END, ?, NULL, NULL,
+                CASE WHEN ? IS NULL THEN NULL ELSE 'mop_S' END, ?, NULL, NULL,
+                ?, NULL)
+        """,
+        (
+            snapshot_id,
+            block_serial,
+            insn_index,
+            dest_stkoff,
+            dest_stkoff,
+            src_l_stkoff,
+            src_l_stkoff,
+            src_r_stkoff,
+            src_r_stkoff,
+            dstr,
+        ),
+    )
+
+
+def _seed_handoff_bundle_pre(conn: sqlite3.Connection, *, snapshot_id: int) -> None:
+    for serial in (80, 118):
+        _seed_block(conn, snapshot_id=snapshot_id, serial=serial)
+    _seed_instruction(
+        conn,
+        snapshot_id=snapshot_id,
+        block_serial=80,
+        insn_index=0,
+        dstr="ldx    ds.2, %var_178.8, %var_230.8",
+    )
+    _seed_instruction(
+        conn,
+        snapshot_id=snapshot_id,
+        block_serial=80,
+        insn_index=1,
+        dstr="mov    #-0x4B6C02C3E6626146.8, %var_678.8",
+    )
+    _seed_instruction(
+        conn,
+        snapshot_id=snapshot_id,
+        block_serial=80,
+        insn_index=2,
+        dstr="mov    #-0x4B6C02C3E6626145.8, %var_680.8",
+    )
+    _seed_instruction(
+        conn,
+        snapshot_id=snapshot_id,
+        block_serial=80,
+        insn_index=3,
+        dstr="mov    #0xE6334342.4, %var_108.4",
+    )
+    _seed_instruction(
+        conn,
+        snapshot_id=snapshot_id,
+        block_serial=80,
+        insn_index=4,
+        dstr="mov    #0x1C6BAB0E.4, %var_110.4",
+    )
+    _seed_instruction(
+        conn,
+        snapshot_id=snapshot_id,
+        block_serial=118,
+        insn_index=0,
+        dstr="add    %var_230.8, (%var_680.8-%var_678.8), %var_360.8",
+    )
+
+
+def _seed_handoff_db(conn: sqlite3.Connection, *, with_violation: bool) -> None:
+    _seed_snapshot(
+        conn,
+        snapshot_id=19,
+        label="post_pipeline",
+        phase="post_pipeline",
+        block_count=223,
+    )
+    _seed_snapshot(
+        conn,
+        snapshot_id=20,
+        label="post_d810",
+        phase="post_d810",
+        block_count=44,
+    )
+    _seed_handoff_bundle_pre(conn, snapshot_id=19)
+    _seed_block(conn, snapshot_id=20, serial=17)
+    _seed_block(conn, snapshot_id=20, serial=29)
+    if with_violation:
+        _seed_instruction(
+            conn,
+            snapshot_id=20,
+            block_serial=17,
+            insn_index=0,
+            dstr="jnz    %var_310.8{126}, something",
+            src_l_stkoff=0x4E8,
+        )
+        _seed_instruction(
+            conn,
+            snapshot_id=20,
+            block_serial=29,
+            insn_index=0,
+            dstr="jz     something, %var_320.8, @31",
+            src_r_stkoff=0x4D8,
+        )
+    else:
+        _seed_instruction(
+            conn,
+            snapshot_id=20,
+            block_serial=17,
+            insn_index=0,
+            dstr="mov    something, %var_310.8",
+            dest_stkoff=0x4E8,
+        )
+        _seed_instruction(
+            conn,
+            snapshot_id=20,
+            block_serial=17,
+            insn_index=1,
+            dstr="jnz    %var_310.8{126}, something",
+            src_l_stkoff=0x4E8,
+        )
+        _seed_instruction(
+            conn,
+            snapshot_id=20,
+            block_serial=29,
+            insn_index=0,
+            dstr="mov    something, %var_320.8",
+            dest_stkoff=0x4D8,
+        )
+        _seed_instruction(
+            conn,
+            snapshot_id=20,
+            block_serial=29,
+            insn_index=1,
+            dstr="jz     something, %var_320.8, @31",
+            src_r_stkoff=0x4D8,
+        )
+
+
+def _make_handoff_db(tmp_path: Path, *, with_violation: bool) -> Path:
+    db_path = tmp_path / (
+        "diag-handoff-violations.sqlite3"
+        if with_violation
+        else "diag-handoff-clean.sqlite3"
+    )
+    diag_db = create_diag_database(str(db_path))
+    conn = diag_db.connection()
+    _seed_handoff_db(conn, with_violation=with_violation)
+    diag_db.close()
     return db_path
 
 
@@ -316,6 +526,31 @@ class TestSnapshotResolution:
         assert exc.value.code == 1
         err = capsys.readouterr().err
         assert "no snapshot matches maturity=MMAT_GLBOPT1 phase=post_d810" in err
+
+
+class TestHandoffCheckCommand:
+    def test_handoff_check_reports_violation(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture
+    ):
+        db_path = _make_handoff_db(tmp_path, with_violation=True)
+        rc = main(
+            ["handoff-check", "--db", str(db_path), "--func", hex(HANDOFF_FUNC_EA_I64)]
+        )
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "sub7ffd_80_118_setup_bundle" in out
+        assert "missing=0x4d8, 0x4e8" in out
+
+    def test_handoff_check_reports_none(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture
+    ):
+        db_path = _make_handoff_db(tmp_path, with_violation=False)
+        rc = main(
+            ["handoff-check", "--db", str(db_path), "--func", hex(HANDOFF_FUNC_EA_I64)]
+        )
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "No handoff violations detected" in out
 
 
 class TestRenderedProgramCommand:

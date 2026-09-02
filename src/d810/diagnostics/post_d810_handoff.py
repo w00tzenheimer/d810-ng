@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
+import argparse
 import dataclasses
+import sys
 import sqlite3
+from pathlib import Path
+
+from d810.diagnostics.output import get_output, write_output
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -28,6 +33,88 @@ class PostD810HandoffViolation:
     missing_def_offsets: tuple[int, ...]
     use_sites: tuple[str, ...]
     def_sites: tuple[str, ...]
+
+
+def _format_offsets(offsets: tuple[int, ...]) -> str:
+    return ", ".join(f"0x{int(offset):x}" for offset in offsets)
+
+
+def add_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--func",
+        type=lambda value: int(value, 0),
+        required=True,
+        help="Function EA in hex (for example 0x180012B60)",
+    )
+
+
+def run(args: argparse.Namespace) -> int:
+    func_ea_i64 = int(getattr(args, "func", 0))
+    conn_path = Path(str(getattr(args, "db", ".tmp/diag.sqlite3")))
+    if not conn_path.exists():
+        print(
+            f"handoff-check: diag DB not found: {conn_path}",
+            file=sys.stderr,
+        )
+        return 2
+
+    conn = sqlite3.connect(str(conn_path))
+    out = get_output(args)
+    try:
+        rows = conn.execute(
+            """
+            SELECT id, maturity
+            FROM snapshots
+            WHERE func_ea_i64 = ? AND phase = 'post_d810'
+            ORDER BY maturity, id
+            """,
+            (int(func_ea_i64),),
+        ).fetchall()
+        if not rows:
+            write_output(out, f"No post_d810 snapshots for 0x{int(func_ea_i64):x}")
+            return 0
+
+        write_output(
+            out,
+            f"Post-D810 handoff check for 0x{int(func_ea_i64):016x} across {len(rows)} snapshot(s)",
+        )
+        violations_found = False
+        for post_snapshot_id, maturity_name in rows:
+            violations = detect_post_d810_handoff_violations(
+                conn,
+                func_ea_i64=int(func_ea_i64),
+                maturity_name=str(maturity_name),
+                post_snapshot_id=int(post_snapshot_id),
+            )
+            if not violations:
+                continue
+            violations_found = True
+            write_output(
+                out,
+                f"\nmaturity={str(maturity_name)} post_snapshot={int(post_snapshot_id)}",
+            )
+            for violation in violations:
+                write_output(
+                    out,
+                    (
+                        f"  {violation.bundle_name}: pre={int(violation.pre_snapshot_id)} "
+                        f"post={int(violation.post_snapshot_id)} "
+                        f"missing={_format_offsets(violation.missing_def_offsets)}"
+                    ),
+                )
+                write_output(
+                    out,
+                    f"    use_sites: {', '.join(violation.use_sites)}",
+                )
+                write_output(
+                    out,
+                    f"    def_sites: {', '.join(violation.def_sites)}",
+                )
+        if not violations_found:
+            write_output(out, "No handoff violations detected")
+    finally:
+        conn.close()
+    return 0
 
 
 _POST_D810_PROTECTED_BUNDLES: tuple[PostD810ProtectedBundleSpec, ...] = (

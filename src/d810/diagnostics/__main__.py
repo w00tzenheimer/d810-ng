@@ -54,6 +54,10 @@ from d810.core.diag.models import (
 )
 from d810.diagnostics.output import add_output_argument, get_output, write_output
 from d810.core.typing import Any
+from d810.diagnostics.post_d810_handoff import (
+    add_arguments as add_handoff_check_arguments,
+    run as run_handoff_check,
+)
 
 from d810.diagnostics.alternate_correlation import (
     AlternateCorrelation,
@@ -2121,6 +2125,13 @@ def main(argv: list[str] | None = None) -> int:
     _register_residual_worksheet(sub)
     _register_snap_render(sub)
 
+    p_handoff = sub.add_parser(
+        "handoff-check",
+        parents=[common],
+        help="Run post-D810 handoff violations across all post_d810 snapshots",
+    )
+    add_handoff_check_arguments(p_handoff)
+
     args = parser.parse_args(argv)
 
     if not args.command:
@@ -2145,6 +2156,9 @@ def main(argv: list[str] | None = None) -> int:
         )
 
         return _run_frontier_diagnostics(args)
+
+    if args.command == "handoff-check":
+        return run_handoff_check(args)
 
     if args.command == "indirect-transfer-map":
         from d810.diagnostics.indirect_state_transfer_map import (
