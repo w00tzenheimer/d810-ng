@@ -656,7 +656,7 @@ class HexraysDecompilationHook(ida_hexrays.Hexrays_Hooks):
         observe_host_outcome = getattr(lifecycle, "observe_host_outcome", None)
         if callable(observe_host_outcome):
             function_ea = int(cfunc.entry_ea)
-            observed = observe_host_outcome(
+            observe_host_outcome(
                 function_ea,
                 HostDecompilationOutcome(
                     kind=HostDecompilationOutcomeKind.RENDERED,
@@ -664,11 +664,4 @@ class HexraysDecompilationHook(ida_hexrays.Hexrays_Hooks):
                     cfunc_available=True,
                 ),
             )
-            if observed and not lifecycle.has_active_sessions:
-                try:
-                    from d810.core.observability import close_observability_session
-
-                    close_observability_session()
-                except Exception:
-                    pass  # diagnostic, never gates decompilation
         return 0

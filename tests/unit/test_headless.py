@@ -118,7 +118,10 @@ def test_decompile_routes_through_manager_owned_controller(monkeypatch):
                 calls.append(("eager", eager_native_preanalysis)),
                 decompile(),
             )[2]
-        )
+        ),
+        observe_host_decompile_result=lambda function_ea, cfunc, failure, *, source: (
+            calls.append(("host_outcome", function_ea, cfunc, failure, source))
+        ),
     )
     headless._state = SimpleNamespace(manager=manager)
     headless._configured = True
@@ -138,6 +141,7 @@ def test_decompile_routes_through_manager_owned_controller(monkeypatch):
         ("controller", 0x401000),
         ("eager", False),
         ("decompile", 0x401000),
+        ("host_outcome", 0x401000, "cfunc", None, "headless"),
     ]
 
 
@@ -157,7 +161,12 @@ def test_headless_decompile_can_explicitly_enable_eager_native_preanalysis(
 
     headless._state = SimpleNamespace(
         manager=SimpleNamespace(
-            decompile_with_native_preanalysis=decompile_with_native_preanalysis
+            decompile_with_native_preanalysis=decompile_with_native_preanalysis,
+            observe_host_decompile_result=(
+                lambda function_ea, cfunc, failure, *, source: calls.append(
+                    ("host_outcome", function_ea, cfunc, failure, source)
+                )
+            ),
         )
     )
     headless._configured = True
@@ -176,6 +185,7 @@ def test_headless_decompile_can_explicitly_enable_eager_native_preanalysis(
     assert calls == [
         ("controller", 0x401000, True),
         ("decompile", 0x401000),
+        ("host_outcome", 0x401000, "cfunc", None, "headless"),
     ]
 
 
@@ -191,7 +201,10 @@ def test_decompile_forwards_hexrays_failure_output_through_controller(monkeypatc
                 calls.append(("eager", eager_native_preanalysis)),
                 decompile(),
             )[2]
-        )
+        ),
+        observe_host_decompile_result=lambda function_ea, cfunc, failure, *, source: (
+            calls.append(("host_outcome", function_ea, cfunc, failure, source))
+        ),
     )
     headless._state = SimpleNamespace(manager=manager)
     headless._configured = True
@@ -211,6 +224,7 @@ def test_decompile_forwards_hexrays_failure_output_through_controller(monkeypatc
         ("controller", 0x401000),
         ("eager", False),
         ("decompile", 0x401000, failure),
+        ("host_outcome", 0x401000, "cfunc", failure, "headless"),
     ]
 
 

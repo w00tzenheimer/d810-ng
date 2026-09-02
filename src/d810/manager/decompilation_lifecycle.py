@@ -36,7 +36,10 @@ from d810.core.native_preanalysis_key import (
     NativePreanalysisKeyMismatch,
 )
 from d810.core.provider_phase import ProviderPhaseSnapshot
-from d810.core.observability import emit as emit_diagnostic
+from d810.core.observability import (
+    close_observability_session,
+    emit as emit_diagnostic,
+)
 from d810.core.observability_events import (
     DiagnosticSessionObserved,
     EvidenceGenerationObserved,
@@ -1569,6 +1572,13 @@ class DecompilationLifecycleCoordinator:
                 )
         self._observe_session(session, "finished")
         self._emit_session_event(DecompilationEvent.SESSION_FINISHED, session.event)
+        # The coordinator is the sole owner that knows a top-level session has
+        # actually finished.  Closing here (after both diagnostic and manager
+        # lifecycle events have been delivered) covers rendered, failed, and
+        # next-prolog-abandoned outcomes without splitting a nested owner from
+        # its still-active parent.
+        if not self._active_sessions:
+            close_observability_session()
         return None
 
     def _emit_session_event(

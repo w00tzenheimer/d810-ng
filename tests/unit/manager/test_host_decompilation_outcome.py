@@ -124,6 +124,66 @@ def test_failed_host_output_finishes_owner_without_synthesizing_code(monkeypatch
     assert event.outcome.failure_code is None
 
 
+def test_final_host_outcome_closes_observability_after_lifecycle_events(monkeypatch) -> None:
+    observed: list[object] = []
+    order: list[str] = []
+
+    class _OrderedEmitter(_Emitter):
+        def emit(self, event, payload) -> None:
+            super().emit(event, payload)
+            if event is DecompilationEvent.SESSION_FINISHED:
+                order.append("finished")
+
+    monkeypatch.setattr(
+        "d810.manager.decompilation_lifecycle.emit_diagnostic", observed.append
+    )
+    monkeypatch.setattr(
+        "d810.manager.decompilation_lifecycle.close_observability_session",
+        lambda: order.append("closed"),
+    )
+    emitter = _OrderedEmitter()
+    coordinator = _coordinator(emitter)
+    coordinator.ensure_hexrays_session(
+        function_ea=0x401000,
+        database_identity="sample.i64",
+    )
+    coordinator.mark_structural_complete()
+
+    assert coordinator.observe_host_outcome(0x401000, _failed("headless", code=None))
+    assert coordinator.has_active_sessions is False
+    assert [event for event, _payload in emitter.events] == [
+        DecompilationEvent.SESSION_STARTED,
+        DecompilationEvent.SESSION_FINISHED,
+    ]
+    assert order == ["finished", "closed"]
+
+
+def test_next_prolog_abandonment_closes_before_new_owner_opens(monkeypatch) -> None:
+    observed: list[object] = []
+    close_order: list[str] = []
+    monkeypatch.setattr(
+        "d810.manager.decompilation_lifecycle.emit_diagnostic", observed.append
+    )
+    monkeypatch.setattr(
+        "d810.manager.decompilation_lifecycle.close_observability_session",
+        lambda: close_order.append("closed"),
+    )
+    coordinator = _coordinator(_Emitter())
+    coordinator.ensure_hexrays_session(
+        function_ea=0x401000,
+        database_identity="sample.i64",
+    )
+    coordinator.mark_structural_complete()
+
+    coordinator.ensure_hexrays_session(
+        function_ea=0x402000,
+        database_identity="sample.i64",
+    )
+
+    assert close_order == ["closed"]
+    assert coordinator.current_session(0x402000) is not None
+
+
 def test_next_top_level_prolog_abandons_previous_structural_owner(monkeypatch) -> None:
     observed: list[object] = []
     monkeypatch.setattr(
