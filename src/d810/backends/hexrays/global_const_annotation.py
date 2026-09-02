@@ -28,6 +28,9 @@ from d810.backends.hexrays.evidence.global_constness import (
 from d810.backends.ida.type_serialization import (
     SerializedTinfoParts,
     capture_serialized_tinfo,
+    const_candidate_semantically_matches,
+    const_variant_is_lossless,
+    is_named_record_for_const_canonicalization,
     serialize_tinfo,
 )
 from d810.capabilities.idb_preparation import (
@@ -382,6 +385,79 @@ def _type_rendering(tif: ida_typeinf.tinfo_t) -> str:
         return str(tif)
 
 
+def _const_tinfo_for_proposal(tif: ida_typeinf.tinfo_t) -> ida_typeinf.tinfo_t:
+    """Return a lossless parser-canonical const spelling when IDA needs one."""
+    updated = tif.copy()
+    updated.set_const()
+    try:
+        type_name = str(tif.get_type_name() or "")
+        pointed = tif.get_pointed_object() if tif.is_ptr() else None
+        canonicalizable = is_named_record_for_const_canonicalization(
+            is_struct=bool(tif.is_struct()),
+            is_union=bool(tif.is_union()),
+            is_anonymous=bool(tif.is_anonymous_udt()),
+            type_name=type_name,
+            is_imported_function_pointer=bool(
+                pointed is not None and pointed.is_func()
+            ),
+        )
+    except (AttributeError, TypeError, RuntimeError):
+        canonicalizable = False
+    if not canonicalizable:
+        return updated
+    try:
+        source_parts = serialize_tinfo(tif)
+        canonical_before = ida_typeinf.tinfo_t()
+        canonical = ida_typeinf.tinfo_t()
+        if (
+            ida_typeinf.parse_decl(
+                canonical_before,
+                None,
+                f"{_type_rendering(tif)};",
+                ida_typeinf.PT_SIL,
+            )
+            is None
+            or ida_typeinf.parse_decl(
+                canonical,
+                None,
+                f"{_type_rendering(updated)};",
+                ida_typeinf.PT_SIL,
+            )
+            is None
+            or not bool(canonical.is_const())
+            or not const_candidate_semantically_matches(
+                tif, canonical_before, updated, canonical
+            )
+        ):
+            return updated
+        before_parts = serialize_tinfo(canonical_before)
+        canonical_parts = serialize_tinfo(canonical)
+        before_name = str(canonical_before.get_type_name() or "")
+        canonical_name = str(canonical.get_type_name() or "")
+        if (
+            const_variant_is_lossless(
+                before_parts,
+                canonical_parts,
+                before_size=int(canonical_before.get_size()),
+                after_size=int(canonical.get_size()),
+                before_name=before_name,
+                after_name=canonical_name,
+            )
+            and before_parts.field_bytes == source_parts.field_bytes
+            and before_parts.field_comment_bytes == source_parts.field_comment_bytes
+            and canonical_parts.field_bytes == source_parts.field_bytes
+            and canonical_parts.field_comment_bytes == source_parts.field_comment_bytes
+            and int(canonical_before.get_size()) == int(tif.get_size())
+            and int(canonical.get_size()) == int(tif.get_size())
+            and before_name == type_name
+            and canonical_name == type_name
+        ):
+            return canonical
+    except (AttributeError, TypeError, RuntimeError, ValueError):
+        pass
+    return updated
+
+
 def _snapshot_from_parts(
     parts: SerializedTinfoParts | None,
 ) -> SerializedTypeSnapshot:
@@ -723,8 +799,7 @@ def annotate_function_global_consts(
             )
             continue
 
-        updated = tif.copy()
-        updated.set_const()
+        updated = _const_tinfo_for_proposal(tif)
         after_rendering = _type_rendering(updated)
         proposal = GlobalConstAnnotationProposal(
             function_ea=int(function_ea),
@@ -841,8 +916,7 @@ def annotate_global_table_access(
         )
         return GlobalConstAnnotationReport(int(function_ea), (outcome,))
 
-    updated = tif.copy()
-    updated.set_const()
+    updated = _const_tinfo_for_proposal(tif)
     after_rendering = _type_rendering(updated)
     proposal = GlobalConstAnnotationProposal(
         function_ea=int(function_ea),

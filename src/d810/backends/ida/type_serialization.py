@@ -8,8 +8,12 @@ __all__ = [
     "SerializedTinfoParts",
     "apply_serialized_tinfo",
     "capture_serialized_tinfo",
+    "const_candidate_semantically_matches",
+    "const_variant_is_lossless",
     "deserialize_tinfo",
+    "is_named_record_for_const_canonicalization",
     "serialize_tinfo",
+    "tinfo_semantically_equal",
 ]
 
 
@@ -28,6 +32,89 @@ class SerializedTinfoParts:
             self.field_comment_bytes, bytes
         ):
             raise TypeError("field_comment_bytes must be bytes or None")
+
+
+def is_named_record_for_const_canonicalization(
+    *,
+    is_struct: bool,
+    is_union: bool,
+    is_anonymous: bool,
+    type_name: str,
+    is_imported_function_pointer: bool = False,
+) -> bool:
+    """Whether a parsed const spelling is warranted for this imported shape."""
+    named_record = (
+        (is_struct or is_union)
+        and not is_anonymous
+        and isinstance(type_name, str)
+        and bool(type_name.strip())
+    )
+    return bool(named_record or is_imported_function_pointer)
+
+
+def const_variant_is_lossless(
+    before: SerializedTinfoParts,
+    after: SerializedTinfoParts,
+    *,
+    before_size: int,
+    after_size: int,
+    before_name: str,
+    after_name: str,
+) -> bool:
+    """Require a parsed candidate to differ only by IDA's const modifier."""
+    if int(before_size) != int(after_size) or before_name != after_name:
+        return False
+    if (
+        before.field_bytes != after.field_bytes
+        or before.field_comment_bytes != after.field_comment_bytes
+        or len(before.type_bytes) != len(after.type_bytes)
+    ):
+        return False
+    differences = [
+        (index, left, right)
+        for index, (left, right) in enumerate(zip(before.type_bytes, after.type_bytes))
+        if left != right
+    ]
+    if len(differences) != 1:
+        return False
+    index, before_byte, after_byte = differences[0]
+    return (
+        index == 0
+        and not (before_byte & 0x40)
+        and bool(after_byte & 0x40)
+        and before_byte ^ after_byte == 0x40
+    )
+
+
+def tinfo_semantically_equal(left: object, right: object) -> bool:
+    """Compare tinfo objects through public semantic comparison APIs."""
+    equals_to = getattr(left, "equals_to", None)
+    reverse_equals_to = getattr(right, "equals_to", None)
+    if callable(equals_to) and callable(reverse_equals_to):
+        try:
+            return bool(equals_to(right)) and bool(reverse_equals_to(left))
+        except (AttributeError, TypeError, RuntimeError):
+            pass
+    compare_with = getattr(left, "compare_with", None)
+    reverse_compare_with = getattr(right, "compare_with", None)
+    if callable(compare_with) and callable(reverse_compare_with):
+        try:
+            return bool(compare_with(right, 0)) and bool(reverse_compare_with(left, 0))
+        except (AttributeError, TypeError, RuntimeError):
+            pass
+    return False
+
+
+def const_candidate_semantically_matches(
+    source: object,
+    parsed_nonconst: object,
+    direct_const: object,
+    parsed_const: object,
+) -> bool:
+    """Require parser canonicalization to preserve both semantic variants."""
+    return tinfo_semantically_equal(source, parsed_nonconst) and tinfo_semantically_equal(
+        direct_const, parsed_const
+    )
 
 
 def serialize_tinfo(tif: object) -> SerializedTinfoParts:

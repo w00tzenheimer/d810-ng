@@ -12,6 +12,9 @@ from d810.backends.ida.idb_preparation.type_metadata import (
 from d810.backends.ida.type_serialization import (
     SerializedTinfoParts,
     apply_serialized_tinfo,
+    const_candidate_semantically_matches,
+    const_variant_is_lossless,
+    is_named_record_for_const_canonicalization,
 )
 from d810.capabilities.idb_preparation import SerializedTypeSnapshot
 
@@ -157,3 +160,56 @@ def test_serialized_type_apply_falls_back_to_ida_nalt_set_tinfo(monkeypatch) -> 
 
     assert apply_serialized_tinfo(0x500000, parts)
     assert calls == ["apply", "set", "apply"]
+
+
+def test_const_parser_canonicalization_is_limited_to_lossless_record_shapes() -> None:
+    assert not is_named_record_for_const_canonicalization(
+        is_struct=True, is_union=False, is_anonymous=True, type_name="_CERTSTORE"
+    )
+    assert not is_named_record_for_const_canonicalization(
+        is_struct=False, is_union=False, is_anonymous=False, type_name="DWORD"
+    )
+    assert is_named_record_for_const_canonicalization(
+        is_struct=True, is_union=False, is_anonymous=False, type_name="_CERTSTORE"
+    )
+
+    before = SerializedTinfoParts(b"\x0a\x10", b"fields", b"comments")
+    assert const_variant_is_lossless(
+        before,
+        SerializedTinfoParts(b"\x4a\x10", b"fields", b"comments"),
+        before_size=16,
+        after_size=16,
+        before_name="_CERTSTORE",
+        after_name="_CERTSTORE",
+    )
+    assert not const_variant_is_lossless(
+        before,
+        SerializedTinfoParts(b"\x4a\x11", b"fields", b"comments"),
+        before_size=16,
+        after_size=16,
+        before_name="_CERTSTORE",
+        after_name="_CERTSTORE",
+    )
+
+
+class _ComparableTinfo:
+    def __init__(self, semantic: str) -> None:
+        self.semantic = semantic
+
+    def equals_to(self, other: object) -> bool:
+        return isinstance(other, _ComparableTinfo) and self.semantic == other.semantic
+
+
+def test_const_parser_canonicalization_requires_semantic_equivalence() -> None:
+    assert not const_candidate_semantically_matches(
+        _ComparableTinfo("source"),
+        _ComparableTinfo("different"),
+        _ComparableTinfo("const"),
+        _ComparableTinfo("const"),
+    )
+    assert const_candidate_semantically_matches(
+        _ComparableTinfo("source"),
+        _ComparableTinfo("source"),
+        _ComparableTinfo("const"),
+        _ComparableTinfo("const"),
+    )
