@@ -2884,6 +2884,20 @@ def _trusted_source_scoped_transition_entry_route(
 
 
 
+def _native_bound_route_is_non_singleton_range(
+    route: NativeBoundTransitionRoute,
+) -> bool:
+    """Whether typed route provenance is too broad for an entry bypass.
+
+    Native binding preserves a current source/target identity, but an interval
+    range still proves only membership in a router interval.  It may support an
+    internal transition; replacing the function-entry edge needs a singleton.
+    Routes without typed producer-row provenance retain legacy handling until
+    canonical semantic authority owns every producer.
+    """
+    return getattr(route, "row_kind", None) in {"interval_range", "range"}
+
+
 def _native_bound_entry_targets(
     flow_graph,
     dispatcher_entry_serial: int | None,
@@ -2902,6 +2916,8 @@ def _native_bound_entry_targets(
     targets: set[int] = set()
     for route in routes:
         try:
+            if _native_bound_route_is_non_singleton_range(route):
+                continue
             if int(route.state_constant) & 0xFFFFFFFF != normalized:
                 continue
             source = int(route.source_block_serial)
@@ -2921,13 +2937,53 @@ def _native_bound_entry_targets(
     return targets
 
 
+def _has_non_singleton_native_bound_entry_route(
+    flow_graph,
+    dispatcher_entry_serial: int | None,
+    state: int,
+    routes: tuple[NativeBoundTransitionRoute, ...],
+) -> bool:
+    """Whether this live entry edge has typed range-only native provenance."""
+    if flow_graph is None or dispatcher_entry_serial is None:
+        return False
+    try:
+        normalized = int(state) & 0xFFFFFFFF
+    except _PROVIDER_SHAPE_ERRORS:
+        return False
+    dispatcher_entry_serial = int(dispatcher_entry_serial)
+    entry_prefix = _entry_prefix_blocks(flow_graph, dispatcher_entry_serial)
+    for route in routes:
+        try:
+            if (
+                not _native_bound_route_is_non_singleton_range(route)
+                or int(route.state_constant) & 0xFFFFFFFF != normalized
+            ):
+                continue
+            source = int(route.source_block_serial)
+        except _PROVIDER_SHAPE_ERRORS:
+            continue
+        source_block = flow_graph.get_block(source)
+        if (
+            source in entry_prefix
+            and source_block is not None
+            and source_block.nsucc == 1
+            and int(source_block.succs[0]) == dispatcher_entry_serial
+        ):
+            return True
+    return False
+
+
 def _native_bound_routes_for_entry_state(
     state: int | None,
     routes: tuple[NativeBoundTransitionRoute, ...],
 ) -> tuple[NativeBoundTransitionRoute, ...]:
     """Restrict source-keyed entry builders to an explicit scalar state."""
     if state is None:
-        return tuple(routes)
+        return tuple(
+            route
+            for route in routes
+            if not _native_bound_route_is_non_singleton_range(route)
+        )
     try:
         normalized = int(state) & 0xFFFFFFFF
     except _PROVIDER_SHAPE_ERRORS:
@@ -2935,6 +2991,8 @@ def _native_bound_routes_for_entry_state(
     matching: list[NativeBoundTransitionRoute] = []
     for route in routes:
         try:
+            if _native_bound_route_is_non_singleton_range(route):
+                continue
             if int(route.state_constant) & 0xFFFFFFFF == normalized:
                 matching.append(route)
         except _PROVIDER_SHAPE_ERRORS:
@@ -3177,6 +3235,24 @@ def _resolve_entry_state_route_resolution(
         return _EntryStateRouteResolution(None, conflict=resolution.conflict)
     target = int(route.target_block)
     if (
+        set(route.source_kinds) == {"interval"}
+        and _has_non_singleton_native_bound_entry_route(
+            flow_graph,
+            dispatcher_entry_serial,
+            state,
+            native_bound_transition_routes,
+        )
+        and not _explicit_singleton_route_evidence(
+            dispatcher, route.normalized_state, target
+        )
+    ):
+        # A concrete value may land inside a wide interval while the dispatcher
+        # still has no singleton proof for that value.  Keep the router rather
+        # than treating its range lookup as permission to replace the function
+        # entry edge.  This is deliberately an entry-only abstention: internal
+        # state transitions may continue to use the same range evidence.
+        return _EntryStateRouteResolution(None)
+    if (
         condition_chain_handlers
         and target not in condition_chain_handlers
         and not (
@@ -3340,7 +3416,11 @@ def build_native_bound_state_entry_bridges(
     """Bypass a native-bound route from the function-entry prefix."""
     return _build_source_keyed_state_entry_bridges(
         flow_graph,
-        routes,
+        tuple(
+            route
+            for route in routes
+            if not _native_bound_route_is_non_singleton_range(route)
+        ),
         dispatcher_region_serials=dispatcher_region_serials,
         authoritative_handler_serials=authoritative_handler_serials,
         peer_routes=peer_routes,

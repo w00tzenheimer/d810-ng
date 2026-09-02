@@ -142,6 +142,8 @@ class NativeBoundTransitionRoute:
     source_block_serial: int
     state_constant: int
     target_handler_serial: int
+    resolver_kind: str | None = None
+    row_kind: str | None = None
 
     def __post_init__(self) -> None:
         fact_id = str(self.fact_id).strip()
@@ -157,11 +159,30 @@ class NativeBoundTransitionRoute:
         state_constant = int(self.state_constant)
         if not 0 <= state_constant <= 0xFFFFFFFF:
             raise ValueError("native-bound transition route state must be 32-bit")
+        resolver_kind = self.resolver_kind
+        row_kind = self.row_kind
+        if (resolver_kind is None) != (row_kind is None):
+            raise ValueError(
+                "native-bound route provenance requires resolver and row kinds together"
+            )
+        if resolver_kind is not None:
+            if not isinstance(resolver_kind, str) or not resolver_kind.strip():
+                raise ValueError(
+                    "native-bound route resolver kind must be a non-empty string"
+                )
+            if not isinstance(row_kind, str) or not row_kind.strip():
+                raise ValueError(
+                    "native-bound route row kind must be a non-empty string"
+                )
+            resolver_kind = resolver_kind.strip()
+            row_kind = row_kind.strip()
         object.__setattr__(self, "fact_id", fact_id)
         object.__setattr__(self, "source_instruction_ea", source_instruction_ea)
         object.__setattr__(self, "source_block_serial", source_block_serial)
         object.__setattr__(self, "state_constant", state_constant)
         object.__setattr__(self, "target_handler_serial", target_handler_serial)
+        object.__setattr__(self, "resolver_kind", resolver_kind)
+        object.__setattr__(self, "row_kind", row_kind)
 
     @property
     def state(self) -> int:
@@ -380,7 +401,20 @@ def bind_native_bound_transition_routes(
     # answer must agree with a dual-bound target, while an incomplete router
     # may defer to that current native target binding.
     grouped_observations: dict[
-        int, list[tuple[str, int, int, int, bool, int, int | None]]
+        int,
+        list[
+            tuple[
+                str,
+                int,
+                int,
+                int,
+                bool,
+                int,
+                int | None,
+                str | None,
+                str | None,
+            ]
+        ],
     ] = {}
     invalid_source_eas: set[int] = set()
     for resolution in resolutions:
@@ -438,6 +472,14 @@ def bind_native_bound_transition_routes(
             typed_fact,
             target_native_ea,
         ) = projected
+        resolver_kind: str | None = None
+        row_kind: str | None = None
+        if typed_fact:
+            resolver_kind = str(getattr(resolution, "resolver_kind", "")).strip()
+            row_kind = str(getattr(resolution, "row_kind", "")).strip()
+            if not resolver_kind or not row_kind:
+                invalid_source_eas.add(source_ea)
+                continue
         try:
             bound_serials = _serial_candidates(
                 block_serial_for_instruction_ea(source_ea)
@@ -497,6 +539,8 @@ def bind_native_bound_transition_routes(
                 typed_fact,
                 source_serial,
                 target_native_ea,
+                resolver_kind,
+                row_kind,
             )
         )
 
@@ -505,7 +549,8 @@ def bind_native_bound_transition_routes(
     # typed predecessor facts deliberately treat that target as provenance
     # only.  Any malformed/conflicting member rejects the complete group.
     grouped: dict[
-        tuple[int, int], list[tuple[str, int, int, int, int, bool]]
+        tuple[int, int],
+        list[tuple[str, int, int, int, int, bool, str | None, str | None]],
     ] = {}
     for source_ea, observations in grouped_observations.items():
         if source_ea in invalid_source_eas:
@@ -515,6 +560,7 @@ def bind_native_bound_transition_routes(
             continue
         typed_target_native_eas: set[int] = set()
         typed_missing_target_native_ea = False
+        typed_provenances: set[tuple[str, str]] = set()
         for item in observations:
             (
                 _fact_id,
@@ -524,12 +570,17 @@ def bind_native_bound_transition_routes(
                 typed_fact,
                 _serial,
                 target_native_ea,
+                resolver_kind,
+                row_kind,
             ) = item
             if typed_fact:
                 if target_native_ea is not None:
                     typed_target_native_eas.add(target_native_ea)
                 else:
                     typed_missing_target_native_ea = True
+                if resolver_kind is None or row_kind is None:
+                    continue
+                typed_provenances.add((resolver_kind, row_kind))
         if len(typed_target_native_eas) > 1:
             # Two native target identities for one source group cannot be
             # reconciled by a stale serial or by whichever route happens to
@@ -538,6 +589,11 @@ def bind_native_bound_transition_routes(
         if typed_target_native_eas and typed_missing_target_native_ea:
             # A missing native identity cannot be merged safely with a
             # native-keyed observation whose prior serial drifted.
+            continue
+        if len(typed_provenances) > 1:
+            # One current native route cannot silently choose between producer
+            # row policies.  Preserve the distinction for entry consumers or
+            # reject the entire source group.
             continue
         bound_target_serial: int | None = None
         if typed_target_native_eas:
@@ -557,7 +613,9 @@ def bind_native_bound_transition_routes(
                 or bound_target_serial in dispatcher_serials
             ):
                 continue
-        candidates: list[tuple[str, int, int, int, int, bool]] = []
+        candidates: list[
+            tuple[str, int, int, int, int, bool, str | None, str | None]
+        ] = []
         invalid_group = False
         for (
             fact_id,
@@ -567,6 +625,8 @@ def bind_native_bound_transition_routes(
             typed_fact,
             source_serial,
             _target_native_ea,
+            resolver_kind,
+            row_kind,
         ) in observations:
             routed_targets: tuple[int, ...] = ()
             if route_target_for_state is not None:
@@ -614,6 +674,8 @@ def bind_native_bound_transition_routes(
                     state_constant,
                     current_target_serial,
                     typed_fact,
+                    resolver_kind,
+                    row_kind,
                 )
             )
         if invalid_group or not candidates:
@@ -628,12 +690,23 @@ def bind_native_bound_transition_routes(
         route_pairs = {(item[3], item[4]) for item in items}
         if len(route_pairs) != 1:
             continue
-        fact_id, source_ea, source_serial, state_constant, target_serial, _ = min(
+        (
+            fact_id,
+            source_ea,
+            source_serial,
+            state_constant,
+            target_serial,
+            typed_fact,
+            resolver_kind,
+            row_kind,
+        ) = min(
             items,
             # If both safe paths are present, use typed predecessor evidence as
-            # the single authority for this source rather than duplicating it.
+            # the single provenance source rather than duplicating it.
             key=lambda item: (not item[5], str(item[0])),
         )
+        if not typed_fact:
+            resolver_kind, row_kind = None, None
         selected.append(
             NativeBoundTransitionRoute(
                 fact_id=fact_id,
@@ -641,6 +714,8 @@ def bind_native_bound_transition_routes(
                 source_block_serial=source_serial,
                 state_constant=state_constant,
                 target_handler_serial=target_serial,
+                resolver_kind=resolver_kind,
+                row_kind=row_kind,
             )
         )
     return tuple(

@@ -1053,6 +1053,45 @@ def test_native_bound_adapter_accepts_carrier_drift_with_typed_predecessor_route
     assert routes[0].source_block_serial == 42
     assert routes[0].state_constant == 0x16AA65E9
     assert routes[0].target_handler_serial == 7
+    assert routes[0].resolver_kind == "interval_dispatcher_row"
+    assert routes[0].row_kind == "interval_range"
+
+
+def test_native_bound_adapter_rejects_conflicting_typed_row_provenance() -> None:
+    """One native fact id cannot select an entry policy by input order."""
+    source_ea = 0x7FF855576BA0
+    target_ea = 0x7FF855576BB1
+
+    class _Index:
+        def rebind_native_ea(self, ea):
+            serial = {source_ea: 42, target_ea: 7}[int(ea)]
+            return SimpleNamespace(block=SimpleNamespace(serial=serial))
+
+    exact = PredecessorDispatcherTargetFact(
+        fact_id="predecessor:duplicate-provenance",
+        predecessor_block_serial=15,
+        dispatcher_entry_serial=2,
+        state_const=0x16AA65E9,
+        target_block_serial=99,
+        resolver_kind="interval_dispatcher_row",
+        row_kind="interval_exact",
+        source_instruction_ea=source_ea,
+        target_native_ea=target_ea,
+        state_var_stkoff=52,
+    )
+    range_row = replace(exact, row_kind="interval_range")
+    bind = state_machine_module.bind_native_bound_transition_routes_for_current_mba
+    arguments = dict(
+        current_block_identity_index=_Index(),
+        graph=SimpleNamespace(blocks={7: object(), 42: object()}),
+        dispatcher=SimpleNamespace(lookup=lambda _state: 7),
+        dispatcher_region_serials=frozenset({2}),
+        state_var_stkoff=52,
+        state_var_reg=None,
+    )
+
+    assert bind((exact, range_row), **arguments) == ()
+    assert bind((range_row, exact), **arguments) == ()
 
 
 def test_native_bound_adapter_uses_unique_initial_state_carrier_family():

@@ -693,14 +693,27 @@ def test_native_cfg_persistence_keeps_exact_terminal_alias_anchor() -> None:
     ] == [(8, 2, 9)]
 
 
-def _native_bound_route(*, source: int, state: int, target: int, fact_id: str = "fact"):
-    return NativeBoundTransitionRoute(
+def _native_bound_route(
+    *,
+    source: int,
+    state: int,
+    target: int,
+    fact_id: str = "fact",
+    resolver_kind: str | None = None,
+    row_kind: str | None = None,
+):
+    values = dict(
         fact_id=fact_id,
         source_instruction_ea=0x7FF855576BA0 + source,
         source_block_serial=source,
         state_constant=state,
         target_handler_serial=target,
     )
+    if resolver_kind is not None:
+        values["resolver_kind"] = resolver_kind
+    if row_kind is not None:
+        values["row_kind"] = row_kind
+    return NativeBoundTransitionRoute(**values)
 
 
 def test_native_bound_route_enriches_unresolved_entry_transition() -> None:
@@ -963,6 +976,87 @@ def test_native_bound_entry_route_receipt_identifies_exact_redirect(monkeypatch)
     )
 
 
+def test_native_bound_interval_range_cannot_bypass_function_entry() -> None:
+    """An interval interior is a router hint, not an exact entry bridge."""
+    fg = FlowGraph(
+        blocks={
+            0: _b(0, (1,), ()),
+            1: _b(1, (2,), (0,)),
+            2: _b(2, (10,), (1, 10)),
+            10: _b(10, (2,), (2,)),
+        },
+        entry_serial=0,
+        func_ea=0x1000,
+    )
+
+    modifications = build_native_bound_state_entry_bridges(
+        fg,
+        (
+            _native_bound_route(
+                source=1,
+                state=0x3C7BAD9A,
+                target=10,
+                fact_id="entry:interval-range",
+                resolver_kind="interval_dispatcher_row",
+                row_kind="interval_range",
+            ),
+        ),
+        dispatcher_region_serials=frozenset({2}),
+        authoritative_handler_serials=frozenset({10}),
+    )
+
+    assert modifications == []
+
+
+def test_interval_only_entry_route_bails_without_a_singleton_proof(
+    monkeypatch,
+) -> None:
+    """The generic interval provider cannot re-promote a rejected range row."""
+    state = 0x3C7BAD9A
+    fg = FlowGraph(
+        blocks={
+            0: _b(0, (1,), ()),
+            1: _b(1, (2,), (0,)),
+            2: _b(2, (10,), (1, 10)),
+            10: _b(10, (2,), (2,)),
+        },
+        entry_serial=0,
+        func_ea=0x1000,
+    )
+    dispatcher = _DualRouteDispatcher(
+        exact_targets={},
+        interval_rows=(IntervalRow(lo=state - 1, hi=state + 2, target=10),),
+    )
+    monkeypatch.setattr(
+        minimal_unflatten_emit_module,
+        "recover_state_write_transitions_via_partitioned_fixpoint",
+        lambda *_args, **_kwargs: (),
+    )
+
+    plan = emit_minimal_unflatten(
+        fg,
+        dispatcher,
+        state_var_stkoff=_STATE,
+        dispatcher_entry_serial=2,
+        initial_state=state,
+        native_bound_transition_routes=(
+            _native_bound_route(
+                source=1,
+                state=state,
+                target=10,
+                fact_id="entry:interval-range",
+                resolver_kind="interval_dispatcher_row",
+                row_kind="interval_range",
+            ),
+        ),
+        condition_chain_handlers=frozenset({10}),
+        authoritative_handler_serials=frozenset({10}),
+        dispatcher_region_serials=frozenset({2}),
+    )
+
+    assert graph_modifications(plan) == []
+
+
 def test_native_bound_route_receipt_is_not_logged_before_entry_bridge_bail(
     monkeypatch, caplog
 ):
@@ -1102,6 +1196,8 @@ def test_native_bound_routes_seed_missing_current_backedge_transition(
                 state=backedge_state,
                 target=20,
                 fact_id="backedge",
+                resolver_kind="interval_dispatcher_row",
+                row_kind="interval_range",
             ),
         ),
         condition_chain_handlers=frozenset({10, 20}),
