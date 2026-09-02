@@ -267,6 +267,44 @@ def test_plan_item_persists_old_and_additional_target_shapes(diag_conn) -> None:
     )
 
 
+def test_plan_item_persists_unsigned_u64_anchors_in_signed_sqlite_lane(diag_conn) -> None:
+    anchor = 0xFFFFFFFFFFFFFFFE
+    event = MutationPlanObserved(
+        session_id="s1",
+        func_ea=0x40C8B0,
+        mutation_batch_id="u64-anchor-plan",
+        mutation_kind="edge_redirect",
+        planned_operation_count=1,
+        mba_generation=8,
+        evidence_generation=3,
+        maturity="MMAT_CALLS",
+        description="preserve unsigned anchor",
+        items=(
+            MutationPlanItemObserved(
+                item_index=0,
+                mutation_kind="edge_redirect",
+                source_serial=1,
+                source_anchor_ea=anchor,
+                source_identity_json=None,
+                target_serial=2,
+                target_anchor_ea=anchor,
+                target_identity_json=None,
+                disposition="planned",
+                reason="u64 anchor",
+                old_target_anchor_ea=anchor,
+            ),
+        ),
+    )
+    emit(event)
+
+    assert diag_conn.execute(
+        "SELECT source_anchor_ea_hex,source_anchor_ea_i64,"
+        "target_anchor_ea_i64,old_target_anchor_ea_i64 "
+        "FROM mutation_plan_items WHERE mutation_batch_id=?",
+        ("u64-anchor-plan",),
+    ).fetchone() == ("0xfffffffffffffffe", -2, -2, -2)
+
+
 def test_timeline_prints_typed_host_failure_code_and_ea(diag_conn) -> None:
     emit(
         HostDecompilationOutcomeObserved(

@@ -615,6 +615,14 @@ def _anchor_hex(anchor: int | None) -> str | None:
     return f"0x{int(anchor) & 0xFFFFFFFFFFFFFFFF:016x}"
 
 
+def _sqlite_i64(value: int | None) -> int | None:
+    """Store a U64 diagnostic coordinate in SQLite's signed INTEGER lane."""
+    if value is None:
+        return None
+    normalized = int(value) & 0xFFFFFFFFFFFFFFFF
+    return normalized - (1 << 64) if normalized >= (1 << 63) else normalized
+
+
 def _compact_json_strings(values: tuple[str, ...]) -> str:
     return json.dumps(list(values), separators=(",", ":"))
 
@@ -673,15 +681,15 @@ def persist_mutation_plan(
                 item.mutation_kind,
                 item.source_serial,
                 _anchor_hex(item.source_anchor_ea),
-                item.source_anchor_ea,
+                _sqlite_i64(item.source_anchor_ea),
                 item.source_identity_json,
                 item.target_serial,
                 _anchor_hex(item.target_anchor_ea),
-                item.target_anchor_ea,
+                _sqlite_i64(item.target_anchor_ea),
                 item.target_identity_json,
                 item.old_target_serial,
                 _anchor_hex(item.old_target_anchor_ea),
-                item.old_target_anchor_ea,
+                _sqlite_i64(item.old_target_anchor_ea),
                 item.old_target_identity_json,
                 json.dumps(
                     [
