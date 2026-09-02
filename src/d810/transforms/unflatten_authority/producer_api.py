@@ -19,6 +19,7 @@ from d810.analyses.control_flow.semantic_route_evidence import (
     SemanticRouteProofKind,
     SemanticRouteFact,
     SemanticRouteFactKind,
+    semantic_route_proof_kind_for_fact,
     SemanticRouteShape,
     SemanticStateWriteDeliveryKind,
     SemanticCorridorPoint,
@@ -366,23 +367,49 @@ def _inventory_instruction_rows(
                 raise ValueError("operand size must be a nonnegative exact int")
             sizes.append(operand.size)
         predicate_observation = None
+        predicate_kind = insn.branch_predicate
+        predicate_left, predicate_right = insn.l, insn.r
+        # Hex-Rays materializes synthesized comparisons as ``jnz(setX(...))``.
+        # Preserve the inner comparison as the semantic predicate while the
+        # outer branch remains ordinary control-transfer evidence.
+        nested_predicate = bool(
+            insn.l is not None
+            and insn.l.sub_predicate_kind is not None
+            and insn.l.sub_l is not None
+            and insn.l.sub_r is not None
+        )
+        if nested_predicate:
+            predicate_kind = insn.l.sub_predicate_kind
+            predicate_left, predicate_right = insn.l.sub_l, insn.l.sub_r
         if (
             insn.kind in {InsnKind.COND_JUMP, InsnKind.EQUALITY_JUMP}
-            and insn.branch_predicate is PredicateKind.EQ
+            and predicate_kind is not None
+            and predicate_kind is not PredicateKind.TRUTHY
             and len(block.succs) == 2
             and insn.d is not None
             and insn.d.block_ref == block.succs[1]
         ):
-            storage = storage_identity_from_mop_snapshot(insn.l)
+            storage = storage_identity_from_mop_snapshot(predicate_left)
             if (
-                insn.l is not None and insn.l.kind is OperandKind.STACK
-                and insn.r is not None and insn.r.kind is OperandKind.NUMBER
-                and insn.r.value is not None
+                predicate_left is not None
+                and predicate_right is not None
+                and predicate_right.kind is OperandKind.NUMBER
+                and predicate_right.value is not None
                 and insn.d.kind is OperandKind.BLOCK
-                and insn.d.block_ref is not None and storage is not None
+                and insn.d.block_ref is not None
+                and storage is not None
+                and predicate_left.size > 0
+                and (
+                    nested_predicate
+                    or predicate_left.kind is OperandKind.STACK
+                )
             ):
                 predicate_observation = model.InventoryPredicateObservation(
-                    PredicateKind.EQ, storage, insn.l.size, insn.r.value, insn.d.block_ref,
+                    predicate_kind,
+                    storage,
+                    predicate_left.size,
+                    predicate_right.value,
+                    insn.d.block_ref,
                 )
         semantic_width = (
             int(insn.d.size)
@@ -1098,7 +1125,16 @@ def _witness_for_serial(
     try:
         return by_ref[block_refs_by_serial[serial_int]]
     except KeyError as exc:
-        raise ValueError("block serial reference is absent from source catalog") from exc
+        block = source.blocks[serial_int]
+        anchor = next(
+            (int(insn.ea) for insn in block.insn_snapshots),
+            int(source.func_ea),
+        )
+        raise ValueError(
+            "block serial reference is absent from source catalog "
+            f"(candidate=blk{serial_int}@0x{anchor:x}, "
+            f"ref={type(block_refs_by_serial[serial_int]).__name__})"
+        ) from exc
 
 
 def resolve_block_locator(
@@ -1167,6 +1203,157 @@ def _destination_matches_witness(destination: object, witness: SourceBlockIdenti
     return True
 
 
+def _canonical_handler_state_anchors(
+    *,
+    witness: SourceBlockIdentityWitness,
+    canonical_route_evidence: CanonicalSemanticEvidence,
+    state_identity: StorageIdentity,
+) -> dict[int, set[int]]:
+    """Return the one canonical destination catalogue for a handler witness."""
+
+    state_to_anchors: dict[int, set[int]] = {}
+    for proof in canonical_route_evidence.route_proofs:
+        for destination in proof.destinations:
+            if _destination_matches_witness(
+                destination, witness, canonical_route_evidence.native_key,
+            ):
+                proof_state_identities = tuple(
+                    identity
+                    for identity in (
+                        getattr(
+                            getattr(proof, "state_write", None),
+                            "state_variable", None,
+                        ),
+                        getattr(
+                            getattr(proof, "predicate", None),
+                            "storage_identity", None,
+                        ),
+                    )
+                    if identity is not None
+                )
+                if any(identity != state_identity for identity in proof_state_identities):
+                    raise ValueError(
+                        "canonical route state identity disagrees with plan input"
+                    )
+                state_to_anchors.setdefault(
+                    int(destination.state_constant), set(),
+                ).add(int(destination.target_anchor_ea))
+    return state_to_anchors
+
+
+def derive_authoritative_handler_serials(
+    *,
+    source: FlowGraph,
+    source_catalog: SourceIdentityCatalog,
+    block_refs_by_serial: Mapping[int, AuthorityBlockRef],
+    recovered_handler_serials: Iterable[int],
+    caller_handler_serials: Iterable[int],
+    canonical_route_evidence: CanonicalSemanticEvidence,
+    state_identity: StorageIdentity,
+    selected_route_proofs: Iterable[SemanticRouteProof] = (),
+) -> tuple[int, ...]:
+    """Promote recovered destinations and explicit handlers into authority.
+
+    Condition-chain handlers are syntactic discovery candidates, not proof
+    authority.  A recovered native candidate becomes an authoritative handler
+    only when canonical route evidence selects it as a destination.  An
+    explicit caller serial proposal remains a delivery-only obligation unless
+    one selected canonical route already discharges the same stable native
+    destination.  The exact logical function-exit sink may be discarded only
+    from recovered discovery noise; explicit logical or unknown proposals
+    always fail closed.
+    """
+
+    _catalog_ref_by_serial(source, source_catalog, block_refs_by_serial)
+    if type(canonical_route_evidence) is not CanonicalSemanticEvidence:
+        raise TypeError("canonical_route_evidence must be canonical")
+    if canonical_route_evidence.native_key != source_catalog.native_key:
+        raise ValueError("canonical route evidence has a foreign native key")
+    if canonical_route_evidence.generation != source_catalog.generation:
+        raise ValueError("canonical route evidence generation is stale")
+    if type(state_identity) is not StorageIdentity:
+        raise TypeError("state_identity must be a StorageIdentity")
+    selected_proofs = tuple(selected_route_proofs)
+    known_proofs = {
+        proof.proof_id: proof
+        for proof in canonical_route_evidence.route_proofs
+    }
+    if any(type(proof) is not SemanticRouteProof for proof in selected_proofs):
+        raise TypeError("selected_route_proofs must contain canonical route proofs")
+    if any(known_proofs.get(proof.proof_id) != proof for proof in selected_proofs):
+        raise ValueError("selected route proof is foreign to canonical evidence")
+    # A selected route claim discharges only its retired source endpoint. Its
+    # destination remains a physical delivery obligation unless independently
+    # discharged by a selected route that retires that exact source identity.
+    selected_retired_source_identities = frozenset(
+        proof.source_identity for proof in selected_proofs
+    )
+    recovered = tuple(sorted({
+        _as_serial(serial, "recovered handler serial")
+        for serial in recovered_handler_serials
+    }))
+    caller = tuple(sorted({
+        _as_serial(serial, "caller handler serial")
+        for serial in caller_handler_serials
+    }))
+
+    def native_witness(
+        serial: int, *, recovered_candidate: bool,
+    ) -> SourceBlockIdentityWitness | None:
+        candidate_ref = block_refs_by_serial.get(serial)
+        candidate_block = source.get_block(serial)
+        if (
+            recovered_candidate
+            and type(candidate_ref) is LogicalBlockRef
+            and candidate_block is not None
+            and (
+                is_exact_logical_function_exit(candidate_block, candidate_ref)
+                or is_unowned_structural_logical_stop(candidate_block, candidate_ref)
+            )
+        ):
+            return None
+        if candidate_block is None or candidate_ref is None:
+            raise ValueError(
+                f"handler candidate contains an unknown serial: {serial}"
+            )
+        if type(candidate_ref) is not NativeBlockRef:
+            raise ValueError(
+                f"handler candidate is not a native source block: {serial}"
+            )
+        try:
+            witness = _witness_for_serial(
+                source, source_catalog, block_refs_by_serial, serial,
+            )
+        except ValueError as exc:
+            raise ValueError(
+                f"handler candidate contains an unknown serial: {serial}"
+            ) from exc
+        return witness
+
+    promoted: set[int] = set()
+    for serial in recovered:
+        witness = native_witness(serial, recovered_candidate=True)
+        if witness is None:
+            continue
+        state_to_anchors = _canonical_handler_state_anchors(
+            witness=witness,
+            canonical_route_evidence=canonical_route_evidence,
+            state_identity=state_identity,
+        )
+        if any(len(anchors) != 1 for anchors in state_to_anchors.values()):
+            raise ValueError("recovered handler route state is ambiguous")
+        if state_to_anchors:
+            promoted.add(serial)
+    for serial in caller:
+        witness = native_witness(serial, recovered_candidate=False)
+        if witness is None:
+            raise ValueError("explicit caller handler must be native")
+        if witness.block_ref.identity in selected_retired_source_identities:
+            continue
+        promoted.add(serial)
+    return tuple(sorted(promoted))
+
+
 def build_unflatten_plan_input_catalog(
     *,
     source: FlowGraph,
@@ -1218,23 +1405,11 @@ def build_unflatten_plan_input_catalog(
             witness = _witness_for_serial(source, source_catalog, block_refs_by_serial, serial)
         except ValueError as exc:
             raise ValueError("authoritative_handler_serials contains an unknown serial") from exc
-        state_to_anchors: dict[int, set[int]] = {}
-        for proof in canonical_route_evidence.route_proofs:
-            for destination in proof.destinations:
-                if _destination_matches_witness(destination, witness, canonical_route_evidence.native_key):
-                    proof_state_identities = tuple(
-                        identity
-                        for identity in (
-                            getattr(getattr(proof, "state_write", None), "state_variable", None),
-                            getattr(getattr(proof, "predicate", None), "storage_identity", None),
-                        )
-                        if identity is not None
-                    )
-                    if any(identity != state_identity for identity in proof_state_identities):
-                        raise ValueError("canonical route state identity disagrees with plan input")
-                    state_to_anchors.setdefault(int(destination.state_constant), set()).add(int(destination.target_anchor_ea))
-        if not state_to_anchors:
-            raise ValueError("authoritative handler has no canonical route destination")
+        state_to_anchors = _canonical_handler_state_anchors(
+            witness=witness,
+            canonical_route_evidence=canonical_route_evidence,
+            state_identity=state_identity,
+        )
         if any(len(anchors) != 1 for anchors in state_to_anchors.values()):
             raise ValueError("authoritative handler route state is ambiguous")
         authoritative_inputs.append(
@@ -2502,20 +2677,10 @@ def adapt_state_transition_route(
         def matches(proof: SemanticRouteProof) -> bool:
             if not proof.destinations:
                 return False
-            expected_kind = {
-                SemanticRouteFactKind.DISPATCHER_MAP: SemanticRouteProofKind.STATE_ASSIGNMENT,
-                SemanticRouteFactKind.NATIVE_BOUND: SemanticRouteProofKind.STATE_ASSIGNMENT,
-                SemanticRouteFactKind.STATE_TRANSFORM: SemanticRouteProofKind.STATE_TRANSFORM,
-                SemanticRouteFactKind.STATE_CARRIER: SemanticRouteProofKind.STATE_CARRIER,
-                SemanticRouteFactKind.STATE_PARTITION: SemanticRouteProofKind.STATE_PARTITION,
-                SemanticRouteFactKind.DECISION_DAG: (
-                    SemanticRouteProofKind.STATE_ASSIGNMENT
-                    if guarded_physical_fact
-                    else SemanticRouteProofKind.STATE_DAG
-                ),
-                SemanticRouteFactKind.BOOTSTRAP: SemanticRouteProofKind.BOOTSTRAP,
-            }.get(transform_fact.kind)
-            if expected_kind is None or proof.proof_kind is not expected_kind:
+            if (
+                proof.proof_kind
+                is not semantic_route_proof_kind_for_fact(transform_fact)
+            ):
                 return False
             if transform_fact.kind is SemanticRouteFactKind.BOOTSTRAP:
                 witness = transform_fact.bootstrap_witness
@@ -2767,8 +2932,14 @@ def _equivalent_route_claim(
                 f"role={destination.role.value}: {exc}"
             ) from exc
     destination_witnesses = tuple(destination_witnesses)
+    # The source catalog proves identity/range membership; it does not own the
+    # proof's semantic endpoint coordinate.  A native block start can precede
+    # its first surviving instruction after partitioning, so reconstructing an
+    # endpoint from ``witness.anchor_ea`` would create a second anchor
+    # namespace and later make the claim unselectable by its own proof.
+    source_anchor_ea = int(proof.source_anchor_ea)
     source_locator = BlockSubjectLocator(
-        source_witness.block_ref, source_witness.anchor_ea,
+        source_witness.block_ref, source_anchor_ea,
     )
     native_destination_subjects = tuple(
         _subject_factory(
@@ -2776,11 +2947,21 @@ def _equivalent_route_claim(
             kind=SemanticSubjectKind.BLOCK,
             role=SemanticSubjectRole.SEMANTIC_ROUTE_DESTINATION,
             block_ref=witness.block_ref,
-            anchor_ea=witness.anchor_ea,
-            locator=BlockSubjectLocator(witness.block_ref, witness.anchor_ea),
+            anchor_ea=int(destination.target_anchor_ea),
+            locator=BlockSubjectLocator(
+                witness.block_ref, int(destination.target_anchor_ea),
+            ),
         )
-        for witness in destination_witnesses
+        for destination, witness in zip(
+            proof.destinations, destination_witnesses, strict=True,
+        )
     )
+    destination_coordinates = tuple(
+        (subject.block_ref, subject.anchor_ea)
+        for subject in native_destination_subjects
+    )
+    if len(set(destination_coordinates)) != len(destination_coordinates):
+        raise ValueError("canonical route proof has duplicate native destinations")
     logical_endpoints: dict[int, SemanticLogicalDagEndpoint] = {}
     if proof.state_dag is not None:
         for comparison in proof.state_dag.witness.comparisons:
@@ -2790,6 +2971,11 @@ def _equivalent_route_claim(
                 prior = logical_endpoints.setdefault(endpoint.serial, endpoint)
                 if prior != endpoint:
                     raise ValueError("canonical logical route endpoint serial is ambiguous")
+    if proof.terminal_delivery is not None:
+        endpoint = proof.terminal_delivery.return_transport.logical_exit
+        prior = logical_endpoints.setdefault(endpoint.serial, endpoint)
+        if prior != endpoint:
+            raise ValueError("canonical logical route endpoint serial is ambiguous")
     if logical_endpoints and block_refs_by_serial is None:
         raise ValueError("logical route endpoint requires exact source references")
     dag_endpoint_subjects = []
@@ -2817,7 +3003,7 @@ def _equivalent_route_claim(
         kind=SemanticSubjectKind.BLOCK,
         role=SemanticSubjectRole.SEMANTIC_ROUTE_SOURCE,
         block_ref=source_witness.block_ref,
-        anchor_ea=source_witness.anchor_ea,
+        anchor_ea=source_anchor_ea,
         locator=source_locator,
     )
     destination_locators = tuple(subject.locator for subject in destination_subjects)
@@ -2826,7 +3012,7 @@ def _equivalent_route_claim(
         proof.proof_id,
         proof.atomic_group_id,
         source_witness.block_ref,
-        source_witness.anchor_ea,
+        source_anchor_ea,
         destination_locators,
         dag_endpoint_locators,
     )
@@ -2835,7 +3021,7 @@ def _equivalent_route_claim(
         kind=SemanticSubjectKind.ROUTE,
         role=SemanticSubjectRole.SEMANTIC_ROUTE_SOURCE,
         block_ref=source_witness.block_ref,
-        anchor_ea=source_witness.anchor_ea,
+        anchor_ea=source_anchor_ea,
         locator=retired_locator,
     )
     # The model's retired/replacement names describe source and candidate
@@ -3041,6 +3227,7 @@ __all__ = [
     "SourceEffectTerminalCatalog",
     "classify_block_effects_and_terminals",
     "build_source_identity_catalog",
+    "derive_authoritative_handler_serials",
     "build_unflatten_plan_input_catalog",
     "build_use_def_fragment_witness",
     "discover_reachable_effects_and_terminals",

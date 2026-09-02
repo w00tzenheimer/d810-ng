@@ -30,6 +30,497 @@ class _EffectClassification:
     structural_preserved: bool = False
 
 
+@dataclass(frozen=True, slots=True)
+class _ObservedBranchHelperElision:
+    """One sealed RF-4 helper elision admitted only during observation."""
+
+    relation_id: str
+    helper_ref: PlanBlockRef
+    helper_patch_fact: model.PatchStepEvidencePayload
+    remove_topology: tuple[model.TopologyEdgeRelation, ...]
+    add_topology: tuple[model.TopologyEdgeRelation, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _ObservedRouteTopologyNormalization:
+    """One transaction-derived normalization of sealed route edge pairs."""
+
+    relation_ids: tuple[str, ...]
+    patch_facts: tuple[model.PatchStepEvidencePayload, ...]
+    candidate_topology: tuple[model.TopologyEdgeRelation, ...]
+
+
+def _topology_relations_for_inventory(
+    inventory: model.SemanticGraphInventory,
+    *,
+    topology_roles: frozenset[model.SemanticSubjectRole],
+) -> tuple[model.TopologyEdgeRelation, ...]:
+    """Render the closed inventory topology once as subject-level relations."""
+
+    by_serial = {item.serial: item for item in inventory.blocks}
+    subject_by_serial: dict[int, tuple[model.SemanticSubjectRef, ...]] = defaultdict(tuple)
+    for subject in inventory.subjects:
+        if (
+            subject.role in topology_roles
+            and subject.block_ref is not None
+            and subject.block_ref in inventory.serial_by_ref
+        ):
+            serial = inventory.serial_by_ref[subject.block_ref]
+            subject_by_serial[serial] = (*subject_by_serial[serial], subject)
+    rows: dict[
+        tuple[int, int],
+        dict[model.TopologyIncidenceKind, model.InventoryTopologyIncidence],
+    ] = {}
+    for item in inventory.topology:
+        key = (
+            (item.owner_serial, item.peer_serial)
+            if item.kind is model.TopologyIncidenceKind.SUCCESSOR
+            else (item.peer_serial, item.owner_serial)
+        )
+        rows.setdefault(key, {})[item.kind] = item
+    result: list[model.TopologyEdgeRelation] = []
+    for (source_serial, target_serial), pair in rows.items():
+        successor = pair.get(model.TopologyIncidenceKind.SUCCESSOR)
+        predecessor = pair.get(model.TopologyIncidenceKind.PREDECESSOR)
+        if (
+            successor is None
+            or predecessor is None
+            or successor.source_transfer_ea != predecessor.source_transfer_ea
+        ):
+            continue
+        anchor = successor.source_transfer_ea
+        if anchor is None:
+            anchor = by_serial[source_serial].anchor_ea
+        if anchor is None:
+            continue
+        for source_subject in subject_by_serial.get(source_serial, ()):
+            for target_subject in subject_by_serial.get(target_serial, ()):
+                result.append(model.TopologyEdgeRelation(
+                    model.SemanticEdgeRole.DIRECT,
+                    source_subject.subject_id,
+                    target_subject.subject_id,
+                    anchor,
+                ))
+                result.append(model.TopologyEdgeRelation(
+                    model.SemanticEdgeRole.DIRECT,
+                    target_subject.subject_id,
+                    source_subject.subject_id,
+                    anchor,
+                ))
+    return tuple(sorted(
+        set(result),
+        key=lambda item: (
+            item.source_subject_id,
+            item.target_subject_id,
+            item.native_edge_anchor_ea,
+        ),
+    ))
+
+
+def _derive_observed_branch_helper_elisions(
+    inputs: model.DerivedUnflattenPreparationInputs,
+    *,
+    projected_topology: tuple[model.TopologyEdgeRelation, ...],
+    candidate_topology: tuple[model.TopologyEdgeRelation, ...],
+) -> tuple[_ObservedBranchHelperElision, ...]:
+    """Admit only the exact observed RF-4 ``F -> H -> N`` to ``F -> N`` fold.
+
+    The helper is not a general allowance.  Its disappearance is valid only
+    when the already-sealed branch-helper relation, both exact branch facts,
+    the creation digest, and every affected reciprocal inventory edge agree.
+    """
+
+    if inputs.candidate_inventory.phase is not model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY:
+        return ()
+    realization = inputs.projected_route_realization
+    if type(realization) is not model.ProjectedRouteRealization:
+        return ()
+    projected = inputs.projected_topology_reference
+    observed = inputs.candidate_inventory
+    projected_rows = {row.serial: row for row in projected.blocks}
+    observed_rows = {row.serial: row for row in observed.blocks}
+    projected_ref_by_serial = {
+        serial: ref for ref, serial in projected.serial_by_ref.items()
+    }
+    observed_ref_by_serial = {
+        serial: ref for ref, serial in observed.serial_by_ref.items()
+    }
+
+    def subject_ids(inventory, ref):
+        return frozenset(
+            subject.subject_id
+            for subject in inventory.subjects
+            if subject.block_ref == ref
+            and subject.role in _TOPOLOGY_ROLES
+        )
+
+    def reciprocal(rows, source_serial: int, target_serial: int) -> bool:
+        source = rows.get(source_serial)
+        target = rows.get(target_serial)
+        return bool(
+            source is not None
+            and target is not None
+            and target_serial in source.successor_serials
+            and source_serial in target.predecessor_serials
+        )
+
+    def refs(rows, ref_by_serial, serial: int, attribute: str):
+        row = rows.get(serial)
+        if row is None:
+            return None
+        try:
+            return tuple(ref_by_serial[item] for item in getattr(row, attribute))
+        except KeyError:
+            return None
+
+    def directed(left_ids, right_ids, anchors):
+        return {
+            model.TopologyEdgeRelation(
+                model.SemanticEdgeRole.DIRECT, left, right, anchor,
+            )
+            for left in left_ids for right in right_ids for anchor in anchors
+        } | {
+            model.TopologyEdgeRelation(
+                model.SemanticEdgeRole.DIRECT, right, left, anchor,
+            )
+            for left in left_ids for right in right_ids for anchor in anchors
+        }
+
+    branch_rows = tuple(
+        row for row in realization.rows
+        if type(row.relation) is model.BranchFallthroughHelperRouteRealization
+    )
+    if len({row.relation.relation_id for row in branch_rows}) != len(branch_rows):
+        return ()
+    missing_helper_relation_ids = {
+        row.relation.relation_id
+        for row in branch_rows
+        if row.relation.helper.ref not in observed.serial_by_ref
+        or not any(subject.block_ref == row.relation.helper.ref for subject in observed.subjects)
+    }
+    # A helper cannot be half-present.  A present helper remains ordinary
+    # observed topology; only a wholly absent helper can enter this exact fold.
+    if any(
+        (row.relation.helper.ref in observed.serial_by_ref)
+        != any(subject.block_ref == row.relation.helper.ref for subject in observed.subjects)
+        for row in branch_rows
+    ):
+        return ()
+    for row in branch_rows:
+        relation = row.relation
+        if relation.helper.ref not in observed.serial_by_ref:
+            continue
+        required = (
+            relation.feeder.ref,
+            relation.helper.ref,
+            relation.untouched_conditional_arm.ref,
+            relation.semantic_target.ref,
+        )
+        if any(ref not in observed.serial_by_ref for ref in required):
+            return ()
+        feeder, helper, untouched, target = (
+            observed.serial_by_ref[ref] for ref in required
+        )
+        if (
+            refs(observed_rows, observed_ref_by_serial, feeder, "successor_serials")
+            != (relation.helper.ref, relation.untouched_conditional_arm.ref)
+            or refs(observed_rows, observed_ref_by_serial, helper, "predecessor_serials")
+            != (relation.feeder.ref,)
+            or refs(observed_rows, observed_ref_by_serial, helper, "successor_serials")
+            != (relation.semantic_target.ref,)
+            or not all((
+                reciprocal(observed_rows, feeder, helper),
+                reciprocal(observed_rows, feeder, untouched),
+                reciprocal(observed_rows, helper, target),
+            ))
+        ):
+            return ()
+
+    results: list[_ObservedBranchHelperElision] = []
+    for row in branch_rows:
+        relation = row.relation
+        if type(relation) is not model.BranchFallthroughHelperRouteRealization:
+            continue
+        creation_digests = dict(relation.creation_spec_digests)
+        helper_digest = creation_digests.get(relation.helper.ref)
+        if (
+            len(creation_digests) != 1
+            or helper_digest is None
+            or relation.helper.ref in observed.serial_by_ref
+            or any(subject.block_ref == relation.helper.ref for subject in observed.subjects)
+        ):
+            continue
+        branch_facts = tuple(
+            fact for fact in inputs.patch_step_facts
+            if fact.step_type == "PatchRedirectBranch"
+            and fact.step_index == row.plan_step_index
+            and fact.step_digest == row.plan_step_digest
+        )
+        feeder_facts = tuple(
+            fact for fact in branch_facts
+            if type(fact.owner_ref) is NativeBlockRef
+            and fact.owner_ref == relation.feeder.ref
+            and fact.creation_spec_digest is None
+        )
+        helper_facts = tuple(
+            fact for fact in branch_facts
+            if type(fact.owner_ref) is PlanBlockRef
+            and fact.owner_ref == relation.helper.ref
+            and fact.creation_spec_digest == helper_digest
+        )
+        if (
+            len(branch_facts) != 2
+            or len(feeder_facts) != 1
+            or len(helper_facts) != 1
+            or any(fact.plan_id != inputs.proposal.plan_id for fact in branch_facts)
+        ):
+            continue
+        route_refs = (
+            relation.feeder.ref,
+            relation.helper.ref,
+            relation.untouched_conditional_arm.ref,
+            relation.semantic_target.ref,
+        )
+        if any(ref not in projected.serial_by_ref for ref in route_refs):
+            continue
+        feeder_serial, helper_serial, untouched_serial, target_serial = (
+            projected.serial_by_ref[ref] for ref in route_refs
+        )
+        if any(ref not in observed.serial_by_ref for ref in (
+            relation.feeder.ref,
+            relation.untouched_conditional_arm.ref,
+            relation.semantic_target.ref,
+        )):
+            continue
+        observed_feeder = observed.serial_by_ref[relation.feeder.ref]
+        observed_untouched = observed.serial_by_ref[relation.untouched_conditional_arm.ref]
+        observed_target = observed.serial_by_ref[relation.semantic_target.ref]
+        if (
+            refs(projected_rows, projected_ref_by_serial, feeder_serial, "successor_serials")
+            != (relation.helper.ref, relation.untouched_conditional_arm.ref)
+            or refs(projected_rows, projected_ref_by_serial, helper_serial, "predecessor_serials")
+            != (relation.feeder.ref,)
+            or refs(projected_rows, projected_ref_by_serial, helper_serial, "successor_serials")
+            != (relation.semantic_target.ref,)
+            or not all((
+                reciprocal(projected_rows, feeder_serial, helper_serial),
+                reciprocal(projected_rows, feeder_serial, untouched_serial),
+                reciprocal(projected_rows, helper_serial, target_serial),
+            ))
+            or refs(observed_rows, observed_ref_by_serial, observed_feeder, "successor_serials")
+            != (relation.semantic_target.ref, relation.untouched_conditional_arm.ref)
+            # CFG snapshot construction canonically orders predecessor rows,
+            # so prove the exact substitution as a set and separately require
+            # reciprocal incidence below.  Ordering is not route authority.
+            or frozenset(
+                refs(
+                    observed_rows, observed_ref_by_serial, observed_target,
+                    "predecessor_serials",
+                ) or ()
+            )
+            != frozenset(
+                relation.feeder.ref if ref == relation.helper.ref else ref
+                for ref in refs(
+                    projected_rows, projected_ref_by_serial, target_serial,
+                    "predecessor_serials",
+                ) or ()
+            )
+            or not all((
+                reciprocal(observed_rows, observed_feeder, observed_target),
+                reciprocal(observed_rows, observed_feeder, observed_untouched),
+            ))
+        ):
+            continue
+        feeder_ids = subject_ids(projected, relation.feeder.ref)
+        helper_ids = subject_ids(projected, relation.helper.ref)
+        target_ids = subject_ids(projected, relation.semantic_target.ref)
+        if not all((feeder_ids, helper_ids, target_ids)):
+            continue
+        if any(
+            subject_ids(projected, ref) != subject_ids(observed, ref)
+            for ref in (
+                relation.feeder.ref,
+                relation.semantic_target.ref,
+            )
+        ):
+            continue
+        feeder_helper = {
+            relation for relation in projected_topology
+            if {relation.source_subject_id, relation.target_subject_id}
+            <= feeder_ids | helper_ids
+            and (
+                relation.source_subject_id in feeder_ids
+                or relation.target_subject_id in feeder_ids
+            )
+        }
+        helper_target = {
+            relation for relation in projected_topology
+            if {relation.source_subject_id, relation.target_subject_id}
+            <= helper_ids | target_ids
+            and (
+                relation.source_subject_id in helper_ids
+                or relation.target_subject_id in helper_ids
+            )
+        }
+        expected_helper_incidence = feeder_helper | helper_target
+        actual_helper_incidence = {
+            relation for relation in projected_topology
+            if relation.source_subject_id in helper_ids
+            or relation.target_subject_id in helper_ids
+        }
+        feeder_helper_anchors = {
+            relation.native_edge_anchor_ea for relation in feeder_helper
+        }
+        normalized_direct = directed(
+            feeder_ids, target_ids, feeder_helper_anchors,
+        )
+        normalized_topology = (set(projected_topology) - actual_helper_incidence) | normalized_direct
+        # The relation owns only the F/H/N splice.  Other independently
+        # normalized topology is checked by the ordinary topology matcher;
+        # this admission must neither bless nor reject it.
+        affected_projected_ids = feeder_ids | helper_ids | target_ids
+        affected_observed_ids = feeder_ids | target_ids
+        normalized_affected_topology = {
+            item for item in normalized_topology
+            if item.source_subject_id in affected_projected_ids
+            or item.target_subject_id in affected_projected_ids
+        }
+        candidate_affected_topology = {
+            item for item in candidate_topology
+            if item.source_subject_id in affected_observed_ids
+            or item.target_subject_id in affected_observed_ids
+        }
+        if (
+            not feeder_helper_anchors
+            or feeder_helper != directed(feeder_ids, helper_ids, feeder_helper_anchors)
+            or helper_target != directed(
+                helper_ids,
+                target_ids,
+                {relation.native_edge_anchor_ea for relation in helper_target},
+            )
+            or actual_helper_incidence != expected_helper_incidence
+            or normalized_affected_topology != candidate_affected_topology
+        ):
+            continue
+        results.append(_ObservedBranchHelperElision(
+            relation.relation_id,
+            relation.helper.ref,
+            helper_facts[0],
+            tuple(sorted(actual_helper_incidence, key=lambda item: (
+                item.source_subject_id, item.target_subject_id,
+                item.native_edge_anchor_ea,
+            ))),
+            tuple(sorted(normalized_direct, key=lambda item: (
+                item.source_subject_id, item.target_subject_id,
+                item.native_edge_anchor_ea,
+            ))),
+        ))
+    if {item.relation_id for item in results} != missing_helper_relation_ids:
+        return ()
+    if len({item.helper_ref for item in results}) != len(results):
+        return ()
+    remove_sets = [set(item.remove_topology) for item in results]
+    add_sets = [set(item.add_topology) for item in results]
+    if any(
+        left & right
+        for index, left in enumerate((*remove_sets, *add_sets))
+        for right in (*remove_sets, *add_sets)[index + 1:]
+    ):
+        return ()
+    return tuple(results)
+
+
+def _fold_observed_branch_helper_topology(
+    projected_topology: tuple[model.TopologyEdgeRelation, ...],
+    elisions: tuple[_ObservedBranchHelperElision, ...],
+) -> tuple[model.TopologyEdgeRelation, ...]:
+    """Apply pairwise-disjoint, sealed RF-4 topology deltas atomically."""
+
+    removals = set().union(*(set(item.remove_topology) for item in elisions))
+    additions = set().union(*(set(item.add_topology) for item in elisions))
+    return tuple(sorted(
+        (set(projected_topology) - removals) | additions,
+        key=lambda item: (
+            item.source_subject_id,
+            item.target_subject_id,
+            item.native_edge_anchor_ea,
+        ),
+    ))
+
+
+def _normalize_observed_route_topology(
+    inputs: model.DerivedUnflattenPreparationInputs,
+    *,
+    projected_topology: tuple[model.TopologyEdgeRelation, ...],
+    candidate_topology: tuple[model.TopologyEdgeRelation, ...],
+) -> _ObservedRouteTopologyNormalization | None:
+    """Normalize only physically revalidated RF-1/direct semantic edge pairs.
+
+    The projected route realization and exact patch facts already own the
+    semantic edge.  Observation verifies that same edge in the backend graph
+    (including the one structural fallthrough helper required by Hex-Rays)
+    and then renders the pair with its canonical projected subject/anchor
+    coordinates.  Unrelated incident edges remain untouched and therefore
+    still fail the ordinary topology comparison.
+    """
+
+    if (
+        inputs.candidate_inventory.phase
+        is not model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY
+        or type(inputs.projected_route_realization)
+        is not model.ProjectedRouteRealization
+    ):
+        return None
+    candidate = inputs.candidate_inventory
+    projected = inputs.projected_topology_reference
+    route_occurrences = candidate.observed_route_topology_occurrences
+    conditional_occurrences = (
+        candidate.observed_lowered_conditional_topology_occurrences
+    )
+    if not route_occurrences and not conditional_occurrences:
+        return None
+    for occurrence in route_occurrences:
+        authority_bind.validate_observed_route_topology_occurrence(occurrence)
+    for occurrence in conditional_occurrences:
+        authority_bind.validate_observed_lowered_conditional_topology_occurrence(
+            occurrence,
+        )
+    normalized = set(candidate_topology)
+    relation_ids: list[str] = []
+    facts: list[model.PatchStepEvidencePayload] = []
+    for occurrence in (*route_occurrences, *conditional_occurrences):
+        # The binder's projected pairs name the complete subject cross-product
+        # for this route relation.  Replace precisely that pair domain; no
+        # incident or raw observed edge is independently interpreted here.
+        owned_subject_pairs = {
+            frozenset((item.source_subject_id, item.target_subject_id))
+            for item in occurrence.normalized_pairs
+        }
+        normalized = {
+            item for item in normalized
+            if frozenset((item.source_subject_id, item.target_subject_id))
+            not in owned_subject_pairs
+        }
+        normalized.update(occurrence.normalized_pairs)
+        relation_ids.append(
+            occurrence.relation_id
+            if type(occurrence) is model.ObservedRouteTopologyOccurrence
+            else occurrence.occurrence_id
+        )
+        facts.append(occurrence.patch_fact)
+    return _ObservedRouteTopologyNormalization(
+        tuple(sorted(set(relation_ids))),
+        tuple(sorted(set(facts), key=lambda fact: (
+            fact.step_index, fact.step_digest, fact.step_type,
+        ))),
+        tuple(sorted(normalized, key=lambda item: (
+            item.source_subject_id, item.target_subject_id,
+            item.native_edge_anchor_ea,
+        ))),
+    )
+
+
+
 # Inventory observations use the compact canonical opcode assigned by the
 # backend adapter.  A local-alias scalarization is specifically STORE -> MOV;
 # accepting an arbitrary opcode would make the display text the only semantic
@@ -49,6 +540,8 @@ _SUPPORTED_PATCH_STEP_TYPES = frozenset({
     "PatchCloneConditionalAsGoto",
     "PatchCloneConditionalAsGotoFromBranchArm",
 })
+
+_TOPOLOGY_ROLES = model.TOPOLOGY_SUBJECT_ROLES
 
 
 def _patch_owner_subjects(
@@ -676,6 +1169,41 @@ def _projected_retirement_cycle_refs(
         if serial not in indexes:
             visit(serial)
     return tuple(sorted(components, key=lambda refs: tuple(sorted(map(repr, refs)))))
+
+
+def _projected_cycle_authority_refs(
+    inputs: model.DerivedUnflattenPreparationInputs,
+) -> tuple[NativeBlockRef | LogicalBlockRef, ...]:
+    """Return typed projected-cycle identities, including detached residue.
+
+    The dispatcher member set also contains retained route-delivery blocks,
+    so it cannot be treated as wholesale retirement authority.  Its members
+    that are physically unreachable from the projected entry are different:
+    they are exact detached dispatcher residue.  Include that residue only
+    to reject an unclaimed cycle before native mutation.  This does not mint
+    an allowance; the terminal/retirement binders below remain the only way
+    an otherwise-cyclic projected component can be accepted.
+    """
+
+    refs: set[NativeBlockRef | LogicalBlockRef] = set()
+    catalog = inputs.proposal.retirement_candidate_catalog
+    if catalog is not None:
+        refs.update(catalog.candidate_refs)
+    candidate_inventory = inputs.candidate_inventory
+    physically_reachable = set(candidate_inventory.physical_entry_reachable_serials)
+    serial_by_ref = candidate_inventory.serial_by_ref
+    refs.update(
+        ref
+        for ref in inputs.proposal.plan_inputs.dispatcher_member_refs
+        if (
+            (serial := serial_by_ref.get(ref)) is not None
+            and serial not in physically_reachable
+        )
+    )
+    for result in inputs.terminal_cycle_phase_results:
+        if result.phase is model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT:
+            refs.update(result.residue_refs)
+    return tuple(sorted(refs, key=repr))
 
 
 def _terminal_cycle_allowance_covers(
@@ -1483,7 +2011,7 @@ def _identity_support(
     if type(locator) is model.BlockSubjectLocator:
         return any(binding.subject == subject for binding in valid)
     if type(locator) is model.LogicalFunctionExitSubjectLocator:
-        return any(
+        exact_projected_binding = any(
             binding.subject == subject
             and binding.block_ref == locator.block_ref
             and binding.serial == locator.serial
@@ -1491,6 +2019,39 @@ def _identity_support(
             and not binding.native_instruction_eas
             for binding in valid
         )
+        if exact_projected_binding:
+            return True
+        # Hex-Rays may fold the projected logical function-exit and allocate
+        # the exact same sink at another observed serial.  The transaction
+        # binder owns that exceptional correspondence: accept it only after a
+        # registry-sealed occurrence proves this locator's projected serial,
+        # this binding's observed serial, and the exact logical reference.
+        # The inventory constructor has already checked the occurrence's
+        # owner/predecessor realization against the observed graph.
+        if phase is not model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY:
+            return False
+        for binding in valid:
+            occurrence = binding.observed_logical_occurrence
+            if (
+                binding.subject != subject
+                or binding.block_ref != locator.block_ref
+                or binding.anchor_ea is not None
+                or binding.native_instruction_eas
+                or binding.serial is None
+                or type(occurrence) is not model.ObservedLogicalEndpointOccurrence
+                or occurrence.logical_ref != locator.block_ref
+                or occurrence.projected_serial != locator.serial
+                or occurrence.observed_serial != binding.serial
+            ):
+                continue
+            try:
+                authority_bind._validate_observed_logical_endpoint_occurrence(
+                    occurrence,
+                )
+            except (TypeError, ValueError):
+                continue
+            return True
+        return False
     if type(locator) is model.ValueFlowSubjectLocator:
         refs = tuple(locator.redirect_owner_refs)
         if not refs or len(set(refs)) != len(refs):
@@ -1516,26 +2077,13 @@ def _identity_support(
             for binding in owner_bindings
         )
     if type(locator) is model.RouteSubjectLocator:
-        def destination_bound(destination: object) -> bool:
-            if type(destination) is model.BlockSubjectLocator:
-                return owner(destination.block_ref, destination.anchor_ea)
-            if type(destination) is model.LogicalFunctionExitSubjectLocator:
-                return any(
-                    binding.status is model.SubjectBindingStatus.UNIQUE
-                    and binding.block_ref == destination.block_ref
-                    and binding.serial == destination.serial
-                    and binding.anchor_ea is None
-                    and not binding.native_instruction_eas
-                    for binding in valid
-                )
-            return False
-        return exact_subject_binding and owner(locator.source_ref, locator.source_anchor_ea) and all(
-            destination_bound(destination)
-            for destination in (
-                *locator.native_destination_members(),
-                *locator.dag_endpoint_members(),
-            )
-        )
+        # The binder mints a UNIQUE route row only after its complete typed
+        # locator (source plus every native/logical endpoint) resolves against
+        # this exact inventory.  Replaying endpoint ownership here creates a
+        # second identity authority that can disagree after backend
+        # normalization.  Endpoint semantics remain closed independently by
+        # route-equivalence evidence and their own subject obligations.
+        return exact_subject_binding
     if type(locator) is model.EdgeSubjectLocator:
         return exact_subject_binding and owner(locator.source_ref, locator.source_anchor_ea) and owner(locator.target_ref, locator.target_anchor_ea)
     if type(locator) is model.EffectSubjectLocator:
@@ -1950,7 +2498,13 @@ def _select_route_source_subject(
 def _evaluator_fact_evidence(
     inputs: model.DerivedUnflattenPreparationInputs,
     phase: model.UnflattenAuthorityPhase,
-) -> tuple[tuple[model.AuthorityEvidence, ...], tuple[model.AuthorityEvidence, ...], tuple[model.GenericCfgGateResult, ...], dict[str, _EffectClassification]]:
+) -> tuple[
+    tuple[model.AuthorityEvidence, ...],
+    tuple[model.AuthorityEvidence, ...],
+    tuple[model.GenericCfgGateResult, ...],
+    dict[str, _EffectClassification],
+    tuple[_ObservedBranchHelperElision, ...],
+]:
     """Create semantic evidence from closed inventories and transport facts."""
 
     source = inputs.source_inventory
@@ -2326,65 +2880,33 @@ def _evaluator_fact_evidence(
             alias_claim, owner_binding, owner_observation, owner_reachable,
         )
 
-    topology_roles = {
-        model.SemanticSubjectRole.SOURCE_ENTRY,
-        model.SemanticSubjectRole.DISPATCHER_ENTRY,
-        model.SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE,
-        model.SemanticSubjectRole.SEMANTIC_ROUTE_SOURCE,
-        model.SemanticSubjectRole.SEMANTIC_ROUTE_DESTINATION,
-        model.SemanticSubjectRole.SEMANTIC_DAG_ENDPOINT,
-        model.SemanticSubjectRole.EXACT_EFFECT_SOURCE,
-        model.SemanticSubjectRole.EXACT_EFFECT_PREDICATE,
-        model.SemanticSubjectRole.EXACT_EFFECT_SELECTED_TARGET,
-        model.SemanticSubjectRole.EXACT_EFFECT_DISCARDED_OWNER,
-        model.SemanticSubjectRole.AUTHORITATIVE_HANDLER,
-        model.SemanticSubjectRole.PLANNED_HELPER,
-    }
+    topology_roles = _TOPOLOGY_ROLES
     retirement_result = inputs.retirement_phase_result
-    def topology_relations(inventory: model.SemanticGraphInventory) -> tuple[model.TopologyEdgeRelation, ...]:
-        by_serial = {item.serial: item for item in inventory.blocks}
-        subject_by_serial: dict[int, tuple[model.SemanticSubjectRef, ...]] = defaultdict(tuple)
-        for subject in inventory.subjects:
-            if (
-                subject.role in topology_roles
-                and subject.block_ref is not None
-                and subject.block_ref in inventory.serial_by_ref
-            ):
-                serial = inventory.serial_by_ref[subject.block_ref]
-                subject_by_serial[serial] = (*subject_by_serial[serial], subject)
-        rows: dict[tuple[int, int], dict[model.TopologyIncidenceKind, model.InventoryTopologyIncidence]] = {}
-        for item in inventory.topology:
-            key = (item.owner_serial, item.peer_serial) if item.kind is model.TopologyIncidenceKind.SUCCESSOR else (item.peer_serial, item.owner_serial)
-            rows.setdefault(key, {})[item.kind] = item
-        result: list[model.TopologyEdgeRelation] = []
-        for (source_serial, target_serial), pair in rows.items():
-            successor = pair.get(model.TopologyIncidenceKind.SUCCESSOR)
-            predecessor = pair.get(model.TopologyIncidenceKind.PREDECESSOR)
-            if successor is None or predecessor is None or successor.source_transfer_ea != predecessor.source_transfer_ea:
-                continue
-            anchor = successor.source_transfer_ea
-            if anchor is None:
-                anchor = by_serial[source_serial].anchor_ea
-            if anchor is None:
-                continue
-            for source_subject in subject_by_serial.get(source_serial, ()):
-                for target_subject in subject_by_serial.get(target_serial, ()):
-                    result.append(model.TopologyEdgeRelation(
-                        model.SemanticEdgeRole.DIRECT, source_subject.subject_id,
-                        target_subject.subject_id, anchor,
-                    ))
-                    result.append(model.TopologyEdgeRelation(
-                        model.SemanticEdgeRole.DIRECT, target_subject.subject_id,
-                        source_subject.subject_id, anchor,
-                    ))
-        # A self edge with one subject yields an identical forward/reciprocal
-        # relation.  Topology is set-valued authority, so retain it once.
-        return tuple(sorted(set(result), key=lambda item: (item.source_subject_id, item.target_subject_id, item.native_edge_anchor_ea)))
-
-    projected_topology_reference = topology_relations(
+    projected_topology_reference = _topology_relations_for_inventory(
         inputs.projected_topology_reference,
+        topology_roles=topology_roles,
     )
-    candidate_topology = topology_relations(candidate)
+    candidate_topology = _topology_relations_for_inventory(
+        candidate,
+        topology_roles=topology_roles,
+    )
+    observed_helper_elisions = _derive_observed_branch_helper_elisions(
+        inputs,
+        projected_topology=projected_topology_reference,
+        candidate_topology=candidate_topology,
+    )
+    if observed_helper_elisions:
+        projected_topology_reference = _fold_observed_branch_helper_topology(
+            projected_topology_reference,
+            observed_helper_elisions,
+        )
+    observed_route_topology = _normalize_observed_route_topology(
+        inputs,
+        projected_topology=projected_topology_reference,
+        candidate_topology=candidate_topology,
+    )
+    if observed_route_topology is not None:
+        candidate_topology = observed_route_topology.candidate_topology
 
     def has_reciprocal_edges(relations: tuple[model.TopologyEdgeRelation, ...]) -> bool:
         """Report reciprocity of the raw topology rows being assessed."""
@@ -2411,6 +2933,9 @@ def _evaluator_fact_evidence(
         item for item in source_subjects
         if item.role is model.SemanticSubjectRole.SOURCE_ENTRY
     ), None)
+    candidate_physical_entry_reachable = frozenset(
+        candidate.physical_entry_reachable_serials
+    )
     candidate_binding_by_id = {
         item.subject.subject_id: item for item in candidate.bindings
     }
@@ -2532,9 +3057,14 @@ def _evaluator_fact_evidence(
             or binding.status is not model.SubjectBindingStatus.UNIQUE
             else binding.serial
         )
+        # ``reachable_serials`` is the semantic-site discovery closure: it
+        # deliberately roots handler and route evidence behind an indirect
+        # dispatcher.  These delivery obligations instead prove a physical
+        # path from the source entry, so semantic discovery cannot satisfy
+        # one by construction.
         reachable = bool(
             type(candidate_serial) is int
-            and candidate_serial in candidate.reachable_serials
+            and candidate_serial in candidate_physical_entry_reachable
         )
         path_subject_ids = (
             (source_entry.subject_id,)
@@ -2945,12 +3475,22 @@ def _evaluator_fact_evidence(
     # A missing generic-gate bundle is an absence of evidence.  It must not
     # be converted into synthetic passing rows: inventory-derived reachability
     # and presence evidence remain independently authoritative where defined.
+    elided_helper_fact_ids = {
+        id(elision.helper_patch_fact)
+        for elision in observed_helper_elisions
+    }
     patch_evidence_rows = []
     for item in inputs.patch_step_facts:
         if item.plan_id != inputs.proposal.plan_id:
             raise ValueError("patch-step evidence belongs to a different plan")
         if item.step_type not in _SUPPORTED_PATCH_STEP_TYPES:
             raise ValueError("patch-step evidence has an unsupported step kind")
+        if id(item) in elided_helper_fact_ids:
+            # This is not a generic missing-helper exception.  The exact
+            # fact was consumed by `_derive_observed_branch_helper_elisions`,
+            # which verified its paired native branch fact, creation digest,
+            # sealed relation, and complete reciprocal topology splice.
+            continue
         if (
             item.step_type in {"PatchRedirectGoto", "PatchRedirectBranch"}
             and type(item.owner_ref) is not PlanBlockRef
@@ -2973,7 +3513,13 @@ def _evaluator_fact_evidence(
             for patch_subject in patch_subjects
         )
     patch_evidence = tuple(patch_evidence_rows)
-    return tuple(sorted(evidence, key=lambda item: item.evidence_id)), patch_evidence, tuple(generic_gates), classifications
+    return (
+        tuple(sorted(evidence, key=lambda item: item.evidence_id)),
+        patch_evidence,
+        tuple(generic_gates),
+        classifications,
+        observed_helper_elisions,
+    )
 
 
 def _accepted_detached_component_results(
@@ -3022,6 +3568,28 @@ def _accepted_detached_component_results(
     return tuple(sorted(accepted, key=lambda item: item[0].claim_id))
 
 
+def _source_subject_matches_catalog(
+    subject: model.SemanticSubjectRef,
+    witness: model.SourceBlockIdentityWitness | None,
+) -> bool:
+    """Accept canonical proof sites only for native route-correlated subjects."""
+    if witness is None:
+        return False
+    if witness.anchor_ea == subject.anchor_ea:
+        return True
+    if subject.role in {
+        model.SemanticSubjectRole.SEMANTIC_ROUTE_SOURCE,
+        model.SemanticSubjectRole.SEMANTIC_ROUTE_DESTINATION,
+    }:
+        return (
+            type(subject.block_ref) is NativeBlockRef
+            and subject.block_ref == witness.block_ref
+            and type(subject.anchor_ea) is int
+            and subject.block_ref.identity.native_ranges.contains(subject.anchor_ea)
+        )
+    return False
+
+
 def build_semantic_case(
     *, authority_id: str, phase: model.UnflattenAuthorityPhase,
     inputs: model.DerivedUnflattenPreparationInputs,
@@ -3047,8 +3615,26 @@ def build_semantic_case(
     candidate_fingerprint = candidate_inventory.graph_fingerprint
     source_generation = source_inventory.generation
     candidate_generation = candidate_inventory.generation
-    lineage_evidence, patch_step_evidence, generic_gates, classifications = _evaluator_fact_evidence(
-        inputs, phase,
+    (
+        lineage_evidence,
+        patch_step_evidence,
+        generic_gates,
+        classifications,
+        observed_helper_elisions,
+    ) = _evaluator_fact_evidence(inputs, phase)
+    elided_helper_subject_ids = frozenset(
+        subject.subject_id
+        for elision in observed_helper_elisions
+        for subject in inputs.projected_topology_reference.subjects
+        if subject.block_ref == elision.helper_ref
+        and subject.role is model.SemanticSubjectRole.PLANNED_HELPER
+    )
+    # The helper's only conditional relations are projected-only obligations.
+    # The exact sealed elision above discharges them; no other absent planned
+    # helper is admitted to this filtered view.
+    conditional_relations = tuple(
+        relation for relation in inputs.conditional_relations
+        if relation.target_subject_id not in elided_helper_subject_ids
     )
     proposal_claim_ids = {claim.claim_id for claim in proposal.claims}
     input_claim_ids = {claim.claim_id for claim in inputs.claims}
@@ -3093,7 +3679,7 @@ def build_semantic_case(
         model.SafetyDimension.TERMINAL_REACHABILITY,
         model.SafetyDimension.STRUCTURAL_ACCOUNTING,
     }
-    for relation in inputs.conditional_relations:
+    for relation in conditional_relations:
         if relation.source_subject_id not in source_ids:
             raise ValueError("conditional relation source is outside source inventory")
         if relation.target_subject_id not in source_ids | {
@@ -3243,7 +3829,7 @@ def build_semantic_case(
             continue
         if source.block_ref is not None:
             witness = catalog_by_ref.get(source.block_ref)
-            if witness is None or witness.anchor_ea != source.anchor_ea:
+            if not _source_subject_matches_catalog(source, witness):
                 raise ValueError("source subject is outside the proposal source catalog")
         elif source.role is model.SemanticSubjectRole.NON_STATE_VALUE_FLOW:
             if any(ref not in catalog_by_ref for ref in source.locator.redirect_owner_refs):
@@ -3309,7 +3895,7 @@ def build_semantic_case(
             if phase is model.UnflattenAuthorityPhase.PRODUCER_FORECAST
             else candidate_generation
         ),
-        conditional_relations=inputs.conditional_relations,
+        conditional_relations=conditional_relations,
         proposal=inputs.proposal,
         detached_dead_handler_ids=detached_dead_handler_ids,
     )
@@ -3629,15 +4215,6 @@ def build_semantic_case(
                     folded_conditional_anchor_edges.add(
                         (model.SemanticEdgeRole.DIRECT, target_id, feeder_id)
                     )
-    lowered_conditional_patch_subject_ids = {
-        item.subject.subject_id
-        for item in evidence
-        if type(item.payload) is model.PatchStepEvidencePayload
-        and item.payload.step_type == "PatchLowerConditionalStateTransition"
-        and type(item.payload.owner_ref) is not PlanBlockRef
-        and any(item.payload is fact for fact in inputs.patch_step_facts)
-    }
-
     def topology_relations_match(
         expected_relations: Iterable[model.TopologyEdgeRelation],
         candidate_relations: Iterable[model.TopologyEdgeRelation],
@@ -3662,7 +4239,6 @@ def build_semantic_case(
             or not (
                 redirect_owner_subject_ids
                 or folded_conditional_anchor_edges
-                or lowered_conditional_patch_subject_ids
             )
         ):
             return False
@@ -3685,11 +4261,7 @@ def build_semantic_case(
         added_edges = candidate_edges - expected_edges
         if added_edges:
             return False
-        if removed_edges and not all(
-            source_id in lowered_conditional_patch_subject_ids
-            or target_id in lowered_conditional_patch_subject_ids
-            for _role, source_id, target_id in removed_edges
-        ):
+        if removed_edges:
             return False
         changed_edges = {
             edge
@@ -3699,9 +4271,7 @@ def build_semantic_case(
         if changed_edges and not all(
             edge in folded_conditional_anchor_edges
             or source_id in redirect_owner_subject_ids
-            or source_id in lowered_conditional_patch_subject_ids
             or target_id in redirect_owner_subject_ids
-            or target_id in lowered_conditional_patch_subject_ids
             for edge in changed_edges
             for _role, source_id, target_id in (edge,)
         ):
@@ -3711,7 +4281,7 @@ def build_semantic_case(
     candidate_drift_ids: set[str] = set()
     if phase is model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT:
         for cycle_refs in _projected_retirement_cycle_refs(
-            candidate_refs=inputs.proposal.plan_inputs.dispatcher_member_refs,
+            candidate_refs=_projected_cycle_authority_refs(inputs),
             inventory=candidate_inventory,
         ):
             if _terminal_cycle_allowance_covers(
@@ -4321,7 +4891,7 @@ def build_semantic_case(
             elif target is not None and target.role is model.SemanticSubjectRole.SEMANTIC_ROUTE_DESTINATION:
                 conditional_targets: list[tuple[str, model.SafetyDimension, bool, model.UnflattenJustificationRule]] = []
                 rule = model.UnflattenJustificationRule.SUBJECT_REACHABLE if payload.reachable else model.UnflattenJustificationRule.SUBJECT_UNREACHABLE
-                for relation in inputs.conditional_relations:
+                for relation in conditional_relations:
                     if relation.source_subject_id != payload.target_subject_id:
                         continue
                     if relation.dimension not in {
@@ -4548,7 +5118,7 @@ def build_semantic_case(
             rule = model.UnflattenJustificationRule.EXACT_INFEASIBLE_EFFECT_PROVEN
         elif type(claim) is model.LocalAliasEffectScalarizationClaim:
             alias_relations = tuple(
-                relation for relation in inputs.conditional_relations
+                relation for relation in conditional_relations
                 if relation.source_subject_id == claim.owner_subject.subject_id
                 and relation.dimension is model.SafetyDimension.EFFECT_PRESERVATION
                 and any(
@@ -4669,7 +5239,7 @@ def build_semantic_case(
     justifications_tuple = tuple(sorted(justifications, key=lambda item: item.justification_id))
     _validate_justification_graph(
         justifications_tuple, required, evidence, phase, inputs.claims,
-        inputs.conditional_relations,
+        conditional_relations,
         candidate_fingerprint=(
             source_fingerprint
             if phase is model.UnflattenAuthorityPhase.PRODUCER_FORECAST
@@ -4701,7 +5271,7 @@ def build_semantic_case(
             else candidate_generation
         ), "source_fingerprint": source_fingerprint,
         "claims": inputs.claims, "subjects": subjects,
-        "bindings": bindings, "conditional_relations": inputs.conditional_relations,
+        "bindings": bindings, "conditional_relations": conditional_relations,
         "required_obligations": required, "evidence": evidence,
         "justifications": justifications_tuple, "obligation_index": index,
         "phase_metrics": model.SemanticPhaseMetrics(

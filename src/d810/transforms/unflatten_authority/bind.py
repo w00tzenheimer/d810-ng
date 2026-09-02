@@ -644,6 +644,19 @@ def _translate_projected_site_draft_violation(exc: _ProjectedSiteDraftViolation)
 _ROUTE_REGISTRY: dict[int, tuple[weakref.ReferenceType[object], str]] = {}
 _SITE_REGISTRY: dict[int, tuple[weakref.ReferenceType[object], str]] = {}
 _SITE_BINDING_REGISTRY: dict[int, tuple[weakref.ReferenceType[object], str]] = {}
+_OBSERVED_LOGICAL_ENDPOINT_REGISTRY: dict[
+    int, tuple[weakref.ReferenceType[object], str]
+] = {}
+_OBSERVED_ROUTE_TOPOLOGY_REGISTRY: dict[
+    int, tuple[weakref.ReferenceType[object], str]
+] = {}
+_OBSERVED_LOWERED_CONDITIONAL_TOPOLOGY_REGISTRY: dict[
+    int, tuple[weakref.ReferenceType[object], str]
+] = {}
+# Publication occurs only in transaction_api's complete entry-liveness binder.
+# This lower layer owns the occurrence store and validates consumers without
+# depending upward on the transaction facade.
+_ENTRY_ENDPOINT_LIVENESS_RECEIPT_OCCURRENCES: dict[int, tuple[object, str]] = {}
 _REGISTRY_PUBLICATION_LOCK = threading.RLock()
 
 
@@ -750,6 +763,139 @@ class _AtomicPublicationBatch:
 
 def _register_site(value: object, identity: str, _registry=_SITE_REGISTRY) -> object:
     return _register_registry_occurrence(value, identity, _registry)
+
+
+def validate_bound_entry_endpoint_liveness_allowance(
+    receipt: model.BoundEntryEndpointLivenessAllowance,
+) -> None:
+    """Require the exact binder-minted entry-liveness receipt occurrence."""
+    if type(receipt) is not model.BoundEntryEndpointLivenessAllowance:
+        raise TypeError("entry liveness receipt has unknown type")
+    receipt.__post_init__()
+    with _REGISTRY_PUBLICATION_LOCK:
+        row = _ENTRY_ENDPOINT_LIVENESS_RECEIPT_OCCURRENCES.get(id(receipt))
+        if row is None or row[0] is not receipt:
+            raise ValueError("entry liveness receipt was not binder-minted")
+        if row[1] != receipt.binding_id:
+            raise ValueError("entry liveness receipt content drifted")
+
+
+def _publish_bound_entry_endpoint_liveness_batch(
+    receipts: tuple[model.BoundEntryEndpointLivenessAllowance, ...],
+) -> tuple[model.BoundEntryEndpointLivenessAllowance, ...]:
+    """Atomically publish a fully transaction-validated receipt batch."""
+    if type(receipts) is not tuple or any(
+        type(item) is not model.BoundEntryEndpointLivenessAllowance
+        for item in receipts
+    ):
+        raise TypeError("entry liveness publication requires exact receipts")
+    for receipt in receipts:
+        receipt.__post_init__()
+    with _REGISTRY_PUBLICATION_LOCK:
+        # Precheck the complete batch before the first registry write.
+        seen: set[int] = set()
+        for receipt in receipts:
+            key = id(receipt)
+            if key in seen:
+                raise ValueError("entry liveness publication batch is duplicated")
+            seen.add(key)
+            existing = _ENTRY_ENDPOINT_LIVENESS_RECEIPT_OCCURRENCES.get(key)
+            if existing is not None and (
+                existing[0] is not receipt
+                or existing[1] != receipt.binding_id
+            ):
+                raise ValueError("entry liveness receipt publication conflicts")
+        for receipt in receipts:
+            _ENTRY_ENDPOINT_LIVENESS_RECEIPT_OCCURRENCES[id(receipt)] = (
+                receipt, receipt.binding_id,
+            )
+    return receipts
+
+
+def _mint_observed_logical_endpoint_occurrence(
+    **values: object,
+) -> model.ObservedLogicalEndpointOccurrence:
+    occurrence = model.ObservedLogicalEndpointOccurrence(**values)
+    return _register_registry_occurrence(
+        occurrence,
+        occurrence.occurrence_id,
+        _OBSERVED_LOGICAL_ENDPOINT_REGISTRY,
+    )
+
+
+def _validate_observed_logical_endpoint_occurrence(
+    occurrence: model.ObservedLogicalEndpointOccurrence,
+) -> None:
+    if type(occurrence) is not model.ObservedLogicalEndpointOccurrence:
+        raise TypeError("observed logical endpoint occurrence has unknown type")
+    occurrence.__post_init__()
+    row = _OBSERVED_LOGICAL_ENDPOINT_REGISTRY.get(id(occurrence))
+    if row is None or row[0]() is not occurrence:
+        raise ValueError(
+            "observed logical endpoint occurrence was not minted by the binder",
+        )
+    if row[1] != occurrence.occurrence_id:
+        raise ValueError("observed logical endpoint occurrence content drifted")
+
+
+def mint_observed_route_topology_occurrence(
+    **values: object,
+) -> model.ObservedRouteTopologyOccurrence:
+    """Mint the sole transaction-owned receipt for one observed route row."""
+
+    occurrence = model.ObservedRouteTopologyOccurrence(**values)
+    return _register_registry_occurrence(
+        occurrence,
+        occurrence.occurrence_id,
+        _OBSERVED_ROUTE_TOPOLOGY_REGISTRY,
+    )
+
+
+def validate_observed_route_topology_occurrence(
+    occurrence: model.ObservedRouteTopologyOccurrence,
+) -> None:
+    if type(occurrence) is not model.ObservedRouteTopologyOccurrence:
+        raise TypeError("observed route topology occurrence has unknown type")
+    occurrence.__post_init__()
+    row = _OBSERVED_ROUTE_TOPOLOGY_REGISTRY.get(id(occurrence))
+    if row is None or row[0]() is not occurrence:
+        raise ValueError(
+            "observed route topology occurrence was not minted by the binder",
+        )
+    if row[1] != occurrence.occurrence_id:
+        raise ValueError("observed route topology occurrence content drifted")
+
+
+def mint_observed_lowered_conditional_topology_occurrence(
+    **values: object,
+) -> model.ObservedLoweredConditionalTopologyOccurrence:
+    """Mint one transaction-owned lowered-conditional topology receipt."""
+
+    occurrence = model.ObservedLoweredConditionalTopologyOccurrence(**values)
+    return _register_registry_occurrence(
+        occurrence,
+        occurrence.occurrence_id,
+        _OBSERVED_LOWERED_CONDITIONAL_TOPOLOGY_REGISTRY,
+    )
+
+
+def validate_observed_lowered_conditional_topology_occurrence(
+    occurrence: model.ObservedLoweredConditionalTopologyOccurrence,
+) -> None:
+    if type(occurrence) is not model.ObservedLoweredConditionalTopologyOccurrence:
+        raise TypeError(
+            "observed lowered conditional topology occurrence has unknown type",
+        )
+    occurrence.__post_init__()
+    row = _OBSERVED_LOWERED_CONDITIONAL_TOPOLOGY_REGISTRY.get(id(occurrence))
+    if row is None or row[0]() is not occurrence:
+        raise ValueError(
+            "observed lowered conditional topology occurrence was not minted by the binder",
+        )
+    if row[1] != occurrence.occurrence_id:
+        raise ValueError(
+            "observed lowered conditional topology occurrence content drifted",
+        )
 
 
 def _site_mint(
@@ -1849,6 +1995,118 @@ def _draft_projected_site_closure(
     )
 
 
+def _unclassified_effect_cut_frontier(
+    *,
+    source_inventory: model.SemanticGraphInventory,
+    projected_inventory: model.SemanticGraphInventory,
+    plan: PatchPlan,
+    patch_step_facts: tuple[model.PatchStepEvidencePayload, ...],
+    owner_serial: int,
+) -> tuple[tuple[object, ...], tuple[object, ...], tuple[object, ...]]:
+    """Attribute a missing effect site to inventory-visible candidate cuts.
+
+    This is diagnostic-only: it reverse-walks source topology through candidate
+    unreachable blocks and reports the first reachable-to-unreachable edges.
+    It neither assesses a route nor changes the site disposition.
+    """
+    source_blocks = {row.serial: row for row in source_inventory.blocks}
+    projected_serial_by_ref = projected_inventory.serial_by_ref
+    projected_reachable = set(projected_inventory.reachable_serials)
+
+    def candidate_reachable(serial: int) -> bool:
+        row = source_blocks.get(serial)
+        if row is None or row.block_ref is None:
+            return False
+        projected_serial = projected_serial_by_ref.get(row.block_ref)
+        return (
+            projected_serial is not None
+            and projected_serial in projected_reachable
+        )
+
+    predecessors: dict[int, list[model.InventoryTopologyIncidence]] = {}
+    for incidence in source_inventory.topology:
+        if incidence.kind is model.TopologyIncidenceKind.SUCCESSOR:
+            predecessors.setdefault(incidence.peer_serial, []).append(incidence)
+
+    frontier: list[object] = []
+    seen: set[int] = set()
+    pending = [owner_serial]
+    while pending:
+        target_serial = pending.pop()
+        if target_serial in seen:
+            continue
+        seen.add(target_serial)
+        for incidence in sorted(
+            predecessors.get(target_serial, ()),
+            key=lambda row: (
+                row.owner_serial,
+                row.peer_serial,
+                -1 if row.source_transfer_ea is None else row.source_transfer_ea,
+            ),
+        ):
+            source_serial = incidence.owner_serial
+            source_row = source_blocks.get(source_serial)
+            target_row = source_blocks.get(target_serial)
+            if candidate_reachable(source_serial):
+                frontier.append((
+                    source_serial,
+                    None if source_row is None else source_row.block_ref,
+                    None if source_row is None else source_row.anchor_ea,
+                    target_serial,
+                    None if target_row is None else target_row.block_ref,
+                    None if target_row is None else target_row.anchor_ea,
+                    incidence.source_transfer_ea,
+                ))
+            else:
+                pending.append(source_serial)
+    frontier_rows = tuple(sorted(frontier, key=canonical_bytes))
+    endpoint_refs = {
+        ref
+        for edge in frontier_rows
+        for ref in (edge[1], edge[4])
+        if ref is not None
+    }
+    # This helper only renders failure context.  Reconstructing canonical step
+    # descriptors here would introduce a second validation authority beside
+    # _index_lineage_fact_groups.  The closed fact payload already carries the
+    # relevant operation coordinates for every endpoint-owned cut.
+    endpoint_facts = tuple(
+        fact
+        for fact in patch_step_facts
+        if fact.owner_ref in endpoint_refs
+    )
+    descriptor_rows = tuple(
+        (
+            fact.step_index,
+            fact.step_type,
+            fact.owner_ref,
+            fact.host_ea,
+            fact.host_opcode,
+            fact.value_size,
+            fact.step_digest,
+        )
+        for fact in endpoint_facts
+    )
+    descriptor_indices = {fact.step_index for fact in endpoint_facts}
+    fact_rows = tuple(
+        (
+            fact.step_index,
+            fact.step_type,
+            fact.owner_ref,
+            fact.host_ea,
+            fact.host_opcode,
+            fact.value_size,
+            fact.step_digest,
+        )
+        for fact in patch_step_facts
+        if (
+            fact.owner_ref in endpoint_refs
+            or fact.step_index in descriptor_indices
+        )
+    )
+    return frontier_rows, descriptor_rows, fact_rows
+
+
 def _validate_projected_site_closure_draft(
     draft: _ProjectedSiteClosureDraft, *, source_authority: model.SourceBoundRouteAuthority,
     plan: PatchPlan, source_inventory: model.SemanticGraphInventory,
@@ -2502,9 +2760,101 @@ def _validate_projected_site_closure_draft(
         if item.outcome is not expected_outcome or item.lineage is not expected_lineage:
             raise _ProjectedSiteDraftViolation("effect lineage/outcome differs", scope=model.RouteRealizationFailureScope.STEP if mapping else model.RouteRealizationFailureScope.EVIDENCE, claim=exact_claim or alias_claim, relation_draft=expected_structural or item.relation_draft, source_row=item.source_row, projected_row=item.projected_row)
         if expected_outcome is model.ProjectedEffectSiteOutcome.UNCLASSIFIED:
+            source_row = item.source_row
+            mapped_owner = (
+                mapping.projected_owner.ref
+                if mapping is not None
+                else source_row.owner_ref
+            )
+            mapped_blocks = tuple(
+                (
+                    row.serial,
+                    row.block_ref,
+                    row.anchor_ea,
+                    row.serial in projected_inventory.reachable_serials,
+                )
+                for row in projected_inventory.blocks
+                if row.block_ref == mapped_owner
+            )
+            mapped_bindings = tuple(
+                (
+                    row.block_ref,
+                    row.serial,
+                    row.anchor_ea,
+                    row.status.value,
+                    row.role.value,
+                )
+                for row in projected_inventory.bindings
+                if row.block_ref == mapped_owner
+            )
+            mapped_owner_effects = tuple(
+                (
+                    row.owner_serial,
+                    row.owner_anchor_ea,
+                    row.instruction_ordinal,
+                    row.instruction_ea,
+                    row.effect_kind.value,
+                    row.opcode,
+                    row.width,
+                    row.owner_serial in projected_inventory.reachable_serials,
+                )
+                for row in projected_inventory.effects
+                if row.owner_ref == mapped_owner
+                and row.instruction_ea == source_row.instruction_ea
+            )
+            same_ea_effects = tuple(
+                (
+                    row.owner_serial,
+                    row.owner_ref,
+                    row.owner_anchor_ea,
+                    row.instruction_ordinal,
+                    row.effect_kind.value,
+                    row.opcode,
+                    row.width,
+                    row.owner_serial in projected_inventory.reachable_serials,
+                )
+                for row in projected_inventory.effects
+                if row.instruction_ea == source_row.instruction_ea
+            )
+            cut_frontier, cut_descriptors, cut_facts = (
+                _unclassified_effect_cut_frontier(
+                    source_inventory=source_inventory,
+                    projected_inventory=projected_inventory,
+                    plan=plan,
+                    patch_step_facts=patch_step_facts,
+                    owner_serial=source_row.owner_serial,
+                )
+            )
+            logger.warning(
+                "unclassified projected effect-site context: source=%r "
+                "owner_mapping=%r mapped_owner=%r mapped_blocks=%r "
+                "mapped_bindings=%r mapped_owner_effects=%r same_ea_effects=%r "
+                "cut_frontier=%r cut_descriptors=%r cut_facts=%r",
+                (
+                    source_row.owner_ref,
+                    source_row.owner_serial,
+                    source_row.owner_anchor_ea,
+                    source_row.instruction_ordinal,
+                    source_row.instruction_ea,
+                    source_row.effect_kind.value,
+                    source_row.opcode,
+                    source_row.width,
+                ),
+                mapping,
+                mapped_owner,
+                mapped_blocks,
+                mapped_bindings,
+                mapped_owner_effects,
+                same_ea_effects,
+                cut_frontier,
+                cut_descriptors,
+                cut_facts,
+            )
             raise _ProjectedSiteDraftViolation(
                 "projected effect site has no typed disposition",
                 scope=model.RouteRealizationFailureScope.EVIDENCE,
+                source_row=item.source_row,
+                projected_row=item.projected_row,
             )
         if mapping is not None:
             if (
@@ -2948,9 +3298,27 @@ def _canonical_registry_seal(
     _site_registry=_SITE_REGISTRY,
     _binding_registry=_SITE_BINDING_REGISTRY,
     _route_registry=_ROUTE_REGISTRY,
+    _logical_registry=_OBSERVED_LOGICAL_ENDPOINT_REGISTRY,
     _route_seal=_route_content_seal,
 ) -> str:
     """Recompute one closed record's canonical live publication seal."""
+    if registry is _logical_registry:
+        if type(value) is not model.ObservedLogicalEndpointOccurrence:
+            raise TypeError("logical endpoint registry has an unknown type")
+        value.__post_init__()
+        return value.occurrence_id
+    if registry is _OBSERVED_ROUTE_TOPOLOGY_REGISTRY:
+        if type(value) is not model.ObservedRouteTopologyOccurrence:
+            raise TypeError("route topology registry has an unknown type")
+        value.__post_init__()
+        return value.occurrence_id
+    if registry is _OBSERVED_LOWERED_CONDITIONAL_TOPOLOGY_REGISTRY:
+        if type(value) is not model.ObservedLoweredConditionalTopologyOccurrence:
+            raise TypeError(
+                "lowered conditional topology registry has an unknown type",
+            )
+        value.__post_init__()
+        return value.occurrence_id
     if registry is _site_registry:
         if type(value) not in {
             model.RawEffectGatePhaseFact, model.EffectSiteCoordinate,
@@ -3271,11 +3639,44 @@ def _validate_source_claim_bindings(
     for subject in expected_subjects:
         canonical = subjects.get(subject.subject_id)
         binding = bindings.get(subject.subject_id)
+        locator = subject.locator
+        reminted_native_anchor = False
         if canonical != subject or binding is None:
-            raise ValueError("route claim subject is absent from source inventory")
+            # A fresh evidence bundle changes the subject ID when it chooses a
+            # different instruction anchor in one native block.  The source
+            # inventory deliberately remains tied to its own captured anchor,
+            # so recover that one row only when every semantic coordinate but
+            # the native instruction anchor is identical.  The canonical
+            # materialization binder has already replayed the new anchor;
+            # this join merely proves it belongs to the same captured source
+            # block rather than accepting a different subject or identity.
+            if not (
+                type(locator) is model.BlockSubjectLocator
+                and type(locator.block_ref) is NativeBlockRef
+            ):
+                raise ValueError("route claim subject is absent from source inventory")
+            witness = catalog.get(locator.block_ref)
+            if witness is None:
+                raise ValueError("route claim block is absent from source identity catalog")
+            alternatives = tuple(
+                (candidate, candidate_binding)
+                for candidate_binding in inventory.bindings
+                for candidate in (subjects.get(candidate_binding.subject.subject_id),)
+                if candidate is not None
+                and candidate_binding.status is model.SubjectBindingStatus.UNIQUE
+                and candidate.kind is subject.kind
+                and candidate.role is subject.role
+                and type(candidate.locator) is model.BlockSubjectLocator
+                and candidate_binding.block_ref == locator.block_ref
+                and candidate_binding.native_instruction_eas == witness.native_instruction_eas
+                and locator.anchor_ea in candidate_binding.native_instruction_eas
+            )
+            if len(alternatives) != 1:
+                raise ValueError("route claim subject is absent from source inventory")
+            canonical, binding = alternatives[0]
+            reminted_native_anchor = True
         if binding.status is not model.SubjectBindingStatus.UNIQUE:
             raise ValueError("route claim subject is not uniquely source-bound")
-        locator = subject.locator
         if type(locator) is model.LogicalFunctionExitSubjectLocator:
             if (
                 binding.block_ref != locator.block_ref
@@ -3285,7 +3686,10 @@ def _validate_source_claim_bindings(
             ):
                 raise ValueError("logical route claim binding drifted from its locator")
             continue
-        if binding.block_ref != locator.block_ref or binding.anchor_ea != locator.anchor_ea:
+        if (
+            binding.block_ref != locator.block_ref
+            or (not reminted_native_anchor and binding.anchor_ea != locator.anchor_ea)
+        ):
             raise ValueError("route claim subject binding drifted from its locator")
         witness = catalog.get(locator.block_ref)
         if witness is None:
@@ -3323,11 +3727,23 @@ def _validate_route_claim_proof_members(
 
     def witness_for(ref: object, anchor_ea: int) -> model.SourceBlockIdentityWitness:
         witness = witnesses.get(ref)
-        if witness is None or witness.anchor_ea != anchor_ea:
+        if witness is None:
+            raise ValueError("route claim locator is not bound to source catalog")
+        if type(ref) is NativeBlockRef:
+            if not ref.identity.native_ranges.contains(anchor_ea):
+                raise ValueError("route claim locator is outside source identity")
+        elif witness.anchor_ea != anchor_ea:
             raise ValueError("route claim locator is not bound to source catalog")
         return witness
 
     source_witness = witness_for(locator.source_ref, locator.source_anchor_ea)
+    # A claim's locator records the producer inventory coordinate, while a
+    # newly minted canonical proof may select another replayed instruction
+    # anchor in that same native block.  Canonical route binding has already
+    # established that the proof anchor resolves uniquely in the immutable
+    # materialization; source authority joins the two representations by their
+    # catalog-owned stable identity.  The later physical step correlation
+    # remains exact, so this does not permit an old plan to drift its anchors.
     if _catalog_stable_identity(source_witness, catalog=catalog) != proof.source_identity:
         raise ValueError("route claim source identity differs from canonical proof")
 
@@ -3366,6 +3782,11 @@ def _validate_route_claim_proof_members(
                 prior = expected_logical.setdefault(endpoint.serial, endpoint)
                 if prior != endpoint:
                     raise ValueError("canonical logical DAG endpoint serial is ambiguous")
+    if proof.terminal_delivery is not None:
+        endpoint = proof.terminal_delivery.return_transport.logical_exit
+        prior = expected_logical.setdefault(endpoint.serial, endpoint)
+        if prior != endpoint:
+            raise ValueError("canonical logical DAG endpoint serial is ambiguous")
     claimed_logical = {item.serial: item for item in logical_locators}
     if len(claimed_logical) != len(logical_locators):
         raise ValueError("route claim logical endpoints are not serial-unique")
@@ -3404,15 +3825,19 @@ def _validate_source_logical_dag_endpoints(
         if proof.proof_id not in selected_proof_ids:
             continue
         dag = proof.state_dag
-        if dag is None:
-            continue
-        for comparison in dag.witness.comparisons:
-            for endpoint in (comparison.true_target, comparison.false_target):
-                if type(endpoint) is not route_model.SemanticLogicalDagEndpoint:
-                    continue
-                prior = expected.setdefault(int(endpoint.serial), endpoint)
-                if prior != endpoint:
-                    raise ValueError("logical DAG endpoint serial is ambiguous")
+        if dag is not None:
+            for comparison in dag.witness.comparisons:
+                for endpoint in (comparison.true_target, comparison.false_target):
+                    if type(endpoint) is not route_model.SemanticLogicalDagEndpoint:
+                        continue
+                    prior = expected.setdefault(int(endpoint.serial), endpoint)
+                    if prior != endpoint:
+                        raise ValueError("logical DAG endpoint serial is ambiguous")
+        if proof.terminal_delivery is not None:
+            endpoint = proof.terminal_delivery.return_transport.logical_exit
+            prior = expected.setdefault(int(endpoint.serial), endpoint)
+            if prior != endpoint:
+                raise ValueError("logical DAG endpoint serial is ambiguous")
     rows = {int(row.serial): row for row in source_inventory.blocks}
     for serial, endpoint in expected.items():
         row = rows.get(serial)
@@ -4429,6 +4854,7 @@ def _select_lineage_fact_group(
     claim: model.EquivalentSemanticRouteClaim,
     proof: route_model.SemanticRouteProof,
     source_inventory: model.SemanticGraphInventory,
+    entry_liveness_receipts: tuple[model.BoundEntryEndpointLivenessAllowance, ...] = (),
 ) -> _LineageFactGroupEntry:
     """Select one descriptor using only closed step and structural coordinates."""
     source_ref = claim.source_subject.locator.block_ref
@@ -4550,6 +4976,24 @@ def _select_lineage_fact_group(
             plan, proof, entry.descriptor,
         )
     ) if not is_conditional else ()
+    entry_liveness = tuple(
+        entry for entry in entries
+        for receipt in entry_liveness_receipts
+        if entry.descriptor.step_kind in {
+            PatchStepKind.REDIRECT_BRANCH, PatchStepKind.REDIRECT_GOTO,
+        }
+        and type(receipt) is model.BoundEntryEndpointLivenessAllowance
+        and receipt.route_proof_id == proof.proof_id
+        and any(receipt.patch_step_fact is fact for fact in entry.facts)
+        and receipt.allowance.patch_step_index == entry.descriptor.step_index
+        and receipt.allowance.patch_step_digest == entry.descriptor.step_digest
+        and entry.descriptor.owner_refs == receipt.allowance.entry_predecessor_owner_refs
+        and entry.descriptor.route_refs[:3] == (
+            receipt.allowance.entry_predecessor_owner_refs[0],
+            receipt.allowance.dispatcher_old_target_ref,
+            receipt.allowance.replacement_endpoint_ref,
+        )
+    ) if not is_conditional else ()
     guarded_conditional_fold = tuple(
         entry for entry in kind_entries(PatchStepKind.CONVERT_TO_GOTO)
         if _guarded_conditional_fold_coordinates_match(
@@ -4588,6 +5032,8 @@ def _select_lineage_fact_group(
             if state_carrier_feeder_direct
             else state_carrier_helper_corridor
             if state_carrier_helper_corridor
+            else entry_liveness
+            if entry_liveness
             else retained_prefix_direct
             if retained_prefix_direct
             else direct + branch + split + corridor
@@ -4675,6 +5121,41 @@ def _select_lineage_fact_group(
     return unique[0]
 
 
+def _selected_entry_liveness_receipt(
+    *, entry: _LineageFactGroupEntry,
+    proof: route_model.SemanticRouteProof,
+    receipts: tuple[model.BoundEntryEndpointLivenessAllowance, ...],
+) -> model.BoundEntryEndpointLivenessAllowance | None:
+    """Return the one receipt authorizing this exact physical redirect.
+
+    The route proof's state-write remains the semantic source.  This receipt
+    alone supplies the different physical predecessor that owns the removed
+    dispatcher edge.
+    """
+    matches = tuple(
+        receipt for receipt in receipts
+        if receipt.route_proof_id == proof.proof_id
+        and any(receipt.patch_step_fact is fact for fact in entry.facts)
+        and receipt.allowance.patch_step_index == entry.descriptor.step_index
+        and receipt.allowance.patch_step_digest == entry.descriptor.step_digest
+        and entry.descriptor.step_kind in {
+            PatchStepKind.REDIRECT_GOTO, PatchStepKind.REDIRECT_BRANCH,
+        }
+        and entry.descriptor.owner_refs
+        == receipt.allowance.entry_predecessor_owner_refs
+        and entry.descriptor.route_refs[:3] == (
+            receipt.allowance.entry_predecessor_owner_refs[0],
+            receipt.allowance.dispatcher_old_target_ref,
+            receipt.allowance.replacement_endpoint_ref,
+        )
+    )
+    if not matches:
+        return None
+    if len(matches) != 1:
+        raise ValueError("entry liveness redirect has ambiguous receipt authority")
+    return matches[0]
+
+
 def _require_valid_lineage_fact_group(
     entry: _LineageFactGroupEntry,
 ) -> tuple[model.PatchStepEvidencePayload, ...]:
@@ -4691,6 +5172,7 @@ def _legacy_structural_projected_routes(*, source_authority: model.SourceBoundRo
                               projected_inventory: model.SemanticGraphInventory,
                               patch_step_facts: tuple[model.PatchStepEvidencePayload, ...],
                               attempt_id: object,
+                              entry_liveness_receipts: tuple[model.BoundEntryEndpointLivenessAllowance, ...] = (),
                               _mint=_route_mint, _failure=_route_failure, _result=_route_result,
                               _validate=_validate_registered_route,
                               _draft_factory=None) -> model.ProjectedRouteRealizationResult:
@@ -4739,6 +5221,13 @@ def _legacy_structural_projected_routes(*, source_authority: model.SourceBoundRo
             raise ValueError("projected realization generation differs from attempt")
         if type(patch_step_facts) is not tuple:
             raise TypeError("patch_step_facts must be an exact tuple")
+        if type(entry_liveness_receipts) is not tuple:
+            raise TypeError("entry liveness receipts must be an exact tuple")
+        receipt_ids = tuple(receipt.binding_id for receipt in entry_liveness_receipts)
+        if receipt_ids != tuple(sorted(receipt_ids)) or len(set(receipt_ids)) != len(receipt_ids):
+            raise ValueError("entry liveness receipts are not canonical")
+        for receipt in entry_liveness_receipts:
+            validate_bound_entry_endpoint_liveness_allowance(receipt)
         facts = patch_step_facts
         active_stage = model.RouteRealizationFailureStage.ATTEMPT_BINDING
         source_by_ref = source_inventory.serial_by_ref
@@ -4776,6 +5265,7 @@ def _legacy_structural_projected_routes(*, source_authority: model.SourceBoundRo
                 entry = _select_lineage_fact_group(
                     lineage_index, plan=plan, claim=claim, proof=claim_proof,
                     source_inventory=source_inventory,
+                    entry_liveness_receipts=entry_liveness_receipts,
                 )
             except _LineageFactViolation as violation:
                 active_stage = violation.stage
@@ -4783,6 +5273,11 @@ def _legacy_structural_projected_routes(*, source_authority: model.SourceBoundRo
                 active_fact = violation.fact
                 raise
             descriptor = entry.descriptor
+            entry_liveness_receipt = _selected_entry_liveness_receipt(
+                entry=entry,
+                proof=claim_proof,
+                receipts=entry_liveness_receipts,
+            )
             active_descriptor = descriptor
             selected_step_indices.add(descriptor.step_index)
             active_fact = entry.facts[0] if entry.facts else entry.violation.fact if entry.violation else None
@@ -4997,6 +5492,11 @@ def _legacy_structural_projected_routes(*, source_authority: model.SourceBoundRo
             shared_state_carrier_source_bypass_match = False
             route_source_ref = source_ref
             route_source_serial_number = source_by_ref.get(source_ref)
+            if entry_liveness_receipt is not None:
+                route_source_ref, route_source_serial_number = _ref_and_serial(
+                    entry_liveness_receipt.allowance.entry_predecessor_owner_refs[0],
+                    source_by_ref,
+                )
             if descriptor.step_kind is PatchStepKind.LOWER_CONDITIONAL:
                 # The lower-conditional relation has two distinct named
                 # source coordinates: the feeder owns the rewritten tail,
@@ -5127,6 +5627,28 @@ def _legacy_structural_projected_routes(*, source_authority: model.SourceBoundRo
                         "conditional fold selected target differs from claim"
                     )
             if descriptor.step_kind is PatchStepKind.REDIRECT_GOTO:
+                if proof.proof_kind is route_model.SemanticRouteProofKind.TERMINAL_DELIVERY:
+                    delivery = proof.terminal_delivery
+                    if (
+                        delivery is None
+                        or not _ref_matches_identity(
+                            descriptor.route_refs[1], delivery.outer_state_dag.entry_identity,
+                        )
+                        or not _ref_matches_identity(
+                            descriptor.route_refs[2], delivery.exit_entry.identity,
+                        )
+                        or not _ref_matches_identity(
+                            descriptor.route_refs[0],
+                            (
+                                proof.source_owner_identity
+                                if proof.source_owner_identity is not None
+                                else proof.source_identity
+                            ),
+                        )
+                    ):
+                        raise ValueError(
+                            "terminal delivery redirect differs from its exact outer route"
+                        )
                 owner_bound_direct_match = (
                     _owner_bound_direct_coordinates_match(
                         plan, proof, descriptor,
@@ -5175,6 +5697,12 @@ def _legacy_structural_projected_routes(*, source_authority: model.SourceBoundRo
                     direct_proof_match = True
                     route_source_ref, route_source_serial_number = _ref_and_serial(
                         descriptor.route_refs[0], source_by_ref,
+                    )
+                if entry_liveness_receipt is not None:
+                    direct_proof_match = True
+                    route_source_ref, route_source_serial_number = _ref_and_serial(
+                        entry_liveness_receipt.allowance.entry_predecessor_owner_refs[0],
+                        source_by_ref,
                     )
                 if state_carrier_feeder_direct_match:
                     direct_proof_match = True
@@ -5828,9 +6356,20 @@ def _legacy_structural_projected_routes(*, source_authority: model.SourceBoundRo
                         route_model.SemanticRouteProofKind.STATE_ASSIGNMENT,
                         route_model.SemanticRouteProofKind.STATE_DAG,
                         route_model.SemanticRouteProofKind.BOOTSTRAP,
+                        route_model.SemanticRouteProofKind.STATE_PARTITION,
                     }
                 ):
                     raise ValueError("unsupported branch proof kind or shape")
+                owner_bound_partition = (
+                    proof.proof_kind
+                    is route_model.SemanticRouteProofKind.STATE_PARTITION
+                )
+                if owner_bound_partition and not _owner_bound_direct_coordinates_match(
+                    plan, proof, descriptor,
+                ):
+                    raise ValueError(
+                        "partition branch differs from its exact owner-bound route"
+                    )
                 if not _ref_matches_identity(source_ref, proof.source_identity):
                     raise ValueError("branch source differs from proof source")
                 if not _ref_matches_identity(new_ref, proof.destinations[0].target_identity):
@@ -5861,6 +6400,57 @@ def _legacy_structural_projected_routes(*, source_authority: model.SourceBoundRo
                     if source_predicate is not None
                     else source_successors[1]
                 )
+                if owner_bound_partition:
+                    partition = proof.state_partition
+                    member = (
+                        None
+                        if partition is None
+                        else next(
+                            (
+                                item
+                                for item in partition.members
+                                if _ref_matches_identity(
+                                    route_source_ref, item.owner_identity,
+                                )
+                            ),
+                            None,
+                        )
+                    )
+                    conditional_edge = (
+                        None if member is None else member.conditional_edge
+                    )
+                    untouched_row = _inventory_block(
+                        source_inventory, untouched_ref,
+                    )
+                    selected_role = (
+                        SemanticEdgeRole.CONDITIONAL_TAKEN
+                        if source_explicit_target == old_serial_number
+                        else SemanticEdgeRole.CONDITIONAL_FALLTHROUGH
+                    )
+                    source_tail = source_row.instruction_observations[-1]
+                    if partition is None or member is None or conditional_edge is None:
+                        raise ValueError(
+                            "partition branch lacks its sealed conditional edge"
+                        )
+                    if source_explicit_target not in {
+                        old_serial_number, untouched_serial,
+                    }:
+                        raise ValueError(
+                            "partition branch lacks its exact source arm"
+                        )
+                    if conditional_edge.edge_role is not selected_role:
+                        raise ValueError("partition branch selected edge role differs")
+                    if not _ref_matches_identity(
+                        untouched_ref, conditional_edge.sibling_identity,
+                    ):
+                        raise ValueError("partition branch sibling identity differs")
+                    if untouched_row.anchor_ea != conditional_edge.sibling_anchor_ea:
+                        raise ValueError("partition branch sibling anchor differs")
+                    if (
+                        source_tail.instruction_ea
+                        != conditional_edge.transfer_instruction_ea
+                    ):
+                        raise ValueError("partition branch transfer instruction differs")
                 expected_predicate_target = _expected_projected_branch_target(
                     source_explicit_target=source_explicit_target,
                     old_target=old_serial_number,
@@ -6422,6 +7012,7 @@ def _legacy_structural_projected_routes(*, source_authority: model.SourceBoundRo
                     relation=relation,
                     expected_roles=expected_roles,
                     exact_selected_arm=exact_selected_arm_correlation,
+                    entry_liveness_receipt=entry_liveness_receipt,
                 )
         # Corrupt supplied facts for an unrelated descriptor cannot be silently
         # ignored.  Valid unrelated groups remain isolated and are accepted.
@@ -6545,6 +7136,7 @@ def _make_route_kernels():
         relation: object
         expected_roles: tuple[object, ...]
         exact_selected_arm: _ExactSelectedArmDirectCorrelation | None
+        entry_liveness_receipt: model.BoundEntryEndpointLivenessAllowance | None
 
     @dataclass(frozen=True, slots=True)
     class _OwnerMapping:
@@ -6591,7 +7183,7 @@ def _make_route_kernels():
             draft.lineage_entry.facts, draft.proof_id, draft.route_subject_id,
             descriptor_content(draft.descriptor), draft.facts,
             draft.selected_target_ref, draft.relation, draft.expected_roles,
-            correlation_content,
+            correlation_content, draft.entry_liveness_receipt,
         ))
 
     def relation_role_payload(relation: object) -> tuple[object, ...]:
@@ -7048,6 +7640,30 @@ def _make_route_kernels():
                 expected_proof_owner = identity_owner(
                     proof.source_identity, proof.source_anchor_ea,
                 )
+                entry_liveness_receipt = draft.entry_liveness_receipt
+                entry_liveness_owner = None
+                if entry_liveness_receipt is not None:
+                    validate_bound_entry_endpoint_liveness_allowance(
+                        entry_liveness_receipt,
+                    )
+                    if _selected_entry_liveness_receipt(
+                        entry=draft.lineage_entry,
+                        proof=proof,
+                        receipts=(entry_liveness_receipt,),
+                    ) is not entry_liveness_receipt:
+                        raise ValueError(
+                            "entry liveness receipt differs from selected redirect",
+                        )
+                    owner_ref = (
+                        entry_liveness_receipt.allowance
+                        .entry_predecessor_owner_refs[0]
+                    )
+                    owner_witness = catalog_by_ref.get(owner_ref)
+                    if owner_witness is None:
+                        raise ValueError("entry liveness owner is foreign to source catalog")
+                    entry_liveness_owner = model.AnchoredBlockRef(
+                        owner_ref, owner_witness.anchor_ea,
+                    )
                 exact_selected_arm = draft.exact_selected_arm
                 owner_bound_direct = _owner_bound_direct_coordinates_match(
                     plan, proof, draft.descriptor,
@@ -7112,6 +7728,15 @@ def _make_route_kernels():
                 expected_relation_source_owner = (
                     exact_selected_arm.feeder
                     if exact_selected_arm is not None
+                    # A retained-prefix relation keeps W as its semantic
+                    # proof source and names P separately as delivery_owner.
+                    # An entry-liveness receipt authorizes that physical P
+                    # edge; it must not rewrite the proof-source role.
+                    else expected_proof_owner
+                    if type(draft.relation)
+                    is model.RetainedPrefixRouteRealization
+                    else entry_liveness_owner
+                    if entry_liveness_owner is not None
                     else identity_owner(
                         proof.source_identity, proof.source_anchor_ea,
                     )
@@ -7215,6 +7840,10 @@ def _make_route_kernels():
                     if (
                         relation.proof_source != expected_proof_source
                         or relation.new_target.ref != selected_target
+                        or (
+                            entry_liveness_owner is not None
+                            and relation.delivery_owner != entry_liveness_owner
+                        )
                     ):
                         raise ValueError("retained-prefix relation differs from proof")
                 elif type(relation) is model.LoweredConditionalRouteRealization:
@@ -7784,7 +8413,12 @@ def _make_route_kernels():
             terminal_by_disposition[id(item)] = row
         effect_results = sorted(effect_results, key=lambda item: item.result_id)
         terminal_results = sorted(terminal_results, key=lambda item: item.result_id)
-        relation_ids = tuple(sorted(item.relation.relation_id for item in drafts))
+        # Several exact patch steps may realize the same canonical relation.
+        # The phase result indexes relation authority, not step occurrences;
+        # occurrence multiplicity remains in the realization rows below.
+        relation_ids = tuple(sorted({
+            item.relation.relation_id for item in drafts
+        }))
         derived_id = derived_effect_gate_fact_id(raw_effect_gate_fact.fact_id, tuple(item.result_id for item in effect_results))
         site_phase = _site_binding_mint(model.ProjectedSemanticSitePhaseResult, {
             "authority_id": authority_id, "source_authority_id": source_authority.source_authority_id,
@@ -8066,7 +8700,7 @@ def _make_route_kernels():
 
     def realize_from_claim_inventory(
         *, authority_id, claim_inventory, raw_effect_gate_fact,
-        legacy_effective_gate_facts,
+        legacy_effective_gate_facts, entry_liveness_receipts=(),
     ):
         require_registered_transaction_projected_claim_inventory(
             claim_inventory,
@@ -8100,6 +8734,8 @@ def _make_route_kernels():
             return reject_input()
         if type(patch_step_facts) is not tuple:
             return reject_input()
+        if type(entry_liveness_receipts) is not tuple:
+            return reject_input()
         if type(raw_effect_gate_fact) is not model.RawEffectGatePhaseFact:
             return reject_input(model.RouteRealizationFailureStage.EFFECT_TERMINAL_PRESERVATION)
         try:
@@ -8123,6 +8759,7 @@ def _make_route_kernels():
                 source_inventory=source_inventory,
                 projected_inventory=projected_inventory,
                 raw_effect_gate_fact=raw_effect_gate_fact,
+                entry_liveness_receipts=entry_liveness_receipts,
             )
         except (TypeError, ValueError):
             return reject_input()
@@ -8155,6 +8792,7 @@ def _make_route_kernels():
             projected_inventory=projected_inventory,
             patch_step_facts=derived.route_patch_step_facts,
             attempt_id=attempt_id,
+            entry_liveness_receipts=entry_liveness_receipts,
             _mint=mint,
             _failure=failure,
             _result=result,
@@ -9758,20 +10396,6 @@ def _classify_corridor_coverage_forecast(
     correlation_content = tuple(
         sorted(correlation_specs, key=lambda item: (item[0], item[2]))
     )
-    # The forecast is the sole producer-owned comparison authority.  Preserve
-    # its exact source nodes as sealed subject IDs for consumers that must
-    # validate dispatcher-only ingress; do not rediscover a comparison region
-    # from either transaction graph.
-    comparison_region_subject_ids = tuple(sorted({
-        binding.subject.subject_id
-        for path in forecast.paths
-        for node in path.nodes
-        for binding in source_inventory.bindings
-        if binding.subject.block_ref == node.block_ref
-        and binding.subject.anchor_ea == node.anchor_ea
-    }))
-    if not comparison_region_subject_ids:
-        raise ValueError("corridor forecast has no source comparison-region subjects")
     dispatcher_candidates = tuple(
         binding.subject.subject_id for binding in source_inventory.bindings
         if binding.subject.role is model.SemanticSubjectRole.DISPATCHER_ENTRY
@@ -9782,6 +10406,82 @@ def _classify_corridor_coverage_forecast(
     if len(dispatcher_candidates) != 1:
         raise ValueError("corridor forecast dispatcher has no exact unique source subject")
     dispatcher_subject_id = dispatcher_candidates[0]
+    # The forecast paths describe upstream delivery into the dispatcher.  They
+    # are not a declaration that every upstream node is comparison
+    # infrastructure: backward enumeration may legitimately retain an
+    # unreachable predecessor.  Comparison membership must instead come from
+    # a producer-owned typed declaration.  A retirement catalogue contributes
+    # its explicit comparison rows below; canonical state-DAG evidence also
+    # contributes its exact comparison nodes.  The latter matters for nested
+    # dispatchers whose branch nodes carry state writes and therefore are not
+    # eligible as effect-free retirement candidates.
+    def source_binding_for_block(
+        *, block_ref: object, anchor_ea: int, label: str,
+    ) -> model.PhaseSubjectBinding:
+        matches = tuple(
+            binding
+            for binding in source_inventory.bindings
+            if (
+                binding.subject.role
+                is model.SemanticSubjectRole.SOURCE_CATALOG_BLOCK
+                and binding.subject.block_ref == block_ref
+                and binding.subject.anchor_ea == anchor_ea
+            )
+        )
+        if len(matches) != 1:
+            raise ValueError(f"{label} has no exact source subject")
+        binding = matches[0]
+        if (
+            binding.status is not model.SubjectBindingStatus.UNIQUE
+            or binding.serial not in source_inventory.reachable_serials
+        ):
+            raise ValueError(f"{label} is not uniquely source-reachable")
+        return binding
+
+    dispatcher_binding = next(
+        binding
+        for binding in source_inventory.bindings
+        if binding.subject.subject_id == dispatcher_subject_id
+    )
+    comparison_bindings = []
+    for claim in proposal.claims:
+        if type(claim) is not model.DetachedDeadHandlerComponentClaim:
+            continue
+        if claim.dispatcher_subject.block_ref != dispatcher_binding.block_ref:
+            continue
+        for subject in claim.comparison_region_subjects:
+            matches = tuple(
+                binding for binding in source_inventory.bindings
+                if binding.subject == subject
+            )
+            if len(matches) != 1:
+                raise ValueError(
+                    "detached comparison-region subject has no exact source binding"
+                )
+            binding = matches[0]
+            if (
+                binding.status is not model.SubjectBindingStatus.UNIQUE
+                or binding.serial not in source_inventory.reachable_serials
+            ):
+                raise ValueError(
+                    "detached comparison-region subject is not uniquely source-reachable"
+                )
+            comparison_bindings.append(binding)
+
+    retirement_catalog = proposal.retirement_candidate_catalog
+    if retirement_catalog is not None:
+        for candidate in retirement_catalog.candidates:
+            if candidate.role != "comparison_dispatcher":
+                continue
+            comparison_bindings.append(source_binding_for_block(
+                block_ref=candidate.block_ref,
+                anchor_ea=candidate.anchor_ea,
+                label="retirement comparison candidate",
+            ))
+    comparison_region_subject_ids = tuple(sorted({
+        dispatcher_subject_id,
+        *(binding.subject.subject_id for binding in comparison_bindings),
+    }))
     result_id = authority_id((
         "unflatten.corridor-coverage-phase.v1", forecast.forecast_id, phase,
         source_fp, candidate_fp, source_inventory.generation,
@@ -10054,6 +10754,7 @@ def _detached_source_result_values(
         *claim.dead_handler_subjects,
         *claim.retained_handler_subjects,
         *claim.component_subjects,
+        *claim.comparison_region_subjects,
     )
     for subject in required_subjects:
         binding = source_bindings.get(subject.subject_id)
@@ -11396,7 +12097,16 @@ def bind_subjects(
         if owner not in witnesses or subject.anchor_ea is None:
             raise ValueError("subject has no exact owner anchor")
         witness = witnesses[owner]
-        if (
+        is_route_endpoint = subject.role in {
+            model.SemanticSubjectRole.SEMANTIC_ROUTE_SOURCE,
+            model.SemanticSubjectRole.SEMANTIC_ROUTE_DESTINATION,
+        }
+        route_anchor_matches = (
+            is_route_endpoint
+            and type(owner) is NativeBlockRef
+            and owner.identity.native_ranges.contains(subject.anchor_ea)
+        )
+        if not route_anchor_matches and (
             subject.anchor_ea != witness.anchor_ea
             or not _witness_anchor_matches(witness, subject.anchor_ea)
         ):
@@ -11450,6 +12160,64 @@ def _projected_native_origin_mismatch(
     )
 
 
+def _validated_source_logical_function_exit_refs(
+    source_inventory: model.SemanticGraphInventory | None,
+    *,
+    catalog: model.SourceIdentityCatalog,
+    generation: int,
+) -> frozenset[LogicalBlockRef]:
+    """Return logical exits proven by one sealed producer inventory.
+
+    A candidate graph cannot nominate a missing logical route endpoint by
+    carrying a sibling ``LogicalFunctionExitSubjectLocator`` itself.  Only the
+    immutable producer inventory may establish that source ownership, and it
+    must contain exactly one matching, uniquely bound locator at its sealed
+    ref/serial coordinate.
+    """
+
+    if source_inventory is None:
+        return frozenset()
+    if type(source_inventory) is not model.SemanticGraphInventory:
+        raise TypeError("source_inventory must be SemanticGraphInventory or None")
+    model.validate_semantic_graph_inventory(source_inventory)
+    if source_inventory.phase is not model.UnflattenAuthorityPhase.PRODUCER_FORECAST:
+        raise ValueError("logical endpoint source inventory must be producer forecast")
+    if source_inventory.generation != generation or generation != catalog.generation:
+        raise ValueError("logical endpoint source inventory generation differs from catalog")
+
+    bindings_by_subject_id = {
+        binding.subject.subject_id: binding
+        for binding in source_inventory.bindings
+    }
+    endpoint_subjects: dict[LogicalBlockRef, list[model.SemanticSubjectRef]] = {}
+    for subject in source_inventory.subjects:
+        if (
+            subject.role is model.SemanticSubjectRole.SEMANTIC_DAG_ENDPOINT
+            and type(subject.locator) is model.LogicalFunctionExitSubjectLocator
+        ):
+            endpoint_subjects.setdefault(subject.locator.block_ref, []).append(subject)
+
+    proven: set[LogicalBlockRef] = set()
+    for ref, subjects in endpoint_subjects.items():
+        if len(subjects) != 1:
+            raise ValueError("logical endpoint source inventory is nonunique")
+        subject = subjects[0]
+        locator = subject.locator
+        assert type(locator) is model.LogicalFunctionExitSubjectLocator
+        binding = bindings_by_subject_id.get(subject.subject_id)
+        if (
+            binding is None
+            or binding.status is not model.SubjectBindingStatus.UNIQUE
+            or binding.block_ref != locator.block_ref
+            or binding.serial != locator.serial
+            or binding.anchor_ea is not None
+            or binding.native_instruction_eas != ()
+        ):
+            raise ValueError("logical endpoint source inventory binding drift")
+        proven.add(ref)
+    return frozenset(proven)
+
+
 def bind_projected_subjects(
     subjects: Sequence[model.SemanticSubjectRef],
     *,
@@ -11459,6 +12227,10 @@ def bind_projected_subjects(
     generation: int,
     serial_by_ref: Mapping[object, int],
     native_instruction_eas_by_ref: Mapping[object, Sequence[int]] | None = None,
+    source_inventory: model.SemanticGraphInventory | None = None,
+    observed_logical_endpoint_occurrences: tuple[
+        model.ObservedLogicalEndpointOccurrence, ...
+    ] = (),
 ) -> tuple[model.PhaseSubjectBinding, ...]:
     """Bind source subjects against a possibly lossy projected graph.
 
@@ -11489,13 +12261,49 @@ def bind_projected_subjects(
         if type(subject) is model.SemanticSubjectRef
         and type(subject.locator) is model.LogicalFunctionExitSubjectLocator
     }
+    if type(observed_logical_endpoint_occurrences) is not tuple or any(
+        type(item) is not model.ObservedLogicalEndpointOccurrence
+        for item in observed_logical_endpoint_occurrences
+    ):
+        raise TypeError(
+            "observed logical endpoint occurrences must be an exact tuple",
+        )
+    for occurrence in observed_logical_endpoint_occurrences:
+        _validate_observed_logical_endpoint_occurrence(occurrence)
+    if (
+        observed_logical_endpoint_occurrences
+        and phase is not model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY
+    ):
+        raise ValueError(
+            "observed logical endpoint occurrences require observed phase",
+        )
+    occurrence_by_ref = {
+        item.logical_ref: item
+        for item in observed_logical_endpoint_occurrences
+    }
+    if len(occurrence_by_ref) != len(observed_logical_endpoint_occurrences):
+        raise ValueError("observed logical endpoint occurrences are nonunique")
+    if len({
+        item.observed_serial for item in observed_logical_endpoint_occurrences
+    }) != len(observed_logical_endpoint_occurrences):
+        raise ValueError("observed logical endpoint serials are nonunique")
     if any(type(ref) not in (PlanBlockRef, LogicalBlockRef) for ref in extra_refs):
         raise ValueError("projected serial binding contains a foreign source reference")
     for ref in extra_refs:
         if type(ref) is not LogicalBlockRef:
             continue
         locator = logical_locators.get(ref)
-        if locator is None or serial_by_ref[ref] != locator.serial:
+        occurrence = occurrence_by_ref.get(ref)
+        exact_source_coordinate = (
+            locator is not None and serial_by_ref[ref] == locator.serial
+        )
+        exact_observed_occurrence = (
+            locator is not None
+            and occurrence is not None
+            and occurrence.projected_serial == locator.serial
+            and occurrence.observed_serial == serial_by_ref[ref]
+        )
+        if not exact_source_coordinate and not exact_observed_occurrence:
             raise ValueError("projected logical function-exit coordinate is not exact")
     serials = tuple(serial_by_ref.values())
     if any(type(serial) is not int or serial < 0 for serial in serials):
@@ -11551,6 +12359,25 @@ def bind_projected_subjects(
 
     result: list[model.PhaseSubjectBinding] = []
     seen_subjects: set[str] = set()
+    # A logical endpoint has no native catalog witness.  Its absence can be
+    # interpreted as lossy projection only during observation, and only from
+    # the separately sealed producer inventory -- never from candidate input.
+    source_owned_logical_refs = (
+        _validated_source_logical_function_exit_refs(
+            source_inventory,
+            catalog=catalog,
+            generation=generation,
+        )
+        if phase is model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY
+        else frozenset()
+    )
+    if any(
+        ref not in source_owned_logical_refs
+        for ref in occurrence_by_ref
+    ):
+        raise ValueError(
+            "observed logical endpoint occurrence is not source-owned",
+        )
     for subject in subjects:
         if type(subject) is not model.SemanticSubjectRef:
             raise TypeError("subjects must contain SemanticSubjectRef values")
@@ -11576,7 +12403,13 @@ def bind_projected_subjects(
                 ))
                 continue
             if present != locator.serial:
-                raise ValueError("projected logical function-exit serial drift")
+                occurrence = occurrence_by_ref.get(locator.block_ref)
+                if (
+                    occurrence is None
+                    or occurrence.projected_serial != locator.serial
+                    or occurrence.observed_serial != present
+                ):
+                    raise ValueError("projected logical function-exit serial drift")
             result.append(model.PhaseSubjectBinding(
                 subject=subject,
                 phase=phase,
@@ -11588,10 +12421,23 @@ def bind_projected_subjects(
                 anchor_ea=None,
                 native_instruction_eas=(),
                 role=subject.role,
+                observed_logical_occurrence=(
+                    None
+                    if present == locator.serial
+                    else occurrence_by_ref[locator.block_ref]
+                ),
             ))
             continue
         refs = _locator_refs(subject)
-        if any(ref not in witnesses and ref not in extra_refs for ref in refs):
+        missing_refs = tuple(
+            ref for ref in refs
+            if ref not in witnesses and ref not in extra_refs
+        )
+        if any(
+            type(ref) is not LogicalBlockRef
+            or ref not in source_owned_logical_refs
+            for ref in missing_refs
+        ):
             raise ValueError("subject contains a foreign or missing source reference")
         owner = subject.block_ref
         if subject.kind is model.SemanticSubjectKind.VALUE_FLOW:
@@ -11622,10 +12468,26 @@ def bind_projected_subjects(
         else:
             witness_anchor = subject.anchor_ea
             witness_origins = tuple(origins.get(owner, ()))
-        if subject.anchor_ea is None or subject.anchor_ea != witness_anchor:
+        is_route_endpoint = subject.role in {
+            model.SemanticSubjectRole.SEMANTIC_ROUTE_SOURCE,
+            model.SemanticSubjectRole.SEMANTIC_ROUTE_DESTINATION,
+        }
+        route_anchor_matches = (
+            is_route_endpoint
+            and type(owner) is NativeBlockRef
+            and subject.anchor_ea is not None
+            and owner.identity.native_ranges.contains(subject.anchor_ea)
+        )
+        if (
+            subject.anchor_ea is None
+            or (not route_anchor_matches and subject.anchor_ea != witness_anchor)
+        ):
             raise ValueError("subject anchor is a near-match for its source witness")
         if owner in witnesses:
-            valid_anchor = _witness_anchor_matches(witness, subject.anchor_ea, witness_origins)
+            valid_anchor = (
+                route_anchor_matches
+                or _witness_anchor_matches(witness, subject.anchor_ea, witness_origins)
+            )
         else:
             # PlanBlockRef helpers have no source witness. Their exact origin
             # rows were validated above; bind only to one of those rows.
@@ -11666,6 +12528,10 @@ def bind_inventory_subjects(
     terminals: Sequence[model.InventoryTerminalSite],
     reachable_serials: Sequence[int],
     native_instruction_eas_by_ref: Mapping[object, Sequence[int]] | None = None,
+    source_inventory: model.SemanticGraphInventory | None = None,
+    observed_logical_endpoint_occurrences: tuple[
+        model.ObservedLogicalEndpointOccurrence, ...
+    ] = (),
 ) -> tuple[model.PhaseSubjectBinding, ...]:
     """Bind an inventory using the inventory's exact reachable site rows.
 
@@ -11704,6 +12570,10 @@ def bind_inventory_subjects(
         generation=generation,
         serial_by_ref=serial_by_ref,
         native_instruction_eas_by_ref=native_instruction_eas_by_ref,
+        source_inventory=source_inventory,
+        observed_logical_endpoint_occurrences=(
+            observed_logical_endpoint_occurrences
+        ),
     )
     rebound: list[model.PhaseSubjectBinding] = []
     for binding in base:

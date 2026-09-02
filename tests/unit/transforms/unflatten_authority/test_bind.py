@@ -3483,6 +3483,152 @@ def test_shared_owner_row_two_canonical_proofs_share_one_target_exactly_once() -
     assert len(result.realization.rows) == 2
 
 
+def test_phase_relation_index_deduplicates_exact_patch_step_occurrences() -> None:
+    """Two exact rows may consume one canonical relation authority ID."""
+
+    authority, plan, source, projected, facts, attempt = (
+        _two_proof_shared_target_case()
+    )
+    assert len(facts) == 2
+    assert facts[0].step_index != facts[1].step_index
+    assert facts[0].step_digest != facts[1].step_digest
+    cells = {
+        getattr(cell.cell_contents, "__name__", None): cell
+        for cell in bind._realize_projected_routes_from_claim_inventory.__closure__
+        or ()
+    }
+    close = cells["_close_projected_route_and_sites"].cell_contents
+    mint_cell = next(
+        cell
+        for cell in close.__closure__ or ()
+        if getattr(cell.cell_contents, "__name__", None)
+        == "_mint_projected_site_closure"
+    )
+    original_mint = mint_cell.cell_contents
+
+    def coalesce_exact_relation_occurrences(**kwargs):
+        drafts = kwargs["drafts"]
+        site_draft = kwargs["draft"]
+        assert len(drafts) == len(site_draft.route_subsets) == 2
+        first, second = drafts
+        coalesced_second = replace(second, relation=first.relation)
+        def coalesce_mapping(mapping):
+            if (
+                mapping is not None
+                and mapping.relation_id == second.relation.relation_id
+            ):
+                return replace(
+                    mapping, relation_id=first.relation.relation_id,
+                )
+            return mapping
+
+        effect_dispositions = tuple(
+            replace(
+                item,
+                relation_draft=(
+                    coalesced_second
+                    if item.relation_draft is second
+                    else item.relation_draft
+                ),
+                owner_mapping=coalesce_mapping(item.owner_mapping),
+            )
+            for item in site_draft.effect_dispositions
+        )
+        terminal_dispositions = tuple(
+            replace(
+                item,
+                relation_draft=(
+                    coalesced_second
+                    if item.relation_draft is second
+                    else item.relation_draft
+                ),
+                owner_mapping=coalesce_mapping(item.owner_mapping),
+            )
+            for item in site_draft.terminal_dispositions
+        )
+        effect_by_id = {
+            id(original): changed
+            for original, changed in zip(
+                site_draft.effect_dispositions, effect_dispositions,
+            )
+        }
+        terminal_by_id = {
+            id(original): changed
+            for original, changed in zip(
+                site_draft.terminal_dispositions, terminal_dispositions,
+            )
+        }
+        kwargs["drafts"] = (first, coalesced_second)
+        kwargs["draft"] = replace(
+            site_draft,
+            exact_binding_drafts=tuple(
+                replace(item, relation_draft=coalesced_second)
+                if item.relation_draft is second else item
+                for item in site_draft.exact_binding_drafts
+            ),
+            effect_dispositions=effect_dispositions,
+            terminal_dispositions=terminal_dispositions,
+            route_subsets=(
+                *(
+                    replace(
+                        subset,
+                        relation_draft=(
+                            coalesced_second
+                            if subset.relation_draft is second
+                            else subset.relation_draft
+                        ),
+                        effect_dispositions=tuple(
+                            effect_by_id[id(item)]
+                            for item in subset.effect_dispositions
+                        ),
+                        terminal_dispositions=tuple(
+                            terminal_by_id[id(item)]
+                            for item in subset.terminal_dispositions
+                        ),
+                    )
+                    for subset in site_draft.route_subsets
+                ),
+            ),
+        )
+        publications = []
+        seen_ids = set()
+        for value, identity in kwargs["route_publications"]:
+            if value is second.relation:
+                value, identity = first.relation, first.relation.relation_id
+            if identity in seen_ids:
+                continue
+            seen_ids.add(identity)
+            publications.append((value, identity))
+        kwargs["route_publications"] = tuple(publications)
+        return original_mint(**kwargs)
+
+    mint_cell.cell_contents = coalesce_exact_relation_occurrences
+    try:
+        result = realize_projected_routes_for_test(
+            source_authority=authority,
+            plan=plan,
+            source_inventory=source,
+            projected_inventory=projected,
+            patch_step_facts=facts,
+            attempt_id=attempt,
+        )
+    finally:
+        mint_cell.cell_contents = original_mint
+
+    assert type(result) is model.ProjectedRouteRealizationAccepted
+    realization = result.realization
+    assert len(realization.rows) == 2
+    assert len({row.row_id for row in realization.rows}) == 2
+    assert {
+        (row.plan_step_index, row.plan_step_digest)
+        for row in realization.rows
+    } == {(fact.step_index, fact.step_digest) for fact in facts}
+    (relation_id,) = realization.site_phase_result.relation_ids
+    assert {
+        row.relation.relation_id for row in realization.rows
+    } == {relation_id}
+
+
 def test_projected_public_path_mints_rows_only_inside_legacy_finalizer() -> None:
     """Structural drafting must finish before row/result minting begins."""
     authority, plan, source, projected, facts, attempt, *_ = _compiler_direct_branch_case()
@@ -4391,6 +4537,10 @@ def test_3b3_x_branch_partition_rejects_at_source_without_projected_rebind() -> 
         phase=model.UnflattenAuthorityPhase.PRODUCER_FORECAST,
         materialization=materialization,
     )
+    # The source inventory is native-only here.  Logical endpoints are bound
+    # only when a route proof actually owns one, so do not manufacture the
+    # obsolete fixture-only serial 26 before exercising SOURCE rejection.
+    assert source_inventory.blocks
     with patch.object(bind, "realize_projected_routes", side_effect=AssertionError("projected X row")):
         result = bind.bind_source_route_authority(
             proposal=proposal,
@@ -6065,8 +6215,8 @@ def test_projected_lower_conditional_accepts_exact_state_choice_without_rebindin
         ))
 
 
-def test_projected_lower_conditional_joins_catalog_owner_to_proof_instruction_site() -> None:
-    """Projected ownership stays catalog-anchored when proof semantics are later."""
+def test_projected_lower_conditional_claim_preserves_proof_instruction_site() -> None:
+    """Claim locators retain the selected proof's canonical source anchor."""
     def with_instruction_site(evidence):
         proof = evidence.route_proofs[0]
         return canonical_semantic_evidence_from_proofs(
@@ -6082,7 +6232,7 @@ def test_projected_lower_conditional_joins_catalog_owner_to_proof_instruction_si
     claim = authority.proposal.claims[0]
 
     assert claim.retired_route_subject.locator.source_ref == refs[1]
-    assert claim.retired_route_subject.locator.source_anchor_ea == 0x2000
+    assert claim.retired_route_subject.locator.source_anchor_ea == 0x2001
     assert proof.source_identity == refs[1].identity
     assert proof.source_anchor_ea == 0x2001
 
@@ -7281,15 +7431,15 @@ def _source_binding_fixture(
     return source, proposal, inventory, materialization, claims[0]
 
 
-def test_source_kernel_joins_catalog_owner_to_instruction_proof_site() -> None:
-    """A route claim owns its catalog block even when proof semantics are later."""
+def test_source_kernel_claim_preserves_instruction_proof_site() -> None:
+    """A route claim keeps the proof anchor after catalog-range validation."""
     source, proposal, inventory, materialization, claim = _source_binding_fixture(
         proof_source_anchor_ea=0x2001,
     )
     proof = proposal.route_evidence.route_proofs[0]
     locator = claim.retired_route_subject.locator
 
-    assert locator.source_anchor_ea == 0x2000
+    assert locator.source_anchor_ea == 0x2001
     assert proof.source_anchor_ea == 0x2001
     assert locator.source_ref.identity == proof.source_identity
 
@@ -7301,6 +7451,54 @@ def test_source_kernel_joins_catalog_owner_to_instruction_proof_site() -> None:
 
     assert type(result) is model.SourceBoundRouteAuthorityAccepted
     assert result.authority.bound_evidence.evidence.route_proofs[0].source_anchor_ea == 0x2001
+
+
+def test_route_step_selector_accepts_canonical_destination_anchor_within_native_identity() -> None:
+    """Route step correlation selects the proof's in-range destination anchor."""
+    _source, proposal, _inventory, _materialization, claim = _source_binding_fixture()
+    locator = claim.retired_route_subject.locator
+    original = next(
+        item for item in locator.native_destination_members()
+        if type(item) is model.BlockSubjectLocator
+    )
+    replacement_ref = NativeBlockRef(StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x3000, 0x3020),),
+        native_key=original.block_ref.identity.native_key,
+        exact_instruction_eas=(0x3004,),
+    ))
+    anchor_ea = 0x3010
+    replacement_catalog = SimpleNamespace(
+        native_key=proposal.source_identity_catalog.native_key,
+        blocks=tuple(
+            model.SourceBlockIdentityWitness(
+                replacement_ref, witness.anchor_ea, (0x3004,),
+            ) if witness.block_ref == original.block_ref else witness
+            for witness in proposal.source_identity_catalog.blocks
+        ),
+    )
+    replacement_claim = _route_claim_with_members(
+        claim,
+        source_ref=locator.source_ref,
+        source_anchor_ea=locator.source_anchor_ea,
+        destination_pairs=tuple(
+            (replacement_ref, anchor_ea)
+            if member.block_ref == original.block_ref else (member.block_ref, member.anchor_ea)
+            for member in locator.native_destination_members()
+            if type(member) is model.BlockSubjectLocator
+        ),
+    )
+
+    selected = bind._native_route_destination_subject_for_proof_destination(
+        claim=replacement_claim,
+        proof_destination=SimpleNamespace(
+            target_identity=replacement_ref.identity,
+            target_anchor_ea=anchor_ea,
+        ),
+        catalog=replacement_catalog,
+    )
+
+    assert selected.block_ref == replacement_ref
+    assert selected.anchor_ea == anchor_ea
 
 
 def _route_claim_with_members(
@@ -8575,6 +8773,357 @@ def test_projected_logical_function_exit_subject_is_missing_without_endpoint() -
     assert binding.block_ref is None
 
 
+def test_observed_route_subject_is_missing_when_its_logical_endpoint_was_removed() -> None:
+    """A removed source-owned logical endpoint makes its route subject MISSING.
+
+    The native route owner remains in the observed graph, but the logical
+    function-exit leaf is closure evidence and has no surviving coordinate.
+    It must not be treated as a foreign source identity.
+    """
+    from .test_transaction_api import _logical_dag_source_bind_case
+
+    _source, _plan, proposal, inventory, _materialization, _endpoint = (
+        _logical_dag_source_bind_case()
+    )
+    subject = next(
+        item for item in inventory.subjects
+        if type(item.locator) is model.RouteSubjectLocator
+        and any(
+            type(ref) is LogicalBlockRef
+            for ref in bind._locator_refs(item)
+        )
+    )
+    logical_endpoint = next(
+        item for item in inventory.subjects
+        if type(item.locator) is model.LogicalFunctionExitSubjectLocator
+    )
+    serial_by_ref = {
+        ref: serial
+        for ref, serial in _plan.source_coordinates
+        if type(ref) is NativeBlockRef
+    }
+
+    bindings = bind.bind_projected_subjects(
+        (subject, logical_endpoint),
+        catalog=proposal.source_identity_catalog,
+        phase=model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY,
+        graph_fingerprint=authority_id("observed-removed-logical-route"),
+        generation=proposal.source_identity_catalog.generation,
+        serial_by_ref=serial_by_ref,
+        native_instruction_eas_by_ref={
+            witness.block_ref: witness.native_instruction_eas
+            for witness in proposal.source_identity_catalog.blocks
+        },
+        source_inventory=inventory,
+    )
+    binding = next(item for item in bindings if item.subject is subject)
+
+    assert binding.status is model.SubjectBindingStatus.MISSING
+    assert binding.block_ref is None
+
+
+def test_projected_route_subject_rejects_missing_logical_endpoint_even_with_source_inventory() -> None:
+    """A source exit may explain observed loss, never projected preflight loss."""
+    from .test_transaction_api import _logical_dag_source_bind_case
+
+    _source, _plan, proposal, inventory, _materialization, _endpoint = (
+        _logical_dag_source_bind_case()
+    )
+    subject = next(
+        item for item in inventory.subjects
+        if type(item.locator) is model.RouteSubjectLocator
+        and any(type(ref) is LogicalBlockRef for ref in bind._locator_refs(item))
+    )
+    logical_endpoint = next(
+        item for item in inventory.subjects
+        if type(item.locator) is model.LogicalFunctionExitSubjectLocator
+    )
+    serial_by_ref = {
+        ref: serial
+        for ref, serial in _plan.source_coordinates
+        if type(ref) is NativeBlockRef
+    }
+
+    with pytest.raises(ValueError, match="foreign or missing source reference"):
+        bind.bind_projected_subjects(
+            (subject, logical_endpoint),
+            catalog=proposal.source_identity_catalog,
+            phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+            graph_fingerprint=authority_id("projected-missing-logical-route"),
+            generation=proposal.source_identity_catalog.generation,
+            serial_by_ref=serial_by_ref,
+            native_instruction_eas_by_ref={
+                witness.block_ref: witness.native_instruction_eas
+                for witness in proposal.source_identity_catalog.blocks
+            },
+            source_inventory=inventory,
+        )
+
+
+def _source_inventory_with_logical_endpoint_rows(
+    inventory: model.SemanticGraphInventory,
+    *,
+    subjects: tuple[model.SemanticSubjectRef, ...],
+    bindings: tuple[model.PhaseSubjectBinding, ...],
+    generation: int | None = None,
+) -> model.SemanticGraphInventory:
+    """Re-seal a producer inventory after a logical-endpoint fixture change."""
+    ordered_subjects = tuple(sorted(subjects, key=lambda item: item.subject_id))
+    ordered_bindings = tuple(sorted(bindings, key=lambda item: item.subject.subject_id))
+    source_subject_ids = tuple(item.subject_id for item in ordered_subjects)
+    inventory_generation = inventory.generation if generation is None else generation
+    digest = semantic_graph_inventory_digest(
+        inventory.phase,
+        inventory.graph_fingerprint,
+        inventory_generation,
+        inventory.blocks,
+        ordered_subjects,
+        ordered_bindings,
+        inventory.effects,
+        inventory.terminals,
+        inventory.topology,
+        inventory.reachable_serials,
+        inventory.entry_serial,
+        source_subject_ids,
+        inventory.function_ea,
+    )
+    return model.SemanticGraphInventory(
+        inventory.phase,
+        inventory.graph_fingerprint,
+        inventory_generation,
+        inventory.blocks,
+        ordered_subjects,
+        ordered_bindings,
+        inventory.effects,
+        inventory.terminals,
+        inventory.topology,
+        digest,
+        inventory.reachable_serials,
+        inventory.entry_serial,
+        source_subject_ids,
+        inventory.function_ea,
+    )
+
+
+def test_observed_route_subject_rejects_when_source_has_no_exact_logical_endpoint() -> None:
+    """A route member cannot use a source inventory that omits its exit proof."""
+    from .test_transaction_api import _logical_dag_source_bind_case
+
+    _source, _plan, proposal, inventory, _materialization, _endpoint = (
+        _logical_dag_source_bind_case()
+    )
+    route_subject = next(
+        item for item in inventory.subjects
+        if type(item.locator) is model.RouteSubjectLocator
+        and any(type(ref) is LogicalBlockRef for ref in bind._locator_refs(item))
+    )
+    endpoint_subject = next(
+        item for item in inventory.subjects
+        if item.role is model.SemanticSubjectRole.SEMANTIC_DAG_ENDPOINT
+        and type(item.locator) is model.LogicalFunctionExitSubjectLocator
+    )
+    source_without_endpoint = _source_inventory_with_logical_endpoint_rows(
+        inventory,
+        subjects=tuple(item for item in inventory.subjects if item is not endpoint_subject),
+        bindings=tuple(
+            item for item in inventory.bindings if item.subject is not endpoint_subject
+        ),
+    )
+    serial_by_ref = {
+        ref: serial
+        for ref, serial in _plan.source_coordinates
+        if type(ref) is NativeBlockRef
+    }
+
+    with pytest.raises(ValueError, match="foreign or missing source reference"):
+        bind.bind_projected_subjects(
+            (route_subject,),
+            catalog=proposal.source_identity_catalog,
+            phase=model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY,
+            graph_fingerprint=authority_id("observed-source-missing-logical-endpoint"),
+            generation=proposal.source_identity_catalog.generation,
+            serial_by_ref=serial_by_ref,
+            native_instruction_eas_by_ref={
+                witness.block_ref: witness.native_instruction_eas
+                for witness in proposal.source_identity_catalog.blocks
+            },
+            source_inventory=source_without_endpoint,
+        )
+
+
+def test_observed_route_subject_rejects_wrong_paired_logical_endpoint() -> None:
+    """A source exit proves only its own sealed logical ref and serial."""
+    from .test_transaction_api import _logical_dag_source_bind_case
+
+    _source, _plan, proposal, inventory, _materialization, _endpoint = (
+        _logical_dag_source_bind_case()
+    )
+    route_subject = next(
+        item for item in inventory.subjects
+        if type(item.locator) is model.RouteSubjectLocator
+        and any(type(ref) is LogicalBlockRef for ref in bind._locator_refs(item))
+    )
+    route_locator = route_subject.locator
+    assert type(route_locator) is model.RouteSubjectLocator
+    wrong_locator = model.LogicalFunctionExitSubjectLocator(
+        LogicalBlockRef("wrong-logical-endpoint", "foreign", 1),
+        5,
+    )
+    wrong_route_subject = _subject_factory(
+        model.SemanticSubjectRef,
+        kind=model.SemanticSubjectKind.ROUTE,
+        role=model.SemanticSubjectRole.SEMANTIC_ROUTE_SOURCE,
+        block_ref=route_subject.block_ref,
+        anchor_ea=route_subject.anchor_ea,
+        locator=replace(
+            route_locator,
+            dag_endpoint_locators=(wrong_locator,),
+        ),
+    )
+    serial_by_ref = {
+        ref: serial
+        for ref, serial in _plan.source_coordinates
+        if type(ref) is NativeBlockRef
+    }
+
+    with pytest.raises(ValueError, match="foreign or missing source reference"):
+        bind.bind_projected_subjects(
+            (wrong_route_subject,),
+            catalog=proposal.source_identity_catalog,
+            phase=model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY,
+            graph_fingerprint=authority_id("observed-wrong-paired-logical-endpoint"),
+            generation=proposal.source_identity_catalog.generation,
+            serial_by_ref=serial_by_ref,
+            native_instruction_eas_by_ref={
+                witness.block_ref: witness.native_instruction_eas
+                for witness in proposal.source_identity_catalog.blocks
+            },
+            source_inventory=inventory,
+        )
+
+
+def test_source_inventory_rejects_nonunique_semantic_dag_endpoint() -> None:
+    """A producer inventory cannot carry two claim-owned proofs for one exit."""
+    from .test_transaction_api import _logical_dag_source_bind_case
+
+    _source, _plan, proposal, inventory, _materialization, _endpoint = (
+        _logical_dag_source_bind_case()
+    )
+    endpoint_subject = next(
+        item for item in inventory.subjects
+        if item.role is model.SemanticSubjectRole.SEMANTIC_DAG_ENDPOINT
+        and type(item.locator) is model.LogicalFunctionExitSubjectLocator
+    )
+    locator = endpoint_subject.locator
+    assert type(locator) is model.LogicalFunctionExitSubjectLocator
+    duplicate_subject = _subject_factory(
+        model.SemanticSubjectRef,
+        kind=model.SemanticSubjectKind.BLOCK,
+        role=model.SemanticSubjectRole.SEMANTIC_DAG_ENDPOINT,
+        block_ref=locator.block_ref,
+        anchor_ea=None,
+        locator=locator,
+    )
+    duplicate_binding = model.PhaseSubjectBinding(
+        subject=duplicate_subject,
+        phase=inventory.phase,
+        block_ref=locator.block_ref,
+        graph_fingerprint=inventory.graph_fingerprint,
+        generation=inventory.generation,
+        status=model.SubjectBindingStatus.UNIQUE,
+        serial=locator.serial,
+        anchor_ea=None,
+        native_instruction_eas=(),
+        role=duplicate_subject.role,
+    )
+    with pytest.raises(ValueError, match="source_subject_ids must be sorted and unique"):
+        _source_inventory_with_logical_endpoint_rows(
+            inventory,
+            subjects=(*inventory.subjects, duplicate_subject),
+            bindings=(*inventory.bindings, duplicate_binding),
+        )
+
+
+def test_observed_route_subject_rejects_source_inventory_generation_drift() -> None:
+    """Source logical-endpoint authority is sealed to the candidate generation."""
+    from .test_transaction_api import _logical_dag_source_bind_case
+
+    _source, _plan, proposal, inventory, _materialization, _endpoint = (
+        _logical_dag_source_bind_case()
+    )
+    route_subject = next(
+        item for item in inventory.subjects
+        if type(item.locator) is model.RouteSubjectLocator
+        and any(type(ref) is LogicalBlockRef for ref in bind._locator_refs(item))
+    )
+    serial_by_ref = {
+        ref: serial
+        for ref, serial in _plan.source_coordinates
+        if type(ref) is NativeBlockRef
+    }
+
+    drifted_bindings = tuple(
+        replace(item, generation=inventory.generation + 1)
+        for item in inventory.bindings
+    )
+    drifted_source_inventory = _source_inventory_with_logical_endpoint_rows(
+        inventory,
+        subjects=inventory.subjects,
+        bindings=drifted_bindings,
+        generation=inventory.generation + 1,
+    )
+    with pytest.raises(ValueError, match="generation differs from catalog"):
+        bind.bind_projected_subjects(
+            (route_subject,),
+            catalog=proposal.source_identity_catalog,
+            phase=model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY,
+            graph_fingerprint=authority_id("observed-source-logical-generation-drift"),
+            generation=proposal.source_identity_catalog.generation,
+            serial_by_ref=serial_by_ref,
+            native_instruction_eas_by_ref={
+                witness.block_ref: witness.native_instruction_eas
+                for witness in proposal.source_identity_catalog.blocks
+            },
+            source_inventory=drifted_source_inventory,
+        )
+
+
+def test_observed_route_subject_rejects_unowned_removed_logical_endpoint() -> None:
+    """A route cannot authorize a missing logical ref by itself."""
+    from .test_transaction_api import _logical_dag_source_bind_case
+
+    _source, _plan, proposal, inventory, _materialization, _endpoint = (
+        _logical_dag_source_bind_case()
+    )
+    subject = next(
+        item for item in inventory.subjects
+        if type(item.locator) is model.RouteSubjectLocator
+        and any(
+            type(ref) is LogicalBlockRef
+            for ref in bind._locator_refs(item)
+        )
+    )
+    serial_by_ref = {
+        ref: serial
+        for ref, serial in _plan.source_coordinates
+        if type(ref) is NativeBlockRef
+    }
+
+    with pytest.raises(ValueError, match="foreign or missing source reference"):
+        bind.bind_projected_subjects(
+            (subject,),
+            catalog=proposal.source_identity_catalog,
+            phase=model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY,
+            graph_fingerprint=authority_id("observed-unowned-logical-route"),
+            generation=proposal.source_identity_catalog.generation,
+            serial_by_ref=serial_by_ref,
+            native_instruction_eas_by_ref={
+                witness.block_ref: witness.native_instruction_eas
+                for witness in proposal.source_identity_catalog.blocks
+            },
+        )
+
+
 def test_projected_logical_function_exit_subject_rejects_serial_drift() -> None:
     """A retained logical ref must retain the serial sealed by its locator."""
     from .test_transaction_api import _logical_dag_source_bind_case
@@ -8836,6 +9385,7 @@ def _terminal_cycle_fixture():
 
     values = _valid_proposal(model)
     native_key = values["source_identity_catalog"].native_key
+    handler_ref = values["plan_inputs"].authoritative_handlers[0].block_ref
     route_source_ref = block_ref("b3")
     terminal_ref = block_ref("b4")
     route_proof = values["route_evidence"].route_proofs[0]
@@ -8921,7 +9471,7 @@ def _terminal_cycle_fixture():
             atomic_group_id,
             route_source_ref,
             0x1400,
-            (model.BlockSubjectLocator(block_ref("b2"), 0x1100),),
+            (model.BlockSubjectLocator(handler_ref, 0x1100),),
         ),
     )
     route_source_subject = _subject_factory(
@@ -8936,9 +9486,9 @@ def _terminal_cycle_fixture():
         model.SemanticSubjectRef,
         kind=model.SemanticSubjectKind.BLOCK,
         role=model.SemanticSubjectRole.SEMANTIC_ROUTE_DESTINATION,
-        block_ref=block_ref("b2"),
+        block_ref=handler_ref,
         anchor_ea=0x1100,
-        locator=model.BlockSubjectLocator(block_ref("b2"), 0x1100),
+        locator=model.BlockSubjectLocator(handler_ref, 0x1100),
     )
     equivalent_route = _claim_factory(
         model.EquivalentSemanticRouteClaim,
@@ -8991,15 +9541,22 @@ def test_terminal_cycle_subjects_admit_exact_claim_owned_logical_exit() -> None:
 def _rewire_inventory(inventory, successors, *, generation=3, entry_serial=None, phase=None):
     entry_serial = inventory.entry_serial if entry_serial is None else entry_serial
     phase = inventory.phase if phase is None else phase
-    predecessor_by_serial = {serial: [] for serial in successors}
-    for owner, peers in successors.items():
+    # Authority fixtures may carry source-catalogue witnesses that are not
+    # members of the topology under test.  Keep those rows as isolated blocks
+    # instead of requiring every focused topology map to restate them.
+    complete_successors = {
+        block.serial: tuple(successors.get(block.serial, ()))
+        for block in inventory.blocks
+    }
+    predecessor_by_serial = {serial: [] for serial in complete_successors}
+    for owner, peers in complete_successors.items():
         for peer in peers:
             predecessor_by_serial[peer].append(owner)
     blocks = tuple(
         replace(
             block,
             predecessor_serials=tuple(sorted(predecessor_by_serial[block.serial])),
-            successor_serials=tuple(successors[block.serial]),
+            successor_serials=complete_successors[block.serial],
         )
         for block in inventory.blocks
     )
@@ -9011,7 +9568,7 @@ def _rewire_inventory(inventory, successors, *, generation=3, entry_serial=None,
                 peer if kind is model.TopologyIncidenceKind.SUCCESSOR else owner,
                 None,
             )
-            for owner, peers in successors.items()
+            for owner, peers in complete_successors.items()
             for peer in peers
             for kind in (
                 model.TopologyIncidenceKind.SUCCESSOR,
@@ -9019,6 +9576,44 @@ def _rewire_inventory(inventory, successors, *, generation=3, entry_serial=None,
             )
         ),
         key=lambda item: (item.kind.value, item.owner_serial, item.peer_serial),
+    ))
+    effects = tuple(sorted(
+        (
+            effect
+            for block in blocks
+            for effect in model.resolve_inventory_block_sites(
+                serial=block.serial,
+                owner_ref=block.block_ref,
+                owner_anchor_ea=block.anchor_ea,
+                block_kind=block.block_kind,
+                successor_serials=block.successor_serials,
+                instruction_observations=block.instruction_observations,
+            )[0]
+        ),
+        key=lambda item: (
+            item.owner_serial, item.instruction_ordinal,
+            item.instruction_ea, item.effect_kind.value,
+        ),
+    ))
+    terminals = tuple(sorted(
+        (
+            terminal
+            for block in blocks
+            for terminal in model.resolve_inventory_block_sites(
+                serial=block.serial,
+                owner_ref=block.block_ref,
+                owner_anchor_ea=block.anchor_ea,
+                block_kind=block.block_kind,
+                successor_serials=block.successor_serials,
+                instruction_observations=block.instruction_observations,
+            )[1]
+        ),
+        key=lambda item: (
+            item.owner_serial, item.instruction_ordinal is None,
+            item.instruction_ordinal
+            if item.instruction_ordinal is not None else -1,
+            item.instruction_ea, item.terminal_kind.value,
+        ),
     ))
     bindings = tuple(
         replace(binding, phase=phase, generation=generation)
@@ -9031,7 +9626,47 @@ def _rewire_inventory(inventory, successors, *, generation=3, entry_serial=None,
         if serial in reachable:
             continue
         reachable.add(serial)
-        pending.extend(successors[serial])
+        pending.extend(complete_successors[serial])
+    serial_by_ref = {
+        block.block_ref: block.serial
+        for block in blocks
+        if block.block_ref is not None
+    }
+    dispatcher_serials = {
+        serial_by_ref[subject.block_ref]
+        for subject in inventory.subjects
+        if subject.role is model.SemanticSubjectRole.DISPATCHER_ENTRY
+    }
+    dispatcher_serial = (
+        next(iter(dispatcher_serials)) if dispatcher_serials else None
+    )
+    semantic_roots = {
+        serial_by_ref[subject.block_ref]
+        for subject in inventory.subjects
+        if subject.block_ref in serial_by_ref
+        and (
+            subject.role is model.SemanticSubjectRole.AUTHORITATIVE_HANDLER
+            or subject.role in {
+                model.SemanticSubjectRole.SEMANTIC_ROUTE_SOURCE,
+                model.SemanticSubjectRole.SEMANTIC_ROUTE_DESTINATION,
+            }
+        )
+    }
+    pending = list(sorted(semantic_roots, reverse=True))
+    while pending:
+        serial = pending.pop()
+        barrier_active = (
+            phase is not model.UnflattenAuthorityPhase.PRODUCER_FORECAST
+            and dispatcher_serial is not None
+        )
+        if (barrier_active and serial == dispatcher_serial) or serial in reachable:
+            continue
+        reachable.add(serial)
+        pending.extend(
+            peer
+            for peer in reversed(complete_successors[serial])
+            if not barrier_active or peer != dispatcher_serial
+        )
     reachable_serials = tuple(sorted(reachable))
     digest = semantic_graph_inventory_digest(
         phase,
@@ -9040,8 +9675,8 @@ def _rewire_inventory(inventory, successors, *, generation=3, entry_serial=None,
         blocks,
         inventory.subjects,
         bindings,
-        inventory.effects,
-        inventory.terminals,
+        effects,
+        terminals,
         topology,
         reachable_serials,
         entry_serial,
@@ -9054,6 +9689,8 @@ def _rewire_inventory(inventory, successors, *, generation=3, entry_serial=None,
         generation=generation,
         blocks=blocks,
         bindings=bindings,
+        effects=effects,
+        terminals=terminals,
         topology=topology,
         reachable_serials=reachable_serials,
         entry_serial=entry_serial,
@@ -9065,6 +9702,7 @@ def _terminal_cycle_inventory_fixture():
     from .test_evaluate import _complete_inputs, _role_subject
 
     proposal, claim = _terminal_cycle_fixture()
+    handler_ref = proposal.plan_inputs.authoritative_handlers[0].block_ref
     canonical_catalog = tuple(
         _subject_factory(
             model.SemanticSubjectRef,
@@ -9088,18 +9726,18 @@ def _terminal_cycle_inventory_fixture():
         model.SemanticSubjectRef,
         kind=model.SemanticSubjectKind.BLOCK,
         role=model.SemanticSubjectRole.SEMANTIC_ROUTE_DESTINATION,
-        block_ref=block_ref("b2"),
+        block_ref=handler_ref,
         anchor_ea=0x1100,
-        locator=model.BlockSubjectLocator(block_ref("b2"), 0x1100),
+        locator=model.BlockSubjectLocator(handler_ref, 0x1100),
     )
     carrier_effect = _subject_factory(
         model.SemanticSubjectRef,
         kind=model.SemanticSubjectKind.EFFECT,
         role=model.SemanticSubjectRole.EFFECT_SITE,
-        block_ref=block_ref("b2"),
-        anchor_ea=0x1100,
+        block_ref=route_source.block_ref,
+        anchor_ea=route_source.anchor_ea,
         locator=model.EffectSubjectLocator(
-            block_ref("b2"), 0x1100, 0x1100,
+            route_source.block_ref, route_source.anchor_ea, route_source.anchor_ea,
             model.EffectSiteKind.CALL,
         ),
     )
@@ -9151,22 +9789,55 @@ def _terminal_cycle_inventory_fixture():
         ),
         proposal=proposal,
     )
+    source_serial_by_ref = {
+        block.block_ref: block.serial
+        for block in inputs.source_inventory.blocks
+        if block.block_ref is not None
+    }
+    candidate_serial_by_ref = {
+        block.block_ref: block.serial
+        for block in inputs.candidate_inventory.blocks
+        if block.block_ref is not None
+    }
+    def topology(serial_by_ref, *, retain_cycle):
+        handler_serial = serial_by_ref[handler_ref]
+        cycle_entry_serial = serial_by_ref[claim.cycle_subject.locator.entry_ref]
+        cleanup_serial = serial_by_ref[claim.cleanup_source_subject.block_ref]
+        route_source_serial = serial_by_ref[route_source.block_ref]
+        terminal_serial = serial_by_ref[claim.terminal_subject.block_ref]
+        return {
+            cycle_entry_serial: (cleanup_serial,),
+            cleanup_serial: (
+                (cycle_entry_serial, handler_serial)
+                if retain_cycle else (handler_serial,)
+            ),
+            route_source_serial: (
+                (cycle_entry_serial,) if retain_cycle else (handler_serial,)
+            ),
+            terminal_serial: (),
+            handler_serial: (terminal_serial,),
+        }
     source = _rewire_inventory(
         inputs.source_inventory,
-        {0: (1,), 1: (0, 2), 2: (4,), 3: (0,), 4: ()},
-        entry_serial=3,
+        topology(source_serial_by_ref, retain_cycle=True),
+        entry_serial=source_serial_by_ref[route_source.block_ref],
     )
     candidate = _rewire_inventory(
         inputs.candidate_inventory,
-        {0: (1,), 1: (2,), 2: (4,), 3: (2,), 4: ()},
+        topology(candidate_serial_by_ref, retain_cycle=False),
         generation=4,
-        entry_serial=3,
+        entry_serial=candidate_serial_by_ref[route_source.block_ref],
+    )
+    residual_topology = topology(candidate_serial_by_ref, retain_cycle=False)
+    residual_topology[candidate_serial_by_ref[claim.cleanup_source_subject.block_ref]] = (
+        candidate_serial_by_ref[claim.cycle_subject.locator.entry_ref],
+        candidate_serial_by_ref[handler_ref],
     )
     residual = _rewire_inventory(
         inputs.candidate_inventory,
-        {0: (1,), 1: (0, 2), 2: (4,), 3: (2,), 4: ()},
+        residual_topology,
         generation=4,
-        entry_serial=3,
+        entry_serial=candidate_serial_by_ref[route_source.block_ref],
     )
     return proposal, claim, inputs, source, candidate, residual
 
@@ -9180,6 +9851,7 @@ def _terminal_cycle_derived_inputs():
     proposal, claim, fixture, source, candidate, residual = (
         _terminal_cycle_inventory_fixture()
     )
+    handler_ref = proposal.plan_inputs.authoritative_handlers[0].block_ref
     plan = PatchPlan(
         plan_id=proposal.plan_id,
         snapshot_id=authority_id("terminal-cycle-snapshot"),
@@ -9189,7 +9861,7 @@ def _terminal_cycle_derived_inputs():
                 owner,
                 block_ref("b1")
                 if owner == block_ref("b0") else block_ref("b0"),
-                block_ref("b2"),
+                handler_ref,
             )
             for owner in proposal.use_def_witness.redirect_owner_refs
         ),
@@ -9362,10 +10034,17 @@ _exact_fixture = exact_fixture
 def _corridor_inventories(*, candidate_full=False, disposition=None, enumeration_complete=True, candidate_subject_tokens=None):
     """Build source/candidate inventories through the closed test builder."""
 
-    from .test_evaluate import _complete_inputs, _role_subject
+    from .test_evaluate import _complete_inputs
 
-    refs = {0: block_ref("b0"), 1: block_ref("b1"), 2: block_ref("b2")}
     proposal_values = _valid_proposal(model)
+    witnesses_by_anchor = {
+        witness.anchor_ea: witness
+        for witness in proposal_values["source_identity_catalog"].blocks
+    }
+    refs = {
+        index: witnesses_by_anchor[anchor].block_ref
+        for index, anchor in ((0, 0x1000), (1, 0x1300), (2, 0x1100))
+    }
     nodes = tuple(
         model.CorridorCoveragePathNode(refs[index], anchor)
         for index, anchor in ((1, 0x1300), (2, 0x1100), (0, 0x1000))
@@ -9400,11 +10079,18 @@ def _corridor_inventories(*, candidate_full=False, disposition=None, enumeration
     proposal_values["corridor_coverage_forecast"] = forecast
     proposal = model.ProposedUnflattenContract(**proposal_values)
     source_subjects = tuple(
-        _role_subject(role, token)
-        for role, token in (
-            (model.SemanticSubjectRole.DISPATCHER_ENTRY, "0"),
-            (model.SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE, "1"),
-            (model.SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE, "2"),
+        _subject_factory(
+            model.SemanticSubjectRef,
+            kind=model.SemanticSubjectKind.BLOCK,
+            role=role,
+            block_ref=refs[index],
+            anchor_ea=anchor,
+            locator=model.BlockSubjectLocator(refs[index], anchor),
+        )
+        for index, anchor, role in (
+            (0, 0x1000, model.SemanticSubjectRole.DISPATCHER_ENTRY),
+            (1, 0x1300, model.SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE),
+            (2, 0x1100, model.SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE),
         )
     )
     inputs = _complete_inputs(
@@ -9666,9 +10352,27 @@ def _detached_subject(
 ) -> model.SemanticSubjectRef:
     ref = block_ref(f"detached-{serial}")
     anchor = 0x2000 + serial * 0x10
-    if role is model.SemanticSubjectRole.AUTHORITATIVE_HANDLER:
-        kind = model.SemanticSubjectKind.HANDLER
-        locator = model.HandlerSubjectLocator(ref, anchor, (serial + 1,))
+    if role in {
+        model.SemanticSubjectRole.AUTHORITATIVE_HANDLER,
+        model.SemanticSubjectRole.DETACHED_DEAD_HANDLER_COMPONENT,
+    }:
+        ref = NativeBlockRef(StableBlockIdentity.from_instruction_eas(
+            (anchor,),
+            native_key=NativePreanalysisKey(
+                "detached-handler-fixture", "x86", 64, 0,
+                "f" * 64, "p" * 64, "s" * 64,
+            ),
+        ))
+        kind = (
+            model.SemanticSubjectKind.HANDLER
+            if role is model.SemanticSubjectRole.AUTHORITATIVE_HANDLER
+            else model.SemanticSubjectKind.BLOCK
+        )
+        locator = (
+            model.HandlerSubjectLocator(ref, anchor, (serial + 1,))
+            if role is model.SemanticSubjectRole.AUTHORITATIVE_HANDLER
+            else model.BlockSubjectLocator(ref, anchor)
+        )
     else:
         kind = model.SemanticSubjectKind.BLOCK
         locator = model.BlockSubjectLocator(ref, anchor)
@@ -9701,7 +10405,7 @@ def _detached_inventory(
             predecessors[target].append(owner)
     bindings = []
     for subject in subjects:
-        serial = int(subject.block_ref.proxy_token.rsplit("-", 1)[-1])
+        serial = (subject.anchor_ea - 0x2000) // 0x10
         if subject.subject_id in ambiguous_subject_ids:
             bindings.append(model.PhaseSubjectBinding(
                 subject, phase, None, fingerprint, generation,
@@ -9721,7 +10425,7 @@ def _detached_inventory(
     bindings = tuple(sorted(bindings, key=lambda item: item.subject.subject_id))
     subject_by_serial = {}
     for subject in subjects:
-        serial = int(subject.block_ref.proxy_token.rsplit("-", 1)[-1])
+        serial = (subject.anchor_ea - 0x2000) // 0x10
         subject_by_serial.setdefault(serial, subject)
     blocks = []
     for serial in sorted(successors):
@@ -9892,11 +10596,26 @@ def _detached_binding_fixture(
     source_instruction_kinds = (
         {} if source_instruction_kinds is None else source_instruction_kinds
     )
+    comparison = _subject_factory(
+        model.SemanticSubjectRef,
+        kind=model.SemanticSubjectKind.BLOCK,
+        role=model.SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE,
+        block_ref=dispatcher.block_ref,
+        anchor_ea=dispatcher.anchor_ea,
+        locator=model.BlockSubjectLocator(
+            dispatcher.block_ref, dispatcher.anchor_ea,
+        ),
+    )
     effect_subjects = []
+    native_ref_by_serial = {
+        (subject.anchor_ea - 0x2000) // 0x10: subject.block_ref
+        for subject in (dead, retained, *components)
+        if type(subject.block_ref) is NativeBlockRef
+    }
     for serial, kind in source_instruction_kinds.items():
         if kind not in {model.InsnKind.CALL, model.InsnKind.STORE}:
             continue
-        ref = block_ref(f"detached-{serial}")
+        ref = native_ref_by_serial.get(serial, block_ref(f"detached-{serial}"))
         anchor = 0x2000 + serial * 0x10
         effect_subjects.append(_subject_factory(
             model.SemanticSubjectRef,
@@ -9918,13 +10637,14 @@ def _detached_binding_fixture(
         dead_handler_subjects=(dead,),
         retained_handler_subjects=(retained,),
         component_subjects=components,
+        comparison_region_subjects=(comparison,),
         source_generation=3,
     )
     subjects = tuple(sorted(
         {
             item.subject_id: item
             for item in (
-                dispatcher, dead, retained, *components, terminal,
+                dispatcher, comparison, dead, retained, *components, terminal,
                 *effect_subjects,
             )
         }.values(),
@@ -9974,6 +10694,126 @@ def _detached_binding_fixture(
         True, False, (), comparison_ids, dispatcher.subject_id,
     )
     return claim, source, candidate, corridor
+
+
+def test_state_dag_fixture_preserves_source_bound_comparison_nodes() -> None:
+    """Canonical DAG evidence retains each exact source comparison identity."""
+
+    from d810.analyses.control_flow.semantic_route_evidence import (
+        SemanticCorridorPoint,
+        SemanticDagComparison,
+        SemanticDecisionDagWitness,
+        SemanticRouteDestination,
+        SemanticRouteProof,
+        SemanticRouteProofKind,
+        SemanticRouteShape,
+        SemanticStateDagProof,
+        SemanticStateWriteDeliveryKind,
+        SemanticStateWriteProof,
+    )
+
+    key = NativePreanalysisKey(
+        "detached-dag-ingress", "x86", 64, 0,
+        "f" * 64, "p" * 64, "s" * 64,
+    )
+    refs = {
+        serial: NativeBlockRef(StableBlockIdentity.from_instruction_eas(
+            (0x2000 + serial * 0x10,), native_key=key,
+        ))
+        for serial in range(1, 7)
+    }
+    state = state_identity()
+
+    def catalog_subject(serial: int) -> model.SemanticSubjectRef:
+        ref = refs[serial]
+        anchor = 0x2000 + serial * 0x10
+        return _subject_factory(
+            model.SemanticSubjectRef,
+            kind=model.SemanticSubjectKind.BLOCK,
+            role=model.SemanticSubjectRole.SOURCE_CATALOG_BLOCK,
+            block_ref=ref,
+            anchor_ea=anchor,
+            locator=model.BlockSubjectLocator(ref, anchor),
+        )
+
+    dispatcher_ref = refs[1]
+    dispatcher_anchor = 0x2010
+    dispatcher = _subject_factory(
+        model.SemanticSubjectRef,
+        kind=model.SemanticSubjectKind.BLOCK,
+        role=model.SemanticSubjectRole.DISPATCHER_ENTRY,
+        block_ref=dispatcher_ref,
+        anchor_ea=dispatcher_anchor,
+        locator=model.BlockSubjectLocator(dispatcher_ref, dispatcher_anchor),
+    )
+    terminal_ref = refs[6]
+    terminal_anchor = 0x2060
+    terminal = _subject_factory(
+        model.SemanticSubjectRef,
+        kind=model.SemanticSubjectKind.TERMINAL,
+        role=model.SemanticSubjectRole.TERMINAL_SITE,
+        block_ref=terminal_ref,
+        anchor_ea=terminal_anchor,
+        locator=model.TerminalSubjectLocator(
+            terminal_ref, terminal_anchor, model.TerminalKind.STOP, terminal_anchor,
+        ),
+    )
+    subjects = tuple(sorted(
+        (dispatcher, terminal, *(catalog_subject(serial) for serial in range(1, 6))),
+        key=lambda subject: subject.subject_id,
+    ))
+    source = _detached_inventory(
+        phase=model.UnflattenAuthorityPhase.PRODUCER_FORECAST,
+        fingerprint=authority_id("detached-dag-source"), generation=3,
+        subjects=subjects,
+        successors={
+            0: (1,), 1: (2, 4), 2: (3, 5), 3: (2,),
+            4: (6,), 5: (2,), 6: (),
+        },
+    )
+    point = {
+        serial: SemanticCorridorPoint(ref.identity, 0x2000 + serial * 0x10)
+        for serial, ref in refs.items()
+    }
+    write_identity = StableBlockIdentity.from_instruction_eas((0x2000,), native_key=key)
+    write = SemanticStateWriteProof(
+        write_identity, 0x2000, state, 4, 7, (0x2000,), None, (),
+        SemanticStateWriteDeliveryKind.DIRECT,
+    )
+    witness = SemanticDecisionDagWitness(
+        state, 7, point[1], (point[1], point[2]), (
+            SemanticDagComparison(point[1], "eq", 7, point[2], point[4], state),
+            SemanticDagComparison(point[2], "eq", 8, point[3], point[5], state),
+        ), (),
+    )
+    dag = SemanticStateDagProof(
+        witness, write_identity, 0x2000, refs[4].identity, 0x2040,
+        refs[1].identity, 0x2010,
+        (SemanticCorridorPoint(write_identity, 0x2000), point[1]),
+        (point[1], point[2]),
+    )
+    proof = SemanticRouteProof(
+        authority_id("detached-dag-proof"), authority_id("detached-dag-group"),
+        SemanticRouteProofKind.STATE_DAG, SemanticRouteShape.DIRECT,
+        write_identity, 0x2000,
+        (SemanticRouteDestination(
+            SemanticEdgeRole.DIRECT, 7, refs[4].identity, 0x2040,
+        ),),
+        NativeEaInterval(0x2000, 0x2001), state_write=write, state_dag=dag,
+    )
+    evidence = canonical_semantic_evidence_from_proofs(
+        native_key=key, generation=3, proofs=(proof,),
+    )
+    dispatcher_binding = next(
+        binding for binding in source.bindings
+        if binding.subject == dispatcher
+    )
+
+    assert dispatcher_binding.block_ref == refs[1]
+    assert {
+        comparison.node.identity
+        for comparison in evidence.route_proofs[0].state_dag.witness.comparisons
+    } == {refs[1].identity, refs[2].identity}
 
 
 def test_detached_binding_mints_projected_source_once_and_reuses_it_observed() -> None:
@@ -13033,7 +13873,9 @@ def test_default_gap_replay_rejects_changed_default_fallthrough() -> None:
         bind._validate_default_gap_extension(**args)
 
 
-def _two_proof_shared_target_case(*, selected_proof_count: int = 2):
+def _two_proof_shared_target_case(
+    *, selected_proof_count: int = 2, include_graphs: bool = False,
+):
     """Two producer-owned direct proofs converge on one projected target."""
     from d810.ir.flowgraph import FlowGraph, InsnKind, MopSnapshot, OperandKind, ValueOpKind
     from d810.transforms.graph_modification import RedirectGoto
@@ -13195,7 +14037,11 @@ def _two_proof_shared_target_case(*, selected_proof_count: int = 2):
         plan.plan_id, authority_id("3b4-shared-target-session"), 1,
         authority_id("3b4-shared-target-attempt"),
     )
-    return authority.authority, plan, source_inventory, projected_inventory, lineage_facts, attempt
+    result = (
+        authority.authority, plan, source_inventory, projected_inventory,
+        lineage_facts, attempt,
+    )
+    return (*result, source, projected) if include_graphs else result
 
 
 def _task_15_two_relation_shared_site_vertical_case():
@@ -13438,6 +14284,208 @@ def _compiler_helper_branch_case():
 def _compiler_redirect_goto_case():
     """Build the retained 3B1 direct-goto family through the real compiler."""
     return _real_projected_branch_fixture(step_shape="goto", direct_route=True)
+
+
+def _terminal_delivery_bind_case():
+    """Build the outer-state terminal-delivery redirect through public bind APIs."""
+    from d810.analyses.control_flow.semantic_route_evidence import (
+        CanonicalRouteAssessmentPhase,
+        CanonicalRouteMaterialization,
+        stable_block_identity_from_snapshot,
+    )
+    from d810.ir.flowgraph import FlowGraph
+    from d810.transforms.cfg_transaction import TransactionAttemptId
+    from d810.transforms.edit_simulator import project_post_state
+    from d810.transforms.graph_modification import RedirectGoto
+    from d810.transforms.unflatten_authority.proposal import canonical_redirect_manifest
+    from tests.typed_patch_authority import compile_patch_plan
+    from tests.unit.analyses.control_flow.test_semantic_route_evidence import (
+        NATIVE_KEY,
+        _loop_guard_terminal_delivery_fixture,
+    )
+
+    source, evidence = _loop_guard_terminal_delivery_fixture()
+
+    def normalize_inventory_block(block):
+        instructions = tuple(
+            replace(instruction, raw_opcode=instruction.opcode)
+            if instruction.raw_opcode is None else instruction
+            for instruction in block.insn_snapshots
+        )
+        if not instructions:
+            return replace(
+                block, tail_opcode=None, tail_kind=None, raw_tail_opcode=None,
+            )
+        tail = instructions[-1]
+        return replace(
+            block,
+            insn_snapshots=instructions,
+            tail_opcode=tail.opcode,
+            tail_kind=tail.kind,
+            raw_tail_opcode=tail.raw_opcode,
+        )
+
+    source = FlowGraph(
+        {serial: normalize_inventory_block(block) for serial, block in source.blocks.items()},
+        source.entry_serial,
+        source.func_ea,
+    )
+    proof = evidence.route_proofs[0]
+    delivery = proof.terminal_delivery
+    assert delivery is not None
+    records_by_ea = {
+        int(instruction.ea): route_model._instruction_projection(instruction)
+        for block in source.blocks.values()
+        for instruction in block.insn_snapshots
+    }
+    transport = replace(
+        delivery.return_transport,
+        move_instruction=records_by_ea[
+            int(delivery.return_transport.move_instruction.ea)
+        ],
+        carrier_instruction=records_by_ea[
+            int(delivery.return_transport.carrier_instruction.ea)
+        ],
+    )
+    proof = replace(
+        proof,
+        terminal_delivery=replace(
+            delivery,
+            state_write_instruction=records_by_ea[
+                int(delivery.state_write_instruction.ea)
+            ],
+            return_transport=transport,
+        ),
+    )
+    evidence = _with_route_proofs(evidence, (proof,))
+    proof = evidence.route_proofs[0]
+    delivery = proof.terminal_delivery
+    assert delivery is not None
+    assert route_model.bind_canonical_semantic_evidence(source, evidence) is not None
+    refs = {
+        serial: (
+            LogicalBlockRef("test", "stop", 1)
+            if serial == delivery.return_transport.logical_exit.serial
+            else NativeBlockRef(stable_block_identity_from_snapshot(
+                block, native_key=NATIVE_KEY,
+            ))
+        )
+        for serial, block in source.blocks.items()
+    }
+    assert all(
+        type(ref) is NativeBlockRef
+        for serial, ref in refs.items()
+        if serial != delivery.return_transport.logical_exit.serial
+    )
+    compiled = compile_patch_plan(
+        [RedirectGoto(23, 2, 24)], source,
+        plan_id=authority_id("terminal-delivery-bind-plan"),
+        source_generation=evidence.generation,
+        block_refs_by_serial=refs,
+    )
+    manifest = canonical_redirect_manifest(compiled)
+    proposal = producer_api.build_proposal(
+        plan_id=compiled.plan_id,
+        source=source,
+        block_refs_by_serial=refs,
+        source_generation=evidence.generation,
+        canonical_route_evidence=evidence,
+        selected_route_proof_ids=(proof.proof_id,),
+        exact_state_effect_exclusions=(),
+        dispatcher_entry_serial=2,
+        dispatcher_member_serials=(2, 3, 4),
+        authoritative_handler_serials=(24,),
+        state_identity=delivery.state_identity,
+        use_def_witness=model.UseDefFragmentWitness(
+            authority_id("terminal-delivery-bind-fragment"),
+            delivery.state_identity,
+            manifest.owner_refs,
+            manifest.digest,
+            True, True, 0, (),
+        ),
+    )
+    plan = replace(
+        compiled,
+        source_coordinates=tuple((refs[serial], serial) for serial in sorted(refs)),
+        unflatten_proposal=proposal,
+    )
+    materialization = CanonicalRouteMaterialization.capture(
+        source,
+        generation=evidence.generation,
+        phase=CanonicalRouteAssessmentPhase.SOURCE,
+    )
+    source_inventory = transaction_api._build_semantic_graph_inventory(
+        source, proposal, plan, source=True,
+        phase=model.UnflattenAuthorityPhase.PRODUCER_FORECAST,
+        materialization=materialization,
+    )
+    source_result = bind.bind_source_route_authority(
+        proposal=proposal,
+        source_inventory=source_inventory,
+        source_materialization=materialization,
+    )
+    assert type(source_result) is model.SourceBoundRouteAuthorityAccepted
+    projected = project_post_state(source, plan)
+    projected_inventory = transaction_api._build_semantic_graph_inventory(
+        projected, proposal, plan, source=False,
+        phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        materialization=None,
+        source_subjects=source_inventory.subjects,
+    )
+    return SimpleNamespace(
+        source_authority=source_result.authority,
+        plan=plan,
+        source_inventory=source_inventory,
+        projected_inventory=projected_inventory,
+        patch_step_facts=transaction_api._derive_patch_lineage_facts(
+            source_inventory, plan,
+        ),
+        attempt_id=TransactionAttemptId(
+            plan.plan_id,
+            authority_id("terminal-delivery-bind-session"),
+            evidence.generation,
+            authority_id("terminal-delivery-bind-attempt"),
+        ),
+        refs=refs,
+    )
+
+
+def test_terminal_delivery_public_source_bind_and_redirect_realization_accept() -> None:
+    """The public bind and projected route path consumes outer-state delivery evidence."""
+    values = _terminal_delivery_bind_case()
+    realized = realize_projected_routes_for_test(
+        source_authority=values.source_authority,
+        plan=values.plan,
+        source_inventory=values.source_inventory,
+        projected_inventory=values.projected_inventory,
+        patch_step_facts=values.patch_step_facts,
+        attempt_id=values.attempt_id,
+    )
+    assert type(realized) is model.ProjectedRouteRealizationAccepted
+    (row,) = realized.realization.rows
+    assert row.plan_step_type is PatchStepKind.REDIRECT_GOTO
+    assert row.old_target_ref == values.refs[2]
+    assert row.new_target_ref == values.refs[24]
+
+
+def test_terminal_delivery_redirect_with_wrong_old_target_rejects() -> None:
+    """The sealed outer decision-DAG entry cannot be replaced by the exit entry."""
+    values = _terminal_delivery_bind_case()
+    wrong_plan = replace(
+        values.plan,
+        steps=(PatchRedirectGoto(values.refs[23], values.refs[24], values.refs[24]),),
+    )
+    rejected = realize_projected_routes_for_test(
+        source_authority=values.source_authority,
+        plan=wrong_plan,
+        source_inventory=values.source_inventory,
+        projected_inventory=values.projected_inventory,
+        patch_step_facts=transaction_api._derive_patch_lineage_facts(
+            values.source_inventory, wrong_plan,
+        ),
+        attempt_id=values.attempt_id,
+    )
+    assert type(rejected) is model.ProjectedRouteRealizationRejected
 
 
 def _compiler_guarded_convert_to_goto_case(
@@ -15088,6 +16136,40 @@ def _task_15_two_arm_vertical_case(
         projected_inventory=projected_inventory, patch_step_facts=facts,
         attempt_id=attempt, refs=refs,
     )
+
+
+def test_unclassified_effect_cut_frontier_attributes_canonical_patch_step() -> None:
+    """The diagnostic attributes a candidate cut with its sealed step fact."""
+    case = _task_15_two_arm_vertical_case()
+    frontier, descriptors, facts = bind._unclassified_effect_cut_frontier(
+        source_inventory=case.source_inventory,
+        projected_inventory=case.projected_inventory,
+        plan=case.plan,
+        patch_step_facts=case.patch_step_facts,
+        owner_serial=2,
+    )
+
+    assert frontier == ((
+        1,
+        case.refs[1],
+        case.source_graph.blocks[1].start_ea,
+        2,
+        case.refs[2],
+        case.source_graph.blocks[2].start_ea,
+        case.source_graph.blocks[1].insn_snapshots[-1].ea,
+    ),)
+    (sealed_fact,) = case.patch_step_facts
+    sealed_projection = (
+        sealed_fact.step_index,
+        sealed_fact.step_type,
+        sealed_fact.owner_ref,
+        sealed_fact.host_ea,
+        sealed_fact.host_opcode,
+        sealed_fact.value_size,
+        sealed_fact.step_digest,
+    )
+    assert descriptors == (sealed_projection,)
+    assert facts == (sealed_projection,)
 
 
 def _task_15_branch_helper_vertical_case(*, synthesized_stop: bool = False):
@@ -22337,6 +23419,7 @@ def test_task_15_two_arm_vertical_preserves_feeder_replacement_and_untouched_arm
 
 
 def test_task_15_two_arm_vertical_rejects_projected_replacement_site_drift(
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     """Removing only N's projected STORE rejects atomically at the site gate."""
     import gc
@@ -22438,9 +23521,13 @@ def test_task_15_two_arm_vertical_rejects_projected_replacement_site_drift(
             side_effect=AssertionError("projected closure evaluator replay"),
         ),
     ):
-        events = _task_15_observe_publication_events(
-            lambda: bind.realize_projected_routes(**values),
-        )
+        with caplog.at_level(
+            "WARNING",
+            logger="d810.transforms.unflatten_authority.bind",
+        ):
+            events = _task_15_observe_publication_events(
+                lambda: bind.realize_projected_routes(**values),
+            )
 
     assert drafter_spy.call_count == 1
     # Missing projected sites are represented as UNCLASSIFIED draft rows and
@@ -22455,7 +23542,33 @@ def test_task_15_two_arm_vertical_rejects_projected_replacement_site_drift(
     assert failure.claim_id is None and failure.proof_id is None
     assert failure.route_subject_id is None
     assert failure.step_index is None and failure.step_digest is None
-    assert failure.anchored_refs == ()
+    assert failure.anchored_refs == (
+        model.AnchoredBlockRef(
+            clean_n_effect.owner_ref,
+            clean_n_effect.owner_anchor_ea,
+        ),
+    )
+    context_records = tuple(
+        record
+        for record in caplog.records
+        if record.getMessage().startswith(
+            "unclassified projected effect-site context:"
+        )
+    )
+    assert len(context_records) == 1
+    context = context_records[0].getMessage()
+    assert "source=(" in context
+    assert repr(clean_n_effect.owner_ref) in context
+    assert str(clean_n_effect.instruction_ea) in context
+    assert "owner_mapping=" in context
+    assert "mapped_owner=" in context
+    assert "mapped_blocks=" in context
+    assert "mapped_bindings=" in context
+    assert "mapped_owner_effects=" in context
+    assert "same_ea_effects=" in context
+    assert "cut_frontier=" in context
+    assert "cut_descriptors=" in context
+    assert "cut_facts=" in context
     assert events.commits == ()
     assert not any(
         type(value) in events.accepted_types for value in events.deferred

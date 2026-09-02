@@ -191,6 +191,8 @@ def _structural_key(value: object):
         TerminalCycleBreakClaim,
     ):
         return ("claim", value.claim_id)
+    if type(value) is EntryEndpointLivenessAllowance:
+        return ("entry_endpoint_liveness", value.allowance_id)
     if type(value) is AuthoritativeHandlerInput:
         return ("handler", _structural_key(value.block_ref), value.anchor_ea)
     if isinstance(value, tuple):
@@ -294,6 +296,24 @@ class SemanticSubjectRole(str, Enum):
     DETACHED_DEAD_HANDLER_COMPONENT = "detached_dead_handler_component"
 
 
+# Canonical subject vocabulary for semantic CFG topology.  Every producer and
+# consumer of subject-level topology must use this same closed role set.
+TOPOLOGY_SUBJECT_ROLES = frozenset({
+    SemanticSubjectRole.SOURCE_ENTRY,
+    SemanticSubjectRole.DISPATCHER_ENTRY,
+    SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE,
+    SemanticSubjectRole.SEMANTIC_ROUTE_SOURCE,
+    SemanticSubjectRole.SEMANTIC_ROUTE_DESTINATION,
+    SemanticSubjectRole.SEMANTIC_DAG_ENDPOINT,
+    SemanticSubjectRole.EXACT_EFFECT_SOURCE,
+    SemanticSubjectRole.EXACT_EFFECT_PREDICATE,
+    SemanticSubjectRole.EXACT_EFFECT_SELECTED_TARGET,
+    SemanticSubjectRole.EXACT_EFFECT_DISCARDED_OWNER,
+    SemanticSubjectRole.AUTHORITATIVE_HANDLER,
+    SemanticSubjectRole.PLANNED_HELPER,
+})
+
+
 class SafetyDimension(str, Enum):
     STRUCTURAL_ACCOUNTING = "structural_accounting"
     ROUTE_EQUIVALENCE = "route_equivalence"
@@ -347,6 +367,10 @@ class UnflattenClaimKind(str, Enum):
     LOCAL_ALIAS_EFFECT_SCALARIZATION = "local_alias_effect_scalarization"
     TERMINAL_CYCLE_BREAK = "terminal_cycle_break"
     DETACHED_DEAD_HANDLER_COMPONENT = "detached_dead_handler_component"
+
+
+class EntryEndpointLivenessReason(str, Enum):
+    NO_PROVIDER_EXIT_PATH_LIVE_SAFE_ENDPOINT = "no_provider_exit_path_live_safe_endpoint"
 
 
 class ProviderConsensusMode(str, Enum):
@@ -521,6 +545,127 @@ class LogicalFunctionExitSubjectLocator:
         object.__setattr__(self, "serial", _nonnegative(self.serial, "serial"))
 
 
+@dataclass(frozen=True, slots=True, weakref_slot=True)
+class ObservedLogicalEndpointOccurrence:
+    """One transaction-validated observed occurrence of a projected exit."""
+
+    logical_ref: LogicalBlockRef
+    projected_serial: int
+    observed_serial: int
+    owner_ref: CfgBlockRef
+    predecessor_refs: tuple[CfgBlockRef, ...]
+
+    def __post_init__(self) -> None:
+        if type(self.logical_ref) is not LogicalBlockRef:
+            raise TypeError("logical_ref must be a LogicalBlockRef")
+        _nonnegative(self.projected_serial, "projected_serial")
+        _nonnegative(self.observed_serial, "observed_serial")
+        if self.projected_serial == self.observed_serial:
+            raise ValueError("observed logical occurrence requires serial movement")
+        _cfg_ref(self.owner_ref, "owner_ref")
+        refs = _canonical_cfg_ref_tuple(
+            self.predecessor_refs,
+            "predecessor_refs",
+        )
+        if not refs or self.owner_ref not in refs:
+            raise ValueError(
+                "observed logical occurrence requires its exact plan owner",
+            )
+        object.__setattr__(self, "predecessor_refs", refs)
+
+    @property
+    def occurrence_id(self) -> str:
+        return authority_id((
+            "unflatten.observed-logical-endpoint-occurrence.v1",
+            self.logical_ref,
+            self.projected_serial,
+            self.observed_serial,
+            self.owner_ref,
+            self.predecessor_refs,
+        ))
+
+
+@dataclass(frozen=True, slots=True, weakref_slot=True)
+class ObservedRouteTopologyOccurrence:
+    """One binder-minted observed realization of a sealed route relation.
+
+    The transaction validates the live backend shape once and retains the
+    projected subject-level pairs that it is allowed to normalize.  Evaluators
+    consume this closed receipt; they do not replay FlowGraph topology.
+    """
+
+    relation_id: str
+    row_id: str
+    patch_fact: PatchStepEvidencePayload
+    normalized_pairs: tuple[TopologyEdgeRelation, ...]
+
+    def __post_init__(self) -> None:
+        _id(self.relation_id, "relation_id")
+        _id(self.row_id, "row_id")
+        if type(self.patch_fact) is not PatchStepEvidencePayload:
+            raise TypeError("patch_fact must be PatchStepEvidencePayload")
+        self.patch_fact.__post_init__()
+        pairs = _tuple(self.normalized_pairs, "normalized_pairs", sort=True)
+        if not pairs or any(type(item) is not TopologyEdgeRelation for item in pairs):
+            raise ValueError("normalized_pairs must contain exact topology relations")
+        for pair in pairs:
+            pair.__post_init__()
+        object.__setattr__(self, "normalized_pairs", pairs)
+
+    @property
+    def occurrence_id(self) -> str:
+        return authority_id((
+            "unflatten.observed-route-topology-occurrence.v1",
+            self.relation_id,
+            self.row_id,
+            self.patch_fact,
+            self.normalized_pairs,
+        ))
+
+
+@dataclass(frozen=True, slots=True, weakref_slot=True)
+class ObservedLoweredConditionalTopologyOccurrence:
+    """Transaction-owned observation of one exact lowered conditional.
+
+    Some planner-owned conditional lowerings are auxiliary control-flow
+    operations rather than rows in ``ProjectedRouteRealization``.  The
+    transaction validates their exact projected and observed shapes once and
+    carries only this immutable occurrence into semantic evaluation.
+    """
+
+    patch_fact: PatchStepEvidencePayload
+    source_ref: CfgBlockRef
+    false_target_ref: CfgBlockRef
+    true_target_ref: CfgBlockRef
+    normalized_pairs: tuple[TopologyEdgeRelation, ...]
+
+    def __post_init__(self) -> None:
+        if type(self.patch_fact) is not PatchStepEvidencePayload:
+            raise TypeError("patch_fact must be PatchStepEvidencePayload")
+        self.patch_fact.__post_init__()
+        for name in ("source_ref", "false_target_ref", "true_target_ref"):
+            _cfg_ref(getattr(self, name), name)
+        if len({self.source_ref, self.false_target_ref, self.true_target_ref}) != 3:
+            raise ValueError("lowered conditional roles must be distinct")
+        pairs = _tuple(self.normalized_pairs, "normalized_pairs", sort=True)
+        if not pairs or any(type(item) is not TopologyEdgeRelation for item in pairs):
+            raise ValueError("normalized_pairs must contain exact topology relations")
+        for pair in pairs:
+            pair.__post_init__()
+        object.__setattr__(self, "normalized_pairs", pairs)
+
+    @property
+    def occurrence_id(self) -> str:
+        return authority_id((
+            "unflatten.observed-lowered-conditional-topology-occurrence.v1",
+            self.patch_fact,
+            self.source_ref,
+            self.false_target_ref,
+            self.true_target_ref,
+            self.normalized_pairs,
+        ))
+
+
 @dataclass(frozen=True, slots=True)
 class EdgeSubjectLocator:
     source_ref: CfgBlockRef
@@ -595,18 +740,17 @@ class EffectSubjectLocator:
 
 @dataclass(frozen=True, slots=True)
 class HandlerSubjectLocator:
-    block_ref: CfgBlockRef
+    block_ref: NativeBlockRef
     anchor_ea: int
     normalized_states: tuple[int, ...]
 
     def __post_init__(self) -> None:
-        _cfg_ref(self.block_ref)
+        if type(self.block_ref) is not NativeBlockRef:
+            raise TypeError("authoritative handler requires a NativeBlockRef")
         object.__setattr__(self, "anchor_ea", _ea(self.anchor_ea, "anchor_ea"))
         states = _tuple(self.normalized_states, "normalized_states", sort=True)
         for state in states:
             _nonnegative(state, "normalized state")
-        if not states:
-            raise ValueError("normalized_states must not be empty")
         object.__setattr__(self, "normalized_states", states)
 
 
@@ -2038,6 +2182,7 @@ class PhaseSubjectBinding:
     anchor_ea: int | None
     native_instruction_eas: tuple[int, ...]
     role: SemanticSubjectRole
+    observed_logical_occurrence: ObservedLogicalEndpointOccurrence | None = None
 
     def __post_init__(self) -> None:
         if type(self.subject) is not SemanticSubjectRef:
@@ -2059,6 +2204,13 @@ class PhaseSubjectBinding:
             _nonnegative(self.serial, "serial")
         if self.anchor_ea is not None:
             _ea(self.anchor_ea, "anchor_ea")
+        occurrence = self.observed_logical_occurrence
+        if occurrence is not None:
+            if type(occurrence) is not ObservedLogicalEndpointOccurrence:
+                raise TypeError(
+                    "observed_logical_occurrence has an unknown type",
+                )
+            occurrence.__post_init__()
         if self.status is SubjectBindingStatus.UNIQUE:
             if self.subject.block_ref is None or self.block_ref != self.subject.block_ref:
                 raise ValueError("unique binding requires block_ref")
@@ -2066,12 +2218,33 @@ class PhaseSubjectBinding:
                 raise ValueError("unique binding requires serial, anchor, and native EAs")
             if type(self.subject.locator) is LogicalFunctionExitSubjectLocator:
                 if (
-                    self.serial != self.subject.locator.serial
-                    or self.anchor_ea is not None
+                    self.anchor_ea is not None
                     or eas
                 ):
                     raise ValueError("logical function-exit binding must remain anchorless")
+                moved = self.serial != self.subject.locator.serial
+                if moved != (
+                    self.phase is UnflattenAuthorityPhase.OBSERVED_POST_APPLY
+                    and occurrence is not None
+                ):
+                    raise ValueError(
+                        "logical function-exit serial movement requires one "
+                        "observed occurrence",
+                    )
+                if occurrence is not None and (
+                    occurrence.logical_ref != self.block_ref
+                    or occurrence.projected_serial
+                    != self.subject.locator.serial
+                    or occurrence.observed_serial != self.serial
+                ):
+                    raise ValueError(
+                        "logical function-exit occurrence differs from binding",
+                    )
                 return
+            if occurrence is not None:
+                raise ValueError(
+                    "only a moved logical endpoint may carry an observed occurrence",
+                )
             if self.anchor_ea is None:
                 raise ValueError("unique binding requires serial, anchor, and native EAs")
             if self.anchor_ea != self.subject.anchor_ea:
@@ -2087,6 +2260,7 @@ class PhaseSubjectBinding:
             or self.serial is not None
             or self.anchor_ea is not None
             or eas
+            or occurrence is not None
         ):
             raise ValueError("non-unique binding requires no block, serial, anchor, or native EAs")
 
@@ -2680,8 +2854,13 @@ class InventoryBlockObservation:
             ):
                 raise ValueError("predicate observation requires a conditional transfer tail")
             predicate = tail.predicate_observation
-            if predicate is None or predicate.predicate_kind is not PredicateKind.EQ:
-                raise ValueError("predicate observation requires EQ predicate")
+            if (
+                predicate is None
+                or predicate.predicate_kind is PredicateKind.TRUTHY
+            ):
+                raise ValueError(
+                    "predicate observation requires a structured comparison predicate",
+                )
             if predicate.explicit_target_serial != self.successor_serials[1]:
                 raise ValueError("predicate explicit target must equal ordered taken successor")
             if self.successor_serials[0] == self.successor_serials[1]:
@@ -3459,6 +3638,7 @@ class DetachedDeadHandlerComponentClaim:
     dead_handler_subjects: tuple[SemanticSubjectRef, ...]
     retained_handler_subjects: tuple[SemanticSubjectRef, ...]
     component_subjects: tuple[SemanticSubjectRef, ...]
+    comparison_region_subjects: tuple[SemanticSubjectRef, ...]
     source_generation: int
 
     def __post_init__(self) -> None:
@@ -3467,12 +3647,26 @@ class DetachedDeadHandlerComponentClaim:
         dead = _tuple(self.dead_handler_subjects, "dead_handler_subjects", sort=True)
         retained = _tuple(self.retained_handler_subjects, "retained_handler_subjects", sort=True)
         component = _tuple(self.component_subjects, "component_subjects", sort=True)
-        if not dead or not retained or not component:
-            raise ValueError("detached component claim requires dead, retained, and component subjects")
+        comparison = _tuple(
+            self.comparison_region_subjects,
+            "comparison_region_subjects",
+            sort=True,
+        )
+        if not dead or not retained or not component or not comparison:
+            raise ValueError(
+                "detached component claim requires dead, retained, component, "
+                "and comparison-region subjects"
+            )
         for subject in (*dead, *retained):
             _claim_subject(subject, SemanticSubjectKind.HANDLER, SemanticSubjectRole.AUTHORITATIVE_HANDLER, HandlerSubjectLocator, "handler_subject")
         for subject in component:
             _claim_subject(subject, SemanticSubjectKind.BLOCK, SemanticSubjectRole.DETACHED_DEAD_HANDLER_COMPONENT, BlockSubjectLocator, "component_subject")
+        for subject in comparison:
+            _claim_subject(
+                subject, SemanticSubjectKind.BLOCK,
+                SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE,
+                BlockSubjectLocator, "comparison_region_subject",
+            )
         if {subject.subject_id for subject in dead} & {subject.subject_id for subject in retained}:
             raise ValueError("dead and retained handler subjects overlap")
         if not {subject.block_ref for subject in dead} <= {subject.block_ref for subject in component}:
@@ -3484,6 +3678,11 @@ class DetachedDeadHandlerComponentClaim:
         object.__setattr__(self, "dead_handler_subjects", dead)
         object.__setattr__(self, "retained_handler_subjects", retained)
         object.__setattr__(self, "component_subjects", component)
+        object.__setattr__(self, "comparison_region_subjects", comparison)
+        if self.dispatcher_subject.block_ref not in {
+            subject.block_ref for subject in comparison
+        }:
+            raise ValueError("comparison region must contain the dispatcher")
         if self.claim_id != claim_id(self):
             raise ValueError("claim_id does not match canonical claim content")
 
@@ -3699,6 +3898,260 @@ ProducerUnflattenClaim: TypeAlias = (
 )
 TransactionDerivedUnflattenClaim: TypeAlias = LocalAliasEffectScalarizationClaim
 UnflattenClaim: TypeAlias = ProducerUnflattenClaim | TransactionDerivedUnflattenClaim
+
+
+@dataclass(frozen=True, slots=True)
+class EntryEndpointLivenessForecast:
+    """Closed producer forecast for one live-safe entry redirect.
+
+    The redirect owner and physical state writer are deliberately distinct
+    coordinates.  The producer has already selected ``route_proof_id``; later
+    layers validate that exact selection rather than searching route evidence.
+    """
+
+    reason: EntryEndpointLivenessReason
+    normalized_state: int
+    route_proof_id: str
+    redirect_owner_ref: CfgBlockRef
+    state_write_source_ref: CfgBlockRef
+    state_write_instruction_ea: int
+    dispatcher_ref: CfgBlockRef
+    replacement_ref: CfgBlockRef
+    exit_path_refs: tuple[CfgBlockRef, ...]
+    delivery_path_refs: tuple[CfgBlockRef, ...] = ()
+    delivery_path_edges: tuple[tuple[int, int], ...] = ()
+    cut_exit_path_uses: bool = False
+
+    def __post_init__(self) -> None:
+        _enum(self.reason, EntryEndpointLivenessReason, "reason")
+        _nonnegative(self.normalized_state, "normalized_state")
+        _id(self.route_proof_id, "route_proof_id")
+        for name in (
+            "redirect_owner_ref", "state_write_source_ref", "dispatcher_ref",
+            "replacement_ref",
+        ):
+            _cfg_ref(getattr(self, name), name)
+        if type(self.state_write_source_ref) is not NativeBlockRef:
+            raise TypeError("entry liveness state write source must be native")
+        _ea(self.state_write_instruction_ea, "state_write_instruction_ea")
+        if not self.state_write_source_ref.identity.native_ranges.contains(
+            self.state_write_instruction_ea
+        ):
+            raise ValueError("entry liveness write EA is outside source identity")
+        exits = _canonical_cfg_ref_tuple(self.exit_path_refs, "exit_path_refs")
+        if not exits or self.dispatcher_ref not in exits:
+            raise ValueError("entry liveness forecast exit path must include dispatcher")
+        if self.dispatcher_ref == self.replacement_ref:
+            raise ValueError("entry liveness forecast must replace dispatcher")
+        if type(self.cut_exit_path_uses) is not bool:
+            raise TypeError("cut_exit_path_uses must be bool")
+        object.__setattr__(self, "exit_path_refs", exits)
+        # A delivery corridor is ordered evidence, unlike a block set.  Do not
+        # canonical-sort it: doing so destroys the W -> ... -> D relation the
+        # transaction must later rebind.
+        path = tuple(self.delivery_path_refs)
+        if len(set(path)) != len(path):
+            raise ValueError("entry liveness forecast corridor must not repeat refs")
+        for ref in path:
+            _cfg_ref(ref, "delivery_path_refs item")
+        if self.redirect_owner_ref != self.state_write_source_ref and not path:
+            raise ValueError(
+                "entry liveness distinct owner requires a delivery corridor"
+            )
+        if path and (path[0] != self.state_write_source_ref or path[-1] != self.dispatcher_ref):
+            raise ValueError("entry liveness forecast requires exact write-to-dispatcher corridor")
+        if path and self.redirect_owner_ref not in path:
+            raise ValueError("entry liveness forecast owner must lie on corridor")
+        if path and tuple(self.delivery_path_edges) != tuple((index, index + 1) for index in range(len(path) - 1)):
+            raise ValueError("entry liveness forecast corridor edges must be exact adjacent indices")
+        object.__setattr__(self, "delivery_path_refs", path)
+
+
+@dataclass(frozen=True, slots=True)
+class EntryEndpointLivenessAllowance:
+    """Planner-sealed no-provider entry shortcut, separate from route claims.
+
+    This deliberately carries the exact redirect coordinate rather than
+    manufacturing semantic-route evidence for an endpoint shortcut.
+    """
+
+    allowance_id: str
+    reason: EntryEndpointLivenessReason
+    normalized_state: int
+    route_proof_id: str
+    entry_predecessor_owner_refs: tuple[CfgBlockRef, ...]
+    dispatcher_old_target_ref: CfgBlockRef
+    replacement_endpoint_ref: CfgBlockRef
+    exit_path_refs: tuple[CfgBlockRef, ...]
+    patch_step_index: int
+    patch_step_digest: str
+    state_write_source_ref: CfgBlockRef
+    state_write_instruction_ea: int
+    delivery_path_refs: tuple[CfgBlockRef, ...] = ()
+    delivery_path_edges: tuple[tuple[int, int], ...] = ()
+    cut_exit_path_uses: bool = False
+
+    def __post_init__(self) -> None:
+        # Compatibility for pre-corridor positional construction: its final
+        # bool occupied the slot now used by ``delivery_path_refs``.
+        legacy_positional = (
+            type(self.delivery_path_refs) is bool
+            and self.delivery_path_edges == ()
+            and self.cut_exit_path_uses is False
+        )
+        if legacy_positional:
+            legacy_cut_exit_path_uses = bool(self.delivery_path_refs)
+            object.__setattr__(self, "delivery_path_refs", ())
+            object.__setattr__(self, "cut_exit_path_uses", legacy_cut_exit_path_uses)
+        _id(self.allowance_id, "allowance_id")
+        _enum(self.reason, EntryEndpointLivenessReason, "reason")
+        _nonnegative(self.normalized_state, "normalized_state")
+        _id(self.route_proof_id, "route_proof_id")
+        owners = _canonical_cfg_ref_tuple(
+            self.entry_predecessor_owner_refs, "entry_predecessor_owner_refs",
+        )
+        if not owners:
+            raise ValueError("entry liveness allowance requires entry predecessor owners")
+        if len(owners) != 1:
+            raise ValueError("entry liveness allowance requires exactly one entry predecessor owner")
+        _cfg_ref(self.dispatcher_old_target_ref, "dispatcher_old_target_ref")
+        _cfg_ref(self.replacement_endpoint_ref, "replacement_endpoint_ref")
+        _cfg_ref(self.state_write_source_ref, "state_write_source_ref")
+        if type(self.state_write_source_ref) is not NativeBlockRef:
+            raise TypeError("entry liveness allowance state write source must be native")
+        _ea(self.state_write_instruction_ea, "state_write_instruction_ea")
+        if not self.state_write_source_ref.identity.native_ranges.contains(
+            self.state_write_instruction_ea
+        ):
+            raise ValueError("entry liveness allowance write EA is outside source identity")
+        if self.dispatcher_old_target_ref == self.replacement_endpoint_ref:
+            raise ValueError("entry liveness allowance must replace the dispatcher target")
+        exits = _canonical_cfg_ref_tuple(self.exit_path_refs, "exit_path_refs")
+        if not exits or self.dispatcher_old_target_ref not in exits:
+            raise ValueError("entry liveness allowance exit path must include dispatcher target")
+        _nonnegative(self.patch_step_index, "patch_step_index")
+        _id(self.patch_step_digest, "patch_step_digest")
+        if type(self.cut_exit_path_uses) is not bool:
+            raise TypeError("cut_exit_path_uses must be bool")
+        expected = authority_id((
+            "unflatten.entry-endpoint-liveness-allowance.v1",
+            self.reason, self.normalized_state, self.route_proof_id,
+            self.entry_predecessor_owner_refs, self.dispatcher_old_target_ref,
+            self.replacement_endpoint_ref, self.exit_path_refs,
+            self.patch_step_index, self.patch_step_digest,
+            self.state_write_source_ref, self.state_write_instruction_ea,
+            *((self.cut_exit_path_uses,) if legacy_positional else (
+                self.delivery_path_refs, self.delivery_path_edges,
+                self.cut_exit_path_uses,
+            )),
+        ))
+        # Existing sealed receipts without a delivery corridor retain their
+        # v1 identity.  A non-empty corridor is always covered by the new
+        # identity form below.
+        legacy_empty_expected = authority_id((
+            "unflatten.entry-endpoint-liveness-allowance.v1",
+            self.reason, self.normalized_state, self.route_proof_id,
+            self.entry_predecessor_owner_refs, self.dispatcher_old_target_ref,
+            self.replacement_endpoint_ref, self.exit_path_refs,
+            self.patch_step_index, self.patch_step_digest,
+            self.state_write_source_ref, self.state_write_instruction_ea,
+            self.cut_exit_path_uses,
+        ))
+        if self.allowance_id != expected and not (
+            not self.delivery_path_refs
+            and not self.delivery_path_edges
+            and self.allowance_id == legacy_empty_expected
+        ):
+            raise ValueError("entry liveness allowance ID does not match content")
+        object.__setattr__(self, "entry_predecessor_owner_refs", owners)
+        object.__setattr__(self, "exit_path_refs", exits)
+        # Preserve producer corridor order for the same reason as the forecast.
+        path = tuple(self.delivery_path_refs)
+        if len(set(path)) != len(path):
+            raise ValueError("entry liveness allowance corridor must not repeat refs")
+        for ref in path:
+            _cfg_ref(ref, "delivery_path_refs item")
+        if owners[0] != self.state_write_source_ref and not path:
+            raise ValueError(
+                "entry liveness distinct owner requires a delivery corridor"
+            )
+        if path and (path[0] != self.state_write_source_ref or path[-1] != self.dispatcher_old_target_ref):
+            raise ValueError("entry liveness allowance requires exact write-to-dispatcher corridor")
+        if path and (owners[0] not in path or tuple(self.delivery_path_edges) != tuple((i, i + 1) for i in range(len(path) - 1))):
+            raise ValueError("entry liveness allowance corridor is invalid")
+        object.__setattr__(self, "delivery_path_refs", path)
+
+
+@dataclass(frozen=True, slots=True)
+class BoundEntryEndpointLivenessAllowance:
+    """Transaction-minted binding for one sealed entry liveness allowance."""
+
+    binding_id: str
+    allowance: EntryEndpointLivenessAllowance
+    route_proof_id: str
+    patch_step_fact: PatchStepEvidencePayload
+    source_fingerprint: str
+    projected_fingerprint: str
+    source_generation: int
+    projected_generation: int
+    source_inventory_digest: str
+    projected_inventory_digest: str
+    source_owner_successors: tuple[CfgBlockRef, ...]
+    projected_owner_successors: tuple[CfgBlockRef, ...]
+    source_liveness_safe: bool
+    projected_redirect_realized: bool
+
+    def __post_init__(self) -> None:
+        _id(self.binding_id, "binding_id")
+        if type(self.allowance) is not EntryEndpointLivenessAllowance:
+            raise TypeError("allowance must be EntryEndpointLivenessAllowance")
+        _id(self.route_proof_id, "route_proof_id")
+        if self.route_proof_id != self.allowance.route_proof_id:
+            raise ValueError("entry liveness receipt route proof differs from allowance")
+        if type(self.patch_step_fact) is not PatchStepEvidencePayload:
+            raise TypeError("patch_step_fact must be PatchStepEvidencePayload")
+        for name in (
+            "source_fingerprint", "projected_fingerprint",
+            "source_inventory_digest", "projected_inventory_digest",
+        ):
+            _id(getattr(self, name), name)
+        _generation(self.source_generation, "source_generation")
+        _generation(self.projected_generation, "projected_generation")
+        self.allowance.__post_init__()
+        self.patch_step_fact.__post_init__()
+        if (
+            self.patch_step_fact.step_index != self.allowance.patch_step_index
+            or self.patch_step_fact.step_digest != self.allowance.patch_step_digest
+            or self.patch_step_fact.owner_ref not in self.allowance.entry_predecessor_owner_refs
+        ):
+            raise ValueError("entry liveness binding patch fact differs from allowance")
+        source_successors = _canonical_cfg_ref_tuple(
+            self.source_owner_successors, "source_owner_successors",
+        )
+        projected_successors = _canonical_cfg_ref_tuple(
+            self.projected_owner_successors, "projected_owner_successors",
+        )
+        if self.allowance.dispatcher_old_target_ref not in source_successors:
+            raise ValueError("entry liveness receipt source preimage omits dispatcher target")
+        if self.allowance.replacement_endpoint_ref not in projected_successors:
+            raise ValueError("entry liveness receipt projected realization omits replacement")
+        if self.allowance.dispatcher_old_target_ref in projected_successors:
+            raise ValueError("entry liveness receipt projected realization retains dispatcher")
+        if self.source_liveness_safe is not True or self.projected_redirect_realized is not True:
+            raise ValueError("entry liveness receipt must seal accepted liveness and realization")
+        object.__setattr__(self, "source_owner_successors", source_successors)
+        object.__setattr__(self, "projected_owner_successors", projected_successors)
+        expected = authority_id((
+            "unflatten.entry-endpoint-liveness-binding.v1",
+            self.allowance, self.route_proof_id, self.patch_step_fact,
+            self.source_fingerprint, self.projected_fingerprint,
+            self.source_generation, self.projected_generation,
+            self.source_inventory_digest, self.projected_inventory_digest,
+            self.source_owner_successors, self.projected_owner_successors,
+            self.source_liveness_safe, self.projected_redirect_realized,
+        ))
+        if self.binding_id != expected:
+            raise ValueError("entry liveness binding ID does not match content")
 
 
 @dataclass(frozen=True, slots=True)
@@ -4095,16 +4548,15 @@ class RetirementPhaseResult:
 
 @dataclass(frozen=True, slots=True)
 class AuthoritativeHandlerInput:
-    block_ref: NativeBlockRef | LogicalBlockRef
+    block_ref: NativeBlockRef
     anchor_ea: int
     normalized_states: tuple[int, ...]
 
     def __post_init__(self) -> None:
-        _authority_ref(self.block_ref)
+        if type(self.block_ref) is not NativeBlockRef:
+            raise TypeError("authoritative handler requires a NativeBlockRef")
         object.__setattr__(self, "anchor_ea", _ea(self.anchor_ea, "anchor_ea"))
         states = _tuple(self.normalized_states, "normalized_states", sort=True)
-        if not states:
-            raise ValueError("normalized_states must not be empty")
         for state in states:
             _nonnegative(state, "normalized state")
         object.__setattr__(self, "normalized_states", states)
@@ -4213,6 +4665,7 @@ class ProposedUnflattenContract:
     plan_inputs: UnflattenPlanInputCatalog
     corridor_coverage_forecast: CorridorCoverageForecast | DefaultGapInfeasibilityForecast | None = None
     retirement_candidate_catalog: RetirementCandidateCatalog | None = None
+    entry_endpoint_liveness_allowances: tuple[EntryEndpointLivenessAllowance, ...] = ()
 
     def __post_init__(self) -> None:
         if (
@@ -4245,6 +4698,35 @@ class ProposedUnflattenContract:
                 witness = source_by_ref.get(member.block_ref)
                 if witness is None or witness.anchor_ea != member.anchor_ea or witness.native_instruction_eas != member.native_instruction_eas:
                     raise ValueError("retirement candidate member identity drifted")
+        allowances = _tuple(
+            self.entry_endpoint_liveness_allowances,
+            "entry_endpoint_liveness_allowances",
+            sort=True,
+        )
+        if any(type(item) is not EntryEndpointLivenessAllowance for item in allowances):
+            raise TypeError("entry endpoint liveness allowances must be closed records")
+        if len({item.allowance_id for item in allowances}) != len(allowances):
+            raise ValueError("entry endpoint liveness allowance IDs must be unique")
+        step_scopes: set[int] = set()
+        owner_scopes: set[CfgBlockRef] = set()
+        edge_scopes: set[tuple[CfgBlockRef, CfgBlockRef]] = set()
+        for allowance in allowances:
+            allowance.__post_init__()
+            owner = allowance.entry_predecessor_owner_refs[0]
+            edge = (
+                allowance.dispatcher_old_target_ref,
+                allowance.replacement_endpoint_ref,
+            )
+            if (
+                allowance.patch_step_index in step_scopes
+                or owner in owner_scopes
+                or edge in edge_scopes
+            ):
+                raise ValueError("entry endpoint liveness allowances overlap a redirect scope")
+            step_scopes.add(allowance.patch_step_index)
+            owner_scopes.add(owner)
+            edge_scopes.add(edge)
+        object.__setattr__(self, "entry_endpoint_liveness_allowances", allowances)
         if self.corridor_coverage_forecast is not None:
             if type(self.corridor_coverage_forecast) not in (CorridorCoverageForecast, DefaultGapInfeasibilityForecast):
                 raise TypeError("corridor_coverage_forecast must be a closed corridor forecast or None")
@@ -4342,8 +4824,23 @@ class ProposedUnflattenContract:
                         continue
                     if witness is None:
                         raise ValueError("proposal subject reference is absent from source catalog")
-                    if anchor is not None and witness.anchor_ea != anchor:
-                        raise ValueError("proposal subject anchor disagrees with source catalog")
+                    if anchor is not None:
+                        if (
+                            type(claim) is EquivalentSemanticRouteClaim
+                            and type(ref) is NativeBlockRef
+                        ):
+                            # Canonical route claims retain proof-owned
+                            # semantic anchors.  The catalog anchor is a
+                            # structural block-start coordinate and can
+                            # precede the first exact instruction after MBA
+                            # partitioning; only the stable identity range is
+                            # authoritative for these route endpoints.
+                            if not ref.identity.native_ranges.contains(anchor):
+                                raise ValueError(
+                                    "proposal route anchor is outside source identity"
+                                )
+                        elif witness.anchor_ea != anchor:
+                            raise ValueError("proposal subject anchor disagrees with source catalog")
             if type(claim) is ExactInfeasibleEffectClaim:
                 exact_sites = (
                     (claim.source_subject.block_ref, claim.source_write_ea),
@@ -5198,6 +5695,10 @@ class SemanticGraphInventory:
     entry_serial: int
     source_subject_ids: tuple[str, ...]
     function_ea: int
+    observed_route_topology_occurrences: tuple[ObservedRouteTopologyOccurrence, ...] = ()
+    observed_lowered_conditional_topology_occurrences: tuple[
+        ObservedLoweredConditionalTopologyOccurrence, ...
+    ] = ()
 
     @property
     def serial_by_ref(self) -> dict[CfgBlockRef, int]:
@@ -5208,6 +5709,35 @@ class SemanticGraphInventory:
             for block in self.blocks
             if block.block_ref is not None
         }
+
+    @property
+    def physical_entry_reachable_serials(self) -> tuple[int, ...]:
+        """Return the raw CFG successor closure rooted at ``entry_serial``.
+
+        ``reachable_serials`` intentionally also includes typed semantic-site
+        roots, so effects and route endpoints behind an indirect dispatcher
+        remain available to the authority inventory.  Delivery obligations,
+        however, must not mistake that evidence-model closure for a physical
+        path from the source entry.
+        """
+
+        if not self.blocks:
+            return ()
+        blocks_by_serial = {block.serial: block for block in self.blocks}
+        reachable: set[int] = set()
+        pending = [self.entry_serial]
+        while pending:
+            serial = pending.pop()
+            if serial in reachable:
+                continue
+            block = blocks_by_serial.get(serial)
+            if block is None:
+                raise ValueError(
+                    "physical entry successor is absent from inventory blocks"
+                )
+            reachable.add(serial)
+            pending.extend(reversed(block.successor_serials))
+        return tuple(sorted(reachable))
 
     @property
     def recognized_terminal_serials(self) -> frozenset[int]:
@@ -5230,6 +5760,51 @@ class SemanticGraphInventory:
     def __post_init__(self) -> None:
         if type(self.phase) is not UnflattenAuthorityPhase:
             raise TypeError("phase must be UnflattenAuthorityPhase")
+        occurrences = self.observed_route_topology_occurrences
+        if type(occurrences) is not tuple or any(
+            type(item) is not ObservedRouteTopologyOccurrence
+            for item in occurrences
+        ):
+            raise TypeError(
+                "observed_route_topology_occurrences must be an exact tuple",
+            )
+        if occurrences and self.phase is not UnflattenAuthorityPhase.OBSERVED_POST_APPLY:
+            raise ValueError(
+                "observed route topology occurrences require observed phase",
+            )
+        if tuple(item.occurrence_id for item in occurrences) != tuple(
+            sorted(item.occurrence_id for item in occurrences)
+        ) or len({item.occurrence_id for item in occurrences}) != len(occurrences):
+            raise ValueError("observed route topology occurrences must be canonical")
+        for occurrence in occurrences:
+            occurrence.__post_init__()
+        conditional_occurrences = (
+            self.observed_lowered_conditional_topology_occurrences
+        )
+        if type(conditional_occurrences) is not tuple or any(
+            type(item) is not ObservedLoweredConditionalTopologyOccurrence
+            for item in conditional_occurrences
+        ):
+            raise TypeError(
+                "observed_lowered_conditional_topology_occurrences must be an exact tuple",
+            )
+        if (
+            conditional_occurrences
+            and self.phase is not UnflattenAuthorityPhase.OBSERVED_POST_APPLY
+        ):
+            raise ValueError(
+                "observed lowered conditional occurrences require observed phase",
+            )
+        if tuple(item.occurrence_id for item in conditional_occurrences) != tuple(
+            sorted(item.occurrence_id for item in conditional_occurrences)
+        ) or len({item.occurrence_id for item in conditional_occurrences}) != len(
+            conditional_occurrences
+        ):
+            raise ValueError(
+                "observed lowered conditional occurrences must be canonical",
+            )
+        for occurrence in conditional_occurrences:
+            occurrence.__post_init__()
         if type(self.graph_fingerprint) is not str:
             raise TypeError("graph_fingerprint must be an exact string")
         _id(self.graph_fingerprint, "graph_fingerprint")
@@ -5531,12 +6106,75 @@ class SemanticGraphInventory:
                 block = blocks.get(binding.serial)
                 if block is None:
                     raise ValueError("unique binding serial is absent from blocks")
+                route_endpoint_binding = (
+                    binding.role in {
+                        SemanticSubjectRole.SEMANTIC_ROUTE_SOURCE,
+                        SemanticSubjectRole.SEMANTIC_ROUTE_DESTINATION,
+                    }
+                    and type(binding.block_ref) is NativeBlockRef
+                    and binding.anchor_ea is not None
+                    and binding.block_ref.identity.native_ranges.contains(
+                        binding.anchor_ea,
+                    )
+                )
                 if (
                     binding.block_ref != block.block_ref
-                    or binding.anchor_ea != block.anchor_ea
                     or binding.native_instruction_eas != block.native_instruction_eas
+                    or (
+                        not route_endpoint_binding
+                        and binding.anchor_ea != block.anchor_ea
+                    )
                 ):
                     raise ValueError("unique binding does not match its block observation")
+                occurrence = binding.observed_logical_occurrence
+                if occurrence is not None:
+                    if not _is_exact_logical_function_exit_row(block):
+                        raise ValueError(
+                            "observed logical occurrence does not bind an exact exit row"
+                        )
+                    predecessor_refs = tuple(
+                        blocks[serial].block_ref
+                        for serial in block.predecessor_serials
+                    )
+                    if (
+                        any(ref is None for ref in predecessor_refs)
+                        or set(predecessor_refs) != set(occurrence.predecessor_refs)
+                    ):
+                        raise ValueError(
+                            "observed logical occurrence predecessor identity drifted"
+                        )
+                    reverse_predecessors = {
+                        row.serial
+                        for row in self.blocks
+                        if block.serial in row.successor_serials
+                    }
+                    if set(block.predecessor_serials) != reverse_predecessors:
+                        raise ValueError(
+                            "observed logical occurrence predecessor topology is incomplete"
+                        )
+                    owner_serial = serial_by_ref.get(occurrence.owner_ref)
+                    owner = blocks.get(owner_serial)
+                    if (
+                        owner is None
+                        or owner.block_kind is not BlockKind.ONE_WAY
+                        or owner.successor_serials != (block.serial,)
+                        or not owner.instruction_observations
+                    ):
+                        raise ValueError(
+                            "observed logical occurrence plan owner is not an exact GOTO"
+                        )
+                    tail = owner.instruction_observations[-1]
+                    if (
+                        tail.instruction_kind is not InsnKind.GOTO
+                        or tail.control_transfer_kind
+                        is not ControlTransferKind.GOTO
+                        or tail.is_call
+                        or tail.call_kind is not None
+                        or tail.predicate_observation is not None
+                    ):
+                        raise ValueError(
+                            "observed logical occurrence owner tail is not an exact GOTO"
+                        )
         for binding in self.bindings:
             if binding.subject.role in (
                 SemanticSubjectRole.EFFECT_SITE,
@@ -5754,6 +6392,8 @@ class SemanticGraphInventory:
             self.subjects, self.bindings, self.effects, self.terminals, self.topology,
             self.reachable_serials,
             self.entry_serial, self.source_subject_ids, self.function_ea,
+            self.observed_route_topology_occurrences,
+            self.observed_lowered_conditional_topology_occurrences,
         )
         if self.inventory_digest != expected:
             raise ValueError("inventory_digest does not match inventory content")
@@ -6988,6 +7628,7 @@ class PreparedUnflattenAuthority:
     projected_loss_ledger: SemanticLossLedger
     source_inputs: DerivedUnflattenPreparationInputs | None = None
     preparation_attempt_id: TransactionAttemptId | None = None
+    entry_endpoint_liveness_receipts: tuple[BoundEntryEndpointLivenessAllowance, ...] = ()
 
     @property
     def attempt_id(self) -> TransactionAttemptId | None:
@@ -7036,6 +7677,37 @@ class PreparedUnflattenAuthority:
             raise ValueError("prepared source inventory must be producer forecast")
         if self.source_inputs is not None and type(self.source_inputs) is not DerivedUnflattenPreparationInputs:
             raise TypeError("source_inputs must be DerivedUnflattenPreparationInputs or None")
+        receipts = _tuple(self.entry_endpoint_liveness_receipts, "entry_endpoint_liveness_receipts")
+        if any(type(item) is not BoundEntryEndpointLivenessAllowance for item in receipts):
+            raise TypeError("entry endpoint liveness receipts must be bound allowances")
+        if {item.allowance for item in receipts} != set(self.proposal.entry_endpoint_liveness_allowances):
+            raise ValueError("prepared entry liveness receipts do not exactly cover proposal allowances")
+        if len({item.binding_id for item in receipts}) != len(receipts):
+            raise ValueError("prepared entry liveness receipt IDs must be unique")
+        if tuple(item.binding_id for item in receipts) != tuple(
+            sorted(item.binding_id for item in receipts)
+        ):
+            raise ValueError("prepared entry liveness receipts must be canonical")
+        route_proof_ids = {
+            proof.proof_id for proof in self.proposal.route_evidence.route_proofs
+        }
+        for receipt in receipts:
+            if receipt.route_proof_id not in route_proof_ids:
+                raise ValueError("prepared entry liveness receipt names a foreign route proof")
+            if (
+                receipt.source_fingerprint != self.source_fingerprint
+                or receipt.projected_fingerprint != self.projected_fingerprint
+                or receipt.source_generation != self.source_generation
+                or receipt.projected_generation != self.projected_generation
+                or receipt.source_inventory_digest != self.source_inventory.inventory_digest
+            ):
+                raise ValueError("prepared entry liveness receipt coordinates drifted")
+            if self.source_inputs is not None and (
+                receipt.projected_inventory_digest
+                != self.source_inputs.candidate_inventory.inventory_digest
+            ):
+                raise ValueError("prepared entry liveness receipt projected inventory drifted")
+        object.__setattr__(self, "entry_endpoint_liveness_receipts", receipts)
         if self.source_inputs is not None:
             if self.source_route_authority is not self.source_inputs.source_route_authority:
                 raise ValueError("prepared source route authority must be the exact input object")
@@ -7243,6 +7915,7 @@ class BoundUnflattenAuthority:
     live_maturity: MaturityEnvelope
     live_bindings: tuple[tuple[CfgBlockRef, int], ...]
     patch_binding: BoundPatchPlan
+    entry_endpoint_liveness_receipts: tuple[BoundEntryEndpointLivenessAllowance, ...] = ()
 
     def __post_init__(self) -> None:
         _id(self.binding_id, "binding_id")
@@ -7280,6 +7953,8 @@ class BoundUnflattenAuthority:
             raise ValueError("patch binding session/generation does not match authority")
         if self.patch_binding.maturity is not self.live_maturity:
             raise ValueError("patch binding maturity does not match authority")
+        if self.entry_endpoint_liveness_receipts != self.prepared.entry_endpoint_liveness_receipts:
+            raise ValueError("bound entry liveness receipts differ from prepared authority")
         if self.binding_id != bound_unflatten_binding_id(
             self.prepared, self.patch_binding
         ):

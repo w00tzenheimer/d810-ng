@@ -39,7 +39,12 @@ from d810.analyses.control_flow.minimal_state_recovery import (
     CandidatePrefixAlternateCorridorProof,
 )
 from d810.analyses.control_flow.route_comparison import current_u32_route_comparison
-from d810.ir.block_identity import StableBlockIdentity
+from d810.analyses.control_flow.condition_chain_model import ConditionChainRouteEvidence
+from d810.analyses.control_flow.semantic_route_evidence import SemanticRouteProof
+from d810.ir.block_identity import (
+    StableBlockIdentity,
+    stable_block_identity_semantic_anchor,
+)
 from d810.ir.flowgraph import InsnKind
 
 from .model import (
@@ -57,6 +62,9 @@ from .model import (
     HandlerSubjectLocator,
     LogicalFunctionExitSubjectLocator,
     ProposedUnflattenContract,
+    EntryEndpointLivenessForecast,
+    EntryEndpointLivenessAllowance,
+    EntryEndpointLivenessReason,
     RetirementCandidateCatalog,
     RetirementPlanMember,
     DispatcherRetirementCandidate,
@@ -119,16 +127,13 @@ def _native_route_destination_subject_for_proof_destination(
         ):
             continue
         witness = witnesses.get(locator.block_ref)
-        if witness is None or witness.anchor_ea != locator.anchor_ea:
+        if (
+            witness is None
+            or type(locator.block_ref) is not NativeBlockRef
+            or not locator.block_ref.identity.native_ranges.contains(locator.anchor_ea)
+        ):
             continue
-        subject_identity = (
-            locator.block_ref.identity
-            if type(locator.block_ref) is NativeBlockRef
-            else StableBlockIdentity.from_instruction_eas(
-                witness.native_instruction_eas,
-                native_key=catalog.native_key,
-            )
-        )
+        subject_identity = locator.block_ref.identity
         if subject_identity != target_identity:
             continue
         selected.append(subject)
@@ -1006,10 +1011,21 @@ def _validated_terminal_route_claim(
 
     def identity_for(subject: SemanticSubjectRef, label: str) -> StableBlockIdentity:
         witness = catalog.get(subject.block_ref)
-        if witness is None or witness.anchor_ea != subject.anchor_ea:
+        if witness is None:
             raise ValueError(f"terminal route {label} subject is foreign to source catalog")
         if type(subject.block_ref) is NativeBlockRef:
+            if (
+                subject.anchor_ea is None
+                or not subject.block_ref.identity.native_ranges.contains(
+                    int(subject.anchor_ea)
+                )
+            ):
+                raise ValueError(
+                    f"terminal route {label} subject is foreign to source catalog"
+                )
             return subject.block_ref.identity
+        if witness.anchor_ea != subject.anchor_ea:
+            raise ValueError(f"terminal route {label} subject is foreign to source catalog")
         if not witness.native_instruction_eas:
             raise ValueError(f"terminal route {label} subject has no native identity")
         return StableBlockIdentity.from_instruction_eas(
@@ -1205,7 +1221,17 @@ def claims_from_dispatcher_removal_forecast(
             ref, ea = resolve(anchor, label)
             handler_input = handler_inputs.get(ref)
             if handler_input is None or int(handler_input.anchor_ea) != ea:
-                raise ValueError(f"detached {label} is not an authoritative source handler")
+                known = tuple(
+                    f"blk{int(serial)}@0x{int(item.anchor_ea):x}"
+                    for serial, candidate_ref in sorted(refs_by_serial.items())
+                    for item in (handler_inputs.get(candidate_ref),)
+                    if item is not None
+                )
+                raise ValueError(
+                    f"detached {label} is not an authoritative source handler "
+                    f"(candidate=blk{int(anchor.serial)}@0x{int(anchor.ea):x}, "
+                    f"known={known})"
+                )
             return _subject_factory(
                 SemanticSubjectRef, kind=SemanticSubjectKind.HANDLER,
                 role=SemanticSubjectRole.AUTHORITATIVE_HANDLER,
@@ -1221,10 +1247,26 @@ def claims_from_dispatcher_removal_forecast(
                 block_ref=ref, anchor_ea=ea, locator=BlockSubjectLocator(ref, ea),
             )
 
+        def comparison_subject(anchor):
+            ref, ea = resolve(anchor, "detached comparison region")
+            if ref not in plan_refs:
+                raise ValueError(
+                    "detached comparison region is outside dispatcher membership"
+                )
+            return _subject_factory(
+                SemanticSubjectRef, kind=SemanticSubjectKind.BLOCK,
+                role=SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE,
+                block_ref=ref, anchor_ea=ea,
+                locator=BlockSubjectLocator(ref, ea),
+            )
+
         dead = tuple(handler_subject(anchor, "dead handler") for anchor in detached.dead_handlers)
         retained = tuple(handler_subject(anchor, "retained handler") for anchor in detached.retained_handlers)
         component = tuple(component_subject(anchor) for anchor in detached.component)
-        if not dead or not retained or not component:
+        comparison = tuple(
+            comparison_subject(anchor) for anchor in detached.comparison_region
+        )
+        if not dead or not retained or not component or not comparison:
             raise ValueError("detached component content is incomplete")
         if len({item.block_ref for item in dead}) != len(dead) or len({item.block_ref for item in retained}) != len(retained) or len({item.block_ref for item in component}) != len(component):
             raise ValueError("detached component anchors are duplicate")
@@ -1243,6 +1285,7 @@ def claims_from_dispatcher_removal_forecast(
             kind=UnflattenClaimKind.DETACHED_DEAD_HANDLER_COMPONENT,
             dispatcher_subject=dispatcher, dead_handler_subjects=dead,
             retained_handler_subjects=retained, component_subjects=component,
+            comparison_region_subjects=comparison,
             source_generation=proposal.source_identity_catalog.generation,
         )
 
@@ -1418,8 +1461,7 @@ def _derive_default_gap_infeasibility_exclusions(
     block_refs_by_serial,
     selected_route_proof_ids,
     corridor_coverage,
-    condition_chain_dag,
-    default_entry_serial,
+    condition_chain_route_evidence,
 ) -> tuple[DefaultGapInfeasibilityExclusion, ...]:
     """Propose exact default-loop exclusions from closed producer evidence.
 
@@ -1432,9 +1474,15 @@ def _derive_default_gap_infeasibility_exclusions(
         or type(corridor_coverage) is not DispatcherCorridorCoverage
         or not corridor_coverage.enumeration_complete
         or corridor_coverage.dispatcher is None
-        or condition_chain_dag is None
-        or int(getattr(condition_chain_dag, "width", 0)) != 32
-        or not getattr(condition_chain_dag, "nodes", None)
+        or type(condition_chain_route_evidence) is not ConditionChainRouteEvidence
+        or condition_chain_route_evidence.state_identity != proposal.plan_inputs.state_identity
+    ):
+        return ()
+    condition_chain_dag = condition_chain_route_evidence.decision_dag
+    default_entry_serial = condition_chain_route_evidence.default_target_serial
+    if (
+        int(condition_chain_dag.width) != 32
+        or not condition_chain_dag.nodes
         or type(default_entry_serial) is not int
     ):
         return ()
@@ -1604,6 +1652,65 @@ def _derive_default_gap_infeasibility_exclusions(
     return tuple(sorted(rows, key=lambda item: item.exclusion_id))
 
 
+def _entry_liveness_route_proof_rejection_detail(
+    *,
+    replacement_witness,
+    write_witness,
+    replacement_ref,
+    forecast: EntryEndpointLivenessForecast,
+    selected_ids: set[str],
+    proof: SemanticRouteProof | None,
+    state_identity,
+    normalized_state: int,
+) -> str | None:
+    """Return the first fail-closed reason for a forecast/proof mismatch."""
+
+    if replacement_witness is None:
+        return "replacement_source_witness"
+    if write_witness is None:
+        return "state_write_source_witness"
+    if type(replacement_ref) is not NativeBlockRef:
+        return "replacement_not_native"
+    if forecast.route_proof_id not in selected_ids:
+        return "proof_not_selected"
+    if proof is None:
+        return "proof_missing"
+    if proof.state_write is None:
+        return "state_write_missing"
+    if (
+        forecast.redirect_owner_ref != forecast.state_write_source_ref
+        and (
+            type(forecast.redirect_owner_ref) is not NativeBlockRef
+            or proof.source_owner_identity not in {
+                None, forecast.redirect_owner_ref.identity,
+            }
+        )
+    ):
+        return "redirect_owner_identity"
+    if proof.state_write.identity != forecast.state_write_source_ref.identity:
+        return "state_write_identity"
+    if int(proof.state_write.instruction_ea) != int(
+        forecast.state_write_instruction_ea
+    ):
+        return "state_write_instruction"
+    if proof.state_write.state_variable != state_identity:
+        return "state_identity"
+    if (int(proof.state_write.state_constant) & 0xFFFFFFFF) != normalized_state:
+        return "state_constant"
+    if sum(
+        1
+        for destination in proof.destinations
+        if (
+            (int(destination.state_constant) & 0xFFFFFFFF) == normalized_state
+            and destination.target_identity == replacement_ref.identity
+            and destination.target_anchor_ea
+            == stable_block_identity_semantic_anchor(replacement_ref.identity)
+        )
+    ) != 1:
+        return "destination"
+    return None
+
+
 def attach_typed_proposal(
     plan: PatchPlan,
     *,
@@ -1619,8 +1726,8 @@ def attach_typed_proposal(
     use_def_witness,
     corridor_coverage=None,
     dispatcher_removal_forecast=None,
-    condition_chain_dag=None,
-    default_entry_serial=None,
+    condition_chain_route_evidence: ConditionChainRouteEvidence | None = None,
+    entry_endpoint_liveness_forecasts: tuple[EntryEndpointLivenessForecast, ...] = (),
 ) -> PatchPlan:
     """Attach one typed proposal from producer-owned typed evidence."""
 
@@ -1628,6 +1735,11 @@ def attach_typed_proposal(
         raise TypeError("typed proposal attachment requires a PatchPlan")
     if plan.unflatten_proposal is not None:
         raise ValueError("typed proposal attachment may run only once")
+    # The selected proof collection is used by proposal construction, entry
+    # liveness binding, and optional coverage derivation.  Freeze a one-shot
+    # producer iterable before its first consumer so every phase sees the same
+    # canonical occurrence sequence.
+    selected_route_proof_ids = tuple(selected_route_proof_ids or ())
     source_refs_by_serial = dict(block_refs_by_serial)
     proposal = producer_api.build_proposal(
         plan_id=plan.plan_id,
@@ -1643,6 +1755,101 @@ def attach_typed_proposal(
         state_identity=state_identity,
         use_def_witness=use_def_witness,
     )
+    if entry_endpoint_liveness_forecasts:
+        if type(entry_endpoint_liveness_forecasts) is not tuple or any(
+            type(item) is not EntryEndpointLivenessForecast
+            for item in entry_endpoint_liveness_forecasts
+        ):
+            raise TypeError("entry liveness forecasts must be closed records")
+        coordinates = {serial: ref for ref, serial in plan.source_coordinates}
+        # A patch plan names only mutation coordinates.  The upstream state
+        # write and its delivery/exit corridor are immutable source evidence,
+        # and deliberately need not be patch targets themselves.
+        patch_refs = set(coordinates.values())
+        source_witnesses = {
+            witness.block_ref: witness
+            for witness in proposal.source_identity_catalog.blocks
+        }
+        allowances: list[EntryEndpointLivenessAllowance] = []
+        selected_ids = set(selected_route_proof_ids or ())
+        for forecast in entry_endpoint_liveness_forecasts:
+            forecast.__post_init__()
+            owner = forecast.redirect_owner_ref
+            old = forecast.dispatcher_ref
+            new = forecast.replacement_ref
+            exits = forecast.exit_path_refs
+            if (
+                owner != forecast.state_write_source_ref
+                and not forecast.delivery_path_refs
+            ):
+                raise ValueError(
+                    "entry liveness distinct owner requires a delivery corridor"
+                )
+            if (
+                owner not in patch_refs
+                or old not in patch_refs
+                or new not in patch_refs
+            ):
+                raise ValueError("entry liveness forecast patch coordinates are foreign")
+            if (
+                forecast.state_write_source_ref not in source_witnesses
+                or any(ref not in source_witnesses for ref in exits)
+                or any(ref not in source_witnesses for ref in forecast.delivery_path_refs)
+            ):
+                raise ValueError("entry liveness forecast immutable source evidence is foreign")
+            descriptors = tuple(
+                descriptor for descriptor in canonical_patch_step_descriptors(plan)
+                if descriptor.owner_refs == (owner,)
+                and descriptor.step_type in {"PatchRedirectGoto", "PatchRedirectBranch"}
+                and descriptor.route_refs[:3] == (owner, old, new)
+            )
+            if len(descriptors) != 1:
+                raise ValueError("entry liveness carrier has no exact redirect descriptor")
+            descriptor = descriptors[0]
+            replacement_witness = source_witnesses.get(new)
+            write_witness = source_witnesses.get(forecast.state_write_source_ref)
+            proof_by_id = {
+                proof.proof_id: proof for proof in proposal.route_evidence.route_proofs
+            }
+            proof = proof_by_id.get(forecast.route_proof_id)
+            state = int(forecast.normalized_state) & 0xFFFFFFFF
+            rejection_detail = _entry_liveness_route_proof_rejection_detail(
+                replacement_witness=replacement_witness,
+                write_witness=write_witness,
+                replacement_ref=new,
+                forecast=forecast,
+                selected_ids=selected_ids,
+                proof=proof,
+                state_identity=proposal.plan_inputs.state_identity,
+                normalized_state=state,
+            )
+            if rejection_detail is not None:
+                raise ValueError(
+                    "entry liveness forecast does not name its selected canonical "
+                    f"route proof: {rejection_detail}"
+                )
+            route_proof_id = forecast.route_proof_id
+            allowance_id = authority_id((
+                "unflatten.entry-endpoint-liveness-allowance.v1",
+                EntryEndpointLivenessReason.NO_PROVIDER_EXIT_PATH_LIVE_SAFE_ENDPOINT,
+                state, route_proof_id, (owner,), old, new, tuple(exits),
+                descriptor.step_index, descriptor.step_digest,
+                forecast.state_write_source_ref, forecast.state_write_instruction_ea,
+                forecast.delivery_path_refs, forecast.delivery_path_edges,
+                bool(forecast.cut_exit_path_uses),
+            ))
+            allowances.append(EntryEndpointLivenessAllowance(
+                allowance_id, EntryEndpointLivenessReason.NO_PROVIDER_EXIT_PATH_LIVE_SAFE_ENDPOINT,
+                state, route_proof_id, (owner,), old, new, tuple(exits),
+                descriptor.step_index, descriptor.step_digest,
+                forecast.state_write_source_ref, forecast.state_write_instruction_ea,
+                forecast.delivery_path_refs, forecast.delivery_path_edges,
+                bool(forecast.cut_exit_path_uses),
+            ))
+        proposal = replace(
+            proposal,
+            entry_endpoint_liveness_allowances=tuple(allowances),
+        )
     producer_api._catalog_ref_by_serial(
         source, proposal.source_identity_catalog, source_refs_by_serial,
     )
@@ -1669,8 +1876,7 @@ def attach_typed_proposal(
             block_refs_by_serial=source_refs_by_serial,
             selected_route_proof_ids=selected_route_proof_ids,
             corridor_coverage=dispatcher_removal_forecast,
-            condition_chain_dag=condition_chain_dag,
-            default_entry_serial=default_entry_serial,
+            condition_chain_route_evidence=condition_chain_route_evidence,
         )
         coverage_forecast = corridor_coverage_forecast_from_analysis(
             dispatcher_removal_forecast,

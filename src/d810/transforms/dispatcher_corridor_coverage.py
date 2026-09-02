@@ -202,6 +202,7 @@ class DetachedDeadHandlerComponentAnalysis:
     dead_handlers: tuple[DispatcherBlockAnchor, ...]
     retained_handlers: tuple[DispatcherBlockAnchor, ...]
     component: tuple[DispatcherBlockAnchor, ...]
+    comparison_region: tuple[DispatcherBlockAnchor, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -1197,6 +1198,7 @@ def build_detached_dead_handler_component_analysis(
         dead_handlers=_anchors_for_serials(flow_graph, dead_handlers),
         retained_handlers=_anchors_for_serials(flow_graph, retained_handlers),
         component=_anchors_for_serials(flow_graph, frozenset(component)),
+        comparison_region=_anchors_for_serials(flow_graph, comparison_region),
     )
 
 def _resolved_goto_redirects(

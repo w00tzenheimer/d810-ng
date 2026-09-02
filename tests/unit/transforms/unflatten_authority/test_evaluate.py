@@ -19,6 +19,8 @@ from d810.analyses.control_flow.semantic_route_evidence import (
     assess_canonical_route,
 )
 from d810.ir.maturity import MaturityEnvelope
+from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
+from d810.core.native_preanalysis_key import NativePreanalysisKey
 from d810.transforms.unflatten_authority import model
 from d810.transforms.unflatten_authority import gates
 from d810.transforms.unflatten_authority import views
@@ -34,7 +36,7 @@ from d810.transforms.unflatten_authority.evaluate import derive_corridor_coverag
 from d810.transforms.unflatten_authority.evaluate import evaluate_case
 from d810.transforms.unflatten_authority.evaluate import REQUIRED_DIMENSIONS
 from d810.transforms.patch_binding import BoundPatchPlan, iter_refs
-from d810.transforms.cfg_transaction import LogicalBlockRef, PlanBlockRef
+from d810.transforms.cfg_transaction import LogicalBlockRef, NativeBlockRef, PlanBlockRef
 from d810.transforms.plan import PatchPlan
 from d810.transforms.unflatten_authority.ids import _case_factory, _claim_factory, _evidence_factory, _justification_factory, _subject_factory, authority_id as canonical_authority_id, bound_unflatten_binding_id, canonical_bytes, canonical_decode, content_id, receipt_id, semantic_graph_inventory_digest
 from .helpers import (
@@ -411,6 +413,61 @@ def test_entry_gate_success_cannot_rescue_typed_missing_entry(
     )
 
 
+def _semantic_handler_delivery_rejected_case() -> model.SemanticSafetyCase:
+    """Build the canonical case where discovery exists but delivery does not."""
+    from copy import copy
+    from .test_bind import _rewire_inventory
+
+    entry = _role_subject(model.SemanticSubjectRole.SOURCE_ENTRY, "0")
+    inputs = _complete_inputs(source_subjects=(entry,))
+    # The handler at serial 2 stays in semantic discovery via its typed
+    # handler subject, but the physical entry path 0 -> 1 -> 2 is severed.
+    candidate = _rewire_inventory(
+        inputs.candidate_inventory,
+        {0: (1,), 1: (), 2: ()},
+        generation=inputs.candidate_inventory.generation,
+    )
+    assert candidate.reachable_serials == (0, 1, 2)
+    assert candidate.physical_entry_reachable_serials == (0, 1)
+    receipt = copy(inputs.preparation_receipt)
+    object.__setattr__(receipt, "candidate_inventory_digest", candidate.inventory_digest)
+    object.__setattr__(
+        receipt, "projected_topology_reference_digest", candidate.inventory_digest,
+    )
+    object.__setattr__(receipt, "receipt_id", receipt_id(receipt))
+    case = build_semantic_case(
+        authority_id=authority_id("handler-physical-delivery"),
+        phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        inputs=replace(
+            inputs,
+            candidate_inventory=candidate,
+            projected_topology_reference=candidate,
+            preparation_receipt=receipt,
+        ),
+    )
+    return case
+
+
+def test_semantic_handler_discovery_cannot_satisfy_physical_delivery() -> None:
+    """A handler semantic root still needs a physical source-entry path."""
+    case = _semantic_handler_delivery_rejected_case()
+    handler = next(
+        subject for subject in case.subjects
+        if subject.role is model.SemanticSubjectRole.AUTHORITATIVE_HANDLER
+    )
+    key = model.ObligationKey(
+        handler, model.SafetyDimension.HANDLER_REACHABILITY,
+    )
+    cell = next(cell for cell in case.obligation_index.cells if cell.key == key)
+    assert cell.state is model.ObligationState.VIOLATED
+    assert any(
+        item.conclusion == key
+        and item.rule is model.UnflattenJustificationRule.SUBJECT_UNREACHABLE
+        for item in case.justifications
+    )
+    assert evaluate_case(case).accepted is False
+
+
 def test_equivalent_route_positive_marks_one_stable_subject_route_equivalence() -> None:
     """The real Direct preparation exposes one sealed route equivalence."""
 
@@ -678,6 +735,13 @@ def _role_subject(role: model.SemanticSubjectRole, token: str) -> model.Semantic
     else:
         ref_anchor = {"b0": 0x1000, "b1": 0x1300, "b2": 0x1100}[ref.proxy_token]
     if role is model.SemanticSubjectRole.AUTHORITATIVE_HANDLER:
+        ref = NativeBlockRef(StableBlockIdentity.from_instruction_eas(
+            (ref_anchor,),
+            native_key=NativePreanalysisKey(
+                "authority-handler-role-fixture", "x86", 64, 0,
+                "f" * 64, "p" * 64, "s" * 64,
+            ),
+        ))
         kind, locator, owner, anchor = model.SemanticSubjectKind.HANDLER, model.HandlerSubjectLocator(ref, ref_anchor, (1,)), ref, ref_anchor
     elif role is model.SemanticSubjectRole.TERMINAL_SITE:
         kind, locator, owner, anchor = model.SemanticSubjectKind.TERMINAL, model.TerminalSubjectLocator(ref, ref_anchor, model.TerminalKind.RETURN, ref_anchor + 4), ref, ref_anchor
@@ -954,6 +1018,9 @@ def _make_binding_serials_injective(
     ) + 1
     normalized = []
     for binding in bindings:
+        if type(binding.subject.locator) is model.LogicalFunctionExitSubjectLocator:
+            normalized.append(binding)
+            continue
         if (
             binding.status is not model.SubjectBindingStatus.UNIQUE
             or binding.block_ref is None
@@ -993,7 +1060,15 @@ def _complete_inputs(*, source_subjects: tuple[model.SemanticSubjectRef, ...], c
             ) if subject.role is model.SemanticSubjectRole.NON_STATE_VALUE_FLOW else subject
             for subject in subjects
         )
-    source_subjects = normalize_value_flow(source_subjects)
+    # Caller token fixtures may still use logical placeholders.  Catalogue
+    # membership is instead derived only from the proposal's exact identities.
+    source_subjects = normalize_value_flow(tuple(
+        subject for subject in source_subjects
+        if subject.role not in {
+            model.SemanticSubjectRole.SOURCE_CATALOG_BLOCK,
+            model.SemanticSubjectRole.AUTHORITATIVE_HANDLER,
+        }
+    ))
     # The source catalogue is a closed transaction input, not an inferred
     # evaluator convenience.  Every ordinary fixture therefore starts with
     # exactly one source-catalog subject for every proposal catalogue row;
@@ -1060,11 +1135,24 @@ def _complete_inputs(*, source_subjects: tuple[model.SemanticSubjectRef, ...], c
         ))
     # This fixture is deliberately proposal-complete: every plan-input and
     # producer-claim subject is explicit before bindings are built.
+    handler_input = proposal.plan_inputs.authoritative_handlers[0]
+    required_handler_subject = _subject_factory(
+        model.SemanticSubjectRef,
+        kind=model.SemanticSubjectKind.HANDLER,
+        role=model.SemanticSubjectRole.AUTHORITATIVE_HANDLER,
+        block_ref=handler_input.block_ref,
+        anchor_ea=handler_input.anchor_ea,
+        locator=model.HandlerSubjectLocator(
+            handler_input.block_ref,
+            handler_input.anchor_ea,
+            handler_input.normalized_states,
+        ),
+    )
     required_subjects = (
         _role_subject(model.SemanticSubjectRole.DISPATCHER_ENTRY, "0"),
         _role_subject(model.SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE, "0"),
         _role_subject(model.SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE, "1"),
-        _role_subject(model.SemanticSubjectRole.AUTHORITATIVE_HANDLER, "2"),
+        required_handler_subject,
         *(subject for claim in claims for subject in (
             (claim.retired_route_subject, claim.replacement_route_subject,
              claim.source_subject, *claim.destination_subjects)
@@ -1081,9 +1169,17 @@ def _complete_inputs(*, source_subjects: tuple[model.SemanticSubjectRef, ...], c
     )
     by_id = {subject.subject_id: subject for subject in (*source_subjects, *required_subjects)}
     source_subjects = tuple(by_id.values())
-    candidate_subjects = source_subjects if candidate_subjects is None else tuple({
+    candidate_subjects = source_subjects if candidate_subjects is None else tuple(
+        subject for subject in candidate_subjects
+        if subject.role is not model.SemanticSubjectRole.AUTHORITATIVE_HANDLER
+    )
+    candidate_subjects = tuple({
         item.subject_id: item
-        for item in (*candidate_subjects, *source_catalog_subjects)
+        for item in (
+            *candidate_subjects,
+            *source_catalog_subjects,
+            required_handler_subject,
+        )
     }.values())
     candidate_subjects = normalize_value_flow(candidate_subjects)
     candidate_terminal_sites = {
@@ -1301,6 +1397,41 @@ def _complete_inputs(*, source_subjects: tuple[model.SemanticSubjectRef, ...], c
             if binding.status is model.SubjectBindingStatus.UNIQUE
             and binding.block_ref is not None
         }
+        entry_subjects = tuple(
+            subject
+            for subject in (subjects if source_partition is None else source_partition)
+            if subject.role is model.SemanticSubjectRole.SOURCE_ENTRY
+        )
+        if not entry_subjects:
+            # Empty/claim-only adversarial inputs are built first so the
+            # evaluator, rather than this fixture, rejects their authority.
+            entry_serial = min(
+                (int(binding.serial) for binding in unique.values()
+                 if binding.serial is not None),
+                default=0,
+            )
+            entry_subjects = ()
+        elif len(entry_subjects) != 1 or entry_subjects[0].block_ref is None:
+            raise ValueError("fixture inventory requires one source entry")
+        else:
+            entry_serials = {
+                int(binding.serial)
+                for binding in bindings
+                if (
+                    binding.status is model.SubjectBindingStatus.UNIQUE
+                    and binding.block_ref == entry_subjects[0].block_ref
+                    and binding.serial is not None
+                )
+            }
+            if not entry_serials and not unique:
+                # A deliberately all-missing projected inventory has no physical
+                # graph rows.  Its entry is still the source partition's exact
+                # identity, but the empty inventory uses the model's sentinel.
+                entry_serial = 0
+            elif len(entry_serials) != 1:
+                raise ValueError("fixture inventory requires one physical source entry")
+            else:
+                entry_serial = next(iter(entry_serials))
         effects_by_owner = {}
         terminals_by_owner = {}
         for subject in subjects if site_subjects is None else site_subjects:
@@ -1368,6 +1499,20 @@ def _complete_inputs(*, source_subjects: tuple[model.SemanticSubjectRef, ...], c
             for left, right in sorted(forecast_edges):
                 successor_by_serial[left] = (*successor_by_serial[left], right)
                 predecessor_by_serial[right].append(left)
+            # Forecast paths describe the dispatcher corridor, while the
+            # inventory additionally records the physical source entry.  When
+            # the fixture gives that entry a distinct predecessor block,
+            # connect it to the unique corridor root instead of leaving a
+            # valid source catalogue outside its own reachability closure.
+            if not successor_by_serial[entry_serial]:
+                corridor_roots = tuple(
+                    serial for serial in serials
+                    if serial != entry_serial and not predecessor_by_serial[serial]
+                )
+                if len(corridor_roots) == 1:
+                    root = corridor_roots[0]
+                    successor_by_serial[entry_serial] = (root,)
+                    predecessor_by_serial[root].append(entry_serial)
         else:
             predecessor_by_serial = {
                 serial: ([serials[index - 1]] if index else [])
@@ -1548,7 +1693,7 @@ def _complete_inputs(*, source_subjects: tuple[model.SemanticSubjectRef, ...], c
             for block in blocks
             if block.block_ref is not None
         }
-        semantic_roots = {blocks[0].serial} if blocks else set()
+        semantic_roots = {entry_serial} if blocks else set()
         semantic_roots.update(
             serial_by_ref[subject.block_ref]
             for subject in subjects
@@ -1586,13 +1731,13 @@ def _complete_inputs(*, source_subjects: tuple[model.SemanticSubjectRef, ...], c
         digest = semantic_graph_inventory_digest(
             phase_value, fingerprint, generation, blocks, subjects, bindings,
             effects, terminals, topology, closure,
-            blocks[0].serial if blocks else 0,
+            entry_serial if blocks else 0,
             tuple(item.subject_id for item in partition), function_ea,
         )
         return model.SemanticGraphInventory(
             phase_value, fingerprint, generation, blocks, subjects, bindings,
             effects, terminals, topology, digest, closure,
-            blocks[0].serial if blocks else 0,
+            entry_serial if blocks else 0,
             tuple(item.subject_id for item in partition),
             function_ea,
         )
@@ -1902,6 +2047,157 @@ def test_value_flow_identity_accepts_bound_physical_owner_anchor_outside_instruc
     )
 
 
+def test_route_identity_consumes_its_complete_binder_row_once() -> None:
+    """A UNIQUE route binding is identity authority; endpoint replay is not."""
+
+    from d810.transforms.unflatten_authority import bind
+    from d810.transforms.unflatten_authority.evaluate import _identity_support
+
+    values = _valid_proposal(model)
+    proposal = model.ProposedUnflattenContract(**values)
+    proof = proposal.route_evidence.route_proofs[0]
+    source_witness = proposal.source_identity_catalog.blocks[0]
+    destination_witness = proposal.source_identity_catalog.blocks[-1]
+    locator = model.RouteSubjectLocator(
+        proof.proof_id,
+        proof.atomic_group_id,
+        source_witness.block_ref,
+        source_witness.anchor_ea,
+        (model.BlockSubjectLocator(
+            destination_witness.block_ref,
+            destination_witness.anchor_ea,
+        ),),
+    )
+    route = _subject_factory(
+        model.SemanticSubjectRef,
+        kind=model.SemanticSubjectKind.ROUTE,
+        role=model.SemanticSubjectRole.SEMANTIC_ROUTE_SOURCE,
+        block_ref=locator.source_ref,
+        anchor_ea=locator.source_anchor_ea,
+        locator=locator,
+    )
+    fingerprint = authority_id("route-binding-single-authority")
+    (binding,) = bind.bind_inventory_subjects(
+        (route,),
+        catalog=proposal.source_identity_catalog,
+        phase=model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY,
+        graph_fingerprint=fingerprint,
+        generation=proposal.source_identity_catalog.generation,
+        serial_by_ref={
+            source_witness.block_ref: 10,
+            destination_witness.block_ref: 11,
+        },
+        effects=(),
+        terminals=(),
+        reachable_serials=(10, 11),
+        native_instruction_eas_by_ref={
+            source_witness.block_ref: source_witness.native_instruction_eas,
+            destination_witness.block_ref: destination_witness.native_instruction_eas,
+        },
+    )
+    assert binding.status is model.SubjectBindingStatus.UNIQUE
+
+    assert _identity_support(
+        route,
+        (route,),
+        (binding,),
+        model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY,
+        fingerprint,
+        proposal.source_identity_catalog.generation,
+    )
+
+
+def test_observed_logical_endpoint_identity_accepts_only_its_minted_move() -> None:
+    """An observed logical exit may move only through its sealed occurrence."""
+
+    from d810.transforms.unflatten_authority import bind
+    from d810.transforms.unflatten_authority.evaluate import _identity_support
+
+    phase = model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY
+    # _complete_inputs fixes observed candidate coordinates to this immutable
+    # fixture generation/fingerprint pair.
+    fingerprint = authority_id("candidate-fp")
+    endpoint = _role_subject(
+        model.SemanticSubjectRole.SEMANTIC_DAG_ENDPOINT,
+        "logical-endpoint-5",
+    )
+    owner = _role_subject(
+        model.SemanticSubjectRole.SEMANTIC_ROUTE_SOURCE, "logical-owner-1",
+    )
+    locator = endpoint.locator
+    assert type(locator) is model.LogicalFunctionExitSubjectLocator
+    occurrence = bind._mint_observed_logical_endpoint_occurrence(
+        logical_ref=locator.block_ref,
+        projected_serial=locator.serial,
+        observed_serial=127,
+        owner_ref=owner.block_ref,
+        predecessor_refs=(owner.block_ref,),
+    )
+    binding = model.PhaseSubjectBinding(
+        subject=endpoint,
+        phase=phase,
+        block_ref=locator.block_ref,
+        graph_fingerprint=fingerprint,
+        generation=4,
+        status=model.SubjectBindingStatus.UNIQUE,
+        serial=127,
+        anchor_ea=None,
+        native_instruction_eas=(),
+        role=endpoint.role,
+        observed_logical_occurrence=occurrence,
+    )
+
+    # This is the exact predicate the observed semantic case uses to set its
+    # IDENTITY_BINDING verdict for the endpoint subject.
+    assert _identity_support(
+        endpoint, (endpoint,), (binding,), phase, fingerprint, 4,
+    )
+
+    # A moved serial cannot appear without a binder-minted receipt.
+    with pytest.raises(ValueError, match="serial movement requires one observed occurrence"):
+        model.PhaseSubjectBinding(
+            subject=endpoint,
+            phase=phase,
+            block_ref=locator.block_ref,
+            graph_fingerprint=fingerprint,
+            generation=4,
+            status=model.SubjectBindingStatus.UNIQUE,
+            serial=127,
+            anchor_ea=None,
+            native_instruction_eas=(),
+            role=endpoint.role,
+        )
+
+    # Matching value content is insufficient: the evaluator must reject a
+    # receipt that was not minted and sealed by the binder.
+    forged = model.ObservedLogicalEndpointOccurrence(
+        logical_ref=locator.block_ref,
+        projected_serial=locator.serial,
+        observed_serial=127,
+        owner_ref=owner.block_ref,
+        predecessor_refs=(owner.block_ref,),
+    )
+    forged_binding = replace(binding, observed_logical_occurrence=forged)
+    assert not _identity_support(
+        endpoint, (endpoint,), (forged_binding,), phase, fingerprint, 4,
+    )
+
+    with pytest.raises(ValueError, match="differs from binding"):
+        model.PhaseSubjectBinding(
+            subject=endpoint,
+            phase=phase,
+            block_ref=locator.block_ref,
+            graph_fingerprint=fingerprint,
+            generation=4,
+            status=model.SubjectBindingStatus.UNIQUE,
+            serial=128,
+            anchor_ea=None,
+            native_instruction_eas=(),
+            role=endpoint.role,
+            observed_logical_occurrence=occurrence,
+        )
+
+
 def test_use_def_audit_evidence_is_evaluator_owned() -> None:
     source_entry = _role_subject(model.SemanticSubjectRole.SOURCE_ENTRY, "audit-injection")
     inputs = _complete_inputs(source_subjects=(source_entry,))
@@ -2005,6 +2301,52 @@ def test_value_flow_owner_resolution_accepts_exact_catalog_physical_root() -> No
     assert _value_flow_owner_subjects(
         (owner,), (owner.block_ref,),
     ) == (owner,)
+
+
+def test_catalog_membership_allows_only_in_range_native_route_subjects() -> None:
+    """Proof-backed route anchors do not relax ordinary catalog subjects."""
+    from d810.transforms.unflatten_authority.evaluate import _source_subject_matches_catalog
+
+    native_key = NativePreanalysisKey(
+        "route-anchor-membership", "x86", 64, 0,
+        "f" * 64, "p" * 64, "s" * 64,
+    )
+    ref = NativeBlockRef(StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x1000, 0x1020),),
+        native_key=native_key,
+        exact_instruction_eas=(0x1004,),
+    ))
+    witness = model.SourceBlockIdentityWitness(ref, 0x1000, (0x1004,))
+    route_subject = _subject_factory(
+        model.SemanticSubjectRef,
+        kind=model.SemanticSubjectKind.BLOCK,
+        role=model.SemanticSubjectRole.SEMANTIC_ROUTE_DESTINATION,
+        block_ref=ref,
+        anchor_ea=0x1010,
+        locator=model.BlockSubjectLocator(ref, 0x1010),
+    )
+    ordinary_subject = _subject_factory(
+        model.SemanticSubjectRef,
+        kind=model.SemanticSubjectKind.BLOCK,
+        role=model.SemanticSubjectRole.SOURCE_ENTRY,
+        block_ref=ref,
+        anchor_ea=0x1010,
+        locator=model.BlockSubjectLocator(ref, 0x1010),
+    )
+
+    assert _source_subject_matches_catalog(route_subject, witness)
+    assert not _source_subject_matches_catalog(ordinary_subject, witness)
+    outside_route_subject = _subject_factory(
+        model.SemanticSubjectRef,
+        kind=model.SemanticSubjectKind.BLOCK,
+        role=model.SemanticSubjectRole.SEMANTIC_ROUTE_DESTINATION,
+        block_ref=ref,
+        anchor_ea=0x1020,
+        locator=model.BlockSubjectLocator(ref, 0x1020),
+    )
+    assert not _source_subject_matches_catalog(
+        outside_route_subject, witness,
+    )
 
 
 def test_value_flow_identity_is_conjunctive_over_every_owner_binding() -> None:
@@ -2724,13 +3066,17 @@ def test_role_inventory_is_exact_and_has_no_unrelated_cells() -> None:
         _role_subject(
             role,
             "2" if role is model.SemanticSubjectRole.AUTHORITATIVE_HANDLER
+            else "99" if role in {
+                model.SemanticSubjectRole.SOURCE_LOGICAL_EXIT,
+                model.SemanticSubjectRole.SEMANTIC_DAG_ENDPOINT,
+            }
             else "0" if role in {
                 model.SemanticSubjectRole.SOURCE_ENTRY,
                 model.SemanticSubjectRole.DISPATCHER_ENTRY,
                 model.SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE,
-            } else f"role-{index}",
+            } else "1",
         )
-        for index, role in enumerate(roles)
+        for role in roles
     )
     entry = next(
         subject for subject in subjects
@@ -2757,10 +3103,13 @@ def test_role_inventory_is_exact_and_has_no_unrelated_cells() -> None:
                 candidate_subjects=candidate_subjects,
             ),
         )
-        if subject.role is model.SemanticSubjectRole.NON_STATE_VALUE_FLOW:
+        if subject.role in {
+            model.SemanticSubjectRole.NON_STATE_VALUE_FLOW,
+            model.SemanticSubjectRole.AUTHORITATIVE_HANDLER,
+        }:
             subject = next(
                 item for item in case.subjects
-                if item.role is model.SemanticSubjectRole.NON_STATE_VALUE_FLOW
+                if item.role is subject.role
             )
         actual = {key.dimension for key in case.required_obligations if key.subject == subject}
         expected = set(REQUIRED_DIMENSIONS[(subject.kind, subject.role)])
@@ -3040,10 +3389,22 @@ def test_unclaimed_missing_canonical_catalog_block_has_one_physical_loss_row() -
 
     # The fixture's sole equivalent-route claim owns b0.  b2 is a real
     # catalog identity outside that claim, so its absence must stay forbidden.
-    subject = _role_subject(model.SemanticSubjectRole.SOURCE_CATALOG_BLOCK, "2")
+    proposal = model.ProposedUnflattenContract(**_valid_proposal(model))
+    witness = next(
+        item for item in proposal.source_identity_catalog.blocks
+        if item.anchor_ea == 0x1100
+    )
+    subject = _subject_factory(
+        model.SemanticSubjectRef,
+        kind=model.SemanticSubjectKind.BLOCK,
+        role=model.SemanticSubjectRole.SOURCE_CATALOG_BLOCK,
+        block_ref=witness.block_ref,
+        anchor_ea=witness.anchor_ea,
+        locator=model.BlockSubjectLocator(witness.block_ref, witness.anchor_ea),
+    )
     entry = _role_subject(model.SemanticSubjectRole.SOURCE_ENTRY, "missing")
     baseline = _complete_inputs(
-        source_subjects=(entry, subject), candidate_subjects=(entry,),
+        source_subjects=(entry, subject), candidate_subjects=(entry,), proposal=proposal,
     )
     missing_b2 = tuple(
         replace(
@@ -3061,7 +3422,7 @@ def test_unclaimed_missing_canonical_catalog_block_has_one_physical_loss_row() -
         phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
         inputs=_complete_inputs(
             source_subjects=(entry, subject), candidate_subjects=(entry,),
-            candidate_bindings=missing_b2,
+            candidate_bindings=missing_b2, proposal=proposal,
         ),
     )
     verdict = evaluate_case(case)
@@ -3957,11 +4318,25 @@ def test_split_and_fold_lineage_use_exact_reciprocal_binding_eas() -> None:
 
 
 def test_fold_lineage_partitions_disjoint_source_origins_and_supports_each_member() -> None:
+    proposal = model.ProposedUnflattenContract(**_valid_proposal(model))
     entry = _role_subject(model.SemanticSubjectRole.SOURCE_ENTRY, "0")
     first = _role_subject(model.SemanticSubjectRole.SEMANTIC_ROUTE_SOURCE, "0")
-    second = _role_subject(model.SemanticSubjectRole.SEMANTIC_ROUTE_DESTINATION, "2")
+    second_witness = next(
+        item for item in proposal.source_identity_catalog.blocks
+        if item.anchor_ea == 0x1100
+    )
+    second = _subject_factory(
+        model.SemanticSubjectRef,
+        kind=model.SemanticSubjectKind.BLOCK,
+        role=model.SemanticSubjectRole.SEMANTIC_ROUTE_DESTINATION,
+        block_ref=second_witness.block_ref,
+        anchor_ea=second_witness.anchor_ea,
+        locator=model.BlockSubjectLocator(
+            second_witness.block_ref, second_witness.anchor_ea,
+        ),
+    )
     helper = _role_subject(model.SemanticSubjectRole.PLANNED_HELPER, "0")
-    baseline = _complete_inputs(source_subjects=(entry, first, second), candidate_subjects=(entry, first, second, helper))
+    baseline = _complete_inputs(source_subjects=(entry, first, second), candidate_subjects=(entry, first, second, helper), proposal=proposal)
     helper_binding = replace(
         next(item for item in baseline.candidate_inventory.bindings if item.subject == helper),
         native_instruction_eas=(first.anchor_ea, second.anchor_ea),
@@ -3970,10 +4345,10 @@ def test_fold_lineage_partitions_disjoint_source_origins_and_supports_each_membe
         helper_binding if item.subject == helper else item
         for item in baseline.candidate_inventory.bindings
     )
-    inputs = _complete_inputs(
-        source_subjects=(entry, first, second),
-        candidate_subjects=(entry, first, second, helper),
-    )
+    # Keep the binding and graph mutation on the same prepared occurrence.
+    # Rebuilding the fixture here would mint a second inventory occurrence and
+    # make the copied binding foreign even though its coordinates are equal.
+    inputs = baseline
     helper_block = next(
         block for block in inputs.candidate_inventory.blocks
         if block.serial == helper_binding.serial
@@ -4052,7 +4427,11 @@ def test_effect_topology_is_conditional_on_exact_owner_survival() -> None:
 def test_local_alias_support_targets_exact_store_effect_relation() -> None:
     values = _valid_proposal(model)
     proof = values["route_evidence"].route_proofs[0]
-    b0, b2 = block_ref("b0"), block_ref("b2")
+    b0 = block_ref("b0")
+    b2 = next(
+        item.block_ref for item in values["source_identity_catalog"].blocks
+        if item.anchor_ea == 0x1100
+    )
     entry = _role_subject(model.SemanticSubjectRole.SOURCE_ENTRY, "0")
     owner = _subject_factory(
         model.SemanticSubjectRef, kind=model.SemanticSubjectKind.BLOCK,
@@ -4069,7 +4448,14 @@ def test_local_alias_support_targets_exact_store_effect_relation() -> None:
         role=model.SemanticSubjectRole.SEMANTIC_ROUTE_SOURCE, block_ref=b0, anchor_ea=0x1000,
             locator=model.RouteSubjectLocator(proof.proof_id, proof.atomic_group_id, b0, 0x1000, (model.BlockSubjectLocator(b2, 0x1100),)),
     )
-    destination = _role_subject(model.SemanticSubjectRole.SEMANTIC_ROUTE_DESTINATION, "2")
+    destination = _subject_factory(
+        model.SemanticSubjectRef,
+        kind=model.SemanticSubjectKind.BLOCK,
+        role=model.SemanticSubjectRole.SEMANTIC_ROUTE_DESTINATION,
+        block_ref=b2,
+        anchor_ea=0x1100,
+        locator=model.BlockSubjectLocator(b2, 0x1100),
+    )
     alias = _claim_factory(
         model.LocalAliasEffectScalarizationClaim,
         kind=model.UnflattenClaimKind.LOCAL_ALIAS_EFFECT_SCALARIZATION,
@@ -4207,7 +4593,11 @@ def test_observed_local_alias_scalar_write_shape_is_closed() -> None:
 def test_local_alias_requires_endpoint_bearing_reachability_path() -> None:
     values = _valid_proposal(model)
     proof = values["route_evidence"].route_proofs[0]
-    b0, b2 = block_ref("b0"), block_ref("b2")
+    b0 = block_ref("b0")
+    b2 = next(
+        item.block_ref for item in values["source_identity_catalog"].blocks
+        if item.anchor_ea == 0x1100
+    )
     entry = _role_subject(model.SemanticSubjectRole.SOURCE_ENTRY, "0")
     owner = _subject_factory(
         model.SemanticSubjectRef, kind=model.SemanticSubjectKind.BLOCK,
@@ -4224,7 +4614,14 @@ def test_local_alias_requires_endpoint_bearing_reachability_path() -> None:
         role=model.SemanticSubjectRole.SEMANTIC_ROUTE_SOURCE, block_ref=b0, anchor_ea=0x1000,
             locator=model.RouteSubjectLocator(proof.proof_id, proof.atomic_group_id, b0, 0x1000, (model.BlockSubjectLocator(b2, 0x1100),)),
     )
-    destination = _role_subject(model.SemanticSubjectRole.SEMANTIC_ROUTE_DESTINATION, "2")
+    destination = _subject_factory(
+        model.SemanticSubjectRef,
+        kind=model.SemanticSubjectKind.BLOCK,
+        role=model.SemanticSubjectRole.SEMANTIC_ROUTE_DESTINATION,
+        block_ref=b2,
+        anchor_ea=0x1100,
+        locator=model.BlockSubjectLocator(b2, 0x1100),
+    )
     alias = _claim_factory(
         model.LocalAliasEffectScalarizationClaim,
         kind=model.UnflattenClaimKind.LOCAL_ALIAS_EFFECT_SCALARIZATION,
@@ -4290,14 +4687,49 @@ def test_local_alias_requires_endpoint_bearing_reachability_path() -> None:
 
 
 def test_route_destination_reachability_correlates_handler_and_terminal_locators() -> None:
+    proposal = model.ProposedUnflattenContract(**_valid_proposal(model))
+    handler_input = proposal.plan_inputs.authoritative_handlers[0]
     entry = _role_subject(model.SemanticSubjectRole.SOURCE_ENTRY, "route-entry")
-    destination = _role_subject(model.SemanticSubjectRole.SEMANTIC_ROUTE_DESTINATION, "2")
-    handler = _role_subject(model.SemanticSubjectRole.AUTHORITATIVE_HANDLER, "2")
-    terminal = _role_subject(model.SemanticSubjectRole.TERMINAL_SITE, "2")
+    destination = _subject_factory(
+        model.SemanticSubjectRef,
+        kind=model.SemanticSubjectKind.BLOCK,
+        role=model.SemanticSubjectRole.SEMANTIC_ROUTE_DESTINATION,
+        block_ref=handler_input.block_ref,
+        anchor_ea=handler_input.anchor_ea,
+        locator=model.BlockSubjectLocator(
+            handler_input.block_ref, handler_input.anchor_ea,
+        ),
+    )
+    handler = _subject_factory(
+        model.SemanticSubjectRef,
+        kind=model.SemanticSubjectKind.HANDLER,
+        role=model.SemanticSubjectRole.AUTHORITATIVE_HANDLER,
+        block_ref=handler_input.block_ref,
+        anchor_ea=handler_input.anchor_ea,
+        locator=model.HandlerSubjectLocator(
+            handler_input.block_ref,
+            handler_input.anchor_ea,
+            handler_input.normalized_states,
+        ),
+    )
+    terminal = _subject_factory(
+        model.SemanticSubjectRef,
+        kind=model.SemanticSubjectKind.TERMINAL,
+        role=model.SemanticSubjectRole.TERMINAL_SITE,
+        block_ref=handler_input.block_ref,
+        anchor_ea=handler_input.anchor_ea,
+        locator=model.TerminalSubjectLocator(
+            handler_input.block_ref, handler_input.anchor_ea,
+            model.TerminalKind.RETURN, handler_input.anchor_ea,
+        ),
+    )
     case = build_semantic_case(
         authority_id=authority_id("destination-conditionals"),
         phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
-        inputs=_complete_inputs(source_subjects=(entry, destination, handler, terminal)),
+        inputs=_complete_inputs(
+            source_subjects=(entry, destination, handler, terminal),
+            proposal=proposal,
+        ),
     )
     dimensions = {
         key.dimension for key in case.required_obligations if key.subject == destination
@@ -4312,6 +4744,7 @@ def test_route_destination_reachability_correlates_handler_and_terminal_locators
         phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
         inputs=_complete_inputs(
             source_subjects=(entry, destination, handler, terminal),
+            proposal=proposal,
         ),
     )
     for subject, dimension in (
@@ -4329,7 +4762,6 @@ def test_route_destination_reachability_correlates_handler_and_terminal_locators
 def test_projected_retirement_cycle_requires_the_exact_minted_retirement_result() -> None:
     """Only the sealed, fully-retired plan cycle may satisfy SCC topology."""
 
-    entry = _role_subject(model.SemanticSubjectRole.SOURCE_ENTRY, "retirement-cycle-entry")
     member0 = _role_subject(model.SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE, "0")
     member1 = _role_subject(model.SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE, "1")
     catalog0 = _role_subject(model.SemanticSubjectRole.SOURCE_CATALOG_BLOCK, "0")
@@ -4374,6 +4806,21 @@ def test_projected_retirement_cycle_requires_the_exact_minted_retirement_result(
         shape=model.UnflattenPlanShape.FULL_DISPATCHER_RETIREMENT,
     )
     route_claim = proposal_values["claims"][0]
+    entry = _subject_factory(
+        model.SemanticSubjectRef,
+        kind=model.SemanticSubjectKind.BLOCK,
+        role=model.SemanticSubjectRole.SOURCE_ENTRY,
+        block_ref=route_claim.destination_subjects[0].block_ref,
+        anchor_ea=route_claim.destination_subjects[0].anchor_ea,
+        locator=model.BlockSubjectLocator(
+            route_claim.destination_subjects[0].block_ref,
+            route_claim.destination_subjects[0].anchor_ea,
+        ),
+    )
+    proposal_values["plan_inputs"] = replace(
+        proposal_values["plan_inputs"],
+        source_entry_ref=entry.block_ref,
+    )
     proposal_base = model.ProposedUnflattenContract(**_valid_proposal(model))
     proposal_values["corridor_coverage_forecast"] = _minimal_corridor_forecast(
         model, proposal_base,
@@ -4413,6 +4860,9 @@ def test_projected_retirement_cycle_requires_the_exact_minted_retirement_result(
     )
     result = inputs.retirement_phase_result
     assert result is not None
+    assert set(evaluator._projected_cycle_authority_refs(inputs)) == set(
+        inputs.proposal.retirement_candidate_catalog.candidate_refs
+    )
     cycle_refs = frozenset(result.retired_refs)
     assert cycle_refs == frozenset((member1.block_ref,))
     assert all(
@@ -4576,8 +5026,49 @@ def test_projected_retirement_cycle_requires_the_exact_minted_retirement_result(
     )
 
 
+def test_retained_route_delivery_cycle_is_outside_projected_cycle_authority() -> None:
+    """Dispatcher discovery membership must not imply retirement ownership."""
+
+    route_a = block_ref("retained-route-a")
+    route_b = block_ref("retained-route-b")
+    retirement = block_ref("retirement-candidate")
+    inventory = SimpleNamespace(
+        serial_by_ref={route_a: 10, route_b: 11, retirement: 12},
+        blocks=(
+            SimpleNamespace(serial=10, successor_serials=(10, 11)),
+            SimpleNamespace(serial=11, successor_serials=(10,)),
+            SimpleNamespace(serial=12, successor_serials=()),
+        ),
+    )
+    broad_dispatcher_members = (route_a, route_b, retirement)
+    inputs = SimpleNamespace(
+        proposal=SimpleNamespace(
+            plan_inputs=SimpleNamespace(
+                dispatcher_member_refs=broad_dispatcher_members,
+            ),
+            retirement_candidate_catalog=SimpleNamespace(
+                member_refs=broad_dispatcher_members,
+                candidate_refs=(retirement,),
+            ),
+        ),
+        candidate_inventory=SimpleNamespace(
+            serial_by_ref={route_a: 10, route_b: 11, retirement: 12},
+            physical_entry_reachable_serials=(10, 11, 12),
+        ),
+        terminal_cycle_phase_results=(),
+    )
+
+    assert evaluator._projected_retirement_cycle_refs(
+        candidate_refs=broad_dispatcher_members, inventory=inventory,
+    ) == (frozenset((route_a, route_b)),)
+    assert evaluator._projected_cycle_authority_refs(inputs) == (retirement,)
+    assert evaluator._projected_retirement_cycle_refs(
+        candidate_refs=evaluator._projected_cycle_authority_refs(inputs),
+        inventory=inventory,
+    ) == ()
+
+
 def test_retirement_claim_requires_one_authorized_lineage_per_member() -> None:
-    entry = _role_subject(model.SemanticSubjectRole.SOURCE_ENTRY, "retirement-entry")
     member0 = _role_subject(model.SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE, "0")
     member1 = _role_subject(model.SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE, "1")
     catalog0 = _role_subject(model.SemanticSubjectRole.SOURCE_CATALOG_BLOCK, "0")
@@ -4625,6 +5116,20 @@ def test_retirement_claim_requires_one_authorized_lineage_per_member() -> None:
     proposal_base = model.ProposedUnflattenContract(**_valid_proposal(model))
     proposal_values["corridor_coverage_forecast"] = _minimal_corridor_forecast(model, proposal_base)
     route_claim = proposal_values["claims"][0]
+    entry = _subject_factory(
+        model.SemanticSubjectRef,
+        kind=model.SemanticSubjectKind.BLOCK,
+        role=model.SemanticSubjectRole.SOURCE_ENTRY,
+        block_ref=route_claim.destination_subjects[0].block_ref,
+        anchor_ea=route_claim.destination_subjects[0].anchor_ea,
+        locator=model.BlockSubjectLocator(
+            route_claim.destination_subjects[0].block_ref,
+            route_claim.destination_subjects[0].anchor_ea,
+        ),
+    )
+    proposal_values["plan_inputs"] = replace(
+        proposal_values["plan_inputs"], source_entry_ref=entry.block_ref,
+    )
     route = route_claim.retired_route_subject
     destination = route_claim.destination_subjects[0]
     retirement_proposal = model.ProposedUnflattenContract(
@@ -4738,51 +5243,17 @@ def test_retirement_claim_requires_one_authorized_lineage_per_member() -> None:
         "reachable_serials",
         tuple(serial for serial in candidate_inventory.reachable_serials if serial != retired_binding.serial),
     )
-    candidate_digest = semantic_graph_inventory_digest(
-        candidate_inventory.phase, candidate_inventory.graph_fingerprint,
-        candidate_inventory.generation, candidate_inventory.blocks,
-        candidate_inventory.subjects, candidate_inventory.bindings,
-        candidate_inventory.effects, candidate_inventory.terminals,
-        candidate_inventory.topology, candidate_inventory.reachable_serials,
-        candidate_inventory.entry_serial, candidate_inventory.source_subject_ids,
-        candidate_inventory.function_ea,
-    )
-    object.__setattr__(candidate_inventory, "inventory_digest", candidate_digest)
-    object.__setattr__(
-        unreachable_inputs.preparation_receipt,
-        "candidate_inventory_digest", candidate_digest,
-    )
-    object.__setattr__(
-        unreachable_inputs.preparation_receipt,
-        "projected_topology_reference_digest",
-        unreachable_inputs.projected_topology_reference.inventory_digest,
-    )
-    object.__setattr__(
-        unreachable_inputs.preparation_receipt,
-        "receipt_id", receipt_id(unreachable_inputs.preparation_receipt),
-    )
     from d810.transforms.unflatten_authority.bind import bind_retired_dispatcher_infrastructure_claim
-    object.__setattr__(
-        unreachable_inputs,
-        "retirement_phase_result",
+    # Reachability is now derived and sealed by SemanticGraphInventory.  A
+    # hand-edited entry/closure pair is no longer an admissible candidate graph
+    # for the retirement binder.
+    with pytest.raises(ValueError, match="entry_serial must refer"):
         bind_retired_dispatcher_infrastructure_claim(
             claim=retirement, proposal=retirement_proposal,
             source_inventory=unreachable_inputs.source_inventory,
             projected_inventory=unreachable_inputs.candidate_inventory,
             phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
-        ).phase_result,
-    )
-    unreachable = build_semantic_case(
-        authority_id=authority_id("retirement-unreachable-physical-row"),
-        phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
-        inputs=unreachable_inputs,
-    )
-    assert any(
-        type(item.payload) is model.StructuralLineageEvidencePayload
-        and item.payload.source_subject_id == catalog0.subject_id
-        and item.payload.disposition is model.StructuralDisposition.AUTHORIZED_RETIREMENT
-        for item in unreachable.evidence
-    )
+        )
 
     incomplete_inputs = _complete_inputs(
         source_subjects=(entry, catalog0, catalog1, member0, member1, corridor, route, destination),
@@ -5724,12 +6195,14 @@ def test_terminal_cycle_claim_cannot_discharge_effect_or_handler_cells() -> None
     terminal_effect = next(
         subject for subject in source.subjects
         if subject.role is model.SemanticSubjectRole.EFFECT_SITE
-        and subject.block_ref.proxy_token == "b2"
+        and subject.block_ref
+        == proposal.plan_inputs.source_entry_ref
     )
     handler = next(
         subject for subject in source.subjects
         if subject.role is model.SemanticSubjectRole.AUTHORITATIVE_HANDLER
-        and subject.block_ref.proxy_token == "b2"
+        and subject.block_ref
+        == proposal.plan_inputs.authoritative_handlers[0].block_ref
     )
     assert len(inputs.terminal_cycle_phase_results) == 1
     case = build_semantic_case(
@@ -5991,6 +6464,12 @@ def test_terminal_cycle_admission_requires_exact_binder_phase_occurrence() -> No
         _terminal_cycle_derived_inputs()
     )
     minted = inputs.terminal_cycle_phase_results[0]
+    expected_cycle_refs = set(minted.residue_refs)
+    if inputs.proposal.retirement_candidate_catalog is not None:
+        expected_cycle_refs.update(
+            inputs.proposal.retirement_candidate_catalog.candidate_refs,
+        )
+    assert set(evaluator._projected_cycle_authority_refs(inputs)) == expected_cycle_refs
     assert replace(inputs, terminal_cycle_phase_results=(minted,))
     equal_but_distinct = replace(minted)
     with pytest.raises(ValueError, match="not minted by the transaction binder"):

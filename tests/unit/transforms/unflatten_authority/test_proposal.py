@@ -12,6 +12,32 @@ from d810.transforms.plan import PatchPlan
 from d810.transforms.unflatten_authority.ids import authority_id
 
 
+def _condition_chain_evidence(contract, refs, dag, default_target_serial):
+    from d810.analyses.control_flow.condition_chain_model import (
+        ConditionChainHandlerEntry,
+        ConditionChainRouteEndpoint,
+        ConditionChainRouteEndpointKind,
+        ConditionChainRouteEvidence,
+        ConditionChainRouteProvenance,
+    )
+
+    target = 2
+    return ConditionChainRouteEvidence(
+        decision_dag=dag,
+        interval_rows=((7, 8, target),),
+        default_target_serial=default_target_serial,
+        endpoints=(
+            ConditionChainRouteEndpoint(
+                target, ConditionChainRouteEndpointKind.NATIVE, refs[target].identity,
+            ),
+        ),
+        handler_entries=(ConditionChainHandlerEntry(target, refs[target].identity),),
+        state_identity=contract.plan_inputs.state_identity,
+        provenance=ConditionChainRouteProvenance.EXTRACTED,
+        source_generation=contract.source_identity_catalog.generation,
+    )
+
+
 def test_canonical_patch_step_descriptor_api_is_the_single_identity_owner() -> None:
     from d810.transforms.unflatten_authority import proposal
 
@@ -63,8 +89,8 @@ def test_default_gap_producer_derives_only_exact_u32_default_loop() -> None:
     exclusions = proposal_api._derive_default_gap_infeasibility_exclusions(
         source=source, proposal=contract, block_refs_by_serial=refs,
         selected_route_proof_ids=(contract.route_evidence.route_proofs[0].proof_id,),
-        corridor_coverage=coverage, condition_chain_dag=dag,
-        default_entry_serial=3,
+        corridor_coverage=coverage,
+        condition_chain_route_evidence=_condition_chain_evidence(contract, refs, dag, 3),
     )
 
     assert len(exclusions) == 1
@@ -119,8 +145,8 @@ def test_default_gap_producer_derives_connected_two_node_eq_chain() -> None:
     exclusions = proposal_api._derive_default_gap_infeasibility_exclusions(
         source=source, proposal=contract, block_refs_by_serial=refs,
         selected_route_proof_ids=(contract.route_evidence.route_proofs[0].proof_id,),
-        corridor_coverage=coverage, condition_chain_dag=dag,
-        default_entry_serial=4,
+        corridor_coverage=coverage,
+        condition_chain_route_evidence=_condition_chain_evidence(contract, refs, dag, 4),
     )
 
     assert len(exclusions) == 1
@@ -133,6 +159,13 @@ def test_attach_typed_proposal_installs_default_gap_before_retirement_claims() -
     """Attachment must install the sibling ledger before it asks for retirement."""
     from dataclasses import replace
 
+    from d810.analyses.control_flow.condition_chain_model import (
+        ConditionChainHandlerEntry,
+        ConditionChainRouteEndpoint,
+        ConditionChainRouteEndpointKind,
+        ConditionChainRouteEvidence,
+        ConditionChainRouteProvenance,
+    )
     from d810.analyses.control_flow.route_predicate import DecisionDag, RouteComparison
     from d810.ir.flowgraph import BlockKind, BlockSnapshot, FlowGraph, InsnKind, InsnSnapshot, MopSnapshot, OperandKind, PredicateKind
     from d810.transforms.dispatcher_corridor_coverage import (
@@ -187,11 +220,27 @@ def test_attach_typed_proposal_installs_default_gap_before_retirement_claims() -
         dispatcher_member_serials=(1,), authoritative_handler_serials=(2,),
         state_identity=contract.plan_inputs.state_identity, use_def_witness=witness,
         corridor_coverage=coverage, dispatcher_removal_forecast=coverage,
-        condition_chain_dag=DecisionDag(32, {
-            1: RouteComparison(1, "jz", 7, 2, 3),
-            3: RouteComparison(3, "jz", 8, 2, 4),
-        }, 1),
-        default_entry_serial=4,
+        condition_chain_route_evidence=ConditionChainRouteEvidence(
+            decision_dag=DecisionDag(32, {
+                1: RouteComparison(1, "jz", 7, 2, 3),
+                3: RouteComparison(3, "jz", 8, 2, 4),
+            }, 1),
+            interval_rows=((7, 8, 2),), default_target_serial=4,
+            endpoints=(
+                ConditionChainRouteEndpoint(
+                    2, ConditionChainRouteEndpointKind.NATIVE, refs[2].identity,
+                ),
+                ConditionChainRouteEndpoint(
+                    4, ConditionChainRouteEndpointKind.NATIVE, refs[4].identity,
+                ),
+            ),
+            handler_entries=(
+                ConditionChainHandlerEntry(2, refs[2].identity),
+            ),
+            state_identity=contract.plan_inputs.state_identity,
+            provenance=ConditionChainRouteProvenance.EXTRACTED,
+            source_generation=1,
+        ),
     )
 
     forecast = attached.unflatten_proposal.corridor_coverage_forecast
@@ -263,8 +312,14 @@ def test_default_gap_producer_fails_closed_for_non_exact_shape(mutation: str) ->
     assert proposal_api._derive_default_gap_infeasibility_exclusions(
         source=source, proposal=contract, block_refs_by_serial=refs,
         selected_route_proof_ids=(contract.route_evidence.route_proofs[0].proof_id,),
-        corridor_coverage=coverage, condition_chain_dag=dag,
-        default_entry_serial=2 if mutation == "wrong_default" else 3,
+        corridor_coverage=coverage,
+        condition_chain_route_evidence=(
+            None
+            if dag is None
+            else _condition_chain_evidence(
+                contract, refs, dag, 2 if mutation == "wrong_default" else 3,
+            )
+        ),
     ) == ()
 
 
@@ -467,6 +522,110 @@ def test_fully_covered_default_gap_forecast_mints_retirement_claim_by_coordinate
     assert claims[0].corridor_subject.locator.member_refs == tuple(
         sorted((refs[0], refs[1]), key=proposal_api.canonical_bytes)
     )
+
+
+def test_terminal_cycle_claim_accepts_selected_interior_native_route_source() -> None:
+    """A terminal cycle reuses the proof endpoint, not the block-start anchor."""
+    from d810.analyses.control_flow.semantic_route_evidence import (
+        canonical_semantic_evidence_from_proofs,
+    )
+    from d810.transforms.dispatcher_corridor_coverage import (
+        DispatcherBlockAnchor,
+        DispatcherCorridorCoverage,
+        DispatcherCycleBreakForecast,
+    )
+    from d810.transforms.unflatten_authority import model, proposal as proposal_api
+    from .helpers import exact_fixture
+
+    source, proposal, _exclusion, refs = exact_fixture()
+    original = proposal.route_evidence.route_proofs[0]
+    evidence = canonical_semantic_evidence_from_proofs(
+        native_key=proposal.route_evidence.native_key,
+        generation=proposal.route_evidence.generation,
+        proofs=(replace(original, source_anchor_ea=0x2001),),
+    )
+    proposal = proposal_api.producer_api.build_proposal(
+        plan_id=proposal.plan_id,
+        source=source,
+        block_refs_by_serial=refs,
+        source_generation=proposal.source_identity_catalog.generation,
+        canonical_route_evidence=evidence,
+        selected_route_proof_ids=(evidence.route_proofs[0].proof_id,),
+        exact_state_effect_exclusions=(),
+        dispatcher_entry_serial=1,
+        dispatcher_member_serials=(0, 1),
+        authoritative_handler_serials=(2,),
+        state_identity=proposal.plan_inputs.state_identity,
+        use_def_witness=proposal.use_def_witness,
+    )
+    coverage = DispatcherCorridorCoverage(
+        function_ea=source.func_ea,
+        dispatcher=DispatcherBlockAnchor(1, 0x2000),
+        covered_corridors=(),
+        residual_corridors=(),
+        enumeration_complete=True,
+        cycle_break=DispatcherCycleBreakForecast(
+            dispatcher=DispatcherBlockAnchor(1, 0x2000),
+            terminal_source=DispatcherBlockAnchor(1, 0x2000),
+            shared_merge=DispatcherBlockAnchor(0, 0x1000),
+            terminal_target=DispatcherBlockAnchor(2, 0x3000),
+            terminal_stop=DispatcherBlockAnchor(3, 0x4000),
+            retired_residue=(
+                DispatcherBlockAnchor(0, 0x1000),
+                DispatcherBlockAnchor(1, 0x2000),
+            ),
+        ),
+    )
+
+    claims = proposal_api.claims_from_dispatcher_removal_forecast(
+        coverage,
+        proposal=proposal,
+        block_refs_by_serial=refs,
+    )
+
+    assert len(claims) == 1
+    assert type(claims[0]) is model.TerminalCycleBreakClaim
+
+    original_claim = proposal.claims[0]
+    outside_anchor = 0x2002
+    source_subject = proposal_api._subject_factory(
+        model.SemanticSubjectRef,
+        kind=model.SemanticSubjectKind.BLOCK,
+        role=model.SemanticSubjectRole.SEMANTIC_ROUTE_SOURCE,
+        block_ref=refs[1],
+        anchor_ea=outside_anchor,
+        locator=model.BlockSubjectLocator(refs[1], outside_anchor),
+    )
+    route_locator = model.RouteSubjectLocator(
+        original_claim.route_proof_ids[0],
+        original_claim.atomic_group_id,
+        refs[1],
+        outside_anchor,
+        tuple(subject.locator for subject in original_claim.destination_subjects),
+        tuple(subject.locator for subject in original_claim.dag_endpoint_subjects),
+    )
+    route_subject = proposal_api._subject_factory(
+        model.SemanticSubjectRef,
+        kind=model.SemanticSubjectKind.ROUTE,
+        role=model.SemanticSubjectRole.SEMANTIC_ROUTE_SOURCE,
+        block_ref=refs[1],
+        anchor_ea=outside_anchor,
+        locator=route_locator,
+    )
+    outside_claim = proposal_api._claim_factory(
+        model.EquivalentSemanticRouteClaim,
+        kind=model.UnflattenClaimKind.EQUIVALENT_SEMANTIC_ROUTE,
+        retired_route_subject=route_subject,
+        replacement_route_subject=route_subject,
+        source_subject=source_subject,
+        destination_subjects=original_claim.destination_subjects,
+        route_proof_ids=original_claim.route_proof_ids,
+        atomic_group_id=original_claim.atomic_group_id,
+        source_generation=original_claim.source_generation,
+        dag_endpoint_subjects=original_claim.dag_endpoint_subjects,
+    )
+    with pytest.raises(ValueError, match="proposal route anchor is outside source identity"):
+        replace(proposal, claims=(outside_claim,))
 
 
 def test_corridor_forecast_adapter_mints_default_gap_sibling_only_for_exact_residual() -> None:
@@ -1439,6 +1598,7 @@ def test_detached_component_attachment_carries_sealed_corridor_into_transaction(
     analysis = DetachedDeadHandlerComponentAnalysis(
         dispatcher=anchors[1], dead_handlers=(anchors[2],),
         retained_handlers=(anchors[3],), component=(anchors[2],),
+        comparison_region=(anchors[1],),
     )
     coverage = DispatcherCorridorCoverage(
         function_ea=source.func_ea,
@@ -1486,6 +1646,9 @@ def test_detached_component_attachment_carries_sealed_corridor_into_transaction(
     )
     assert len(claims) == 1
     assert claims[0].dead_handler_subjects[0].block_ref == refs[2]
+    assert tuple(
+        subject.block_ref for subject in claims[0].comparison_region_subjects
+    ) == (refs[1],)
     assert attached_proposal.corridor_coverage_forecast is not None
 
     materialization = CanonicalRouteMaterialization.capture(
@@ -1511,6 +1674,10 @@ def test_detached_component_attachment_carries_sealed_corridor_into_transaction(
         candidate_inventory=projected_inventory,
         phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
     )
+    assert corridor.comparison_region_subject_ids == tuple(sorted((
+        claims[0].dispatcher_subject.subject_id,
+        claims[0].comparison_region_subjects[0].subject_id,
+    )))
     _sources, phase_results = transaction_api._bind_detached_authority_results(
         claims=claims,
         source_inventory=source_inventory,
@@ -1524,6 +1691,58 @@ def test_detached_component_attachment_carries_sealed_corridor_into_transaction(
         projected_inventory.serial_by_ref[refs[2]]
         not in projected_inventory.reachable_serials
     )
+
+    # This reaches the exact projected-authority ID boundary used by transaction
+    # preparation.  A detached-component claim is a closed producer claim, so it
+    # must survive alongside the transaction-derived claim inventory rather than
+    # being rejected by a stale subset of the closed union.
+    from d810.transforms.cfg_transaction import TransactionAttemptId
+    from d810.transforms.unflatten_authority.gates import GenericEffectfulGateFacts
+    from d810.transforms.unflatten_authority.ids import projected_authority_id
+
+    derived = transaction_api._derive_transaction_facts(source_inventory, attached)
+    assert any(
+        type(claim) is model.DetachedDeadHandlerComponentClaim
+        for claim in derived.claims
+    )
+    owners = frozenset(
+        row.owner_serial for row in source_inventory.effects
+        if row.owner_serial in source_inventory.reachable_serials
+    )
+    projected_by_ref = projected_inventory.serial_by_ref
+    retained = frozenset(
+        serial for serial, ref in {
+            row.serial: row.block_ref for row in source_inventory.blocks
+        }.items()
+        if serial in owners
+        and (projected_serial := projected_by_ref.get(ref)) is not None
+        and projected_serial in projected_inventory.reachable_serials
+    )
+    raw_effect_gate_fact = transaction_api.authority_bind.bind_raw_effect_gate_phase_fact(
+        source_inventory=source_inventory,
+        projected_inventory=projected_inventory,
+        raw_gate_facts=GenericEffectfulGateFacts(
+            not (owners - retained), owners, retained, owners - retained,
+            "detached-claim-projected-authority-id",
+        ),
+        derived_claim_inventory=derived,
+    )
+    assert projected_authority_id(
+        attempt_id=TransactionAttemptId(
+            attached.plan_id,
+            authority_id("detached-claim-authority-id-session"),
+            1,
+            authority_id("detached-claim-authority-id-attempt"),
+        ),
+        proposal_id=authority_id(attached_proposal),
+        source_authority_id=authority_id("detached-claim-source-authority"),
+        plan_id=attached.plan_id,
+        claims=derived.claims,
+        patch_step_facts=derived.patch_step_facts,
+        source_inventory=source_inventory,
+        projected_inventory=projected_inventory,
+        raw_effect_gate_fact=raw_effect_gate_fact,
+    ).startswith("sha256:")
 
 
 def test_proposal_module_has_no_local_removal_verdict_api() -> None:

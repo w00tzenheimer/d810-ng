@@ -417,11 +417,12 @@ def test_authority_id_uses_exact_scalar_preimage_and_canonical_patch_order() -> 
         (
             attempt, values["proposal_id"], values["source_authority_id"], plan.plan_id,
             values["claims"], tuple(zip(patch_ids, facts)),
-            (source_inventory.inventory_digest, source_inventory.graph_fingerprint, source_inventory.generation),
-            (projected_inventory.inventory_digest, projected_inventory.graph_fingerprint, projected_inventory.generation),
-            raw.fact_id,
-        ),
-    )
+                (source_inventory.inventory_digest, source_inventory.graph_fingerprint, source_inventory.generation),
+                (projected_inventory.inventory_digest, projected_inventory.graph_fingerprint, projected_inventory.generation),
+                raw.fact_id,
+                (),
+            ),
+        )
     assert result == expected
     with pytest.raises(ValueError, match="canonical|sorted|unique"):
         projected_authority_id(**{**values, "patch_step_facts": tuple(reversed(facts))})
@@ -514,6 +515,31 @@ def test_canonical_encoding_preserves_sequence_and_inverse_types() -> None:
     assert canonical_decode(encoded[0]) == [1, 2]
     assert canonical_decode(encoded[1]) == (1, 2)
     assert canonical_decode(encoded[2]) == frozenset({1, 2})
+
+
+def test_observed_logical_endpoint_occurrence_has_closed_codec_schema() -> None:
+    logical_ref = block_ref("logical-exit")
+    owner_ref = block_ref("redirect-owner")
+    sibling_ref = block_ref("comparison-owner")
+    occurrence = model.ObservedLogicalEndpointOccurrence(
+        logical_ref=logical_ref,
+        projected_serial=5,
+        observed_serial=127,
+        owner_ref=owner_ref,
+        predecessor_refs=(owner_ref, sibling_ref),
+    )
+
+    encoded = canonical_bytes(occurrence)
+    wire = json.loads(encoded)
+
+    assert tuple(name for name, _value in wire["v"]) == (
+        "logical_ref",
+        "projected_serial",
+        "observed_serial",
+        "owner_ref",
+        "predecessor_refs",
+    )
+    assert canonical_decode(encoded) == occurrence
 
 
 def test_canonical_encoding_rejects_omitted_unknown_and_float_values() -> None:
@@ -737,6 +763,31 @@ def test_state_proof_evidence_proposal_and_source_authority_round_trip(proof_kin
         decoded = canonical_decode(canonical_bytes(value))
         assert type(decoded) is type(value)
         assert canonical_bytes(decoded) == canonical_bytes(value)
+
+
+def test_terminal_delivery_evidence_round_trip_and_commits_transport_content() -> None:
+    """The outer DAG and sealed return transport are canonical ID inputs."""
+    from tests.unit.analyses.control_flow.test_semantic_route_evidence import (
+        _loop_guard_terminal_delivery_fixture,
+    )
+
+    _graph, evidence = _loop_guard_terminal_delivery_fixture()
+    proof = evidence.route_proofs[0]
+    delivery = proof.terminal_delivery
+    assert delivery is not None
+    for value in (delivery.return_transport, delivery, evidence):
+        decoded = canonical_decode(canonical_bytes(value))
+        assert type(decoded) is type(value)
+        assert canonical_bytes(decoded) == canonical_bytes(value)
+
+    drifted_transport = _13_1_clone(
+        delivery.return_transport,
+        carrier_result_width=4,
+    )
+    drifted_delivery = _13_1_clone(delivery, return_transport=drifted_transport)
+    drifted_proof = _13_1_clone(proof, terminal_delivery=drifted_delivery)
+    drifted_evidence = _13_1_clone(evidence, route_proofs=(drifted_proof,))
+    assert canonical_bytes(drifted_evidence) != canonical_bytes(evidence)
 
 
 def test_validate_canonical_roundtrip_reencodes_deep_authority_only_in_decode() -> None:

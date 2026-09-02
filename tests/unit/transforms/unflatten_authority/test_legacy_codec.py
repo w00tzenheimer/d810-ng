@@ -859,16 +859,12 @@ def test_exact_legacy_decode_roundtrips_through_the_producer_builder() -> None:
             proposal.plan_id, source, 1, tuple(sorted(refs.items())),
             proposal.route_evidence, foreign, proposal.use_def_witness,
         )
-    substituted_handler = replace(
-        proposal.plan_inputs,
-        authoritative_handlers=(replace(
+    # An authoritative handler is now native by construction.  The old
+    # context-level foreign-reference check is unreachable because the typed
+    # model rejects a logical handler at creation time.
+    with pytest.raises(TypeError, match="NativeBlockRef"):
+        replace(
             proposal.plan_inputs.authoritative_handlers[0], block_ref=foreign_ref,
-        ),),
-    )
-    with pytest.raises(ValueError, match="foreign ref"):
-        _codec().LegacyUnflattenDecodeContext(
-            proposal.plan_id, source, 1, tuple(sorted(refs.items())),
-            proposal.route_evidence, substituted_handler, proposal.use_def_witness,
         )
     with pytest.raises(TypeError, match="use-def witness"):
         _codec().LegacyUnflattenDecodeContext(
@@ -1301,9 +1297,16 @@ def test_terminal_cycle_conversion_binds_terminal_route_and_actual_stop() -> Non
 
     proposal, _existing_claim = _terminal_cycle_fixture()
     route = proposal.route_evidence.route_proofs[0]
-    refs = {
-        int(witness.block_ref.proxy_token[1:]): witness.block_ref
+    refs_by_anchor = {
+        witness.anchor_ea: witness.block_ref
         for witness in proposal.source_identity_catalog.blocks
+    }
+    refs = {
+        serial: refs_by_anchor[anchor_ea]
+        for serial, anchor_ea in (
+            (0, 0x1000), (1, 0x1300), (2, 0x1100),
+            (3, 0x1400), (4, 0x1500),
+        )
     }
 
     def anchor(serial: int, ea: int) -> dict[str, object]:

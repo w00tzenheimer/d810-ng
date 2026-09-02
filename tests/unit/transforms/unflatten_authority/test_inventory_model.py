@@ -385,12 +385,58 @@ def test_inventory_entry_serial_proves_the_raw_successor_closure() -> None:
             model.InventoryTopologyIncidence(model.TopologyIncidenceKind.SUCCESSOR, 1, 2, None),
         ),
     )
+    assert inventory.physical_entry_reachable_serials == (1, 2)
     object.__setattr__(inventory, "entry_serial", 2)
     with pytest.raises((TypeError, ValueError), match="closure|reachable"):
         model.validate_semantic_graph_inventory(inventory)
     object.__setattr__(inventory, "entry_serial", True)
     with pytest.raises((TypeError, ValueError), match="entry_serial"):
         model.validate_semantic_graph_inventory(inventory)
+
+
+def test_inventory_keeps_semantic_handler_discovery_distinct_from_physical_delivery() -> None:
+    """A handler root is discoverable evidence, not an entry-path witness."""
+    key = NativePreanalysisKey("input", "x86", 64, 0, "function", "profile", "sdk")
+    entry_ref = NativeBlockRef(
+        StableBlockIdentity.from_instruction_eas((0x1000,), native_key=key)
+    )
+    handler_ref = NativeBlockRef(
+        StableBlockIdentity.from_instruction_eas((0x2000,), native_key=key)
+    )
+    entry = model.InventoryBlockObservation(
+        1, entry_ref, 0x1000, (0x1000,), (), (), None,
+        (_obs(0, 0x1000, 0, 0),), tail_opcode=0, raw_tail_opcode=0,
+        tail_kind=InsnKind.NOP,
+    )
+    handler = model.InventoryBlockObservation(
+        2, handler_ref, 0x2000, (0x2000,), (), (), None,
+        (_obs(0, 0x2000, 0, 0),), tail_opcode=0, raw_tail_opcode=0,
+        tail_kind=InsnKind.NOP,
+    )
+    handler_subject = _subject_factory(
+        model.SemanticSubjectRef,
+        kind=model.SemanticSubjectKind.HANDLER,
+        role=model.SemanticSubjectRole.AUTHORITATIVE_HANDLER,
+        block_ref=handler_ref,
+        anchor_ea=0x2000,
+        # Empty states are a handler-delivery subject without a selected route
+        # equivalence claim; it must remain independently reachable.
+        locator=model.HandlerSubjectLocator(handler_ref, 0x2000, ()),
+    )
+    binding = model.PhaseSubjectBinding(
+        handler_subject, model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        handler_ref, authority_id("graph"), 3,
+        model.SubjectBindingStatus.UNIQUE, 2, 0x2000, (0x2000,),
+        model.SemanticSubjectRole.AUTHORITATIVE_HANDLER,
+    )
+    inventory = _inventory(
+        blocks=(entry, handler), subjects=(handler_subject,), bindings=(binding,),
+        reachable_serials=(1, 2), entry_serial=1,
+        source_subject_ids=(handler_subject.subject_id,),
+    )
+
+    assert inventory.reachable_serials == (1, 2)
+    assert inventory.physical_entry_reachable_serials == (1,)
 
 
 def test_producer_site_subjects_equal_reachable_raw_site_locators() -> None:

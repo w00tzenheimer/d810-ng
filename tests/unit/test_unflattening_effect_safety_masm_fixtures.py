@@ -470,35 +470,40 @@ def test_authority_payload_aggregation_returns_valid_projected_observed_rows() -
     assert evidence.session_id == "session-1"
 
 
-@pytest.mark.parametrize(
-    "mutation",
-    [
-        lambda payload: payload.update(
-            coverage=[_coverage_row()],
-            obligation_states=[_obligation(), _corridor_obligation()],
-        ),
-        lambda payload: payload.update(
-            loss_ledger=[_loss_row("blk1@0x1000", "retired_dispatcher_infrastructure")],
-            loss_summary={
-                "structurally_lost": ["blk1@0x1000"],
-                "allowed": ["blk1@0x1000"],
-                "forbidden": [],
-                "conflicting": [],
-                "observed_only": [],
-            },
-        ),
-    ],
-)
-def test_authority_target_a_requires_a_retained_dispatcher_empty_loss_ledger(
-    mutation,
-) -> None:
-    evidence = parse_authority_phase_payloads(_authority_payloads())
-
-    require_target_authority_policy(evidence, "A")
-
+def test_authority_target_a_rejects_phase_mismatched_coverage() -> None:
     payloads = _authority_payloads()
-    mutation(payloads[0])
-    with pytest.raises(ValueError, match="target A"):
+    payloads[0].update(
+        coverage=[_coverage_row()],
+        obligation_states=[_obligation(), _corridor_obligation()],
+    )
+
+    with pytest.raises(ValueError, match="phase-equal"):
+        require_target_authority_policy(parse_authority_phase_payloads(payloads), "A")
+
+
+def test_authority_target_a_accepts_phase_equal_satisfied_coverage() -> None:
+    payloads = _authority_payloads()
+    for payload in payloads:
+        payload["coverage"] = [_coverage_row()]
+        payload["obligation_states"] = [_obligation(), _corridor_obligation()]
+
+    require_target_authority_policy(parse_authority_phase_payloads(payloads), "A")
+
+
+def test_authority_target_a_rejects_any_loss_ledger() -> None:
+    payloads = _authority_payloads()
+    payloads[0].update(
+        loss_ledger=[_loss_row("blk1@0x1000", "retired_dispatcher_infrastructure")],
+        loss_summary={
+            "structurally_lost": ["blk1@0x1000"],
+            "allowed": ["blk1@0x1000"],
+            "forbidden": [],
+            "conflicting": [],
+            "observed_only": [],
+        },
+    )
+
+    with pytest.raises(ValueError, match="empty loss ledger"):
         require_target_authority_policy(parse_authority_phase_payloads(payloads), "A")
 
 

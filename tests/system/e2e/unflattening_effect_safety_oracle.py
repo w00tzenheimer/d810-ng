@@ -820,21 +820,25 @@ def require_target_authority_policy(
     """Apply exact fixture policy to an already-validated canonical pair.
 
     A makes a deliberately partial redirect and retains its dispatcher; B/C
-    require transaction-owned corridor closure.  A successful closure may
-    preserve every source block while removing the dispatcher's semantics, so
-    structural loss is not itself a required retirement witness.  This only
-    inspects typed rows emitted by the authority verdict and never reconstructs
-    CFG coverage.
+    require transaction-owned corridor closure.  A may therefore carry the
+    canonical satisfied corridor-coverage projection already validated against
+    its obligation states, but both authority phases must agree exactly and no
+    semantic loss is permitted.  This only inspects typed rows emitted by the
+    authority verdict and never reconstructs CFG coverage.
     """
     if type(evidence) is not AuthorityOracleEvidence:
         raise TypeError("evidence must be AuthorityOracleEvidence")
     if target not in {"A", "B", "C"}:
         raise ValueError("unknown authority target")
     if target == "A":
+        if evidence.projected.coverage_rows != evidence.observed.coverage_rows:
+            raise ValueError(
+                "target A requires phase-equal canonical coverage"
+            )
         for phase in (evidence.projected, evidence.observed):
-            if phase.coverage_rows or phase.loss_rows or phase.observed_only_loss_rows:
+            if phase.loss_rows or phase.observed_only_loss_rows:
                 raise ValueError(
-                    "target A must retain an empty coverage and loss ledger"
+                    "target A must retain an empty loss ledger"
                 )
             summary = phase.loss_summary
             if any(getattr(summary, name) for name in _LOSS_SUMMARY_BUCKETS):

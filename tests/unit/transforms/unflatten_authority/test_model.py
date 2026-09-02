@@ -353,8 +353,13 @@ def _canonical_evidence(model, *, generation=3, native_key=None):
 
 
 def _valid_proposal(model):
-    b0, b1, b2 = block_ref("b0"), block_ref("b1"), block_ref("b2")
+    b0, b1 = block_ref("b0"), block_ref("b1")
     route_evidence, _ = _canonical_evidence(model)
+    b2 = NativeBlockRef(
+        StableBlockIdentity.from_instruction_eas(
+            (0x1100,), native_key=route_evidence.native_key,
+        )
+    )
     # Canonical evidence reissues proof/group IDs from its full semantic
     # payload.  All synthetic claim coordinates must therefore follow the
     # proposal's canonical proof rather than the pre-canonical fixture seeds.
@@ -887,6 +892,9 @@ def test_subject_kind_role_locator_matrix_is_closed() -> None:
     model = import_authority_model()
     b0 = block_ref("b0")
     b1 = block_ref("b1")
+    native_b0 = NativeBlockRef(
+        StableBlockIdentity.from_instruction_eas((0x1000,), native_key=_native_key(model))
+    )
     cases = [
         (model.SemanticSubjectKind.BLOCK, model.SemanticSubjectRole.SOURCE_CATALOG_BLOCK,
          model.BlockSubjectLocator(b0, 0x1000)),
@@ -911,7 +919,7 @@ def test_subject_kind_role_locator_matrix_is_closed() -> None:
         (model.SemanticSubjectKind.EFFECT, model.SemanticSubjectRole.EFFECT_SITE,
          model.EffectSubjectLocator(b0, 0x1000, 0x1004, model.EffectSiteKind.STORE)),
         (model.SemanticSubjectKind.HANDLER, model.SemanticSubjectRole.AUTHORITATIVE_HANDLER,
-         model.HandlerSubjectLocator(b0, 0x1000, (1, 2))),
+         model.HandlerSubjectLocator(native_b0, 0x1000, (1, 2))),
         (model.SemanticSubjectKind.TERMINAL, model.SemanticSubjectRole.TERMINAL_SITE,
          model.TerminalSubjectLocator(b0, 0x1000, model.TerminalKind.RETURN, 0x1004)),
         (model.SemanticSubjectKind.TERMINAL, model.SemanticSubjectRole.TERMINAL_SITE,
@@ -1514,17 +1522,38 @@ def test_proposed_contract_revalidates_low_level_use_def_mutation() -> None:
 
 def test_plan_input_catalog_and_handler_rows_are_closed() -> None:
     model = import_authority_model()
-    b0 = block_ref("b0")
+    native_key = _native_key(model)
+    b0 = NativeBlockRef(
+        StableBlockIdentity.from_instruction_eas((0x1000,), native_key=native_key)
+    )
     handler = model.AuthoritativeHandlerInput(b0, 0x1000, [3, 1])
     assert handler.normalized_states == (1, 3)
-    with pytest.raises(ValueError):
-        model.AuthoritativeHandlerInput(b0, 0x1000, [])
+    assert model.AuthoritativeHandlerInput(b0, 0x1000, []).normalized_states == ()
+    logical = LogicalBlockRef("authority-test", "handler-is-never-logical", 1)
+    with pytest.raises(TypeError, match="NativeBlockRef"):
+        model.AuthoritativeHandlerInput(logical, 0x1000, ())
+    with pytest.raises(TypeError, match="NativeBlockRef"):
+        model.HandlerSubjectLocator(logical, 0x1000, ())
     catalog = model.UnflattenPlanInputCatalog(
         model.UnflattenPlanShape.EXACT_EFFECT_ONLY, b0, b0, (b0,),
         (handler,), state_identity(),
     )
     assert catalog.authoritative_handlers == (handler,)
     assert "plan_inputs" in model.ProposedUnflattenContract.__dataclass_fields__
+
+
+def test_empty_state_handler_is_delivery_only_not_route_equivalence() -> None:
+    """An unselected native handler can be preserved without minting a route."""
+    from d810.transforms.unflatten_authority import evaluate
+
+    handler_dimensions = evaluate.REQUIRED_DIMENSIONS[
+        (
+            model.SemanticSubjectKind.HANDLER,
+            model.SemanticSubjectRole.AUTHORITATIVE_HANDLER,
+        )
+    ]
+    assert model.SafetyDimension.HANDLER_REACHABILITY in handler_dimensions
+    assert model.SafetyDimension.ROUTE_EQUIVALENCE not in handler_dimensions
 
 
 def test_legacy_shadow_transport_has_exact_closed_schema() -> None:
@@ -1866,7 +1895,7 @@ def test_proposal_is_valid_but_rejects_incoherent_authority_inputs() -> None:
             "plan_inputs": model.UnflattenPlanInputCatalog(
                 model.UnflattenPlanShape.EXACT_EFFECT_ONLY,
                 block_ref("b0"), block_ref("b0"), (block_ref("b0"),),
-                (model.AuthoritativeHandlerInput(block_ref("b0"), 0x1000, (1,)),),
+                    (valid["plan_inputs"].authoritative_handlers[0],),
                 state_identity(),
             ),
         })
@@ -1943,6 +1972,9 @@ def test_source_and_handler_catalogs_reject_cross_row_duplicates() -> None:
     model = import_authority_model()
     key = _native_key(model)
     b0, b1 = block_ref("b0"), block_ref("b1")
+    native_b1 = NativeBlockRef(
+        StableBlockIdentity.from_instruction_eas((0x1100,), native_key=key)
+    )
     with pytest.raises(ValueError):
         model.SourceIdentityCatalog(
             key, 0,
@@ -1955,8 +1987,8 @@ def test_source_and_handler_catalogs_reject_cross_row_duplicates() -> None:
         model.UnflattenPlanInputCatalog(
             model.UnflattenPlanShape.PARTIAL_REWRITE, b0, b0, (b0,),
             (
-                model.AuthoritativeHandlerInput(b1, 0x1100, (1,)),
-                model.AuthoritativeHandlerInput(b1, 0x1100, (2,)),
+                model.AuthoritativeHandlerInput(native_b1, 0x1100, (1,)),
+                model.AuthoritativeHandlerInput(native_b1, 0x1100, (2,)),
             ), state_identity(),
         )
 
@@ -2146,14 +2178,20 @@ def test_unordered_model_collections_have_reversed_input_equality() -> None:
     model = import_authority_model()
     key = _native_key(model)
     b0, b1 = block_ref("b0"), block_ref("b1")
+    native_b0 = NativeBlockRef(
+        StableBlockIdentity.from_instruction_eas((0x1000,), native_key=key)
+    )
+    native_b1 = NativeBlockRef(
+        StableBlockIdentity.from_instruction_eas((0x1100,), native_key=key)
+    )
     blocks = (
         model.SourceBlockIdentityWitness(b0, 0x1000, (0x1000,)),
         model.SourceBlockIdentityWitness(b1, 0x1100, (0x1100,)),
     )
     assert model.SourceIdentityCatalog(key, 0, blocks) == model.SourceIdentityCatalog(key, 0, blocks[::-1])
     handlers = (
-        model.AuthoritativeHandlerInput(b0, 0x1000, (1,)),
-        model.AuthoritativeHandlerInput(b1, 0x1100, (2,)),
+        model.AuthoritativeHandlerInput(native_b0, 0x1000, (1,)),
+        model.AuthoritativeHandlerInput(native_b1, 0x1100, (2,)),
     )
     first = model.UnflattenPlanInputCatalog(
         model.UnflattenPlanShape.PARTIAL_REWRITE, b0, b0, (b0, b1), handlers, state_identity(),
@@ -2176,7 +2214,12 @@ def test_plan_shape_uses_complete_dispatcher_inventory_and_retired_members() -> 
     valid = _valid_proposal(model)
     valid_base = model.ProposedUnflattenContract(**valid)
     valid["corridor_coverage_forecast"] = _minimal_corridor_forecast(model, valid_base)
-    b0, b1, b2 = block_ref("b0"), block_ref("b1"), block_ref("b2")
+    b0, b1 = block_ref("b0"), block_ref("b1")
+    native_b2 = NativeBlockRef(
+        StableBlockIdentity.from_instruction_eas(
+            (0x1100,), native_key=valid["source_identity_catalog"].native_key
+        )
+    )
     infra = _subject(model, model.SemanticSubjectKind.BLOCK,
                      model.SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE,
                      model.BlockSubjectLocator(b0, 0x1000))
@@ -2193,13 +2236,13 @@ def test_plan_shape_uses_complete_dispatcher_inventory_and_retired_members() -> 
             infra, corridor, (infra, infra2), tuple(sorted({evidence_id for candidate in retirement_catalog.candidates for evidence_id in candidate.evidence_ids})), 3,
             retirement_catalog,
     )
-    assert model.AuthoritativeHandlerInput(b2, 0x1100, (1,)).block_ref not in {
+    assert model.AuthoritativeHandlerInput(native_b2, 0x1100, (1,)).block_ref not in {
         member.locator.block_ref for member in retirement.member_subjects
     }
     full_inputs = model.UnflattenPlanInputCatalog(
         model.UnflattenPlanShape.FULL_DISPATCHER_RETIREMENT,
         b0, b0, (b0, b1),
-        (model.AuthoritativeHandlerInput(b2, 0x1100, (1,)),), state_identity(),
+        (model.AuthoritativeHandlerInput(native_b2, 0x1100, (1,)),), state_identity(),
     )
     assert model.ProposedUnflattenContract(
             **{**valid, "claims": (retirement,), "plan_inputs": full_inputs,
@@ -2208,7 +2251,7 @@ def test_plan_shape_uses_complete_dispatcher_inventory_and_retired_members() -> 
     partial_inputs = model.UnflattenPlanInputCatalog(
         model.UnflattenPlanShape.PARTIAL_REWRITE,
         b0, b0, (b0, b1),
-        (model.AuthoritativeHandlerInput(b2, 0x1100, (1,)),), state_identity(),
+        (model.AuthoritativeHandlerInput(native_b2, 0x1100, (1,)),), state_identity(),
     )
     with pytest.raises(ValueError):
         model.ProposedUnflattenContract(
@@ -2217,18 +2260,18 @@ def test_plan_shape_uses_complete_dispatcher_inventory_and_retired_members() -> 
 
     foreign_infra = _subject(model, model.SemanticSubjectKind.BLOCK,
                              model.SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE,
-                             model.BlockSubjectLocator(b2, 0x1100))
+                             model.BlockSubjectLocator(native_b2, 0x1100))
     foreign_corridor = _subject(model, model.SemanticSubjectKind.CORRIDOR,
                                 model.SemanticSubjectRole.DISPATCHER_CORRIDOR,
                                 model.CorridorSubjectLocator(
-                                    authority_id("foreign-corridor"), b2, 0x1100,
-                                    (b2,), (0x1100,),
+                                    authority_id("foreign-corridor"), native_b2, 0x1100,
+                                    (native_b2,), (0x1100,),
                                 ))
     foreign_retirement = _claim_factory(model.RetiredDispatcherInfrastructureClaim,
         model.UnflattenClaimKind.RETIRED_DISPATCHER_INFRASTRUCTURE,
         foreign_infra, foreign_corridor, (foreign_infra,),
-        (_retirement_catalog(model, (b2,), (0x1100,), 3).candidates[0].evidence_ids[0],), 3,
-        _retirement_catalog(model, (b2,), (0x1100,), 3),
+        (_retirement_catalog(model, (native_b2,), (0x1100,), 3).candidates[0].evidence_ids[0],), 3,
+        _retirement_catalog(model, (native_b2,), (0x1100,), 3),
     )
     with pytest.raises(ValueError, match="retirement (claims must share|claim must share|candidate catalog)|dispatcher_member_refs"):
         model.ProposedUnflattenContract(
@@ -2571,6 +2614,17 @@ def test_3b3_relation_row_and_aggregate_dispatch_is_exhaustive(fixture, relation
     ):
         with pytest.raises(TypeError, match="unknown route relation"):
             getattr(row, name)
+    subclass = type("ForgedDirectRoute", (model.TwoArmDirectBranchRouteRealization,), {})
+    forged = object.__new__(subclass)
+    for name in model.TwoArmDirectBranchRouteRealization.__dataclass_fields__:
+        object.__setattr__(forged, name, None)
+    object.__setattr__(row, "relation", forged)
+    for name in (
+        "source_ref", "old_target_ref", "new_target_ref", "realization_kind",
+        "conditional_roles", "helper_refs", "creation_spec_digests",
+    ):
+        with pytest.raises(TypeError, match="unknown route relation"):
+            getattr(row, name)
     subclass = type("SubclassRouteRelation", (relation_type,), {})
     forged = object.__new__(subclass)
     for name in relation.__dataclass_fields__:
@@ -2770,14 +2824,43 @@ def test_3b3_row_properties_reject_unknown_relation_dispatch() -> None:
     ):
         with pytest.raises(TypeError, match="unknown route relation"):
             getattr(row, name)
-    subclass = type("ForgedDirectRoute", (model.TwoArmDirectBranchRouteRealization,), {})
-    forged = object.__new__(subclass)
-    for name in model.TwoArmDirectBranchRouteRealization.__dataclass_fields__:
-        object.__setattr__(forged, name, None)
-    object.__setattr__(row, "relation", forged)
-    for name in (
-        "source_ref", "old_target_ref", "new_target_ref", "realization_kind",
-        "conditional_roles", "helper_refs", "creation_spec_digests",
-    ):
-        with pytest.raises(TypeError, match="unknown route relation"):
-            getattr(row, name)
+
+
+def test_entry_liveness_allowance_content_id_seals_canonical_route_proof() -> None:
+    """A planner cannot retarget a no-provider shortcut by changing only proof text."""
+    owner, old, replacement = block_ref("entry-owner"), block_ref("dispatcher"), block_ref("handler")
+    write_ref = NativeBlockRef(StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x401000, 0x401010),),
+        native_key=_native_key(model, fingerprint="entry-liveness-write"),
+        exact_instruction_eas=(0x401000,),
+    ))
+    delivery_path = (write_ref, owner, old)
+    fields = (
+        model.EntryEndpointLivenessReason.NO_PROVIDER_EXIT_PATH_LIVE_SAFE_ENDPOINT,
+        7, authority_id("entry-proof"), (owner,), old, replacement, (old,),
+        3, authority_id("entry-step"), write_ref, 0x401000,
+        delivery_path, ((0, 1), (1, 2)), False,
+    )
+    allowance = model.EntryEndpointLivenessAllowance(
+        canonical_authority_id(("unflatten.entry-endpoint-liveness-allowance.v1", *fields)),
+        *fields,
+    )
+    assert allowance.route_proof_id == authority_id("entry-proof")
+    with pytest.raises(ValueError, match="allowance ID"):
+        replace(allowance, route_proof_id=authority_id("foreign-proof"))
+
+
+def test_entry_liveness_allowance_rejects_multiple_owner_scope() -> None:
+    """One receipt owns one exact redirect, never a producer-selected owner set."""
+    owner, owner2 = block_ref("entry-owner"), block_ref("entry-owner-2")
+    old, replacement = block_ref("dispatcher"), block_ref("handler")
+    fields = (
+        model.EntryEndpointLivenessReason.NO_PROVIDER_EXIT_PATH_LIVE_SAFE_ENDPOINT,
+        7, authority_id("entry-proof"), (owner, owner2), old, replacement,
+        (old,), 3, authority_id("entry-step"), owner, 0x401000, False,
+    )
+    with pytest.raises(ValueError, match="exactly one entry predecessor"):
+        model.EntryEndpointLivenessAllowance(
+            canonical_authority_id(("unflatten.entry-endpoint-liveness-allowance.v1", *fields)),
+            *fields,
+        )

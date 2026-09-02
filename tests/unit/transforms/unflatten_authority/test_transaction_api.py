@@ -5,6 +5,7 @@ from __future__ import annotations
 from copy import copy, deepcopy
 from dataclasses import FrozenInstanceError, fields, replace
 from inspect import signature
+import logging
 from pathlib import Path
 from unittest.mock import patch
 
@@ -24,7 +25,9 @@ from d810.transforms.unflatten_authority.model import (
     UnflattenPlanRoute,
 )
 from d810.transforms.unflatten_authority.transaction_api import select_plan_route
+from d810.transforms.unflatten_authority.proposal import attach_typed_proposal
 from d810.transforms.unflatten_authority.ids import authority_id
+from d810.transforms.unflatten_authority import model, transaction_api
 
 from .helpers import (
     authority_id as helper_authority_id,
@@ -34,12 +37,732 @@ from .helpers import (
     observed_patch_binding_for_test,
 )
 from .test_model import _valid_proposal
+from .test_bind import _compiler_redirect_goto_case
 
 
+def test_observed_native_origin_diagnostic_matches_canonical_subset_admission(
+    caplog,
+) -> None:
+    """Diagnostics must not call a binder-admitted subset a mismatch."""
+
+    source, proposal, _exclusion, refs = exact_fixture()
+    plan = PatchPlan(
+        plan_id=proposal.plan_id,
+        source_generation=1,
+        source_coordinates=tuple(
+            (refs[serial], serial) for serial in sorted(source.blocks)
+        ),
+    )
+    inventory = transaction_api._build_semantic_graph_inventory(
+        source,
+        proposal,
+        plan,
+        source=True,
+        phase=model.UnflattenAuthorityPhase.PRODUCER_FORECAST,
+    )
+    witnesses = {
+        witness.block_ref: witness
+        for witness in proposal.source_identity_catalog.blocks
+    }
+    row = next(
+        candidate
+        for candidate in inventory.blocks
+        if (
+            type(candidate.block_ref).__name__ == "NativeBlockRef"
+            and len(candidate.native_instruction_eas) > 1
+            and witnesses[candidate.block_ref].anchor_ea
+            in candidate.native_instruction_eas
+        )
+    )
+    expected = row.native_instruction_eas
+    anchor = witnesses[row.block_ref].anchor_ea
+    admitted = tuple(ea for ea in expected if ea != expected[-1])
+    if anchor not in admitted:
+        admitted = tuple(ea for ea in expected if ea != expected[0])
+    assert model._phase_native_origin_subset_preserves_anchor(
+        row.block_ref, anchor, admitted, expected,
+    )
+    invalid = tuple(ea for ea in expected if ea != anchor)
+    assert not model._phase_native_origin_subset_preserves_anchor(
+        row.block_ref, anchor, invalid, expected,
+    )
+
+    def with_origins(origins):
+        drifted = copy(row)
+        object.__setattr__(drifted, "native_instruction_eas", origins)
+        return [
+            drifted if candidate is row else candidate
+            for candidate in inventory.blocks
+        ]
+
+    caplog.set_level(
+        logging.DEBUG,
+        logger="d810.transforms.unflatten_authority.transaction_api",
+    )
+    transaction_api._observed_native_origin_mismatch_diagnostics(
+        block_rows=with_origins(admitted),
+        blocks_by_serial=source.blocks,
+        proposal=proposal,
+        plan=plan,
+        function_ea=source.func_ea,
+    )
+    messages = tuple(record.getMessage() for record in caplog.records)
+    assert any("native-origin subset accepted" in message for message in messages)
+    assert not any(
+        record.levelno >= logging.WARNING
+        and "native-origin mismatch" in record.getMessage()
+        for record in caplog.records
+    )
+
+    caplog.clear()
+    transaction_api._observed_native_origin_mismatch_diagnostics(
+        block_rows=with_origins(invalid),
+        blocks_by_serial=source.blocks,
+        proposal=proposal,
+        plan=plan,
+        function_ea=source.func_ea,
+    )
+    assert any(
+        record.levelno >= logging.WARNING
+        and "native-origin mismatch" in record.getMessage()
+        for record in caplog.records
+    )
+
+
+def test_binds_no_provider_entry_endpoint_liveness_to_its_exact_redirect_fact() -> None:
+    """A nested-style entry bridge is authorized only by its own patch fact."""
+    (
+        _source_authority,
+        plan,
+        source_inventory,
+        _projected_inventory,
+        patch_step_facts,
+        _attempt_id,
+        *_ignored,
+    ) = _compiler_redirect_goto_case()
+    fact = next(item for item in patch_step_facts if item.step_type == "PatchRedirectGoto")
+    owner = fact.owner_ref
+    step = plan.steps[fact.step_index]
+    old_target = step.old_target
+    replacement = step.new_target
+    (route_proof,) = plan.unflatten_proposal.route_evidence.route_proofs
+    write_ref = next(
+        ref for ref, _serial in plan.source_coordinates
+        if getattr(ref, "identity", None) == route_proof.state_write.identity
+    )
+    source, *_ = exact_fixture()
+    source_inventory = transaction_api._build_semantic_graph_inventory(
+        source, plan.unflatten_proposal, plan, source=True,
+        phase=model.UnflattenAuthorityPhase.PRODUCER_FORECAST,
+    )
+    serials = dict(plan.source_coordinates)
+    owner_serial = serials[step.from_serial]
+    old_serial = serials[step.old_target]
+    replacement_serial = serials[step.new_target]
+    projected_blocks = dict(source.blocks)
+    projected_blocks[owner_serial] = replace(
+        projected_blocks[owner_serial],
+        succs=(replacement_serial,),
+    )
+    projected_blocks[old_serial] = replace(
+        projected_blocks[old_serial], preds=tuple(
+            serial for serial in projected_blocks[old_serial].preds
+            if serial != owner_serial
+        ),
+    )
+    projected_blocks[replacement_serial] = replace(
+        projected_blocks[replacement_serial], preds=tuple(sorted((
+            *projected_blocks[replacement_serial].preds, owner_serial,
+        ))),
+    )
+    from d810.ir.flowgraph import FlowGraph
+    projected = FlowGraph(projected_blocks, source.entry_serial, source.func_ea)
+    allowance_fields = (
+        model.EntryEndpointLivenessReason.NO_PROVIDER_EXIT_PATH_LIVE_SAFE_ENDPOINT,
+        int(route_proof.state_write.state_constant), route_proof.proof_id,
+        (owner,), old_target, replacement, (old_target,),
+        fact.step_index, fact.step_digest, write_ref,
+        route_proof.state_write.instruction_ea, False,
+    )
+    allowance = model.EntryEndpointLivenessAllowance(
+        allowance_id=authority_id(("unflatten.entry-endpoint-liveness-allowance.v1", *allowance_fields)),
+        reason=model.EntryEndpointLivenessReason.NO_PROVIDER_EXIT_PATH_LIVE_SAFE_ENDPOINT,
+        normalized_state=int(route_proof.state_write.state_constant),
+        route_proof_id=route_proof.proof_id,
+        entry_predecessor_owner_refs=(owner,),
+        dispatcher_old_target_ref=old_target,
+        replacement_endpoint_ref=replacement,
+        exit_path_refs=(old_target,),
+        patch_step_index=fact.step_index,
+        patch_step_digest=fact.step_digest,
+        state_write_source_ref=write_ref,
+        state_write_instruction_ea=route_proof.state_write.instruction_ea,
+    )
+    plan = replace(
+        plan,
+        unflatten_proposal=replace(
+            plan.unflatten_proposal,
+            entry_endpoint_liveness_allowances=(allowance,),
+        ),
+    )
+
+    bound = transaction_api.bind_entry_endpoint_liveness_allowances(
+        plan=plan, allowances=(allowance,), patch_step_facts=patch_step_facts,
+        source=source, projected=projected,
+        source_inventory=source_inventory,
+        projected_inventory=transaction_api._build_semantic_graph_inventory(
+            projected, plan.unflatten_proposal, plan, source=False,
+            phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+            source_subjects=source_inventory.subjects,
+        ),
+    )
+
+    assert bound[0].allowance is allowance
+    assert bound[0].patch_step_fact is fact
+    assert not hasattr(
+        transaction_api.authority_bind,
+        "mint_bound_entry_endpoint_liveness_allowance",
+    )
+    # Content equality is insufficient authority: the receipt must be the
+    # exact binder-minted occurrence that the transaction admitted.
+    reconstructed = replace(bound[0])
+    with pytest.raises(ValueError, match="binder-minted"):
+        transaction_api._admit_bound_entry_endpoint_liveness(
+            proposal=plan.unflatten_proposal,
+            receipts=(reconstructed,),
+            patch_step_facts=patch_step_facts,
+        )
+    # The lower publication primitive prechecks the complete batch: a later
+    # duplicate cannot leave the first occurrence partially published.
+    with pytest.raises(ValueError, match="duplicated"):
+        transaction_api.authority_bind._publish_bound_entry_endpoint_liveness_batch(
+            (reconstructed, reconstructed)
+        )
+    with pytest.raises(ValueError, match="binder-minted"):
+        transaction_api.authority_bind.validate_bound_entry_endpoint_liveness_allowance(
+            reconstructed
+        )
+    with pytest.raises(ValueError, match="allowance ID"):
+        transaction_api.bind_entry_endpoint_liveness_allowances(
+            plan=plan,
+            allowances=(replace(allowance, patch_step_digest=authority_id("drift")),),
+            patch_step_facts=patch_step_facts,
+            source=source, projected=projected,
+            source_inventory=source_inventory,
+            projected_inventory=transaction_api._build_semantic_graph_inventory(
+                projected, plan.unflatten_proposal, plan, source=False,
+                phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+                source_subjects=source_inventory.subjects,
+            ),
+        )
+
+
+def test_closed_entry_forecast_flows_from_canonical_proof_to_transaction_binding() -> None:
+    """A one-shot selected-proof iterable seals the entry receipt end to end."""
+    (
+        _source_authority,
+        compiled,
+        _source_inventory,
+        _projected_inventory,
+        _patch_step_facts,
+        _attempt_id,
+        *_ignored,
+    ) = _compiler_redirect_goto_case()
+    original_proposal = compiled.unflatten_proposal
+    assert original_proposal is not None
+    (route_proof,) = original_proposal.route_evidence.route_proofs
+    source, *_ = exact_fixture()
+    refs_by_serial = {serial: ref for ref, serial in compiled.source_coordinates}
+    serials_by_ref = dict(compiled.source_coordinates)
+    step = compiled.steps[0]
+    assert type(step) is PatchRedirectGoto
+    owner = step.from_serial
+    old = step.old_target
+    replacement = step.new_target
+    write_ref = next(
+        ref for ref, _serial in compiled.source_coordinates
+        if ref.identity == route_proof.state_write.identity
+    )
+    forecast = model.EntryEndpointLivenessForecast(
+        model.EntryEndpointLivenessReason.NO_PROVIDER_EXIT_PATH_LIVE_SAFE_ENDPOINT,
+        int(route_proof.state_write.state_constant),
+        route_proof.proof_id,
+        owner,
+        write_ref,
+        route_proof.state_write.instruction_ea,
+        old,
+        replacement,
+        (old,),
+    )
+    plan = attach_typed_proposal(
+        replace(compiled, unflatten_proposal=None),
+        source=source,
+        block_refs_by_serial=refs_by_serial,
+        canonical_route_evidence=original_proposal.route_evidence,
+        selected_route_proof_ids=(
+            proof_id for proof_id in (route_proof.proof_id,)
+        ),
+        exact_state_effect_exclusions=(),
+        dispatcher_entry_serial=serials_by_ref[old],
+        dispatcher_member_serials=(serials_by_ref[old],),
+        authoritative_handler_serials=(serials_by_ref[replacement],),
+        state_identity=original_proposal.plan_inputs.state_identity,
+        use_def_witness=original_proposal.use_def_witness,
+        entry_endpoint_liveness_forecasts=(forecast,),
+    )
+    (allowance,) = plan.unflatten_proposal.entry_endpoint_liveness_allowances
+    assert allowance.route_proof_id == route_proof.proof_id
+    assert allowance.state_write_source_ref == write_ref
+
+    owner_serial = serials_by_ref[owner]
+    old_serial = serials_by_ref[old]
+    replacement_serial = serials_by_ref[replacement]
+    blocks = dict(source.blocks)
+    blocks[owner_serial] = replace(blocks[owner_serial], succs=(replacement_serial,))
+    blocks[old_serial] = replace(
+        blocks[old_serial],
+        preds=tuple(serial for serial in blocks[old_serial].preds if serial != owner_serial),
+    )
+    blocks[replacement_serial] = replace(
+        blocks[replacement_serial],
+        preds=tuple(sorted((*blocks[replacement_serial].preds, owner_serial))),
+    )
+    from d810.ir.flowgraph import FlowGraph
+    projected = FlowGraph(blocks, source.entry_serial, source.func_ea)
+    source_inventory = transaction_api._build_semantic_graph_inventory(
+        source, plan.unflatten_proposal, plan, source=True,
+        phase=model.UnflattenAuthorityPhase.PRODUCER_FORECAST,
+    )
+    projected_inventory = transaction_api._build_semantic_graph_inventory(
+        projected, plan.unflatten_proposal, plan, source=False,
+        phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        source_subjects=source_inventory.subjects,
+    )
+    facts = transaction_api._derive_transaction_facts(
+        source_inventory, plan,
+    ).patch_step_facts
+    (bound,) = transaction_api.bind_entry_endpoint_liveness_allowances(
+        plan=plan,
+        allowances=(allowance,),
+        patch_step_facts=facts,
+        source=source,
+        projected=projected,
+        source_inventory=source_inventory,
+        projected_inventory=projected_inventory,
+    )
+    assert bound.allowance is allowance
+    assert bound.route_proof_id == route_proof.proof_id
+
+
+def test_entry_liveness_distinct_owner_requires_delivery_corridor() -> None:
+    """P cannot borrow W's route proof without an exact W -> P -> D path."""
+    source, proposal, _exclusion, refs = exact_fixture()
+    (proof,) = proposal.route_evidence.route_proofs
+
+    with pytest.raises(ValueError, match="distinct owner requires.*corridor"):
+        model.EntryEndpointLivenessForecast(
+            model.EntryEndpointLivenessReason.NO_PROVIDER_EXIT_PATH_LIVE_SAFE_ENDPOINT,
+            int(proof.state_write.state_constant),
+            proof.proof_id,
+            refs[1],
+            refs[0],
+            proof.state_write.instruction_ea,
+            refs[2],
+            refs[3],
+            (refs[2],),
+        )
+
+
+@pytest.mark.parametrize(
+    ("redirect_factory", "expected_step_type"),
+    (
+        pytest.param(
+            "goto", PatchRedirectGoto,
+            id="redirect-goto",
+        ),
+        pytest.param(
+            "branch", PatchRedirectBranch,
+            id="redirect-branch",
+        ),
+    ),
+)
+def test_entry_liveness_keeps_state_write_distinct_from_physical_redirect_owner(
+    redirect_factory: str,
+    expected_step_type: type[PatchRedirectGoto | PatchRedirectBranch],
+) -> None:
+    """A state write may reach D through P while P owns the physical rewrite.
+
+    W=blk0 writes the dispatcher state, P=blk1 selects the D=blk2 arm, and
+    the projected edit redirects exactly P:D -> H=blk3.  This is deliberately
+    not a fabricated relation: evidence, proposal, inventories, patch fact,
+    receipt, and projected realization are all rebuilt through the public
+    authority helpers.
+    """
+    from d810.analyses.control_flow import semantic_route_evidence as route
+    from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
+    from d810.ir.flowgraph import FlowGraph
+    from d810.transforms.cfg_transaction import NativeBlockRef
+    from d810.transforms.cfg_transaction import TransactionAttemptId
+    from d810.transforms.edit_simulator import project_post_state
+    from d810.transforms.graph_modification import RedirectBranch, RedirectGoto
+    from d810.transforms.unflatten_authority import bind, producer_api
+    from d810.transforms.unflatten_authority.proposal import canonical_redirect_manifest
+    from tests.typed_patch_authority import compile_patch_plan
+
+    source, base, _exclusion, refs = exact_fixture()
+    blocks = dict(source.blocks)
+    # The physical microcode block start is a valid source-catalog witness,
+    # but the canonical route destination is anchored at its first native
+    # instruction.  The two coordinates must not be compared as one model.
+    blocks[4] = replace(blocks[4], start_ea=0x4FF0)
+    refs = {
+        **refs,
+        4: NativeBlockRef(StableBlockIdentity.from_intervals(
+            (NativeEaInterval(0x4FF0, 0x5001),),
+            native_key=base.source_identity_catalog.native_key,
+            exact_instruction_eas=(0x5000,),
+        )),
+    }
+    if redirect_factory == "goto":
+        # GOTO is a real one-way P -> D edge; H is introduced by the edit.
+        from .test_bind import _one_way_goto
+
+        blocks[1] = _one_way_goto(blocks[1], 2, preds=(0,))
+        blocks[2] = replace(blocks[2], preds=(1,))
+        blocks[3] = replace(blocks[3], preds=())
+    else:
+        # BRANCH preserves P's other arm (blk3) and redirects only P:D -> H.
+        blocks[4] = replace(blocks[4], preds=())
+    source = FlowGraph(blocks, source.entry_serial, source.func_ea)
+    state = base.route_evidence.route_proofs[0].state_write.state_variable
+    fact = route.SemanticRouteFact(
+        route.SemanticRouteFactKind.NATIVE_BOUND,
+        0,  # W: physical state write
+        0,
+        0x1000,
+        7,
+        4,  # H: semantic destination
+        0x1000,
+        0x5000,
+        (0,),
+        (),
+        authority_id(("entry-liveness-distinct-owner", redirect_factory)),
+        physical_state_write=route.SemanticPhysicalStateWriteWitness(
+            route._instruction_projection(source.blocks[0].insn_snapshots[0]),
+            state,
+            4,
+            7,
+        ),
+    )
+    produced = route.build_canonical_semantic_evidence(
+        (fact,),
+        route.CanonicalSemanticEvidenceProductionContext(
+            base.source_identity_catalog.native_key,
+            1,
+            authority_id(("entry-liveness-distinct-owner-context", redirect_factory)),
+            state,
+            tuple(source.blocks.values()),
+            tuple((serial, ref.identity) for serial, ref in refs.items()),
+            source.entry_serial,
+        ),
+    )
+    assert produced.abstention is None and produced.evidence is not None
+    evidence = produced.evidence
+    (proof,) = evidence.route_proofs
+    assert proof.state_write.identity == refs[0].identity
+    assert refs[0] != refs[1]
+
+    modification = (
+        RedirectGoto(1, 2, 4)
+        if redirect_factory == "goto"
+        else RedirectBranch(1, 2, 4)
+    )
+    compiled = compile_patch_plan(
+        (modification,),
+        source,
+        plan_id=authority_id(("entry-liveness-distinct-owner-plan", redirect_factory)),
+        source_generation=1,
+        block_refs_by_serial=refs,
+    )
+    manifest = canonical_redirect_manifest(compiled)
+    forecast = model.EntryEndpointLivenessForecast(
+        model.EntryEndpointLivenessReason.NO_PROVIDER_EXIT_PATH_LIVE_SAFE_ENDPOINT,
+        7,
+        proof.proof_id,
+        refs[1],  # P: physical owner, deliberately distinct from W
+        refs[0],
+        proof.state_write.instruction_ea,
+        refs[2],  # D
+        refs[4],  # H
+        (refs[2],),
+        (refs[0], refs[1], refs[2]),
+        ((0, 1), (1, 2)),
+    )
+
+    def attach_entry(entry_evidence, entry_forecast):
+        (entry_proof,) = entry_evidence.route_proofs
+        return attach_typed_proposal(
+            replace(compiled, unflatten_proposal=None),
+            source=source,
+            block_refs_by_serial=refs,
+            canonical_route_evidence=entry_evidence,
+            selected_route_proof_ids=(entry_proof.proof_id,),
+            exact_state_effect_exclusions=(),
+            dispatcher_entry_serial=2,
+            dispatcher_member_serials=(2,),
+            authoritative_handler_serials=(4,),
+            state_identity=state,
+            use_def_witness=model.UseDefFragmentWitness(
+                authority_id((
+                    "entry-liveness-distinct-owner-fragment", redirect_factory,
+                )),
+                state,
+                manifest.owner_refs,
+                manifest.digest,
+                True,
+                True,
+                0,
+                (),
+            ),
+            entry_endpoint_liveness_forecasts=(replace(
+                entry_forecast,
+                route_proof_id=entry_proof.proof_id,
+            ),),
+        )
+
+    def evidence_with_destination(destination):
+        return route.canonical_semantic_evidence_from_proofs(
+            native_key=evidence.native_key,
+            generation=evidence.generation,
+            proofs=(replace(proof, destinations=(destination,)),),
+        )
+
+    # Keep target identity and the exact-one-destination requirement closed:
+    # a source-catalog block start is not a semantic route anchor.
+    with pytest.raises(
+        ValueError,
+        match=(
+            "entry liveness forecast does not name its selected canonical "
+            "route proof: destination"
+        ),
+    ):
+        attach_entry(
+            evidence_with_destination(replace(
+                proof.destinations[0], target_anchor_ea=0x4FF0,
+            )),
+            forecast,
+        )
+    with pytest.raises(
+        ValueError,
+        match=(
+            "entry liveness forecast does not name its selected canonical "
+            "route proof: destination"
+        ),
+    ):
+        attach_entry(
+            evidence_with_destination(replace(
+                proof.destinations[0],
+                target_identity=refs[3].identity,
+                target_anchor_ea=0x4000,
+            )),
+            forecast,
+        )
+    # A-shaped lifecycle regression: the physical redirect owner P is a
+    # source witness, but it is not the selected canonical proof's state
+    # write W.  A forecast must reject that substitution at the exact clause.
+    with pytest.raises(
+        ValueError,
+        match=(
+            "entry liveness forecast does not name its selected canonical "
+            "route proof: state_write_identity"
+        ),
+    ):
+        attach_entry(
+            evidence,
+            replace(
+                forecast,
+                state_write_source_ref=refs[1],
+                state_write_instruction_ea=source.blocks[1].start_ea,
+                delivery_path_refs=(refs[1], refs[2]),
+                delivery_path_edges=((0, 1),),
+            ),
+        )
+    plan = attach_entry(evidence, forecast)
+    (allowance,) = plan.unflatten_proposal.entry_endpoint_liveness_allowances
+    assert allowance.state_write_source_ref == refs[0]
+    assert allowance.entry_predecessor_owner_refs == (refs[1],)
+    assert allowance.delivery_path_refs == (refs[0], refs[1], refs[2])
+    assert allowance.delivery_path_edges == ((0, 1), (1, 2))
+
+    materialization = route.CanonicalRouteMaterialization.capture(
+        source,
+        generation=1,
+        phase=route.CanonicalRouteAssessmentPhase.SOURCE,
+    )
+    source_inventory = transaction_api._build_semantic_graph_inventory(
+        source,
+        plan.unflatten_proposal,
+        plan,
+        source=True,
+        phase=model.UnflattenAuthorityPhase.PRODUCER_FORECAST,
+        materialization=materialization,
+    )
+    source_result = bind.bind_source_route_authority(
+        proposal=plan.unflatten_proposal,
+        source_inventory=source_inventory,
+        source_materialization=materialization,
+    )
+    assert type(source_result) is model.SourceBoundRouteAuthorityAccepted
+    projected = project_post_state(source, plan)
+    projected_inventory = transaction_api._build_semantic_graph_inventory(
+        projected,
+        plan.unflatten_proposal,
+        plan,
+        source=False,
+        phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        source_subjects=source_inventory.subjects,
+    )
+    from d810.analyses.control_flow.graph_checks import (
+        check_effectful_reachability_preserved,
+        check_entry_reachability_not_collapsed,
+        check_terminal_reachability_preserved,
+    )
+    from d810.transforms.unflatten_authority.gates import GenericCfgGateBundle
+
+    raw_effect = check_effectful_reachability_preserved(source, post_cfg=projected)
+    preparation = transaction_api.prepare_unflatten_authority(
+        source=source,
+        projection=CfgProjection(plan.plan_id, plan.snapshot_id, projected),
+        plan=plan,
+        attempt_id=TransactionAttemptId(
+            plan.plan_id,
+            authority_id(("entry-liveness-distinct-owner-session", redirect_factory)),
+            1,
+            authority_id(("entry-liveness-distinct-owner-attempt", redirect_factory)),
+        ),
+        generic_gates=GenericCfgGateBundle(
+            check_entry_reachability_not_collapsed(source, post_cfg=projected),
+            raw_effect,
+            raw_effect,
+            check_terminal_reachability_preserved(source, post_cfg=projected),
+        ),
+    )
+
+    assert type(plan.steps[0]) is expected_step_type
+    assert type(preparation) is model.UnflattenAuthorityPreparationAccepted
+    assert preparation.prepared is not None
+    (row,) = preparation.prepared.projected_route_realization.rows
+    if redirect_factory == "goto":
+        assert type(row.relation) is model.RetainedPrefixRouteRealization
+        assert row.relation.proof_source.ref == refs[0]
+        assert row.relation.delivery_owner.ref == refs[1]
+        assert row.relation.old_target.ref == refs[2]
+        assert row.relation.new_target.ref == refs[4]
+    else:
+        assert type(row.relation) is model.TwoArmDirectBranchRouteRealization
+        assert row.relation.feeder.ref == refs[1]
+        assert row.relation.source_rewritten_arm.ref == refs[2]
+        assert row.relation.projected_replacement_arm.ref == refs[4]
+    assert proof.state_write.identity == refs[0].identity
+
+    if redirect_factory == "goto":
+        broken_blocks = dict(source.blocks)
+        broken_blocks[0] = _one_way_goto(broken_blocks[0], 3, preds=())
+        broken_blocks[1] = replace(broken_blocks[1], preds=())
+        broken_blocks[3] = replace(broken_blocks[3], preds=(0,))
+        broken_source = FlowGraph(
+            broken_blocks, source.entry_serial, source.func_ea,
+        )
+        broken_projected = project_post_state(broken_source, plan)
+        broken_materialization = route.CanonicalRouteMaterialization.capture(
+            broken_source,
+            generation=1,
+            phase=route.CanonicalRouteAssessmentPhase.SOURCE,
+        )
+        broken_source_inventory = transaction_api._build_semantic_graph_inventory(
+            broken_source,
+            plan.unflatten_proposal,
+            plan,
+            source=True,
+            phase=model.UnflattenAuthorityPhase.PRODUCER_FORECAST,
+            materialization=broken_materialization,
+        )
+        broken_projected_inventory = transaction_api._build_semantic_graph_inventory(
+            broken_projected,
+            plan.unflatten_proposal,
+            plan,
+            source=False,
+            phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+            source_subjects=broken_source_inventory.subjects,
+        )
+        broken_facts = transaction_api._derive_patch_lineage_facts(
+            broken_source_inventory, plan,
+        )
+        with pytest.raises(ValueError, match="delivery corridor drifted"):
+            transaction_api.bind_entry_endpoint_liveness_allowances(
+                plan=plan,
+                allowances=(allowance,),
+                patch_step_facts=broken_facts,
+                source=broken_source,
+                projected=broken_projected,
+                source_inventory=broken_source_inventory,
+                projected_inventory=broken_projected_inventory,
+            )
+
+
+def test_entry_liveness_admission_rejects_two_receipts_in_noncanonical_binding_order() -> None:
+    """The prepared transaction never normalizes caller receipt ordering."""
+    from . import test_bind
+
+    (
+        _authority, plan, source_inventory, projected_inventory, facts, _attempt,
+        source, projected,
+    ) = test_bind._two_proof_shared_target_case(include_graphs=True)
+    proofs = {
+        proof.source_identity: proof
+        for proof in plan.unflatten_proposal.route_evidence.route_proofs
+    }
+    allowances = []
+    for fact in facts:
+        step = plan.steps[fact.step_index]
+        proof = proofs[fact.owner_ref.identity]
+        fields = (
+            model.EntryEndpointLivenessReason.NO_PROVIDER_EXIT_PATH_LIVE_SAFE_ENDPOINT,
+            int(proof.state_write.state_constant), proof.proof_id,
+            (fact.owner_ref,), step.old_target, step.new_target,
+            (step.old_target,), fact.step_index, fact.step_digest,
+            fact.owner_ref, proof.state_write.instruction_ea, False,
+        )
+        allowances.append(model.EntryEndpointLivenessAllowance(
+            authority_id(("unflatten.entry-endpoint-liveness-allowance.v1", *fields)),
+            *fields,
+        ))
+    plan = replace(
+        plan,
+        unflatten_proposal=replace(
+            plan.unflatten_proposal,
+            entry_endpoint_liveness_allowances=tuple(allowances),
+        ),
+    )
+    receipts = transaction_api.bind_entry_endpoint_liveness_allowances(
+        plan=plan, allowances=tuple(allowances), patch_step_facts=facts,
+        source=source, projected=projected,
+        source_inventory=source_inventory, projected_inventory=projected_inventory,
+    )
+
+    assert tuple(item.binding_id for item in receipts) == tuple(
+        sorted(item.binding_id for item in receipts)
+    )
+    with pytest.raises(ValueError, match="canonical"):
+        transaction_api._admit_bound_entry_endpoint_liveness(
+            proposal=plan.unflatten_proposal,
+            receipts=tuple(reversed(receipts)),
+            patch_step_facts=facts,
+        )
 def test_projected_corridor_union_binds_default_gap_with_source_authority() -> None:
     """The transaction chooses the typed binder before compatibility projection."""
     from . import test_bind
-    from d810.transforms.unflatten_authority import model, transaction_api
+    from d810.transforms.unflatten_authority import bind, model, transaction_api
 
     proposal, source, projected, source_authority = (
         test_bind._default_gap_bound_projected_case()
@@ -248,6 +971,200 @@ def test_default_gap_authority_closes_the_full_transaction_vertical(
     assert observed_result.correlations[0].initial_state_seeds == projected_result.correlations[0].initial_state_seeds
     assert observed_evidence is not None
     assert observed_evidence.phase_result_id == observed_result.base_result.result_id
+
+
+def _rf4_observed_helper_elision_inputs():
+    """Hex-Rays may fold the planned branch helper into F -> N post-apply.
+
+    RF-4's projected realization proves ``F -> H -> N`` and ``F -> U`` once.
+    Observation must consume that same sealed relation when the backend elides
+    the empty H block and exposes ``F -> N`` directly; it must not demand a
+    second helper subject or re-assess the route.
+    """
+    from d810.ir.flowgraph import FlowGraph
+    from d810.transforms.unflatten_authority import bind, evaluate, model, transaction_api
+    from . import test_bind
+
+    fixture = test_bind._task_15_branch_helper_vertical_case()
+    values = test_bind._task_15_two_arm_vertical_inputs(fixture)
+    realization_result = bind.realize_projected_routes(**values)
+    assert type(realization_result) is model.ProjectedRouteRealizationAccepted
+    realization = realization_result.realization
+    (route_row,) = realization.rows
+    relation = route_row.relation
+    assert type(relation) is model.BranchFallthroughHelperRouteRealization
+
+    projected_inputs = transaction_api._derive_inputs(
+        fixture.source_inventory,
+        fixture.projected_inventory,
+        fixture.plan,
+        fixture.proposal,
+        None,
+        phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        phase_build_metrics=model.PhaseBuildMetrics(
+            model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT, 1, 1, 0.0,
+        ),
+        preparation_metrics=model.PreparationBuildMetrics(1, 1, 0.0),
+        source_route_authority=fixture.source_authority,
+        projected_route_realization=realization,
+    )
+
+    feeder_serial = fixture.projected_inventory.serial_by_ref[relation.feeder.ref]
+    helper_serial = fixture.projected_inventory.serial_by_ref[relation.helper.ref]
+    untouched_serial = fixture.projected_inventory.serial_by_ref[
+        relation.untouched_conditional_arm.ref
+    ]
+    semantic_target_serial = fixture.projected_inventory.serial_by_ref[
+        relation.semantic_target.ref
+    ]
+    (redirect_step,) = fixture.plan.steps
+    assert type(redirect_step) is PatchRedirectBranch
+    old_target_serial = fixture.projected_inventory.serial_by_ref[
+        redirect_step.old_target
+    ]
+    assert fixture.projected_graph.blocks[feeder_serial].succs == (
+        helper_serial,
+        untouched_serial,
+    )
+    assert fixture.projected_graph.blocks[helper_serial].succs == (
+        semantic_target_serial,
+    )
+
+    # The compiler-owned old arm remains structurally present but unreachable.
+    # The only observed delta is H's elision and its exact F -> H -> N splice.
+    observed_blocks = dict(fixture.projected_graph.blocks)
+    del observed_blocks[helper_serial]
+    observed_blocks[feeder_serial] = replace(
+        observed_blocks[feeder_serial],
+        succs=(semantic_target_serial, untouched_serial),
+    )
+    observed_blocks[semantic_target_serial] = replace(
+        observed_blocks[semantic_target_serial],
+        preds=(feeder_serial, old_target_serial),
+    )
+    observed = FlowGraph(
+        observed_blocks,
+        fixture.projected_graph.entry_serial,
+        fixture.projected_graph.func_ea,
+        metadata=fixture.projected_graph.metadata,
+    )
+    assert observed.blocks[feeder_serial].succs == (
+        semantic_target_serial,
+        untouched_serial,
+    )
+    assert helper_serial not in observed.blocks
+    assert observed.blocks[semantic_target_serial].preds == (
+        feeder_serial,
+        old_target_serial,
+    )
+
+    observed_inventory = transaction_api._build_semantic_graph_inventory(
+        observed,
+        fixture.proposal,
+        fixture.plan,
+        source=False,
+        phase=model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY,
+        source_subjects=fixture.source_inventory.subjects,
+        source_inventory=fixture.source_inventory,
+    )
+    assert relation.helper.ref not in observed_inventory.serial_by_ref
+    assert observed_inventory.serial_by_ref[relation.feeder.ref] == feeder_serial
+    assert observed_inventory.serial_by_ref[relation.semantic_target.ref] == (
+        semantic_target_serial
+    )
+
+    observed_inputs = transaction_api._derive_inputs(
+        fixture.source_inventory,
+        observed_inventory,
+        fixture.plan,
+        fixture.proposal,
+        None,
+        phase=model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY,
+        candidate_generation=observed_inventory.generation,
+        phase_build_metrics=model.PhaseBuildMetrics(
+            model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY, 0, 1, 0.0,
+        ),
+        preparation_metrics=projected_inputs.preparation_metrics,
+        source_route_authority=fixture.source_authority,
+        projected_route_realization=realization,
+        preparation_inputs=projected_inputs,
+    )
+    return observed_inputs, relation
+
+
+def test_observed_branch_helper_elision_reuses_the_sealed_route_relation() -> None:
+    """The sealed RF-4 relation normalizes its exact observed helper elision."""
+    from d810.transforms.unflatten_authority import evaluate, model
+
+    observed_inputs, relation = _rf4_observed_helper_elision_inputs()
+    observed_case = evaluate.build_semantic_case(
+        authority_id=authority_id("rf4-observed-helper-elision"),
+        phase=model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY,
+        inputs=observed_inputs,
+    )
+    verdict = evaluate.evaluate_case(observed_case)
+
+    assert verdict.accepted, verdict.failed_obligations
+    assert not any(
+        subject.role is model.SemanticSubjectRole.PLANNED_HELPER
+        for subject in observed_case.subjects
+    )
+    assert not any(
+        type(evidence.payload) is model.PatchStepEvidencePayload
+        and evidence.payload.owner_ref == relation.helper.ref
+        for evidence in observed_case.evidence
+    )
+
+
+def test_observed_branch_helper_elision_rejects_foreign_fact_and_extra_topology() -> None:
+    """RF-4 cannot turn a generic missing helper into an observed allowance."""
+    from d810.transforms.unflatten_authority import evaluate, model
+
+    observed_inputs, relation = _rf4_observed_helper_elision_inputs()
+    projected_topology = evaluate._topology_relations_for_inventory(
+        observed_inputs.projected_topology_reference,
+        topology_roles=evaluate._TOPOLOGY_ROLES,
+    )
+    candidate_topology = evaluate._topology_relations_for_inventory(
+        observed_inputs.candidate_inventory,
+        topology_roles=evaluate._TOPOLOGY_ROLES,
+    )
+    helper_fact_index = next(
+        index
+        for index, fact in enumerate(observed_inputs.patch_step_facts)
+        if fact.owner_ref == relation.helper.ref
+    )
+    original_facts = observed_inputs.patch_step_facts
+    foreign_facts = list(original_facts)
+    foreign_facts[helper_fact_index] = replace(
+        foreign_facts[helper_fact_index],
+        creation_spec_digest=authority_id("rf4-foreign-helper-creation"),
+    )
+    # Deliberately bypass the sealed input constructor: this is an adversarial
+    # replay of otherwise valid phase inputs with a foreign helper receipt.
+    object.__setattr__(observed_inputs, "patch_step_facts", tuple(foreign_facts))
+    try:
+        assert evaluate._derive_observed_branch_helper_elisions(
+            observed_inputs,
+            projected_topology=projected_topology,
+            candidate_topology=candidate_topology,
+        ) == ()
+    finally:
+        object.__setattr__(observed_inputs, "patch_step_facts", original_facts)
+
+    exemplar = candidate_topology[0]
+    extra_topology = model.TopologyEdgeRelation(
+        model.SemanticEdgeRole.DIRECT,
+        exemplar.source_subject_id,
+        exemplar.target_subject_id,
+        0xF4E1,
+    )
+    assert extra_topology not in candidate_topology
+    assert evaluate._derive_observed_branch_helper_elisions(
+        observed_inputs,
+        projected_topology=projected_topology,
+        candidate_topology=(*candidate_topology, extra_topology),
+    ) == ()
 
 
 def test_default_gap_observed_inputs_reject_reminted_result_and_equal_projected_topology() -> None:
@@ -1291,6 +2208,50 @@ def test_projected_inventory_uniquely_binds_retained_logical_function_exit():
     assert logical_binding.native_instruction_eas == ()
 
 
+def test_observed_inventory_uses_producer_endpoint_authority_for_missing_route_leaf():
+    """Observed route loss is classified from the sealed producer endpoint.
+
+    The candidate inventory carries the route subject but not the logical STOP
+    coordinate.  It must therefore bind MISSING rather than treating its own
+    sibling subject as proof of source ownership.
+    """
+    from d810.ir.flowgraph import FlowGraph
+    from d810.transforms.unflatten_authority import model, transaction_api
+
+    source, plan, proposal, source_inventory, _materialization, _endpoint = (
+        _logical_dag_source_bind_case()
+    )
+    observed = FlowGraph(
+        {
+            **{serial: block for serial, block in source.blocks.items() if serial != 5},
+            2: replace(source.blocks[2], succs=(4,)),
+        },
+        source.entry_serial,
+        source.func_ea,
+    )
+
+    inventory = transaction_api._build_semantic_graph_inventory(
+        observed,
+        proposal,
+        plan,
+        source=False,
+        phase=model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY,
+        source_subjects=source_inventory.subjects,
+        source_inventory=source_inventory,
+    )
+    route_binding = next(
+        binding
+        for binding in inventory.bindings
+        if binding.subject.role is model.SemanticSubjectRole.SEMANTIC_ROUTE_SOURCE
+        and type(binding.subject.locator) is model.RouteSubjectLocator
+        and any(
+            type(member) is model.LogicalFunctionExitSubjectLocator
+            for member in binding.subject.locator.dag_endpoint_members()
+        )
+    )
+    assert route_binding.status is model.SubjectBindingStatus.MISSING
+
+
 @pytest.mark.parametrize(
     "observed_mutation",
     (None, "endpoint_shape", "comparison_edge"),
@@ -1313,7 +2274,6 @@ def test_public_logical_dag_authority_lifecycle_closes_one_endpoint_authority(
     )
     from d810.hexrays.ir.mba_identity_index import MbaBlockIdentityIndex
     from d810.hexrays.mutation.patch_binding import bind_patch_plan
-    from d810.transforms.edit_simulator import project_post_state
     from d810.transforms.edit_simulator import project_post_state
     from d810.transforms.cfg_transaction import CfgProjection, TransactionAttemptId
     from d810.transforms.unflatten_authority import model, transaction_api
@@ -1428,6 +2388,171 @@ def test_public_logical_dag_authority_lifecycle_closes_one_endpoint_authority(
         for comparison in proof.state_dag.witness.comparisons
         for item in (comparison.true_target, comparison.false_target)
     )
+
+
+def test_observed_logical_endpoint_occurrence_rebinds_exact_plan_owned_sink():
+    """One prepared logical target may move without changing its identity."""
+    from d810.ir.flowgraph import FlowGraph, MopSnapshot, OperandKind
+    from d810.transforms.plan import PatchRedirectGoto
+    from d810.transforms.unflatten_authority import bind, model, transaction_api
+    from d810.transforms.unflatten_authority.proposal import (
+        canonical_redirect_manifest,
+    )
+
+    source, plan, proposal, source_inventory, _materialization, _endpoint = (
+        _logical_dag_source_bind_case()
+    )
+    refs_by_serial = {
+        serial: ref for ref, serial in plan.source_coordinates
+    }
+    logical_ref = refs_by_serial[5]
+    redirect = plan.steps[0]
+    assert type(redirect) is PatchRedirectGoto
+    logical_plan = replace(
+        plan,
+        steps=(replace(redirect, new_target=logical_ref),),
+    )
+    manifest = canonical_redirect_manifest(logical_plan)
+    proposal = replace(
+        proposal,
+        use_def_witness=replace(
+            proposal.use_def_witness,
+            redirect_owner_refs=manifest.owner_refs,
+            redirect_digest=manifest.digest,
+        ),
+    )
+    logical_plan = replace(logical_plan, unflatten_proposal=proposal)
+
+    def retarget(block, target_serial):
+        tail = replace(
+            block.insn_snapshots[-1],
+            d=MopSnapshot(kind=OperandKind.BLOCK, block_ref=target_serial),
+            operands=(MopSnapshot(kind=OperandKind.BLOCK, block_ref=target_serial),),
+            operand_slots=((
+                "d", MopSnapshot(kind=OperandKind.BLOCK, block_ref=target_serial),
+            ),),
+        )
+        return replace(
+            block,
+            succs=(target_serial,),
+            insn_snapshots=(*block.insn_snapshots[:-1], tail),
+        )
+
+    projected_blocks = {
+        **source.blocks,
+        1: retarget(source.blocks[1], 5),
+        2: replace(source.blocks[2], preds=()),
+        5: replace(source.blocks[5], preds=(1, 2)),
+    }
+    projected = FlowGraph(
+        projected_blocks, source.entry_serial, source.func_ea,
+    )
+    projected_inventory = transaction_api._build_semantic_graph_inventory(
+        projected,
+        proposal,
+        logical_plan,
+        source=False,
+        phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        source_subjects=source_inventory.subjects,
+        source_inventory=source_inventory,
+    )
+
+    observed_serial = 127
+    observed_blocks = {
+        **{
+            serial: block
+            for serial, block in projected.blocks.items()
+            if serial != 5
+        },
+        1: retarget(projected.blocks[1], observed_serial),
+        2: replace(
+            projected.blocks[2],
+            succs=tuple(
+                observed_serial if serial == 5 else serial
+                for serial in projected.blocks[2].succs
+            ),
+        ),
+        observed_serial: replace(
+            projected.blocks[5], serial=observed_serial,
+        ),
+    }
+    observed = FlowGraph(
+        observed_blocks, projected.entry_serial, projected.func_ea,
+    )
+    serial_by_ref = transaction_api._projected_serials(
+        observed,
+        proposal,
+        plan=logical_plan,
+        phase=model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY,
+    )
+    occurrence = transaction_api._resolve_observed_logical_endpoint_occurrences(
+        blocks=observed.blocks,
+        plan=logical_plan,
+        serial_by_ref=serial_by_ref,
+        projected_inventory=projected_inventory,
+    )
+
+    assert occurrence == (
+        model.ObservedLogicalEndpointOccurrence(
+            logical_ref=logical_ref,
+            projected_serial=5,
+            observed_serial=observed_serial,
+            owner_ref=refs_by_serial[1],
+            predecessor_refs=(refs_by_serial[1], refs_by_serial[2]),
+        ),
+    )
+    bind._validate_observed_logical_endpoint_occurrence(occurrence[0])
+    with pytest.raises(ValueError, match="not minted"):
+        bind._validate_observed_logical_endpoint_occurrence(
+            model.ObservedLogicalEndpointOccurrence(
+                logical_ref=logical_ref,
+                projected_serial=5,
+                observed_serial=observed_serial,
+                owner_ref=refs_by_serial[1],
+                predecessor_refs=(refs_by_serial[1], refs_by_serial[2]),
+            ),
+        )
+
+    foreign_target = MopSnapshot(kind=OperandKind.BLOCK, block_ref=999)
+    contradictory_owner = replace(
+        observed.blocks[1],
+        insn_snapshots=(
+            *observed.blocks[1].insn_snapshots[:-1],
+            replace(
+                observed.blocks[1].insn_snapshots[-1],
+                l=foreign_target,
+            ),
+        ),
+    )
+    assert not transaction_api._is_exact_unconditional_goto_to(
+        contradictory_owner, observed_serial,
+    )
+
+    hidden_predecessor_blocks = {
+        **observed.blocks,
+        6: replace(observed.blocks[6], succs=(observed_serial,)),
+    }
+    assert transaction_api._resolve_observed_logical_endpoint_occurrences(
+        blocks=hidden_predecessor_blocks,
+        plan=logical_plan,
+        serial_by_ref=serial_by_ref,
+        projected_inventory=projected_inventory,
+    ) == ()
+
+    malformed_sink_blocks = {
+        **observed.blocks,
+        observed_serial: replace(
+            observed.blocks[observed_serial],
+            kind=observed.blocks[1].kind,
+            succs=(3,),
+        ),
+    }
+    assert transaction_api._resolve_observed_logical_endpoint_occurrences(
+        blocks=malformed_sink_blocks,
+        plan=logical_plan,
+        serial_by_ref=serial_by_ref,
+        projected_inventory=projected_inventory,
+    ) == ()
 
 
 def test_projected_serials_exclude_unsealed_or_malformed_logical_stops():
@@ -1615,6 +2740,7 @@ def test_public_preparation_closes_guarded_convert_to_goto_evidence() -> None:
 )
 def test_observed_guarded_convert_to_goto_binds_backend_generated_tail(
     mutation: str | None,
+    caplog,
 ) -> None:
     """Observed validation consumes the same fold after Hex-Rays m_goto mint."""
 
@@ -1737,13 +2863,17 @@ def test_observed_guarded_convert_to_goto_binds_backend_generated_tail(
         assert observed_gates.effectful_effective.passed
         assert observed_gates.terminal.passed
 
-    verdict = transaction_api.revalidate_observed_unflatten_authority(
-        authority=authority,
-        observed=observed,
-        observed_generation=attempt.generation,
-        generic_gates=observed_gates,
-        observed_patch_binding=observed_patch_binding_for_test(authority),
-    )
+    with caplog.at_level(
+        "WARNING",
+        logger="d810.transforms.unflatten_authority.transaction_api",
+    ):
+        verdict = transaction_api.revalidate_observed_unflatten_authority(
+            authority=authority,
+            observed=observed,
+            observed_generation=attempt.generation,
+            generic_gates=observed_gates,
+            observed_patch_binding=observed_patch_binding_for_test(authority),
+        )
 
     if mutation in {
         "wrong_target", "foreign_source_origin", "unrelated_edge_loss",
@@ -1758,6 +2888,13 @@ def test_observed_guarded_convert_to_goto_binds_backend_generated_tail(
                 item.key.dimension is model.SafetyDimension.TOPOLOGY_INTEGRITY
                 and item.state is model.ObligationState.VIOLATED
                 for item in verdict.failed_obligations
+            )
+        if mutation == "unrelated_edge_loss":
+            assert any(
+                "observed authority first failure dimension=" in record.getMessage()
+                and " state=" in record.getMessage()
+                and " subject=" in record.getMessage()
+                for record in caplog.records
             )
         return
 
@@ -2847,6 +3984,200 @@ def _observed_gates(source, observed):
     )
 
 
+def _lowered_conditional_observed_helper_case(*, valid_helper: bool):
+    """Materialize RF-1's portable false arm through one backend helper.
+
+    The projected RF-1 relation is the portable ``F -> {false, true}``
+    conditional.  Hex-Rays may instead retain the false arm through a fresh,
+    ownerless helper: ``F -> {H, true}``, ``H -> false``.  This helper has no
+    source identity, so the observed transaction must accept it only through
+    the sealed lower-conditional realization and its exact patch fact.
+    """
+    from d810.ir.flowgraph import BlockKind, BlockSnapshot, FlowGraph, InsnKind, InsnSnapshot, MopSnapshot, OperandKind
+
+    source, projected, attempt, authority = _prepared_lowered_conditional_observed_case()
+    # Native insertion shifts every following serial.  Model that real backend
+    # coordinate change rather than using a non-adjacent synthetic helper.
+    renumber = {0: 0, 1: 2, 2: 3, 3: 4, 4: 5}
+    helper_serial, feeder_serial, false_serial, true_serial = 1, 0, 4, 3
+    badaddr = 0xFFFFFFFFFFFFFFFF
+    helper_target = false_serial if valid_helper else 4
+    helper = BlockSnapshot(
+        helper_serial,
+        0,
+        (false_serial,),
+        (feeder_serial,),
+        0,
+        badaddr,
+        (
+            InsnSnapshot(
+                55,
+                badaddr,
+                (),
+                d=MopSnapshot(kind=OperandKind.BLOCK, block_ref=helper_target),
+                kind=InsnKind.GOTO,
+                raw_opcode=55 if valid_helper else 0,
+            ),
+        ),
+        tail_opcode=55,
+        kind=BlockKind.ONE_WAY,
+        tail_kind=InsnKind.GOTO,
+        raw_tail_opcode=55 if valid_helper else 0,
+    )
+    def remap_operand(operand):
+        if operand is None or operand.kind is not OperandKind.BLOCK:
+            return operand
+        return replace(operand, block_ref=renumber.get(operand.block_ref, operand.block_ref))
+
+    remapped = {
+        renumber[serial]: replace(
+            block,
+            serial=renumber[serial],
+            succs=tuple(renumber[item] for item in block.succs),
+            preds=tuple(renumber[item] for item in block.preds),
+            insn_snapshots=tuple(replace(
+                item,
+                l=remap_operand(item.l), r=remap_operand(item.r),
+                d=remap_operand(item.d),
+            ) for item in block.insn_snapshots),
+        )
+        for serial, block in projected.blocks.items()
+    }
+    observed = FlowGraph(
+        {
+            **remapped,
+            helper_serial: helper,
+            feeder_serial: replace(
+                remapped[feeder_serial],
+                succs=(helper_serial, true_serial),
+            ),
+            false_serial: replace(
+                remapped[false_serial],
+                preds=(helper_serial, renumber[1]),
+            ),
+        },
+        projected.entry_serial,
+        projected.func_ea,
+        metadata=projected.metadata,
+    )
+    return source, attempt, authority, observed
+
+
+def test_observed_lowered_conditional_helper_reuses_sealed_route_relation() -> None:
+    """RF-1 accepts only the exact lowered route represented by its receipt."""
+    from d810.transforms.unflatten_authority import model, transaction_api
+
+    source, attempt, authority, observed = _lowered_conditional_observed_helper_case(
+        valid_helper=True,
+    )
+    (row,) = authority.prepared.projected_route_realization.rows
+    assert type(row.relation) is model.LoweredConditionalRouteRealization
+    assert row.plan_step_type is model.PatchStepKind.LOWER_CONDITIONAL
+
+    verdict = transaction_api.revalidate_observed_unflatten_authority(
+        authority=authority,
+        observed=observed,
+        observed_generation=attempt.generation,
+        generic_gates=_observed_gates(source, observed),
+        observed_patch_binding=observed_patch_binding_for_test(authority),
+    )
+
+    assert verdict.accepted, verdict.failed_obligations
+
+
+def test_observed_lowered_conditional_rejects_missing_false_edge_without_valid_helper() -> None:
+    """RF-1 must not excuse a lost false arm merely because its feeder lowered."""
+    from d810.transforms.unflatten_authority import transaction_api
+
+    source, attempt, authority, observed = _lowered_conditional_observed_helper_case(
+        valid_helper=False,
+    )
+    verdict = transaction_api.revalidate_observed_unflatten_authority(
+        authority=authority,
+        observed=observed,
+        observed_generation=attempt.generation,
+        generic_gates=_observed_gates(source, observed),
+        observed_patch_binding=observed_patch_binding_for_test(authority),
+    )
+
+    assert not verdict.accepted
+
+
+def test_unrepresented_lowered_conditional_helper_mints_exact_transaction_occurrence() -> None:
+    """A plan-bound conditional omitted from route rows still has one authority."""
+    from d810.transforms.unflatten_authority import bind, model, transaction_api
+
+    _source, _attempt, authority, observed = _lowered_conditional_observed_helper_case(
+        valid_helper=True,
+    )
+    prepared = authority.prepared
+    plan = authority.patch_binding.plan
+    projected = prepared.source_inputs.candidate_inventory
+    lower_step_index = next(
+        index for index, step in enumerate(plan.steps)
+        if type(step).__name__ == "PatchLowerConditionalStateTransition"
+    )
+    facts = tuple(
+        fact for fact in prepared.source_inputs.patch_step_facts
+        if fact.step_index == lower_step_index
+    )
+    observed_serial_by_ref = {
+        ref: (serial if serial == 0 else serial + 1)
+        for ref, serial in projected.serial_by_ref.items()
+    }
+
+    occurrences = transaction_api._mint_observed_lowered_conditional_topology_occurrences(
+        blocks=observed.blocks,
+        serial_by_ref=observed_serial_by_ref,
+        projected_inventory=projected,
+        realization=None,
+        patch_facts=facts,
+        plan=plan,
+    )
+
+    assert len(occurrences) == 1
+    occurrence = occurrences[0]
+    assert type(occurrence) is model.ObservedLoweredConditionalTopologyOccurrence
+    assert occurrence.patch_fact is facts[0]
+    assert occurrence.source_ref == plan.steps[lower_step_index].source_serial
+    assert occurrence.false_target_ref == plan.steps[lower_step_index].false_target_serial
+    assert occurrence.true_target_ref == plan.steps[lower_step_index].true_target_serial
+    bind.validate_observed_lowered_conditional_topology_occurrence(occurrence)
+
+
+def test_unrepresented_lowered_conditional_occurrence_rejects_non_synthetic_helper() -> None:
+    """A real or malformed helper cannot borrow lowered-conditional authority."""
+    from d810.transforms.unflatten_authority import transaction_api
+
+    _source, _attempt, authority, observed = _lowered_conditional_observed_helper_case(
+        valid_helper=False,
+    )
+    prepared = authority.prepared
+    plan = authority.patch_binding.plan
+    projected = prepared.source_inputs.candidate_inventory
+    lower_step_index = next(
+        index for index, step in enumerate(plan.steps)
+        if type(step).__name__ == "PatchLowerConditionalStateTransition"
+    )
+    facts = tuple(
+        fact for fact in prepared.source_inputs.patch_step_facts
+        if fact.step_index == lower_step_index
+    )
+    observed_serial_by_ref = {
+        ref: (serial if serial == 0 else serial + 1)
+        for ref, serial in projected.serial_by_ref.items()
+    }
+
+    assert transaction_api._mint_observed_lowered_conditional_topology_occurrences(
+        blocks=observed.blocks,
+        serial_by_ref=observed_serial_by_ref,
+        projected_inventory=projected,
+        realization=None,
+        patch_facts=facts,
+        plan=plan,
+    ) == ()
+
+
 def test_lowered_conditional_observed_only_exact_loss_correlates_to_latent_binding():
     """An observed-only CALL loss consumes the projected latent exact authority."""
     from d810.transforms.unflatten_authority import transaction_api, model
@@ -2863,13 +4194,33 @@ def test_lowered_conditional_observed_only_exact_loss_correlates_to_latent_bindi
         observed_patch_binding=observed_patch_binding_for_test(authority),
     )
     assert verdict.accepted
-    exact_claim = next(
-        claim for claim in authority.prepared.source_inputs.claims
-        if type(claim) is model.ExactInfeasibleEffectClaim
-    )
     ledger = verdict.observed_acceptance.observed_ledger
     assert len(ledger.rows) == 1
     assert ledger.rows[0].kind is model.SemanticLossKind.EXACT_INFEASIBLE_EFFECT
+    expected_claims = tuple(
+        claim for claim in authority.prepared.source_inputs.claims
+        if (
+            type(claim) is model.ExactInfeasibleEffectClaim
+            and type(claim.discarded_effect_subject.locator)
+            is model.EffectSubjectLocator
+            and claim.discarded_effect_subject.locator.owner_anchor_ea == 0x4000
+            and claim.discarded_effect_subject.locator.instruction_ea == 0x4001
+            and claim.discarded_effect_subject.locator.effect_kind
+            is model.EffectSiteKind.CALL
+        )
+    )
+    assert len(expected_claims) == 1
+    (exact_claim,) = expected_claims
+    # The fixture also carries another exact-effect claim.  Its ID must not
+    # satisfy the observed-loss row merely because it has the same claim kind.
+    assert all(
+        claim.claim_id != exact_claim.claim_id
+        for claim in authority.prepared.source_inputs.claims
+        if (
+            type(claim) is model.ExactInfeasibleEffectClaim
+            and claim is not exact_claim
+        )
+    )
     assert ledger.rows[0].claim_ids == (exact_claim.claim_id,)
     effect_cell = next(
         cell for cell in verdict.safety_case.obligation_index.cells
@@ -3289,6 +4640,199 @@ def test_redirect_lineage_retains_exact_unowned_structural_stop_preimage():
         )
 
 
+def test_redirect_branch_lineage_retains_only_an_exact_native_old_edge_preimage():
+    """A native old branch arm is structural provenance, never route authority."""
+
+    from d810.ir.flowgraph import BlockKind, FlowGraph
+    from d810.transforms.unflatten_authority import transaction_api
+
+    fixture, source, plan, _projected, _gates = _c1_direct_preparation_case()
+    refs = {serial: ref for ref, serial in plan.source_coordinates}
+    # Make the selected semantic source a genuine two-arm owner.  Its second
+    # arm is native block 4, which is deliberately absent from the selected
+    # route closure; it is only the exact old edge replaced by this step.
+    blocks = dict(source.blocks)
+    blocks[0] = replace(
+        blocks[0],
+        succs=(3, 4),
+        kind=BlockKind.TWO_WAY,
+    )
+    blocks[1] = replace(blocks[1], preds=())
+    blocks[3] = replace(blocks[3], preds=(0, 1))
+    blocks[4] = replace(blocks[4], preds=(0,))
+    native_preimage_source = FlowGraph(
+        blocks, source.entry_serial, source.func_ea,
+    )
+    branch_plan = replace(
+        plan,
+        steps=(PatchRedirectBranch(refs[0], refs[4], refs[3]),),
+    )
+    inventory = transaction_api._build_semantic_graph_inventory(
+        native_preimage_source,
+        branch_plan.unflatten_proposal,
+        branch_plan,
+        source=True,
+        phase=model.UnflattenAuthorityPhase.PRODUCER_FORECAST,
+    )
+
+    preimage = transaction_api._native_source_edge_patch_preimage(
+        source_inventory=inventory,
+        plan=branch_plan,
+        step=branch_plan.steps[0],
+        ref_position=1,
+        ref=refs[4],
+    )
+    assert preimage is not None
+    assert (preimage.source_serial, preimage.target_serial) == (0, 4)
+    assert refs[4] not in transaction_api._selected_route_subject_refs(
+        branch_plan.unflatten_proposal,
+    )
+    (fact,) = transaction_api._derive_patch_lineage_facts(
+        inventory, branch_plan, semantic_admission=True,
+    )
+    assert fact.owner_ref == refs[0]
+
+    # A destination is never admitted as a preimage, and a merely named native
+    # target must still be the reciprocal old edge of the exact source block.
+    assert transaction_api._native_source_edge_patch_preimage(
+        source_inventory=inventory,
+        plan=branch_plan,
+        step=branch_plan.steps[0],
+        ref_position=2,
+        ref=refs[3],
+    ) is None
+    broken_blocks = dict(native_preimage_source.blocks)
+    broken_blocks[0] = replace(broken_blocks[0], succs=(3,))
+    broken_blocks[4] = replace(broken_blocks[4], preds=())
+    broken_source = FlowGraph(
+        broken_blocks, source.entry_serial, source.func_ea,
+    )
+    broken_inventory = transaction_api._build_semantic_graph_inventory(
+        broken_source,
+        branch_plan.unflatten_proposal,
+        branch_plan,
+        source=True,
+        phase=model.UnflattenAuthorityPhase.PRODUCER_FORECAST,
+    )
+    assert transaction_api._native_source_edge_patch_preimage(
+        source_inventory=broken_inventory,
+        plan=branch_plan,
+        step=branch_plan.steps[0],
+        ref_position=1,
+        ref=refs[4],
+    ) is None
+    with pytest.raises(ValueError, match="outside proposal route subjects"):
+        transaction_api._derive_patch_lineage_facts(
+            broken_inventory, branch_plan, semantic_admission=True,
+        )
+
+
+def test_redirect_lineage_retains_only_an_exact_conditional_suffix_owner():
+    """A non-route GOTO owner belongs only to its adjacent branch triangle."""
+
+    from d810.ir.flowgraph import BlockKind, FlowGraph
+    from d810.transforms.unflatten_authority import transaction_api
+    from .test_bind import _one_way_goto
+
+    _fixture, source, plan, _projected, _gates = _c1_direct_preparation_case()
+    refs = {serial: ref for ref, serial in plan.source_coordinates}
+    # A=0 is the selected semantic route block, B=2 its native fallthrough
+    # suffix, and C=4 their shared old target.  The paired edits are exactly
+    # A:C->A followed by B:C->A.
+    blocks = dict(source.blocks)
+    blocks[0] = replace(
+        blocks[0], succs=(2, 4), kind=BlockKind.TWO_WAY,
+    )
+    blocks[1] = replace(blocks[1], preds=())
+    blocks[2] = _one_way_goto(blocks[2], 4, preds=(0,))
+    blocks[4] = replace(blocks[4], preds=(0, 2))
+    suffix_source = FlowGraph(blocks, source.entry_serial, source.func_ea)
+    suffix_plan = replace(
+        plan,
+        steps=(
+            PatchRedirectBranch(refs[0], refs[4], refs[0]),
+            PatchRedirectGoto(refs[2], refs[4], refs[0]),
+        ),
+    )
+    inventory = transaction_api._build_semantic_graph_inventory(
+        suffix_source,
+        suffix_plan.unflatten_proposal,
+        suffix_plan,
+        source=True,
+        phase=model.UnflattenAuthorityPhase.PRODUCER_FORECAST,
+    )
+    route_refs = transaction_api._selected_route_subject_refs(
+        suffix_plan.unflatten_proposal,
+    )
+    assert refs[0] in route_refs and refs[2] not in route_refs
+
+    preimage = transaction_api._native_conditional_suffix_patch_preimage(
+        source_inventory=inventory,
+        plan=suffix_plan,
+        step_index=1,
+        step=suffix_plan.steps[1],
+        ref_position=0,
+        ref=refs[2],
+        route_refs=route_refs,
+    )
+    assert preimage is not None
+    assert (
+        preimage.branch_owner_serial,
+        preimage.suffix_owner_serial,
+        preimage.old_target_serial,
+    ) == (0, 2, 4)
+    facts = transaction_api._derive_patch_lineage_facts(
+        inventory, suffix_plan, semantic_admission=True,
+    )
+    assert tuple(fact.owner_ref for fact in facts) == (refs[0], refs[2])
+
+    # The authority is the exact adjacent pair and its triangle.  Neither an
+    # unrelated prior branch nor topology with a detached suffix may lend it.
+    wrong_pair = replace(
+        suffix_plan,
+        steps=(
+            replace(suffix_plan.steps[0], old_target=refs[3]),
+            suffix_plan.steps[1],
+        ),
+    )
+    assert transaction_api._native_conditional_suffix_patch_preimage(
+        source_inventory=inventory,
+        plan=wrong_pair,
+        step_index=1,
+        step=wrong_pair.steps[1],
+        ref_position=0,
+        ref=refs[2],
+        route_refs=route_refs,
+    ) is None
+    detached_blocks = dict(suffix_source.blocks)
+    detached_blocks[0] = replace(detached_blocks[0], succs=(3, 4))
+    detached_blocks[2] = replace(detached_blocks[2], preds=())
+    detached_blocks[3] = replace(detached_blocks[3], preds=(0, 1))
+    detached_source = FlowGraph(
+        detached_blocks, source.entry_serial, source.func_ea,
+    )
+    detached_inventory = transaction_api._build_semantic_graph_inventory(
+        detached_source,
+        suffix_plan.unflatten_proposal,
+        suffix_plan,
+        source=True,
+        phase=model.UnflattenAuthorityPhase.PRODUCER_FORECAST,
+    )
+    assert transaction_api._native_conditional_suffix_patch_preimage(
+        source_inventory=detached_inventory,
+        plan=suffix_plan,
+        step_index=1,
+        step=suffix_plan.steps[1],
+        ref_position=0,
+        ref=refs[2],
+        route_refs=route_refs,
+    ) is None
+    with pytest.raises(ValueError, match="outside proposal route subjects"):
+        transaction_api._derive_patch_lineage_facts(
+            detached_inventory, suffix_plan, semantic_admission=True,
+        )
+
+
 def test_direct_projected_gate_validates_one_exact_loss_ledger_once(monkeypatch):
     """The transaction validates its shared exhaustive ledger once."""
     from d810.transforms.unflatten_authority import transaction_api
@@ -3605,7 +5149,9 @@ def test_3b3_physical_descriptor_failure_preserves_canonical_error(fixture_name:
         side_effect=ValueError("canonical descriptor coordinates are malformed"),
     ):
         with pytest.raises(ValueError, match="canonical descriptor coordinates"):
-            transaction_api._derive_patch_lineage_facts(source, plan)
+            transaction_api._derive_patch_lineage_facts(
+                source, plan, semantic_admission=True,
+            )
 
 
 def test_transaction_derivation_rejects_a_residual_terminal_cycle() -> None:
@@ -3931,7 +5477,7 @@ def test_transaction_derivation_carries_terminal_cycle_phase_result() -> None:
                 block_ref("b1")
                 if owner == block_ref("b0")
                 else block_ref("b0"),
-                block_ref("b2"),
+                proposal.plan_inputs.authoritative_handlers[0].block_ref,
             )
             for owner in proposal.use_def_witness.redirect_owner_refs
         ),
@@ -4415,6 +5961,7 @@ def test_derived_detached_authority_reuses_projected_source_across_observation()
     from d810.transforms.unflatten_authority.proposal import (
         canonical_redirect_manifest,
     )
+    from d810.transforms.cfg_transaction import NativeBlockRef
     from .test_bind import _detached_binding_fixture
 
     claim, source, projected, _ = _detached_binding_fixture()
@@ -4439,12 +5986,15 @@ def test_derived_detached_authority_reuses_projected_source_across_observation()
             )
             for role, serial in subject_specs
         )
-        subjects = tuple(sorted(
-            (*inventory.subjects, *added_subjects), key=lambda item: item.subject_id,
-        ))
-        bindings = tuple(sorted((
-            *inventory.bindings,
-            *(
+        subjects = tuple(sorted({
+            item.subject_id: item
+            for item in (*inventory.subjects, *added_subjects)
+        }.values(), key=lambda item: item.subject_id))
+        bindings = tuple(sorted({
+            item.subject.subject_id: item
+            for item in (
+                *inventory.bindings,
+                *(
                 model.PhaseSubjectBinding(
                     subject, inventory.phase, blocks[serial].block_ref,
                     inventory.graph_fingerprint, inventory.generation,
@@ -4453,12 +6003,13 @@ def test_derived_detached_authority_reuses_projected_source_across_observation()
                     subject.role,
                 )
                 for subject, (_role, serial) in zip(added_subjects, subject_specs)
-            ),
-        ), key=lambda item: item.subject.subject_id))
-        source_subject_ids = tuple(sorted(
-            (*inventory.source_subject_ids,
-             *(subject.subject_id for subject in added_subjects)),
-        ))
+                ),
+            )
+        }.values(), key=lambda item: item.subject.subject_id))
+        source_subject_ids = tuple(sorted({
+            *inventory.source_subject_ids,
+            *(subject.subject_id for subject in added_subjects),
+        }))
         digest = semantic_graph_inventory_digest(
             inventory.phase, inventory.graph_fingerprint, inventory.generation,
             inventory.blocks, subjects, bindings, inventory.effects,
@@ -4476,8 +6027,13 @@ def test_derived_detached_authority_reuses_projected_source_across_observation()
     source = with_plan_catalog_subjects(source)
     projected = with_plan_catalog_subjects(projected)
     base = model.ProposedUnflattenContract(**_valid_proposal(model))
+    source_native_key = next(
+        block.block_ref.identity.native_key
+        for block in source.blocks
+        if type(block.block_ref) is NativeBlockRef
+    )
     catalog = model.SourceIdentityCatalog(
-        base.source_identity_catalog.native_key,
+        source_native_key,
         source.generation,
         tuple(
             model.SourceBlockIdentityWitness(
@@ -5854,6 +7410,134 @@ def test_local_alias_claim_is_derived_before_authority_id() -> None:
     mutated_steps[alias_index] = replace(mutated_steps[alias_index], alias_token="mutated-alias")
     with pytest.raises(ValueError, match="tokens"):
         transaction_api._derive_transaction_facts(source_inventory, replace(plan, steps=tuple(mutated_steps)))
+
+
+def test_local_alias_source_coordinate_uses_catalog_binding_not_route_binding() -> None:
+    """Scalar ownership remains source-catalog-bound despite a route-local anchor.
+
+    A canonical route may legitimately bind an interior native EA of the same
+    source block.  That role-specific binding is not authority for a planner
+    scalarization: the step's typed source coordinate must select the immutable
+    source-catalog block binding, then projected MOV validation happens later.
+    """
+    from d810.transforms.unflatten_authority.ids import (
+        _subject_factory,
+        semantic_graph_inventory_digest,
+    )
+
+    _authority, plan, source_inventory, _projected, _facts, _attempt = (
+        __import__(
+            "tests.unit.transforms.unflatten_authority.test_bind",
+            fromlist=["_compiler_direct_branch_case"],
+        )._compiler_direct_branch_case(two_local_aliases=True)
+    )
+    step = next(
+        item for item in plan.steps
+        if type(item).__name__ == "PatchScalarizeLocalAliasAccess"
+        and item.host_ea == 0x1000
+    )
+    source_binding = next(
+        item for item in source_inventory.bindings
+        if item.block_ref == step.block_serial
+        and item.role is model.SemanticSubjectRole.SOURCE_CATALOG_BLOCK
+    )
+    alternate_anchor = next(
+        ea for ea in source_binding.native_instruction_eas
+        if ea != source_binding.anchor_ea
+    )
+    route_subject = _subject_factory(
+        model.SemanticSubjectRef,
+        kind=model.SemanticSubjectKind.BLOCK,
+        role=model.SemanticSubjectRole.SEMANTIC_ROUTE_DESTINATION,
+        block_ref=step.block_serial,
+        anchor_ea=alternate_anchor,
+        locator=model.BlockSubjectLocator(step.block_serial, alternate_anchor),
+    )
+    route_binding = model.PhaseSubjectBinding(
+        subject=route_subject,
+        phase=source_inventory.phase,
+        block_ref=step.block_serial,
+        graph_fingerprint=source_inventory.graph_fingerprint,
+        generation=source_inventory.generation,
+        status=model.SubjectBindingStatus.UNIQUE,
+        serial=source_binding.serial,
+        anchor_ea=alternate_anchor,
+        native_instruction_eas=source_binding.native_instruction_eas,
+        role=route_subject.role,
+    )
+    subjects = tuple(sorted(
+        (*source_inventory.subjects, route_subject),
+        key=lambda item: item.subject_id,
+    ))
+    bindings = tuple(sorted(
+        (*source_inventory.bindings, route_binding),
+        key=lambda item: item.subject.subject_id,
+    ))
+    source_subject_ids = tuple(sorted(
+        (*source_inventory.source_subject_ids, route_subject.subject_id),
+    ))
+    source_with_route_local_binding = replace(
+        source_inventory,
+        subjects=subjects,
+        bindings=bindings,
+        source_subject_ids=source_subject_ids,
+        inventory_digest=semantic_graph_inventory_digest(
+            source_inventory.phase,
+            source_inventory.graph_fingerprint,
+            source_inventory.generation,
+            source_inventory.blocks,
+            subjects,
+            bindings,
+            source_inventory.effects,
+            source_inventory.terminals,
+            source_inventory.topology,
+            source_inventory.reachable_serials,
+            source_inventory.entry_serial,
+            source_subject_ids,
+            source_inventory.function_ea,
+            source_inventory.observed_route_topology_occurrences,
+            source_inventory.observed_lowered_conditional_topology_occurrences,
+        ),
+    )
+    model.validate_semantic_graph_inventory(source_with_route_local_binding)
+
+    occurrences, facts, relations = transaction_api._derive_local_alias_transaction_facts(
+        source_with_route_local_binding,
+        plan,
+    )
+
+    assert len(occurrences) == 2
+    scalar_claim = next(
+        item.claim for item in occurrences
+        if item.claim.host_ea == step.host_ea
+    )
+    assert scalar_claim.owner_subject.anchor_ea == source_binding.anchor_ea
+    assert len(facts) == 2
+    assert len(relations) == 2
+
+    foreign_owner = next(
+        ref for ref, _serial in plan.source_coordinates
+        if ref != step.block_serial
+    )
+    foreign_steps = tuple(
+        replace(item, block_serial=foreign_owner) if item is step else item
+        for item in plan.steps
+    )
+    with pytest.raises(ValueError, match="owner is not uniquely bound"):
+        transaction_api._derive_local_alias_transaction_facts(
+            source_with_route_local_binding,
+            replace(plan, steps=foreign_steps),
+        )
+
+    stale_coordinates = tuple(
+        (ref, 3 if ref == step.block_serial else serial)
+        for ref, serial in plan.source_coordinates
+    )
+    with pytest.raises(ValueError, match="owner binding is stale"):
+        transaction_api._derive_local_alias_transaction_facts(
+            source_with_route_local_binding,
+            replace(plan, source_coordinates=stale_coordinates),
+        )
 
 
 

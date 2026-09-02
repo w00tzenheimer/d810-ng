@@ -13,6 +13,8 @@ Pure: synthetic ``FlowGraph`` + ``IntervalDispatcher`` (no IDA).  Mirrors
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 from tests.native_preanalysis import make_native_key
 
 NATIVE_KEY = make_native_key()
@@ -66,6 +68,7 @@ from d810.transforms.minimal_unflatten_emit import (
     build_conditional_arm_redirects,
     build_folded_loop_guard_transitions,
     build_shared_merge_conditional_redirects,
+    _shared_write_block_is_pure_state_plumbing,
     build_state_write_redirects,
     lower_conditional_transition_candidates,
 )
@@ -432,6 +435,7 @@ def test_shared_merge_repair_suppresses_every_rewritten_source() -> None:
         disp,
         transitions,
         dispatcher_entry_serial=2,
+        state_var_stkoff=_STATE,
     )
 
     assert {
@@ -442,6 +446,176 @@ def test_shared_merge_repair_suppresses_every_rewritten_source() -> None:
         ("RedirectGoto", 11, 12, 40),
     }
     assert suppressed == {10, 11, 12}
+
+
+@pytest.mark.parametrize("merge_defect", ("effectful_store", "missing_left"))
+def test_shared_merge_repair_preserves_impure_merge_corridor(
+    merge_defect: str,
+) -> None:
+    """An observable or unresolved merge retains its original corridor."""
+    fg = FlowGraph(
+        blocks={
+            2: _b(2, (10, 40, 50), (12,)),
+            10: _b(10, (11, 12), (2,), (_conditional_jump(0x1010, 12),)),
+            11: _b(11, (12,), (10,), (_mov_reg_const(0x1110, 1, 0xAA),)),
+            12: _b(12, (2,), (10, 11), (_mov_reg_state(0x1210, 1),)),
+            40: _b(40, (), (2,)),
+            50: _b(50, (), (2,)),
+            99: _stop(99, ()),
+        },
+        entry_serial=2,
+        func_ea=0x1000,
+    )
+    blocks = dict(fg.blocks)
+    if merge_defect == "effectful_store":
+        blocks[12] = replace(
+            blocks[12],
+            insn_snapshots=(*blocks[12].insn_snapshots, _stx_alias(
+                0x1214, 0x90, "effectful merge",
+            )),
+        )
+    else:
+        blocks[12] = replace(
+            blocks[12],
+            insn_snapshots=(replace(blocks[12].insn_snapshots[0], l=None),),
+        )
+    effectful = FlowGraph(blocks, fg.entry_serial, fg.func_ea)
+    disp = _disp({0x10: 10, 0xAA: 40, 0xBB: 50}, exit_block=99)
+    transitions = (
+        HandlerTransition(
+            handler=10,
+            states=(0x10,),
+            arms=(
+                TransitionArm(0xBB, 50, False, 10, 12, 12, (10, 12)),
+                TransitionArm(0xAA, 40, False, 10, 12, 12, (10, 11, 12)),
+            ),
+        ),
+    )
+
+    redirects, suppressed = build_shared_merge_conditional_redirects(
+        effectful,
+        disp,
+        transitions,
+        dispatcher_entry_serial=2,
+        state_var_stkoff=_STATE,
+    )
+
+    assert redirects == []
+    assert suppressed == {10, 11, 12}
+
+
+@pytest.mark.parametrize(
+    "merge_variant",
+    ("pure", "effectful_store", "missing_left"),
+)
+def test_shared_merge_repair_requires_exact_dispatcher_successor(
+    merge_variant: str,
+) -> None:
+    """A non-dispatcher merge target is not owned by this repair pass."""
+    merge_instructions = (_mov_reg_state(0x1210, 1),)
+    if merge_variant == "effectful_store":
+        merge_instructions += (_stx_alias(0x1214, 0x90, "effectful merge"),)
+    elif merge_variant == "missing_left":
+        merge_instructions = (replace(merge_instructions[0], l=None),)
+    fg = FlowGraph(
+        blocks={
+            2: _b(2, (10, 40, 50), ()),
+            10: _b(10, (11, 12), (2,), (_conditional_jump(0x1010, 12),)),
+            11: _b(11, (12,), (10,), (_mov_reg_const(0x1110, 1, 0xAA),)),
+            12: _b(12, (99,), (10, 11), merge_instructions),
+            40: _b(40, (), (2,)),
+            50: _b(50, (), (2,)),
+            99: _stop(99, (12,)),
+        },
+        entry_serial=2,
+        func_ea=0x1000,
+    )
+    disp = _disp({0x10: 10, 0xAA: 40, 0xBB: 50}, exit_block=99)
+    transitions = (
+        HandlerTransition(
+            handler=10,
+            states=(0x10,),
+            arms=(
+                TransitionArm(0xBB, 50, False, 10, 12, 12, (10, 12)),
+                TransitionArm(0xAA, 40, False, 10, 12, 12, (10, 11, 12)),
+            ),
+        ),
+    )
+
+    redirects, suppressed = build_shared_merge_conditional_redirects(
+        fg,
+        disp,
+        transitions,
+        dispatcher_entry_serial=2,
+        state_var_stkoff=_STATE,
+    )
+
+    assert redirects == []
+    assert suppressed == set()
+
+
+@pytest.mark.parametrize("kind", (InsnKind.MOV, InsnKind.XDU, InsnKind.XDS))
+def test_shared_merge_pure_plumbing_requires_exact_unary_arity(kind: InsnKind) -> None:
+    """Unary state writes require one resolved scalar source and no right slot."""
+    valid = InsnSnapshot(
+        opcode=_OP_MOV,
+        ea=0x1300,
+        operands=(),
+        l=_reg(1),
+        d=_stack(_STATE, size=4),
+        kind=kind,
+    )
+    assert _shared_write_block_is_pure_state_plumbing(
+        _b(12, (), (), (valid,)), state_var_stkoff=_STATE, state_var_reg=None,
+    )
+    assert not _shared_write_block_is_pure_state_plumbing(
+        _b(12, (), (), (replace(valid, l=None),)),
+        state_var_stkoff=_STATE,
+        state_var_reg=None,
+    )
+    assert not _shared_write_block_is_pure_state_plumbing(
+        _b(12, (), (), (replace(
+            valid,
+            l=MopSnapshot(kind=OperandKind.REGISTER, size=4),
+        ),)),
+        state_var_stkoff=_STATE,
+        state_var_reg=None,
+    )
+    assert not _shared_write_block_is_pure_state_plumbing(
+        _b(12, (), (), (replace(valid, r=_reg(2)),)),
+        state_var_stkoff=_STATE,
+        state_var_reg=None,
+    )
+
+
+@pytest.mark.parametrize("kind", (InsnKind.ADD, InsnKind.SUB, InsnKind.AND, InsnKind.MUL))
+def test_shared_merge_pure_plumbing_requires_exact_binary_arity(kind: InsnKind) -> None:
+    """Binary state writes require both resolved scalar sources."""
+    valid = InsnSnapshot(
+        opcode=_OP_MOV,
+        ea=0x1310,
+        operands=(),
+        l=_reg(1),
+        r=_reg(2),
+        d=_stack(_STATE, size=4),
+        kind=kind,
+    )
+    assert _shared_write_block_is_pure_state_plumbing(
+        _b(12, (), (), (valid,)), state_var_stkoff=_STATE, state_var_reg=None,
+    )
+    assert not _shared_write_block_is_pure_state_plumbing(
+        _b(12, (), (), (replace(valid, r=None),)),
+        state_var_stkoff=_STATE,
+        state_var_reg=None,
+    )
+    assert not _shared_write_block_is_pure_state_plumbing(
+        _b(12, (), (), (replace(
+            valid,
+            r=MopSnapshot(kind=OperandKind.REGISTER, size=4),
+        ),)),
+        state_var_stkoff=_STATE,
+        state_var_reg=None,
+    )
 
 
 def test_arm_redirects_preserve_reachability(_seam) -> None:

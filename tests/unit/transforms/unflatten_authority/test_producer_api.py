@@ -1155,6 +1155,42 @@ def test_projected_conditional_inventory_carries_ordered_predicate_observation()
     assert predicate.explicit_target_serial == 2
 
 
+def test_counter_bound_conditional_inventory_carries_typed_predicate() -> None:
+    """Counter guards retain storage, width, bound, and signedness semantics."""
+    from d810.transforms.edit_simulator import project_post_state
+    from d810.transforms.graph_modification import SyntheticCounterBoundCondition
+    from d810.transforms.plan import LowerConditionalStateTransition
+    from tests.typed_patch_authority import compile_patch_plan
+    from tests.unit.transforms.unflatten_authority.helpers import exact_fixture
+
+    source, _proposal, _exclusion, refs = exact_fixture()
+    plan = compile_patch_plan(
+        [LowerConditionalStateTransition(
+            source_serial=0,
+            old_dispatcher_serial=1,
+            rewrite_from_ea=0x1001,
+            condition_operand=SyntheticCounterBoundCondition(
+                4, 100, counter_stkoff=0xA0, signed=False,
+            ),
+            false_target_serial=3,
+            true_target_serial=2,
+        )],
+        source,
+    )
+    projected = project_post_state(source, plan)
+    observation = observe_inventory_block(
+        projected.blocks[0], owner_ref=refs[0], owner_anchor_ea=0x1000,
+    )
+
+    predicate = observation.instruction_observations[-1].predicate_observation
+    assert predicate is not None
+    assert predicate.predicate_kind is PredicateKind.ULT
+    assert predicate.storage_identity.key == "S160"
+    assert predicate.width == 4
+    assert predicate.compare_constant == 100
+    assert predicate.explicit_target_serial == 2
+
+
 def test_predicate_observation_invariants_pin_order_tail_and_closed_kind() -> None:
     """Predicate facts are valid only for the exact ordered conditional tail."""
     from dataclasses import replace
@@ -1189,10 +1225,15 @@ def test_predicate_observation_invariants_pin_order_tail_and_closed_kind() -> No
             *observation.instruction_observations[:-1],
             replace(tail, control_transfer_kind=None),
         ))
-    with pytest.raises(ValueError, match="requires EQ"):
+    with pytest.raises(ValueError, match="structured comparison"):
         replace(observation, instruction_observations=(
             *observation.instruction_observations[:-1],
-            replace(tail, predicate_observation=replace(predicate, predicate_kind=PredicateKind.NE)),
+            replace(
+                tail,
+                predicate_observation=replace(
+                    predicate, predicate_kind=PredicateKind.TRUTHY,
+                ),
+            ),
         ))
 
 
@@ -2919,3 +2960,211 @@ def test_state_partition_adapter_requires_exact_dag_namespaces_and_xdu_bridges()
                 replace(route, semantic_route_fact=replace(fact, decision_dag_witness=drifted_dag)),
                 **kwargs,
             )
+
+
+def test_handler_catalogue_separates_recovered_destinations_from_explicit_proposals() -> None:
+    """Discovery candidates cannot masquerade as handler authority."""
+    from d810.ir.flowgraph import FlowGraph
+    from d810.transforms.cfg_transaction import LogicalBlockRef
+    from d810.transforms.unflatten_authority import model
+
+    source, proposal, _exclusion, refs = __import__(
+        "tests.unit.transforms.unflatten_authority.test_bind",
+        fromlist=["_exact_fixture"],
+    )._exact_fixture()
+    logical_exit_serial = 4
+    logical_exit = BlockSnapshot(
+        serial=logical_exit_serial, block_type=0, succs=(), preds=(), flags=0,
+        start_ea=0xFFFFFFFFFFFFFFFF, insn_snapshots=(), kind=BlockKind.ZERO_WAY,
+    )
+    source = FlowGraph(
+        {**source.blocks, logical_exit_serial: logical_exit},
+        source.entry_serial, source.func_ea,
+    )
+    refs = {
+        **refs,
+        logical_exit_serial: LogicalBlockRef("test", "function-exit", 1),
+    }
+    catalog = producer_module.build_source_identity_catalog(
+        source, refs, native_key=proposal.route_evidence.native_key,
+        source_generation=proposal.route_evidence.generation,
+    )
+    state_identity = proposal.route_evidence.route_proofs[0].state_write.state_variable
+    selected_destination_proof = proposal.route_evidence.route_proofs[0]
+
+    assert producer_module.derive_authoritative_handler_serials(
+        source=source,
+        source_catalog=catalog,
+        block_refs_by_serial=refs,
+        recovered_handler_serials=(logical_exit_serial,),
+        caller_handler_serials=(),
+        canonical_route_evidence=proposal.route_evidence,
+        state_identity=state_identity,
+    ) == ()
+    assert producer_module.derive_authoritative_handler_serials(
+        source=source,
+        source_catalog=catalog,
+        block_refs_by_serial=refs,
+        # A raw recovered candidate is not promoted to handler authority when
+        # canonical route evidence never selects it as a destination.
+        recovered_handler_serials=(0,),
+        caller_handler_serials=(),
+        canonical_route_evidence=proposal.route_evidence,
+        state_identity=state_identity,
+    ) == ()
+    assert producer_module.derive_authoritative_handler_serials(
+        source=source,
+        source_catalog=catalog,
+        block_refs_by_serial=refs,
+        # Explicit caller authority remains a delivery-only obligation even
+        # when it does not own a selected state-route destination.
+        recovered_handler_serials=(),
+        caller_handler_serials=(0,),
+        canonical_route_evidence=proposal.route_evidence,
+        state_identity=state_identity,
+    ) == (0,)
+    assert producer_module.derive_authoritative_handler_serials(
+        source=source,
+        source_catalog=catalog,
+        block_refs_by_serial=refs,
+        recovered_handler_serials=(),
+        # A caller proposal that is the retired exact source of one selected
+        # canonical route is discharged by that typed route claim;
+        # it must not mint a redundant physical-delivery obligation.
+        caller_handler_serials=(1,),
+        canonical_route_evidence=proposal.route_evidence,
+        selected_route_proofs=(selected_destination_proof,),
+        state_identity=state_identity,
+    ) == ()
+    assert producer_module.derive_authoritative_handler_serials(
+        source=source,
+        source_catalog=catalog,
+        block_refs_by_serial=refs,
+        recovered_handler_serials=(),
+        # A selected proof for another stable retired source cannot suppress the
+        # caller's physical-delivery obligation.
+        caller_handler_serials=(0,),
+        canonical_route_evidence=proposal.route_evidence,
+        selected_route_proofs=(selected_destination_proof,),
+        state_identity=state_identity,
+    ) == (0,)
+    assert producer_module.derive_authoritative_handler_serials(
+        source=source,
+        source_catalog=catalog,
+        block_refs_by_serial=refs,
+        recovered_handler_serials=(),
+        # A selected route's destination has not itself been retired, so it
+        # remains a physical-delivery obligation.
+        caller_handler_serials=(2,),
+        canonical_route_evidence=proposal.route_evidence,
+        selected_route_proofs=(selected_destination_proof,),
+        state_identity=state_identity,
+    ) == (2,)
+    with pytest.raises(ValueError, match="foreign to canonical evidence"):
+        producer_module.derive_authoritative_handler_serials(
+            source=source,
+            source_catalog=catalog,
+            block_refs_by_serial=refs,
+            recovered_handler_serials=(),
+            caller_handler_serials=(1,),
+            canonical_route_evidence=proposal.route_evidence,
+            # This is typed but is not a member of the bound canonical
+            # evidence, so it cannot discharge an obligation.
+            selected_route_proofs=(replace(selected_destination_proof, proof_id="foreign"),),
+            state_identity=state_identity,
+        )
+    assert producer_module.derive_authoritative_handler_serials(
+        source=source,
+        source_catalog=catalog,
+        block_refs_by_serial=refs,
+        # Route destination 2 is the canonical state-7 handler.  Repeating it
+        # in the caller proposal must not duplicate the authority row.
+        recovered_handler_serials=(2,),
+        caller_handler_serials=(2,),
+        canonical_route_evidence=proposal.route_evidence,
+        state_identity=state_identity,
+    ) == (2,)
+    destination_inputs = producer_module.build_unflatten_plan_input_catalog(
+        source=source,
+        source_catalog=catalog,
+        block_refs_by_serial=refs,
+        canonical_route_evidence=proposal.route_evidence,
+        state_identity=state_identity,
+        source_entry_serial=source.entry_serial,
+        dispatcher_entry_serial=1,
+        dispatcher_member_serials=(1,),
+        authoritative_handler_serials=(2,),
+        shape=model.UnflattenPlanShape.PARTIAL_REWRITE,
+    )
+    assert destination_inputs.authoritative_handlers[0].normalized_states == (7,)
+    plan_inputs = producer_module.build_unflatten_plan_input_catalog(
+        source=source,
+        source_catalog=catalog,
+        block_refs_by_serial=refs,
+        canonical_route_evidence=proposal.route_evidence,
+        state_identity=state_identity,
+        source_entry_serial=source.entry_serial,
+        dispatcher_entry_serial=1,
+        dispatcher_member_serials=(1,),
+        authoritative_handler_serials=(0,),
+        shape=model.UnflattenPlanShape.PARTIAL_REWRITE,
+    )
+    assert plan_inputs.authoritative_handlers[0].normalized_states == ()
+    # Handler delivery and route equivalence are independent authorities: an
+    # empty-state handler does not select or mint a route claim.
+    assert producer_module.build_equivalent_route_claims(
+        source=source,
+        source_catalog=catalog,
+        route_evidence=proposal.route_evidence,
+        selected_proof_ids=(),
+        block_refs_by_serial=refs,
+    ) == ()
+    with pytest.raises(ValueError, match="unknown serial: 99"):
+        producer_module.derive_authoritative_handler_serials(
+            source=source,
+            source_catalog=catalog,
+            block_refs_by_serial=refs,
+            recovered_handler_serials=(99,),
+            caller_handler_serials=(),
+            canonical_route_evidence=proposal.route_evidence,
+            state_identity=state_identity,
+        )
+    with pytest.raises(ValueError, match="unknown serial: 99"):
+        producer_module.derive_authoritative_handler_serials(
+            source=source,
+            source_catalog=catalog,
+            block_refs_by_serial=refs,
+            recovered_handler_serials=(),
+            caller_handler_serials=(99,),
+            canonical_route_evidence=proposal.route_evidence,
+            state_identity=state_identity,
+        )
+    with pytest.raises(ValueError, match="not a native source block"):
+        producer_module.derive_authoritative_handler_serials(
+            source=source,
+            source_catalog=catalog,
+            block_refs_by_serial=refs,
+            recovered_handler_serials=(),
+            caller_handler_serials=(logical_exit_serial,),
+            canonical_route_evidence=proposal.route_evidence,
+            state_identity=state_identity,
+        )
+
+    nonterminal_serial = 5
+    nonterminal = BlockSnapshot(
+        serial=nonterminal_serial, block_type=0, succs=(0,), preds=(), flags=0,
+        start_ea=0xFFFFFFFFFFFFFFFF, insn_snapshots=(), kind=BlockKind.ONE_WAY,
+    )
+    with pytest.raises(ValueError, match="native|anchor|logical"):
+        producer_module.build_source_identity_catalog(
+            FlowGraph(
+                {**source.blocks, nonterminal_serial: nonterminal},
+                source.entry_serial, source.func_ea,
+            ),
+            {
+                **refs,
+                nonterminal_serial: LogicalBlockRef("test", "not-an-exit", 1),
+            },
+            native_key=proposal.route_evidence.native_key,
+            source_generation=proposal.route_evidence.generation,
+        )
