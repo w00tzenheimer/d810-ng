@@ -2850,6 +2850,60 @@ def test_entry_liveness_allowance_content_id_seals_canonical_route_proof() -> No
         replace(allowance, route_proof_id=authority_id("foreign-proof"))
 
 
+def test_entry_liveness_delivery_corridor_ends_at_exact_redirect_owner() -> None:
+    """The W -> ... -> D witness must end with the rewritten P -> D edge."""
+    owner = block_ref("entry-owner")
+    intermediate = block_ref("entry-intermediate")
+    old = block_ref("dispatcher")
+    replacement = block_ref("handler")
+    write_ref = NativeBlockRef(StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x402000, 0x402010),),
+        native_key=_native_key(model, fingerprint="entry-liveness-delivery"),
+        exact_instruction_eas=(0x402000,),
+    ))
+    reason = model.EntryEndpointLivenessReason.NO_PROVIDER_EXIT_PATH_LIVE_SAFE_ENDPOINT
+    route_proof_id = authority_id("entry-delivery-proof")
+    direct_path = (write_ref, owner, old)
+    forecast = model.EntryEndpointLivenessForecast(
+        reason, 7, route_proof_id, owner, write_ref, 0x402000,
+        old, replacement, (old,), direct_path, ((0, 1), (1, 2)), False,
+    )
+    assert forecast.delivery_path_refs == direct_path
+
+    fields = (
+        reason, 7, route_proof_id, (owner,), old, replacement, (old,),
+        3, authority_id("entry-delivery-step"), write_ref, 0x402000,
+        direct_path, ((0, 1), (1, 2)), False,
+    )
+    allowance = model.EntryEndpointLivenessAllowance(
+        canonical_authority_id((
+            "unflatten.entry-endpoint-liveness-allowance.v1", *fields,
+        )),
+        *fields,
+    )
+    assert allowance.delivery_path_refs == direct_path
+
+    indirect_path = (write_ref, owner, intermediate, old)
+    with pytest.raises(ValueError, match="must end at redirect owner"):
+        model.EntryEndpointLivenessForecast(
+            reason, 7, route_proof_id, owner, write_ref, 0x402000,
+            old, replacement, (old,), indirect_path,
+            ((0, 1), (1, 2), (2, 3)), False,
+        )
+    indirect_fields = (
+        reason, 7, route_proof_id, (owner,), old, replacement, (old,),
+        3, authority_id("entry-delivery-step"), write_ref, 0x402000,
+        indirect_path, ((0, 1), (1, 2), (2, 3)), False,
+    )
+    with pytest.raises(ValueError, match="must end at redirect owner"):
+        model.EntryEndpointLivenessAllowance(
+            canonical_authority_id((
+                "unflatten.entry-endpoint-liveness-allowance.v1", *indirect_fields,
+            )),
+            *indirect_fields,
+        )
+
+
 def test_entry_liveness_allowance_rejects_multiple_owner_scope() -> None:
     """One receipt owns one exact redirect, never a producer-selected owner set."""
     owner, owner2 = block_ref("entry-owner"), block_ref("entry-owner-2")

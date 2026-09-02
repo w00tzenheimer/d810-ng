@@ -5,6 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 import math
 from time import perf_counter_ns
+from d810.analyses.control_flow.semantic_route_evidence import (
+    SemanticRouteProofKind,
+    SemanticRouteShape,
+)
+from d810.ir.semantic_edge import SemanticEdgeRole
 from d810.analyses.value_flow.observation import FactObservation
 from d810.transforms.cfg_transaction import TransactionAttemptId
 from d810.transforms.plan import PatchRedirectGoto
@@ -61,23 +66,37 @@ def native_bound_transition_route_receipts_from_plan(
             for name, value in proof.diagnostic_provenance
             if name == "fact_kind"
         )
-        # A native receipt may be upgraded to the stronger exact carrier
-        # proof during canonical production.  Its fact_id remains the sole
-        # receipt provenance; preserve that diagnostic correlation without
-        # downgrading the authoritative proof kind.
-        if fact_kinds not in (("native_bound",), ("state_carrier",)):
+        if proof.proof_kind is SemanticRouteProofKind.STATE_ASSIGNMENT:
+            if fact_kinds != ("native_bound",):
+                if fact_kinds in (("native_bound",), ("state_carrier",)):
+                    return ()
+                continue
+            is_carrier = False
+        elif proof.proof_kind is SemanticRouteProofKind.STATE_CARRIER:
+            # A native receipt may be upgraded to the stronger exact carrier
+            # proof during canonical production. Its fact_id remains the sole
+            # receipt provenance; preserve that diagnostic correlation without
+            # downgrading the authoritative proof kind.
+            if fact_kinds != ("state_carrier",):
+                return ()
+            is_carrier = True
+        elif fact_kinds in (("native_bound",), ("state_carrier",)):
+            return ()
+        else:
             continue
         fact_ids = tuple(
             value
             for name, value in proof.diagnostic_provenance
             if name == "fact_id"
         )
-        # Ordinary carrier proofs are authoritative route evidence but are not
-        # native receipt provenance.  Only a carrier that carries one native
-        # fact ID participates in this diagnostic projection.
-        if fact_kinds == ("state_carrier",) and not fact_ids:
+        # Most canonical carriers are route authority only. They are not
+        # receipt provenance and must not suppress receipts from sibling
+        # native-bound carrier claims in the same committed plan.
+        if is_carrier and not fact_ids:
             continue
         if len(fact_ids) != 1 or len(proof.destinations) != 1:
+            return ()
+        if len(claim.destination_subjects) != 1:
             return ()
         source_locator = claim.source_subject.locator
         destination_locator = claim.destination_subjects[0].locator
@@ -90,20 +109,64 @@ def native_bound_transition_route_receipts_from_plan(
         target_serial = serial_by_ref.get(destination_locator.block_ref)
         if type(source_serial) is not int or type(target_serial) is not int:
             return ()
-        matching_steps = tuple(
-            step
-            for step in steps
-            if (
-                type(step) is PatchRedirectGoto
-                and step.from_serial == source_locator.block_ref
-                and step.new_target == destination_locator.block_ref
+        if not is_carrier:
+            matching_steps = tuple(
+                step
+                for step in steps
+                if (
+                    type(step) is PatchRedirectGoto
+                    and step.from_serial == source_locator.block_ref
+                    and step.new_target == destination_locator.block_ref
+                )
             )
-        )
+        else:
+            carrier = getattr(proof, "state_carrier", None)
+            if (
+                carrier is None
+                or proof.shape is not SemanticRouteShape.DIRECT
+                or bool(getattr(carrier, "requires_feeder_clone", True))
+                or len(proof.destinations) != 1
+                or proof.destinations[0].role is not SemanticEdgeRole.DIRECT
+            ):
+                return ()
+            matching_steps = tuple(
+                step
+                for step in steps
+                if (
+                    type(step) is PatchRedirectGoto
+                    and step.new_target == destination_locator.block_ref
+                    and (
+                        (
+                            getattr(step.from_serial, "identity", None)
+                            == carrier.feeder_identity
+                            and getattr(step.old_target, "identity", None)
+                            == carrier.comparison_entry_identity
+                        )
+                        or (
+                            getattr(step.from_serial, "identity", None)
+                            == proof.source_identity
+                            and getattr(step.from_serial, "identity", None)
+                            == carrier.source_identity
+                            and getattr(step.old_target, "identity", None)
+                            == carrier.feeder_identity
+                            and getattr(step.new_target, "identity", None)
+                            == proof.destinations[0].target_identity
+                        )
+                    )
+                )
+            )
         if len(matching_steps) != 1:
             return ()
         step = matching_steps[0]
         old_target_serial = serial_by_ref.get(step.old_target)
         if type(old_target_serial) is not int:
+            return ()
+        operation_source_serial = (
+            source_serial
+            if not is_carrier
+            else serial_by_ref.get(step.from_serial)
+        )
+        if type(operation_source_serial) is not int:
             return ()
         destination = proof.destinations[0]
         try:
@@ -120,7 +183,7 @@ def native_bound_transition_route_receipts_from_plan(
                 ),
                 operation_key=(
                     "block_goto_change",
-                    source_serial,
+                    operation_source_serial,
                     old_target_serial,
                     target_serial,
                 ),

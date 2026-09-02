@@ -35,6 +35,10 @@ from d810.analyses.control_flow.dispatcher_recovery import (
     recover_entry_dominated_initial_state,
     recover_dispatcher,
 )
+from d810.analyses.control_flow.dispatcher_resolution import (
+    InitialStateWriteWitness,
+    initial_state_write_witness_from_entry_cut,
+)
 from d810.analyses.machine import recover_machine
 from d810.analyses.control_flow.comparison_dispatcher_model import (
     ComparisonDispatcherModel,
@@ -169,6 +173,37 @@ logger = logging.getLogger("d810.passes.unflatten.state_machine")
 LOWER_STATE_MACHINE_PLAN_METADATA = "lower_state_machine_plan_metadata"
 CANONICAL_SEMANTIC_EVIDENCE = "canonical_semantic_evidence"
 BOUND_CANONICAL_SEMANTIC_EVIDENCE = "bound_canonical_semantic_evidence"
+
+
+def _mint_missing_initial_state_write_witness(
+    *,
+    graph: FlowGraph,
+    dispatcher_entry_serial: int,
+    state_var_stkoff: int,
+    initial_state: int,
+    condition_chain_dag: DecisionDag,
+) -> InitialStateWriteWitness | None:
+    """Mint a fallback entry witness only at the current semantic DAG root.
+
+    ``initial_state`` is a property of the function-entry delivery corridor.
+    A later equality-chain node may carry the same stack value, but it is a
+    route-internal comparison, not an entry authority.  Recovery-owned
+    witnesses remain authoritative; this guard applies only to the temporary
+    compatibility mint for profiles that have not published one yet.
+    """
+    try:
+        if int(getattr(condition_chain_dag, "root", None)) != int(
+            dispatcher_entry_serial
+        ):
+            return None
+    except (TypeError, ValueError):
+        return None
+    return initial_state_write_witness_from_entry_cut(
+        graph,
+        int(dispatcher_entry_serial),
+        int(state_var_stkoff),
+        int(initial_state),
+    )
 
 
 def _typed_or_empty_unflatten_plan(plan: PatchPlan) -> PatchPlan:
@@ -3322,6 +3357,25 @@ class LowerStateMachine(PipelinePass):
                 )
                 else None
             )
+            initial_state_write_witness = getattr(
+                recovery, "initial_state_write_witness", None,
+            )
+            # Recovery predates the current range/decision-DAG producer in a
+            # few profiles.  Retain the scalar only as input to the shared,
+            # fail-closed entry-cut binder; the emitter never rediscovers it.
+            if (
+                initial_state_write_witness is None
+                and initial_state is not None
+                and state_var_stkoff is not None
+                and condition_chain_dag is not None
+            ):
+                initial_state_write_witness = _mint_missing_initial_state_write_witness(
+                    graph=context.graph,
+                    dispatcher_entry_serial=int(dispatcher_entry),
+                    state_var_stkoff=int(state_var_stkoff),
+                    initial_state=int(initial_state),
+                    condition_chain_dag=condition_chain_dag,
+                )
             plan = emit_minimal_unflatten(
                 context.graph,
                 dispatcher,
@@ -3356,9 +3410,7 @@ class LowerStateMachine(PipelinePass):
                 dispatcher_entry_serial=int(dispatcher_entry),
                 pre_header_serial=getattr(range_evidence, "pre_header_serial", None),
                 initial_state=initial_state,
-                initial_state_write_witness=(
-                    getattr(recovery, "initial_state_write_witness", None)
-                ),
+                initial_state_write_witness=initial_state_write_witness,
                 state_dispatcher_map=getattr(recovery, "dispatch_map", None),
                 native_bound_transition_routes=native_bound_transition_routes,
                 is_indirect=is_indirect,

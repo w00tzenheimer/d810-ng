@@ -7,6 +7,7 @@ only by the persistence codec and are never producer transport here.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, fields, replace
 from d810.core.typing import Literal, TypeAlias
 from d810.transforms.cfg_transaction import (
@@ -40,7 +41,11 @@ from d810.analyses.control_flow.minimal_state_recovery import (
 )
 from d810.analyses.control_flow.route_comparison import current_u32_route_comparison
 from d810.analyses.control_flow.condition_chain_model import ConditionChainRouteEvidence
-from d810.analyses.control_flow.semantic_route_evidence import SemanticRouteProof
+from d810.analyses.control_flow.semantic_route_evidence import (
+    SemanticCorridorPoint,
+    SemanticRouteProof,
+    SemanticRouteProofKind,
+)
 from d810.ir.block_identity import (
     StableBlockIdentity,
     stable_block_identity_semantic_anchor,
@@ -65,6 +70,7 @@ from .model import (
     EntryEndpointLivenessForecast,
     EntryEndpointLivenessAllowance,
     EntryEndpointLivenessReason,
+    SourceBlockIdentityWitness,
     RetirementCandidateCatalog,
     RetirementPlanMember,
     DispatcherRetirementCandidate,
@@ -1652,50 +1658,207 @@ def _derive_default_gap_infeasibility_exclusions(
     return tuple(sorted(rows, key=lambda item: item.exclusion_id))
 
 
+def _source_witness_covers_semantic_point(
+    witness: SourceBlockIdentityWitness,
+    point_ea: int,
+    *,
+    allow_native_range_fallback: bool = False,
+) -> bool:
+    """Prove that a semantic endpoint belongs to one immutable source block.
+
+    ``SourceBlockIdentityWitness.anchor_ea`` is the catalogue's stable block
+    anchor, whereas route and carrier proofs bind instruction-level semantic
+    points.  Treating the former as the latter creates a second coordinate
+    namespace and rejects a valid proof whenever the route starts after the
+    block's first instruction.  The immutable instruction inventory is the
+    exact proof when it is available.  A caller may request native-range
+    fallback only for a proof field whose canonical model explicitly allows a
+    block anchor rather than an instruction origin (the carrier corridor does).
+    """
+
+    if type(witness) is not SourceBlockIdentityWitness or type(point_ea) is not int:
+        return False
+    if type(witness.block_ref) is not NativeBlockRef:
+        return False
+    if witness.native_instruction_eas:
+        if int(point_ea) in witness.native_instruction_eas:
+            return True
+        return bool(
+            allow_native_range_fallback
+            and witness.block_ref.identity.native_ranges.contains(int(point_ea))
+        )
+    return bool(
+        allow_native_range_fallback
+        and witness.block_ref.identity.native_ranges.contains(int(point_ea))
+    )
+
+
 def _entry_liveness_route_proof_rejection_detail(
     *,
-    replacement_witness,
-    write_witness,
+    source_witnesses: Mapping[object, SourceBlockIdentityWitness],
     replacement_ref,
-    forecast: EntryEndpointLivenessForecast,
+    redirect_owner_ref,
+    dispatcher_old_target_ref,
+    state_production_source_ref,
+    state_production_instruction_ea: int,
+    route_proof_id: str,
     selected_ids: set[str],
     proof: SemanticRouteProof | None,
     state_identity,
     normalized_state: int,
 ) -> str | None:
-    """Return the first fail-closed reason for a forecast/proof mismatch."""
+    """Return the first fail-closed reason for exact entry-route authority.
 
+    Assignment and carrier proofs deliberately meet at this boundary.  A
+    carrier is not an assignment with a missing write: it must bind the whole
+    source -> feeder -> comparison corridor to the redirect it authorizes.
+    """
+
+    def source_witness(ref: object) -> SourceBlockIdentityWitness | None:
+        witness = source_witnesses.get(ref)
+        if (
+            type(ref) is not NativeBlockRef
+            or type(witness) is not SourceBlockIdentityWitness
+            or witness.block_ref != ref
+        ):
+            return None
+        return witness
+
+    replacement_witness = source_witness(replacement_ref)
     if replacement_witness is None:
         return "replacement_source_witness"
-    if write_witness is None:
-        return "state_write_source_witness"
     if type(replacement_ref) is not NativeBlockRef:
         return "replacement_not_native"
-    if forecast.route_proof_id not in selected_ids:
+    if route_proof_id not in selected_ids:
         return "proof_not_selected"
     if proof is None:
         return "proof_missing"
-    if proof.state_write is None:
+    state_write = proof.state_write
+    state_carrier = proof.state_carrier
+    if state_write is None and not (
+        proof.proof_kind is SemanticRouteProofKind.STATE_CARRIER
+        and state_carrier is not None
+    ):
         return "state_write_missing"
-    if (
-        forecast.redirect_owner_ref != forecast.state_write_source_ref
-        and (
-            type(forecast.redirect_owner_ref) is not NativeBlockRef
-            or proof.source_owner_identity not in {
-                None, forecast.redirect_owner_ref.identity,
-            }
-        )
+    if state_write is not None:
+        write_witness = source_witness(state_production_source_ref)
+        if write_witness is None:
+            return "state_write_source_witness"
+        if (
+            redirect_owner_ref != state_production_source_ref
+            and (
+                type(redirect_owner_ref) is not NativeBlockRef
+                or proof.source_owner_identity not in {
+                    None, redirect_owner_ref.identity,
+                }
+            )
+        ):
+            return "redirect_owner_identity"
+        production_identity = state_write.identity
+        production_instruction_ea = state_write.instruction_ea
+        production_state_identity = state_write.state_variable
+        production_state_constant = state_write.state_constant
+        identity_reason = "state_write_identity"
+        instruction_reason = "state_write_instruction"
+    else:
+        assert state_carrier is not None
+        source_witness_row = source_witness(state_production_source_ref)
+        owner_witness = source_witness(redirect_owner_ref)
+        feeder_witness = source_witness(dispatcher_old_target_ref)
+        comparison_ref = NativeBlockRef(state_carrier.comparison_entry_identity)
+        comparison_witness = source_witness(comparison_ref)
+        if source_witness_row is None:
+            return "state_carrier_source_witness"
+        if owner_witness is None:
+            return "state_carrier_owner_witness"
+        if feeder_witness is None:
+            return "state_carrier_feeder_witness"
+        if comparison_witness is None:
+            return "state_carrier_comparison_witness"
+        if (
+            type(redirect_owner_ref) is not NativeBlockRef
+            or redirect_owner_ref != state_production_source_ref
+            or redirect_owner_ref.identity != state_carrier.source_identity
+            or state_carrier.owner_identity != redirect_owner_ref.identity
+            or not _source_witness_covers_semantic_point(
+                owner_witness, state_carrier.owner_anchor_ea,
+                allow_native_range_fallback=True,
+            )
+        ):
+            return "state_carrier_redirect_owner"
+        # A carrier's nested owner and its enclosing route owner are the same
+        # authority subject.  Most source-owned carriers omit the redundant
+        # route-level field; when canonical evidence names it explicitly, it
+        # must bind the exact same owner point, never merely another block
+        # with the same native key.
+        if proof.source_owner_identity is not None and (
+            proof.source_owner_identity != state_carrier.owner_identity
+            or proof.source_owner_identity != redirect_owner_ref.identity
+            or proof.source_owner_anchor_ea != state_carrier.owner_anchor_ea
+            or not _source_witness_covers_semantic_point(
+                owner_witness, int(proof.source_owner_anchor_ea),
+                allow_native_range_fallback=True,
+            )
+        ):
+            return "state_carrier_route_owner"
+        if (
+            not _source_witness_covers_semantic_point(
+                source_witness_row, state_carrier.source_anchor_ea,
+            )
+            or int(state_production_instruction_ea)
+            != int(state_carrier.source_anchor_ea)
+        ):
+            return "state_carrier_source_anchor"
+        if (
+            type(dispatcher_old_target_ref) is not NativeBlockRef
+            or dispatcher_old_target_ref.identity != state_carrier.feeder_identity
+            or not _source_witness_covers_semantic_point(
+                feeder_witness, state_carrier.feeder_anchor_ea,
+                allow_native_range_fallback=True,
+            )
+        ):
+            return "state_carrier_feeder"
+        if (
+            not _source_witness_covers_semantic_point(
+                comparison_witness,
+                state_carrier.comparison_entry_anchor_ea,
+                allow_native_range_fallback=True,
+            )
+            or comparison_ref == dispatcher_old_target_ref
+            or state_carrier.corridor
+            != (
+                SemanticCorridorPoint(
+                    state_carrier.source_identity,
+                    state_carrier.source_anchor_ea,
+                ),
+                SemanticCorridorPoint(
+                    state_carrier.feeder_identity,
+                    state_carrier.feeder_anchor_ea,
+                ),
+                SemanticCorridorPoint(
+                    state_carrier.comparison_entry_identity,
+                    state_carrier.comparison_entry_anchor_ea,
+                ),
+            )
+        ):
+            return "state_carrier_comparison_corridor"
+        production_identity = state_carrier.source_identity
+        production_instruction_ea = state_carrier.source_anchor_ea
+        production_state_identity = state_carrier.state_identity
+        production_state_constant = state_carrier.state_constant
+        identity_reason = "state_carrier_identity"
+        instruction_reason = "state_carrier_instruction"
+    if production_identity != state_production_source_ref.identity:
+        return identity_reason
+    if int(production_instruction_ea) != int(state_production_instruction_ea):
+        return instruction_reason
+    if state_write is not None and not _source_witness_covers_semantic_point(
+        write_witness, production_instruction_ea,
     ):
-        return "redirect_owner_identity"
-    if proof.state_write.identity != forecast.state_write_source_ref.identity:
-        return "state_write_identity"
-    if int(proof.state_write.instruction_ea) != int(
-        forecast.state_write_instruction_ea
-    ):
-        return "state_write_instruction"
-    if proof.state_write.state_variable != state_identity:
+        return "state_write_instruction_witness"
+    if production_state_identity != state_identity:
         return "state_identity"
-    if (int(proof.state_write.state_constant) & 0xFFFFFFFF) != normalized_state:
+    if (int(production_state_constant) & 0xFFFFFFFF) != normalized_state:
         return "state_constant"
     if sum(
         1
@@ -1705,6 +1868,10 @@ def _entry_liveness_route_proof_rejection_detail(
             and destination.target_identity == replacement_ref.identity
             and destination.target_anchor_ea
             == stable_block_identity_semantic_anchor(replacement_ref.identity)
+            and _source_witness_covers_semantic_point(
+                replacement_witness, destination.target_anchor_ea,
+                allow_native_range_fallback=True,
+            )
         )
     ) != 1:
         return "destination"
@@ -1786,6 +1953,13 @@ def attach_typed_proposal(
                     "entry liveness distinct owner requires a delivery corridor"
                 )
             if (
+                forecast.delivery_path_refs
+                and forecast.delivery_path_refs[-2] != owner
+            ):
+                raise ValueError(
+                    "entry liveness forecast corridor must end at redirect owner"
+                )
+            if (
                 owner not in patch_refs
                 or old not in patch_refs
                 or new not in patch_refs
@@ -1806,18 +1980,21 @@ def attach_typed_proposal(
             if len(descriptors) != 1:
                 raise ValueError("entry liveness carrier has no exact redirect descriptor")
             descriptor = descriptors[0]
-            replacement_witness = source_witnesses.get(new)
-            write_witness = source_witnesses.get(forecast.state_write_source_ref)
             proof_by_id = {
                 proof.proof_id: proof for proof in proposal.route_evidence.route_proofs
             }
             proof = proof_by_id.get(forecast.route_proof_id)
             state = int(forecast.normalized_state) & 0xFFFFFFFF
             rejection_detail = _entry_liveness_route_proof_rejection_detail(
-                replacement_witness=replacement_witness,
-                write_witness=write_witness,
+                source_witnesses=source_witnesses,
                 replacement_ref=new,
-                forecast=forecast,
+                redirect_owner_ref=forecast.redirect_owner_ref,
+                dispatcher_old_target_ref=forecast.dispatcher_ref,
+                state_production_source_ref=forecast.state_write_source_ref,
+                state_production_instruction_ea=(
+                    forecast.state_write_instruction_ea
+                ),
+                route_proof_id=forecast.route_proof_id,
                 selected_ids=selected_ids,
                 proof=proof,
                 state_identity=proposal.plan_inputs.state_identity,

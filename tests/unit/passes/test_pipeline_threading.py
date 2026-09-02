@@ -142,6 +142,52 @@ def test_observation_publication_canonicalizes_each_immutable_payload_once(
     assert canonicalizations == [1, 1, 1, 1]
 
 
+def test_missing_initial_state_witness_is_minted_only_for_the_current_dag_root(
+    monkeypatch,
+):
+    """An internal comparison node cannot borrow function-entry authority."""
+    calls = []
+    sentinel = object()
+
+    def mint(graph, entry, stkoff, state):
+        calls.append((graph, entry, stkoff, state))
+        return sentinel
+
+    monkeypatch.setattr(
+        state_machine_module,
+        "initial_state_write_witness_from_entry_cut",
+        mint,
+    )
+
+    assert state_machine_module._mint_missing_initial_state_write_witness(
+        graph=object(),
+        dispatcher_entry_serial=7,
+        state_var_stkoff=STATE_OFF,
+        initial_state=C1,
+        condition_chain_dag=SimpleNamespace(root=8),
+    ) is None
+    assert calls == []
+
+    assert state_machine_module._mint_missing_initial_state_write_witness(
+        graph=object(),
+        dispatcher_entry_serial=7,
+        state_var_stkoff=STATE_OFF,
+        initial_state=C1,
+        condition_chain_dag=object(),
+    ) is None
+    assert calls == []
+
+    graph = object()
+    assert state_machine_module._mint_missing_initial_state_write_witness(
+        graph=graph,
+        dispatcher_entry_serial=7,
+        state_var_stkoff=STATE_OFF,
+        initial_state=C1,
+        condition_chain_dag=SimpleNamespace(root=7),
+    ) is sentinel
+    assert calls == [(graph, 7, STATE_OFF, C1)]
+
+
 def test_observation_publication_preserves_per_row_fallback_order():
     calls = []
 

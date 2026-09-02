@@ -27,8 +27,7 @@ from d810.transforms.cfg_transaction import TransactionAttemptId
 from .test_evaluate import _complete_inputs, _role_subject
 
 
-@pytest.mark.parametrize("fact_kind", ("native_bound", "state_carrier"))
-def test_native_bound_receipt_projects_from_canonical_plan(fact_kind: str) -> None:
+def test_native_bound_receipt_projects_from_canonical_plan() -> None:
     """Typed plans diagnose from selected proof and step, never legacy metadata."""
     from d810.analyses.control_flow.semantic_route_evidence import (
         SemanticRouteDestination,
@@ -75,7 +74,7 @@ def test_native_bound_receipt_projects_from_canonical_plan(fact_kind: str) -> No
         ),
         diagnostic_provenance=(
             ("fact_id", "transition:state=0x7:target=2:resolver=exact"),
-            ("fact_kind", fact_kind),
+            ("fact_kind", "native_bound"),
         ),
     )
     evidence = canonical_semantic_evidence_from_proofs(
@@ -120,6 +119,227 @@ def test_native_bound_receipt_projects_from_canonical_plan(fact_kind: str) -> No
             operation_key=("block_goto_change", 0, 1, 2),
         ),
     )
+
+
+def _native_bound_carrier_receipt_fixture():
+    """Build a sealed plan from a real carrier proof with native provenance."""
+    from d810.analyses.control_flow import semantic_route_evidence as route
+    from d810.analyses.control_flow.semantic_route_evidence import (
+        canonical_semantic_evidence_from_proofs,
+    )
+    from d810.ir.block_identity import stable_block_identity_from_snapshot
+    from d810.ir.flowgraph import BlockKind, FlowGraph
+    from d810.transforms.cfg_transaction import NativeBlockRef
+    from d810.transforms.plan import PatchPlan, PatchRedirectGoto
+    from d810.transforms.unflatten_authority import producer_api
+
+    evidence, replay_graph, _stage = __import__(
+        "tests.unit.transforms.unflatten_authority.test_bind",
+        fromlist=["_branch_x_canonical_replay_case"],
+    )._branch_x_canonical_replay_case(route.SemanticRouteProofKind.STATE_CARRIER)
+    source = FlowGraph(
+        {
+            **replay_graph.blocks,
+            2: replace(
+                replay_graph.blocks[2],
+                succs=(3,),
+                kind=BlockKind.ONE_WAY,
+            ),
+            5: replace(replay_graph.blocks[5], preds=()),
+        },
+        replay_graph.entry_serial,
+        replay_graph.func_ea,
+    )
+    proof = replace(
+        evidence.route_proofs[0],
+        diagnostic_provenance=(
+            ("fact_id", "native-carrier-receipt"),
+            ("fact_kind", "state_carrier"),
+        ),
+    )
+    evidence = canonical_semantic_evidence_from_proofs(
+        evidence.native_key,
+        evidence.generation,
+        (proof,),
+    )
+    refs = {
+        serial: NativeBlockRef(stable_block_identity_from_snapshot(
+            block,
+            native_key=evidence.native_key,
+        ))
+        for serial, block in source.blocks.items()
+    }
+    carrier = proof.state_carrier
+    assert carrier is not None
+    plan = PatchPlan(
+        plan_id=authority_id("native-carrier-receipt-plan"),
+        snapshot_id=authority_id("native-carrier-receipt-snapshot"),
+        steps=(PatchRedirectGoto(
+            refs[3], refs[4], refs[5],
+        ),),
+        source_coordinates=tuple((ref, serial) for serial, ref in refs.items()),
+    )
+    proposal = producer_api.build_proposal(
+        plan_id=plan.plan_id,
+        source=source,
+        block_refs_by_serial=refs,
+        source_generation=evidence.generation,
+        canonical_route_evidence=evidence,
+        selected_route_proof_ids=(proof.proof_id,),
+        exact_state_effect_exclusions=(),
+        dispatcher_entry_serial=4,
+        dispatcher_member_serials=(4,),
+        authoritative_handler_serials=(5,),
+        state_identity=carrier.state_identity,
+        use_def_witness=model.UseDefFragmentWitness(
+            authority_id("native-carrier-receipt-use-def"),
+            carrier.state_identity,
+            (refs[3],),
+            authority_id("native-carrier-receipt-redirect"),
+            True,
+            True,
+            0,
+            (),
+        ),
+    )
+    plan = replace(plan, unflatten_proposal=proposal)
+    return plan, proposal.route_evidence.route_proofs[0]
+
+
+def test_native_bound_carrier_receipt_projects_from_its_feeder_redirect() -> None:
+    """A native-receipted carrier publishes the typed feeder redirect."""
+    plan, _proof = _native_bound_carrier_receipt_fixture()
+
+    assert native_bound_transition_route_receipts_from_plan(plan) == (
+        __import__(
+            "d810.transforms.unflatten_authority.legacy_codec",
+            fromlist=["NativeBoundTransitionRouteReceipt"],
+        ).NativeBoundTransitionRouteReceipt(
+            fact_id="native-carrier-receipt",
+            native_ea=0x1200,
+            current_block="blk2@0x1200",
+            state=7,
+            target=5,
+            target_block="blk5@0x1500",
+            operation_key=("block_goto_change", 3, 4, 5),
+        ),
+    )
+
+
+def test_native_bound_carrier_receipt_projects_from_its_source_bypass() -> None:
+    """A shared carrier receipt publishes its exact source -> feeder bypass."""
+    from d810.transforms.plan import PatchRedirectGoto
+
+    plan, _proof = _native_bound_carrier_receipt_fixture()
+    step = plan.steps[0]
+    source_ref = next(
+        ref for ref, serial in plan.source_coordinates if serial == 2
+    )
+    plan = replace(plan, steps=(PatchRedirectGoto(
+        source_ref,
+        step.from_serial,
+        step.new_target,
+    ),))
+
+    assert native_bound_transition_route_receipts_from_plan(plan) == (
+        __import__(
+            "d810.transforms.unflatten_authority.legacy_codec",
+            fromlist=["NativeBoundTransitionRouteReceipt"],
+        ).NativeBoundTransitionRouteReceipt(
+            fact_id="native-carrier-receipt",
+            native_ea=0x1200,
+            current_block="blk2@0x1200",
+            state=7,
+            target=5,
+            target_block="blk5@0x1500",
+            operation_key=("block_goto_change", 2, 3, 5),
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "duplicate_step",
+        "feeder_drift",
+        "comparison_drift",
+        "destination_drift",
+        "non_goto",
+        "non_direct_proof",
+        "requires_feeder_clone",
+        "non_direct_destination",
+        "missing_fact_id",
+        "multiple_fact_ids",
+        "ordinary_carrier",
+        "carrier_mislabeled_native_bound_source_goto",
+    ),
+)
+def test_native_bound_carrier_receipt_fails_closed_on_malformed_provenance_or_step(
+    mutation: str,
+) -> None:
+    """Only one exact feeder redirect may publish a native carrier receipt."""
+    from d810.analyses.control_flow.semantic_route_evidence import (
+        SemanticRouteShape,
+    )
+    from d810.ir.semantic_edge import SemanticEdgeRole
+    from d810.transforms.plan import PatchConvertToGoto, PatchRedirectGoto
+
+    plan, proof = _native_bound_carrier_receipt_fixture()
+    step = plan.steps[0]
+    if mutation == "duplicate_step":
+        plan = replace(plan, steps=(step, step))
+    elif mutation == "feeder_drift":
+        plan = replace(plan, steps=(replace(step, from_serial=step.old_target),))
+    elif mutation == "comparison_drift":
+        plan = replace(plan, steps=(replace(step, old_target=step.from_serial),))
+    elif mutation == "destination_drift":
+        plan = replace(plan, steps=(replace(step, new_target=step.old_target),))
+    elif mutation == "non_goto":
+        plan = replace(plan, steps=(PatchConvertToGoto(
+            step.from_serial,
+            step.new_target,
+        ),))
+    elif mutation == "non_direct_proof":
+        object.__setattr__(proof, "shape", SemanticRouteShape.CONDITIONAL)
+    elif mutation == "requires_feeder_clone":
+        assert proof.state_carrier is not None
+        object.__setattr__(proof.state_carrier, "requires_feeder_clone", True)
+    elif mutation == "non_direct_destination":
+        object.__setattr__(
+            proof.destinations[0],
+            "role",
+            SemanticEdgeRole.CONDITIONAL_TAKEN,
+        )
+    elif mutation == "missing_fact_id":
+        object.__setattr__(proof, "diagnostic_provenance", (
+            ("fact_kind", "state_carrier"),
+        ))
+    elif mutation == "multiple_fact_ids":
+        object.__setattr__(proof, "diagnostic_provenance", (
+            ("fact_id", "native-carrier-receipt-a"),
+            ("fact_id", "native-carrier-receipt-b"),
+            ("fact_kind", "state_carrier"),
+        ))
+    elif mutation == "ordinary_carrier":
+        object.__setattr__(proof, "diagnostic_provenance", (
+            ("fact_kind", "state_carrier"),
+            ("provider_proof_kind", "state_carrier"),
+        ))
+    else:
+        source_ref = next(
+            ref for ref, serial in plan.source_coordinates if serial == 2
+        )
+        plan = replace(plan, steps=(PatchRedirectGoto(
+            source_ref,
+            step.old_target,
+            step.new_target,
+        ),))
+        object.__setattr__(proof, "diagnostic_provenance", (
+            ("fact_id", "native-carrier-receipt"),
+            ("fact_kind", "native_bound"),
+        ))
+
+    assert native_bound_transition_route_receipts_from_plan(plan) == ()
 
 
 def test_one_anchored_fact_observation_per_authoritative_phase() -> None:

@@ -6692,6 +6692,176 @@ def test_state_carrier_feeder_redirect_is_selected_by_its_typed_corridor() -> No
     )
 
 
+def test_entry_liveness_carrier_matcher_requires_the_exact_typed_corridor() -> None:
+    """Carrier evidence owns source -> feeder -> comparison -> destination."""
+    from d810.analyses.control_flow import semantic_route_evidence as route
+    from d810.transforms.cfg_transaction import NativeBlockRef
+    from d810.transforms.unflatten_authority.proposal import (
+        _entry_liveness_route_proof_rejection_detail,
+    )
+
+    evidence, _graph, _stage = (
+        __import__(
+            "tests.unit.transforms.unflatten_authority.test_bind",
+            fromlist=["_branch_x_canonical_replay_case"],
+        )._branch_x_canonical_replay_case(
+            route.SemanticRouteProofKind.STATE_CARRIER,
+        )
+    )
+    proof = evidence.route_proofs[0]
+    carrier = proof.state_carrier
+    assert carrier is not None
+    source_ref = NativeBlockRef(carrier.source_identity)
+    owner_ref = NativeBlockRef(carrier.owner_identity)
+    feeder_ref = NativeBlockRef(carrier.feeder_identity)
+    comparison_ref = NativeBlockRef(carrier.comparison_entry_identity)
+    replacement_ref = NativeBlockRef(proof.destinations[0].target_identity)
+    source_witnesses = {
+        ref: model.SourceBlockIdentityWitness(
+            ref,
+            anchor,
+            ref.identity.exact_instruction_eas,
+        )
+        for ref, anchor in (
+            (owner_ref, carrier.owner_anchor_ea),
+            (source_ref, carrier.source_anchor_ea),
+            (feeder_ref, carrier.feeder_anchor_ea),
+            (comparison_ref, carrier.comparison_entry_anchor_ea),
+            (
+                replacement_ref,
+                proof.destinations[0].target_anchor_ea,
+            ),
+        )
+    }
+    exact = dict(
+        source_witnesses=source_witnesses,
+        replacement_ref=replacement_ref,
+        redirect_owner_ref=source_ref,
+        dispatcher_old_target_ref=feeder_ref,
+        state_production_source_ref=source_ref,
+        state_production_instruction_ea=carrier.source_anchor_ea,
+        route_proof_id=proof.proof_id,
+        selected_ids={proof.proof_id},
+        proof=proof,
+        state_identity=carrier.state_identity,
+        normalized_state=carrier.state_constant,
+    )
+
+    assert _entry_liveness_route_proof_rejection_detail(**exact) is None
+
+    # Source-owned carrier routes normally leave the enclosing owner empty.
+    # An explicit owner is also legitimate only when it seals the exact nested
+    # carrier/redirect owner coordinate.
+    proof_with_matching_route_owner = replace(
+        proof,
+        source_owner_identity=carrier.owner_identity,
+        source_owner_anchor_ea=carrier.owner_anchor_ea,
+    )
+    assert _entry_liveness_route_proof_rejection_detail(
+        **(exact | {"proof": proof_with_matching_route_owner})
+    ) is None
+
+    # Every piece below is authority, not descriptive metadata.  Each drift
+    # must close the carrier route before proposal attachment or admission.
+    source_witnesses_without_source = dict(source_witnesses)
+    del source_witnesses_without_source[source_ref]
+    carrier_with_foreign_owner = replace(
+        carrier,
+        owner_identity=carrier.feeder_identity,
+        owner_anchor_ea=carrier.feeder_anchor_ea,
+    )
+    proof_with_foreign_owner = replace(
+        proof,
+        state_carrier=carrier_with_foreign_owner,
+    )
+    proof_with_foreign_route_owner = replace(
+        proof,
+        source_owner_identity=carrier.feeder_identity,
+        source_owner_anchor_ea=carrier.feeder_anchor_ea,
+    )
+    carrier_with_collapsed_comparison = replace(
+        carrier,
+        comparison_entry_identity=carrier.feeder_identity,
+        comparison_entry_anchor_ea=carrier.feeder_anchor_ea,
+        corridor=(
+            route.SemanticCorridorPoint(
+                carrier.source_identity,
+                carrier.source_anchor_ea,
+            ),
+            route.SemanticCorridorPoint(
+                carrier.feeder_identity,
+                carrier.feeder_anchor_ea,
+            ),
+            route.SemanticCorridorPoint(
+                carrier.feeder_identity,
+                carrier.feeder_anchor_ea,
+            ),
+        ),
+    )
+    proof_with_collapsed_comparison = replace(
+        proof,
+        state_carrier=carrier_with_collapsed_comparison,
+    )
+    drifted_cases = (
+        ("source catalogue witness", {"source_witnesses": source_witnesses_without_source}),
+        ("source identity", {"state_production_source_ref": feeder_ref}),
+        ("source EA", {"state_production_instruction_ea": carrier.source_anchor_ea + 1}),
+        (
+            "carrier owner identity and anchor",
+            {"proof": proof_with_foreign_owner},
+        ),
+        (
+            "route-level owner identity and anchor",
+            {"proof": proof_with_foreign_route_owner},
+        ),
+        ("feeder identity", {"dispatcher_old_target_ref": comparison_ref}),
+        (
+            "comparison entry identity and corridor",
+            {"proof": proof_with_collapsed_comparison},
+        ),
+        ("state namespace", {"state_identity": object()}),
+        ("state constant", {"normalized_state": carrier.state_constant + 1}),
+        ("destination identity", {"replacement_ref": feeder_ref}),
+        ("selected proof ID", {"selected_ids": set()}),
+        ("entry redirect owner", {"redirect_owner_ref": feeder_ref}),
+    )
+    for label, drift in drifted_cases:
+        assert _entry_liveness_route_proof_rejection_detail(
+            **(exact | drift)
+        ) is not None, label
+
+
+def test_entry_liveness_semantic_point_uses_inventory_before_explicit_range_fallback() -> None:
+    """A catalogue block anchor is not silently promoted to an endpoint point."""
+    from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
+    from d810.transforms.cfg_transaction import NativeBlockRef
+    from d810.transforms.unflatten_authority.proposal import (
+        _source_witness_covers_semantic_point,
+    )
+    from tests.native_preanalysis import make_native_key
+
+    ref = NativeBlockRef(StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x1000, 0x1010),),
+        native_key=make_native_key(),
+        exact_instruction_eas=(0x1004,),
+    ))
+    witness = model.SourceBlockIdentityWitness(
+        ref, 0x1000, (0x1004,),
+    )
+    assert _source_witness_covers_semantic_point(
+        witness, witness.native_instruction_eas[0],
+    )
+    assert not _source_witness_covers_semantic_point(
+        witness, 0x1000,
+    )
+    assert _source_witness_covers_semantic_point(
+        witness, 0x1000, allow_native_range_fallback=True,
+    )
+    assert not _source_witness_covers_semantic_point(
+        witness, 0x1010, allow_native_range_fallback=True,
+    )
+
+
 def test_cloned_state_carrier_corridor_is_selected_by_its_typed_relation() -> None:
     """A cloned carrier corridor owns source -> feeder -> comparison -> target."""
     from dataclasses import replace

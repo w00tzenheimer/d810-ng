@@ -52,6 +52,7 @@ from d810.analyses.control_flow.dispatcher_resolution import (
     ResolverCandidate,
     StateDispatcherMap,
     StateDispatcherRow,
+    initial_state_write_witness_from_entry_cut,
 )
 from d810.analyses.control_flow.emulated_state_walk import walk_emulated_state_machine
 from d810.capabilities.providers import get_condition_chain_walkers
@@ -60,10 +61,7 @@ from d810.evaluator.hexrays_microcode.emulator import (
     MicroCodeInterpreter,
 )
 from d810.hexrays.utils.hexrays_formatters import maturity_to_string
-from d810.ir.flowgraph import FlowGraph, InsnKind, OperandKind
-from d810.ir.graph_fingerprint import instruction_projection_without_block_references
-from d810.ir.storage_identity import StorageIdentity, StorageIdentityKind
-from d810.analyses.control_flow.route_comparison import current_u32_route_comparison
+from d810.ir.flowgraph import FlowGraph
 
 logger = getLogger("d810.analyses.emulation_dispatcher_resolver")
 
@@ -618,43 +616,6 @@ class EmulationDispatcherResolver:
             return (value, witness)
         return None
 
-    @staticmethod
-    def _initial_state_write_witness_from_selected_block(
-        graph: FlowGraph,
-        source_serial: int,
-        stkoff: int,
-        initial_state: int,
-    ) -> tuple[int, object] | None:
-        """Mint a witness only for the exact block selected by folded recovery."""
-        block = graph.blocks.get(int(source_serial))
-        if block is None:
-            return None
-        writes = tuple(
-            insn
-            for insn in block.insn_snapshots
-            if (
-                insn.kind in {InsnKind.MOV, InsnKind.STORE}
-                and insn.d is not None
-                and insn.d.kind is OperandKind.STACK
-                and int(insn.d.stkoff or -1) == int(stkoff)
-                and int(insn.d.size) == 4
-                and insn.l is not None
-                and insn.l.kind is OperandKind.NUMBER
-                and int(insn.l.size) == 4
-                and insn.l.value is not None
-                and (int(insn.l.value) & 0xFFFFFFFF)
-                == (int(initial_state) & 0xFFFFFFFF)
-            )
-        )
-        if len(writes) != 1:
-            return None
-        write_ea = int(writes[0].native_ea or writes[0].ea)
-        if not 0 < write_ea < 0xFFFFFFFFFFFFFFFF:
-            return None
-        # The caller seals the entry-cut corridor; this helper only projects
-        # the selected immutable operation.
-        return (int(source_serial), instruction_projection_without_block_references(writes[0]))
-
     @classmethod
     def _initial_state_write_witness_from_entry_cut(
         cls,
@@ -663,136 +624,9 @@ class EmulationDispatcherResolver:
         stkoff: int,
         initial_state: int,
     ) -> InitialStateWriteWitness | None:
-        """Bind the scalar recovery to one literal writer in its entry-cut set.
-
-        This is the same source-side cut used by initial-state recovery, not a
-        later emitter scan.  Multiple literal writers (even with the same
-        value) intentionally leave the scalar usable but mint no authority.
-        """
-        reachable: set[int] = set()
-        stack = [int(graph.entry_serial)]
-        while stack:
-            serial = stack.pop()
-            if serial in reachable or serial not in graph.blocks:
-                continue
-            reachable.add(serial)
-            if serial == int(entry):
-                continue
-            stack.extend(int(successor) for successor in graph.blocks[serial].succs)
-        occurrences = tuple(
-            candidate
-            for serial in sorted(reachable)
-            if (candidate := cls._initial_state_write_witness_from_selected_block(
-                graph, serial, stkoff, initial_state,
-            )) is not None
-        )
-        # The entry cut identifies the unique predecessor P that enters D.
-        # P may be conditional and its *other* arm may later rejoin D, so only
-        # W->P must be unique; append the selected reciprocal P->D edge.
-        qualifying = [
-            int(pred) for pred in graph.blocks[int(entry)].preds
-            if int(pred) in reachable
-        ]
-        if len(qualifying) != 1:
-            return None
-        predecessor = qualifying[0]
-        candidates: list[tuple[int, object, tuple[int, ...], object | None]] = []
-        for source_serial, source_instruction in occurrences:
-            queue = [(source_serial, (source_serial,))]
-            paths: list[tuple[int, ...]] = []
-            while queue:
-                serial, path = queue.pop(0)
-                if serial == predecessor:
-                    paths.append(path)
-                    continue
-                for successor in graph.blocks[serial].succs:
-                    if int(successor) in reachable and int(successor) not in path:
-                        queue.append((int(successor), (*path, int(successor))))
-            if len(paths) != 1:
-                continue
-            candidates.append((source_serial, source_instruction, paths[0], None))
-        if len(candidates) != 1:
-            # Equal raw state writes can be disambiguated only by a selector
-            # write in the same source block that makes the exact P -> D arm
-            # feasible. This is still recovery-owned evidence, not an emitter
-            # rescan or a scalar-only exception.
-            feasible: list[tuple[int, object, tuple[int, ...], object]] = []
-            for source_serial, source_instruction in occurrences:
-                block = graph.blocks[source_serial]
-                for selector in block.insn_snapshots:
-                    if (
-                        selector.kind not in {InsnKind.MOV, InsnKind.STORE}
-                        or selector.d is None
-                        or selector.d.kind is not OperandKind.STACK
-                        or selector.l is None
-                        or selector.l.kind is not OperandKind.NUMBER
-                        or selector.l.value is None
-                        or int(selector.d.size) != 4
-                        or int(selector.l.size) != 4
-                    ):
-                        continue
-                    selector_identity = StorageIdentity(
-                        StorageIdentityKind.STACK, int(selector.d.stkoff)
-                    )
-                    if selector_identity == StorageIdentity(StorageIdentityKind.STACK, int(stkoff)):
-                        continue
-                    comparison_current = current_u32_route_comparison(
-                        graph, predecessor,
-                        expected_identities=frozenset({selector_identity}),
-                    )
-                    if comparison_current is None:
-                        continue
-                    comparison, identity, _block_ea, _branch_ea = comparison_current
-                    value = int(selector.l.value) & 0xFFFFFFFF
-                    selected = (
-                        int(comparison.true_target)
-                        if (value == int(comparison.const) if comparison.op == "jz" else value != int(comparison.const))
-                        else int(comparison.false_target)
-                    )
-                    if identity != selector_identity or selected != int(entry):
-                        continue
-                    queue = [(source_serial, (source_serial,))]
-                    paths: list[tuple[int, ...]] = []
-                    while queue:
-                        serial, path = queue.pop(0)
-                        if serial == predecessor:
-                            paths.append(path)
-                            continue
-                        for successor in graph.blocks[serial].succs:
-                            if int(successor) in reachable and int(successor) not in path:
-                                queue.append((int(successor), (*path, int(successor))))
-                    if len(paths) == 1:
-                        feasible.append((source_serial, source_instruction, paths[0], (selector, selector_identity, comparison, selected)))
-            if len(feasible) != 1:
-                return None
-            candidates = feasible
-        source_serial, source_instruction, prefix_path, selector_closure = candidates[0]
-        path = (*prefix_path, int(entry))
-        selector_kwargs = {}
-        if selector_closure is not None:
-            selector, selector_identity, comparison, selected = selector_closure
-            branch = next(
-                item for item in graph.blocks[predecessor].insn_snapshots
-                if item.control_transfer_kind.name == "CONDITIONAL_BRANCH"
-            )
-            selector_kwargs = dict(
-                selector_instruction=instruction_projection_without_block_references(selector),
-                selector_identity=selector_identity,
-                selector_width=4,
-                selector_value=int(selector.l.value),
-                comparison_instruction=instruction_projection_without_block_references(branch),
-                comparison_identity=selector_identity,
-                comparison_constant=int(comparison.const),
-                comparison_true_target_serial=int(comparison.true_target),
-                comparison_false_target_serial=int(comparison.false_target),
-                comparison_selected_target_serial=int(selected),
-            )
-        return InitialStateWriteWitness(
-            source_serial, source_instruction,
-            StorageIdentity(StorageIdentityKind.STACK, int(stkoff)), 4,
-            int(initial_state), int(entry), predecessor, path,
-            tuple(zip(path, path[1:])),
-            **selector_kwargs,
+        """Delegate entry-cut authority minting to portable analysis."""
+        return initial_state_write_witness_from_entry_cut(
+            graph, entry, stkoff, initial_state,
         )
 
     def _self_update_blocks(

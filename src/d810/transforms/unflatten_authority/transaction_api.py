@@ -79,6 +79,7 @@ from d810.transforms.unflatten_authority.views import compatibility_projection
 from d810.transforms.exit_path_liveness_policy import exit_path_blocks_live_violations
 from .proposal import (
     CanonicalPatchStepDescriptor,
+    _entry_liveness_route_proof_rejection_detail,
     canonical_patch_step_descriptor,
     canonical_patch_step_descriptors,
 )
@@ -5371,6 +5372,12 @@ def bind_entry_endpoint_liveness_allowances(
     if len(facts_by_index) != len(patch_step_facts):
         raise ValueError("entry liveness patch facts must have unique step indices")
     proof_by_id = {proof.proof_id: proof for proof in proposal.route_evidence.route_proofs}
+    selected_route_proof_ids = {
+        proof_id
+        for claim in proposal.claims
+        if type(claim) is model.EquivalentSemanticRouteClaim
+        for proof_id in claim.route_proof_ids
+    }
     source_witnesses = {item.block_ref: item for item in proposal.source_identity_catalog.blocks}
     serials = dict(plan.source_coordinates)
     source_serials_by_ref = dict(source_inventory.serial_by_ref)
@@ -5382,41 +5389,22 @@ def bind_entry_endpoint_liveness_allowances(
             raise TypeError("entry liveness allowance has an unknown type")
         allowance.__post_init__()
         proof = proof_by_id.get(allowance.route_proof_id)
-        replacement_witness = source_witnesses.get(allowance.replacement_endpoint_ref)
-        if proof is None or replacement_witness is None or type(allowance.replacement_endpoint_ref) is not NativeBlockRef:
+        if proof is None or type(allowance.replacement_endpoint_ref) is not NativeBlockRef:
             raise ValueError("entry liveness allowance route proof or destination is foreign")
-        if (
-            proof.state_write is None
-            or type(allowance.state_write_source_ref) is not NativeBlockRef
-            or proof.state_write.identity
-            != allowance.state_write_source_ref.identity
-            or int(proof.state_write.instruction_ea)
-            != int(allowance.state_write_instruction_ea)
-            or (
-                allowance.entry_predecessor_owner_refs[0]
-                != allowance.state_write_source_ref
-                and (
-                    type(allowance.entry_predecessor_owner_refs[0])
-                    is not NativeBlockRef
-                    or proof.source_owner_identity not in {
-                        None, allowance.entry_predecessor_owner_refs[0].identity,
-                    }
-                )
-            )
-            or proof.state_write.state_variable != proposal.plan_inputs.state_identity
-            or (int(proof.state_write.state_constant) & 0xFFFFFFFF) != allowance.normalized_state
-            or sum(
-                1 for destination in proof.destinations
-                if (
-                    (int(destination.state_constant) & 0xFFFFFFFF) == allowance.normalized_state
-                    and destination.target_identity == allowance.replacement_endpoint_ref.identity
-                    and destination.target_anchor_ea
-                    == stable_block_identity_semantic_anchor(
-                        allowance.replacement_endpoint_ref.identity
-                    )
-                )
-            ) != 1
-        ):
+        rejection_detail = _entry_liveness_route_proof_rejection_detail(
+            source_witnesses=source_witnesses,
+            replacement_ref=allowance.replacement_endpoint_ref,
+            redirect_owner_ref=allowance.entry_predecessor_owner_refs[0],
+            dispatcher_old_target_ref=allowance.dispatcher_old_target_ref,
+            state_production_source_ref=allowance.state_write_source_ref,
+            state_production_instruction_ea=allowance.state_write_instruction_ea,
+            route_proof_id=allowance.route_proof_id,
+            selected_ids=selected_route_proof_ids,
+            proof=proof,
+            state_identity=proposal.plan_inputs.state_identity,
+            normalized_state=allowance.normalized_state,
+        )
+        if rejection_detail is not None:
             raise ValueError("entry liveness allowance does not name one exact canonical route")
         scope = (
             allowance.patch_step_index, allowance.entry_predecessor_owner_refs,
@@ -5477,6 +5465,7 @@ def bind_entry_endpoint_liveness_allowances(
             if (
                 int(delivery_serials[0]) != int(write_serial)
                 or int(delivery_serials[-1]) != int(old_serial)
+                or int(delivery_serials[-2]) != int(owner_serial)
                 or tuple(
                     (int(delivery_serials[left]), int(delivery_serials[right]))
                     for left, right in allowance.delivery_path_edges

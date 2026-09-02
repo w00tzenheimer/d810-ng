@@ -94,7 +94,10 @@ from d810.analyses.control_flow.semantic_transition import (
     NativeBoundRouteBindingEvidence,
     NativeBoundTransitionRoute,
 )
-from d810.analyses.control_flow.dispatcher_resolution import InitialStateWriteWitness
+from d810.analyses.control_flow.dispatcher_resolution import (
+    InitialStateWriteWitness,
+    bind_initial_state_write_witness,
+)
 from d810.analyses.control_flow.interval_map import IntervalDispatcher, IntervalRow
 from d810.analyses.control_flow.condition_chain_model import (
     ConditionChainRouteEndpointKind,
@@ -150,6 +153,7 @@ from d810.analyses.control_flow.native_preanalysis_session import (
 )
 from d810.analyses.control_flow.route_predicate import (
     DecisionDag,
+    satisfying_set,
 )
 from d810.analyses.control_flow.route_comparison import (
     current_u32_route_comparison,
@@ -258,6 +262,7 @@ from d810.transforms.unflatten_authority.producer_api import (
 from d810.transforms.unflatten_authority.proposal import (
     attach_typed_proposal,
     canonical_redirect_manifest,
+    _entry_liveness_route_proof_rejection_detail,
 )
 from d810.transforms.unflatten_authority.model import (
     EntryEndpointLivenessForecast,
@@ -696,12 +701,30 @@ def _is_exact_return_dag_with_logical_exit(
     ))
     if not logical_endpoints:
         return False
+    path_serials = frozenset(
+        int(serial) for serial in fact.decision_dag_witness.path_serials
+    )
+    state = int(fact.state_constant) & 0xFFFFFFFF
     for witness in fact.decision_dag_witness.comparisons:
+        if int(witness.serial) not in path_serials:
+            continue
         comparison = witness.comparison
-        for endpoint_serial in (comparison.true_target, comparison.false_target):
-            endpoint = logical_endpoints.get(int(endpoint_serial))
-            if endpoint is not None and int(endpoint.serial) == int(endpoint_serial):
-                return True
+        selected_true = satisfying_set(
+            32, comparison.op, int(comparison.const),
+        ).contains(state)
+        selected_serial = int(
+            comparison.true_target if selected_true else comparison.false_target
+        )
+        sibling_serial = int(
+            comparison.false_target if selected_true else comparison.true_target
+        )
+        endpoint = logical_endpoints.get(sibling_serial)
+        if (
+            selected_serial == target_serial
+            and endpoint is not None
+            and int(endpoint.serial) == sibling_serial
+        ):
+            return True
     return False
 
 
@@ -2901,6 +2924,7 @@ SOURCE_CARRIER_DECISION_DAG_ENTRY_ROUTE_SOURCE_KIND = (
     "source_carrier_decision_dag"
 )
 SOURCE_SCOPED_TRANSITION_ENTRY_ROUTE_SOURCE_KIND = "source_scoped_transition"
+INITIAL_STATE_DECISION_DAG_ENTRY_ROUTE_SOURCE_KIND = "initial_state_decision_dag"
 _SOURCE_CARRIER_DAG_ORACLE = "exact_source_carrier_decision_dag_route"
 _SOURCE_CARRIER_DAG_KIND = "source_carrier_decision_dag_reconciled"
 
@@ -3035,6 +3059,81 @@ def _trusted_source_carrier_entry_route(
             normalized_state=normalized,
             target_block=target,
             source_kinds=(SOURCE_CARRIER_DECISION_DAG_ENTRY_ROUTE_SOURCE_KIND,),
+        )
+    )
+
+
+def _trusted_initial_state_decision_dag_entry_route(
+    flow_graph,
+    *,
+    dispatcher_entry_serial: int,
+    state: int,
+    initial_state_write_witness: InitialStateWriteWitness | None,
+    decision_dag: DecisionDag | None,
+    bound_current_dag: DecisionDag | None,
+    dispatcher_region_serials: frozenset[int],
+) -> _ConcreteStateRouteResolution:
+    """Bind one physical initial-state corridor to its exact DAG leaf.
+
+    A range row is not entry authority by itself.  This narrowly admits it
+    only after the recovery-selected write and delivery corridor rebind against
+    the current graph and the exact U32 decision-DAG replay selects the same
+    concrete handler.
+    """
+    if (
+        flow_graph is None
+        or initial_state_write_witness is None
+        or decision_dag is None
+    ):
+        return _ConcreteStateRouteResolution(None)
+    if bound_current_dag is None:
+        return _ConcreteStateRouteResolution(None, conflict=True)
+    try:
+        normalized = int(state) & 0xFFFFFFFF
+        dispatcher_entry = int(dispatcher_entry_serial)
+        witness = bind_initial_state_write_witness(
+            flow_graph, initial_state_write_witness,
+        )
+        if witness is None:
+            return _ConcreteStateRouteResolution(None, conflict=True)
+        if (
+            int(witness.normalized_state) != normalized
+            or int(witness.dispatcher_entry_serial) != dispatcher_entry
+        ):
+            return _ConcreteStateRouteResolution(None, conflict=True)
+        if (
+            int(bound_current_dag.root) != dispatcher_entry
+            or int(decision_dag.root) != dispatcher_entry
+            or dict(bound_current_dag.nodes) != dict(decision_dag.nodes)
+            or dict(bound_current_dag.aliases) != dict(decision_dag.aliases)
+        ):
+            return _ConcreteStateRouteResolution(None, conflict=True)
+        routed = route_current_u32_decision_forest(
+            flow_graph,
+            bound_current_dag,
+            normalized,
+            entry_serial=dispatcher_entry,
+        )
+    except _PROVIDER_SHAPE_ERRORS:
+        return _ConcreteStateRouteResolution(None, conflict=True)
+    if routed is None:
+        return _ConcreteStateRouteResolution(None)
+    target, path = routed
+    target_block = flow_graph.get_block(int(target))
+    if (
+        not path
+        or int(path[0]) != dispatcher_entry
+        or int(target) == dispatcher_entry
+        or int(target) in dispatcher_region_serials
+        or not _block_has_stable_native_anchor(target_block)
+        or int(target) not in _flow_graph_reachable_serials(flow_graph)
+    ):
+        return _ConcreteStateRouteResolution(None, conflict=True)
+    return _ConcreteStateRouteResolution(
+        ConcreteStateRoute(
+            normalized_state=normalized,
+            target_block=int(target),
+            source_kinds=(INITIAL_STATE_DECISION_DAG_ENTRY_ROUTE_SOURCE_KIND,),
         )
     )
 
@@ -3452,6 +3551,9 @@ def _resolve_entry_state_route_resolution(
     native_bound_transition_routes: tuple[NativeBoundTransitionRoute, ...] = (),
     state_write_transitions: tuple[StateWriteTransition, ...] = (),
     dispatcher_region_serials: frozenset[int] = frozenset(),
+    initial_state_write_witness: InitialStateWriteWitness | None = None,
+    decision_dag: DecisionDag | None = None,
+    bound_current_dag: DecisionDag | None = None,
 ) -> _EntryStateRouteResolution:
     """Resolve scalar entry evidence once for preflight and mutation."""
     source_carrier_resolution = _trusted_source_carrier_entry_route(
@@ -3471,6 +3573,17 @@ def _resolve_entry_state_route_resolution(
         dispatcher_region_serials=dispatcher_region_serials,
     )
     if source_scoped_resolution.conflict:
+        return _EntryStateRouteResolution(None, conflict=True)
+    initial_state_dag_resolution = _trusted_initial_state_decision_dag_entry_route(
+        flow_graph,
+        dispatcher_entry_serial=dispatcher_entry_serial,
+        state=state,
+        initial_state_write_witness=initial_state_write_witness,
+        decision_dag=decision_dag,
+        bound_current_dag=bound_current_dag,
+        dispatcher_region_serials=dispatcher_region_serials,
+    )
+    if initial_state_dag_resolution.conflict:
         return _EntryStateRouteResolution(None, conflict=True)
     resolution = _resolve_concrete_route_resolution(
         dispatcher,
@@ -3493,6 +3606,7 @@ def _resolve_entry_state_route_resolution(
     route = resolution.route
     carrier_route = source_carrier_resolution.route
     source_scoped_route = source_scoped_resolution.route
+    initial_state_dag_route = initial_state_dag_resolution.route
     if carrier_route is not None:
         if route is not None and int(route.target_block) != int(
             carrier_route.target_block
@@ -3522,6 +3636,23 @@ def _resolve_entry_state_route_resolution(
                 sorted(
                     {
                         *source_scoped_route.source_kinds,
+                        *(route.source_kinds if route is not None else ()),
+                    }
+                )
+            ),
+        )
+    if initial_state_dag_route is not None:
+        if route is not None and int(route.target_block) != int(
+            initial_state_dag_route.target_block
+        ):
+            return _EntryStateRouteResolution(None, conflict=True)
+        route = ConcreteStateRoute(
+            normalized_state=int(initial_state_dag_route.normalized_state),
+            target_block=int(initial_state_dag_route.target_block),
+            source_kinds=tuple(
+                sorted(
+                    {
+                        INITIAL_STATE_DECISION_DAG_ENTRY_ROUTE_SOURCE_KIND,
                         *(route.source_kinds if route is not None else ()),
                     }
                 )
@@ -3559,6 +3690,7 @@ def _resolve_entry_state_route_resolution(
                 NATIVE_BOUND_ENTRY_ROUTE_SOURCE_KIND,
                 SOURCE_CARRIER_DECISION_DAG_ENTRY_ROUTE_SOURCE_KIND,
                 SOURCE_SCOPED_TRANSITION_ENTRY_ROUTE_SOURCE_KIND,
+                INITIAL_STATE_DECISION_DAG_ENTRY_ROUTE_SOURCE_KIND,
             }
         )
         and not _explicit_singleton_route_evidence(
@@ -3575,6 +3707,8 @@ def _resolve_entry_state_route_resolution(
             and SOURCE_CARRIER_DECISION_DAG_ENTRY_ROUTE_SOURCE_KIND
             not in route.source_kinds
             and NATIVE_BOUND_ENTRY_ROUTE_SOURCE_KIND not in route.source_kinds
+            and INITIAL_STATE_DECISION_DAG_ENTRY_ROUTE_SOURCE_KIND
+            not in route.source_kinds
             and not _explicit_singleton_route_evidence(
                 dispatcher, route.normalized_state, target
             )
@@ -4212,11 +4346,10 @@ def _entry_dispatcher_map_route_fact(
             carrier_fact = _native_bound_route_fact(
                 flow_graph,
                 NativeBoundTransitionRoute(
-                    fact_id=(
-                        "entry-state-carrier:"
-                        f"source={source_serial}:feeder={dispatcher_serial}:"
-                        f"state=0x{state:08X}:target={replacement_serial}"
-                    ),
+                    # This entry adapter establishes route authority only.
+                    # It is not a rebound native receipt, so it must not
+                    # occupy the canonical diagnostic fact_id namespace.
+                    fact_id=None,
                     source_instruction_ea=int(carrier_witness.source_instruction_ea),
                     source_block_serial=source_serial,
                     state_constant=state,
@@ -4232,7 +4365,13 @@ def _entry_dispatcher_map_route_fact(
                 # canonical binding select the target identity's semantic
                 # anchor; a stale physical entry root must not become an
                 # independent target-coordinate authority.
-                return carrier_fact
+                # ``NativeBoundTransitionRoute`` normalizes its identifier to
+                # text, so passing ``None`` through the compatibility adapter
+                # would otherwise create the literal diagnostic ID ``"None"``.
+                # This synthetic entry fact carries route authority only; the
+                # separately rebound native transition remains the sole owner
+                # of receipt provenance when canonical proofs are deduplicated.
+                return replace(carrier_fact, fact_id=None)
 
     witness = carrier.initial_state_write_witness
     if witness is None:
@@ -12697,6 +12836,7 @@ def emit_minimal_unflatten(
             }
     )
     state_route_resolver: Callable[[int], int | None] | None = None
+    current_route_dag: DecisionDag | None = None
     # The replay catalogue is bound from the typed condition-chain bundle, not
     # from successful comparison-node reconstruction.  A direct interval entry
     # has no comparison nodes to rebuild, but its exact source-bound leaves are
@@ -12710,9 +12850,13 @@ def emit_minimal_unflatten(
         current_route_dag = build_current_u32_decision_forest(
             flow_graph,
             int(condition_chain_dag.root),
-            expected_identities=expected_u32_state_identities(
-                state_var_stkoff=state_var_stkoff,
-                state_var_reg=state_var_reg,
+            expected_identities=(
+                frozenset({initial_state_write_witness.state_identity})
+                if initial_state_write_witness is not None
+                else expected_u32_state_identities(
+                    state_var_stkoff=state_var_stkoff,
+                    state_var_reg=state_var_reg,
+                )
             ),
             reference_dag=condition_chain_dag,
             permitted_non_state_handler_leaf_catalog=(
@@ -13462,6 +13606,9 @@ def emit_minimal_unflatten(
                             *(int(serial) for serial in dispatcher_region_serials),
                         }
                     ),
+                    initial_state_write_witness=initial_state_write_witness,
+                    decision_dag=condition_chain_dag,
+                    bound_current_dag=current_route_dag,
                 )
                 if initial_state is not None
                 else _EntryStateRouteResolution(None)
@@ -14893,53 +15040,45 @@ def emit_minimal_unflatten(
                     int(carrier.replacement_serial)
                 )
                 write_ref = block_refs_by_serial.get(int(held_entry_fact.source_serial))
+                dispatcher_ref = block_refs_by_serial.get(
+                    int(carrier.dispatcher_serial)
+                )
                 if (
                     type(owner_ref) is not NativeBlockRef
                     or type(write_ref) is not NativeBlockRef
                     or type(target_ref) is not NativeBlockRef
+                    or type(dispatcher_ref) is not NativeBlockRef
                 ):
                     raise ValueError("entry liveness carrier lacks native endpoint identities")
+                source_witnesses = {
+                    witness.block_ref: witness for witness in route_catalog.blocks
+                }
                 entry_proofs = tuple(
                     proof for proof in canonical_route_evidence.route_proofs
                     if (
                         _route_proof_matches_local_fact_family(
                             held_entry_fact, proof,
                         )
-                        and proof.source_identity == write_ref.identity
-                        and (
-                            (
-                                owner_ref == write_ref
-                                and proof.source_owner_identity is None
-                            )
-                            or (
-                                owner_ref != write_ref
-                                and (
-                                    proof.source_owner_identity == owner_ref.identity
-                                    # An initial-state W is upstream of the
-                                    # redirect owner P.  Its canonical route
-                                    # is owned by W (there is no false P->W
-                                    # corridor); P stays in the closed carrier.
-                                    or (
-                                        carrier.initial_state_write_witness is not None
-                                        and proof.source_owner_identity is None
-                                    )
-                                )
-                            )
-                        )
-                        and int(proof.source_anchor_ea)
-                        == int(held_entry_fact.source_instruction_ea)
-                        and proof.state_write is not None
-                        and proof.state_write.state_variable == state_identity
-                        and (int(proof.state_write.state_constant) & 0xFFFFFFFF)
-                        == (int(carrier.state) & 0xFFFFFFFF)
-                        and sum(
-                            1 for destination in proof.destinations
-                            if (
-                                (int(destination.state_constant) & 0xFFFFFFFF)
-                                == (int(carrier.state) & 0xFFFFFFFF)
-                                and destination.target_identity == target_ref.identity
-                            )
-                        ) == 1
+                        # Selection is a producer-side preview of the same
+                        # exact authority predicate used at transaction bind.
+                        # The singleton selected-id set is provisional only:
+                        # select_route below seals this exact candidate into
+                        # the final plan selection before attachment.
+                        and _entry_liveness_route_proof_rejection_detail(
+                            source_witnesses=source_witnesses,
+                            replacement_ref=target_ref,
+                            redirect_owner_ref=owner_ref,
+                            dispatcher_old_target_ref=dispatcher_ref,
+                            state_production_source_ref=write_ref,
+                            state_production_instruction_ea=(
+                                int(held_entry_fact.source_instruction_ea)
+                            ),
+                            route_proof_id=proof.proof_id,
+                            selected_ids={proof.proof_id},
+                            proof=proof,
+                            state_identity=state_identity,
+                            normalized_state=(int(carrier.state) & 0xFFFFFFFF),
+                        ) is None
                     )
                 )
                 if len(entry_proofs) != 1:
@@ -14992,9 +15131,6 @@ def emit_minimal_unflatten(
                 # select this exact proof below; defer the entry-only fallback
                 # until that sole route owner is known.
                 entry_liveness_proof = entry_proofs[0]
-                dispatcher_ref = block_refs_by_serial.get(
-                    int(carrier.dispatcher_serial)
-                )
                 exit_refs = tuple(
                     block_refs_by_serial.get(int(serial))
                     for serial in carrier.exit_path_serials

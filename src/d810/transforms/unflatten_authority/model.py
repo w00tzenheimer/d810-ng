@@ -3962,6 +3962,10 @@ class EntryEndpointLivenessForecast:
             raise ValueError("entry liveness forecast requires exact write-to-dispatcher corridor")
         if path and self.redirect_owner_ref not in path:
             raise ValueError("entry liveness forecast owner must lie on corridor")
+        if path and (len(path) < 2 or path[-2] != self.redirect_owner_ref):
+            raise ValueError(
+                "entry liveness forecast corridor must end at redirect owner"
+            )
         if path and tuple(self.delivery_path_edges) != tuple((index, index + 1) for index in range(len(path) - 1)):
             raise ValueError("entry liveness forecast corridor edges must be exact adjacent indices")
         object.__setattr__(self, "delivery_path_refs", path)
@@ -4079,6 +4083,10 @@ class EntryEndpointLivenessAllowance:
             raise ValueError("entry liveness allowance requires exact write-to-dispatcher corridor")
         if path and (owners[0] not in path or tuple(self.delivery_path_edges) != tuple((i, i + 1) for i in range(len(path) - 1))):
             raise ValueError("entry liveness allowance corridor is invalid")
+        if path and (len(path) < 2 or path[-2] != owners[0]):
+            raise ValueError(
+                "entry liveness allowance corridor must end at redirect owner"
+            )
         object.__setattr__(self, "delivery_path_refs", path)
 
 

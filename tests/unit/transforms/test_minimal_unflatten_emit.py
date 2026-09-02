@@ -167,6 +167,9 @@ from d810.transforms.minimal_unflatten_emit import (
 from d810.transforms.unflatten_authority.producer_api import (
     ConditionalEntryBridgeForecast,
 )
+from d810.transforms.unflatten_authority.proposal import (
+    _entry_liveness_route_proof_rejection_detail,
+)
 from d810.analyses.control_flow.semantic_route_evidence import (
     CanonicalSemanticEvidenceProductionContext,
 )
@@ -668,6 +671,7 @@ def test_entry_carrier_adapter_mints_state_carrier_fact_from_bound_interval_leaf
 
     assert fact is not None
     assert fact.kind is SemanticRouteFactKind.STATE_CARRIER
+    assert fact.fact_id is None
     assert fact.source_serial == 1
     assert fact.target_serial == 10
     assert fact.target_anchor_ea == minimal_unflatten_emit_module.stable_block_identity_semantic_anchor(
@@ -982,6 +986,107 @@ def test_entry_dispatcher_map_adapter_accepts_selected_upstream_initial_write() 
     assert fact.owner_serial == 1
     assert fact.source_serial == 1
     assert fact.source_instruction_ea == 0x1004
+
+
+def test_initial_state_dag_entry_rejects_witness_namespace_different_from_current_dag() -> None:
+    write = _mov_state(0x1004, 7)
+    comparison = _eq_block(1, 7, 2, 3, preds=(0,))
+    branch = comparison.insn_snapshots[-1]
+    wrong_namespace_branch = replace(
+        branch,
+        l=replace(branch.l, stkoff=_STATE + 4),
+    )
+    graph = FlowGraph(
+        {
+            0: _b(0, (1,), (), (write,)),
+            1: replace(comparison, insn_snapshots=(wrong_namespace_branch,)),
+            2: _b(2, (), (1,)),
+            3: _b(3, (), (1,)),
+        },
+        0,
+        0x1000,
+    )
+    witness = InitialStateWriteWitness(
+        0,
+        instruction_projection_without_block_references(write),
+        StorageIdentity(StorageIdentityKind.STACK, _STATE),
+        4,
+        7,
+        1,
+        0,
+        (0, 1),
+        ((0, 1),),
+    )
+    dag = DecisionDag(
+        32, {1: RouteComparison(1, "jz", 7, 2, 3)}, root=1,
+    )
+    bound = minimal_state_recovery_module.build_current_u32_decision_forest(
+        graph,
+        1,
+        expected_identities=frozenset({witness.state_identity}),
+        reference_dag=dag,
+    )
+    assert bound is None
+
+    result = minimal_unflatten_emit_module._trusted_initial_state_decision_dag_entry_route(
+        graph,
+        dispatcher_entry_serial=1,
+        state=7,
+        initial_state_write_witness=witness,
+        decision_dag=dag,
+        bound_current_dag=bound,
+        dispatcher_region_serials=frozenset({1}),
+    )
+
+    assert result.route is None
+    assert result.conflict
+
+
+def test_initial_state_dag_entry_consumes_shared_namespace_bound_forest_with_semantic_leaf() -> None:
+    write = _mov_state(0x1004, 7)
+    comparison = _eq_block(1, 7, 2, 3, preds=(0,))
+    graph = FlowGraph(
+        {
+            0: _b(0, (1,), (), (write,)),
+            1: comparison,
+            # A handler may itself have two semantic successors.  The shared
+            # forest was bound with the handler-leaf catalogue; rebuilding
+            # without that catalogue would incorrectly reject this leaf.
+            2: _b(2, (4, 5), (1,)),
+            3: _b(3, (), (1,)),
+            4: _b(4, (), (2,)),
+            5: _b(5, (), (2,)),
+        },
+        0,
+        0x1000,
+    )
+    witness = InitialStateWriteWitness(
+        0,
+        instruction_projection_without_block_references(write),
+        StorageIdentity(StorageIdentityKind.STACK, _STATE),
+        4,
+        7,
+        1,
+        0,
+        (0, 1),
+        ((0, 1),),
+    )
+    dag = DecisionDag(
+        32, {1: RouteComparison(1, "jz", 7, 2, 3)}, root=1,
+    )
+
+    result = minimal_unflatten_emit_module._trusted_initial_state_decision_dag_entry_route(
+        graph,
+        dispatcher_entry_serial=1,
+        state=7,
+        initial_state_write_witness=witness,
+        decision_dag=dag,
+        bound_current_dag=dag,
+        dispatcher_region_serials=frozenset({1}),
+    )
+
+    assert result.route is not None
+    assert result.route.target_block == 2
 
 
 def test_typed_emitter_mints_closed_entry_forecast_for_exact_conditional_arm(
@@ -1665,6 +1770,46 @@ def test_return_dag_logical_exit_selection_rejects_untyped_or_malformed_endpoint
     typed_refs = native_refs | {
         logical_exit: LogicalBlockRef("return-dag-logical-exit", "function-exit", 0),
     }
+
+    assert minimal_unflatten_emit_module._is_exact_return_dag_with_logical_exit(
+        graph, transition, typed_refs,
+    )
+
+    witness = fact.decision_dag_witness
+    assert witness is not None
+    path_without_exit = DecisionDagComparisonWitness(
+        4,
+        RouteComparison(4, "jz", state, 20, 21),
+        StorageIdentity(StorageIdentityKind.STACK, _STATE),
+    )
+    unrelated_exit = DecisionDagComparisonWitness(
+        5,
+        RouteComparison(5, "jz", state, 20, logical_exit),
+        StorageIdentity(StorageIdentityKind.STACK, _STATE),
+    )
+    unrelated_fact = replace(
+        fact,
+        decision_dag_witness=replace(
+            witness,
+            comparisons=(path_without_exit, unrelated_exit),
+        ),
+    )
+    assert not minimal_unflatten_emit_module._is_exact_return_dag_with_logical_exit(
+        graph, replace(transition, semantic_route_fact=unrelated_fact), typed_refs,
+    )
+
+    wrong_sibling = DecisionDagComparisonWitness(
+        4,
+        RouteComparison(4, "jz", state, 21, logical_exit),
+        StorageIdentity(StorageIdentityKind.STACK, _STATE),
+    )
+    wrong_sibling_fact = replace(
+        fact,
+        decision_dag_witness=replace(witness, comparisons=(wrong_sibling,)),
+    )
+    assert not minimal_unflatten_emit_module._is_exact_return_dag_with_logical_exit(
+        graph, replace(transition, semantic_route_fact=wrong_sibling_fact), typed_refs,
+    )
 
     assert not minimal_unflatten_emit_module._is_exact_return_dag_with_logical_exit(
         graph, replace(transition, semantic_route_fact=None), typed_refs,
@@ -4748,7 +4893,6 @@ def test_interval_only_entry_route_bails_without_a_singleton_proof(
                 row_kind="interval_range",
             ),
         ),
-        condition_chain_handlers=frozenset({10}),
         authoritative_handler_serials=frozenset({10}),
         dispatcher_region_serials=frozenset({2}),
     )
@@ -16514,6 +16658,75 @@ def test_native_entry_receipt_upgrades_exact_carrier_delivery_to_typed_fact() ->
     assert proof.state_carrier.source_identity == refs[1].identity
     assert proof.state_carrier.feeder_identity == refs[3].identity
     assert proof.state_carrier.comparison_entry_identity == refs[4].identity
+    carrier = proof.state_carrier
+    assert carrier is not None
+    source_witnesses = {item.block_ref: item for item in catalog.blocks}
+    exact = dict(
+        source_witnesses=source_witnesses,
+        replacement_ref=refs[10],
+        redirect_owner_ref=refs[1],
+        dispatcher_old_target_ref=refs[3],
+        state_production_source_ref=refs[1],
+        state_production_instruction_ea=0x1100,
+        route_proof_id=proof.proof_id,
+        selected_ids={proof.proof_id},
+        proof=proof,
+        state_identity=StorageIdentity(StorageIdentityKind.STACK, _STATE),
+        normalized_state=state,
+    )
+    assert _entry_liveness_route_proof_rejection_detail(**exact) is None
+
+    # The emitter supplies these exact source-catalogue coordinates before it
+    # chooses the entry proof.  Each relation is part of the selected route,
+    # rather than a descriptive carrier hint.
+    missing_source = dict(source_witnesses)
+    del missing_source[refs[1]]
+    comparison_drift = replace(
+        carrier,
+        comparison_entry_identity=carrier.feeder_identity,
+        comparison_entry_anchor_ea=carrier.feeder_anchor_ea,
+        corridor=carrier.corridor[:2] + (carrier.corridor[1],),
+    )
+    non_instruction_source_anchor = next(
+        point
+        for interval in carrier.source_identity.native_ranges.intervals
+        for point in range(interval.start_ea, interval.end_ea)
+        if point not in carrier.source_identity.exact_instruction_eas
+    )
+    source_anchor_drift = replace(
+        carrier,
+        source_anchor_ea=non_instruction_source_anchor,
+        corridor=(
+            semantic_route_evidence_module.SemanticCorridorPoint(
+                carrier.source_identity, non_instruction_source_anchor,
+            ),
+            *carrier.corridor[1:],
+        ),
+    )
+    proof_with_source_anchor_drift = replace(
+        proof,
+        source_anchor_ea=non_instruction_source_anchor,
+        state_carrier=source_anchor_drift,
+    )
+    for label, drift in (
+        ("source witness", {"source_witnesses": missing_source}),
+        ("state-production source", {"state_production_source_ref": refs[3]}),
+        ("redirect owner", {"redirect_owner_ref": refs[3]}),
+        ("dispatcher feeder", {"dispatcher_old_target_ref": refs[4]}),
+        ("comparison corridor", {"proof": replace(proof, state_carrier=comparison_drift)}),
+        (
+            "paired carrier source proof and allowance EA",
+            {
+                "proof": proof_with_source_anchor_drift,
+                "state_production_instruction_ea": non_instruction_source_anchor,
+            },
+        ),
+        ("destination", {"replacement_ref": refs[3]}),
+        ("selected proof", {"selected_ids": set()}),
+    ):
+        assert _entry_liveness_route_proof_rejection_detail(
+            **(exact | drift)
+        ) is not None, label
 
 
 def test_native_receipt_attaches_its_fact_id_to_matching_completed_carrier() -> None:
@@ -16898,6 +17111,93 @@ def test_exact_source_carrier_dag_route_authorizes_default_entry_leaf(
         graph_modifications(plan)
     )
     _assert_no_legacy_plan_metadata(plan)
+
+
+def test_exact_state_carrier_survives_canonical_entry_liveness_selection(
+    monkeypatch,
+    _seam,
+) -> None:
+    """The current source-carrier corridor is entry state authority itself."""
+
+    class _CleanUseDefSafety:
+        def redirect_use_def_violations(self, *_args, **_kwargs):
+            return ()
+
+    state = 0x16AA65E9
+    graph, dag = _task5_carrier_fixture(initial_state=state)
+    route = replace(
+        _native_bound_route(
+            source=1,
+            state=state,
+            target=10,
+            fact_id="typed-entry-liveness-carrier",
+        ),
+        source_instruction_ea=0x1100,
+    )
+    fact = _native_bound_route_fact(
+        graph,
+        route,
+        state_identity=StorageIdentity(StorageIdentityKind.STACK, _STATE),
+        decision_dag=dag,
+    )
+    assert fact is not None
+    assert fact.kind is SemanticRouteFactKind.STATE_CARRIER
+    monkeypatch.setattr(
+        minimal_unflatten_emit_module,
+        "recover_state_write_transitions_via_partitioned_fixpoint",
+        lambda *_args, **_kwargs: (
+            StateWriteTransition(
+                1,
+                state,
+                10,
+                False,
+                None,
+                via_block=3,
+                proof=TransitionProof(
+                    "exact_source_carrier_decision_dag_route",
+                    "source_carrier_decision_dag_reconciled",
+                    True,
+                    route_source_kinds=("decision_dag", "source_carrier"),
+                ),
+                semantic_route_fact=fact,
+            ),
+        ),
+    )
+    monkeypatch.setattr(
+        minimal_unflatten_emit_module,
+        "resolve_materialized_indirect_transfer_targets",
+        lambda rows, *_args, **_kwargs: tuple(rows),
+    )
+    dispatcher = _DualRouteDispatcher(
+        exact_targets={},
+        interval_rows=(IntervalRow(0, 0x100000000, 10),),
+        default_target=10,
+    )
+
+    plan = emit_minimal_unflatten(
+        graph,
+        dispatcher,
+        state_var_stkoff=_STATE,
+        dispatcher_entry_serial=3,
+        initial_state=state,
+        entry_bridge_exit_path_blocks=(3, 4, 9, 12),
+        entry_bridge_requires_witness=True,
+        condition_chain_route_evidence=_typed_condition_chain_evidence(
+            graph,
+            dag,
+            frozenset({10, 15, 19}),
+            dispatcher=dispatcher,
+        ),
+        block_refs_by_serial=_entry_dispatcher_map_test_refs(graph),
+        authoritative_handler_serials=frozenset({10, 15, 19}),
+        dispatcher_region_serials=frozenset({3, 4, 9, 12}),
+        use_def_safety=_CleanUseDefSafety(),
+        live_function=object(),
+    )
+
+    assert RedirectGoto(from_serial=1, old_target=3, new_target=10) in (
+        graph_modifications(plan)
+    )
 
 
 def test_native_entry_carrier_receipt_drives_typed_emitter_forecast(
