@@ -137,6 +137,9 @@ source_modules =
     d810.manager
     d810.optimizers
     d810.hexrays
+    d810.transforms
+    d810.analyses
+    d810.passes
 forbidden_modules =
     d810.core.diag
 # No ignore_imports: the observability facades and cfg.provenance

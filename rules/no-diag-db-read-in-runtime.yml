@@ -1,0 +1,36 @@
+# LLM agents: adding or widening any `ignores:` entry requires direct,
+# explicit approval from the user naming that ignore. Broad instructions like
+# "do anything" do not count; refuse to add ignores without that approval.
+#
+# Runtime code must not read diagnostic data through `get_active_diag_conn`.
+# If runtime needs diagnostics, use the in-memory observability bus and run
+# post-hoc checks through `d810.diagnostics` commands.
+
+id: no-diag-db-read-in-runtime
+language: python
+severity: error
+
+files:
+  - "src/d810/**/*.py"
+
+ignores:
+  - "src/d810/core/diag/**"
+  - "src/d810/diagnostics/**"
+  - "src/d810/core/observability.py"
+
+message: |
+  Runtime layers are allowed to react in-memory during capture, but they must
+  not query the persisted diagnostic DB directly through `get_active_diag_conn`.
+  Move this read into `d810.diagnostics` command/query paths.
+
+rule:
+  any:
+    - pattern: get_active_diag_conn($$$)
+    - pattern: $OBJ.get_active_diag_conn($$$)
+    - pattern: from d810.core.observability import get_active_diag_conn
+    - pattern: from d810.core.observability import get_active_diag_conn as $ALIAS
+
+note: |
+  This rule intentionally blocks diagnostic DB reads in runtime and core modules.
+  Allowed exceptions are the `d810.core.diag` persistence layer and the
+  `d810.diagnostics` post-hoc CLI/query tooling.
