@@ -185,6 +185,37 @@ def test_equal_but_distinct_occurrences_never_reuse_each_others_bytes() -> None:
     assert metrics.canonical_bytes_reuses == 0
 
 
+def test_cache_does_not_survive_across_sessions_or_after_the_phase_ends() -> None:
+    """A fresh session, or no session at all, never reuses a prior session's work."""
+
+    value = (1, "two", (3, 4), frozenset({5}))
+    with _canonical_validation_session(
+        CanonicalSessionPhase.PROJECTED_PREPARATION,
+    ) as first_session:
+        ids.canonical_bytes(value)
+        assert first_session.metrics.deep_validations == 1
+
+    # A second, fresh session for the *same* live occurrence must fully
+    # revalidate: nothing survives the first session's teardown.
+    with _canonical_validation_session(
+        CanonicalSessionPhase.OBSERVED_REVALIDATION,
+    ) as second_session:
+        ids.canonical_bytes(value)
+        metrics = second_session.metrics
+
+    assert metrics.deep_validations == 1
+    assert metrics.wire_encodes == 1
+    assert metrics.canonical_bytes_reuses == 0
+
+    # Outside any session at all, the call is not tracked by either session
+    # and still performs full validation (process ledger only).
+    before = process_work_metrics()
+    ids.canonical_bytes(value)
+    after = process_work_metrics()
+    assert after.deep_validations == before.deep_validations + 1
+    assert after.canonical_bytes_reuses == before.canonical_bytes_reuses
+
+
 def test_deep_authority_roundtrip_repeats_work_for_one_exact_occurrence() -> None:
     """Freeze the repeated work `validate_canonical_roundtrip` costs today."""
 
