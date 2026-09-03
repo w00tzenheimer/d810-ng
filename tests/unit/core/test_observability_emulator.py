@@ -344,8 +344,10 @@ class TestUnownedScopeSharing:
     breaks dedupe between the ``record_emulator_gap`` and
     ``format_emulator_gap`` calls inside one ``_warn_gap`` (they see two
     different objects) and defeats the "warn once per attempt" contract
-    entirely. Unowned lookups must share ONE typed-unowned scope per
-    ``func_ea`` instead.
+    entirely. Unowned lookups must share ONE typed-unowned scope for the
+    SAME ``func_ea`` instead -- but that scope is a single-slot holder, not
+    a dict keyed by func_ea, so it never grows one entry per function
+    forever (ticket d81-dhs3 follow-up).
     """
 
     UNOWNED_FUNC = 0x7FFB0EB99999
@@ -359,9 +361,9 @@ class TestUnownedScopeSharing:
         )
         from d810.core import observability_emulator as _mod
 
-        _mod._unowned_emulator_gap_scopes.clear()
+        _mod._unowned_emulator_gap_scope = None
         yield
-        _mod._unowned_emulator_gap_scopes.clear()
+        _mod._unowned_emulator_gap_scope = None
 
     def test_repeat_lookups_return_the_same_unowned_scope(self):
         first = emulator_gap_scope(self.UNOWNED_FUNC)
@@ -406,6 +408,25 @@ class TestUnownedScopeSharing:
         emulator_gap_scope(self.UNOWNED_FUNC)
 
         assert len(constructed) == 1
+
+    def test_unowned_scope_holder_keeps_at_most_one_entry(self):
+        from d810.core import observability_emulator as _mod
+
+        first_scope = emulator_gap_scope(self.UNOWNED_FUNC)
+        other_func = self.UNOWNED_FUNC + 0x1000
+
+        other_scope = emulator_gap_scope(other_func)
+
+        assert other_scope is not first_scope
+        assert other_scope.func_ea == other_func
+        # Single-slot holder: a lookup for a DIFFERENT func_ea evicts the
+        # first scope entirely, so re-acquiring the original func_ea mints
+        # a brand-new scope rather than resuming stale dedupe state. Memory
+        # never grows past one cached entry.
+        assert _mod._unowned_emulator_gap_scope is other_scope
+        reacquired_first = emulator_gap_scope(self.UNOWNED_FUNC)
+        assert reacquired_first is not first_scope
+        assert _mod._unowned_emulator_gap_scope is reacquired_first
 
 
 class TestFlushAll:
