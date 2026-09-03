@@ -1102,12 +1102,20 @@ def _decode_term(payload: bytes, *, name: str) -> TypedBvTerm:
         raise ValueError(f"invalid {name} bytes") from exc
 
 
-def _attempt_payload_bytes(attempt: DiscoveryAttempt) -> bytes:
-    outcome = attempt.outcome
+def _attempt_content_bytes(attempt: DiscoveryAttempt) -> bytes:
+    """Return the canonical bytes of one attempt's complete stored content.
+
+    This is the single serialization of everything ``record_attempt``
+    persists about an attempt: the payload column verbatim, and -- through the
+    context, the outcome and both term fingerprints -- every other column the
+    INSERT derives.  Both the stored payload and the recorded-attempt memo key
+    are built from it, so neither can drift away from the schema on its own.
+    """
+
     eligible_for_mining = attempt.eligible_for_mining
     if type(eligible_for_mining) is not bool:
         raise TypeError("eligible_for_mining must be a bool")
-    payload = json.dumps(
+    return json.dumps(
         {
             "schema_version": 1,
             "attempt_uuid": attempt.attempt_uuid,
@@ -1115,13 +1123,18 @@ def _attempt_payload_bytes(attempt: DiscoveryAttempt) -> bytes:
             "raw_fingerprint": term_fingerprint(attempt.raw_term),
             "eligible_for_mining": eligible_for_mining,
             "context": attempt.context.to_dict(),
-            "outcome": outcome.to_dict(),
+            "outcome": attempt.outcome.to_dict(),
         },
         allow_nan=False,
         ensure_ascii=True,
         separators=(",", ":"),
         sort_keys=True,
     ).encode("utf-8")
+
+
+def _attempt_payload_bytes(attempt: DiscoveryAttempt) -> bytes:
+    eligible_for_mining = attempt.eligible_for_mining
+    payload = _attempt_content_bytes(attempt)
     decoded = _strict_loads(payload)
     try:
         if type(decoded) is not dict or set(decoded) != {
@@ -2143,53 +2156,26 @@ class MbaDiscoveryStore:
 
     @staticmethod
     def _attempt_identity(attempt: DiscoveryAttempt) -> tuple[object, ...]:
-        """Return the full content identity of one attempt, cheaply.
+        """Return the full content identity of one attempt.
 
-        Every column ``record_attempt``'s duplicate fast-path compares is
-        covered here, plus both term fingerprints, so two attempts with equal
-        identities necessarily serialize to the same stored bytes.  Computing
-        it costs two fingerprints instead of three JSON round trips.
+        The identity embeds the *exact* canonical bytes ``record_attempt``
+        stores in ``outcome_payload``, so it covers every field that payload
+        carries -- the attempt UUID, the whole observation context and the
+        whole provider outcome, late-added members such as
+        ``source_provenance``, ``metadata`` and ``matcher`` included.  Every
+        remaining persisted column is derived from that content or from the
+        term widths carried alongside it, which is what makes two equal
+        identities necessarily serialize to the same stored bytes.
+
+        Hand-listing the fields is what let the key drift behind the schema
+        before, so the key is deliberately built from the same serialization
+        the row itself is written from.
         """
-        identity = attempt.context.function_identity
-        context = attempt.context
-        outcome = attempt.outcome
-        input_cost = outcome.input_cost or (None, None)
-        output_cost = outcome.output_cost or (None, None)
+
         return (
-            term_fingerprint(attempt.canonical_term),
-            term_fingerprint(attempt.raw_term),
+            _attempt_content_bytes(attempt),
             attempt.canonical_term.width,
             attempt.raw_term.width,
-            identity.input_identity,
-            identity.input_identity_provenance,
-            identity.external_evidence_allowed,
-            identity.database_uuid,
-            identity.database_identity,
-            identity.function_ea,
-            identity.function_rva,
-            identity.function_fingerprint,
-            identity.decompilation_session_id,
-            identity.top_level_epoch,
-            identity.evidence_generation,
-            identity.maturity,
-            context.instruction_ea,
-            context.block_serial,
-            context.block_ea,
-            context.plugin_identity.name,
-            context.plugin_identity.distribution,
-            context.plugin_identity.version,
-            context.plugin_identity.origin,
-            outcome.provider.value,
-            outcome.status.value,
-            input_cost[0],
-            input_cost[1],
-            output_cost[0],
-            output_cost[1],
-            outcome.proof_verdict,
-            outcome.elapsed_ms,
-            outcome.refusal_reason,
-            outcome.fingerprint,
-            attempt.eligible_for_mining,
         )
 
     def _memoized_duplicate(
@@ -2199,8 +2185,9 @@ class MbaDiscoveryStore:
 
         Only the group's live revision/state is read, so the receipt is never
         stale.  The expensive parts -- both term round trips, the outcome
-        payload, ``BEGIN IMMEDIATE`` and the causal-domain validation it drags
-        in -- are skipped entirely.
+        payload's validating re-decode, ``BEGIN IMMEDIATE`` and the
+        causal-domain validation it drags in -- are skipped entirely; the key
+        itself costs one canonical encoding of the attempt's content.
         """
         with self._lock:
             self._ensure_open()
