@@ -10,6 +10,7 @@ from d810.core.typing import Optional
 from d810.core.typing import Set
 from d810.core.typing import Tuple
 from d810.analyses.control_flow.interval_map import IntervalDispatcher
+from d810.analyses.control_flow.route_exactness import WrittenStateSet
 from d810.analyses.control_flow.route_predicate import DecisionDag
 from d810.ir.block_identity import StableBlockIdentity
 from d810.ir.flowgraph import FlowGraph
@@ -361,12 +362,15 @@ class ConditionChainAnalysisResult:
     state_var_stkoff: int | None = None
     state_var_lvar_idx: int | None = None
     state_var_reg: int | None = None
-    # Every state constant the function writes to the state variable.  A
-    # comparison-tree (BST) dispatcher publishes wide leaf intervals, so
-    # interval width alone cannot decide whether a row binds one concrete
-    # state; this set can (ticket d81-8xhg).  Empty means "not recovered",
-    # which keeps consumers on the conservative singleton-only exactness rule.
-    written_state_constants: frozenset[int] = frozenset()
+    # Every state constant the function writes to the state variable, PLUS
+    # whether that enumeration was exhaustive.  A comparison-tree (BST)
+    # dispatcher publishes wide leaf intervals, so interval width alone cannot
+    # decide whether a row binds one concrete state; the written-state set can
+    # (ticket d81-8xhg) -- but only as closed-world reasoning, which is
+    # inadmissible unless the receipt says every write was classified
+    # (ticket d81-pk0f).  The default receipt is incomplete, which keeps
+    # consumers on the conservative singleton-only exactness rule.
+    written_states: WrittenStateSet = field(default_factory=WrittenStateSet)
 
 
 def resolve_target_via_condition_chain(

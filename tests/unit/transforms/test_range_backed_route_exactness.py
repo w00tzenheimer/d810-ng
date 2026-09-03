@@ -9,11 +9,21 @@ bridge for the initial state could never be built
 The positive fixture is the real row that stranded ``0x1CAFDDE5``; the negative
 control puts a second written constant inside the same leaf, which must keep
 the refusal because the leaf is then a genuinely shared corridor.
+
+Ticket d81-pk0f adds a third control: the same leaf with the same single
+written member but an INCOMPLETE receipt (some write to the state slot could
+not be classified).  All three consumers must abstain there, because the
+"only one written member" argument is closed-world and the receipt is what
+licenses it.
 """
 
 from __future__ import annotations
 
 from d810.analyses.control_flow.interval_map import IntervalDispatcher, IntervalRow
+from d810.analyses.control_flow.route_exactness import (
+    REASON_NONCONSTANT_WRITE,
+    WrittenStateSet,
+)
 from d810.analyses.control_flow.linearized_state_dag import (
     _is_range_backed_only_handoff_anchor,
 )
@@ -38,13 +48,22 @@ _DISPATCHER_ENTRY = 146
 _SHARED_STATE = 0x1B7B68FE
 
 
-def _range_only_dispatcher(written_states) -> IntervalDispatcher:
-    """The stranding table: one wide leaf, no singleton row anywhere."""
+def _range_only_dispatcher(written_states, *, complete: bool = True):
+    """The stranding table: one wide leaf, no singleton row anywhere.
+
+    *written_states* is wrapped in a completeness receipt; pass
+    ``complete=False`` to model a collector that could not classify every write
+    to the state slot (ticket d81-pk0f).
+    """
+    receipt = WrittenStateSet.exhaustive(
+        written_states,
+        reasons=() if complete else (REASON_NONCONSTANT_WRITE,),
+    )
     return IntervalDispatcher(
         [IntervalRow(_RANGE_LO, _RANGE_HI, _LEAF)],
         default_target=_DISPATCHER_ENTRY,
         compute_default=False,
-        written_state_constants=written_states,
+        written_state_constants=receipt,
     )
 
 
@@ -135,3 +154,45 @@ def test_handoff_anchor_singleton_path_is_unchanged():
     assert not _is_range_backed_only_handoff_anchor(
         _INITIAL_STATE, _LEAF, report, singleton
     )
+
+
+# ---------------------------------------------------------------------------
+# d81-pk0f: an incomplete receipt abstains at every consumer.
+# ---------------------------------------------------------------------------
+
+
+def test_entry_bridge_refused_when_the_receipt_is_incomplete():
+    dispatcher = _range_only_dispatcher({_INITIAL_STATE}, complete=False)
+    assert _entry_route(dispatcher) is None
+
+
+def test_route_evidence_refused_when_the_receipt_is_incomplete():
+    dispatcher = _range_only_dispatcher({_INITIAL_STATE}, complete=False)
+    assert not _explicit_singleton_route_evidence(
+        dispatcher, _INITIAL_STATE, _LEAF
+    )
+
+
+def test_handoff_anchor_refused_when_the_receipt_is_incomplete():
+    report = _report({}, {_LEAF: (_RANGE_LO, _RANGE_HI - 1)})
+    dispatcher = _range_only_dispatcher({_INITIAL_STATE}, complete=False)
+    assert _is_range_backed_only_handoff_anchor(
+        _INITIAL_STATE, _LEAF, report, dispatcher
+    )
+
+
+def test_incomplete_receipt_leaves_the_singleton_path_alone():
+    """Abstaining returns to the pre-d81-8xhg rule, it does not go below it."""
+    report = _report({}, {_LEAF: (_INITIAL_STATE, _INITIAL_STATE)})
+    singleton = IntervalDispatcher(
+        [IntervalRow(_INITIAL_STATE, _INITIAL_STATE + 1, _LEAF)],
+        default_target=_DISPATCHER_ENTRY,
+        compute_default=False,
+        written_state_constants=WrittenStateSet.exhaustive(
+            {_INITIAL_STATE}, reasons=(REASON_NONCONSTANT_WRITE,)
+        ),
+    )
+    assert not _is_range_backed_only_handoff_anchor(
+        _INITIAL_STATE, _LEAF, report, singleton
+    )
+    assert _explicit_singleton_route_evidence(singleton, _INITIAL_STATE, _LEAF)

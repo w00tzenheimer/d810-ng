@@ -15,6 +15,13 @@ These tests pin the corrected predicate:
 * a range row containing none stays refused;
 * the pre-existing singleton path is untouched (and does not need the
   written-state set at all).
+
+Ticket d81-pk0f adds the missing premise.  Reading "not in the written set" as
+"cannot occur" is closed-world reasoning, so the written-state set is only
+admissible when it arrives with a completeness receipt
+(:class:`WrittenStateSet`) attesting that every write to the state slot was
+classified.  A bare collection is NOT a receipt, and an incomplete receipt
+ABSTAINS back to the pre-d81-8xhg refusal.
 """
 
 from __future__ import annotations
@@ -23,7 +30,13 @@ import pytest
 
 from d810.analyses.control_flow.interval_map import IntervalDispatcher, IntervalRow
 from d810.analyses.control_flow.route_exactness import (
+    REASON_NONCONSTANT_WRITE,
+    REASON_NO_RECEIPT,
+    REASON_UNRESOLVED_WRITE,
+    WrittenStateSet,
+    coerce_written_state_set,
     dispatcher_written_state_constants,
+    dispatcher_written_state_set,
     interval_isolates_state,
     is_exact_route_interval,
     normalize_written_state_constants,
@@ -55,7 +68,7 @@ def test_singleton_row_not_covering_state_is_refused():
 
 
 def test_range_row_with_single_written_member_is_exact():
-    written = frozenset({_STATE, 0x76B1AD38, 0x3FCA366B})
+    written = WrittenStateSet.exhaustive({_STATE, 0x76B1AD38, 0x3FCA366B})
     assert is_exact_route_interval(
         lo=_LO, hi=_HI, state=_STATE, written_states=written
     )
@@ -63,7 +76,7 @@ def test_range_row_with_single_written_member_is_exact():
 
 
 def test_range_row_with_two_written_members_is_refused():
-    written = frozenset({_STATE, _LO + 1})
+    written = WrittenStateSet.exhaustive({_STATE, _LO + 1})
     assert not is_exact_route_interval(
         lo=_LO, hi=_HI, state=_STATE, written_states=written
     )
@@ -76,7 +89,10 @@ def test_range_row_with_no_written_members_is_refused():
     # ``state`` itself is not in the written set -> the intersection is empty
     # for the queried value and the row proves nothing about it.
     assert not is_exact_route_interval(
-        lo=_LO, hi=_HI, state=_STATE, written_states=frozenset({0x76B1AD38})
+        lo=_LO,
+        hi=_HI,
+        state=_STATE,
+        written_states=WrittenStateSet.exhaustive({0x76B1AD38}),
     )
 
 
@@ -90,7 +106,7 @@ def test_range_row_without_written_states_keeps_the_old_refusal():
 
 
 def test_range_row_not_covering_state_is_refused():
-    written = frozenset({_STATE})
+    written = WrittenStateSet.exhaustive({_STATE})
     assert not is_exact_route_interval(
         lo=_HI, hi=_HI + 0x100, state=_STATE, written_states=written
     )
@@ -111,8 +127,9 @@ def test_dispatcher_carries_written_state_constants():
     plain = IntervalDispatcher(rows)
     assert dispatcher_written_state_constants(plain) == frozenset()
 
-    bound = plain.with_written_state_constants({_STATE})
+    bound = plain.with_written_state_constants(WrittenStateSet.exhaustive({_STATE}))
     assert dispatcher_written_state_constants(bound) == frozenset({_STATE})
+    assert dispatcher_written_state_set(bound).complete
     # copy-on-write: the original is untouched
     assert dispatcher_written_state_constants(plain) == frozenset()
     assert [(r.lo, r.hi, r.target) for r in bound._rows] == [(_LO, _HI, _TARGET)]
@@ -144,7 +161,7 @@ def test_debug_log_names_state_range_and_target(caplog):
                 lo=_LO,
                 hi=_HI,
                 state=_STATE,
-                written_states=frozenset({_STATE}),
+                written_states=WrittenStateSet.exhaustive({_STATE}),
                 target=_TARGET,
             )
     finally:
@@ -161,5 +178,70 @@ def test_debug_log_names_state_range_and_target(caplog):
 def test_degenerate_intervals_are_refused(bad):
     lo, hi = bad
     assert not is_exact_route_interval(
-        lo=lo, hi=hi, state=lo, written_states=frozenset({lo})
+        lo=lo, hi=hi, state=lo, written_states=WrittenStateSet.exhaustive({lo})
     )
+
+
+# ---------------------------------------------------------------------------
+# d81-pk0f: the closed-world step needs a completeness receipt.
+# ---------------------------------------------------------------------------
+
+
+def test_bare_constant_collection_is_not_a_receipt():
+    """A raw set carries no attestation that every write was enumerated.
+
+    This is the d81-pk0f regression guard: before the receipt, handing the
+    predicate a bare set was enough to accept a wide leaf.
+    """
+    assert not is_exact_route_interval(
+        lo=_LO, hi=_HI, state=_STATE, written_states=frozenset({_STATE})
+    )
+    assert coerce_written_state_set(frozenset({_STATE})).reasons == (
+        REASON_NO_RECEIPT,
+    )
+
+
+@pytest.mark.parametrize(
+    "reason", [REASON_NONCONSTANT_WRITE, REASON_UNRESOLVED_WRITE]
+)
+def test_incomplete_receipt_abstains(reason):
+    receipt = WrittenStateSet.exhaustive({_STATE}, reasons=[reason])
+
+    assert not receipt.complete
+    assert not is_exact_route_interval(
+        lo=_LO, hi=_HI, state=_STATE, written_states=receipt
+    )
+    assert not interval_isolates_state(
+        lo=_LO, hi=_HI, state=_STATE, written_states=receipt
+    )
+
+
+def test_incomplete_receipt_does_not_disturb_the_singleton_path():
+    """Abstention falls back to pre-d81-8xhg behaviour, not below it."""
+    receipt = WrittenStateSet.exhaustive(
+        {_STATE}, reasons=[REASON_NONCONSTANT_WRITE]
+    )
+
+    assert is_exact_route_interval(
+        lo=_STATE, hi=_STATE + 1, state=_STATE, written_states=receipt
+    )
+
+
+def test_receipt_cannot_claim_closure_while_carrying_a_reason():
+    receipt = WrittenStateSet(
+        constants=frozenset({_STATE}),
+        complete=True,
+        reasons=(REASON_NONCONSTANT_WRITE,),
+    )
+
+    assert receipt.complete is False
+
+
+def test_dispatcher_without_a_receipt_reports_incomplete():
+    rows = [IntervalRow(_LO, _HI, _TARGET)]
+    assert not dispatcher_written_state_set(IntervalDispatcher(rows)).complete
+    assert not dispatcher_written_state_set(None).complete
+    assert not dispatcher_written_state_set(object()).complete
+    # A bare collection handed to the table is still not a receipt.
+    bare = IntervalDispatcher(rows).with_written_state_constants({_STATE})
+    assert not dispatcher_written_state_set(bare).complete

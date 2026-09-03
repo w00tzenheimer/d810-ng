@@ -12,7 +12,8 @@ from dataclasses import dataclass, field
 from enum import Enum, auto
 from d810.core.logging import getLogger
 from d810.analyses.control_flow.route_exactness import (
-    normalize_written_state_constants,
+    WrittenStateSet,
+    coerce_written_state_set,
 )
 from d810.core.typing import Any, Iterable, Mapping
 
@@ -410,17 +411,19 @@ class IntervalDispatcher:
 
     Args:
         rows: Pre-built list of IntervalRow objects.
-        written_state_constants: The state constants the analysed function
-            actually writes to the state variable.  A comparison-tree (BST)
-            dispatcher publishes wide leaf intervals, so interval width alone
-            cannot say whether a row binds one concrete state; carrying the
-            occurring values alongside the table lets
-            :mod:`d810.analyses.control_flow.route_exactness` decide that
-            (ticket d81-8xhg).  Empty -> consumers stay on the conservative
+        written_state_constants: The written-state completeness receipt
+            (:class:`~d810.analyses.control_flow.route_exactness.WrittenStateSet`)
+            for the analysed function.  A comparison-tree (BST) dispatcher
+            publishes wide leaf intervals, so interval width alone cannot say
+            whether a row binds one concrete state; carrying the occurring
+            values *and whether that enumeration was exhaustive* alongside the
+            table lets :mod:`d810.analyses.control_flow.route_exactness` decide
+            that (tickets d81-8xhg, d81-pk0f).  A bare collection, or nothing
+            at all, is not a receipt and keeps consumers on the conservative
             singleton-only behaviour.
     """
 
-    __slots__ = ("_rows", "_starts", "_default_target", "_written_state_constants")
+    __slots__ = ("_rows", "_starts", "_default_target", "_written_states")
 
     def __init__(
         self,
@@ -428,11 +431,11 @@ class IntervalDispatcher:
         *,
         default_target: Any | None = None,
         compute_default: bool = True,
-        written_state_constants: Iterable[Any] | None = None,
+        written_state_constants: WrittenStateSet | Iterable[Any] | None = None,
     ) -> None:
         self._rows: list[IntervalRow] = sorted(rows)
-        self._written_state_constants: frozenset[int] = (
-            normalize_written_state_constants(written_state_constants)
+        self._written_states: WrittenStateSet = coerce_written_state_set(
+            written_state_constants
         )
         # Validate no overlaps
         for i in range(len(self._rows) - 1):
@@ -491,18 +494,29 @@ class IntervalDispatcher:
         return self._default_target
 
     @property
-    def written_state_constants(self) -> frozenset[int]:
-        """State constants the analysed function writes to the state variable.
+    def written_states(self) -> WrittenStateSet:
+        """Written-state completeness receipt for the analysed function.
 
-        Empty when the table was built without that evidence.  Consumers must
-        treat "empty" as "no evidence" and fall back to singleton-only route
-        exactness rather than concluding a range row is unambiguous.
+        Route exactness over a RANGE row is closed-world reasoning, so it is
+        only admissible when the receipt attests that every write to the state
+        slot was classified.  A table built without a receipt carries an
+        incomplete one and consumers stay on singleton-only exactness
+        (ticket d81-pk0f).
         """
-        return self._written_state_constants
+        return self._written_states
+
+    @property
+    def written_state_constants(self) -> frozenset[int]:
+        """The receipt's constants only (diagnostics / back-compat view).
+
+        Empty when the table was built without that evidence.  Decisions must
+        read :attr:`written_states` instead so they see completeness.
+        """
+        return self._written_states.constants
 
     def with_written_state_constants(
         self,
-        written_state_constants: Iterable[Any] | None,
+        written_state_constants: WrittenStateSet | Iterable[Any] | None,
     ) -> "IntervalDispatcher":
         """Return a copy of this table carrying *written_state_constants*.
 
@@ -511,7 +525,8 @@ class IntervalDispatcher:
         mutating a table another analysis may already hold.
 
         Args:
-            written_state_constants: Constants written to the state variable.
+            written_state_constants: The written-state receipt (or a bare
+                collection, which is treated as *no* receipt).
 
         Returns:
             A new dispatcher with identical rows and default target.

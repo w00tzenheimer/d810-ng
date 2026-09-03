@@ -100,7 +100,7 @@ from d810.analyses.control_flow.dispatcher_resolution import (
 )
 from d810.analyses.control_flow.interval_map import IntervalDispatcher, IntervalRow
 from d810.analyses.control_flow.route_exactness import (
-    dispatcher_written_state_constants,
+    dispatcher_written_state_set,
     is_exact_route_interval,
 )
 from d810.analyses.control_flow.condition_chain_model import (
@@ -2889,15 +2889,17 @@ def _explicit_singleton_route_evidence(
     owner of the range-vs-singleton decision.  A width-1 row is exact as it
     always was; a wider comparison-tree (BST) leaf is exact only when the
     queried state is the sole value the function writes inside that interval
-    (ticket d81-8xhg).  A leaf shared by two or more written constants, or
-    carrying no written-state evidence at all, is still refused.
+    (ticket d81-8xhg).  A leaf shared by two or more written constants, one
+    carrying no written-state evidence at all, or one whose written-state
+    receipt is INCOMPLETE (some write to the state slot could not be
+    classified, ticket d81-pk0f) is still refused.
     """
     try:
         normalized = int(state) & 0xFFFFFFFF
         expected_target = int(target)
     except _PROVIDER_SHAPE_ERRORS:
         return False
-    written_states = dispatcher_written_state_constants(dispatcher)
+    written_states = dispatcher_written_state_set(dispatcher)
     # ``StateDispatcherMap`` exposes exact rows rather than ``lookup_row``.
     for attribute in ("rows", "_rows"):
         try:

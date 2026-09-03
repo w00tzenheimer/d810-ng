@@ -49,8 +49,14 @@ from d810.analyses.control_flow.interval_map import (
     IntervalDispatcher,
 )
 from d810.analyses.control_flow.route_exactness import (
+    REASON_BLOCK_UNREADABLE,
+    REASON_NO_STATE_VARIABLE,
+    MAX_STATE_WRITES_PER_BLOCK,
+    StateWriteKind,
+    StateWriteObservation,
+    WrittenStateSet,
+    build_written_state_set,
     is_exact_route_interval,
-    written_states_in_interval,
 )
 from d810.ir.flowgraph import InsnSnapshot, MopSnapshot, OperandKind
 from d810.ir.instructions import Instruction
@@ -1398,31 +1404,299 @@ def _forward_eval_insn(
     )
 
 
-# The smallest value treated as a dispatcher state constant.  Values below it
-# are ordinary small integers a handler may store in the same slot (flags,
-# counters), not selector values, and admitting them would let unrelated writes
-# poison route exactness.
+# The smallest value treated as a *selector-grade* dispatcher state constant.
+# Values below it are ordinary small integers a handler may store in the same
+# slot (flags, counters).  Nothing in a comparison-tree dispatcher forbids a
+# small selector, though, so this threshold is a SHAPE HEURISTIC and not a
+# proof: dropping sub-threshold constants from the route-exactness ground set
+# would under-approximate the values that can reach an interval, which is the
+# unsound direction.  They are therefore RETAINED by
+# :func:`_collect_written_state_set` and filtered out only by the selector-only
+# view (``WrittenStateSet.filtered``), which marks itself incomplete
+# (tickets d81-8xhg, d81-pk0f).
 MIN_STATE_CONSTANT: int = 0x01000000
 
 
-def _collect_written_state_constants(
+def _lvar_stkoff(mba: Optional[object], idx: Optional[int]) -> Optional[int]:
+    """Return the stack offset of ``mba.vars[idx]``, or ``None`` if undecidable."""
+    if mba is None or idx is None:
+        return None
+    try:
+        return int(mba.vars[int(idx)].location.stkoff())
+    except Exception:
+        return None
+
+
+def _dest_alias_is_undecidable(
+    mop: object,
+    state_var_stkoff: Optional[int],
+    *,
+    state_var_lvar_idx: Optional[int],
+    mba: Optional[object],
+) -> bool:
+    """Return True when *mop* is a destination we cannot prove is NOT the state slot.
+
+    The only such shape today is an ``mop_l`` whose lvar we cannot map to a
+    stack offset: without the mapping we can neither match it against the state
+    variable nor rule it out, so the write must be reported as an unsupported
+    alias rather than silently ignored (ticket d81-pk0f).
+
+    Args:
+        mop: Destination operand of a write.
+        state_var_stkoff: Stack offset of the state variable, if stack-resident.
+        state_var_lvar_idx: Known lvar index of the state variable, if any.
+        mba: Block array, used for the ``mba.vars`` stack-offset lookup.
+
+    Returns:
+        True when the alias question cannot be decided.
+    """
+    if mop is None or state_var_stkoff is None:
+        return False
+    if state_var_lvar_idx is not None:
+        # The lvar index is known, so ``_mop_matches_stkoff`` decides mop_l
+        # exactly and there is nothing left undecidable.
+        return False
+    mop_l_type = _mop_type_value("mop_l", None)
+    if mop_l_type is None or getattr(mop, "t", None) != mop_l_type:
+        return False
+    lref = getattr(mop, "l", None)
+    idx = getattr(lref, "idx", None) if lref is not None else None
+    if idx is None:
+        return True
+    return _lvar_stkoff(mba, idx) is None
+
+
+def _mop_subtree_references_stack(mop: object, depth: int = 3) -> bool:
+    """Return True when *mop* mentions a stack location anywhere in its subtree."""
+    if mop is None or depth < 0:
+        return False
+    mop_type = getattr(mop, "t", None)
+    if mop_type is None:
+        return False
+    if mop_type in (
+        _mop_type_value("mop_S", None),
+        _mop_type_value("mop_a", None),
+    ):
+        return True
+    if mop_type == _mop_type_value("mop_d", None):
+        sub = getattr(mop, "d", None)
+        if sub is None:
+            return False
+        return any(
+            _mop_subtree_references_stack(getattr(sub, name, None), depth - 1)
+            for name in ("l", "r", "d")
+        )
+    return False
+
+
+def _store_address_is_undecidable(
+    mop: object,
+    state_var_stkoff: Optional[int],
+) -> bool:
+    """Return True when an ``m_stx`` destination address may be the state slot.
+
+    A store whose address resolves to a concrete stack slot is decided by
+    ``_mop_matches_stkoff``.  A store through a stack-flavoured expression that
+    does NOT resolve to a concrete offset may land on the state slot and is
+    reported as an unresolved write.
+
+    A store through an opaque non-stack pointer is treated as non-aliasing.
+    That is the one documented assumption the receipt does not cover: the state
+    slot is a compiler-local flattening variable whose address does not escape,
+    and flagging every register-indirect store would mark every real function
+    incomplete (ticket d81-pk0f).
+
+    Args:
+        mop: Destination address operand of the store.
+        state_var_stkoff: Stack offset of the state variable, if stack-resident.
+
+    Returns:
+        True when the store may alias the state slot but cannot be pinned.
+    """
+    if mop is None or state_var_stkoff is None:
+        return False
+    mop_type = getattr(mop, "t", None)
+    mop_S_type = _mop_type_value("mop_S", None)
+    mop_a_type = _mop_type_value("mop_a", None)
+    if mop_type == mop_S_type:
+        # A direct stack operand always carries a concrete offset.
+        return getattr(getattr(mop, "s", None), "off", None) is None
+    if mop_type == mop_a_type:
+        inner = getattr(mop, "a", None)
+        if inner is not None and getattr(inner, "t", None) == mop_S_type:
+            return getattr(getattr(inner, "s", None), "off", None) is None
+        return True
+    return _mop_subtree_references_stack(mop)
+
+
+def _classify_state_write(
+    insn: object,
+    blk: object,
+    state_var_stkoff: Optional[int],
+    *,
+    state_var_lvar_idx: Optional[int],
+    mba: Optional[object],
+    state_var_reg: Optional[int],
+    block_serial: Optional[int],
+    insn_index: int,
+) -> Optional[StateWriteObservation]:
+    """Classify one instruction as a write to the state slot, or ``None``.
+
+    Args:
+        insn: The instruction to classify.
+        blk: Its block, used for in-block constant folding.
+        state_var_stkoff: Stack offset of the state variable, if stack-resident.
+        state_var_lvar_idx: lvar index of the state variable, if known.
+        mba: Block array, for ``mba.vars`` lookups.
+        state_var_reg: Register identity of a register-resident state variable.
+        block_serial: Block serial, recorded for diagnostics.
+        insn_index: Instruction index in the block, recorded for diagnostics.
+
+    Returns:
+        The observation, or ``None`` when the instruction provably does not
+        write the state slot.
+    """
+    opcode = getattr(insn, "opcode", None)
+    if opcode is None:
+        return None
+    m_mov_opcode = _opcode_value("m_mov", None)
+    m_stx_opcode = _opcode_value("m_stx", None)
+    l_mop = getattr(insn, "l", None)
+    r_mop = getattr(insn, "r", None)
+    d_mop = getattr(insn, "d", None)
+
+    def _matches(mop: object) -> bool:
+        return _mop_matches_stkoff(
+            mop,
+            state_var_stkoff,
+            state_var_lvar_idx=state_var_lvar_idx,
+            mba=mba,
+            state_var_reg=state_var_reg,
+        )
+
+    def _observe(kind: StateWriteKind, value: Optional[int] = None, detail: str = ""):
+        return StateWriteObservation(
+            kind=kind,
+            value=value,
+            block_serial=block_serial,
+            insn_index=insn_index,
+            detail=detail or (OPCODE_MAP.get(opcode, f"opcode_{opcode}")),
+        )
+
+    def _value(source: object, detail: str) -> StateWriteObservation:
+        value = _get_mop_const_value(source)
+        if value is None:
+            value = _resolve_mop_value_in_block(source, blk, insn)
+        if value is None:
+            return _observe(StateWriteKind.NONCONSTANT, detail=detail)
+        return _observe(StateWriteKind.CONSTANT, value=int(value), detail=detail)
+
+    if m_mov_opcode is not None and opcode == m_mov_opcode:
+        if _matches(d_mop):
+            return _value(l_mop, "m_mov")
+        if _dest_alias_is_undecidable(
+            d_mop, state_var_stkoff, state_var_lvar_idx=state_var_lvar_idx, mba=mba
+        ):
+            return _observe(StateWriteKind.UNSUPPORTED_ALIAS, detail="m_mov")
+        return None
+
+    if m_stx_opcode is not None and opcode == m_stx_opcode:
+        if _matches(r_mop):
+            return _value(l_mop, "m_stx")
+        if _store_address_is_undecidable(r_mop, state_var_stkoff):
+            return _observe(StateWriteKind.UNRESOLVED, detail="m_stx")
+        return None
+
+    # Any other opcode that writes the state slot directly produces a COMPUTED
+    # value (m_add/m_ldx/...), which the folding path above cannot recover from
+    # the destination alone.
+    if _matches(d_mop):
+        return _observe(StateWriteKind.NONCONSTANT)
+    if _dest_alias_is_undecidable(
+        d_mop, state_var_stkoff, state_var_lvar_idx=state_var_lvar_idx, mba=mba
+    ):
+        return _observe(StateWriteKind.UNSUPPORTED_ALIAS)
+    return None
+
+
+def _extract_state_writes_from_block(
+    blk: object,
+    state_var_stkoff: Optional[int],
+    *,
+    state_var_lvar_idx: Optional[int] = None,
+    mba: Optional[object] = None,
+    state_var_reg: Optional[int] = None,
+    block_serial: Optional[int] = None,
+) -> list[StateWriteObservation]:
+    """Enumerate EVERY write to the state slot in *blk*.
+
+    ``_extract_state_from_block`` returns the FIRST write and stops, which is
+    correct for the handler walk (it wants the value that reaches the
+    dispatcher) but wrong as a ground set: the second and later writes vanish,
+    and route exactness then reads their absence as proof the values cannot
+    occur (ticket d81-pk0f).  This function reports all of them, classified.
+
+    Args:
+        blk: The microcode block to scan.
+        state_var_stkoff: Stack offset of the state variable, if stack-resident.
+        state_var_lvar_idx: lvar index of the state variable, if known.
+        mba: Block array, for ``mba.vars`` lookups.
+        state_var_reg: Register identity of a register-resident state variable.
+        block_serial: Block serial, recorded for diagnostics.
+
+    Returns:
+        One observation per write to the state slot, in program order.
+    """
+    _init_constants()
+    observations: list[StateWriteObservation] = []
+    insn = getattr(blk, "head", None)
+    insn_index = 0
+    while insn is not None:
+        observation = _classify_state_write(
+            insn,
+            blk,
+            state_var_stkoff,
+            state_var_lvar_idx=state_var_lvar_idx,
+            mba=mba,
+            state_var_reg=state_var_reg,
+            block_serial=block_serial,
+            insn_index=insn_index,
+        )
+        if observation is not None:
+            if len(observations) >= MAX_STATE_WRITES_PER_BLOCK:
+                observations.append(
+                    StateWriteObservation(
+                        kind=StateWriteKind.TRUNCATED,
+                        block_serial=block_serial,
+                        insn_index=insn_index,
+                        detail="write cap",
+                    )
+                )
+                break
+            observations.append(observation)
+        insn = getattr(insn, "next", None)
+        insn_index += 1
+    return observations
+
+
+def _collect_written_state_set(
     mba: object,
     state_var_stkoff: Optional[int],
     *,
     state_var_lvar_idx: Optional[int] = None,
     state_var_reg: Optional[int] = None,
     initial_state: Optional[int] = None,
-) -> frozenset[int]:
-    """Collect every state constant the function writes to the state variable.
+) -> WrittenStateSet:
+    """Collect every write to the state variable, with a completeness receipt.
 
-    One linear scan over the blocks, reusing the same per-block extractor the
-    handler walk uses, so the set is exactly the values a selector can hold at
-    a dispatcher entry.  ``initial_state`` is included because the prologue
-    write is a real occurrence even when it lives outside the scanned shape.
+    One linear scan over the blocks.  Each write is classified; the receipt is
+    ``complete`` only when every one of them folded to a constant, because the
+    range branch of route exactness is closed-world reasoning over this set and
+    is inadmissible otherwise (ticket d81-pk0f).
 
-    This is the ground set for route exactness: a wide comparison-tree interval
-    is an exact binding for a state precisely when it contains one member of
-    this set (ticket d81-8xhg).
+    Sub-``MIN_STATE_CONSTANT`` constants are RETAINED: over-approximating the
+    set can only refuse more routes, whereas dropping them could accept a route
+    a small selector also reaches.
 
     Args:
         mba: The microcode block array.
@@ -1432,30 +1706,33 @@ def _collect_written_state_constants(
         initial_state: Recovered pre-header state constant, when known.
 
     Returns:
-        The masked state constants written anywhere in the function.
+        The written-state completeness receipt.
     """
     if state_var_stkoff is None and state_var_reg is None:
-        return frozenset()
-    written: set[int] = set()
+        return WrittenStateSet.unknown(REASON_NO_STATE_VARIABLE)
+    observations: list[StateWriteObservation] = []
+    reasons: list[str] = []
     for serial in range(int(getattr(mba, "qty", 0) or 0)):
         try:
             blk = mba.get_mblock(serial)
         except Exception:
             blk = None
         if blk is None:
+            reasons.append(REASON_BLOCK_UNREADABLE)
             continue
-        state = _extract_state_from_block(
-            blk,
-            state_var_stkoff,
-            state_var_lvar_idx=state_var_lvar_idx,
-            mba=mba,
-            state_var_reg=state_var_reg,
+        observations.extend(
+            _extract_state_writes_from_block(
+                blk,
+                state_var_stkoff,
+                state_var_lvar_idx=state_var_lvar_idx,
+                mba=mba,
+                state_var_reg=state_var_reg,
+                block_serial=serial,
+            )
         )
-        if state is not None and int(state) >= MIN_STATE_CONSTANT:
-            written.add(int(state) & 0xFFFFFFFF)
-    if initial_state is not None:
-        written.add(int(initial_state) & 0xFFFFFFFF)
-    return frozenset(written)
+    return build_written_state_set(
+        observations, initial_state=initial_state, extra_reasons=reasons
+    )
 
 
 def _extract_state_from_block(
@@ -2304,21 +2581,25 @@ def analyze_condition_chain_dispatcher(
         )
         dispatcher = None
     # The set of state constants this function actually writes to the state
-    # variable.  It is the missing term in route exactness: a comparison-tree
-    # (BST) leaf publishes a WIDE interval, so interval width cannot say whether
-    # a row binds one concrete state, but the values that can actually occur
-    # can (ticket d81-8xhg).  Collected once here, before the back-fill, and
-    # carried on the dispatcher so every downstream consumer of the same table
-    # reaches the same verdict.
-    written_state_constants = _collect_written_state_constants(
+    # variable, PLUS whether that enumeration was exhaustive.  It is the
+    # missing term in route exactness: a comparison-tree (BST) leaf publishes a
+    # WIDE interval, so interval width cannot say whether a row binds one
+    # concrete state, but the values that can actually occur can (d81-8xhg) --
+    # and only if every write was accounted for, because that step is
+    # closed-world reasoning (d81-pk0f).  Collected once here, before the
+    # back-fill, and carried on the dispatcher so every downstream consumer of
+    # the same table reaches the same verdict.
+    written_states = _collect_written_state_set(
         mba,
         state_var_stkoff,
         state_var_lvar_idx=state_var_lvar_idx,
+        state_var_reg=state_var_reg,
         initial_state=result.initial_state,
     )
-    result.written_state_constants = written_state_constants
-    if dispatcher is not None and written_state_constants:
-        dispatcher = dispatcher.with_written_state_constants(written_state_constants)
+    result.written_states = written_states
+    logger.info("WRITTEN_STATE_RECEIPT: %s", written_states.describe())
+    if dispatcher is not None:
+        dispatcher = dispatcher.with_written_state_constants(written_states)
     result.dispatcher = dispatcher
     if dispatcher is not None:
         logger.info("INTERVAL_DISPATCHER_ROWS: %s", dispatcher.to_json())
@@ -2358,20 +2639,20 @@ def analyze_condition_chain_dispatcher(
                 backfill_point += 1
                 continue
             # Wider interval: exact only when a single written state constant
-            # falls inside it.  Such a leaf is unreachable by any other state
+            # falls inside it AND the written-state receipt accounted for every
+            # write to the slot.  Such a leaf is unreachable by any other state
             # the function can produce, so it names a concrete binding just as
             # a width-1 row does (d81-8xhg).  Otherwise it stays a shared
-            # corridor and is registered in the range map only.
-            isolated = written_states_in_interval(
-                lo=row.lo, hi=row.hi, written_states=written_state_constants
-            )
+            # corridor -- or an unproven one (d81-pk0f) -- and is registered in
+            # the range map only.
+            isolated = written_states.in_interval(row.lo, row.hi)
             if len(isolated) == 1:
                 only_state = next(iter(isolated))
                 if is_exact_route_interval(
                     lo=row.lo,
                     hi=row.hi,
                     state=only_state,
-                    written_states=written_state_constants,
+                    written_states=written_states,
                     target=row.target,
                     site="interval_backfill",
                 ):
@@ -2475,13 +2756,24 @@ def analyze_condition_chain_dispatcher(
         and getattr(_dag, "nodes", None)
         and state_var_stkoff is not None
     ):
-        written_states = set(written_state_constants)
+        # Selector-only view: the decision-DAG union has always worked on
+        # >= MIN_STATE_CONSTANT values.  ``filtered`` marks the view incomplete
+        # for anything that reads the receipt, but this consumer only needs the
+        # constants (d81-pk0f).
+        decision_dag_states = set(
+            written_states.filtered(MIN_STATE_CONSTANT).constants
+        )
+        if result.initial_state is not None:
+            # The pre-header write is a real occurrence regardless of its
+            # magnitude, and the pre-d81-pk0f code added it AFTER the
+            # threshold filter.  Keep that exactly.
+            decision_dag_states.add(int(result.initial_state) & 0xFFFFFFFF)
         # UNION (not replace): keep the original equality-leaf handlers (correct
         # block identity + return classification) and ADD only the interval-interior
         # states they missed, routed via the decision_dag.
         _covered = set(handler_state_map.values())
         _added = 0
-        for _s in sorted(written_states):
+        for _s in sorted(decision_dag_states):
             if _s in _covered:
                 continue
             _h = _dag.route(int(_s))
@@ -2497,7 +2789,7 @@ def analyze_condition_chain_dispatcher(
                 "equality leaves (%d written states)",
                 _added,
                 len(handler_serials) - _added,
-                len(written_states),
+                len(decision_dag_states),
             )
             result.handler_state_map = handler_state_map
 

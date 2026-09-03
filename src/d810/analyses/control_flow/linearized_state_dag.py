@@ -13,7 +13,7 @@ from d810.core import logging
 from d810.core.typing import Callable, Mapping
 from d810.analyses.control_flow.interval_map import IntervalDispatcher, IntervalRow
 from d810.analyses.control_flow.route_exactness import (
-    dispatcher_written_state_constants,
+    dispatcher_written_state_set,
     is_exact_route_interval,
 )
 from d810.analyses.control_flow.comparison_dispatcher_model import (
@@ -1946,7 +1946,9 @@ def _is_range_backed_only_handoff_anchor(
     width: a comparison-tree leaf legitimately spans a wide range, and it still
     names a concrete binding when the only state value the function writes
     inside that range is this one (ticket d81-8xhg).  A row shared by two or
-    more written constants remains a corridor and stays refused.
+    more written constants remains a corridor and stays refused, and so does
+    every range row whose written-state receipt could not account for all
+    writes to the state slot (ticket d81-pk0f).
     """
 
     masked = int(state_value) & 0xFFFFFFFF
@@ -1964,7 +1966,7 @@ def _is_range_backed_only_handoff_anchor(
             lo=int(row.lo),
             hi=int(row.hi),
             state=masked,
-            written_states=dispatcher_written_state_constants(dispatcher),
+            written_states=dispatcher_written_state_set(dispatcher),
             target=anchor_serial,
             site="handoff_anchor",
         )
