@@ -6,11 +6,12 @@ from collections.abc import Sequence
 
 import ida_hexrays
 
+from d810.core.log_aggregates import FakeLoopCheckAggregator
 from d810.evaluator.hexrays_microcode.tracker import (
     MopTracker,
     get_all_possibles_values,
 )
-from d810.hexrays.utils.hexrays_formatters import format_minsn_t
+from d810.hexrays.utils.hexrays_formatters import format_minsn_t, maturity_to_string
 from d810.passes.fake_jump import (
     FakeJumpPredFix,
     resolve_fake_jump_target,
@@ -47,6 +48,7 @@ def collect_live_fake_jump_block_fixes(
     logger: object | None = None,
     max_nb_block: int = 100,
     max_path: int = 1000,
+    aggregate: "FakeLoopCheckAggregator | None" = None,
 ) -> tuple[FakeJumpPredFix, ...]:
     """Analyze one live mblock and derive deterministic per-predecessor fixes."""
     if blk is None or blk.tail is None:
@@ -62,8 +64,8 @@ def collect_live_fake_jump_block_fixes(
     if _live_block_has_terminal_successor(blk):
         return ()
 
-    if logger is not None:
-        logger.info(
+    if logger is not None and logger.debug_on:
+        logger.debug(
             "Checking if blk%d@0x%x is fake loop: %s preds=%s succs=%s",
             blk.serial,
             int(blk.start),
@@ -84,8 +86,8 @@ def collect_live_fake_jump_block_fixes(
             op_compared,
             max_nb_block=max_nb_block,
         ):
-            if logger is not None:
-                logger.info(
+            if logger is not None and logger.debug_on:
+                logger.debug(
                     "Pred blk%d@0x%x updates compared operand for candidate "
                     "fake jump blk%d@0x%x with a non-constant value; "
                     "preserving carrier guard",
@@ -102,8 +104,8 @@ def collect_live_fake_jump_block_fixes(
             op_compared,
         )
         if branch_arm_target is not None:
-            if logger is not None:
-                logger.info(
+            if logger is not None and logger.debug_on:
+                logger.debug(
                     "Pred %s resolves fake jump via direct branch-arm assignment: "
                     "%s -> %s",
                     pred_blk.serial,
@@ -166,12 +168,14 @@ def collect_live_fake_jump_block_fixes(
         pred_values = get_all_possibles_values(resolved_histories, [op_compared])
         pred_values = [value[0] for value in pred_values]
         if None in pred_values:
-            if logger is not None:
-                logger.info("Some path are not resolved, can't fix jump")
+            if logger is not None and logger.debug_on:
+                logger.debug("Some path are not resolved, can't fix jump")
+            if aggregate is not None:
+                aggregate.record(confirmed=False)
             return ()
 
-        if logger is not None:
-            logger.info(
+        if logger is not None and logger.debug_on:
+            logger.debug(
                 "Pred %s has %s possible path (%s different cst): %s",
                 pred_blk.serial,
                 len(pred_values),
@@ -215,6 +219,8 @@ def collect_live_fake_jump_block_fixes(
             )
         )
 
+    if aggregate is not None:
+        aggregate.record(confirmed=bool(fixes))
     return tuple(fixes)
 
 
@@ -318,6 +324,7 @@ def collect_live_fake_jump_fixes(
         return ()
 
     fixes: list[FakeJumpPredFix] = []
+    aggregate = FakeLoopCheckAggregator()
     qty = int(getattr(mba, "qty", 0))
     for serial in range(qty):
         blk = mba.get_mblock(serial)
@@ -327,7 +334,13 @@ def collect_live_fake_jump_fixes(
                 logger=logger,
                 max_nb_block=max_nb_block,
                 max_path=max_path,
+                aggregate=aggregate,
             )
+        )
+    if logger is not None:
+        aggregate.flush(
+            logger,
+            f"collect_live_fake_jump_fixes {maturity_to_string(maturity)}",
         )
     return tuple(fixes)
 

@@ -115,17 +115,18 @@ def log_sccs(sccs: tuple[StateSCC, ...]) -> None:
     if not cyclic:
         return
     logger.info("preanalysis SCC: %d cyclic component(s)", len(cyclic))
-    for s in cyclic:
-        sample_states = ", ".join(f"0x{x:08X}" for x in sorted(s.states)[:8])
-        more = "..." if len(s.states) > 8 else ""
-        logger.info(
-            "preanalysis SCC: cycle id=%d size=%d states=[%s%s]%s",
-            s.scc_id,
-            len(s.states),
-            sample_states,
-            more,
-            " self-loop" if s.has_self_loop else "",
-        )
+    if logger.debug_on:
+        for s in cyclic:
+            sample_states = ", ".join(f"0x{x:08X}" for x in sorted(s.states)[:8])
+            more = "..." if len(s.states) > 8 else ""
+            logger.debug(
+                "preanalysis SCC: cycle id=%d size=%d states=[%s%s]%s",
+                s.scc_id,
+                len(s.states),
+                sample_states,
+                more,
+                " self-loop" if s.has_self_loop else "",
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -239,24 +240,25 @@ def classify_loop_regions(
 
     if regions:
         logger.info("loop region: %d classified", len(regions))
-        for r in regions:
-            sample_states = ", ".join(f"0x{x:08X}" for x in sorted(r.states)[:6])
-            more = "..." if len(r.states) > 6 else ""
-            sample_h = ", ".join(str(s) for s in sorted(r.handler_serials)[:6])
-            more_h = "..." if len(r.handler_serials) > 6 else ""
-            logger.info(
-                "loop region: id=%d kind=%s size=%d states=[%s%s] handlers=[%s%s]"
-                " disp=%d non-disp=%d%s",
-                r.scc_id,
-                r.kind,
-                r.size,
-                sample_states,
-                more,
-                sample_h,
-                more_h,
-                len(r.dispatcher_handlers),
-                len(r.nondispatcher_handlers),
-                " self-loop" if r.has_self_loop else "",
-            )
+        if logger.debug_on:
+            for r in regions:
+                sample_states = ", ".join(f"0x{x:08X}" for x in sorted(r.states)[:6])
+                more = "..." if len(r.states) > 6 else ""
+                sample_h = ", ".join(str(s) for s in sorted(r.handler_serials)[:6])
+                more_h = "..." if len(r.handler_serials) > 6 else ""
+                logger.debug(
+                    "loop region: id=%d kind=%s size=%d states=[%s%s] handlers=[%s%s]"
+                    " disp=%d non-disp=%d%s",
+                    r.scc_id,
+                    r.kind,
+                    r.size,
+                    sample_states,
+                    more,
+                    sample_h,
+                    more_h,
+                    len(r.dispatcher_handlers),
+                    len(r.nondispatcher_handlers),
+                    " self-loop" if r.has_self_loop else "",
+                )
 
     return tuple(regions)

@@ -1,0 +1,68 @@
+# Forbid logger.info() in modules classified as pure exploration tier.
+#
+# Level taxonomy (plan _gitless/plans/2026-09-02_unflat-diagnostics-legibility.md
+# section 3.1):
+#   ERROR    invariant broken, output may be wrong
+#   WARNING  safe bail or incomplete capture the operator must know about
+#   INFO     one outcome line per (function, maturity, candidate), plus pass
+#            boundaries
+#   DEBUG    exploration (rule matches, fake-loop probes, per-item queue
+#            dumps, per-instruction/per-block chatter)
+#
+# The files listed below are modules whose logger.info() calls were, as of
+# 2026-09-02, exploration-tier chatter fired once per instruction/block/
+# candidate (rule-match dumps) rather than a genuine pass boundary or
+# terminal outcome. All such calls were demoted to logger.debug() (ticket
+# d81-ymrt, slice 3) and replaced, where the plan calls for it, with a
+# single per-maturity aggregate INFO summary line emitted from a dedicated
+# flush() method on d810.core.log_aggregates.{RuleMatchAggregator,
+# FakeLoopCheckAggregator} rather than from inside the hot per-event path.
+#
+# Modules that retain legitimate pass-boundary/outcome INFO lines are
+# intentionally NOT listed here -- a blanket ban would also forbid lines
+# slice 3 keeps by design:
+#   - src/d810/hexrays/mutation/deferred_modifier.py: retains "Applying N
+#     queued modifications" / "Applied N/M modifications (F failed, R
+#     rolled back)" pass-boundary/outcome lines, plus ~70 logger.info()
+#     calls in unrelated transaction/mutation mechanisms this ticket never
+#     touched.
+#   - src/d810/core/config.py: retains "Configuration saved to ...",
+#     "Loaded configuration from ...", and the new "discovered N project
+#     configurations" summary line (slice 6, ticket d81-ebpz).
+#   - src/d810/optimizers/microcode/flow/flattening/cleanup_live_evidence.py:
+#     the fake-jump per-predecessor probe family (the plan's evidence site,
+#     "Checking if blk...is fake loop" / "Pred %s has %d possible path")
+#     was demoted and its counts routed through
+#     d810.core.log_aggregates.FakeLoopCheckAggregator.flush(), but the
+#     file also hosts an unrelated SingleIteration loop detector whose
+#     "Detected {copied-carrier,copied-comparison,body-preserving,
+#     single-iteration} loop at block ..." lines are genuine, rare,
+#     one-per-detection outcomes -- exactly the taxonomy's INFO tier, not
+#     chatter -- and were left untouched.
+#
+# Widening the `files:` list below, or adding an `ignores:` entry, needs
+# explicit user approval naming the file/ignore being added. This rule
+# carries no `ignores:` today; do not add one without that approval.
+
+id: no-info-logging-in-exploration-modules
+language: python
+severity: error
+
+files:
+  - src/d810/optimizers/microcode/instructions/handler.py
+  - src/d810/optimizers/microcode/instructions/pattern_matching/handler.py
+
+message: |
+  logger.info() is forbidden in this module: it is classified as
+  exploration-tier (rule matches, per-instruction chatter). Use
+  logger.debug() behind a `logger.debug_on` guard instead, and route any
+  genuine per-maturity outcome through the module's existing
+  aggregate-flush helper (see d810.core.log_aggregates).
+
+rule:
+  any:
+    - pattern: $LOGGER.info($$$ARGS)
+
+note: |
+  See plan _gitless/plans/2026-09-02_unflat-diagnostics-legibility.md
+  section 3.1 and ticket d81-ymrt (slice 3).
