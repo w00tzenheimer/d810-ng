@@ -9,6 +9,7 @@ import importlib
 import os
 import pathlib
 import shlex
+import time
 
 from d810.backends.hexrays.registration import register_hexrays_backend_providers
 from d810.hexrays.utils.ida_utils import ensure_hexrays_available
@@ -235,9 +236,41 @@ class D810State(metaclass=SingletonMeta):
     gui: D810GUI
     current_project: ProjectConfiguration
 
+    #: When set, ``__init__`` skips its own ``reset()`` call. Only the plugin
+    #: reloader sets this, around a construction it *knows* ``load()`` will
+    #: immediately follow (ticket d81-43c8) -- it avoids building a
+    #: ``D810Manager`` (~20s) just to discard it a few lines later. Every
+    #: other ``D810State()`` call site (tests, headless, first construction
+    #: outside the reloader) is unaffected and gets a fully reset instance.
+    _defer_initial_reset: typing.ClassVar[bool] = False
+
     def __init__(self):
         self.gui = None  # Set by load(gui=True)
-        self.reset()
+        if type(self)._defer_initial_reset:
+            # A guaranteed load() call follows immediately; leave the state
+            # unresolved (no manager) rather than build-then-discard one.
+            self._initialized = False
+            self._is_loaded = False
+        else:
+            self.reset()
+
+    @classmethod
+    @contextlib.contextmanager
+    def defer_initial_reset(cls) -> typing.Iterator[None]:
+        """Suspend ``__init__``'s ``reset()`` for constructions made inside.
+
+        Callers MUST call ``.load()`` (or ``.reset()``) on the resulting
+        instance before touching ``.manager`` or any other reset-populated
+        attribute -- outside this context manager's block is exactly the
+        existing ``D810State()`` + ``.load()`` contract every other caller
+        already relies on.
+        """
+        previous = cls._defer_initial_reset
+        cls._defer_initial_reset = True
+        try:
+            yield
+        finally:
+            cls._defer_initial_reset = previous
 
     def is_loaded(self):
         return self._is_loaded
@@ -286,7 +319,15 @@ class D810State(metaclass=SingletonMeta):
             clear_logs(self.log_dir)
         configure_loggers(self.log_dir)
         manager_module = importlib.import_module("d810.manager")
-        self.manager = manager_module.D810Manager(self.log_dir)
+        if logger.debug_on:
+            _manager_build_start = time.perf_counter()
+            self.manager = manager_module.D810Manager(self.log_dir)
+            logger.debug(
+                "D810State.reset(): D810Manager(...) took %.3fs",
+                time.perf_counter() - _manager_build_start,
+            )
+        else:
+            self.manager = manager_module.D810Manager(self.log_dir)
         self.function_storage_configuration_error: str | None = None
         try:
             storage_config = parse_function_recipe_storage(
@@ -1620,7 +1661,12 @@ class D810State(metaclass=SingletonMeta):
             self.gui.show_windows()
 
     def unload(self, gui: bool = True):
-        self.manager.stop()
+        # ``manager`` may be absent if this instance was constructed inside
+        # ``defer_initial_reset()`` and never subsequently loaded (e.g. IDA
+        # terminates before the reload's load() call runs).
+        previous_manager = getattr(self, "manager", None)
+        if previous_manager is not None:
+            previous_manager.stop()
         if gui and self._is_loaded:
             self.gui.term()
             del self.gui

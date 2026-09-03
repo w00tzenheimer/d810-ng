@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import importlib
 import py_compile
 import sys
@@ -468,7 +469,6 @@ def test_reloadable_plugin_constructs_replacement_after_reload_body() -> None:
         "unload",
         "reload-core",
         "construct",
-        "reset",
         "register",
         "publish",
         "load",
@@ -492,3 +492,122 @@ def test_reloadable_plugin_does_not_construct_after_reload_failure() -> None:
         "unload",
         "reload-core",
     ]
+
+
+class _D81_43c8FakeState:
+    """Fake plugin state mirroring D810State's reset()/load()/defer_initial_reset
+    contract (ticket d81-43c8), without any IDA dependency.
+
+    ``load()`` always calls ``reset()`` itself, exactly like the real
+    ``D810State.load()``. ``defer_initial_reset()`` lets ``__init__`` skip its
+    own reset when a ``load()`` call is guaranteed to follow immediately, so
+    that reset() runs at most once per construct-then-load cycle instead of
+    once for the (discarded) construction and again for load().
+    """
+
+    _defer_initial_reset = False
+    reset_log: list[str] = []
+
+    def __init__(self) -> None:
+        if type(self)._defer_initial_reset:
+            self._is_loaded = False
+        else:
+            self.reset()
+
+    @classmethod
+    @contextlib.contextmanager
+    def defer_initial_reset(cls):
+        previous = cls._defer_initial_reset
+        cls._defer_initial_reset = True
+        try:
+            yield
+        finally:
+            cls._defer_initial_reset = previous
+
+    def reset(self) -> None:
+        type(self).reset_log.append("reset")
+        self._is_loaded = False
+
+    def is_loaded(self) -> bool:
+        return self._is_loaded
+
+    def load(self) -> None:
+        self.reset()
+        self._is_loaded = True
+
+    def unload(self) -> None:
+        self._is_loaded = False
+
+
+class _RealImportLifecycleProbe(ida_reloader.ReloadablePluginBase):
+    """Reload probe that exercises the base class's real ``_import_plugin_cls``
+    (unlike ``_ReloadLifecycleProbe``, which overrides it), so the
+    ``defer_initial_reset`` hook is actually invoked."""
+
+    def register_reload_action(self) -> None:
+        pass
+
+    def unregister_reload_action(self) -> None:
+        pass
+
+    def add_plugin_to_console(self) -> None:
+        pass
+
+    def reload(self) -> None:
+        raise NotImplementedError
+
+    def run(self, args) -> None:
+        raise NotImplementedError
+
+
+def test_plugin_setup_reload_resets_plugin_state_exactly_once() -> None:
+    """Ticket d81-43c8: one reload must build the replacement state's manager
+    equivalent exactly once, not three times.
+
+    Before the fix, one reload called reset() 3x: once from
+    ``_import_plugin_cls()``'s implicit ``__init__``, once from the explicit
+    ``self.plugin.reset()`` in ``plugin_setup_reload()``, and once from
+    ``self.plugin.load()`` -- discarding two full (~20s each, in the real
+    D810Manager) rebuilds. After the fix: the explicit reset is gone and
+    ``__init__`` defers to the guaranteed ``load()`` call, leaving exactly 1.
+    """
+    _D81_43c8FakeState.reset_log = []
+    plugin = _RealImportLifecycleProbe(
+        global_name="D810_TEST_D81_43C8",
+        base_package_name="probe",
+        plugin_class=f"{_D81_43c8FakeState.__module__}._D81_43c8FakeState",
+        hook_cls=lambda: object(),
+        skip_code=0,
+        ok_code=1,
+    )
+    # Isolate the reload's own resets from whatever the initial construction
+    # (exercised separately below) performed.
+    _D81_43c8FakeState.reset_log = []
+
+    with plugin.plugin_setup_reload():
+        pass
+
+    assert _D81_43c8FakeState.reset_log == ["reset"], (
+        "one reload cycle must call reset() exactly once; got "
+        f"{_D81_43c8FakeState.reset_log!r}"
+    )
+
+
+def test_first_construction_defers_reset_until_load() -> None:
+    """First-load path (ticket d81-43c8): constructing the plugin must not
+    eagerly reset, since ``late_init()`` always calls ``load()`` right after
+    -- otherwise the first-ever plugin load also discards one rebuild."""
+    _D81_43c8FakeState.reset_log = []
+    plugin = _RealImportLifecycleProbe(
+        global_name="D810_TEST_D81_43C8_FIRST",
+        base_package_name="probe",
+        plugin_class=f"{_D81_43c8FakeState.__module__}._D81_43c8FakeState",
+        hook_cls=lambda: object(),
+        skip_code=0,
+        ok_code=1,
+    )
+    assert _D81_43c8FakeState.reset_log == []
+
+    plugin.plugin.load()
+
+    assert _D81_43c8FakeState.reset_log == ["reset"]
