@@ -39,9 +39,11 @@ from d810.core.provider_phase import ProviderPhaseSnapshot
 from d810.core.observability import (
     close_observability_session,
     emit as emit_diagnostic,
+    register_active_emulator_gap_scope_provider,
     register_active_unflat_counters_provider,
+    register_pending_emulator_gap_scopes_provider,
 )
-from d810.core.observability_emulator import flush_all_emulator_gaps
+from d810.core.observability_emulator import EmulatorGapScope, flush_all_emulator_gaps
 from d810.core.observability_unflat import UnflattenOutcomeCounters
 from d810.core.observability_events import (
     DiagnosticSessionObserved,
@@ -161,6 +163,14 @@ class DecompilationSessionContext:
     unflat_counters: UnflattenOutcomeCounters = field(
         default_factory=UnflattenOutcomeCounters, repr=False
     )
+    #: The emulator's deduped gap worklist for this session (ticket
+    #: d81-e0uy). Same ownership shape as ``unflat_counters`` above -- minted
+    #: fresh with the session, unreachable once it is popped and dropped.
+    #: ``func_ea`` is corrected in ``__post_init__`` (a dataclass
+    #: ``default_factory`` cannot see a sibling field's value).
+    emulator_gap_scope: EmulatorGapScope = field(
+        default_factory=lambda: EmulatorGapScope(func_ea=0), repr=False
+    )
 
     def __post_init__(self) -> None:
         resolution = self.input_identity_resolution
@@ -187,6 +197,7 @@ class DecompilationSessionContext:
                 native_key=self.native_key,
             )
         )
+        self.emulator_gap_scope.func_ea = int(self.function_ea)
 
     @property
     def identity_key(self) -> str:
@@ -265,21 +276,48 @@ class DecompilationLifecycleCoordinator:
         init=False,
         repr=False,
     )
+    #: Sessions minted since the last full quiescence whose emulator gap
+    #: scope may still hold unflushed gaps (ticket d81-e0uy). Appended once
+    #: per genuinely new top-level/nested session; drained and cleared
+    #: together at the SAME point ``flush_all_emulator_gaps`` already fires
+    #: (finish_hexrays_session, when the outermost session finishes) so a
+    #: nested session's last attempt is never lost and never flushed twice.
+    _sessions_pending_gap_flush: list[DecompilationSessionContext] = field(
+        default_factory=list,
+        init=False,
+        repr=False,
+    )
 
     def __post_init__(self) -> None:
-        # Session-owned unflatten outcome counters (ticket d81-pqrc) live on
+        # Session-owned unflatten outcome counters (ticket d81-pqrc) and
+        # emulator gap scopes (ticket d81-e0uy) live on
         # DecompilationSessionContext, not a process-global dict. core-layer
         # producers (which must not import this manager-layer module) reach
-        # them through this one registered indirection -- the same
+        # them through these registered indirections -- the same
         # dependency-inversion shape core.diag already uses for the active
         # diag session. Idempotent: a later coordinator construction (plugin
         # reload) simply replaces the previous registration.
         register_active_unflat_counters_provider(self.unflat_counters_for)
+        register_active_emulator_gap_scope_provider(self.emulator_gap_scope_for)
+        register_pending_emulator_gap_scopes_provider(
+            self._pending_emulator_gap_scopes
+        )
 
     def unflat_counters_for(self, function_ea: int) -> UnflattenOutcomeCounters | None:
         """Return the active session's unflatten outcome counters, if any."""
         session = self.current_session(function_ea)
         return None if session is None else session.unflat_counters
+
+    def emulator_gap_scope_for(self, function_ea: int) -> EmulatorGapScope | None:
+        """Return the active session's emulator gap scope, if any."""
+        session = self.current_session(function_ea)
+        return None if session is None else session.emulator_gap_scope
+
+    def _pending_emulator_gap_scopes(self) -> tuple[EmulatorGapScope, ...]:
+        """Every scope minted since the last full flush, oldest first."""
+        return tuple(
+            session.emulator_gap_scope for session in self._sessions_pending_gap_flush
+        )
 
     @property
     def has_active_sessions(self) -> bool:
@@ -608,6 +646,12 @@ class DecompilationLifecycleCoordinator:
         self._active_sessions.append(
             _SessionActivation(session=session, owns_session=True)
         )
+        # Track this session's emulator gap scope for the final flush-all at
+        # the outermost session's finish (ticket d81-e0uy); mirrors how
+        # unflat_counters is reached lazily via current_session() but needs
+        # an explicit registry here because flush_all must enumerate every
+        # scope, not look one up by func_ea.
+        self._sessions_pending_gap_flush.append(session)
         initializer = self.resolver_attachment_initializer
         if callable(initializer):
             try:
@@ -1624,6 +1668,13 @@ class DecompilationLifecycleCoordinator:
                 flush_all_emulator_gaps()
             except Exception:  # noqa: BLE001 — diagnostics never break a run
                 logger.debug("emulator gap final flush failed", exc_info=True)
+            finally:
+                # Drop this activity's session references now that every
+                # scope they own has been flushed (ticket d81-e0uy) -- an
+                # uncleared list would both re-flush (harmlessly, since
+                # _flush_scope no-ops on an empty scope) and leak session
+                # objects across every future decompile in this process.
+                self._sessions_pending_gap_flush.clear()
             close_observability_session()
         return None
 

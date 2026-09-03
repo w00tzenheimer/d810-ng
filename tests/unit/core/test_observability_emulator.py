@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import pytest
 
+from d810.core import observability
 from d810.core.observability_emulator import (
     CAUSE_GLOBAL_NOT_SEEDED,
     CAUSE_HELPER_NOT_IMPLEMENTED,
@@ -34,7 +35,6 @@ from d810.core.observability_emulator import (
     format_emulator_gap_aggregate,
     is_stack_slot_in_aliased_memory,
     record_emulator_gap,
-    reset_emulator_gaps,
 )
 from d810.core.observability_events import EmulatorGapObserved
 from d810.core.observability_state_write import STATE_WRITE_RESOLUTION_CAUSES
@@ -43,10 +43,29 @@ FUNC = 0x7FFB0EB06E50
 
 
 @pytest.fixture(autouse=True)
-def _clean_scopes():
-    reset_emulator_gaps()
-    yield
-    reset_emulator_gaps()
+def _fake_emulator_gap_session_store(monkeypatch):
+    """Stand in for a lifecycle-owned session store (ticket d81-e0uy).
+
+    Production scopes live on ``DecompilationSessionContext.emulator_gap_scope``
+    and are reached only through the registered ``d810.core.observability``
+    providers; this module owns no scope storage of its own anymore. A plain
+    per-test dict keyed by func_ea stands in for "a session exists and owns
+    this scope" without pulling in the manager-layer lifecycle coordinator.
+    """
+    store: dict[int, EmulatorGapScope] = {}
+
+    def _scope_provider(func_ea):
+        return store.setdefault(int(func_ea), EmulatorGapScope(func_ea=int(func_ea)))
+
+    monkeypatch.setattr(
+        observability, "_active_emulator_gap_scope_provider", _scope_provider
+    )
+    monkeypatch.setattr(
+        observability,
+        "_pending_emulator_gap_scopes_provider",
+        lambda: tuple(store.values()),
+    )
+    yield store
 
 
 # -- cause vocabulary --------------------------------------------------------

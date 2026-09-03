@@ -22,13 +22,14 @@ import platform
 import ida_hexrays
 import pytest
 
+from d810.core import observability
 from d810.core.observability_emulator import (
     EMULATOR_GAP_CAUSES,
+    EmulatorGapScope,
     begin_emulator_gap_attempt,
     emulator_gap_counts,
     flush_emulator_gaps,
     is_stack_slot_in_aliased_memory,
-    reset_emulator_gaps,
 )
 from d810.core.observability_state_write import (
     CAUSE_NO_REACHING_DEFS,
@@ -63,10 +64,32 @@ class TestEmulatorGapFacts:
     binary_name = _get_default_binary()
 
     @pytest.fixture(autouse=True)
-    def _clean_scopes(self):
-        reset_emulator_gaps()
-        yield
-        reset_emulator_gaps()
+    def _fake_emulator_gap_session_store(self, monkeypatch):
+        """Stand in for a lifecycle-owned session store (ticket d81-e0uy).
+
+        No DecompilationLifecycleCoordinator runs in this test module (it
+        drives the emulator directly against live microcode); a plain
+        per-test dict keyed by func_ea stands in for "a session exists and
+        owns this scope" so ``record_emulator_gap`` / ``begin_emulator_gap_attempt``
+        have somewhere to persist dedupe state across calls, exactly like
+        production's session-owned scope.
+        """
+        store: dict[int, EmulatorGapScope] = {}
+
+        def _scope_provider(func_ea):
+            return store.setdefault(
+                int(func_ea), EmulatorGapScope(func_ea=int(func_ea))
+            )
+
+        monkeypatch.setattr(
+            observability, "_active_emulator_gap_scope_provider", _scope_provider
+        )
+        monkeypatch.setattr(
+            observability,
+            "_pending_emulator_gap_scopes_provider",
+            lambda: tuple(store.values()),
+        )
+        yield store
 
     def test_an_aliased_stack_slot_is_named_as_a_coverage_gap(self, merge_read):
         """``ndefs=0`` at/above ``minstkref`` is NOT "no reaching defs"."""
@@ -161,14 +184,20 @@ class TestEmulatorGapFacts:
         # Flushing resets the attempt's dedupe state.
         assert emulator_gap_counts(func_ea) == {}
 
-    def test_the_gap_channel_never_changes_an_evaluation(self, merge_read):
+    def test_the_gap_channel_never_changes_an_evaluation(
+        self, merge_read, _fake_emulator_gap_session_store
+    ):
         mba, blk, insn, mop, defs = merge_read
         env_a = MicroCodeEnvironment()
         env_a.set_cur_flow(blk, insn)
         first = MicroCodeInterpreter(symbolic_mode=False)._resolve_mop_via_def_use(
             mop, env_a
         )
-        reset_emulator_gaps()
+        # Clear this function's dedupe state between the two evaluations so
+        # the second one is not silently suppressed by the first.
+        scope = _fake_emulator_gap_session_store.get(int(mba.entry_ea))
+        if scope is not None:
+            scope.clear()
         env_b = MicroCodeEnvironment()
         env_b.set_cur_flow(blk, insn)
         second = MicroCodeInterpreter(symbolic_mode=False)._resolve_mop_via_def_use(
