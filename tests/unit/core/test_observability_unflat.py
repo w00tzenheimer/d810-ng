@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import pytest
 
+from d810.core import diag as _diag_backend  # noqa: F401
+from d810.core import observability
 from d810.core.observability import reset_diagnostic_bus, subscribe
 from d810.core.observability_events import UnflattenCandidateOutcomeObserved
 from d810.core.observability_unflat import (
@@ -21,6 +23,7 @@ from d810.core.observability_unflat import (
     note_unresolved_state_write,
     observe_unflat_candidate_outcome,
     reset_unflat_counters,
+    resolve_unflat_hint_db_path,
     skipped_maturities,
     unflat_counters,
     unflat_why_hint,
@@ -227,6 +230,91 @@ def test_build_record_quotes_the_accumulated_counters():
 def test_hint_uses_a_placeholder_without_an_active_capture():
     assert unflat_why_hint(0x1000, None) == (
         "python -m d810.diagnostics unflat-why --db <diag-db> --func 0x1000"
+    )
+
+
+# ---------------------------------------------------------------------------
+# aa-smoo: the hint must resolve to the emitted function's own capture
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_hint_db_path_keeps_the_path_when_no_active_func_ea_is_known():
+    assert (
+        resolve_unflat_hint_db_path(0x7FFB0EB06E50, "/tmp/x.sqlite3", None)
+        == "/tmp/x.sqlite3"
+    )
+
+
+def test_resolve_hint_db_path_keeps_the_path_when_it_matches_the_active_session():
+    assert (
+        resolve_unflat_hint_db_path(0x7FFB0EB06E50, "/tmp/x.sqlite3", 0x7FFB0EB06E50)
+        == "/tmp/x.sqlite3"
+    )
+
+
+def test_resolve_hint_db_path_drops_the_path_for_a_different_active_function():
+    # A session that never rotated (a multi-function headless batch) still
+    # names the first function's DB; a record for a different function must
+    # not point an operator at that misleadingly-named file.
+    assert (
+        resolve_unflat_hint_db_path(0x7FFB0F2726E0, "/tmp/x.sqlite3", 0x7FFB0EB06E50)
+        is None
+    )
+
+
+def test_resolve_hint_db_path_is_a_noop_on_an_already_missing_path():
+    assert resolve_unflat_hint_db_path(0x1000, None, 0x2000) is None
+
+
+def test_observe_omits_the_db_path_when_the_active_session_is_a_different_function(
+    monkeypatch,
+):
+    # ``_diag_backend`` (imported above) must load before these monkeypatches
+    # run, or ``observe_unflat_candidate_outcome``'s lazy backend bootstrap
+    # re-registers the real providers mid-test and overwrites them.
+    monkeypatch.setattr(
+        observability, "_diag_path_provider", lambda: "/tmp/first_func.diag.sqlite3"
+    )
+    monkeypatch.setattr(
+        observability, "_diag_active_func_ea_provider", lambda: 0x7FFB0EB06E50
+    )
+    record = observe_unflat_candidate_outcome(
+        session_id="s1",
+        func_ea=0x7FFB0F2726E0,
+        maturity="MMAT_GLBOPT1",
+        graph_fingerprint="",
+        candidate_identity="",
+        attempt=0,
+        disposition="maturity_no_callbacks",
+        reason="hexrays_delivered_no_optblock_callback",
+    )
+    assert record is not None
+    assert record.next_hint == (
+        "python -m d810.diagnostics unflat-why --db <diag-db> --func 0x7ffb0f2726e0"
+    )
+
+
+def test_observe_keeps_the_db_path_when_the_active_session_matches(monkeypatch):
+    monkeypatch.setattr(
+        observability, "_diag_path_provider", lambda: "/tmp/own_func.diag.sqlite3"
+    )
+    monkeypatch.setattr(
+        observability, "_diag_active_func_ea_provider", lambda: 0x7FFB0F2726E0
+    )
+    record = observe_unflat_candidate_outcome(
+        session_id="s1",
+        func_ea=0x7FFB0F2726E0,
+        maturity="MMAT_GLBOPT1",
+        graph_fingerprint="",
+        candidate_identity="",
+        attempt=0,
+        disposition="maturity_no_callbacks",
+        reason="hexrays_delivered_no_optblock_callback",
+    )
+    assert record is not None
+    assert record.next_hint == (
+        "python -m d810.diagnostics unflat-why "
+        "--db /tmp/own_func.diag.sqlite3 --func 0x7ffb0f2726e0"
     )
 
 

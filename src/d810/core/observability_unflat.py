@@ -27,7 +27,7 @@ from d810.core.maturity_labels import (
     MaturityNumbering,
     mmat_name,
 )
-from d810.core.observability import emit, get_active_diag_path
+from d810.core.observability import emit, get_active_diag_func_ea, get_active_diag_path
 from d810.core.observability_events import (
     UNFLATTEN_CANDIDATE_DISPOSITIONS,
     UnflattenCandidateOutcomeObserved,
@@ -188,6 +188,32 @@ def unflat_why_hint(func_ea: int, db_path: str | None) -> str:
     return f"{_UNFLAT_WHY_COMMAND} --db {database} --func 0x{int(func_ea):x}"
 
 
+def resolve_unflat_hint_db_path(
+    func_ea: int, db_path: str | None, active_func_ea: int | None
+) -> str | None:
+    """Only trust ``db_path`` when it unambiguously names ``func_ea``'s capture.
+
+    ``get_active_diag_path()`` names whatever diag DB is *currently* open.
+    A session that never rotates across a multi-function headless batch
+    (``open_diag_session``'s reentry early-return keeps ``_current_db`` open
+    across unrelated functions) keeps naming the *first* function's capture
+    file for every later one -- confirmed against a real 17-function batch
+    run where every later function's terminal record physically landed in
+    the first function's DB file, named after a completely different
+    function EA. Whether or not the row is actually there, a hint that
+    names a file whose filename disagrees with the ``--func`` it also
+    prints is misleading. ``active_func_ea`` is whatever
+    :func:`get_active_diag_func_ea` reports for the session that produced
+    ``db_path``; a mismatch means the path cannot be trusted for ``func_ea``
+    and the caller should render the placeholder instead (ticket aa-smoo).
+    """
+    if db_path is None:
+        return None
+    if active_func_ea is not None and int(active_func_ea) != int(func_ea):
+        return None
+    return db_path
+
+
 def _pair(left: int | None, right: int | None) -> str:
     return f"{'?' if left is None else left}/{'?' if right is None else right}"
 
@@ -279,6 +305,7 @@ def observe_unflat_candidate_outcome(
         db_path = get_active_diag_path()
     except Exception:
         db_path = None
+    db_path = resolve_unflat_hint_db_path(func_ea, db_path, get_active_diag_func_ea())
     record = build_unflat_candidate_outcome(
         session_id=session_id,
         func_ea=func_ea,
@@ -309,6 +336,7 @@ __all__ = [
     "note_unresolved_state_write",
     "observe_unflat_candidate_outcome",
     "reset_unflat_counters",
+    "resolve_unflat_hint_db_path",
     "skipped_maturities",
     "unflat_counters",
     "unflat_why_hint",
