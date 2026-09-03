@@ -54,4 +54,3 @@ def merge_read(libobfuscated_setup):
             return (mba,) + found
     pytest.skip("no multi-def register read found in the sample binary")
 
-

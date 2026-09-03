@@ -1,0 +1,41 @@
+id: no-diag-db-read-in-runtime
+snapshots:
+  ? |
+    def resolve_hint(func_ea):
+        conn = get_active_diag_conn(func_ea)
+        return conn
+  : labels:
+    - source: get_active_diag_conn(func_ea)
+      style: primary
+      start: 38
+      end: 67
+  ? |
+    def resolve_hint(self, func_ea):
+        conn = self.tracker.get_active_diag_conn(func_ea)
+        return conn
+  : labels:
+    - source: self.tracker.get_active_diag_conn(func_ea)
+      style: primary
+      start: 44
+      end: 86
+  ? |
+    from d810.core.observability import get_active_diag_conn
+
+    def resolve_hint(func_ea):
+        conn = get_active_diag_conn(func_ea)
+        return conn
+  : labels:
+    - source: from d810.core.observability import get_active_diag_conn
+      style: primary
+      start: 0
+      end: 56
+  ? |
+    from d810.core.observability import get_active_diag_conn as gac
+
+    def resolve_hint(func_ea):
+        return gac(func_ea)
+  : labels:
+    - source: from d810.core.observability import get_active_diag_conn as gac
+      style: primary
+      start: 0
+      end: 63
