@@ -74,6 +74,7 @@ from d810.transforms.plan import (
     compile_patch_plan,
 )
 from d810.core import logging
+from d810.core.maturity_labels import live_snapshot_maturity
 from d810.evaluator.hexrays_microcode.terminal_return_proof import (
     prove_terminal_returns,
 )
@@ -1103,7 +1104,10 @@ class TransactionalExecutor:
                 blocks=_mba_to_block_snapshots(self.mba),
                 label=f"{fragment.strategy_name}_post_apply",
                 func_ea=self.mba.entry_ea,
-                maturity="MMAT_GLBOPT1",
+                # Ticket d81-4ulv: the label must name the maturity the MBA is
+                # LIVE at.  Hard-coding GLBOPT1 mislabelled every snapshot the
+                # pipeline wrote at the GLBOPT2 boundary.
+                maturity=live_snapshot_maturity(getattr(self.mba, "maturity", None)),
                 phase="post_apply",
             )
         except Exception:

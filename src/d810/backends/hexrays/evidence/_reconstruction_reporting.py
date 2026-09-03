@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from d810.core.maturity_labels import live_snapshot_maturity
 from d810.core.observability import SnapshotRef
 from d810.hexrays.utils.hexrays_formatters import blk_label
 
@@ -56,7 +57,8 @@ def snapshot_reconstruction_dag(
             blocks=[],
             label=f"{strategy_name}_state_write_reconstruction_dag",
             func_ea=mba.entry_ea if mba is not None else 0,
-            maturity="MMAT_GLBOPT1",
+            # Ticket d81-4ulv: label with the live maturity, never a constant.
+            maturity=live_snapshot_maturity(getattr(mba, "maturity", None)),
             phase="post_apply",
         )
         if snap_ref is not None:
@@ -154,7 +156,8 @@ def snapshot_reconstruction_post_apply(
             blocks=[],
             label=f"{strategy_name}_state_write_reconstruction_post_apply",
             func_ea=mba.entry_ea if mba is not None else 0,
-            maturity="MMAT_GLBOPT1",
+            # Ticket d81-4ulv: label with the live maturity, never a constant.
+            maturity=live_snapshot_maturity(getattr(mba, "maturity", None)),
             phase="post_apply",
         )
         if snap_ref is not None:
