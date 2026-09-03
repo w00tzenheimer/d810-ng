@@ -42,6 +42,7 @@ from d810.core.observability_state_write import (
     CAUSE_PHI_MULTI_DEF,
     CAUSE_SINGLE_DEF_EVAL_FAILED,
     CAUSE_STACK_SLOT_IN_ALIASED_MEMORY,
+    CAUSE_SYNTHETIC_TAINT,
     AbstainCauseLog,
 )
 from .chains import (
@@ -54,7 +55,12 @@ from .chains import (
     find_reaching_defs_for_stkvar,
 )
 from .p_multi_def import agreed_value, select_def_index_for_predecessor
-from .p_taint import any_tainted, taint_result
+from .p_taint import (
+    EvalResult,
+    any_tainted,
+    taint_location_key,
+    taint_result,
+)
 
 # Gap-warning dedupe lives in ``d810.core.observability_emulator``, keyed on
 # ``(function, attempt, cause, site)``.  The pipeline builds a FRESH interpreter
@@ -85,6 +91,7 @@ if get_stack_or_reg_name is None:
 from d810.errors import (
     EmulationException,
     EmulationIndirectJumpException,
+    TaintedOperandException,
     UnresolvedMopException,
     WritableMemoryReadException,
 )
@@ -106,6 +113,24 @@ from d810.hexrays.utils.hexrays_helpers import (
 from d810.hexrays.utils.ida_utils import is_never_written_var, fetch_idb_value
 
 emulator_log = getLogger(__name__)
+
+
+def mop_taint_key(mop: ida_hexrays.mop_t | None) -> tuple | None:
+    """The location key taint is tracked on, or ``None`` for a non-location.
+
+    Deliberately NOT ``get_mop_key``: that key carries the operand SIZE, while
+    the value store matches locations with ``equal_mops_ignore_size``.  Keying
+    taint by size therefore laundered every widening/narrowing copy -- a
+    tainted ``rax.8`` read back as ``rax.4`` came out clean (ticket d81-1t9x).
+    """
+    if mop is None:
+        return None
+    t = mop.t
+    if t == ida_hexrays.mop_r:
+        return taint_location_key(t, mop.r)
+    if t == ida_hexrays.mop_S and mop.s is not None:
+        return taint_location_key(t, mop.s.off)
+    return None
 
 
 @runtime_checkable
@@ -603,7 +628,9 @@ class MicroCodeInterpreter(object):
             return
         t = mop.t
         if t in (ida_hexrays.mop_r, ida_hexrays.mop_S):
-            keys.add(get_mop_key(mop))
+            key = mop_taint_key(mop)
+            if key is not None:
+                keys.add(key)
         elif t == ida_hexrays.mop_d and mop.d is not None:
             self._collect_mop_keys(mop.d.l, keys)
             self._collect_mop_keys(mop.d.r, keys)
@@ -634,12 +661,42 @@ class MicroCodeInterpreter(object):
         A consumer that needs a PROVEN value -- a dispatcher state write, a
         fake-jump path comparison -- must treat this as "cannot prove" and
         abstain, exactly as it did when the call evaluated to ``None``.
+
+        Two ways to be tainted: the operand READS a location holding an
+        invention, or the operand IS the invention -- a bare ``jz call(...),
+        #0`` names no location at all, so the nested synthetic site is the only
+        evidence (ticket d81-1t9x).
         """
-        if mop is None or not environment.tainted_keys:
+        if mop is None:
+            return False
+        if mop.t == ida_hexrays.mop_d and self._has_synthetic_result(mop.d):
+            return True
+        if not environment.tainted_keys:
             return False
         keys: set = set()
         self._collect_mop_keys(mop, keys)
         return any_tainted(keys, environment.tainted_keys)
+
+    def _require_exact(
+        self, mop: ida_hexrays.mop_t, environment: MicroCodeEnvironment
+    ) -> int:
+        """Evaluate *mop* for a DECISION: proven value, or refuse.
+
+        The single chokepoint every control-flow read goes through.  An
+        unmodeled call hands out a stable synthetic integer so the enclosing
+        ``mov call(...), dst`` still evaluates (ticket d81-0xzp); comparing that
+        integer would pick an arbitrary-but-stable branch, so it raises here
+        instead (ticket d81-1t9x).
+        """
+        value = self.eval(mop, environment)
+        if self.is_tainted_mop(mop, environment):
+            self.abstain_causes.note(CAUSE_SYNTHETIC_TAINT)
+            raise TaintedOperandException(
+                "operand derives from a synthetic call return: {0}".format(
+                    format_mop_t(mop)
+                )
+            )
+        return value
 
     def _resolve_segment_register(self, mreg: int) -> int | None:
         """Resolve a segment register to its selector value.
@@ -924,6 +981,13 @@ class MicroCodeInterpreter(object):
                     else AND_TABLE[mop.size]
                 )
                 value = value & res_mask
+                # The def-use walk evaluates the DEFINING instruction outside
+                # ``_eval_instruction_and_update_environment``, so its taint was
+                # never recorded: a ``mov call(...), reg`` reached through a
+                # chain used to come back clean (ticket d81-1t9x).
+                self._propagate_taint(def_insn, environment)
+                if environment.is_location_tainted(def_insn.d):
+                    environment.mark_tainted(mop)
                 if mop_key in self._def_use_cache:
                     del self._def_use_cache[mop_key]
                 return value
@@ -1232,35 +1296,66 @@ class MicroCodeInterpreter(object):
                 )
             )
         direct_child_serial = cur_blk.nextb.serial
+        # ``_require_exact``, never ``eval``: a synthetic call return is a
+        # concrete integer, so comparing it silently picks an
+        # arbitrary-but-stable branch (ticket d81-1t9x).
         if ins.opcode == ida_hexrays.m_jcnd:
-            jump_taken = self.eval(ins.l, environment) != 0
+            jump_taken = self._require_exact(ins.l, environment) != 0
         elif ins.opcode == ida_hexrays.m_jnz:
-            jump_taken = self.eval(ins.l, environment) != self.eval(ins.r, environment)
+            jump_taken = self._require_exact(ins.l, environment) != self._require_exact(
+                ins.r, environment
+            )
         elif ins.opcode == ida_hexrays.m_jz:
-            jump_taken = self.eval(ins.l, environment) == self.eval(ins.r, environment)
+            jump_taken = self._require_exact(ins.l, environment) == self._require_exact(
+                ins.r, environment
+            )
         elif ins.opcode == ida_hexrays.m_jae:
-            jump_taken = self.eval(ins.l, environment) >= self.eval(ins.r, environment)
+            jump_taken = self._require_exact(ins.l, environment) >= self._require_exact(
+                ins.r, environment
+            )
         elif ins.opcode == ida_hexrays.m_jb:
-            jump_taken = self.eval(ins.l, environment) < self.eval(ins.r, environment)
+            jump_taken = self._require_exact(ins.l, environment) < self._require_exact(
+                ins.r, environment
+            )
         elif ins.opcode == ida_hexrays.m_ja:
-            jump_taken = self.eval(ins.l, environment) > self.eval(ins.r, environment)
+            jump_taken = self._require_exact(ins.l, environment) > self._require_exact(
+                ins.r, environment
+            )
         elif ins.opcode == ida_hexrays.m_jbe:
-            jump_taken = self.eval(ins.l, environment) <= self.eval(ins.r, environment)
+            jump_taken = self._require_exact(ins.l, environment) <= self._require_exact(
+                ins.r, environment
+            )
         elif ins.opcode == ida_hexrays.m_jg:
-            left_value = unsigned_to_signed(self.eval(ins.l, environment), ins.l.size)
-            right_value = unsigned_to_signed(self.eval(ins.r, environment), ins.r.size)
+            left_value = unsigned_to_signed(
+                self._require_exact(ins.l, environment), ins.l.size
+            )
+            right_value = unsigned_to_signed(
+                self._require_exact(ins.r, environment), ins.r.size
+            )
             jump_taken = left_value > right_value
         elif ins.opcode == ida_hexrays.m_jge:
-            left_value = unsigned_to_signed(self.eval(ins.l, environment), ins.l.size)
-            right_value = unsigned_to_signed(self.eval(ins.r, environment), ins.r.size)
+            left_value = unsigned_to_signed(
+                self._require_exact(ins.l, environment), ins.l.size
+            )
+            right_value = unsigned_to_signed(
+                self._require_exact(ins.r, environment), ins.r.size
+            )
             jump_taken = left_value >= right_value
         elif ins.opcode == ida_hexrays.m_jl:
-            left_value = unsigned_to_signed(self.eval(ins.l, environment), ins.l.size)
-            right_value = unsigned_to_signed(self.eval(ins.r, environment), ins.r.size)
+            left_value = unsigned_to_signed(
+                self._require_exact(ins.l, environment), ins.l.size
+            )
+            right_value = unsigned_to_signed(
+                self._require_exact(ins.r, environment), ins.r.size
+            )
             jump_taken = left_value < right_value
         elif ins.opcode == ida_hexrays.m_jle:
-            left_value = unsigned_to_signed(self.eval(ins.l, environment), ins.l.size)
-            right_value = unsigned_to_signed(self.eval(ins.r, environment), ins.r.size)
+            left_value = unsigned_to_signed(
+                self._require_exact(ins.l, environment), ins.l.size
+            )
+            right_value = unsigned_to_signed(
+                self._require_exact(ins.r, environment), ins.r.size
+            )
             jump_taken = left_value <= right_value
         else:
             # This should never happen
@@ -1282,6 +1377,21 @@ class MicroCodeInterpreter(object):
                 )
             )
 
+        try:
+            return self._resolve_next_flow(ins, cur_blk, environment)
+        except TaintedOperandException:
+            # No branch may be inherited from an invented value: publish UNKNOWN
+            # flow so a consumer reading ``next_blk`` cannot fall through to the
+            # textually-next block as if it had been proven (ticket d81-1t9x).
+            environment.set_unknown_flow()
+            raise
+
+    def _resolve_next_flow(
+        self,
+        ins: ida_hexrays.minsn_t,
+        cur_blk: ida_hexrays.mblock_t,
+        environment: MicroCodeEnvironment,
+    ) -> bool:
         next_blk_serial = self._eval_conditional_jump(ins, environment)
         if next_blk_serial is not None:
             next_blk = cur_blk.mba.get_mblock(next_blk_serial)
@@ -1292,7 +1402,7 @@ class MicroCodeInterpreter(object):
         if ins.opcode == ida_hexrays.m_goto:
             next_blk_serial = self._get_blk_serial(ins.l)
         elif ins.opcode == ida_hexrays.m_jtbl:
-            left_value = self.eval(ins.l, environment)
+            left_value = self._require_exact(ins.l, environment)
             cases = ins.r.c
             # Initialize to default case
             next_blk_serial = [x for x in cases.targets][-1]
@@ -1310,7 +1420,7 @@ class MicroCodeInterpreter(object):
                         format_minsn_t(ins)
                     )
                 )
-            ijmp_dest_ea = self.eval(ins.d, environment)
+            ijmp_dest_ea = self._require_exact(ins.d, environment)
             dest_block_serials = get_block_serials_by_address(
                 environment.cur_blk.mba, ijmp_dest_ea
             )
@@ -1376,6 +1486,8 @@ class MicroCodeInterpreter(object):
         elif helper_name in ("__readfsqword", "__readgsqword"):
             # These helpers read from FS/GS: they are known to be non-null in practice.
             # Return a stable non-zero synthetic value to avoid null folding.
+            # INVENTED, so it is recorded as such: non-null is all it proves.
+            self._note_synthetic_result(ins)
             return self.synthetic_call.get(ins) & res_mask
         return None
 
@@ -1405,12 +1517,15 @@ class MicroCodeInterpreter(object):
                 )
             if (
                 stack_mop_value := environment.lookup(
-                    stack_mop, raise_exception=not self.symbolic_mode
+                    stack_mop,
+                    raise_exception=not self.symbolic_mode,
+                    require_exact=False,
                 )
             ) is None:
                 if self.symbolic_mode:
                     stack_mop_value = self.synthetic_call.get(stack_mop)
                     environment.define(stack_mop, stack_mop_value)
+                    environment.mark_tainted(stack_mop)
                     if emulator_log.info_on:
                         emulator_log.info(
                             " synthetic stack mop {0} @ address {1:x} defined as: {2:x}".format(
@@ -1575,6 +1690,7 @@ class MicroCodeInterpreter(object):
         # Windows-specific helpers sometimes show up as named helpers (e.g., !NtCurrentPeb <fast:>)
         hname = (helper_name or "").lstrip("!")
         if hname.startswith("NtCurrentPeb"):
+            self._note_synthetic_result(ins)
             return self.synthetic_call.get(ins) & res_mask
 
         self._warn_gap(
@@ -1601,6 +1717,16 @@ class MicroCodeInterpreter(object):
         return value & mask if mask is not None else value
 
     def eval(self, mop: ida_hexrays.mop_t, environment: MicroCodeEnvironment) -> int:
+        """RAW evaluation -- the value, with no claim about how far it is proven.
+
+        This is the PROPAGATION path: it deliberately keeps carrying a value
+        derived from a result the emulator invented, so a dead call result no
+        longer discards a whole emulated path (ticket d81-0xzp).  It is NOT the
+        API for a decision.  A caller that acts on the value -- a branch, a jump
+        target, a published state constant -- must go through
+        :meth:`eval_mop` / :meth:`eval_mop_result` / :meth:`_require_exact`,
+        which are EXACT-or-``None`` (ticket d81-1t9x).
+        """
         # Check for invalid mop sizes (e.g., function references have size=-1)
         if mop.size < 0:
             raise EmulationException(
@@ -1612,8 +1738,11 @@ class MicroCodeInterpreter(object):
         if mop.t == ida_hexrays.mop_n:
             return mop.nnn.value
         elif mop.t in [ida_hexrays.mop_r, ida_hexrays.mop_S]:
-            # First, try the environment (values assigned during this emulation run)
-            value = environment.lookup(mop, raise_exception=False)
+            # First, try the environment (values assigned during this emulation run).
+            # ``require_exact=False``: propagation must keep carrying a tainted
+            # value (a dead call result still has to flow); the REFUSAL happens
+            # at the decision points -- ``_require_exact`` and ``eval_mop``.
+            value = environment.lookup(mop, raise_exception=False, require_exact=False)
             if value is not None:
                 # Opt-in masking to the READ size: ``environment.lookup`` matches by
                 # location (``equal_mops_ignore_size``), so a sub-register read (e.g.
@@ -1661,6 +1790,7 @@ class MicroCodeInterpreter(object):
             if self.symbolic_mode:
                 value = self.synthetic_call.get(mop)
                 environment.define(mop, value)
+                environment.mark_tainted(mop)
                 if emulator_log.info_on:
                     emulator_log.info(
                         " synthetic mop_r/mop_S {0} defined as: {1:x}".format(
@@ -1852,12 +1982,42 @@ class MicroCodeInterpreter(object):
         environment: MicroCodeEnvironment | None = None,
         raise_exception: bool = False,
     ) -> int | None:
+        """The PROVEN value of *mop*, or ``None``.
+
+        A value derived from a result the emulator invented is not proven, so it
+        comes back as ``None`` -- indistinguishable, to a consumer, from "could
+        not evaluate", which is exactly how it must be treated (ticket
+        d81-1t9x).  ``eval_mop_result`` keeps the distinction for callers that
+        want it.
+        """
+        return self.eval_mop_result(
+            mop, environment=environment, raise_exception=raise_exception
+        ).exact_value
+
+    def eval_mop_result(
+        self,
+        mop: ida_hexrays.mop_t,
+        environment: MicroCodeEnvironment | None = None,
+        raise_exception: bool = False,
+    ) -> EvalResult:
+        """Evaluate *mop* into a value TAGGED with how far it may be trusted."""
         try:
             if environment is None:
                 environment = self.global_environment
             self.abstain_causes.begin_step()
             res = self.eval(mop, environment)
-            return res
+            if self.is_tainted_mop(mop, environment):
+                self.abstain_causes.note(CAUSE_SYNTHETIC_TAINT)
+                if raise_exception:
+                    raise TaintedOperandException(
+                        "operand derives from a synthetic call return: {0}".format(
+                            format_mop_t(mop)
+                        )
+                    )
+                return EvalResult.tainted(res)
+            return EvalResult.unknown() if res is None else EvalResult.exact(res)
+        except TaintedOperandException:
+            raise
         except EmulationException as e:
             self._warn_gap(
                 self.abstain_causes.latest() or CAUSE_UNCLASSIFIED,
@@ -1875,7 +2035,7 @@ class MicroCodeInterpreter(object):
             if raise_exception:
                 raise e
             else:
-                return None
+                return EvalResult.unknown()
         except Exception as e:
             emulator_log.error(
                 "Unexpected exception while computing constant mop value: '%s': %s",
@@ -1885,7 +2045,7 @@ class MicroCodeInterpreter(object):
             if raise_exception:
                 raise e
             else:
-                return None
+                return EvalResult.unknown()
 
 
 class MopMapping(typing.MutableMapping[ida_hexrays.mop_t, int]):
@@ -1991,13 +2151,36 @@ class MicroCodeEnvironment:
 
     def mark_tainted(self, mop: ida_hexrays.mop_t) -> None:
         """Record that *mop*'s current value derives from a synthetic result."""
-        if mop is not None and mop.t in (ida_hexrays.mop_r, ida_hexrays.mop_S):
-            self.tainted_keys.add(get_mop_key(mop))
+        key = mop_taint_key(mop)
+        if key is not None:
+            self.tainted_keys.add(key)
 
     def clear_taint(self, mop: ida_hexrays.mop_t) -> None:
         """Drop *mop*'s taint: it was just overwritten with a proven value."""
-        if mop is not None and self.tainted_keys:
-            self.tainted_keys.discard(get_mop_key(mop))
+        if not self.tainted_keys:
+            return
+        key = mop_taint_key(mop)
+        if key is not None:
+            self.tainted_keys.discard(key)
+
+    def is_location_tainted(self, mop: ida_hexrays.mop_t | None) -> bool:
+        """``True`` when the LOCATION *mop* names currently holds an invention."""
+        if not self.tainted_keys:
+            return False
+        key = mop_taint_key(mop)
+        return key is not None and key in self.tainted_keys
+
+    def set_unknown_flow(self) -> None:
+        """Publish "the next block could not be proven".
+
+        ``set_cur_flow`` optimistically points ``next_blk`` at the fall-through
+        before the instruction is evaluated, so an unresolved jump that merely
+        stopped evaluating would leave a *plausible* successor behind.  Every
+        consumer already treats ``next_blk is None`` as "abstain" (ticket
+        d81-1t9x).
+        """
+        self.next_blk = None
+        self.next_ins = None
 
     def set_cur_flow(self, cur_blk: ida_hexrays.mblock_t, cur_ins: ida_hexrays.minsn_t):
         self.cur_blk = cur_blk
@@ -2069,8 +2252,22 @@ class MicroCodeEnvironment:
             )
 
     def lookup(
-        self, mop: ida_hexrays.mop_t, raise_exception: bool = True
+        self,
+        mop: ida_hexrays.mop_t,
+        raise_exception: bool = True,
+        require_exact: bool = True,
     ) -> int | None:
+        """The value stored for *mop* -- EXACT by default.
+
+        ``require_exact`` (the default) returns ``None`` for a location holding
+        a value the emulator INVENTED, so a consumer reading the environment
+        cannot mistake a synthetic call return for a proven one.  The raw
+        integer still has to flow through evaluation, so the interpreter's own
+        propagation path asks for it explicitly with ``require_exact=False``
+        (ticket d81-1t9x).
+        """
+        if require_exact and self.is_location_tainted(mop):
+            return None
         if mop.t == ida_hexrays.mop_r:
             return self._lookup_mop(
                 mop, self.mop_r_record, raise_exception=raise_exception

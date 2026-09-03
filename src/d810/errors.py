@@ -33,6 +33,17 @@ class UnresolvedMopException(EmulationException):
     pass
 
 
+class TaintedOperandException(EmulationException):
+    """A decision was attempted on a value the emulator INVENTED.
+
+    Raised when a conditional jump, a jump table or an indirect jump reads an
+    operand whose value derives from an unmodeled call's synthetic return
+    (ticket d81-1t9x).  The integer exists -- it is stable and it propagates --
+    but it proves nothing, so the emulator publishes UNKNOWN control flow
+    instead of an arbitrary-but-stable branch.
+    """
+
+
 class WritableMemoryReadException(EmulationException):
     pass
 

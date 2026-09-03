@@ -34,7 +34,6 @@ from d810.core.typing import Optional, Sequence
 
 from d810.core.observability_state_write import (
     CAUSE_EMULATOR_RAISED,
-    CAUSE_SYNTHETIC_TAINT,
 )
 from d810.analyses.data_flow.concolic.emulation import (
     Abstain,
@@ -138,22 +137,16 @@ class HexRaysBlockEmulator:
                 )
                 if insn.ea == write_insn.ea and insn.opcode == write_insn.opcode:
                     if ok:
+                        # Both fetches are EXACT-or-``None``: a next-state derived
+                        # from a call the emulator MODELED rather than computed is
+                        # refused by the emulator itself and reported as
+                        # ``synthetic_taint`` (tickets d81-0xzp, d81-1t9x), so this
+                        # consumer needs no taint check of its own.
                         value = env.lookup(write_insn.d, raise_exception=False)
                         if value is None:
                             value = interpreter.eval_mop(
                                 write_insn.d, environment=env, raise_exception=False
                             )
-                        if value is not None and interpreter.is_tainted_mop(
-                            write_insn.d, env
-                        ):
-                            # Derived from a call the emulator MODELED rather than
-                            # computed: not a proven next-state (ticket d81-0xzp).
-                            interpreter.abstain_causes.note(CAUSE_SYNTHETIC_TAINT)
-                            logger.debug(
-                                "HexRaysBlockEmulator: state write derives from a "
-                                "synthetic call return; abstaining"
-                            )
-                            value = None
                         if value is not None:
                             resolved = int(value)
                     break
