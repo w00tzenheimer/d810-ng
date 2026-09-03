@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from d810.core import logging
+from d810.core.observability_unflat import note_unflat_counters
 from d810.ir.flowgraph import FlowGraph
 from d810.analyses.value_flow.model import ValidatedFactView
 from d810.analyses.control_flow.transition_builder import TransitionResult
@@ -56,6 +57,16 @@ def plan_semantic_regions(
     linear_regions = tuple(
         tuple(int(node.key.handler_serial) for node in region) for region in regions
     )
+    # Terminal-record counters (ticket d81-rhu6): collected unconditionally so
+    # the outcome record stays complete with chatter logging off.
+    try:
+        note_unflat_counters(
+            int(graph.func_ea),
+            dag_nodes=len(dag.nodes),
+            dag_edges=len(dag.edges),
+        )
+    except Exception:
+        logger.debug("unflatten DAG counters failed", exc_info=True)
     logger.info(
         "unflat regions: dag_nodes=%d dag_edges=%d regions=%d entry=%s state_var=%s diag=%s",
         len(dag.nodes),

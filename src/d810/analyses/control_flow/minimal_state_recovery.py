@@ -45,6 +45,7 @@ import operator
 from d810.core.logging import getLogger
 from d810.core.observability import emit
 from d810.core.observability_events import RecoverySearchObserved
+from d810.core.observability_unflat import note_unresolved_state_write
 from d810.analyses.control_flow.state_machine_analysis import (
     _SnapshotProjectionCache,
     _constant_dest_locator_snapshot,
@@ -4412,6 +4413,16 @@ def _reject_decision_dag_reconciliation(
             f"{int(via.native_start_ea or via.start_ea):X}"
         )
     )
+    # Terminal-record anchor (ticket d81-rhu6): this rejection is exactly the
+    # unresolved state write an operator needs named in the outcome line.
+    try:
+        note_unresolved_state_write(
+            int(flow_graph.func_ea),
+            int(transition.write_block),
+            source_ea,
+        )
+    except Exception:
+        logger.debug("unresolved state-write anchor capture failed", exc_info=True)
     logger.warning(
         "decision-DAG reconciliation rejected fragment: reason=%s "
         "source=blk%d@0x%X via=%s state=%s",

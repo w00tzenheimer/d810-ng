@@ -295,6 +295,44 @@ def get_active_diag_path() -> str | None:
         return None
 
 
+_diag_active_func_ea_provider: Callable[[], int | None] | None = None
+
+
+def register_diag_active_func_ea_provider(fn: Callable[[], int | None]) -> None:
+    """Register the provider for the func_ea that opened the active session.
+
+    Called by ``d810.core.diag.__init__`` at module load, alongside
+    :func:`register_diag_path_provider`. A caller comparing this against the
+    func_ea of the record it is about to attribute to
+    :func:`get_active_diag_path` can detect the one case that path cannot
+    answer on its own: a session that never rotated across a multi-function
+    batch keeps naming the *first* function's capture file for every later
+    one (ticket aa-smoo).
+    """
+    global _diag_active_func_ea_provider
+    with _session_lock:
+        _diag_active_func_ea_provider = fn
+
+
+def get_active_diag_func_ea() -> int | None:
+    """Return the func_ea that opened the active diag session, or ``None``.
+
+    Never opens or creates a diagnostic DB; mirrors :func:`get_active_diag_path`.
+    """
+    _ensure_backend_loaded()
+    provider = _diag_active_func_ea_provider
+    if provider is None:
+        return None
+    try:
+        return provider()
+    except Exception:
+        _logger.warning(
+            "diag active func_ea provider raised; treating as unknown",
+            exc_info=True,
+        )
+        return None
+
+
 _snapshot_id_resolver: Callable[["SnapshotRef"], int | None] | None = None
 
 
@@ -337,10 +375,12 @@ __all__ = [
     "close_observability_session",
     "emit",
     "get_active_diag_conn",
+    "get_active_diag_func_ea",
     "get_active_diag_path",
     "has_subscribers",
     "new_snapshot_key",
     "open_observability_session",
+    "register_diag_active_func_ea_provider",
     "register_diag_conn_provider",
     "register_diag_path_provider",
     "register_diag_session_handlers",

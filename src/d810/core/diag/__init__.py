@@ -354,6 +354,20 @@ def get_active_diag_path() -> str | None:
     return str(database) if database else None
 
 
+def get_active_diag_func_ea() -> int | None:
+    """Return the func_ea passed to the session's opening ``open_diag_session``.
+
+    Reentry (Generated/PREOPT maturity callbacks, or a batch driver that
+    never triggers ``close_diag_session`` between functions) keeps this
+    pinned to the *first* function of the active session, not necessarily
+    the function currently being processed -- that is exactly the signal
+    :func:`d810.core.observability.get_active_diag_func_ea` callers need to
+    tell whether :func:`get_active_diag_path` still names their function's
+    own capture file (ticket aa-smoo).
+    """
+    return _current_func_ea
+
+
 def get_diag_db(func_ea: int = 0, log_dir: str | None = None) -> SqliteDatabase | None:
     """Return the current session's diag **peewee db** (or None if disabled).
 
@@ -404,6 +418,7 @@ def get_diag_conn(
 # concrete backend.  ``core.observability`` lives in the same package
 # layer as ``core.diag``, so this back-edge is allowed.
 from d810.core.observability import (
+    register_diag_active_func_ea_provider as _register_diag_active_func_ea_provider,
     register_diag_conn_provider as _register_diag_conn_provider,
     register_diag_path_provider as _register_diag_path_provider,
     register_diag_session_handlers as _register_diag_session_handlers,
@@ -412,3 +427,4 @@ from d810.core.observability import (
 _register_diag_session_handlers(open_diag_session, close_diag_session)
 _register_diag_conn_provider(get_diag_conn)
 _register_diag_path_provider(get_active_diag_path)
+_register_diag_active_func_ea_provider(get_active_diag_func_ea)

@@ -1309,3 +1309,136 @@ def test_handler_exception_is_swallowed_by_bus(fake_conn, caplog):
             modifications=(Modification(mod_index=0, mod_type="goto_redirect"),),
         )
     )
+
+
+# ---------------------------------------------------------------------------
+# Terminal unflatten candidate outcome (ticket d81-rhu6)
+# ---------------------------------------------------------------------------
+
+
+def _unflat_outcome(**overrides):
+    from d810.core.observability_events import UnflattenCandidateOutcomeObserved
+
+    kwargs = dict(
+        session_id="unflat-session",
+        func_ea=0x7FFB0EB06E50,
+        maturity="MMAT_GLBOPT1",
+        graph_fingerprint="flowgraph-topology-epoch-v1:abc",
+        candidate_identity="DispatcherCandidateIdentity(blk=330)",
+        attempt=1,
+        disposition="not_submitted_safe_bail",
+        reason="residual_dispatcher_corridor",
+        plan_id="plan-7",
+        handlers_recovered=85,
+        handlers_total=85,
+        dag_nodes=59,
+        dag_edges=20,
+        coverage_covered=0,
+        coverage_residual=158,
+        unresolved_anchors=((330, 0x7FFB0EB15239),),
+        committed_batches_before=0,
+        next_hint="python -m d810.diagnostics unflat-why --db D --func 0x7ffb0eb06e50",
+    )
+    kwargs.update(overrides)
+    return UnflattenCandidateOutcomeObserved(**kwargs)
+
+
+def test_unflat_candidate_outcome_writes_lifecycle_and_outcome_rows(fake_conn):
+    emit(_unflat_outcome())
+
+    kind, maturity, correlation, payload = fake_conn.execute(
+        "SELECT event_kind,maturity,correlation_id,payload_json "
+        "FROM lifecycle_events WHERE event_kind='unflat_candidate_outcome'"
+    ).fetchone()
+    assert kind == "unflat_candidate_outcome"
+    assert maturity == "MMAT_GLBOPT1"
+    assert correlation == (
+        "flowgraph-topology-epoch-v1:abc:DispatcherCandidateIdentity(blk=330):1"
+    )
+    body = json.loads(payload)
+    assert body["disposition"] == "not_submitted_safe_bail"
+    assert body["reason"] == "residual_dispatcher_corridor"
+    assert body["plan_id"] == "plan-7"
+    assert body["handlers"] == [85, 85]
+    assert body["dag"] == [59, 20]
+    assert body["coverage"] == [0, 158]
+    assert body["unresolved_anchors"] == [[330, 0x7FFB0EB15239]]
+    assert body["committed_batches_before"] == 0
+    assert body["next"].startswith("python -m d810.diagnostics unflat-why")
+
+    rows = fake_conn.execute(
+        "SELECT func_ea_hex,maturity,graph_fingerprint,candidate_identity,attempt,"
+        "disposition,reason,plan_id,handlers_recovered,handlers_total,dag_nodes,"
+        "dag_edges,coverage_covered,coverage_residual,committed_batches_before,"
+        "unresolved_anchors_json,next_hint FROM unflatten_candidate_outcomes"
+    ).fetchall()
+    assert len(rows) == 1
+    row = rows[0]
+    assert row[0] == "0x00007ffb0eb06e50"
+    assert row[1] == "MMAT_GLBOPT1"
+    assert row[4] == 1
+    assert row[5] == "not_submitted_safe_bail"
+    assert row[6] == "residual_dispatcher_corridor"
+    assert row[7] == "plan-7"
+    assert row[8:15] == (85, 85, 59, 20, 0, 158, 0)
+    assert json.loads(row[15]) == [[330, 0x7FFB0EB15239]]
+
+
+def test_unflat_candidate_outcome_records_are_append_only(fake_conn):
+    emit(_unflat_outcome(attempt=1))
+    emit(_unflat_outcome(attempt=2, disposition="exhausted", reason="all_excluded"))
+    rows = fake_conn.execute(
+        "SELECT attempt,disposition FROM unflatten_candidate_outcomes ORDER BY attempt"
+    ).fetchall()
+    assert rows == [(1, "not_submitted_safe_bail"), (2, "exhausted")]
+
+
+def test_unflat_candidate_outcome_persists_a_maturity_no_callback_class(fake_conn):
+    emit(
+        _unflat_outcome(
+            func_ea=0x7FFB0F2726E0,
+            disposition="maturity_no_callbacks",
+            reason="hexrays_delivered_no_optblock_callback",
+            graph_fingerprint="",
+            candidate_identity="",
+            attempt=0,
+            plan_id=None,
+            handlers_recovered=None,
+            handlers_total=None,
+            dag_nodes=None,
+            dag_edges=None,
+            coverage_covered=None,
+            coverage_residual=None,
+            unresolved_anchors=(),
+        )
+    )
+    row = fake_conn.execute(
+        "SELECT disposition,reason,plan_id,handlers_total,unresolved_anchors_json "
+        "FROM unflatten_candidate_outcomes"
+    ).fetchone()
+    assert row == (
+        "maturity_no_callbacks",
+        "hexrays_delivered_no_optblock_callback",
+        None,
+        None,
+        "[]",
+    )
+
+
+def test_unflat_candidate_outcome_persists_the_poisoned_class(fake_conn):
+    emit(
+        _unflat_outcome(
+            disposition="poisoned_restart_required",
+            reason="structural_accounting:source_catalog_block",
+            committed_batches_before=7,
+        )
+    )
+    row = fake_conn.execute(
+        "SELECT disposition,reason,committed_batches_before "
+        "FROM unflatten_candidate_outcomes"
+    ).fetchone()
+    assert row == (
+        "poisoned_restart_required",
+        "structural_accounting:source_catalog_block",
+        7,
+    )

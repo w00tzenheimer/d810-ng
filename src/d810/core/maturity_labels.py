@@ -229,6 +229,32 @@ def maturity_phase_rank(maturity: Any, phase: Any, *, default: int = 99) -> int:
     return _TIMELINE_PHASE_RANKS.get((name, str(phase)), int(default))
 
 
+def live_snapshot_maturity(
+    value: Any,
+    *,
+    numbering: MaturityNumbering = MaturityNumbering.WITH_ZERO,
+    fallback: str = "MMAT_GLBOPT1",
+) -> str:
+    """Label a diagnostic snapshot with the maturity the MBA is live at.
+
+    Snapshot writers must not hard-code a maturity: the pipeline that emits a
+    ``post_apply`` snapshot can fire at a different maturity boundary than the
+    one the label claims, which silently mislabels the capture (ticket
+    d81-4ulv).  ``fallback`` is used only when the live value is unreadable.
+
+    The default numbering is ``WITH_ZERO`` because that -- not ``IDA`` -- is
+    the numbering the live ``ida_hexrays.MMAT_*`` constants use (they start at
+    ``MMAT_ZERO = 0``).  Passing a raw ``mba.maturity`` under ``IDA``
+    numbering shifts every name by one.
+    """
+    if isinstance(value, str):
+        return normalize_mmat_name(value, numbering=numbering) or value
+    try:
+        return mmat_name(int(value), numbering=numbering)
+    except (TypeError, ValueError):
+        return str(fallback)
+
+
 def is_glbopt1_post_d810(maturity: Any, phase: Any) -> bool:
     """Return true for the GLBOPT1 post-D810 diagnostic snapshot boundary."""
     return (
@@ -264,6 +290,7 @@ __all__ = [
     "WITH_ZERO_MMAT_PREOPTIMIZED",
     "WITH_ZERO_MMAT_ZERO",
     "is_glbopt1_post_d810",
+    "live_snapshot_maturity",
     "maturity_phase_rank",
     "mmat_label",
     "mmat_name",

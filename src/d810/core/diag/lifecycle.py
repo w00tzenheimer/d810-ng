@@ -17,6 +17,7 @@ from d810.core.observability_events import (
     MutationPlanObserved,
     MutationReceiptObserved,
     RecoverySearchObserved,
+    UnflattenCandidateOutcomeObserved,
     PassContractEvidencePublished,
     SemanticOutputVerifiedObserved,
     SemanticFragmentRouteOracleComparedObserved,
@@ -810,6 +811,82 @@ def persist_recovery_search(
     return event_id
 
 
+def persist_unflatten_candidate_outcome(
+    conn: sqlite3.Connection,
+    event: UnflattenCandidateOutcomeObserved,
+) -> int:
+    """Persist the one terminal outcome record for an unflatten candidate."""
+    anchors = [[int(serial), int(ea)] for serial, ea in event.unresolved_anchors]
+    anchors_json = json.dumps(anchors, separators=(",", ":"))
+    correlation_id = ":".join(
+        (
+            event.graph_fingerprint,
+            event.candidate_identity,
+            str(int(event.attempt)),
+        )
+    )
+    event_id = persist_lifecycle_event(
+        conn,
+        LifecycleEventObserved(
+            session_id=event.session_id,
+            func_ea=event.func_ea,
+            event_kind="unflat_candidate_outcome",
+            provider="state_machine_cff_unflattener",
+            maturity=event.maturity,
+            phase=event.disposition,
+            correlation_id=correlation_id,
+            summary=f"unflatten candidate {event.disposition}: {event.reason}",
+            payload={
+                "disposition": event.disposition,
+                "reason": event.reason,
+                "plan_id": event.plan_id,
+                "graph_fingerprint": event.graph_fingerprint,
+                "candidate_identity": event.candidate_identity,
+                "attempt": int(event.attempt),
+                "handlers": [event.handlers_recovered, event.handlers_total],
+                "dag": [event.dag_nodes, event.dag_edges],
+                "coverage": [event.coverage_covered, event.coverage_residual],
+                "unresolved_anchors": anchors,
+                "committed_batches_before": int(event.committed_batches_before),
+                "next": event.next_hint,
+            },
+            timestamp=event.timestamp,
+        ),
+        snapshot_id=None,
+    )
+    conn.execute(
+        "INSERT INTO unflatten_candidate_outcomes "
+        "(event_id,session_id,func_ea_hex,func_ea_i64,maturity,graph_fingerprint,"
+        "candidate_identity,attempt,disposition,reason,plan_id,handlers_recovered,"
+        "handlers_total,dag_nodes,dag_edges,coverage_covered,coverage_residual,"
+        "committed_batches_before,unresolved_anchors_json,next_hint) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (
+            event_id,
+            event.session_id,
+            _func_hex(event.func_ea),
+            int(event.func_ea),
+            event.maturity,
+            event.graph_fingerprint,
+            event.candidate_identity,
+            int(event.attempt),
+            event.disposition,
+            event.reason,
+            event.plan_id,
+            event.handlers_recovered,
+            event.handlers_total,
+            event.dag_nodes,
+            event.dag_edges,
+            event.coverage_covered,
+            event.coverage_residual,
+            int(event.committed_batches_before),
+            anchors_json,
+            event.next_hint,
+        ),
+    )
+    return event_id
+
+
 def persist_semantic_fragment_route_oracle(
     conn: sqlite3.Connection,
     event: SemanticFragmentRouteOracleComparedObserved,
@@ -1208,6 +1285,7 @@ __all__.extend(
     [
         "persist_mutation_plan",
         "persist_recovery_search",
+        "persist_unflatten_candidate_outcome",
         "persist_mutation_receipt",
         "persist_semantic_fragment_route_oracle",
     ]

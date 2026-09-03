@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import inspect
 import logging
+import pathlib
 from dataclasses import fields, replace
 from types import SimpleNamespace
 
@@ -18819,3 +18820,63 @@ def test_exact_table_multi_entry_policy_rejects_unbound_delivery(
     assert not minimal_unflatten_emit_module._exact_table_multi_entry_source_edges(
         graph, dispatcher_entry_serial=dispatcher, state_var_stkoff=_STATE, state_var_reg=None,
     )
+
+
+# ---------------------------------------------------------------------------
+# Terminal outcome counters (ticket d81-rhu6)
+# ---------------------------------------------------------------------------
+
+
+def _emit_module_source() -> str:
+    import d810.transforms.minimal_unflatten_emit as module
+
+    return pathlib.Path(module.__file__).read_text()
+
+
+def _calls_named(node, name: str) -> bool:
+    import ast as _ast
+
+    return any(
+        isinstance(child, _ast.Call)
+        and isinstance(child.func, _ast.Name)
+        and child.func.id == name
+        for child in _ast.walk(node)
+    )
+
+
+def _function_named(tree, name: str):
+    import ast as _ast
+
+    for node in _ast.walk(tree):
+        if isinstance(node, (_ast.FunctionDef, _ast.AsyncFunctionDef)):
+            if node.name == name:
+                return node
+    raise AssertionError(f"function {name} not found")
+
+
+def test_coverage_counters_are_not_sourced_from_the_info_log_helper():
+    """``log_dispatcher_coverage`` runs only on the legacy, non-typed path.
+
+    Sourcing the terminal record's coverage numbers from it would leave the
+    typed-authority path with no counters at all.
+    """
+    import ast as _ast
+
+    tree = _ast.parse(_emit_module_source())
+    helper = _function_named(tree, "log_dispatcher_coverage")
+    assert not _calls_named(helper, "note_unflat_counters")
+
+
+def test_counters_are_noted_unconditionally_in_emit_minimal_unflatten():
+    import ast as _ast
+
+    tree = _ast.parse(_emit_module_source())
+    emitter = _function_named(tree, "emit_minimal_unflatten")
+    # Both counter notes must sit directly in the emitter body (statement
+    # depth 1), not under an ``if logger.info_on`` or a path branch.
+    top_level_notes = [
+        stmt
+        for stmt in emitter.body
+        if isinstance(stmt, _ast.Try) and _calls_named(stmt, "note_unflat_counters")
+    ]
+    assert len(top_level_notes) == 2

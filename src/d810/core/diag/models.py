@@ -427,6 +427,57 @@ class RecoverySearchOutcomeRecord(BaseModel):
         indexes = ((('func_ea_i64', 'provider', 'outcome'), False),)
 
 
+class UnflattenCandidateOutcomeRecord(BaseModel):
+    """One terminal per-candidate unflatten outcome (ticket d81-rhu6).
+
+    Append-only.  ``plan_id`` names the corridor coverage summary the record
+    closes; nothing back-fills that summary's ``application_status``.
+    """
+
+    event = ForeignKeyField(
+        LifecycleEvent,
+        field="event_id",
+        column_name="event_id",
+        primary_key=True,
+        index=False,
+        null=False,
+    )
+    session_id = TextField()
+    func_ea_hex = TextField()
+    func_ea_i64 = IntegerField()
+    maturity = TextField()
+    graph_fingerprint = TextField()
+    candidate_identity = TextField()
+    attempt = IntegerField()
+    disposition = TextField(
+        constraints=[
+            Check(
+                "disposition IN ('not_submitted_safe_bail','rejected_preflight',"
+                "'applied_observed','poisoned_restart_required',"
+                "'maturity_no_callbacks','exhausted')"
+            )
+        ]
+    )
+    reason = TextField()
+    plan_id = TextField(null=True)
+    handlers_recovered = IntegerField(null=True)
+    handlers_total = IntegerField(null=True)
+    dag_nodes = IntegerField(null=True)
+    dag_edges = IntegerField(null=True)
+    coverage_covered = IntegerField(null=True)
+    coverage_residual = IntegerField(null=True)
+    committed_batches_before = IntegerField()
+    unresolved_anchors_json = TextField()
+    next_hint = TextField()
+
+    class Meta:
+        table_name = "unflatten_candidate_outcomes"
+        indexes = (
+            ((('func_ea_i64', 'maturity', 'disposition'), False),)
+            + ((('graph_fingerprint', 'candidate_identity', 'attempt'), False),)
+        )
+
+
 class FrontendNormalizationPlanIntent(BaseModel):
     """Typed receipt-backed frontend plan intent used by the case projector."""
 
@@ -1768,6 +1819,7 @@ MODELS = (
     IdentityDecision,
     MutationPlanItem,
     RecoverySearchOutcomeRecord,
+    UnflattenCandidateOutcomeRecord,
     FrontendNormalizationPlanIntent,
     SemanticOutputVerdict,
     PassContractEvidencePublication,
