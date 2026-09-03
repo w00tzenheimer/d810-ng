@@ -11,6 +11,8 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+import hashlib
+import json
 from pathlib import Path
 
 from d810.mba.differential_report import (
@@ -19,6 +21,7 @@ from d810.mba.differential_report import (
 )
 from d810.mba.island_profile import MbaIslandProfile, profile_from_dict, profile_to_dict
 from d810.mba.provider_outcome import (
+    MatcherSelection,
     MbaProviderKind,
     MbaProviderOutcome,
     ProviderOutcomeStatus,
@@ -31,6 +34,24 @@ from d810.mba.residual_corpus import (
 
 _NATIVE_PROFILE_METADATA_KEY = "native_profile"
 _NATIVE_CANDIDATE_NOT_OBSERVED = "native_candidate_not_observed"
+_RAW_NATIVE_IDENTITY_METADATA_KEY = "raw_native_identity"
+_RAW_IDENTITY_PROFILE_UNAVAILABLE = "raw_identity_profile_unavailable"
+_RAW_IDENTITY_INSTRUCTION_FIELDS = frozenset({"opcode", "ea", "iprops", "l", "r", "d"})
+_RAW_IDENTITY_OPERAND_FIELDS = frozenset({"type", "oprops", "size", "valnum"})
+_RAW_IDENTITY_TOP_ALIASES = frozenset({"left", "right", "destination", "size"})
+_RAW_IDENTITY_VARIANTS = (
+    frozenset({"value", "original_value", "value_width"}),
+    frozenset({"register"}),
+    frozenset({"stack_offset"}),
+    frozenset({"global_address"}),
+    frozenset({"block_num"}),
+    frozenset({"helper"}),
+    frozenset({"string"}),
+    frozenset({"local_index", "local_offset"}),
+    frozenset({"instruction"}),
+    frozenset({"address", "address_insize", "address_outsize"}),
+    frozenset({"low", "high"}),
+)
 
 
 @dataclass(frozen=True)
@@ -70,6 +91,7 @@ class NativeCaptureSelection:
         elif self.unavailable_reason not in {
             _NATIVE_CANDIDATE_NOT_OBSERVED,
             "native_candidate_ambiguous",
+            _RAW_IDENTITY_PROFILE_UNAVAILABLE,
         }:
             raise ValueError("unknown native capture unavailable reason")
 
@@ -99,6 +121,135 @@ def native_profile_from_outcome(outcome: MbaProviderOutcome) -> MbaIslandProfile
 
 def _has_native_profile(outcome: MbaProviderOutcome) -> bool:
     return isinstance((outcome.metadata or {}).get(_NATIVE_PROFILE_METADATA_KEY), Mapping)
+
+
+def _raw_identity_json_value(value: object) -> object:
+    if isinstance(value, Mapping):
+        return {key: _raw_identity_json_value(item) for key, item in value.items()}
+    if isinstance(value, tuple):
+        return [_raw_identity_json_value(item) for item in value]
+    return value
+
+
+def _valid_raw_identity_operand(value: object, *, depth: int = 0) -> bool:
+    if value is None:
+        return True
+    if depth > 64 or not isinstance(value, Mapping):
+        return False
+    if not _RAW_IDENTITY_OPERAND_FIELDS.issubset(value):
+        return False
+    if any(type(value[field]) is not int for field in _RAW_IDENTITY_OPERAND_FIELDS):
+        return False
+    extra = set(value) - _RAW_IDENTITY_OPERAND_FIELDS
+    variants = [variant for variant in _RAW_IDENTITY_VARIANTS if variant & extra]
+    if len(variants) > 1 or (variants and extra != variants[0]):
+        return False
+    if not variants:
+        return not extra
+    variant = variants[0]
+    if variant == frozenset({"value", "original_value", "value_width"}):
+        return all(type(value[field]) is int for field in variant)
+    if variant in {
+        frozenset({"register"}),
+        frozenset({"stack_offset"}),
+        frozenset({"global_address"}),
+        frozenset({"block_num"}),
+        frozenset({"local_index", "local_offset"}),
+    }:
+        return all(type(value[field]) is int for field in variant)
+    if variant in {frozenset({"helper"}), frozenset({"string"})}:
+        return type(value[next(iter(variant))]) is str
+    if variant == frozenset({"instruction"}):
+        return _valid_raw_identity_instruction(value["instruction"], depth=depth + 1)
+    if variant == frozenset({"address", "address_insize", "address_outsize"}):
+        return (
+            _valid_raw_identity_operand(value["address"], depth=depth + 1)
+            and type(value["address_insize"]) is int
+            and type(value["address_outsize"]) is int
+        )
+    if variant == frozenset({"low", "high"}):
+        return _valid_raw_identity_operand(value["low"], depth=depth + 1) and _valid_raw_identity_operand(
+            value["high"], depth=depth + 1
+        )
+    return False
+
+
+def _valid_raw_identity_instruction(
+    value: object, *, depth: int = 0, top_level: bool = False
+) -> bool:
+    if depth > 64 or not isinstance(value, Mapping):
+        return False
+    required = _RAW_IDENTITY_INSTRUCTION_FIELDS
+    allowed = required | _RAW_IDENTITY_TOP_ALIASES if top_level else required
+    if (
+        set(value) - allowed
+        or not required.issubset(value)
+        or (top_level and not _RAW_IDENTITY_TOP_ALIASES.issubset(value))
+    ):
+        return False
+    if any(type(value[field]) is not int for field in ("opcode", "ea", "iprops")):
+        return False
+    if any(
+        not _valid_raw_identity_operand(value[field], depth=depth + 1)
+        or value[field] is None
+        for field in ("l", "r", "d")
+    ):
+        return False
+    if not top_level:
+        return True
+    if any(value[alias] != value[source] for alias, source in {
+        "left": "l",
+        "right": "r",
+        "destination": "d",
+    }.items()):
+        return False
+    return type(value["size"]) is int and value["size"] == value["d"]["size"]
+
+
+def raw_identity_payload_fingerprint(payload: Mapping[str, object]) -> str:
+    """Fingerprint the exact serialized raw identity payload.
+
+    This helper is portable so the IDA producer and the capture validator use
+    one canonical JSON encoding, without importing Hex-Rays into the MBA
+    capture layer.
+    """
+
+    encoded = json.dumps(
+        _raw_identity_json_value(payload),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+        allow_nan=False,
+    ).encode("utf-8")
+    return f"raw:{hashlib.sha256(encoded).hexdigest()}"
+
+
+def _is_raw_native_identity_outcome(outcome: MbaProviderOutcome) -> bool:
+    """Return whether an outcome satisfies the complete raw-hit contract."""
+
+    metadata = outcome.metadata or {}
+    payload = metadata.get(_RAW_NATIVE_IDENTITY_METADATA_KEY)
+    matcher = outcome.matcher
+    return (
+        outcome.provider is MbaProviderKind.CATALOGUE
+        and outcome.status is ProviderOutcomeStatus.APPLIED
+        and outcome.fingerprint.startswith("raw:")
+        and isinstance(payload, Mapping)
+        and _valid_raw_identity_instruction(payload, top_level=True)
+        and raw_identity_payload_fingerprint(payload) == outcome.fingerprint
+        and "native_profile" not in metadata
+        and outcome.proof_verdict is None
+        and metadata.get("mutation_outcome") == "accepted"
+        and bool(outcome.source_provenance)
+        and matcher is not None
+        and matcher.selection is MatcherSelection.RAW
+        and matcher.stop_reason == "matched"
+        and matcher.terminal_stop_reason == "matched"
+        and matcher.raw_comparisons > 0
+        and matcher.fallback_comparisons == 0
+        and matcher.native_equivalence_verdict is None
+        and matcher.mutation_outcome == "accepted"
+    )
 
 
 def _native_profile_key_present(outcome: MbaProviderOutcome) -> bool:
@@ -180,7 +331,9 @@ def profiles_from_native_provider_histories(
     profiles: dict[str, MbaIslandProfile] = {}
     for rule in rules:
         for outcome in _history_for_provider(rule, history_snapshot):
-            if outcome.fingerprint == "profile_unavailable":
+            if outcome.fingerprint == "profile_unavailable" or _is_raw_native_identity_outcome(
+                outcome
+            ):
                 continue
             profile = native_profile_from_outcome(outcome)
             previous = profiles.setdefault(profile.fingerprint, profile)
@@ -266,6 +419,7 @@ def capture_native_provider_case(
     """
 
     expected = tuple(expected_providers)
+    selected_rules = tuple(rules)
     if expected and len(set(expected)) != len(expected):
         raise ValueError("expected_providers must not contain duplicates")
     if profile is None:
@@ -273,6 +427,21 @@ def capture_native_provider_case(
             raise ValueError(
                 "missing native candidate evidence requires declared provider coverage"
             )
+        if unavailable_reason == _RAW_IDENTITY_PROFILE_UNAVAILABLE:
+            observed_raw = tuple(
+                outcome
+                for rule in selected_rules
+                for outcome in _history_for_provider(rule, history_snapshot)
+                if _is_raw_native_identity_outcome(outcome)
+            )
+            if not observed_raw:
+                raise ValueError(
+                    "raw identity profile unavailable requires a validated raw outcome"
+                )
+            if MbaProviderKind.CATALOGUE not in expected:
+                raise ValueError(
+                    "raw identity profile unavailable requires catalogue coverage"
+                )
         return MbaCorpusCaseReport(
             case_id=case_id,
             stratum=stratum,
@@ -290,7 +459,7 @@ def capture_native_provider_case(
         )
 
     grouped: dict[object, list[MbaProviderOutcome]] = {}
-    for rule in rules:
+    for rule in selected_rules:
         for outcome in _history_for_provider(rule, history_snapshot):
             if outcome.fingerprint != profile.fingerprint:
                 continue

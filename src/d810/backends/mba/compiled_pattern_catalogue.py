@@ -9,8 +9,9 @@ the replacement from those bindings and never re-runs pattern matching.
 
 from __future__ import annotations
 
+import enum
 from collections.abc import Iterator, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from types import MappingProxyType
 
 from d810.mba.certified_rule_compiler import (
@@ -19,7 +20,10 @@ from d810.mba.certified_rule_compiler import (
     _materialize_symbolic_term,
     require_admitted_compiled_rules,
 )
-from d810.backends.mba.native_mba_term_view import NativeMbaTermView
+from d810.backends.mba.native_mba_term_view import (
+    NativeMbaTermView,
+    project_canonical_native_paths,
+)
 from d810.core.typing import Any
 from d810.mba.canonical_pattern import (
     CanonicalCompiledPattern,
@@ -29,17 +33,38 @@ from d810.mba.canonical_pattern import (
     CanonicalPatternUnsupported,
     compile_canonical_pattern,
     evaluate_frozen_constraints,
+    merge_canonical_bindings,
     match_canonical_term_pattern,
+    resolve_canonical_match_paths,
 )
 from d810.mba.ac_matching import AcMatchStopReason
 from d810.mba.dsl import SymbolicExpressionProtocol
 from d810.mba.extension_api import CanonicalPatternComparisonBudgetExceeded
-from d810.mba.semantic_canonicalization import canonicalize_mba_term
+from d810.mba.semantic_canonicalization import (
+    CanonicalMbaTermView,
+    canonicalize_mba_term,
+)
 from d810.mba.typed_term import TypedBvTerm, term_fingerprint
 
 
 _AC_OPERATIONS = frozenset({"add", "and", "mul", "or", "xor"})
 _PodPattern = tuple[tuple[tuple[int, ...], ...], tuple[str, ...]]
+
+
+class NativeMatchSelection(enum.StrEnum):
+    RAW_POD = "raw_pod"
+    CANONICAL_FALLBACK = "canonical_fallback"
+    NONE = "none"
+
+
+class NativeMatchStopReason(enum.StrEnum):
+    MATCHED = "matched"
+    CLEAN_MISS = "clean_miss"
+    RAW_BUDGET = "raw_budget"
+    RAW_UNSUPPORTED = "raw_unsupported"
+    CANONICAL_BUDGET = "canonical_budget"
+    CANONICAL_MISS = "canonical_miss"
+    PROVENANCE_REJECTED = "provenance_rejected"
 
 
 @dataclass(frozen=True)
@@ -94,6 +119,12 @@ class NativePatternMatchResult:
     # Diagnostic-only: semantic parity compares matches and resource facts,
     # while the performance receipt must retain the actual matching path.
     matcher_backend: str = field(default="python", compare=False)
+    selection: NativeMatchSelection = NativeMatchSelection.NONE
+    stop_reason: NativeMatchStopReason = NativeMatchStopReason.CLEAN_MISS
+    fallback_comparisons: int = 0
+    fallback_commuted_branches: int = 0
+    fallback_flattened_nodes: int = 0
+    canonical_budget_exceeded: bool = False
 
 
 @dataclass(frozen=True)
@@ -215,21 +246,188 @@ class CompiledPatternCatalogue:
     def match_root(
         self, candidate: NativeMbaTermView, *, comparison_budget: int = 64
     ) -> NativePatternMatchResult:
-        """Return bounded deterministic root applications without AST materialization.
-
-        The callback-local POD layer owns numeric matching when the accelerated
-        backend is available.  It falls back to ``_match_root_portable`` for
-        unsupported packed shapes, keeping this implementation as the semantic
-        oracle and avoiding a second rule catalogue.
-        """
+        """Try the raw matcher first, then one bounded canonical fallback."""
 
         from d810.backends.mba.native_pod_matcher import match_root_pod
 
-        return match_root_pod(self, candidate, comparison_budget=comparison_budget)
+        if not isinstance(candidate, NativeMbaTermView):
+            raise TypeError("candidate must be a NativeMbaTermView")
+        if type(comparison_budget) is not int or comparison_budget <= 0:
+            raise ValueError("comparison_budget must be a positive integer")
+        raw = match_root_pod(
+            self,
+            candidate,
+            comparison_budget=comparison_budget,
+        )
+        if raw.matches:
+            return raw
+        if raw.stop_reason is NativeMatchStopReason.RAW_BUDGET:
+            return raw
+        if raw.stop_reason is NativeMatchStopReason.RAW_UNSUPPORTED:
+            return raw
+
+        projection = project_canonical_native_paths(candidate)
+        canonical = self.match_canonical_root(
+            projection.canonical_view,
+            comparison_budget=64,
+        )
+        if canonical.stop_reason is AcMatchStopReason.COMPARISON_BUDGET:
+            return NativePatternMatchResult(
+                (),
+                raw.comparisons,
+                raw.lazy_swaps,
+                candidate_term=projection.canonical_view.raw_term,
+                matcher_backend=raw.matcher_backend,
+                stop_reason=NativeMatchStopReason.CANONICAL_BUDGET,
+                fallback_comparisons=canonical.comparisons,
+                fallback_commuted_branches=canonical.commuted_branches,
+                fallback_flattened_nodes=canonical.flattened_nodes,
+                canonical_budget_exceeded=True,
+            )
+        if not canonical.matches:
+            return NativePatternMatchResult(
+                (),
+                raw.comparisons,
+                raw.lazy_swaps,
+                candidate_term=raw.candidate_term,
+                matcher_backend=raw.matcher_backend,
+                selection=NativeMatchSelection.NONE,
+                stop_reason=NativeMatchStopReason.CANONICAL_MISS,
+                fallback_comparisons=canonical.comparisons,
+                fallback_commuted_branches=canonical.commuted_branches,
+                fallback_flattened_nodes=canonical.flattened_nodes,
+            )
+
+        resolved: list[NativePatternMatch] = []
+        rejected = False
+        grouped: dict[int, list[object]] = {}
+        templates: dict[int, CanonicalCompiledPattern] = {}
+        for canonical_match in canonical.matches:
+            key = id(canonical_match.compiled_pattern)
+            grouped.setdefault(key, []).append(canonical_match)
+            templates[key] = canonical_match.compiled_pattern
+        seen_replacements: set[tuple[int, str]] = set()
+        for key in sorted(grouped, key=lambda item: templates[item].declaration_index):
+            template = templates[key]
+            valid_canonical_matches = []
+            compatibility = _fixed_constant_bindings(
+                template,
+                projection.canonical_view.canonical_term,
+            )
+            required_native_names_by_match = [
+                _replacement_placeholder_names(
+                    template.replacement_template,
+                    candidate_paths=canonical_match.bindings.candidate_paths,
+                )
+                for canonical_match in grouped[key]
+            ]
+            required_native_names = frozenset().union(*required_native_names_by_match)
+            for canonical_match, required_names in zip(
+                grouped[key], required_native_names_by_match, strict=True
+            ):
+                try:
+                    merged = merge_canonical_bindings(
+                        canonical_match.bindings,
+                        compatibility,
+                    )
+                except ValueError:
+                    rejected = True
+                    continue
+                terms = dict(merged.terms)
+                candidate_paths = {
+                    name: path
+                    for name, path in merged.candidate_paths.items()
+                    if tuple(path) in projection.canonical_to_raw_paths
+                    or name in required_names
+                }
+                if not evaluate_frozen_constraints(
+                    template.constraints,
+                    terms,
+                    width=projection.canonical_view.canonical_term.width,
+                ):
+                    continue
+                valid_canonical_matches.append(
+                    replace(
+                        canonical_match,
+                        bindings=CanonicalFixedBindings(
+                            terms,
+                            candidate_paths,
+                            projection.canonical_view.canonical_term.width,
+                        ),
+                    )
+                )
+            if not valid_canonical_matches:
+                continue
+            resolved_matches = resolve_canonical_match_paths(
+                valid_canonical_matches,
+                canonical_to_raw_paths=projection.canonical_to_raw_paths,
+                placeholder_order=(name for _kind, name in template.terminal_kinds),
+                required_names=required_native_names,
+            )
+            if not resolved_matches:
+                rejected = True
+                continue
+            for resolved_match in resolved_matches:
+                bindings = resolved_match.bindings
+                native: dict[str, NativeMbaTermView] = {}
+                try:
+                    for name, path in bindings.candidate_paths.items():
+                        native[name] = projection.raw_views_by_path[path]
+                    fixed = FixedBindings(
+                        native=native,
+                        terms=bindings.terms,
+                        width=bindings.width,
+                    )
+                    fingerprint = term_fingerprint(
+                        fixed.materialize_replacement(template.rule)
+                    )
+                except (TypeError, ValueError, KeyError):
+                    rejected = True
+                    continue
+                identity = (template.declaration_index, fingerprint)
+                if identity in seen_replacements:
+                    continue
+                seen_replacements.add(identity)
+                resolved.append(
+                    NativePatternMatch(
+                        rule=template.rule,
+                        bindings=fixed,
+                        catalogue_index=template.declaration_index,
+                    )
+                )
+        if not resolved:
+            return NativePatternMatchResult(
+                (),
+                raw.comparisons,
+                raw.lazy_swaps,
+                candidate_term=raw.candidate_term,
+                matcher_backend=raw.matcher_backend,
+                stop_reason=(
+                    NativeMatchStopReason.PROVENANCE_REJECTED
+                    if rejected
+                    else NativeMatchStopReason.CANONICAL_MISS
+                ),
+                fallback_comparisons=canonical.comparisons,
+                fallback_commuted_branches=canonical.commuted_branches,
+                fallback_flattened_nodes=canonical.flattened_nodes,
+            )
+        resolved.sort(key=lambda match: match.catalogue_index)
+        return NativePatternMatchResult(
+            tuple(resolved),
+            raw.comparisons,
+            raw.lazy_swaps,
+            candidate_term=projection.canonical_view.raw_term,
+            matcher_backend=raw.matcher_backend,
+            selection=NativeMatchSelection.CANONICAL_FALLBACK,
+            stop_reason=NativeMatchStopReason.MATCHED,
+            fallback_comparisons=canonical.comparisons,
+            fallback_commuted_branches=canonical.commuted_branches,
+            fallback_flattened_nodes=canonical.flattened_nodes,
+        )
 
     def match_canonical_root(
         self,
-        candidate: TypedBvTerm,
+        candidate: TypedBvTerm | CanonicalMbaTermView,
         *,
         comparison_budget: int = 64,
     ) -> CanonicalPatternMatchReport:
@@ -243,9 +441,12 @@ class CompiledPatternCatalogue:
 
         if type(comparison_budget) is not int or comparison_budget <= 0:
             raise ValueError("comparison_budget must be a positive integer")
-        if not isinstance(candidate, TypedBvTerm):
-            raise TypeError("candidate must be a TypedBvTerm")
-        canonical_candidate = canonicalize_mba_term(candidate).canonical_term
+        if isinstance(candidate, CanonicalMbaTermView):
+            canonical_candidate = candidate.canonical_term
+        elif isinstance(candidate, TypedBvTerm):
+            canonical_candidate = canonicalize_mba_term(candidate).canonical_term
+        else:
+            raise TypeError("candidate must be a TypedBvTerm or CanonicalMbaTermView")
         operation = canonical_candidate.operation
         if operation is None:
             return CanonicalPatternMatchReport((), 0, 0, 0, AcMatchStopReason.MISS)
@@ -390,7 +591,12 @@ class CompiledPatternCatalogue:
         if type(comparison_budget) is not int or comparison_budget <= 0:
             raise ValueError("comparison_budget must be a positive integer")
         if candidate.operation is None:
-            return NativePatternMatchResult((), 0, 0)
+            return NativePatternMatchResult(
+                (),
+                0,
+                0,
+                stop_reason=NativeMatchStopReason.CLEAN_MISS,
+            )
 
         matches: list[NativePatternMatch] = []
         budget = _MatchBudget(comparison_budget)
@@ -430,13 +636,27 @@ class CompiledPatternCatalogue:
                     )
             except _ComparisonBudgetExceeded:
                 return NativePatternMatchResult(
-                    (), budget.comparisons, budget.lazy_swaps, True
+                    (),
+                    budget.comparisons,
+                    budget.lazy_swaps,
+                    True,
+                    stop_reason=NativeMatchStopReason.RAW_BUDGET,
                 )
         return NativePatternMatchResult(
             tuple(matches),
             budget.comparisons,
             budget.lazy_swaps,
             candidate_term=candidate.to_typed_term() if matches else None,
+            selection=(
+                NativeMatchSelection.RAW_POD
+                if matches
+                else NativeMatchSelection.NONE
+            ),
+            stop_reason=(
+                NativeMatchStopReason.MATCHED
+                if matches
+                else NativeMatchStopReason.CLEAN_MISS
+            ),
         )
 
 
@@ -585,10 +805,81 @@ def _view_key(candidate: NativeMbaTermView) -> tuple[Any, ...]:
     )
 
 
+def _fixed_constant_bindings(
+    template: CanonicalCompiledPattern,
+    candidate: TypedBvTerm,
+) -> CanonicalFixedBindings | None:
+    """Locate uniquely occurring fixed constants for one template.
+
+    Canonical matching reports alternatives without compatibility-only names.
+    Reconstructing this small, immutable association per compiled template
+    keeps those names from leaking between rules in one aggregate report.
+    """
+
+    if not template.fixed_constant_values:
+        return None
+    occurrences: dict[str, list[tuple[TypedBvTerm, tuple[int, ...]]]] = {
+        name: [] for name in template.fixed_constant_values
+    }
+
+    def visit(current: TypedBvTerm, path: tuple[int, ...]) -> None:
+        if current.operation is None:
+            if current.value is not None:
+                for name, expected in template.fixed_constant_values.items():
+                    if current.value == (expected & ((1 << current.width) - 1)):
+                        occurrences[name].append((current, path))
+            return
+        for index, child in enumerate(current.children):
+            visit(child, path + (index,))
+
+    visit(candidate, ())
+    terms: dict[str, TypedBvTerm] = {}
+    paths: dict[str, tuple[int, ...]] = {}
+    for name, matches in occurrences.items():
+        if len(matches) == 1:
+            terms[name], paths[name] = matches[0]
+    if not terms:
+        return None
+    return CanonicalFixedBindings(terms, paths, candidate.width)
+
+
+def _replacement_placeholder_names(
+    term: TypedBvTerm, *, candidate_paths: Mapping[str, tuple[int, ...]]
+) -> frozenset[str]:
+    names: set[str] = set()
+
+    def visit(current: TypedBvTerm) -> None:
+        if current.operation is None:
+            key = current.leaf_key
+            if (
+                type(key) is tuple
+                and len(key) == 2
+                and key[0] == "pattern_var"
+                and type(key[1]) is str
+            ):
+                names.add(key[1])
+            elif (
+                type(key) is tuple
+                and len(key) == 2
+                and key[0] == "pattern_const"
+                and type(key[1]) is str
+                and key[1] in candidate_paths
+            ):
+                names.add(key[1])
+            return
+        for child in current.children:
+            visit(child)
+
+    visit(term)
+    return frozenset(names)
+
+
 __all__ = [
     "CanonicalPatternComparisonBudgetExceeded",
     "CompiledPatternCatalogue",
     "FixedBindings",
+    "NativeMatchSelection",
+    "NativeMatchStopReason",
     "NativePatternMatch",
     "NativePatternMatchResult",
 ]

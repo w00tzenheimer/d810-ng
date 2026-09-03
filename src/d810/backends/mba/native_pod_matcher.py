@@ -22,7 +22,11 @@ from d810.backends.mba.runtime_semantics import (
 )
 from d810.core.cymode import CythonMode
 from d810.core.typing import Any
-from d810.mba.typed_term import TypedBvTerm, _leaf_key_fingerprint
+from d810.mba.typed_term import (
+    SUPPORTED_OPERATIONS,
+    TypedBvTerm,
+    _leaf_key_fingerprint,
+)
 
 
 _OPERATION_CODES = {
@@ -217,6 +221,22 @@ def match_root_pod(
     result type exactly.
     """
 
+    if _contains_unsupported_operation(view):
+        from d810.backends.mba.compiled_pattern_catalogue import (
+            NativeMatchSelection,
+            NativeMatchStopReason,
+            NativePatternMatchResult,
+        )
+
+        return NativePatternMatchResult(
+            (),
+            0,
+            0,
+            matcher_backend=matcher_backend(),
+            selection=NativeMatchSelection.NONE,
+            stop_reason=NativeMatchStopReason.RAW_UNSUPPORTED,
+        )
+
     try:
         packed = PackedNativeMbaTerm.from_view(view)
     except ValueError:
@@ -230,6 +250,15 @@ def match_root_pod(
         if accelerated is not None:
             return accelerated
     return catalogue._match_root_portable(view, comparison_budget=comparison_budget)
+
+
+def _contains_unsupported_operation(view: NativeMbaTermView) -> bool:
+    """Identify native operations with no portable typed-term semantics."""
+
+    return (
+        view.operation is not None
+        and view.operation not in SUPPORTED_OPERATIONS
+    ) or any(_contains_unsupported_operation(child) for child in view.children)
 
 
 def matcher_backend() -> str:
@@ -385,6 +414,8 @@ def _match_cython_catalogue(
 
     from d810.backends.mba.compiled_pattern_catalogue import (
         FixedBindings,
+        NativeMatchSelection,
+        NativeMatchStopReason,
         NativePatternMatch,
         NativePatternMatchResult,
     )
@@ -399,7 +430,13 @@ def _match_cython_catalogue(
     full_bucket = catalogue.root_width_buckets.get(root_width, ())
     bucket = catalogue.feasible_root_patterns(root)
     if not bucket:
-        return NativePatternMatchResult((), 0, 0, matcher_backend="cython")
+        return NativePatternMatchResult(
+            (),
+            0,
+            0,
+            matcher_backend="cython",
+            stop_reason=NativeMatchStopReason.CLEAN_MISS,
+        )
     if _match_pod_catalogue is None:
         return None
     if any(pattern.pod_pattern is None for pattern in bucket):
@@ -423,7 +460,12 @@ def _match_cython_catalogue(
     )
     if exceeded:
         return NativePatternMatchResult(
-            (), comparisons, lazy_swaps, True, matcher_backend="cython"
+            (),
+            comparisons,
+            lazy_swaps,
+            True,
+            matcher_backend="cython",
+            stop_reason=NativeMatchStopReason.RAW_BUDGET,
         )
     matches: list[Any] = []
     for compiled, bindings_rows in zip(bucket, results_by_pattern, strict=True):
@@ -469,6 +511,16 @@ def _match_cython_catalogue(
         lazy_swaps,
         candidate_term=packed.typed_term() if matches else None,
         matcher_backend="cython",
+        selection=(
+            NativeMatchSelection.RAW_POD
+            if matches
+            else NativeMatchSelection.NONE
+        ),
+        stop_reason=(
+            NativeMatchStopReason.MATCHED
+            if matches
+            else NativeMatchStopReason.CLEAN_MISS
+        ),
     )
 
 

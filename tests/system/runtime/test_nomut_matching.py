@@ -26,6 +26,7 @@ from d810.core.stats import OptimizationStatistics
 from d810.core.settings import reset_settings
 from d810.backends.mba.ida import IDAPatternAdapter
 from d810.mba.provider_outcome import ProviderOutcomeStatus
+from d810.mba.typed_term import TypedBvTerm
 
 import ida_hexrays
 
@@ -175,6 +176,435 @@ def test_direct_locopt_match_preempts_tracker_provenance_gate(monkeypatch):
 
     assert optimizer.get_optimized_instruction(blk, ins) is sentinel
     assert labels == ["direct"]
+
+
+def test_canonical_inventory_bypasses_outer_opcode_gate(monkeypatch):
+    """A root-opcode miss still enters matching when fallback inventory exists."""
+
+    optimizer = object.__new__(PatternOptimizer)
+    optimizer.rules = [object()]
+    optimizer._allowed_root_opcodes = {ida_hexrays.m_add}
+    optimizer._canonical_fallback_rules_by_root_shape = {
+        ("add", 32, 2): [object()]
+    }
+    optimizer._use_tracker_resolution_fallback = False
+    optimizer._pending_replacement_rule = None
+    optimizer._try_matches = lambda *_args, **_kwargs: "fallback-entry"
+    monkeypatch.setattr(pattern_handler, "minsn_to_ast", lambda _ins: object())
+    blk = SimpleNamespace(mba=SimpleNamespace(maturity=ida_hexrays.MMAT_LOCOPT))
+    ins = SimpleNamespace(opcode=ida_hexrays.m_sub)
+
+    assert optimizer.get_optimized_instruction(blk, ins) == "fallback-entry"
+
+
+def test_terminal_raw_abstention_stops_later_raw_candidates():
+    """An ordinary raw exception cannot be bypassed by a later raw hit."""
+
+    optimizer = object.__new__(PatternOptimizer)
+    optimizer.cur_maturity = 7
+    optimizer.stats = None
+    optimizer._use_nomut_matching = False
+    optimizer._use_legacy_storage = False
+    optimizer._run_later_callback = None
+    optimizer._pending_replacement_rule = None
+    optimizer._canonical_fallback_rules_by_root_shape = {}
+    calls = []
+
+    class Rule:
+        canonical_fallback_enabled = False
+        maturities = [7]
+
+        def __init__(self, name, result=None, error=None):
+            self.name = name
+            self.result = result
+            self.error = error
+
+        def check_pattern_and_replace(self, _pattern, _candidate):
+            calls.append(self.name)
+            if self.error is not None:
+                raise ValueError(self.error)
+            return self.result
+
+    first = Rule("terminal", error="provider failed")
+    later = Rule("later", result="must-not-hit")
+    optimizer._get_candidates = lambda _ast: [
+        RulePatternInfo(first, object()),
+        RulePatternInfo(later, object()),
+    ]
+
+    assert optimizer._try_matches(
+        None,
+        SimpleNamespace(ea=0x401001, _print=lambda: "terminal"),
+        object(),
+        allowed_rule_names=None,
+        scheduled_rule_names=None,
+        source_label="terminal",
+    ) is None
+    assert calls == ["terminal"]
+
+
+def test_shadow_observation_skips_fallback_enabled_raw_candidate(monkeypatch):
+    """Shadow DSL observation is deferred until the canonical fallback phase."""
+
+    optimizer = object.__new__(PatternOptimizer)
+    optimizer.cur_maturity = 7
+    optimizer.stats = None
+    optimizer._use_nomut_matching = False
+    optimizer._use_legacy_storage = False
+    optimizer._run_later_callback = None
+    optimizer._pending_replacement_rule = None
+    optimizer._canonical_fallback_rules_by_root_shape = {}
+    monkeypatch.setenv("D810_SHADOW_DSL_MATCHING", "1")
+    monkeypatch.setattr(pattern_handler, "format_minsn_t", lambda _value: "formatted")
+    calls = []
+
+    class Rule:
+        name = "fallback-raw"
+        maturities = [7]
+        canonical_fallback_enabled = True
+
+        def check_pattern_and_replace(self, _pattern, _candidate):
+            return "raw-hit"
+
+        def observe_structural_match(self, _candidate):
+            calls.append("observed")
+
+    rule = Rule()
+    optimizer._get_candidates = lambda _ast: [RulePatternInfo(rule, object())]
+
+    assert optimizer._try_matches(
+        None,
+        SimpleNamespace(ea=0x401002, _print=lambda: "shadow"),
+        object(),
+        allowed_rule_names=None,
+        scheduled_rule_names=None,
+        source_label="shadow",
+    ) == "raw-hit"
+    assert calls == []
+
+
+def test_ineligible_fallback_inventory_does_not_lower():
+    """Maturity filtering happens before canonical lowering."""
+
+    optimizer = object.__new__(PatternOptimizer)
+    optimizer.cur_maturity = 7
+    optimizer.stats = None
+    optimizer._use_nomut_matching = False
+    optimizer._use_legacy_storage = False
+    optimizer._run_later_callback = None
+    optimizer._pending_replacement_rule = None
+    lowering_calls = []
+
+    class Rule:
+        name = "future-fallback"
+        maturities = [8]
+        canonical_fallback_enabled = True
+
+        def prepare_structural_candidate(self, *_args, **_kwargs):
+            lowering_calls.append(True)
+            raise AssertionError("ineligible fallback must not lower")
+
+    optimizer._canonical_fallback_rules_by_root_shape = {
+        ("add", 32, 2): [Rule()]
+    }
+    optimizer._get_candidates = lambda _ast: []
+
+    assert optimizer._try_matches(
+        None,
+        SimpleNamespace(ea=0x401003, d=SimpleNamespace(size=4), _print=lambda: "future"),
+        object(),
+        allowed_rule_names=None,
+        scheduled_rule_names=None,
+        source_label="eligibility",
+    ) is None
+    assert lowering_calls == []
+
+
+def test_legacy_structural_alias_enables_fallback_when_flag_is_false():
+    """Legacy opt-ins remain active when a mixed-version adapter exposes both flags."""
+
+    rule = SimpleNamespace(canonical_fallback_enabled=False, uses_structural_matching=True)
+    assert PatternOptimizer._canonical_fallback_enabled_for(rule) is True
+
+
+def test_fallback_extension_exception_fails_closed_without_escape():
+    """An extension-style fallback exception is recorded and does not escape."""
+
+    optimizer = object.__new__(PatternOptimizer)
+    optimizer.cur_maturity = 7
+    optimizer.stats = None
+    optimizer._use_nomut_matching = False
+    optimizer._use_legacy_storage = False
+    optimizer._run_later_callback = None
+    optimizer._pending_replacement_rule = None
+    optimizer._canonical_fallback_rules_by_root_shape = {}
+    errors = []
+
+    class Rule:
+        name = "fallback-extension"
+        maturities = [7]
+        canonical_fallback_enabled = True
+
+        def check_pattern_and_replace(self, _pattern, _candidate):
+            return None
+
+        def prepare_structural_candidate(self, _candidate, *, destination_size):
+            leaf = TypedBvTerm(None, 32, leaf_key=("mop", "x"))
+            return SimpleNamespace(
+                term=TypedBvTerm("add", 32, children=(leaf, leaf)),
+            )
+
+        def match_structural_and_replace(self, *_args, **_kwargs):
+            raise ValueError("extension contract failed")
+
+        def record_attempt_error(self, error):
+            errors.append(type(error).__name__)
+
+    rule = Rule()
+    optimizer._canonical_fallback_rules_by_root_shape = {
+        ("add", 32, 0): [rule]
+    }
+    optimizer._get_candidates = lambda _ast: []
+    optimizer._canonical_fallback_rules_for = lambda _shape: (rule,)
+
+    assert optimizer._try_matches(
+        None,
+        SimpleNamespace(d=SimpleNamespace(size=4), ea=0x401004, _print=lambda: "extension"),
+        object(),
+        allowed_rule_names=None,
+        scheduled_rule_names=None,
+        source_label="extension",
+    ) is None
+    assert errors == ["ValueError"]
+
+
+def test_raw_hit_skips_canonical_lowering_and_fallback(monkeypatch):
+    """A clean raw hit must never prepare or invoke the canonical fallback."""
+
+    optimizer = object.__new__(PatternOptimizer)
+    optimizer.cur_maturity = 7
+    optimizer.stats = None
+    optimizer._use_nomut_matching = False
+    optimizer._use_legacy_storage = False
+    optimizer._run_later_callback = None
+    optimizer._pending_replacement_rule = None
+    calls = []
+
+    class Rule:
+        name = "RawFirst"
+        maturities = [7]
+        canonical_fallback_enabled = True
+        uses_structural_matching = True
+
+        def check_pattern_and_replace(self, _pattern, _candidate):
+            calls.append("raw")
+            return "raw-hit"
+
+        def match_structural_and_replace(self, *_args, **_kwargs):
+            calls.append("fallback")
+            return "fallback-hit"
+
+        def prepare_structural_candidate(self, *_args, **_kwargs):
+            raise AssertionError("raw hit must not lower canonical island")
+
+    rule = Rule()
+    optimizer._canonical_fallback_rules_by_root_shape = {("add", 32, 2): [rule]}
+    optimizer._get_candidates = lambda _ast: [RulePatternInfo(rule, object())]
+    monkeypatch.setattr(pattern_handler, "format_minsn_t", lambda _value: "formatted")
+
+    class Instruction:
+        ea = 0x401000
+
+        @staticmethod
+        def _print():
+            return "raw-first"
+
+    result = optimizer._try_matches(
+        None,
+        Instruction(),
+        object(),
+        allowed_rule_names=None,
+        scheduled_rule_names=None,
+        source_label="raw-first",
+    )
+
+    assert result == "raw-hit"
+    assert calls == ["raw"]
+
+
+def test_clean_raw_miss_runs_certified_fallback_in_declaration_order():
+    """Fallback adapters share one lowering and stop at the first certified hit."""
+
+    optimizer = object.__new__(PatternOptimizer)
+    optimizer.cur_maturity = 7
+    optimizer.stats = None
+    optimizer._use_nomut_matching = False
+    optimizer._use_legacy_storage = False
+    optimizer._run_later_callback = None
+    optimizer._pending_replacement_rule = None
+    lowering_calls = []
+    attempts = []
+    leaf = TypedBvTerm(None, 32, leaf_key=("mop", "x"))
+    lowered = SimpleNamespace(
+        term=TypedBvTerm("add", 32, children=(leaf, leaf)),
+    )
+
+    class Rule:
+        maturities = [7]
+        canonical_fallback_enabled = True
+        uses_structural_matching = True
+
+        def __init__(self, name, result):
+            self.name = name
+            self.result = result
+
+        def check_pattern_and_replace(self, _pattern, _candidate):
+            attempts.append((self.name, "raw"))
+            return None
+
+        def prepare_structural_candidate(self, _candidate, *, destination_size):
+            lowering_calls.append(destination_size)
+            return lowered
+
+        def match_structural_and_replace(
+            self,
+            _candidate,
+            *,
+            bucket_size,
+            attempted_rule_count,
+            comparison_budget,
+            lowering,
+            lowering_provided,
+        ):
+            attempts.append((self.name, bucket_size, attempted_rule_count, lowering, lowering_provided))
+            return self.result
+
+    raw_rule = Rule("raw", None)
+    first_fallback = Rule("first", None)
+    second_fallback = Rule("second", "fallback-hit")
+    optimizer._canonical_fallback_rules_by_root_shape = {
+        ("add", 32, 2): [first_fallback, second_fallback]
+    }
+    optimizer._get_candidates = lambda _ast: [RulePatternInfo(raw_rule, object())]
+    optimizer._canonical_fallback_rules_for = lambda _shape: (
+        first_fallback,
+        second_fallback,
+    )
+
+    class Instruction:
+        class d:
+            size = 4
+
+    result = optimizer._try_matches(
+        None,
+        Instruction(),
+        object(),
+        allowed_rule_names=None,
+        scheduled_rule_names=None,
+        source_label="fallback-order",
+    )
+
+    assert result == "fallback-hit"
+    assert lowering_calls == [4]
+    assert attempts == [
+        ("raw", "raw"),
+        ("first", 2, 1, lowered, True),
+        ("second", 2, 2, lowered, True),
+    ]
+
+
+def test_raw_match_error_abstains_without_canonical_fallback():
+    """A raw matcher error is terminal for this instruction, not a fallback miss."""
+
+    optimizer = object.__new__(PatternOptimizer)
+    optimizer.cur_maturity = 7
+    optimizer.stats = None
+    optimizer._use_nomut_matching = False
+    optimizer._use_legacy_storage = False
+    optimizer._run_later_callback = None
+    optimizer._pending_replacement_rule = None
+    fallback_calls = []
+
+    class Rule:
+        name = "RawError"
+        maturities = [7]
+        canonical_fallback_enabled = True
+        uses_structural_matching = True
+
+        def check_pattern_and_replace(self, _pattern, _candidate):
+            raise RuntimeError("raw matcher budget exhausted")
+
+        def match_structural_and_replace(self, *_args, **_kwargs):
+            fallback_calls.append(True)
+            return "must-not-run"
+
+    rule = Rule()
+    optimizer._get_candidates = lambda _ast: [RulePatternInfo(rule, object())]
+    optimizer._canonical_fallback_rules_for = lambda _shape: (rule,)
+
+    class Instruction:
+        ea = 0x401001
+
+        @staticmethod
+        def _print():
+            return "raw-error"
+
+    assert (
+        optimizer._try_matches(
+            None,
+            Instruction(),
+            object(),
+            allowed_rule_names=None,
+            scheduled_rule_names=None,
+            source_label="raw-error",
+        )
+        is None
+    )
+    assert fallback_calls == []
+
+
+@pytest.mark.parametrize("raw_reason", ("raw_budget", "raw_unsupported"))
+def test_typed_raw_abstention_states_do_not_fall_through(raw_reason):
+    """Typed raw budget/unsupported outcomes are terminal for this instruction."""
+
+    optimizer = object.__new__(PatternOptimizer)
+    optimizer.cur_maturity = 7
+    optimizer.stats = None
+    optimizer._use_nomut_matching = False
+    optimizer._use_legacy_storage = False
+    optimizer._run_later_callback = None
+    optimizer._pending_replacement_rule = None
+    fallback_calls = []
+
+    class Rule:
+        name = "TypedRawAbstention"
+        maturities = [7]
+        canonical_fallback_enabled = True
+        raw_stop_reason = raw_reason
+
+        def check_pattern_and_replace(self, _pattern, _candidate):
+            return None
+
+        def match_structural_and_replace(self, *_args, **_kwargs):
+            fallback_calls.append(True)
+            return "must-not-run"
+
+    rule = Rule()
+    optimizer._get_candidates = lambda _ast: [RulePatternInfo(rule, object())]
+    optimizer._canonical_fallback_rules_for = lambda _shape: (rule,)
+
+    assert (
+        optimizer._try_matches(
+            None,
+            object(),
+            object(),
+            allowed_rule_names=None,
+            scheduled_rule_names=None,
+            source_label="typed-raw-abstention",
+        )
+        is None
+    )
+    assert fallback_calls == []
 
 
 @pytest.fixture(autouse=True)
@@ -370,7 +800,7 @@ class TestNomutMatchingHotPath:
             optimizer._use_indexed_legacy_fallback = False
             optimizer._indexed_storage = indexed
             optimizer.pattern_storage = legacy
-            optimizer._structural_rules_by_root_opcode = {}
+            optimizer._canonical_fallback_rules_by_root_shape = {}
             optimizer._match_bindings = pattern_handler.MatchBindings()
             optimizer._run_later_callback = None
             optimizer._pending_replacement_rule = None

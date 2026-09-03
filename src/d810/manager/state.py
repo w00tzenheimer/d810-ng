@@ -16,6 +16,7 @@ from d810.backends.mba.ida import (
     IDAPatternAdapter,
     adapt_rules,
     attach_selected_certified_catalogue_snapshot,
+    canonical_fallback_rollout_requested,
 )
 from d810.core import typing
 from d810.core.config import (
@@ -745,9 +746,7 @@ class D810State(metaclass=SingletonMeta):
         shadow_observation_requested = (
             os.environ.get("D810_SHADOW_DSL_MATCHING", "0") == "1"
         )
-        structural_matching_requested = (
-            os.environ.get("D810_STRUCTURAL_DSL_MATCHING", "0") == "1"
-        )
+        structural_matching_requested = canonical_fallback_rollout_requested()
         candidate_certified_catalogue_snapshot = None
         candidate_shadow_matcher_parity_ledger = None
         if selected_catalogue_adapters and (

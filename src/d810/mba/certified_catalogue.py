@@ -474,12 +474,18 @@ class StructuralMatcherParityCertificate:
         runtime_mode: str,
         expectation: StructuralMatcherParityExpectation | None,
     ) -> bool:
+        """Return true only for complete, exact, runtime-bound evidence."""
+
         return (
             expectation is not None
             and snapshot.structural_authorizable is True
             and runtime_mode in {"python", "cython"}
+            and _is_sha256_digest(snapshot.fingerprint)
+            and _is_sha256_digest(self.snapshot_fingerprint)
             and self.snapshot_fingerprint == snapshot.fingerprint
             and self.runtime_mode == runtime_mode
+            and _is_sha256_digest(self.corpus_digest)
+            and _is_sha256_digest(self.toolchain_digest)
             and self.corpus_digest == expectation.corpus_digest
             and self.toolchain_digest == expectation.toolchain_digest
             and _is_sha256_digest(self.runtime_semantics_digest)

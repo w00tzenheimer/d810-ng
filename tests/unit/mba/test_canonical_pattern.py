@@ -253,6 +253,41 @@ def test_native_binding_resolution_prefers_earliest_raw_paths_for_catalogue_07()
     }
 
 
+def test_native_binding_resolution_fails_closed_for_duplicate_or_missing_paths():
+    from d810.mba.canonical_pattern import (
+        CanonicalFixedBindings,
+        CanonicalPatternMatch,
+        compile_canonical_pattern,
+        resolve_canonical_match_paths,
+    )
+
+    rule = _catalogue_rule("add", "Add_HackersDelightRule_2")
+    assert rule is not None
+    compiled = compile_canonical_pattern(rule, width=32, declaration_index=0)
+    terms = {"x": _leaf("x", 32), "y": _leaf("y", 32)}
+
+    duplicate = CanonicalPatternMatch(
+        compiled,
+        CanonicalFixedBindings(terms, {"x": (0,), "y": (1,)}, 32),
+    )
+    missing_required = CanonicalPatternMatch(
+        compiled,
+        CanonicalFixedBindings(terms, {"x": (0,)}, 32),
+    )
+
+    assert resolve_canonical_match_paths(
+        (duplicate,),
+        canonical_to_raw_paths={(0,): (2,), (1,): (2,)},
+        placeholder_order=("x", "y"),
+    ) == ()
+    assert resolve_canonical_match_paths(
+        (missing_required,),
+        canonical_to_raw_paths={(0,): (2,)},
+        placeholder_order=("x", "y"),
+        required_names=("TWO",),
+    ) == ()
+
+
 @pytest.mark.parametrize("width", [8, 16, 32, 64])
 def test_pattern_literals_are_masked_at_every_supported_width(width: int):
     from d810.mba.canonical_pattern import lower_symbolic_template

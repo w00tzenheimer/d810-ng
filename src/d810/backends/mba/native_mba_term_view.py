@@ -172,6 +172,82 @@ class NativeMbaTermView:
 
 
 @dataclass(frozen=True)
+class CanonicalNativeProjection:
+    """Canonical semantics with exact source-path provenance for native views."""
+
+    canonical_view: CanonicalMbaTermView
+    raw_views_by_path: Mapping[tuple[int, ...], NativeMbaTermView]
+    canonical_to_raw_paths: Mapping[tuple[int, ...], tuple[int, ...]]
+
+    def __post_init__(self) -> None:
+        raw_views = {
+            tuple(path): native for path, native in self.raw_views_by_path.items()
+        }
+        canonical_paths = {
+            tuple(path): tuple(raw_path)
+            for path, raw_path in self.canonical_to_raw_paths.items()
+        }
+        object.__setattr__(self, "raw_views_by_path", MappingProxyType(raw_views))
+        object.__setattr__(
+            self,
+            "canonical_to_raw_paths",
+            MappingProxyType(canonical_paths),
+        )
+
+
+def project_canonical_native_paths(
+    view: NativeMbaTermView,
+) -> CanonicalNativeProjection:
+    """Project canonical term paths onto exact paths in one native view.
+
+    Canonical paths that describe synthetic groupings have no source native
+    node and are intentionally omitted. Structurally equal duplicate terms
+    consume their source occurrences in depth-first path order.
+    """
+
+    if not isinstance(view, NativeMbaTermView):
+        raise TypeError("view must be a NativeMbaTermView")
+
+    raw_term = view.to_typed_term()
+    canonical_view = canonicalize_mba_term(raw_term)
+    raw_views: dict[tuple[int, ...], NativeMbaTermView] = {}
+
+    def collect_native(
+        native: NativeMbaTermView, path: tuple[int, ...]
+    ) -> None:
+        raw_views[path] = native
+        for index, child in enumerate(native.children):
+            collect_native(child, path + (index,))
+
+    collect_native(view, ())
+
+    raw_occurrences: dict[TypedBvTerm, list[tuple[int, ...]]] = {}
+
+    def collect_raw(term: TypedBvTerm, path: tuple[int, ...]) -> None:
+        if path in raw_views:
+            raw_occurrences.setdefault(term, []).append(path)
+        for index, child in enumerate(term.children):
+            collect_raw(child, path + (index,))
+
+    collect_raw(raw_term, ())
+    canonical_to_raw: dict[tuple[int, ...], tuple[int, ...]] = {}
+
+    def collect_canonical(term: TypedBvTerm, path: tuple[int, ...]) -> None:
+        candidates = raw_occurrences.get(term)
+        if candidates:
+            canonical_to_raw[path] = candidates.pop(0)
+        for index, child in enumerate(term.children):
+            collect_canonical(child, path + (index,))
+
+    collect_canonical(canonical_view.canonical_term, ())
+    return CanonicalNativeProjection(
+        canonical_view=canonical_view,
+        raw_views_by_path=raw_views,
+        canonical_to_raw_paths=canonical_to_raw,
+    )
+
+
+@dataclass(frozen=True)
 class NativeMbaViewResult:
     view: NativeMbaTermView | None
     profile: MbaIslandProfile
@@ -497,4 +573,10 @@ def _profile_view(view: NativeMbaTermView) -> MbaIslandProfile:
     )
 
 
-__all__ = ["NativeMbaTermView", "NativeMbaViewResult", "NativeMopRuntime"]
+__all__ = [
+    "CanonicalNativeProjection",
+    "NativeMbaTermView",
+    "NativeMbaViewResult",
+    "NativeMopRuntime",
+    "project_canonical_native_paths",
+]

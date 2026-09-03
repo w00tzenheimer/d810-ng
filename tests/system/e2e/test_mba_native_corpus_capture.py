@@ -18,7 +18,6 @@ from d810.mba.native_corpus_capture import (
     NativeMbaCorpusCapture,
     capture_manifest_native_cases,
     capture_native_provider_histories,
-    native_profile_from_outcome,
     select_native_capture_profile,
     snapshot_native_provider_histories,
 )
@@ -245,7 +244,13 @@ class TestNativeMbaCorpusCapture:
                 and outcome.status is ProviderOutcomeStatus.APPLIED
             )
         assert applied, "native corpus did not record an accepted catalogue outcome"
-        profile = native_profile_from_outcome(applied[-1])
+        raw_outcome = applied[-1]
+        assert raw_outcome.metadata.get("raw_native_identity")
+        assert raw_outcome.matcher is not None
+        assert raw_outcome.matcher.selection.value == "raw"
+        assert raw_outcome.matcher.fallback_comparisons == 0
+        assert raw_outcome.matcher.native_equivalence_verdict is None
+        assert "native_profile" not in raw_outcome.metadata
         capture = NativeMbaCorpusCapture(
             corpus_identity="mba-compiler-shapes-native",
             toolchain_identity={
@@ -257,13 +262,25 @@ class TestNativeMbaCorpusCapture:
         case = capture.add_case(
             case_id="catalogue_01",
             stratum="catalogue",
-            profile=profile,
+            profile=None,
             rules=captured_rules,
+            expected_providers=(MbaProviderKind.CATALOGUE,),
+            unavailable_reason="raw_identity_profile_unavailable",
         )
         assert [outcome.provider for outcome in case.outcomes] == [
             MbaProviderKind.CATALOGUE
         ]
-        assert case.outcomes[0].status is ProviderOutcomeStatus.APPLIED
+        assert case.outcomes[0].status is ProviderOutcomeStatus.UNAVAILABLE
+        assert case.outcomes[0].refusal_reason == "raw_identity_profile_unavailable"
+        receipt = raw_outcome.matcher
+        assert receipt is not None
+        assert receipt.selection.value == "raw"
+        assert receipt.terminal_stop_reason == "matched"
+        assert receipt.fallback_comparisons == 0
+        assert receipt.native_equivalence_verdict is None
+        assert raw_outcome.source_provenance
+        assert raw_outcome.metadata["rule_name"] == "Add_HackersDelightRule_2"
+        assert "raw_native_identity" not in case.outcomes[0].metadata
 
         capture_path = tmp_path / "native-capture.json"
         report_path = tmp_path / "report.json"
@@ -289,11 +306,11 @@ class TestNativeMbaCorpusCapture:
         report = json.loads(report_path.read_text(encoding="utf-8"))
         assert [case["case_id"] for case in report["cases"]] == ["catalogue_01"]
         captured_case = report["cases"][0]
-        assert captured_case["profile"]["fingerprint"] == profile.fingerprint
+        assert captured_case["profile"] is None
         assert len(captured_case["outcomes"]) == 1
         captured_outcome = captured_case["outcomes"][0]
         assert captured_outcome["provider"] == MbaProviderKind.CATALOGUE.value
-        assert captured_outcome["status"] == ProviderOutcomeStatus.APPLIED.value
+        assert captured_outcome["status"] == ProviderOutcomeStatus.UNAVAILABLE.value
         assert captured_outcome == case.outcomes[0].to_dict()
 
     def test_history_snapshot_retains_real_post_snapshot_outcome(
@@ -341,7 +358,9 @@ class TestNativeMbaCorpusCapture:
                     and outcome.status is ProviderOutcomeStatus.APPLIED
                 )
             assert post_snapshot_applied, "native snapshot delta has no applied outcome"
-            profile = native_profile_from_outcome(post_snapshot_applied[-1])
+            raw_outcome = post_snapshot_applied[-1]
+            assert raw_outcome.metadata.get("raw_native_identity")
+            assert "native_profile" not in raw_outcome.metadata
 
         capture = NativeMbaCorpusCapture(
             corpus_identity="mba-compiler-shapes-native",
@@ -350,11 +369,14 @@ class TestNativeMbaCorpusCapture:
         case = capture.add_case(
             case_id="catalogue-post-snapshot",
             stratum="catalogue",
-            profile=profile,
+            profile=None,
             rules=selected_rules,
             history_snapshot=history_snapshot,
+            expected_providers=(MbaProviderKind.CATALOGUE,),
+            unavailable_reason="raw_identity_profile_unavailable",
         )
-        assert case.outcomes == (post_snapshot_applied[-1],)
+        assert case.profile is None
+        assert case.outcomes[0].status is ProviderOutcomeStatus.UNAVAILABLE
 
         capture_path = tmp_path / "snapshot-capture.json"
         report_path = tmp_path / "snapshot-report.json"
@@ -381,8 +403,8 @@ class TestNativeMbaCorpusCapture:
             "catalogue-post-snapshot"
         ]
         report_case = report["cases"][0]
-        assert report_case["profile"]["fingerprint"] == profile.fingerprint
-        assert report_case["outcomes"] == [post_snapshot_applied[-1].to_dict()]
+        assert report_case["profile"] is None
+        assert report_case["outcomes"] == [case.outcomes[0].to_dict()]
 
     def test_history_snapshot_excludes_prior_real_profile(
         self,
@@ -431,7 +453,8 @@ class TestNativeMbaCorpusCapture:
                     and outcome.status is ProviderOutcomeStatus.APPLIED
                 )
                 assert prior_applied, "first native run did not retain an applied outcome"
-                first_profile = native_profile_from_outcome(prior_applied[-1])
+                first_raw = prior_applied[-1]
+                assert first_raw.metadata.get("raw_native_identity")
 
                 history_snapshot = snapshot_native_provider_histories(selected_rules)
                 run_deobfuscation_test(
@@ -447,16 +470,21 @@ class TestNativeMbaCorpusCapture:
         without_snapshot = capture.add_case(
             case_id="prior-profile-without-snapshot",
             stratum="catalogue",
-            profile=first_profile,
+            profile=None,
             rules=selected_rules,
+            expected_providers=(MbaProviderKind.CATALOGUE,),
+            unavailable_reason="raw_identity_profile_unavailable",
         )
-        assert without_snapshot.outcomes == (prior_applied[-1],)
+        assert without_snapshot.outcomes[0].status is ProviderOutcomeStatus.UNAVAILABLE
 
-        with_snapshot = capture.add_case(
-            case_id="prior-profile-with-snapshot",
-            stratum="catalogue",
-            profile=first_profile,
-            rules=selected_rules,
-            history_snapshot=history_snapshot,
-        )
-        assert with_snapshot.outcomes == ()
+        with pytest.raises(ValueError, match="requires a validated raw outcome"):
+            capture.add_case(
+                case_id="prior-profile-with-snapshot",
+                stratum="catalogue",
+                profile=None,
+                rules=selected_rules,
+                history_snapshot=history_snapshot,
+                expected_providers=(MbaProviderKind.CATALOGUE,),
+                unavailable_reason="raw_identity_profile_unavailable",
+            )
+        assert "native_profile" not in first_raw.metadata

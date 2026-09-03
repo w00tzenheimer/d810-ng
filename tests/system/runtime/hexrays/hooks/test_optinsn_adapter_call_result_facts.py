@@ -446,6 +446,31 @@ def test_provider_is_snapshotted_and_restored():
     assert not hasattr(snapshot, "external_provider_block_cycles")
 
 
+def test_snapshot_restore_preserves_canonical_fallback_buckets():
+    """Activation rollback restores canonical buckets, not the removed structural index."""
+
+    optimizer = _RecordingOptimizer()
+    original = {("add", 32, 2): ["certified-old"]}
+    optimizer._canonical_fallback_rules_by_root_shape = original
+    manager = _snapshot_manager()
+    manager.instruction_optimizers = [optimizer]
+    manager.analyzer = optimizer
+    manager._capture_child_runtime_state = (
+        InstructionOptimizerManager._capture_child_runtime_state
+    )
+
+    snapshot = manager.capture_runtime_state()
+    optimizer._canonical_fallback_rules_by_root_shape = {
+        ("sub", 32, 2): ["failed-activation"]
+    }
+
+    InstructionOptimizerManager._restore_child_runtime_state(snapshot.children[0])
+
+    assert optimizer._canonical_fallback_rules_by_root_shape is original
+    assert optimizer._canonical_fallback_rules_by_root_shape == original
+    assert not hasattr(optimizer, "_structural_rules_by_root_opcode")
+
+
 def test_manager_requests_view_for_exact_function_and_maturity():
     optimizer = _RecordingOptimizer()
     calls = []
