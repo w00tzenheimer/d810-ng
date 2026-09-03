@@ -1078,9 +1078,11 @@ class _PatchTransactionLifecycle:
                     )
                     for item in semantic_verdict.failed_obligations
                 )
+                detail = semantic_verdict.rejection_detail
                 raise PatchTransactionPostObservationRejected(
                     "observed unflatten authority rejected: "
-                    f"reason={semantic_verdict.reason.value}; failed={failed!r}",
+                    f"reason={semantic_verdict.reason.value}; failed={failed!r}"
+                    + ("" if detail is None else f"; detail={detail}"),
                     unflatten_verdict=semantic_verdict,
                 )
         post_projection = CfgProjection(
