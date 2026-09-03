@@ -12,11 +12,11 @@ from __future__ import annotations
 from d810._vendor.peewee import SqliteDatabase
 from d810.core.diag.models import DiagnosticSchemaVersion, MODELS
 
-# Terminal per-candidate unflatten outcomes are persisted in
-# ``unflatten_candidate_outcomes`` (ticket d81-rhu6). Existing databases are
-# disposable and must be recreated; there is deliberately no v12 -> v13
+# Per-corridor state-write resolution facts are persisted in
+# ``state_write_resolutions`` (ticket d81-qt4v). Existing databases are
+# disposable and must be recreated; there is deliberately no v13 -> v14
 # backfill.
-DIAGNOSTIC_SCHEMA_VERSION = 13
+DIAGNOSTIC_SCHEMA_VERSION = 14
 
 # Recovered-CFG tables were historically named ``dag_*``.  The modeled
 # schema now owns ``state_cfg_*`` tables; this mapping is retained for the

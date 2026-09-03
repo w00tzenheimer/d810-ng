@@ -45,6 +45,12 @@ import operator
 from d810.core.logging import getLogger
 from d810.core.observability import emit
 from d810.core.observability_events import RecoverySearchObserved
+from d810.core.observability_state_write import (
+    CAUSE_EMULATOR_RAISED,
+    CAUSE_NO_LIVE_BLOCK,
+    CAUSE_TOP_FLOOR_STRICT,
+    StateWriteResolutionRecorder,
+)
 from d810.core.observability_unflat import note_unresolved_state_write
 from d810.analyses.control_flow.state_machine_analysis import (
     _SnapshotProjectionCache,
@@ -417,6 +423,7 @@ def _emulate_unresolved_state(
     spine_floor: "AbstractEvidence | None" = None,
     strict_floor: bool = False,
     pred_serial: int | None = None,
+    recorder: "StateWriteResolutionRecorder | None" = None,
 ) -> int | None:
     """Consult the concrete leg for a single ⊥ back-edge, or ``None`` on abstain.
 
@@ -451,10 +458,24 @@ def _emulate_unresolved_state(
         # is_sound_iff; ticket llr-1d8u §0.1.)
         if logger.info_on:
             logger.info("emu-consult: ⊤ floor under strict_floor -> stay ⊤ (abstain)")
+        _note_consult(
+            recorder,
+            pred_serial,
+            outcome_kind="skipped",
+            resolved=False,
+            emulator_cause=CAUSE_TOP_FLOOR_STRICT,
+        )
         return None
     if live_block is None:
         if logger.info_on:
             logger.info("emu-consult: no live block -> abstain")
+        _note_consult(
+            recorder,
+            pred_serial,
+            outcome_kind="skipped",
+            resolved=False,
+            emulator_cause=CAUSE_NO_LIVE_BLOCK,
+        )
         return None
     try:
         outcome = emu.eval_block(live_block, seeded_store, pred_serial=pred_serial)
@@ -466,6 +487,14 @@ def _emulate_unresolved_state(
                 getattr(live_block, "serial", "?"),
                 len(getattr(seeded_store, "cells", {})),
             )
+        _note_consult(
+            recorder,
+            pred_serial,
+            outcome_kind="raised",
+            resolved=False,
+            store_cells=len(getattr(seeded_store, "cells", {})),
+            emulator_cause=CAUSE_EMULATOR_RAISED,
+        )
         return None
     folded = fold_exact(
         ConcolicValue(None, None, floor, floor.width, PrecisionStatus.ABSTRACT),
@@ -489,9 +518,46 @@ def _emulate_unresolved_state(
             resolved,
             (" value=0x%x" % (int(folded.concrete) & 0xFFFFFFFF)) if resolved else "",
         )
+    _note_consult(
+        recorder,
+        pred_serial,
+        outcome_kind=type(outcome).__name__,
+        resolved=resolved,
+        reason=str(getattr(outcome, "reason", "") or ""),
+        store_cells=len(getattr(seeded_store, "cells", {})),
+        folded_value=(
+            (int(folded.concrete) & 0xFFFFFFFF) if resolved else None
+        ),
+        emulator_cause=str(getattr(outcome, "cause", "") or ""),
+        def_sites=tuple(getattr(outcome, "def_sites", ()) or ()),
+    )
     if not resolved:
         return None
     return int(folded.concrete) & 0xFFFFFFFF
+
+
+def _note_consult(
+    recorder: "StateWriteResolutionRecorder | None",
+    pred_serial: object,
+    **fields: object,
+) -> None:
+    """Record one emu-consult decision (ticket d81-qt4v), never raising.
+
+    Diagnostics must never change an optimizer outcome, so a recorder failure
+    is swallowed: the consult's own verdict is already decided above.
+    """
+    if recorder is None:
+        return
+    if pred_serial is None:
+        corridor: tuple[int, ...] = ()
+    elif isinstance(pred_serial, int):
+        corridor = (int(pred_serial),)
+    else:
+        corridor = tuple(int(serial) for serial in pred_serial)
+    try:
+        recorder.note(corridor=corridor, **fields)
+    except Exception:  # noqa: BLE001 — diagnostics never break a run
+        logger.debug("state-write consult record failed", exc_info=True)
 
 
 @dataclass(frozen=True, slots=True)
@@ -7922,6 +7988,28 @@ def _transitive_glue_partition_transitions(ctx, pred, block, edge_states):
     return out
 
 
+def _ctx_func_ea(ctx) -> int:
+    """The function EA the state-write facts are keyed by, or ``0``."""
+    try:
+        return int(getattr(ctx.flow_graph, "func_ea", 0) or 0)
+    except (AttributeError, TypeError, ValueError):
+        return 0
+
+
+def _ctx_block_ea(ctx, serial: int) -> int:
+    """Native start EA of ``serial``; the only stable cross-maturity key."""
+    try:
+        blk = ctx.flow_graph.get_block(int(serial))
+    except (AttributeError, KeyError, IndexError, TypeError, ValueError):
+        return 0
+    if blk is None:
+        return 0
+    try:
+        return int(getattr(blk, "native_start_ea", 0) or getattr(blk, "start_ea", 0) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 def _provider_emulation(ctx, pred, block, arm, ambiguous):
     """[refine] The reduced-product CONCRETE leg -- ⊥-only, fold_exact-gated.
 
@@ -7937,7 +8025,14 @@ def _provider_emulation(ctx, pred, block, arm, ambiguous):
     if ctx.emu is None or ctx.live_block_for is None or ctx.state_cell is None:
         return None
     emulated = _emulate_partition_states(
-        ctx.emu, ctx.live_block_for, ctx.state_cell, ctx.fp, block, pred
+        ctx.emu,
+        ctx.live_block_for,
+        ctx.state_cell,
+        ctx.fp,
+        block,
+        pred,
+        func_ea=_ctx_func_ea(ctx),
+        block_ea=_ctx_block_ea(ctx, pred),
     )
     if emulated is None:
         return None
@@ -8952,7 +9047,18 @@ def _emit_seeded_back_edge(
     return False
 
 
-def _emulate_partition_states(emu, live_block_for, state_cell, fp, block, pred):
+def _emulate_partition_states(
+    emu,
+    live_block_for,
+    state_cell,
+    fp,
+    block,
+    pred,
+    *,
+    func_ea: int = 0,
+    block_ea: int = 0,
+    maturity: str = "",
+):
     """Per-immediate-predecessor concrete next-states for a ⊥ back-edge, or ``None``.
 
     The reduced-product CONCRETE leg (ticket llr-xauw).  For each immediate
@@ -8973,6 +9079,16 @@ def _emulate_partition_states(emu, live_block_for, state_cell, fp, block, pred):
     """
     edge_states: dict[int, int] = {}
     next_hops: dict[int, int] = {}
+    # Causal leaves for this partition attempt (ticket d81-qt4v).  Facts are
+    # BUILT once the verdict below is known, so
+    # ``contributed_to_unresolved_transition`` is written into the record
+    # rather than back-filled onto a published one.
+    recorder = StateWriteResolutionRecorder(
+        func_ea=int(func_ea),
+        block_serial=int(pred),
+        block_ea=int(block_ea),
+        maturity=str(maturity),
+    )
     for ip in sorted(int(p) for p in block.preds):
         seeded_store = _seed_concrete_store(
             dict(fp.out_stk_maps.get(ip, {})),
@@ -8986,24 +9102,45 @@ def _emulate_partition_states(emu, live_block_for, state_cell, fp, block, pred):
                 seeded_store,
                 state_cell,
                 pred_serial=path,
+                recorder=recorder,
             )
 
         resolved = _resolve_incoming_corridor(
-            consult, live_block_for, int(ip), int(pred), bool(seeded_store.cells)
+            consult,
+            live_block_for,
+            int(ip),
+            int(pred),
+            bool(seeded_store.cells),
+            recorder=recorder,
         )
         if resolved is None:
             # any ⊥ residual -> abstain wholesale (stay seeded/unresolved)
-            return None
+            return _abstain_partition(recorder)
         for path, concrete in resolved:
             source = int(path[-1])
             state = int(concrete) & 0xFFFFFFFF
             if source in edge_states and edge_states[source] != state:
                 # The same source reached through two corridors with two different
                 # next-states: nothing here says which one an edge takes.
-                return None
+                return _abstain_partition(recorder)
             edge_states[source] = state
             next_hops[source] = int(path[-2]) if len(path) > 1 else int(pred)
-    return (edge_states, next_hops) if edge_states else None
+    if not edge_states:
+        return _abstain_partition(recorder)
+    recorder.emit()
+    return (edge_states, next_hops)
+
+
+def _abstain_partition(recorder: StateWriteResolutionRecorder) -> None:
+    """Publish this partition's facts as unresolved-transition contributors.
+
+    Transition recovery consumes the abstention here: every consult that did
+    NOT resolve its corridor is why the back-edge stayed unresolved, so the
+    residual corridor count decomposes by cause (ticket d81-qt4v).
+    """
+    recorder.mark_unresolved_transition()
+    recorder.emit()
+    return None
 
 
 #: How far above an immediate predecessor the concrete leg follows a corridor
@@ -9031,6 +9168,8 @@ def _resolve_incoming_corridor(
     ip: int,
     pred: int,
     has_store: bool,
+    *,
+    recorder: "StateWriteResolutionRecorder | None" = None,
 ) -> list[tuple[tuple[int, ...], int]] | None:
     """Resolve one incoming edge of the state-write block, or ``None`` to abstain.
 
@@ -9049,6 +9188,9 @@ def _resolve_incoming_corridor(
         return [((ip,), direct)]
     if has_store:
         return None  # a real predecessor that simply does not resolve
+    # The glue probe is superseded by the per-path consults below, so it is
+    # not a fact about any incoming corridor (ticket d81-qt4v).
+    _drop_consult(recorder, (ip,))
     results: list[tuple[tuple[int, ...], int]] = []
     unresolved: list[tuple[int, ...]] = []
     for parent in _live_preds(live_block_for, ip):
@@ -9065,8 +9207,11 @@ def _resolve_incoming_corridor(
                 if state is not None:
                     extended = candidate
                     break
+                # A failed extension is a probe, not this corridor's verdict.
+                _drop_consult(recorder, candidate)
             if extended is None:
                 break
+            _drop_consult(recorder, path)  # superseded by the deeper path
             path = extended
             hops += 1
         if state is None:
@@ -9077,6 +9222,14 @@ def _resolve_incoming_corridor(
             continue
         results.append((path, state))
     if unresolved:
+        if recorder is not None:
+            # The walk -- not the last consult on it -- is what knows this
+            # corridor has no defining block within the hop bound.
+            for path in unresolved:
+                try:
+                    recorder.mark_corridor_exhausted(path)
+                except Exception:  # noqa: BLE001 — diagnostics never break a run
+                    logger.debug("corridor cause update failed", exc_info=True)
         if logger.info_on:
             logger.info(
                 "emu-corridor: blk=%s glue=%s resolved=%s unresolved=%s -> abstain",
@@ -9087,6 +9240,18 @@ def _resolve_incoming_corridor(
             )
         return None  # one unresolved corridor -> abstain wholesale
     return results or None
+
+
+def _drop_consult(
+    recorder: "StateWriteResolutionRecorder | None", corridor: tuple[int, ...]
+) -> None:
+    """Forget a superseded corridor probe, never raising."""
+    if recorder is None:
+        return
+    try:
+        recorder.drop(corridor)
+    except Exception:  # noqa: BLE001 — diagnostics never break a run
+        logger.debug("corridor probe drop failed", exc_info=True)
 
 
 def _emit_partition_transitions(

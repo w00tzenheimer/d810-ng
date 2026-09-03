@@ -20,6 +20,13 @@ from d810.core.bits import (
     unsigned_to_signed,
 )
 from d810.core.cymode import CythonMode
+from d810.core.observability_state_write import (
+    CAUSE_GLOBAL_NOT_SEEDED,
+    CAUSE_NO_REACHING_DEFS,
+    CAUSE_PHI_MULTI_DEF,
+    CAUSE_SINGLE_DEF_EVAL_FAILED,
+    AbstainCauseLog,
+)
 from .chains import (
     find_reaching_defs_for_reg,
     find_reaching_defs_for_stkvar,
@@ -438,6 +445,10 @@ class MicroCodeInterpreter(object):
         # along it (tickets d81-yrkv, d81-182q).  ``None`` -> the historical
         # path-insensitive behaviour.
         self._merge_pred_context: tuple[int, tuple[int, ...]] | None = None
+        # WHY the last evaluation could not prove a value (ticket d81-qt4v).
+        # Purely additive: nothing reads it back during evaluation, and a
+        # consumer that ignores it sees byte-identical behaviour.
+        self.abstain_causes = AbstainCauseLog()
         # Resolution strategies (tried in order after env lookup, before def-use chains)
         if strategies is not None:
             self._strategies: list[MopResolutionStrategy] = strategies
@@ -594,6 +605,7 @@ class MicroCodeInterpreter(object):
 
         # Handle multiple definitions (phi-node situations)
         if len(defs) == 0:
+            self.abstain_causes.note(CAUSE_NO_REACHING_DEFS)
             if emulator_log.debug_on:
                 emulator_log.debug(
                     "DEF-USE-DIAG: blk=%d var=%s ndefs=0 (no reaching defs)",
@@ -716,6 +728,11 @@ class MicroCodeInterpreter(object):
                 for def_site in defs
             ]
         merged = agreed_value(values)
+        if merged is None:
+            self.abstain_causes.note(
+                CAUSE_PHI_MULTI_DEF,
+                def_sites=[(d.block_serial, d.ins_ea) for d in defs],
+            )
         if merged is None and emulator_log.debug_on:
             emulator_log.debug(
                 "DEF-USE-DIAG: blk=%d var=%s ndefs=%d defs=%s values=%s "
@@ -789,6 +806,10 @@ class MicroCodeInterpreter(object):
                 return value
             else:
                 # Evaluation failed, remove from cache
+                self.abstain_causes.note(
+                    CAUSE_SINGLE_DEF_EVAL_FAILED,
+                    def_sites=((def_site.block_serial, def_site.ins_ea),),
+                )
                 if emulator_log.debug_on:
                     emulator_log.debug(
                         "DEF-USE-DIAG: blk=%d var=%s def_site=blk%d@%#x eval=None (def eval failed)",
@@ -802,6 +823,10 @@ class MicroCodeInterpreter(object):
                 return None
         except Exception as e:
             # Evaluation failed due to an exception, remove from cache
+            self.abstain_causes.note(
+                CAUSE_SINGLE_DEF_EVAL_FAILED,
+                def_sites=((def_site.block_serial, def_site.ins_ea),),
+            )
             if emulator_log.debug_on:
                 emulator_log.debug(
                     "DEF-USE-DIAG: blk=%d var=%s def_site=blk%d@%#x exc=%s",
@@ -1621,6 +1646,7 @@ class MicroCodeInterpreter(object):
                     memory_value = fetch_idb_value(mop.g, mop.size)
                     if memory_value is not None:
                         return memory_value & AND_TABLE[mop.size]
+                self.abstain_causes.note(CAUSE_GLOBAL_NOT_SEEDED)
                 raise EmulationException(
                     "Variable for mop_v at 0x{0:X} (size={1}) is not defined".format(
                         mop.g, mop.size

@@ -548,3 +548,133 @@ class TestUnflatWhyCommand:
         assert rc == 0
         assert capsys.readouterr().out == ""
         assert "disposition=exhausted" in output.read_text()
+
+
+# ---------------------------------------------------------------------------
+# State-write resolution decomposition (ticket d81-qt4v, slice 4)
+# ---------------------------------------------------------------------------
+
+
+def _insert_state_write(
+    conn: sqlite3.Connection,
+    *,
+    event_id: int,
+    block_serial: int = 330,
+    corridor: str = "355>397",
+    outcome: str = "abstain",
+    cause: str = "no_def_within_hop_bound",
+    reason: str = "",
+    store_cells: int = 0,
+    folded_value_hex: str | None = None,
+    folded_value_i64: int | None = None,
+    def_sites_json: str = "[]",
+    contributed: int = 1,
+    func_ea: int = FUNC_EA,
+    func_ea_hex: str = FUNC_EA_HEX,
+    maturity: str = "MMAT_GLBOPT1",
+    session_id: str = "s1",
+    block_ea_hex: str = "0x00007ffb0eb15239",
+    block_ea_i64: int = 0x7FFB0EB15239,
+) -> None:
+    conn.execute(
+        """
+        INSERT INTO state_write_resolutions
+            (event_id, session_id, func_ea_hex, func_ea_i64, maturity,
+             block_serial, block_ea_hex, block_ea_i64, corridor, outcome,
+             cause, reason, store_cells, folded_value_hex, folded_value_i64,
+             def_sites_json, contributed_to_unresolved_transition)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            event_id,
+            session_id,
+            func_ea_hex,
+            func_ea,
+            maturity,
+            block_serial,
+            block_ea_hex,
+            block_ea_i64,
+            corridor,
+            outcome,
+            cause,
+            reason,
+            store_cells,
+            folded_value_hex,
+            folded_value_i64,
+            def_sites_json,
+            contributed,
+        ),
+    )
+
+
+def _blk330_capture(conn: sqlite3.Connection) -> None:
+    _insert_outcome(
+        conn,
+        event_id=1,
+        disposition="not_submitted_safe_bail",
+        reason="residual_dispatcher_corridor",
+        coverage_covered=0,
+        coverage_residual=158,
+    )
+    _insert_state_write(
+        conn, event_id=101, corridor="329", outcome="exact_result",
+        cause="resolved", folded_value_hex="0x000000004bcc8bee",
+        folded_value_i64=0x4BCC8BEE, store_cells=2, contributed=0,
+    )
+    _insert_state_write(
+        conn, event_id=102, corridor="355>398", outcome="exact_result",
+        cause="resolved", folded_value_hex="0x000000001b3ee0ef",
+        folded_value_i64=0x1B3EE0EF, contributed=0,
+    )
+    _insert_state_write(
+        conn, event_id=103, corridor="355>397",
+        cause="no_def_within_hop_bound", contributed=1,
+    )
+    _insert_state_write(
+        conn, event_id=104, block_serial=236, corridor="235",
+        cause="no_reaching_defs", contributed=1,
+    )
+    conn.commit()
+
+
+def test_state_write_resolutions_decompose_by_cause(tmp_path):
+    conn, _ = _make_db(tmp_path)
+    _blk330_capture(conn)
+    text = "\n".join(render_unflat_why(conn, FUNC_EA))
+
+    assert "state_write_resolutions:" in text
+    assert "resolved=2" in text
+    assert "no_def_within_hop_bound=1" in text
+    assert "no_reaching_defs=1" in text
+
+
+def test_state_write_resolutions_list_top_unresolved_corridors(tmp_path):
+    conn, _ = _make_db(tmp_path)
+    _blk330_capture(conn)
+    lines = render_unflat_why(conn, FUNC_EA)
+    text = "\n".join(lines)
+
+    assert "unresolved corridors" in text
+    assert "blk236 corridor=235 cause=no_reaching_defs" in text
+    assert "blk330 corridor=355>397 cause=no_def_within_hop_bound" in text
+    # A resolved corridor is never listed as a contributor.
+    assert "corridor=329 cause=resolved" not in text
+
+
+def test_state_write_resolutions_render_the_resolved_corridors_too(tmp_path):
+    conn, _ = _make_db(tmp_path)
+    _blk330_capture(conn)
+    text = "\n".join(render_unflat_why(conn, FUNC_EA))
+    assert "blk330@0x00007ffb0eb15239 corridor=329 outcome=exact_result" in text
+    assert "0x4bcc8bee" in text
+    assert "corridor=355>398 outcome=exact_result cause=resolved" in text
+    assert "0x1b3ee0ef" in text
+
+
+def test_state_write_resolutions_absent_renders_not_recorded(tmp_path):
+    conn, _ = _make_db(tmp_path)
+    _insert_outcome(conn, event_id=1)
+    conn.commit()
+    text = "\n".join(render_unflat_why(conn, FUNC_EA))
+    assert "state_write_resolutions: not recorded" in text
+    assert "StateWriteResolutionFact" in text
