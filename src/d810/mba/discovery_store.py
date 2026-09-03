@@ -8,6 +8,7 @@ import sqlite3
 import threading
 from collections.abc import Callable, Mapping
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from uuid import UUID, uuid4
@@ -1102,34 +1103,65 @@ def _decode_term(payload: bytes, *, name: str) -> TypedBvTerm:
         raise ValueError(f"invalid {name} bytes") from exc
 
 
-def _attempt_content_bytes(attempt: DiscoveryAttempt) -> bytes:
-    """Return the canonical bytes of one attempt's complete stored content.
-
-    This is the single serialization of everything ``record_attempt``
-    persists about an attempt: the payload column verbatim, and -- through the
-    context, the outcome and both term fingerprints -- every other column the
-    INSERT derives.  Both the stored payload and the recorded-attempt memo key
-    are built from it, so neither can drift away from the schema on its own.
-    """
-
-    eligible_for_mining = attempt.eligible_for_mining
-    if type(eligible_for_mining) is not bool:
-        raise TypeError("eligible_for_mining must be a bool")
+def _canonical_json_bytes(mapping: dict[str, object]) -> bytes:
     return json.dumps(
-        {
-            "schema_version": 1,
-            "attempt_uuid": attempt.attempt_uuid,
-            "canonical_fingerprint": term_fingerprint(attempt.canonical_term),
-            "raw_fingerprint": term_fingerprint(attempt.raw_term),
-            "eligible_for_mining": eligible_for_mining,
-            "context": attempt.context.to_dict(),
-            "outcome": attempt.outcome.to_dict(),
-        },
+        mapping,
         allow_nan=False,
         ensure_ascii=True,
         separators=(",", ":"),
         sort_keys=True,
     ).encode("utf-8")
+
+
+def _attempt_occurrence_mapping(attempt: DiscoveryAttempt) -> dict[str, object]:
+    """Return everything the store persists about an attempt *but* its UUID.
+
+    The UUID is the unique event identity of a stored row: every provider
+    mints a fresh ``uuid4`` for each attempt, so two observations of the same
+    occurrence necessarily carry different ones.  Everything else here -- both
+    term fingerprints, the whole observation context, the whole provider
+    outcome and the eligibility verdict -- is semantic content that two equal
+    occurrences must agree on.
+    """
+
+    eligible_for_mining = attempt.eligible_for_mining
+    if type(eligible_for_mining) is not bool:
+        raise TypeError("eligible_for_mining must be a bool")
+    return {
+        "schema_version": 1,
+        "canonical_fingerprint": term_fingerprint(attempt.canonical_term),
+        "raw_fingerprint": term_fingerprint(attempt.raw_term),
+        "eligible_for_mining": eligible_for_mining,
+        "context": attempt.context.to_dict(),
+        "outcome": attempt.outcome.to_dict(),
+    }
+
+
+def _attempt_occurrence_bytes(attempt: DiscoveryAttempt) -> bytes:
+    """Return the canonical bytes of one attempt's *occurrence* content.
+
+    This is the stored payload minus the volatile attempt UUID, and it is what
+    makes :class:`AttemptOccurrenceKey` proof against schema drift: any member
+    the payload gains is carried here too, and therefore keys the memo, without
+    anyone having to remember to extend a hand-written field list.
+    """
+
+    return _canonical_json_bytes(_attempt_occurrence_mapping(attempt))
+
+
+def _attempt_content_bytes(attempt: DiscoveryAttempt) -> bytes:
+    """Return the canonical bytes of one attempt's complete stored content.
+
+    This is the single serialization of everything ``record_attempt`` persists
+    about an attempt: the payload column verbatim, and -- through the context,
+    the outcome and both term fingerprints -- every other column the INSERT
+    derives.  It is the occurrence content plus the attempt UUID, and nothing
+    else; ``test_the_occurrence_key_omits_exactly_the_attempt_uuid`` pins that.
+    """
+
+    mapping = _attempt_occurrence_mapping(attempt)
+    mapping["attempt_uuid"] = attempt.attempt_uuid
+    return _canonical_json_bytes(mapping)
 
 
 def _attempt_payload_bytes(attempt: DiscoveryAttempt) -> bytes:
@@ -1177,6 +1209,216 @@ def _attempt_payload_bytes(attempt: DiscoveryAttempt) -> bytes:
     ):
         raise ValueError("attempt payload is not canonically representable")
     return payload
+
+
+#: The one statement that writes a ``provider_attempts`` row.  The column
+#: classification below sits next to it deliberately: a column added to this
+#: statement without being classified fails
+#: ``test_attempt_identity_covers_every_persisted_attempt_column``.
+_ATTEMPT_INSERT_SQL = (
+    "INSERT INTO provider_attempts("
+    "attempt_uuid,function_id,term_id,raw_term_id,session_id,top_level_epoch,"
+    "evidence_generation,maturity,instruction_ea,block_serial,block_ea,provider,"
+    "plugin_name,plugin_distribution,plugin_version,plugin_origin,status,"
+    "input_cost_ops,input_cost_nodes,output_cost_ops,output_cost_nodes,"
+    "proof_verdict,elapsed_ms,refusal_reason,outcome_payload,created_at"
+    ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+)
+
+#: Columns fixed by :class:`AttemptOccurrenceKey`: two attempts with equal
+#: occurrence keys necessarily write equal values here.  ``outcome_payload`` is
+#: in this set even though it re-embeds ``attempt_uuid``, because the *only*
+#: member it carries beyond the occurrence content is that UUID, which is
+#: classified VOLATILE below.  That carve-out is pinned by
+#: ``test_the_occurrence_key_omits_exactly_the_attempt_uuid`` rather than
+#: asserted here in prose.
+MEMO_KEYED_ATTEMPT_COLUMNS = frozenset(
+    {
+        "session_id",
+        "top_level_epoch",
+        "evidence_generation",
+        "maturity",
+        "instruction_ea",
+        "block_serial",
+        "block_ea",
+        "provider",
+        "plugin_name",
+        "plugin_distribution",
+        "plugin_version",
+        "plugin_origin",
+        "status",
+        "input_cost_ops",
+        "input_cost_nodes",
+        "output_cost_ops",
+        "output_cost_nodes",
+        "proof_verdict",
+        "elapsed_ms",
+        "refusal_reason",
+        "outcome_payload",
+    }
+)
+
+#: Surrogate row ids, computable from memo-keyed content: ``function_id`` from
+#: the function identity, ``term_id``/``raw_term_id`` from the two term
+#: fingerprints.  They are looked up or created, never chosen.
+DERIVED_ATTEMPT_COLUMNS = frozenset({"function_id", "term_id", "raw_term_id"})
+
+#: Columns that legitimately differ between two equal occurrences.
+#: ``attempt_uuid`` is the unique event identity of a stored row and every real
+#: provider mints a fresh ``uuid4`` per attempt; ``created_at`` is wall clock.
+#: Neither is derived from anything -- they are volatile by construction.
+VOLATILE_ATTEMPT_COLUMNS = frozenset({"attempt_uuid", "created_at"})
+
+
+def attempt_insert_columns() -> tuple[str, ...]:
+    """Return the ``provider_attempts`` columns the store actually writes."""
+
+    start = _ATTEMPT_INSERT_SQL.index("(") + 1
+    end = _ATTEMPT_INSERT_SQL.index(")", start)
+    return tuple(name.strip() for name in _ATTEMPT_INSERT_SQL[start:end].split(","))
+
+
+@dataclass(frozen=True, slots=True)
+class AttemptOccurrenceKey:
+    """The semantic content of one provider attempt, without its event id.
+
+    **Occurrence identity vs. this key.**  A *live occurrence* is one visit of
+    one provider to one instruction site.  Two visits can agree on function,
+    site, maturity, terms and outcome and still be distinct -- a re-visit after
+    another rule mutated the block, or the same site in a later pass of the
+    same maturity.  Distinguishing them needs a per-session visit ordinal, and
+    the observation API carries none: :class:`MbaObservationContext` has no
+    pass or visit counter and no provider supplies one.  ``attempt_uuid`` does
+    not supply it either -- it is minted per *attempt*, so a retry of one visit
+    already gets a fresh one.  **The store therefore cannot observe live
+    occurrence identity, and this key does not claim to.**
+
+    What it is instead is a *content* key: every field the store persists
+    except the volatile UUID and the wall clock.  It answers exactly one
+    question -- "have I already validated and written a row with this
+    content?" -- which is the question the duplicate fast path needs.
+
+    **Policy for a new live occurrence with identical content: one row.** The
+    memo answers ``DUPLICATE`` and does not insert.  Three reasons:
+
+    * It is what the perf work needs.  On the real 49 MB discovery database
+      75.9% of ``provider_attempts`` rows (9,642 of 12,699) are exact-content
+      repeats, and the per-attempt lifecycle validation walks every attempt
+      already stored for the term, so repeats make the cost superlinear.
+    * Nothing downstream reads ``provider_attempts`` outside this module.  The
+      only aggregate that escapes is ``residual_groups.eligible_observation_count``,
+      which gates no transition and is carried as descriptive evidence weight
+      on a mined proposal (``MbaRuleProposal.occurrence_count``).  Under this
+      policy it counts distinct-content observations, not visits.
+    * The alternative -- one row per live occurrence -- is not implementable
+      truthfully today.  With no visit ordinal the store would have to fall
+      back on ``attempt_uuid``, which would retain retries as if they were
+      visits and over-count.  A row per *visit* becomes available the day the
+      context carries a visit ordinal; that ordinal would then be a semantic
+      field and would join this key, restoring one row per occurrence with no
+      change to the fast path.
+    """
+
+    canonical_fingerprint: str
+    raw_fingerprint: str
+    canonical_width: int
+    raw_width: int
+    input_identity: str
+    input_identity_provenance: str
+    external_evidence_allowed: bool
+    database_uuid: str
+    database_identity: str
+    function_ea: int
+    function_rva: int
+    function_fingerprint: str
+    decompilation_session_id: str
+    top_level_epoch: int
+    evidence_generation: int
+    maturity: str
+    instruction_ea: int
+    block_serial: int | None
+    block_ea: int | None
+    plugin_name: str
+    plugin_distribution: str | None
+    plugin_version: str | None
+    plugin_origin: str
+    eligible_for_mining: bool
+    provider: str
+    status: str
+    input_cost_ops: int | None
+    input_cost_nodes: int | None
+    output_cost_ops: int | None
+    output_cost_nodes: int | None
+    proof_verdict: bool | None
+    elapsed_ms: float
+    refusal_reason: str | None
+    fingerprint: str
+    #: Canonical bytes of the whole occurrence: the stored payload minus the
+    #: UUID.  The named fields above are the auditable, typed statement of what
+    #: an occurrence is; this one is the drift guard.  It carries the open
+    #: members no scalar can stand for -- ``source_provenance``, ``metadata``
+    #: and ``matcher`` -- and it carries any member the context or the outcome
+    #: gains later, whether or not anyone remembers to add a field here.
+    occurrence_content: bytes
+
+
+def attempt_occurrence_key(attempt: DiscoveryAttempt) -> AttemptOccurrenceKey:
+    """Return the content key two equal occurrences of ``attempt`` share."""
+
+    if not isinstance(attempt, DiscoveryAttempt):
+        raise TypeError("attempt must be a DiscoveryAttempt")
+    identity = attempt.context.function_identity
+    context = attempt.context
+    outcome = attempt.outcome
+    input_cost = outcome.input_cost or (None, None)
+    output_cost = outcome.output_cost or (None, None)
+    return AttemptOccurrenceKey(
+        canonical_fingerprint=term_fingerprint(attempt.canonical_term),
+        raw_fingerprint=term_fingerprint(attempt.raw_term),
+        canonical_width=attempt.canonical_term.width,
+        raw_width=attempt.raw_term.width,
+        input_identity=identity.input_identity,
+        input_identity_provenance=identity.input_identity_provenance,
+        external_evidence_allowed=identity.external_evidence_allowed,
+        database_uuid=identity.database_uuid,
+        database_identity=identity.database_identity,
+        function_ea=identity.function_ea,
+        function_rva=identity.function_rva,
+        function_fingerprint=identity.function_fingerprint,
+        decompilation_session_id=identity.decompilation_session_id,
+        top_level_epoch=identity.top_level_epoch,
+        evidence_generation=identity.evidence_generation,
+        maturity=identity.maturity,
+        instruction_ea=context.instruction_ea,
+        block_serial=context.block_serial,
+        block_ea=context.block_ea,
+        plugin_name=context.plugin_identity.name,
+        plugin_distribution=context.plugin_identity.distribution,
+        plugin_version=context.plugin_identity.version,
+        plugin_origin=context.plugin_identity.origin,
+        eligible_for_mining=attempt.eligible_for_mining,
+        provider=outcome.provider.value,
+        status=outcome.status.value,
+        input_cost_ops=input_cost[0],
+        input_cost_nodes=input_cost[1],
+        output_cost_ops=output_cost[0],
+        output_cost_nodes=output_cost[1],
+        proof_verdict=outcome.proof_verdict,
+        elapsed_ms=outcome.elapsed_ms,
+        refusal_reason=outcome.refusal_reason,
+        fingerprint=outcome.fingerprint,
+        occurrence_content=_attempt_occurrence_bytes(attempt),
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class AttemptMemoStats:
+    """What the recorded-attempt memo actually did, for acceptance runs."""
+
+    hits: int
+    misses: int
+    occurrences: int
+    clears: int
 
 
 def _context_from_dict(value: object) -> MbaObservationContext:
@@ -1346,18 +1588,23 @@ class MbaDiscoveryStore:
         # already validated in full.  ``None`` forces the next transaction to
         # sweep every group.  See ``_causal_domain_token``.
         self._validated_causal_domain: tuple[int, int] | None = None
-        # content identity -> (attempt_id, term_id, raw_term_id).  Lets a
+        # occurrence key -> (attempt_id, term_id, raw_term_id).  Lets a
         # repeat observation of the same term, at the same instruction, in the
         # same evidence generation, with the same outcome answer DUPLICATE
         # without serializing either term or opening a transaction.
         #
-        # Keyed on CONTENT, not on ``attempt_uuid``: the uuid is the row's
-        # primary key and each attempt must keep a fresh one.  A provider
-        # cannot derive a safe deterministic uuid itself because it cannot see
-        # the session id, top-level epoch or evidence generation, so a
-        # plugin-side content uuid would collide across decompilations and the
-        # store would answer ``attempt_uuid_conflict``.
-        self._recorded_attempts: dict[tuple[object, ...], tuple[int, int, int]] = {}
+        # Keyed on the occurrence, NOT on ``attempt_uuid``: the uuid is the
+        # unique event identity of a stored row and every provider mints a
+        # fresh ``uuid4`` per attempt, so a uuid-bearing key would miss on
+        # every single repeat and hand the whole store cost back to the
+        # decompile thread.  See :class:`AttemptOccurrenceKey` for the contract
+        # this key does and does not claim.
+        self._recorded_attempts: dict[
+            AttemptOccurrenceKey, tuple[int, int, int]
+        ] = {}
+        self._memo_hits = 0
+        self._memo_misses = 0
+        self._memo_clears = 0
         self._connection = sqlite3.connect(
             self.path, timeout=5.0, check_same_thread=False
         )
@@ -2155,28 +2402,30 @@ class MbaDiscoveryStore:
         return eligible, outcome, context
 
     @staticmethod
-    def _attempt_identity(attempt: DiscoveryAttempt) -> tuple[object, ...]:
-        """Return the full content identity of one attempt.
+    def _attempt_identity(attempt: DiscoveryAttempt) -> AttemptOccurrenceKey:
+        """Return the memo key of one attempt: its occurrence, not its event.
 
-        The identity embeds the *exact* canonical bytes ``record_attempt``
-        stores in ``outcome_payload``, so it covers every field that payload
-        carries -- the attempt UUID, the whole observation context and the
-        whole provider outcome, late-added members such as
-        ``source_provenance``, ``metadata`` and ``matcher`` included.  Every
-        remaining persisted column is derived from that content or from the
-        term widths carried alongside it, which is what makes two equal
-        identities necessarily serialize to the same stored bytes.
-
-        Hand-listing the fields is what let the key drift behind the schema
-        before, so the key is deliberately built from the same serialization
-        the row itself is written from.
+        Every ``MEMO_KEYED_ATTEMPT_COLUMNS`` entry is fixed by the returned
+        key, and the ``VOLATILE_ATTEMPT_COLUMNS`` entries deliberately are not.
         """
 
-        return (
-            _attempt_content_bytes(attempt),
-            attempt.canonical_term.width,
-            attempt.raw_term.width,
-        )
+        return attempt_occurrence_key(attempt)
+
+    def attempt_memo_stats(self) -> AttemptMemoStats:
+        """Return what the duplicate fast path did, for acceptance runs.
+
+        ``hits`` are repeats answered without a transaction, ``misses`` went to
+        the real path, and ``occurrences`` is the number of distinct occurrence
+        keys currently memoized.
+        """
+
+        with self._lock:
+            return AttemptMemoStats(
+                hits=self._memo_hits,
+                misses=self._memo_misses,
+                occurrences=len(self._recorded_attempts),
+                clears=self._memo_clears,
+            )
 
     def _memoized_duplicate(
         self, attempt: DiscoveryAttempt
@@ -2216,6 +2465,7 @@ class MbaDiscoveryStore:
                 != self._validated_causal_domain
             ):
                 self._recorded_attempts.clear()
+                self._memo_clears += 1
                 return None
             if row is None:
                 self._recorded_attempts.pop(identity, None)
@@ -2225,6 +2475,7 @@ class MbaDiscoveryStore:
             except ValueError:
                 self._recorded_attempts.pop(identity, None)
                 return None
+            self._memo_hits += 1
             return DiscoveryReceipt(
                 ReceiptStatus.DUPLICATE,
                 attempt_id=attempt_id,
@@ -2237,7 +2488,7 @@ class MbaDiscoveryStore:
 
     def _memoize_attempt(
         self,
-        identity: tuple[object, ...],
+        identity: AttemptOccurrenceKey,
         receipt: DiscoveryReceipt,
     ) -> None:
         if (
@@ -2248,6 +2499,7 @@ class MbaDiscoveryStore:
             return
         if len(self._recorded_attempts) >= _RECORDED_ATTEMPT_MEMO_LIMIT:
             self._recorded_attempts.clear()
+            self._memo_clears += 1
         self._recorded_attempts[identity] = (
             int(receipt.attempt_id),
             int(receipt.term_id),
@@ -2260,6 +2512,8 @@ class MbaDiscoveryStore:
         memoized = self._memoized_duplicate(attempt)
         if memoized is not None:
             return memoized
+        with self._lock:
+            self._memo_misses += 1
         attempt_identity = self._attempt_identity(attempt)
         canonical = _term_bytes(attempt.canonical_term, name="canonical term")
         raw = _term_bytes(attempt.raw_term, name="raw term")
@@ -2398,7 +2652,7 @@ class MbaDiscoveryStore:
                 now = self._now()
                 attempt_id = int(
                     conn.execute(
-                        "INSERT INTO provider_attempts(attempt_uuid,function_id,term_id,raw_term_id,session_id,top_level_epoch,evidence_generation,maturity,instruction_ea,block_serial,block_ea,provider,plugin_name,plugin_distribution,plugin_version,plugin_origin,status,input_cost_ops,input_cost_nodes,output_cost_ops,output_cost_nodes,proof_verdict,elapsed_ms,refusal_reason,outcome_payload,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        _ATTEMPT_INSERT_SQL,
                         (
                             attempt.attempt_uuid,
                             function_id,
@@ -4355,8 +4609,15 @@ class MbaDiscoveryStore:
 
 
 __all__ = [
+    "DERIVED_ATTEMPT_COLUMNS",
     "DISCOVERY_LEASE_TIMEOUT",
+    "MEMO_KEYED_ATTEMPT_COLUMNS",
+    "VOLATILE_ATTEMPT_COLUMNS",
+    "AttemptMemoStats",
+    "AttemptOccurrenceKey",
     "MbaDiscoveryStore",
     "SCHEMA_VERSION",
+    "attempt_insert_columns",
+    "attempt_occurrence_key",
     "decode_proposal_payload",
 ]

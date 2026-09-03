@@ -218,8 +218,13 @@ class SqliteMbaResidualObservationSink(MbaResidualObservationSink):
             observation, activation_identity, expected_provider
         )
         if started is not None:
+            # ``uuid`` is logged so an acceptance run can prove the providers
+            # really do mint a fresh one per attempt -- the whole reason the
+            # attempt memo is keyed on the occurrence and not on the row.
             logger.debug(
-                "residual observation publish status=%s reason=%s harness_ms=%.3f",
+                "residual observation publish uuid=%s status=%s reason=%s "
+                "harness_ms=%.3f",
+                getattr(observation, "attempt_uuid", None),
                 receipt.status,
                 receipt.reason,
                 (perf_counter() - started) * 1000.0,
@@ -270,6 +275,19 @@ class SqliteMbaResidualObservationSink(MbaResidualObservationSink):
             if self._closed:
                 return
             self._closed = True
+            # One INFO line, once per session: the duplicate fast path is only
+            # worth its complexity if it actually hits at runtime, and that is
+            # not observable from the stored rows alone.
+            memo_stats = getattr(self._store, "attempt_memo_stats", None)
+            if callable(memo_stats):
+                stats = memo_stats()
+                logger.info(
+                    "mba attempt memo hits=%d misses=%d occurrences=%d clears=%d",
+                    stats.hits,
+                    stats.misses,
+                    stats.occurrences,
+                    stats.clears,
+                )
             close = getattr(self._store, "close", None)
             if callable(close):
                 close()
