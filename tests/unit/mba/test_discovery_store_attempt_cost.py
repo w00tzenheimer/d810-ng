@@ -256,3 +256,27 @@ def test_persisted_rows_are_byte_identical_to_the_reference_encoding(
     )
     assert rows[3] == term_fingerprint(attempt.raw_term)
     assert bytes(rows[4]) == discovery_store_module._attempt_payload_bytes(attempt)
+
+
+def test_memo_defers_to_a_foreign_writer(tmp_path: Path) -> None:
+    """A foreign commit must retire the memo, not be answered from it."""
+
+    path = tmp_path / "memo-foreign.sqlite3"
+    store = MbaDiscoveryStore(path)
+    try:
+        attempt = _attempt()
+        assert store.record_attempt(attempt).status is ReceiptStatus.STORED
+        assert store.record_attempt(attempt).status is ReceiptStatus.DUPLICATE
+
+        foreign = sqlite3.connect(str(path))
+        try:
+            foreign.execute("UPDATE provider_attempts SET elapsed_ms=99")
+            foreign.commit()
+        finally:
+            foreign.close()
+
+        # The stored row no longer matches the attempt, so the real path must
+        # run and refuse instead of the memo answering "duplicate".
+        assert store.record_attempt(attempt).status is ReceiptStatus.REFUSED
+    finally:
+        store.close()

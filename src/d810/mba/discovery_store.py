@@ -2206,6 +2206,19 @@ class MbaDiscoveryStore:
             self._ensure_open()
             if not self._recorded_attempts:
                 return None
+            identity = self._attempt_identity(attempt)
+            memo = self._recorded_attempts.get(identity)
+            if memo is None:
+                return None
+            attempt_id, term_id, raw_term_id = memo
+            # Read the group BEFORE the token check.  ``PRAGMA data_version``
+            # reports the state this connection last observed, so a foreign
+            # commit only becomes visible once the connection reads; doing the
+            # read first is what makes the token check see it.
+            row = self._connection.execute(
+                "SELECT group_id, state, revision FROM residual_groups WHERE term_id=?",
+                (term_id,),
+            ).fetchone()
             # The memo asserts what the store itself wrote and validated.  Any
             # mutation it did not make -- a direct connection write, another
             # process -- moves the causal-domain token away from the last
@@ -2217,15 +2230,6 @@ class MbaDiscoveryStore:
             ):
                 self._recorded_attempts.clear()
                 return None
-            identity = self._attempt_identity(attempt)
-            memo = self._recorded_attempts.get(identity)
-            if memo is None:
-                return None
-            attempt_id, term_id, raw_term_id = memo
-            row = self._connection.execute(
-                "SELECT group_id, state, revision FROM residual_groups WHERE term_id=?",
-                (term_id,),
-            ).fetchone()
             if row is None:
                 self._recorded_attempts.pop(identity, None)
                 return None
