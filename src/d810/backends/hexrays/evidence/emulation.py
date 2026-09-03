@@ -139,6 +139,16 @@ class HexRaysBlockEmulator:
                             value = interpreter.eval_mop(
                                 write_insn.d, environment=env, raise_exception=False
                             )
+                        if value is not None and interpreter.is_tainted_mop(
+                            write_insn.d, env
+                        ):
+                            # Derived from a call the emulator MODELED rather than
+                            # computed: not a proven next-state (ticket d81-0xzp).
+                            logger.debug(
+                                "HexRaysBlockEmulator: state write derives from a "
+                                "synthetic call return; abstaining"
+                            )
+                            value = None
                         if value is not None:
                             resolved = int(value)
                     break

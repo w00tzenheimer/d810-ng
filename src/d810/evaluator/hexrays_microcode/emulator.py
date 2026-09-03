@@ -30,6 +30,7 @@ from .chains import (
     find_reaching_defs_for_stkvar,
 )
 from .p_multi_def import agreed_value, select_def_index_for_predecessor
+from .p_taint import any_tainted, taint_result
 
 #: Upper bound on the reaching definitions the path-INSENSITIVE agreement leg
 #: will evaluate at one merge.  A merge with more incoming definitions than this
@@ -420,6 +421,13 @@ class MicroCodeInterpreter(object):
         self.mask_subreg_reads: bool = mask_subreg_reads
         # Cache for def-use chain resolutions during the current emulation pass
         self._def_use_cache: dict[tuple, int | None] = {}
+        # ``(ea, opcode)`` of every instruction whose result this interpreter
+        # INVENTED (a modeled call return, a dereference of a synthetic pointer).
+        # Values derived from these are not proven -- see ``p_taint`` (d81-0xzp).
+        self._synthetic_result_sites: set[tuple[int, int]] = set()
+        # Call sites already reported as unsupported, so one bypassed call logs
+        # once instead of once per emulation pass.
+        self._warned_call_sites: set[tuple[int, int]] = set()
         # ``(block_serial, pred_serial)``: the incoming edge a consumer declared it
         # is evaluating, so a phi-like merge read in that block resolves to the
         # definition arriving along THAT edge (ticket d81-yrkv).  ``None`` -> the
@@ -449,6 +457,60 @@ class MicroCodeInterpreter(object):
             self._merge_pred_context = None
         else:
             self._merge_pred_context = (int(block_serial), int(pred_serial))
+
+    # -- synthetic-return taint (ticket d81-0xzp) --------------------------
+    @staticmethod
+    def _site_of(ins: ida_hexrays.minsn_t) -> tuple[int, int]:
+        """``(ea, opcode)`` identity of an instruction."""
+        return (int(getattr(ins, "ea", 0) or 0), int(getattr(ins, "opcode", -1)))
+
+    def _note_synthetic_result(self, ins: ida_hexrays.minsn_t) -> None:
+        """Record that *ins*'s result was invented, not computed."""
+        self._synthetic_result_sites.add(self._site_of(ins))
+
+    def _collect_mop_keys(self, mop: ida_hexrays.mop_t | None, keys: set) -> None:
+        """Collect the register/stack keys *mop* reads, descending into sub-insns."""
+        if mop is None:
+            return
+        t = mop.t
+        if t in (ida_hexrays.mop_r, ida_hexrays.mop_S):
+            keys.add(get_mop_key(mop))
+        elif t == ida_hexrays.mop_d and mop.d is not None:
+            self._collect_mop_keys(mop.d.l, keys)
+            self._collect_mop_keys(mop.d.r, keys)
+        elif t == ida_hexrays.mop_f and mop.f is not None:
+            try:
+                for arg in mop.f.args:
+                    self._collect_mop_keys(arg, keys)
+            except (AttributeError, TypeError):  # defensive: unusable arg list
+                pass
+
+    def _has_synthetic_result(self, ins: ida_hexrays.minsn_t | None) -> bool:
+        """``True`` when *ins* (or a nested sub-instruction) invented its result."""
+        if ins is None:
+            return False
+        if self._site_of(ins) in self._synthetic_result_sites:
+            return True
+        for mop in (ins.l, ins.r):
+            if mop is not None and mop.t == ida_hexrays.mop_d and mop.d is not None:
+                if self._has_synthetic_result(mop.d):
+                    return True
+        return False
+
+    def is_tainted_mop(
+        self, mop: ida_hexrays.mop_t | None, environment: MicroCodeEnvironment
+    ) -> bool:
+        """``True`` when *mop*'s value derives from an invented (synthetic) result.
+
+        A consumer that needs a PROVEN value -- a dispatcher state write, a
+        fake-jump path comparison -- must treat this as "cannot prove" and
+        abstain, exactly as it did when the call evaluated to ``None``.
+        """
+        if mop is None or not environment.tainted_keys:
+            return False
+        keys: set = set()
+        self._collect_mop_keys(mop, keys)
+        return any_tainted(keys, environment.tainted_keys)
 
     def _resolve_segment_register(self, mreg: int) -> int | None:
         """Resolve a segment register to its selector value.
@@ -750,7 +812,30 @@ class MicroCodeInterpreter(object):
         if res is not None:
             if (ins.d is not None) and ins.d.t != ida_hexrays.mop_z:
                 environment.assign(ins.d, res, auto_define=True)
+                self._propagate_taint(ins, environment)
         return res
+
+    def _propagate_taint(
+        self, ins: ida_hexrays.minsn_t, environment: MicroCodeEnvironment
+    ) -> None:
+        """Mark or clear the destination's taint after *ins* was evaluated.
+
+        The masked value carries no usable tag of its own (see ``p_taint``), so
+        provenance is tracked per destination LOCATION and refreshed on every
+        write: a location overwritten with a proven value becomes clean again.
+        """
+        source_keys: set = set()
+        self._collect_mop_keys(ins.l, source_keys)
+        self._collect_mop_keys(ins.r, source_keys)
+        tainted = taint_result(
+            produces_synthetic=self._has_synthetic_result(ins),
+            source_keys=source_keys,
+            tainted_keys=environment.tainted_keys,
+        )
+        if tainted:
+            environment.mark_tainted(ins.d)
+        else:
+            environment.clear_taint(ins.d)
 
     def _eval_instruction(
         self, ins: ida_hexrays.minsn_t, environment: MicroCodeEnvironment
@@ -1192,6 +1277,7 @@ class MicroCodeInterpreter(object):
                 if self.synthetic_call.is_synthetic_address(load_address):
                     # Return a cached, stable synthetic value based on the address + dest size
                     # This allows symbolic propagation through pointer chains
+                    self._note_synthetic_result(ins)
                     return self.synthetic_call.chain(ins, load_address)
                 # Treat null deref as unknown to avoid spurious MEMORY[0]
                 if load_address == 0:
@@ -1288,13 +1374,18 @@ class MicroCodeInterpreter(object):
     ) -> int | None:
         # call   ld   l is mop_v or mop_b or mop_h
         if ins.l.t in [ida_hexrays.mop_v, ida_hexrays.mop_b]:
-            # TODO: implement
-            emulator_log.warning(
-                "Evaluation of call with unsupported mop type %s (%s): bypassing",
+            # The callee is not modeled, but its RESULT still has to flow: a
+            # ``None`` here makes the enclosing ``mov call(...), dst`` raise, which
+            # discards the whole path even when the call result is dead (ticket
+            # d81-0xzp).  Hand out the stable synthetic return and mark it tainted
+            # so no consumer mistakes it for a proven value.
+            self._warn_unsupported_call_once(
+                ins,
+                "Evaluation of call with unsupported mop type %s (%s): "
+                "modeled as a tainted synthetic return",
                 mop_type_to_string(ins.l.t),
-                format_minsn_t(ins),
             )
-            return None
+            return self._synthetic_call_result(ins)
         # we only support ida_hexrays.mop_h for calls atm
         res_mask = AND_TABLE[ins.d.size]
         insn_helper: ida_hexrays.mop_t = ins.l
@@ -1305,12 +1396,35 @@ class MicroCodeInterpreter(object):
         if hname.startswith("NtCurrentPeb"):
             return self.synthetic_call.get(ins) & res_mask
 
-        emulator_log.warning(
-            "Evaluation of helper %s (%s) not implemented: bypassing",
+        self._warn_unsupported_call_once(
+            ins,
+            "Evaluation of helper %s (%s) not implemented: "
+            "modeled as a tainted synthetic return",
             helper_name,
-            format_minsn_t(ins),
         )
-        return
+        return self._synthetic_call_result(ins)
+
+    def _synthetic_call_result(self, ins: ida_hexrays.minsn_t) -> int:
+        """Stable synthetic return for an unmodeled call, recorded as tainted.
+
+        A live ``call`` carries its return description in ``d`` (``mop_f``) whose
+        ``size`` is 0, so there is no destination width to mask to here; the
+        enclosing ``mov call(...), dst`` masks to the real destination.
+        """
+        self._note_synthetic_result(ins)
+        value = self.synthetic_call.get(ins)
+        mask = AND_TABLE.get(getattr(ins.d, "size", 0) or 0)
+        return value & mask if mask is not None else value
+
+    def _warn_unsupported_call_once(
+        self, ins: ida_hexrays.minsn_t, message: str, subject: str
+    ) -> None:
+        """Warn once per call SITE instead of once per emulation pass."""
+        site = self._site_of(ins)
+        if site in self._warned_call_sites:
+            return
+        self._warned_call_sites.add(site)
+        emulator_log.warning(message, subject, format_minsn_t(ins))
 
     def eval(self, mop: ida_hexrays.mop_t, environment: MicroCodeEnvironment) -> int:
         # Check for invalid mop sizes (e.g., function references have size=-1)
@@ -1659,6 +1773,10 @@ class MicroCodeEnvironment:
     parent: MicroCodeEnvironment | None = dataclasses.field(default=None)
     mop_r_record: MopMapping = dataclasses.field(default_factory=MopMapping)
     mop_S_record: MopMapping = dataclasses.field(default_factory=MopMapping)
+    #: Keys of locations whose value derives from an invented (synthetic) call
+    #: result.  Travels with the environment so it resets per emulated path
+    #: (ticket d81-0xzp).
+    tainted_keys: set = dataclasses.field(default_factory=set)
 
     cur_blk: ida_hexrays.mblock_t | None = dataclasses.field(init=False, default=None)
     cur_ins: ida_hexrays.minsn_t | None = dataclasses.field(init=False, default=None)
@@ -1677,11 +1795,22 @@ class MicroCodeEnvironment:
             new_env.define(mop, mop_value)
         for mop, mop_value in self.mop_S_record.items():
             new_env.define(mop, mop_value)
+        new_env.tainted_keys = set(self.tainted_keys)
         new_env.cur_blk = self.cur_blk
         new_env.cur_ins = self.cur_ins
         new_env.next_blk = self.next_blk
         new_env.next_ins = self.next_ins
         return new_env
+
+    def mark_tainted(self, mop: ida_hexrays.mop_t) -> None:
+        """Record that *mop*'s current value derives from a synthetic result."""
+        if mop is not None and mop.t in (ida_hexrays.mop_r, ida_hexrays.mop_S):
+            self.tainted_keys.add(get_mop_key(mop))
+
+    def clear_taint(self, mop: ida_hexrays.mop_t) -> None:
+        """Drop *mop*'s taint: it was just overwritten with a proven value."""
+        if mop is not None and self.tainted_keys:
+            self.tainted_keys.discard(get_mop_key(mop))
 
     def set_cur_flow(self, cur_blk: ida_hexrays.mblock_t, cur_ins: ida_hexrays.minsn_t):
         self.cur_blk = cur_blk
