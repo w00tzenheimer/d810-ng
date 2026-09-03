@@ -37,7 +37,7 @@ KNOWN_FLATTENED = [
 def known_flattened_preanalysis():
     """Analyze the asserted functions instead of depending on test order."""
     from d810.manager import D810State
-    from d810.passes.store import PreanalysisStore
+    from d810.passes.store import PreanalysisStore, get_preanalysis_writer
 
     state = D810State()
     was_loaded = state.is_loaded()
@@ -67,6 +67,17 @@ def known_flattened_preanalysis():
 
         db_path = state.manager.analysis_db
         assert db_path is not None, "Preanalysis runtime did not expose a database"
+        # Each decompile's consumer outcomes are queued onto the store's
+        # background writer thread (``_persist_outcomes`` -> ``submit``)
+        # as soon as its analysis session finishes, which happens inside
+        # ``idaapi.decompile`` itself. That queue is only *drained* on the
+        # writer's own schedule, so a read immediately afterwards can race
+        # ahead of the last function's write landing in SQLite -- with no
+        # guarantee that any *other* decompile happens in-process to give
+        # the writer time to catch up. Block until every queued write for
+        # this db has actually executed before reading it back, so the
+        # fixture never depends on unrelated tests supplying that delay.
+        get_preanalysis_writer(db_path).flush()
         with PreanalysisStore(db_path) as store:
             records = {
                 name: {
