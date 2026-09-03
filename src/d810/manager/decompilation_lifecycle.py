@@ -41,6 +41,7 @@ from d810.core.observability import (
     emit as emit_diagnostic,
 )
 from d810.core.observability_emulator import flush_all_emulator_gaps
+from d810.core.observability_unflat import reset_unflat_counters
 from d810.core.observability_events import (
     DiagnosticSessionObserved,
     EvidenceGenerationObserved,
@@ -603,6 +604,20 @@ class DecompilationLifecycleCoordinator:
 
         self._observe_session(session, "active")
         self._emit_session_event(DecompilationEvent.SESSION_STARTED, session.event)
+        # A new top-level session for this func_ea must never inherit the
+        # prior session's unflatten outcome counters (ticket d81-pqrc):
+        # handlers_recovered, plan_id, and committed_batches_before are
+        # session-scoped state, not per-function-forever state. Only this
+        # branch (a genuinely new ``DecompilationSessionContext``) reaches
+        # here; borrowed/reentrant activations for the same function return
+        # earlier and correctly keep accumulating into the live session.
+        try:
+            reset_unflat_counters(function_ea)
+        except Exception:
+            logger.exception(
+                "unflatten outcome counters reset failed for func=0x%x",
+                function_ea,
+            )
 
         preanalysis_runtime = self.preanalysis_runtime
         if preanalysis_runtime is not None:
@@ -1600,6 +1615,14 @@ class DecompilationLifecycleCoordinator:
                 flush_all_emulator_gaps()
             except Exception:  # noqa: BLE001 — diagnostics never break a run
                 logger.debug("emulator gap final flush failed", exc_info=True)
+            # Drop this function's unflatten outcome counters with the
+            # session that owned them (ticket d81-pqrc) so nothing lingers
+            # past the lifecycle boundary that created it, mirroring the
+            # per-session reset above.
+            try:
+                reset_unflat_counters(int(session.function_ea))
+            except Exception:  # noqa: BLE001 — diagnostics never break a run
+                logger.debug("unflatten outcome counters reset failed", exc_info=True)
             close_observability_session()
         return None
 

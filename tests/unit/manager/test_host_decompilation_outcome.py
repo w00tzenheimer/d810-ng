@@ -2,17 +2,38 @@
 
 from __future__ import annotations
 
+import pytest
+
 from d810.core.decompilation_session import DecompilationEvent
 from d810.core.observability_events import (
     HostDecompilationOutcome,
     HostDecompilationOutcomeKind,
     HostDecompilationOutcomeObserved,
 )
+from d810.core.observability_unflat import (
+    note_committed_batch,
+    note_unflat_counters,
+    reset_unflat_counters,
+    unflat_counters,
+)
 from d810.manager.decompilation_lifecycle import DecompilationLifecycleCoordinator
 from tests.native_preanalysis import make_native_key
 
 
 NATIVE_KEY = make_native_key()
+
+
+@pytest.fixture(autouse=True)
+def _clean_unflat_counters():
+    """Isolate the unflatten counters process-global across every test here.
+
+    ``d810.core.observability_unflat._COUNTERS`` is process-global; without
+    this, a counters test could leak into an unrelated session test (or vice
+    versa) sharing the same ``0x401000`` func_ea.
+    """
+    reset_unflat_counters()
+    yield
+    reset_unflat_counters()
 
 
 class _Emitter:
@@ -156,6 +177,65 @@ def test_final_host_outcome_closes_observability_after_lifecycle_events(monkeypa
         DecompilationEvent.SESSION_FINISHED,
     ]
     assert order == ["finished", "closed"]
+
+
+def test_new_session_resets_unflatten_counters_for_the_same_func_ea(monkeypatch) -> None:
+    """Ticket d81-pqrc: a fresh session must never inherit a stale run's counters.
+
+    Reproduces the reviewer's report verbatim: a prior session left
+    ``handlers_recovered=85``, a ``plan_id``, and one committed batch behind
+    for this func_ea; a brand new top-level session at the SAME func_ea must
+    start from zero, not silently read the old run's numbers.
+    """
+    monkeypatch.setattr(
+        "d810.manager.decompilation_lifecycle.emit_diagnostic", lambda *a, **k: None
+    )
+    coordinator = _coordinator(_Emitter())
+
+    note_unflat_counters(0x401000, handlers_recovered=85, handlers_total=85, plan_id="plan-old")
+    note_committed_batch(0x401000)
+    assert unflat_counters(0x401000).handlers_recovered == 85
+
+    coordinator.ensure_hexrays_session(function_ea=0x401000, database_identity="sample.i64")
+
+    stale = unflat_counters(0x401000)
+    assert stale.handlers_recovered is None
+    assert stale.plan_id is None
+    assert stale.committed_batches == 0
+
+
+def test_finished_session_drops_unflatten_counters_for_its_func_ea(monkeypatch) -> None:
+    """Ticket d81-pqrc: counters must not outlive the session that owned them."""
+    monkeypatch.setattr(
+        "d810.manager.decompilation_lifecycle.emit_diagnostic", lambda *a, **k: None
+    )
+    monkeypatch.setattr(
+        "d810.manager.decompilation_lifecycle.close_observability_session", lambda: None
+    )
+    coordinator = _coordinator(_Emitter())
+    coordinator.ensure_hexrays_session(function_ea=0x401000, database_identity="sample.i64")
+    note_unflat_counters(0x401000, dag_nodes=59)
+    coordinator.mark_structural_complete()
+
+    assert coordinator.observe_host_outcome(0x401000, _rendered("headless")) is True
+
+    assert unflat_counters(0x401000).dag_nodes is None
+
+
+def test_reentrant_activation_for_the_same_func_ea_keeps_its_counters(monkeypatch) -> None:
+    """A borrowed/reentrant activation must not reset counters mid-session."""
+    monkeypatch.setattr(
+        "d810.manager.decompilation_lifecycle.emit_diagnostic", lambda *a, **k: None
+    )
+    coordinator = _coordinator(_Emitter())
+    coordinator.ensure_hexrays_session(function_ea=0x401000, database_identity="sample.i64")
+    note_unflat_counters(0x401000, dag_nodes=59)
+
+    # Same func_ea, same database identity, no active-session change: this is
+    # the reentrant "current, False" branch and must not touch counters.
+    coordinator.ensure_hexrays_session(function_ea=0x401000, database_identity="sample.i64")
+
+    assert unflat_counters(0x401000).dag_nodes == 59
 
 
 def test_next_prolog_abandonment_closes_before_new_owner_opens(monkeypatch) -> None:
