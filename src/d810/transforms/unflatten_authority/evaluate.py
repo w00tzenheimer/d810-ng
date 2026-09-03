@@ -2495,6 +2495,72 @@ def _select_route_source_subject(
     return selected
 
 
+def _observed_folded_transfer_tail_covered(
+    *,
+    block_ref: object,
+    anchor_ea: int | None,
+    source_origins: set[int],
+    candidate_origins: set[int],
+    transfer_ea: int | None,
+    effect_and_terminal_eas: frozenset[int],
+) -> bool:
+    """Account exactly one folded control-transfer tail as block presence.
+
+    A committed transformation can prove a block's conditional tail static and
+    remove it, leaving the physical block in place as a fall-through -- with no
+    surviving microinstruction at all when that tail was its only one.  The
+    block still denotes its own catalog identity, because identity is the
+    reference binding plus the native range rather than the instruction count,
+    and a control transfer is neither an effect site nor a terminal site, so
+    this admits no silent effect or terminal loss.  What the fold changed is
+    the block's outgoing edge, which remains owned by the topology and route
+    obligations of the same canonical case.
+
+    Everything else stays a loss: a missing origin that is not the tail, a
+    foreign origin, an anchor outside every native range, or a reference with
+    no native range to anchor the claim.
+    """
+
+    if type(block_ref) is not NativeBlockRef or anchor_ea is None:
+        return False
+    if not block_ref.identity.native_ranges.contains(int(anchor_ea)):
+        return False
+    if transfer_ea is None or not candidate_origins <= source_origins:
+        return False
+    missing = source_origins - candidate_origins
+    if missing != {int(transfer_ea)}:
+        return False
+    return not (missing & effect_and_terminal_eas)
+
+
+def _observed_identity_backed_origin_loss(
+    *,
+    phase: model.UnflattenAuthorityPhase,
+    block_ref: object,
+    anchor_ea: int | None,
+    source_origins: set[int],
+    candidate_origins: set[int],
+) -> bool:
+    """Recognize strict observed origin loss inside one preserved identity.
+
+    Lineage witnesses back a preserved block with its bindings, not with its
+    instruction count.  When a committed transformation folds instructions out
+    of a block that stays uniquely bound at the same reference and anchor, the
+    remaining -- possibly empty -- origin set is still that block's, provided
+    the anchor is one of the surviving origins or a physical entry inside the
+    reference's native range.  Whether the fold itself is accountable is
+    decided by the classifier, not by this witness check.
+    """
+
+    if phase is not model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY:
+        return False
+    if anchor_ea is None or not candidate_origins < source_origins:
+        return False
+    return model._anchor_matches_native_scope(
+        block_ref, int(anchor_ea), tuple(sorted(candidate_origins)),
+    )
+
+
 def _evaluator_fact_evidence(
     inputs: model.DerivedUnflattenPreparationInputs,
     phase: model.UnflattenAuthorityPhase,
@@ -2617,9 +2683,51 @@ def _evaluator_fact_evidence(
             )
             return len(redirect_facts) == 1
 
+        def observed_folded_transfer_tail() -> bool:
+            """Bind the folded-tail term to this subject's own source row."""
+
+            if (
+                phase is not model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY
+                or candidate_binding is None
+                or candidate_binding.status is not model.SubjectBindingStatus.UNIQUE
+                or candidate_binding.block_ref != subject.block_ref
+            ):
+                return False
+            source_row = next(
+                (
+                    row for row in source.blocks
+                    if row.block_ref == subject.block_ref
+                ),
+                None,
+            )
+            if source_row is None:
+                return False
+            return _observed_folded_transfer_tail_covered(
+                block_ref=subject.block_ref,
+                anchor_ea=candidate_binding.anchor_ea,
+                source_origins=set(source_binding.native_instruction_eas),
+                candidate_origins=set(candidate_binding.native_instruction_eas),
+                transfer_ea=source_row.transfer_ea,
+                effect_and_terminal_eas=frozenset(
+                    row.instruction_ea
+                    for row in (*source.effects, *source.terminals)
+                    if row.owner_ref == subject.block_ref
+                ),
+            )
+
         if source_binding.status is not model.SubjectBindingStatus.UNIQUE:
             return model.StructuralDisposition.UNACCOUNTED_LOSS, (), (), (subject.subject_id,)
         source_origins = set(source_binding.native_instruction_eas)
+        # A folded tail leaves no origin to intersect, so the block's own
+        # unique binding at the same reference is still its own candidate.
+        folded_transfer_tail = observed_folded_transfer_tail()
+
+        def intersects_source_origins(binding: model.PhaseSubjectBinding) -> bool:
+            return bool(set(binding.native_instruction_eas) & source_origins) or (
+                folded_transfer_tail
+                and binding.subject.subject_id == subject.subject_id
+            )
+
         if subject.kind is not model.SemanticSubjectKind.BLOCK:
             if (
                 candidate_binding is not None
@@ -2661,7 +2769,7 @@ def _evaluator_fact_evidence(
                     subject.role,
                     model.SemanticSubjectRole.PLANNED_HELPER,
                 }
-                and set(binding.native_instruction_eas) & source_origins
+                and intersects_source_origins(binding)
             }
             if (
                 candidate_binding is None
@@ -2669,6 +2777,7 @@ def _evaluator_fact_evidence(
                 or (
                     set(candidate_binding.native_instruction_eas) != source_origins
                     and not observed_exact_subset_covered()
+                    and not folded_transfer_tail
                 )
                 or intersecting_ids != {subject.subject_id}
             ):
@@ -2702,7 +2811,7 @@ def _evaluator_fact_evidence(
                 subject.role,
                 model.SemanticSubjectRole.PLANNED_HELPER,
             }
-            and set(binding.native_instruction_eas) & source_origins
+            and intersects_source_origins(binding)
         )
         intersecting_candidate_ids = {
             binding.subject.subject_id for binding in intersecting_candidates
@@ -2714,6 +2823,7 @@ def _evaluator_fact_evidence(
                 and (
                     set(candidate_binding.native_instruction_eas) == source_origins
                     or observed_exact_subset_covered()
+                    or folded_transfer_tail
                 )
                 and intersecting_candidate_ids == {subject.subject_id}
             ):
@@ -4669,7 +4779,7 @@ def build_semantic_case(
                 if payload.disposition is model.StructuralDisposition.PRESERVED:
                     source_binding = source_group_bindings[0]
                     candidate_binding = candidate_bindings_for_lineage[0]
-                    range_backed_preserved = bool(
+                    same_bound_identity = bool(
                         source_binding is not None
                         and candidate_binding is not None
                         and source_binding.status is model.SubjectBindingStatus.UNIQUE
@@ -4683,8 +4793,21 @@ def build_semantic_case(
                         == candidate_binding.subject.subject_id
                         and source_binding.block_ref == candidate_binding.block_ref
                         and source_binding.anchor_ea == candidate_binding.anchor_ea
-                        and not source_eas
-                        and not candidate_eas[0]
+                    )
+                    range_backed_preserved = bool(
+                        same_bound_identity
+                        and (
+                            (not source_eas and not candidate_eas[0])
+                            # A committed fold can leave this same bound
+                            # identity carrying fewer -- or no -- origins.
+                            or _observed_identity_backed_origin_loss(
+                                phase=phase,
+                                block_ref=candidate_binding.block_ref,
+                                anchor_ea=candidate_binding.anchor_ea,
+                                source_origins=source_eas,
+                                candidate_origins=candidate_eas[0],
+                            )
+                        )
                     )
                 if (
                     (any(not eas for eas in candidate_eas) or not source_eas)
@@ -4700,11 +4823,14 @@ def build_semantic_case(
                     if len(payload.source_subject_ids) != 1:
                         raise ValueError("preserved lineage requires one source")
                     observed_anchor_preserving_loss = (
-                        phase is model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY
-                        and candidate_eas[0] < source_eas
-                        and candidate_bindings_for_lineage[0] is not None
-                        and candidate_bindings_for_lineage[0].anchor_ea
-                        in candidate_eas[0]
+                        candidate_bindings_for_lineage[0] is not None
+                        and _observed_identity_backed_origin_loss(
+                            phase=phase,
+                            block_ref=candidate_bindings_for_lineage[0].block_ref,
+                            anchor_ea=candidate_bindings_for_lineage[0].anchor_ea,
+                            source_origins=source_eas,
+                            candidate_origins=candidate_eas[0],
+                        )
                     )
                     if (
                         candidate_eas[0] != source_eas
