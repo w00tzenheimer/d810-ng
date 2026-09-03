@@ -244,6 +244,42 @@ def test_persistence_boundary_roundtrip_still_fully_validates_a_cached_occurrenc
     assert after.wire_encodes == before.wire_encodes + 1
 
 
+def test_an_occurrence_that_fails_validation_is_never_served_from_cache() -> None:
+    """A raising validation must not populate a reusable cache entry."""
+
+    from d810.transforms.unflatten_authority import model
+
+    fixture = ids.DigestFixture(
+        3, model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT, ("native",),
+    )
+    with _canonical_validation_session(
+        CanonicalSessionPhase.PROJECTED_PREPARATION,
+    ) as session:
+        # Corrupt this exact live occurrence past a fail-closed field check.
+        object.__setattr__(fixture, "ea", "not-an-int")
+        with pytest.raises(TypeError):
+            ids.canonical_bytes(fixture)
+        after_failure = session.metrics
+
+        # Repair it and retry the same exact occurrence: it must be fully
+        # revalidated, never served a stale or partial cache entry from the
+        # failed attempt.
+        object.__setattr__(fixture, "ea", 3)
+        data = ids.canonical_bytes(fixture)
+        after_retry = session.metrics
+
+    # The failed attempt never touched the deep-validation/wire counters and
+    # certainly never recorded a reusable entry.
+    assert after_failure.deep_validations == 0
+    assert after_failure.wire_encodes == 0
+    assert after_failure.canonical_bytes_reuses == 0
+    # The retry pays full price exactly once; it is a miss, not a hit.
+    assert after_retry.deep_validations == 1
+    assert after_retry.wire_encodes == 1
+    assert after_retry.canonical_bytes_reuses == 0
+    assert data == ids.canonical_bytes(fixture)
+
+
 def test_deep_authority_roundtrip_repeats_work_for_one_exact_occurrence() -> None:
     """Freeze the repeated work `validate_canonical_roundtrip` costs today."""
 
