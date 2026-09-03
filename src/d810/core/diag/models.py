@@ -527,6 +527,45 @@ class StateWriteResolutionRecord(BaseModel):
         )
 
 
+class EmulatorGapRecord(BaseModel):
+    """One DEDUPED evaluator gap the emulator hit in one attempt (d81-c6n7).
+
+    The emulator's WARNINGs are a worklist: each row is a real, individually
+    fixable gap, keyed exactly as the WARNING line is deduped --
+    ``(function, attempt, cause, site)`` -- with ``occurrences`` keeping the
+    count the dedupe would otherwise hide.
+    """
+
+    event = ForeignKeyField(
+        LifecycleEvent,
+        field="event_id",
+        column_name="event_id",
+        primary_key=True,
+        index=False,
+        null=False,
+    )
+    session_id = TextField()
+    func_ea_hex = TextField()
+    func_ea_i64 = IntegerField()
+    maturity = TextField()
+    #: Attempt number within the function; the dedupe resets on each one.
+    attempt = IntegerField()
+    cause = TextField()
+    site_ea_hex = TextField()
+    site_ea_i64 = IntegerField()
+    block_serial = IntegerField()
+    occurrences = IntegerField()
+    detail = TextField()
+    def_sites_json = TextField()
+
+    class Meta:
+        table_name = "emulator_gaps"
+        indexes = (
+            ((('func_ea_i64', 'cause'), False),)
+            + ((('func_ea_i64', 'attempt', 'site_ea_i64'), False),)
+        )
+
+
 class FrontendNormalizationPlanIntent(BaseModel):
     """Typed receipt-backed frontend plan intent used by the case projector."""
 
@@ -1870,6 +1909,7 @@ MODELS = (
     RecoverySearchOutcomeRecord,
     UnflattenCandidateOutcomeRecord,
     StateWriteResolutionRecord,
+    EmulatorGapRecord,
     FrontendNormalizationPlanIntent,
     SemanticOutputVerdict,
     PassContractEvidencePublication,

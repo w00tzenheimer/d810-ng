@@ -9,6 +9,7 @@ import time
 from d810.core.observability_state_write import format_corridor
 from d810.core.observability_events import (
     CfgTransactionAttemptObserved,
+    EmulatorGapObserved,
     DiagnosticSessionObserved,
     EvidenceGenerationObserved,
     FrontendNormalizationPlanIntentObserved,
@@ -964,6 +965,69 @@ def persist_state_write_resolution(
     return event_id
 
 
+def persist_emulator_gap(
+    conn: sqlite3.Connection,
+    event: EmulatorGapObserved,
+) -> int:
+    """Persist one deduped evaluator gap fact (ticket d81-c6n7).
+
+    The correlation id is the dedupe key the WARNING line uses, so a reader can
+    join a log line to its row without re-deriving anything.
+    """
+    def_sites = [[int(blk), int(ea)] for blk, ea in event.def_sites]
+    site_hex = _func_hex(event.site_ea)
+    event_id = persist_lifecycle_event(
+        conn,
+        LifecycleEventObserved(
+            session_id=event.session_id,
+            func_ea=event.func_ea,
+            event_kind="emulator_gap",
+            provider="hexrays_microcode_emulator",
+            maturity=event.maturity,
+            phase=event.cause,
+            correlation_id=f"{int(event.attempt)}:{event.cause}:{site_hex}",
+            summary=(
+                f"emulator gap {event.cause} at {site_hex} "
+                f"(x{int(event.occurrences)})"
+            ),
+            payload={
+                "kind": "EmulatorGapFact",
+                "cause": event.cause,
+                "site_ea": int(event.site_ea),
+                "block_serial": int(event.block_serial),
+                "occurrences": int(event.occurrences),
+                "attempt": int(event.attempt),
+                "detail": event.detail,
+                "def_sites": def_sites,
+            },
+            timestamp=event.timestamp,
+        ),
+        snapshot_id=None,
+    )
+    conn.execute(
+        "INSERT INTO emulator_gaps "
+        "(event_id,session_id,func_ea_hex,func_ea_i64,maturity,attempt,cause,"
+        "site_ea_hex,site_ea_i64,block_serial,occurrences,detail,def_sites_json) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (
+            event_id,
+            event.session_id,
+            _func_hex(event.func_ea),
+            int(event.func_ea),
+            event.maturity,
+            int(event.attempt),
+            event.cause,
+            site_hex,
+            int(event.site_ea),
+            int(event.block_serial),
+            int(event.occurrences),
+            event.detail,
+            json.dumps(def_sites, separators=(",", ":")),
+        ),
+    )
+    return event_id
+
+
 def persist_semantic_fragment_route_oracle(
     conn: sqlite3.Connection,
     event: SemanticFragmentRouteOracleComparedObserved,
@@ -1364,6 +1428,7 @@ __all__.extend(
         "persist_recovery_search",
         "persist_unflatten_candidate_outcome",
         "persist_state_write_resolution",
+        "persist_emulator_gap",
         "persist_mutation_receipt",
         "persist_semantic_fragment_route_oracle",
     ]

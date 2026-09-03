@@ -43,6 +43,11 @@ CAUSE_RESOLVED = "resolved"
 CAUSE_PHI_MULTI_DEF = "phi_multi_def"
 #: The operand had no reaching definition at all (live-in seeding gap).
 CAUSE_NO_REACHING_DEFS = "no_reaching_defs"
+#: A stack slot at or above ``mba.minstkref`` lies in ALIASED memory, where
+#: Hex-Rays builds no ``get_stk_chain`` entry under ``GC_REGS_AND_STKVARS``.
+#: "ndefs=0" there is a chain-COVERAGE gap, not a missing definition: the slot
+#: has a live def in every snapshot (ticket d81-cor5, plan section 6.5).
+CAUSE_STACK_SLOT_IN_ALIASED_MEMORY = "stack_slot_in_aliased_memory"
 #: Exactly one reaching definition, and evaluating it failed.
 CAUSE_SINGLE_DEF_EVAL_FAILED = "single_def_eval_failed"
 #: The value derives from a call the emulator MODELED rather than computed,
@@ -71,6 +76,7 @@ STATE_WRITE_RESOLUTION_CAUSES = frozenset(
         CAUSE_RESOLVED,
         CAUSE_PHI_MULTI_DEF,
         CAUSE_NO_REACHING_DEFS,
+        CAUSE_STACK_SLOT_IN_ALIASED_MEMORY,
         CAUSE_SINGLE_DEF_EVAL_FAILED,
         CAUSE_SYNTHETIC_TAINT,
         CAUSE_GLOBAL_NOT_SEEDED,
@@ -91,6 +97,10 @@ STATE_WRITE_RESOLUTION_CAUSES = frozenset(
 _CAUSE_PRECEDENCE: tuple[str, ...] = (
     CAUSE_SYNTHETIC_TAINT,
     CAUSE_PHI_MULTI_DEF,
+    # More specific than the bare "no reaching defs" it refines: Hex-Rays
+    # returned no chain because the slot is aliased, not because nothing
+    # defines it (ticket d81-cor5).
+    CAUSE_STACK_SLOT_IN_ALIASED_MEMORY,
     CAUSE_NO_REACHING_DEFS,
     CAUSE_GLOBAL_NOT_SEEDED,
     CAUSE_SINGLE_DEF_EVAL_FAILED,
@@ -198,9 +208,21 @@ class AbstainCauseLog:
     'phi_multi_def'
     >>> log.def_sites()
     ((329, 4096),)
+
+    A second, NARROWER question -- "why did THIS instruction fail" -- is what a
+    per-instruction WARNING needs, so the log also carries a cursor on the most
+    recently noted cause.  :meth:`begin_step` forgets only that cursor, never
+    the accumulated causes :meth:`dominant` ranks, so the block-level consult
+    slice 4 ships is byte-identical.
+
+    >>> log.begin_step()
+    >>> log.latest()
+    ''
+    >>> log.dominant()
+    'phi_multi_def'
     """
 
-    __slots__ = ("_causes", "_def_sites")
+    __slots__ = ("_causes", "_def_sites", "_last")
 
     #: Bound on the definition sites reported for one abstention.
     MAX_DEF_SITES = 16
@@ -210,6 +232,7 @@ class AbstainCauseLog:
     def __init__(self) -> None:
         self._causes: list[str] = []
         self._def_sites: dict[str, list[tuple[int, int]]] = {}
+        self._last: str = ""
 
     def note(
         self, cause: str, *, def_sites: Sequence[tuple[int, int]] = ()
@@ -223,6 +246,7 @@ class AbstainCauseLog:
                 return
             self._causes.append(token)
             self._def_sites[token] = []
+        self._last = token
         sites = self._def_sites[token]
         for entry in def_sites:
             if len(sites) >= self.MAX_DEF_SITES:
@@ -245,10 +269,30 @@ class AbstainCauseLog:
         """Definition sites recorded for the dominant cause."""
         return tuple(self._def_sites.get(self.dominant(), ()))
 
+    def begin_step(self) -> None:
+        """Start a new instruction: forget the CURSOR, keep the causes.
+
+        A stale cursor would attribute the previous instruction's cause to this
+        one, which is exactly the misattribution a cause token is supposed to
+        end (ticket d81-c6n7).
+        """
+        self._last = ""
+
+    def latest(self) -> str:
+        """The cause noted most recently since the last :meth:`begin_step`."""
+        return self._last
+
+    def latest_def_sites(self) -> tuple[tuple[int, int], ...]:
+        """Definition sites recorded for :meth:`latest`."""
+        if not self._last:
+            return ()
+        return tuple(self._def_sites.get(self._last, ()))
+
     def clear(self) -> None:
         """Drop everything; called at the start of each consult."""
         self._causes.clear()
         self._def_sites.clear()
+        self._last = ""
 
 
 @dataclass(slots=True)
@@ -475,6 +519,7 @@ __all__ = [
     "CAUSE_PHI_MULTI_DEF",
     "CAUSE_RESOLVED",
     "CAUSE_SINGLE_DEF_EVAL_FAILED",
+    "CAUSE_STACK_SLOT_IN_ALIASED_MEMORY",
     "CAUSE_SYNTHETIC_TAINT",
     "CAUSE_TOP_FLOOR_STRICT",
     "CAUSE_UNRESOLVED",

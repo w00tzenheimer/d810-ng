@@ -12,11 +12,10 @@ from __future__ import annotations
 from d810._vendor.peewee import SqliteDatabase
 from d810.core.diag.models import DiagnosticSchemaVersion, MODELS
 
-# Per-corridor state-write resolution facts are persisted in
-# ``state_write_resolutions`` (ticket d81-qt4v). Existing databases are
-# disposable and must be recreated; there is deliberately no v13 -> v14
-# backfill.
-DIAGNOSTIC_SCHEMA_VERSION = 14
+# Deduped emulator gap facts are persisted in ``emulator_gaps``
+# (ticket d81-c6n7). Existing databases are disposable and must be recreated;
+# there is deliberately no v14 -> v15 backfill.
+DIAGNOSTIC_SCHEMA_VERSION = 15
 
 # Recovered-CFG tables were historically named ``dag_*``.  The modeled
 # schema now owns ``state_cfg_*`` tables; this mapping is retained for the

@@ -23,6 +23,13 @@ import platform
 import ida_hexrays
 import pytest
 
+from d810.core.observability_emulator import (
+    CAUSE_UNSUPPORTED_CALL_OPERAND,
+    begin_emulator_gap_attempt,
+    emulator_gap_counts,
+    flush_emulator_gaps,
+    reset_emulator_gaps,
+)
 from d810.evaluator.hexrays_microcode.emulator import (
     MicroCodeEnvironment,
     MicroCodeInterpreter,
@@ -182,13 +189,10 @@ class TestSyntheticCallTaint:
     def test_the_unsupported_call_warns_once_per_site(self, live_call, caplog):
         """Dedupe must survive a FRESH interpreter: the pipeline builds one per
         tracked path and per block consult, so an instance-scoped set still
-        emitted ~1100 warnings for 3 call sites (ticket d81-0xzp)."""
-        from d810.evaluator.hexrays_microcode import emulator as emulator_module
-
+        emitted ~1100 warnings for 3 call sites (ticket d81-0xzp).  Slice 5
+        (d81-c6n7) moved the key to ``(function, attempt, cause, site)``."""
         mba, blk, call_insn = live_call
-        emulator_module._WARNED_CALL_SITES.discard(
-            MicroCodeInterpreter._site_of(call_insn)
-        )
+        reset_emulator_gaps()
         with caplog.at_level(
             "WARNING", logger="d810.evaluator.hexrays_microcode.emulator"
         ):
@@ -197,5 +201,90 @@ class TestSyntheticCallTaint:
                 env = MicroCodeEnvironment()
                 env.set_cur_flow(blk, call_insn)
                 interpreter._eval_call(call_insn, env)
-        warnings = [r for r in caplog.records if "synthetic return" in r.getMessage()]
+        warnings = [
+            r
+            for r in caplog.records
+            if f"cause={CAUSE_UNSUPPORTED_CALL_OPERAND}" in r.getMessage()
+        ]
         assert len(warnings) == 1, [r.getMessage() for r in warnings]
+
+    def test_a_new_attempt_warns_about_the_same_site_again(self, live_call, caplog):
+        """A retry must not go silent: the module-scoped set it replaces never
+        reset, so the second and third attempts lost their warnings."""
+        mba, blk, call_insn = live_call
+        reset_emulator_gaps()
+        func_ea = int(mba.entry_ea)
+        with caplog.at_level(
+            "WARNING", logger="d810.evaluator.hexrays_microcode.emulator"
+        ):
+            for _ in range(3):
+                begin_emulator_gap_attempt(func_ea, maturity="MMAT_CALLS")
+                interpreter = MicroCodeInterpreter(symbolic_mode=False)
+                env = MicroCodeEnvironment()
+                env.set_cur_flow(blk, call_insn)
+                interpreter._eval_call(call_insn, env)
+        warnings = [
+            r
+            for r in caplog.records
+            if f"cause={CAUSE_UNSUPPORTED_CALL_OPERAND}" in r.getMessage()
+        ]
+        assert len(warnings) == 3, [r.getMessage() for r in warnings]
+
+    def test_the_gap_line_is_anchored_and_actionable(self, live_call, caplog):
+        mba, blk, call_insn = live_call
+        reset_emulator_gaps()
+        with caplog.at_level(
+            "WARNING", logger="d810.evaluator.hexrays_microcode.emulator"
+        ):
+            interpreter = MicroCodeInterpreter(symbolic_mode=False)
+            env = MicroCodeEnvironment()
+            env.set_cur_flow(blk, call_insn)
+            interpreter._eval_call(call_insn, env)
+        line = next(
+            r.getMessage()
+            for r in caplog.records
+            if f"cause={CAUSE_UNSUPPORTED_CALL_OPERAND}" in r.getMessage()
+        )
+        assert line.startswith("EMULATOR_GAP ")
+        assert f"func=0x{int(mba.entry_ea):x}" in line
+        assert f"blk={int(blk.serial)}" in line
+        assert f"site=0x{int(call_insn.ea):x}" in line
+        assert "maturity=CALLS" in line
+        assert "python -m d810.diagnostics unflat-why" in line
+
+    def test_a_repeat_still_counts_toward_the_aggregate(self, live_call):
+        mba, blk, call_insn = live_call
+        reset_emulator_gaps()
+        func_ea = int(mba.entry_ea)
+        begin_emulator_gap_attempt(func_ea, maturity="MMAT_CALLS")
+        for _ in range(4):
+            interpreter = MicroCodeInterpreter(symbolic_mode=False)
+            env = MicroCodeEnvironment()
+            env.set_cur_flow(blk, call_insn)
+            interpreter._eval_call(call_insn, env)
+        counts = emulator_gap_counts(func_ea)
+        assert counts.get(CAUSE_UNSUPPORTED_CALL_OPERAND) == 4
+
+    def test_the_attempt_publishes_one_fact_per_site(self, live_call):
+        mba, blk, call_insn = live_call
+        reset_emulator_gaps()
+        func_ea = int(mba.entry_ea)
+        begin_emulator_gap_attempt(func_ea, maturity="MMAT_CALLS")
+        for _ in range(3):
+            interpreter = MicroCodeInterpreter(symbolic_mode=False)
+            env = MicroCodeEnvironment()
+            env.set_cur_flow(blk, call_insn)
+            interpreter._eval_call(call_insn, env)
+        published: list[object] = []
+        line = flush_emulator_gaps(func_ea, emit_fn=published.append)
+        assert line and line.startswith("EMULATOR_GAPS ")
+        assert f"{CAUSE_UNSUPPORTED_CALL_OPERAND}=3" in line
+        gaps = [
+            event
+            for event in published
+            if getattr(event, "cause", "") == CAUSE_UNSUPPORTED_CALL_OPERAND
+        ]
+        assert len(gaps) == 1
+        assert gaps[0].occurrences == 3
+        assert gaps[0].site_ea == int(call_insn.ea)
+        assert gaps[0].func_ea == func_ea

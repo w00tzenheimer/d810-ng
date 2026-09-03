@@ -678,3 +678,123 @@ def test_state_write_resolutions_absent_renders_not_recorded(tmp_path):
     text = "\n".join(render_unflat_why(conn, FUNC_EA))
     assert "state_write_resolutions: not recorded" in text
     assert "StateWriteResolutionFact" in text
+
+
+# ---------------------------------------------------------------------------
+# Emulator gap worklist (ticket d81-c6n7, slice 5)
+# ---------------------------------------------------------------------------
+
+
+def _insert_emulator_gap(
+    conn: sqlite3.Connection,
+    *,
+    event_id: int,
+    cause: str = "stack_slot_in_aliased_memory",
+    site_ea_hex: str = "0x00007ffb0eb0cab7",
+    site_ea_i64: int = 0x7FFB0EB0CAB7,
+    block_serial: int = 236,
+    occurrences: int = 12,
+    detail: str = "",
+    def_sites_json: str = "[]",
+    maturity: str = "MMAT_GLBOPT1",
+    attempt: int = 1,
+    func_ea: int = FUNC_EA,
+    func_ea_hex: str = FUNC_EA_HEX,
+    session_id: str = "s1",
+) -> None:
+    conn.execute(
+        """
+        INSERT INTO emulator_gaps
+            (event_id, session_id, func_ea_hex, func_ea_i64, maturity, attempt,
+             cause, site_ea_hex, site_ea_i64, block_serial, occurrences,
+             detail, def_sites_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            event_id,
+            session_id,
+            func_ea_hex,
+            func_ea,
+            maturity,
+            attempt,
+            cause,
+            site_ea_hex,
+            site_ea_i64,
+            block_serial,
+            occurrences,
+            detail,
+            def_sites_json,
+        ),
+    )
+
+
+def _gap_capture(conn: sqlite3.Connection) -> None:
+    _insert_outcome(
+        conn,
+        event_id=1,
+        disposition="not_submitted_safe_bail",
+        reason="residual_dispatcher_corridor",
+        coverage_covered=0,
+        coverage_residual=158,
+    )
+    # The two ndefs=0 stack slots of sub_7FFB0EB06E50 (plan section 6.5).
+    _insert_emulator_gap(conn, event_id=201, block_serial=236, occurrences=6)
+    _insert_emulator_gap(
+        conn,
+        event_id=202,
+        block_serial=268,
+        site_ea_hex="0x00007ffb0eb10db1",
+        site_ea_i64=0x7FFB0EB10DB1,
+        occurrences=6,
+    )
+    _insert_emulator_gap(
+        conn,
+        event_id=203,
+        cause="unsupported_call_operand",
+        site_ea_hex="0x00007ffb0eb0bcf7",
+        site_ea_i64=0x7FFB0EB0BCF7,
+        block_serial=398,
+        occurrences=3,
+    )
+    _insert_emulator_gap(
+        conn,
+        event_id=204,
+        cause="phi_multi_def",
+        site_ea_hex="0x00007ffb0eb15239",
+        site_ea_i64=0x7FFB0EB15239,
+        block_serial=330,
+        occurrences=1,
+        def_sites_json="[[329, 140718000000000]]",
+    )
+    conn.commit()
+
+
+def test_emulator_gaps_render_a_per_cause_count(tmp_path):
+    conn, _ = _make_db(tmp_path)
+    _gap_capture(conn)
+    text = "\n".join(render_unflat_why(conn, FUNC_EA))
+
+    assert "emulator_gaps:" in text
+    assert "stack_slot_in_aliased_memory=12" in text
+    assert "unsupported_call_operand=3" in text
+    assert "phi_multi_def=1" in text
+
+
+def test_emulator_gaps_list_each_site_with_its_block(tmp_path):
+    conn, _ = _make_db(tmp_path)
+    _gap_capture(conn)
+    text = "\n".join(render_unflat_why(conn, FUNC_EA))
+
+    assert "blk236@0x00007ffb0eb0cab7" in text
+    assert "blk268@0x00007ffb0eb10db1" in text
+    assert "cause=phi_multi_def" in text
+    assert "x6" in text
+
+
+def test_emulator_gaps_absent_renders_not_recorded(tmp_path):
+    conn, _ = _make_db(tmp_path)
+    _insert_outcome(conn, event_id=1)
+    conn.commit()
+    text = "\n".join(render_unflat_why(conn, FUNC_EA))
+    assert "emulator_gaps: not recorded" in text
+    assert "EmulatorGapFact" in text

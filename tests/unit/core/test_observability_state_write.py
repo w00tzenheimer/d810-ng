@@ -23,6 +23,7 @@ from d810.core.observability_state_write import (
     CAUSE_NO_REACHING_DEFS,
     CAUSE_PHI_MULTI_DEF,
     CAUSE_RESOLVED,
+    CAUSE_STACK_SLOT_IN_ALIASED_MEMORY,
     CAUSE_SYNTHETIC_TAINT,
     CAUSE_TOP_FLOOR_STRICT,
     CAUSE_UNRESOLVED,
@@ -376,3 +377,70 @@ class TestMarkCorridorExhausted:
         rec = self._recorder()
         assert rec.mark_corridor_exhausted((1, 2)) is False
         assert rec.build_events() == ()
+
+
+# ---------------------------------------------------------------------------
+# Per-step cause cursor (ticket d81-c6n7, slice 5)
+# ---------------------------------------------------------------------------
+
+
+class TestAbstainCauseLogStepCursor:
+    """The emulator WARNING needs the cause of THIS instruction, not the block.
+
+    ``dominant()`` answers "why did this whole consult abstain" and slice 4's
+    ``eval_block`` reads it once per block.  A per-instruction WARNING needs a
+    narrower question, so the cursor is additive: ``begin_step`` only forgets
+    the *cursor*, never the accumulated causes ``dominant()`` ranks.
+    """
+
+    def test_latest_is_empty_before_anything_is_noted(self):
+        log = AbstainCauseLog()
+        assert log.latest() == ""
+        assert log.latest_def_sites() == ()
+
+    def test_latest_names_the_most_recent_cause(self):
+        log = AbstainCauseLog()
+        log.note(CAUSE_PHI_MULTI_DEF, def_sites=((329, 0x10),))
+        log.note(CAUSE_NO_REACHING_DEFS)
+        assert log.latest() == CAUSE_NO_REACHING_DEFS
+        assert log.latest_def_sites() == ()
+
+    def test_latest_carries_the_def_sites_of_that_cause(self):
+        log = AbstainCauseLog()
+        log.note(CAUSE_PHI_MULTI_DEF, def_sites=((329, 0x10), (398, 0x20)))
+        assert log.latest() == CAUSE_PHI_MULTI_DEF
+        assert log.latest_def_sites() == ((329, 0x10), (398, 0x20))
+
+    def test_begin_step_clears_only_the_cursor(self):
+        log = AbstainCauseLog()
+        log.note(CAUSE_PHI_MULTI_DEF, def_sites=((329, 0x10),))
+        log.begin_step()
+        assert log.latest() == ""
+        # dominant() still sees the accumulated cause: slice 4's block-level
+        # consult must be byte-identical.
+        assert log.dominant() == CAUSE_PHI_MULTI_DEF
+        assert log.def_sites() == ((329, 0x10),)
+
+    def test_a_repeat_note_still_moves_the_cursor(self):
+        log = AbstainCauseLog()
+        log.note(CAUSE_PHI_MULTI_DEF, def_sites=((329, 0x10),))
+        log.note(CAUSE_NO_REACHING_DEFS)
+        log.begin_step()
+        log.note(CAUSE_PHI_MULTI_DEF)
+        assert log.latest() == CAUSE_PHI_MULTI_DEF
+        assert log.latest_def_sites() == ((329, 0x10),)
+
+    def test_clear_resets_the_cursor_too(self):
+        log = AbstainCauseLog()
+        log.note(CAUSE_PHI_MULTI_DEF)
+        log.clear()
+        assert log.latest() == ""
+        assert log.dominant() == ""
+
+    def test_the_aliased_stack_slot_cause_outranks_no_reaching_defs(self):
+        assert (
+            dominant_cause(
+                [CAUSE_NO_REACHING_DEFS, CAUSE_STACK_SLOT_IN_ALIASED_MEMORY]
+            )
+            == CAUSE_STACK_SLOT_IN_ALIASED_MEMORY
+        )

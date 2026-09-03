@@ -117,6 +117,7 @@ def render_unflat_why(conn: sqlite3.Connection, func_ea: int) -> list[str]:
         lines.append("")
 
     _render_state_write_resolutions(lines, conn, func_ea_i64)
+    _render_emulator_gaps(lines, conn, func_ea_i64)
     _render_recovery_search(lines, conn, func_ea_i64)
     return lines
 
@@ -517,6 +518,74 @@ def _safe_def_sites(text: object) -> list[tuple[int, int]]:
         except (TypeError, ValueError):
             continue
     return sites
+
+
+#: How many gap sites the report lists before it truncates.
+_TOP_EMULATOR_GAP_SITES = 20
+
+
+def _render_emulator_gaps(
+    lines: list[str], conn: sqlite3.Connection, func_ea_i64: int
+) -> None:
+    """List the evaluator gaps this function hit, by cause (ticket d81-c6n7).
+
+    The emulator's WARNINGs are a worklist: each cause is a real, individually
+    fixable gap, and the count says which one to close first.  ``occurrences``
+    is the pre-dedupe sighting count, so a single-site gap that fired 2,000
+    times is still visible as such.
+    """
+    if not _table_exists(conn, "emulator_gaps"):
+        lines.append(
+            "emulator_gaps: not recorded (schema predates ticket d81-c6n7 "
+            "slice 5; this diag DB carries no EmulatorGapFact)"
+        )
+        return
+    rows = conn.execute(
+        """
+        SELECT attempt, cause, site_ea_hex, block_serial, occurrences, detail,
+               def_sites_json
+        FROM emulator_gaps
+        WHERE func_ea_i64 = ?
+        ORDER BY attempt, cause, site_ea_i64, rowid
+        """,
+        (int(func_ea_i64),),
+    ).fetchall()
+    if not rows:
+        lines.append(
+            "emulator_gaps: not recorded (no EmulatorGapFact for this function)"
+        )
+        return
+
+    counts: dict[str, int] = {}
+    for row in rows:
+        cause = row["cause"]
+        counts[cause] = counts.get(cause, 0) + int(row["occurrences"])
+    decomposition = " ".join(
+        f"{cause}={count}"
+        for cause, count in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+    )
+    total = sum(counts.values())
+    lines.append(
+        f"emulator_gaps: {len(rows)} site(s), {total} sighting(s); "
+        f"{decomposition}"
+    )
+    shown = rows[:_TOP_EMULATOR_GAP_SITES]
+    truncated = len(rows) - len(shown)
+    for row in shown:
+        def_sites = _safe_def_sites(row["def_sites_json"])
+        sites = (
+            ""
+            if not def_sites
+            else " defs=" + ",".join(f"blk{blk}@0x{ea:x}" for blk, ea in def_sites)
+        )
+        detail = f" detail={row['detail']}" if row["detail"] else ""
+        lines.append(
+            f"  attempt{row['attempt']} cause={row['cause']} "
+            f"blk{row['block_serial']}@{row['site_ea_hex']} "
+            f"x{row['occurrences']}{sites}{detail}"
+        )
+    if truncated > 0:
+        lines.append(f"  ... {truncated} more gap site(s) not shown")
 
 
 def _render_recovery_search(

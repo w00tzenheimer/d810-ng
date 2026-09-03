@@ -20,11 +20,28 @@ from d810.core.bits import (
     unsigned_to_signed,
 )
 from d810.core.cymode import CythonMode
+from d810.core.maturity_labels import MaturityNumbering, mmat_name
+from d810.core.observability_emulator import (
+    CAUSE_HELPER_NOT_IMPLEMENTED,
+    CAUSE_NO_SEGMENT,
+    CAUSE_NULL_DEREF,
+    CAUSE_STX_OPERANDS_UNRESOLVED,
+    CAUSE_UNCLASSIFIED,
+    CAUSE_UNDEFINED_VARIABLE,
+    CAUSE_UNSUPPORTED_CALL_OPERAND,
+    EmulatorGapScope,
+    active_gap_db_path,
+    emulator_gap_scope,
+    format_emulator_gap,
+    is_stack_slot_in_aliased_memory,
+    record_emulator_gap,
+)
 from d810.core.observability_state_write import (
     CAUSE_GLOBAL_NOT_SEEDED,
     CAUSE_NO_REACHING_DEFS,
     CAUSE_PHI_MULTI_DEF,
     CAUSE_SINGLE_DEF_EVAL_FAILED,
+    CAUSE_STACK_SLOT_IN_ALIASED_MEMORY,
     AbstainCauseLog,
 )
 from .chains import (
@@ -39,11 +56,12 @@ from .chains import (
 from .p_multi_def import agreed_value, select_def_index_for_predecessor
 from .p_taint import any_tainted, taint_result
 
-#: Call sites already reported as unsupported.  Module scope on purpose: the
-#: pipeline builds a FRESH interpreter for nearly every evaluation (one per
-#: tracked path, one per block consult), so an instance-scoped set still emitted
-#: ~1100 warnings for 3 distinct call sites (ticket d81-0xzp).
-_WARNED_CALL_SITES: set[tuple[int, int]] = set()
+# Gap-warning dedupe lives in ``d810.core.observability_emulator``, keyed on
+# ``(function, attempt, cause, site)``.  The pipeline builds a FRESH interpreter
+# for nearly every evaluation (one per tracked path, one per block consult), so
+# an instance-scoped set emitted ~1100 warnings for 3 distinct call sites
+# (ticket d81-0xzp); a module-scoped one fixed the count but never reset, so a
+# second function or a retry silently lost its warnings (ticket d81-c6n7).
 
 #: Upper bound on the reaching definitions the path-INSENSITIVE agreement leg
 #: will evaluate at one merge.  A merge with more incoming definitions than this
@@ -438,7 +456,8 @@ class MicroCodeInterpreter(object):
         # INVENTED (a modeled call return, a dereference of a synthetic pointer).
         # Values derived from these are not proven -- see ``p_taint`` (d81-0xzp).
         self._synthetic_result_sites: set[tuple[int, int]] = set()
-        # (call-site dedupe lives at module scope: ``_WARNED_CALL_SITES``)
+        # (gap-warning dedupe lives in ``core.observability_emulator``, keyed on
+        # ``(function, attempt, cause, site)``)
         # ``(block_serial, path)``: the incoming edge -- or the whole incoming
         # PATH, nearest block first -- a consumer declared it is evaluating, so a
         # phi-like merge read in that block resolves to the definition arriving
@@ -496,6 +515,87 @@ class MicroCodeInterpreter(object):
     def _note_synthetic_result(self, ins: ida_hexrays.minsn_t) -> None:
         """Record that *ins*'s result was invented, not computed."""
         self._synthetic_result_sites.add(self._site_of(ins))
+
+    @staticmethod
+    def _gap_context(
+        environment: "MicroCodeEnvironment | None" = None,
+        blk: ida_hexrays.mblock_t | None = None,
+        ins: ida_hexrays.minsn_t | None = None,
+    ) -> tuple[int, int, str, int]:
+        """``(func_ea, block_serial, maturity, site_ea)`` for a gap record.
+
+        Best effort by design: an unknown function or block anchors the gap at
+        ``0`` / ``-1`` rather than dropping it, because a gap the operator
+        cannot locate is still a gap the operator must see.
+        """
+        block = blk
+        if block is None and environment is not None:
+            block = environment.cur_blk
+        func_ea = 0
+        maturity = ""
+        block_serial = -1
+        if block is not None:
+            block_serial = int(getattr(block, "serial", -1))
+            mba = getattr(block, "mba", None)
+            if mba is not None:
+                func_ea = int(getattr(mba, "entry_ea", 0) or 0)
+                maturity = mmat_name(
+                    int(getattr(mba, "maturity", 0) or 0),
+                    numbering=MaturityNumbering.WITH_ZERO,
+                )
+        site = ins
+        if site is None and environment is not None:
+            site = environment.cur_ins
+        site_ea = 0 if site is None else int(getattr(site, "ea", 0) or 0)
+        return func_ea, block_serial, maturity, site_ea
+
+    def _warn_gap(
+        self,
+        cause: str,
+        *,
+        environment: "MicroCodeEnvironment | None" = None,
+        blk: ida_hexrays.mblock_t | None = None,
+        ins: ida_hexrays.minsn_t | None = None,
+        detail_fn: typing.Callable[[], str] | None = None,
+        def_sites: typing.Sequence[tuple[int, int]] = (),
+    ) -> bool:
+        """Warn ONCE per ``(function, attempt, cause, site)`` about a gap.
+
+        The emulator's gap warnings are a worklist, not noise (plan 5.5), so
+        the level stays WARNING; what changes is that the line names a stable
+        cause token, the site, the block, the maturity and the command to run
+        next -- and that a retry no longer triples it.
+
+        ``detail_fn`` is called only on a FIRST sighting, so the expensive
+        ``format_minsn_t`` render is skipped for every deduped repeat.
+        """
+        func_ea, block_serial, maturity, site_ea = self._gap_context(
+            environment, blk, ins
+        )
+        gap = record_emulator_gap(
+            func_ea,
+            cause,
+            site_ea=site_ea,
+            block_serial=block_serial,
+            maturity=maturity,
+            def_sites=def_sites,
+        )
+        if gap is None:
+            return False
+        if detail_fn is not None:
+            try:
+                gap.detail = str(detail_fn())[: EmulatorGapScope.MAX_DETAIL]
+            except Exception:  # noqa: BLE001 — a render must never break a run
+                gap.detail = ""
+        emulator_log.warning(
+            "%s",
+            format_emulator_gap(
+                emulator_gap_scope(func_ea),
+                gap,
+                db_path=active_gap_db_path(func_ea),
+            ),
+        )
+        return True
 
     def _collect_mop_keys(self, mop: ida_hexrays.mop_t | None, keys: set) -> None:
         """Collect the register/stack keys *mop* reads, descending into sub-insns."""
@@ -605,12 +705,14 @@ class MicroCodeInterpreter(object):
 
         # Handle multiple definitions (phi-node situations)
         if len(defs) == 0:
-            self.abstain_causes.note(CAUSE_NO_REACHING_DEFS)
+            cause = self._no_reaching_defs_cause(mba, mop)
+            self.abstain_causes.note(cause)
             if emulator_log.debug_on:
                 emulator_log.debug(
-                    "DEF-USE-DIAG: blk=%d var=%s ndefs=0 (no reaching defs)",
+                    "DEF-USE-DIAG: blk=%d var=%s ndefs=0 (%s)",
                     blk_serial,
                     get_mop_key(mop),
+                    cause,
                 )
             return None
         elif len(defs) > 1:
@@ -633,6 +735,27 @@ class MicroCodeInterpreter(object):
         if value is not None:
             self._def_use_cache[mop_key] = value
         return value
+
+    @staticmethod
+    def _no_reaching_defs_cause(mba: object, mop: ida_hexrays.mop_t) -> str:
+        """Why ``ndefs=0``: a real seeding gap, or no CHAIN at all.
+
+        ``find_reaching_defs_for_stkvar`` asks Hex-Rays for
+        ``get_ud(GC_REGS_AND_STKVARS)[blk].get_stk_chain(off, size)``, which is
+        restricted memory only.  A slot at or above ``mba.minstkref`` lies in
+        ALIASED memory, where that call returns ``None`` for a slot that is
+        demonstrably defined -- both ``ndefs=0`` stack slots in
+        ``sub_7FFB0EB06E50`` (0xD30, 0x1020, ``minstkref`` 0x9A0) have a live
+        def in every snapshot (plan section 6.5).  Naming the coverage gap
+        keeps the worklist honest; closing it is ticket d81-cor5.
+        """
+        if mop.t != ida_hexrays.mop_S or mop.s is None:
+            return CAUSE_NO_REACHING_DEFS
+        if is_stack_slot_in_aliased_memory(
+            getattr(mop.s, "off", None), getattr(mba, "minstkref", None)
+        ):
+            return CAUSE_STACK_SLOT_IN_ALIASED_MEMORY
+        return CAUSE_NO_REACHING_DEFS
 
     def _reaching_defs_at(
         self, mba: object, blk_serial: int, mop: ida_hexrays.mop_t
@@ -1299,6 +1422,9 @@ class MicroCodeInterpreter(object):
                 else:
                     # Avoid dstr/format_mop_t in exception text (hot path)
                     _name = get_stack_or_reg_name(stack_mop)
+                    if not self.abstain_causes.latest():
+                        # The def-use walk named no finer cause for this read.
+                        self.abstain_causes.note(CAUSE_UNDEFINED_VARIABLE)
                     raise EmulationException(
                         "Variable {0} is not defined for mop_r or mop_S".format(_name)
                     )
@@ -1326,12 +1452,14 @@ class MicroCodeInterpreter(object):
                     return self.synthetic_call.chain(ins, load_address)
                 # Treat null deref as unknown to avoid spurious MEMORY[0]
                 if load_address == 0:
-                    emulator_log.warning(
-                        "ldx 0 @ {0:x} (null deref, returning None)".format(
-                            load_address
-                        )
+                    self._warn_gap(
+                        CAUSE_NULL_DEREF,
+                        environment=environment,
+                        ins=ins,
+                        detail_fn=lambda: f"ldx 0 -> None ({format_minsn_t(ins)})",
                     )
                     return None
+                self.abstain_causes.note(CAUSE_NO_SEGMENT)
                 raise EmulationException(
                     "ldx {0:x} (no segment -> return None)".format(load_address)
                 )
@@ -1382,7 +1510,12 @@ class MicroCodeInterpreter(object):
         except EmulationException as e:
             # If we can't evaluate operands and symbolic mode is off, bypass
             if not self.symbolic_mode:
-                emulator_log.warning("Can't evaluate stx operands: %s, bypassing", e)
+                self._warn_gap(
+                    CAUSE_STX_OPERANDS_UNRESOLVED,
+                    environment=environment,
+                    ins=ins,
+                    detail_fn=lambda: f"stx operands unresolved: {e}",
+                )
                 return None
             raise
 
@@ -1424,11 +1557,14 @@ class MicroCodeInterpreter(object):
             # discards the whole path even when the call result is dead (ticket
             # d81-0xzp).  Hand out the stable synthetic return and mark it tainted
             # so no consumer mistakes it for a proven value.
-            self._warn_unsupported_call_once(
-                ins,
-                "Evaluation of call with unsupported mop type %s (%s): "
-                "modeled as a tainted synthetic return",
-                mop_type_to_string(ins.l.t),
+            self._warn_gap(
+                CAUSE_UNSUPPORTED_CALL_OPERAND,
+                environment=environment,
+                ins=ins,
+                detail_fn=lambda: (
+                    f"call operand {mop_type_to_string(ins.l.t)}: "
+                    f"{format_minsn_t(ins)} -> tainted synthetic return"
+                ),
             )
             return self._synthetic_call_result(ins)
         # we only support ida_hexrays.mop_h for calls atm
@@ -1441,11 +1577,14 @@ class MicroCodeInterpreter(object):
         if hname.startswith("NtCurrentPeb"):
             return self.synthetic_call.get(ins) & res_mask
 
-        self._warn_unsupported_call_once(
-            ins,
-            "Evaluation of helper %s (%s) not implemented: "
-            "modeled as a tainted synthetic return",
-            helper_name,
+        self._warn_gap(
+            CAUSE_HELPER_NOT_IMPLEMENTED,
+            environment=environment,
+            ins=ins,
+            detail_fn=lambda: (
+                f"helper {helper_name}: {format_minsn_t(ins)} "
+                "-> tainted synthetic return"
+            ),
         )
         return self._synthetic_call_result(ins)
 
@@ -1460,16 +1599,6 @@ class MicroCodeInterpreter(object):
         value = self.synthetic_call.get(ins)
         mask = AND_TABLE.get(getattr(ins.d, "size", 0) or 0)
         return value & mask if mask is not None else value
-
-    def _warn_unsupported_call_once(
-        self, ins: ida_hexrays.minsn_t, message: str, subject: str
-    ) -> None:
-        """Warn once per call SITE instead of once per emulation pass."""
-        site = self._site_of(ins)
-        if site in _WARNED_CALL_SITES:
-            return
-        _WARNED_CALL_SITES.add(site)
-        emulator_log.warning(message, subject, format_minsn_t(ins))
 
     def eval(self, mop: ida_hexrays.mop_t, environment: MicroCodeEnvironment) -> int:
         # Check for invalid mop sizes (e.g., function references have size=-1)
@@ -1691,12 +1820,21 @@ class MicroCodeInterpreter(object):
             )
         # Clear def-use cache at the start of each emulation pass to avoid stale values
         self._clear_def_use_cache()
+        # Forget only the CURSOR: a cause noted while evaluating the PREVIOUS
+        # instruction must not be attributed to this one, but the accumulated
+        # causes the block-level consult ranks stay intact (ticket d81-c6n7).
+        self.abstain_causes.begin_step()
         try:
             self._eval_instruction_and_update_environment(blk, ins, environment)
             return True
         except EmulationException as e:
-            emulator_log.warning(
-                "Can't evaluate instruction: '%s': %s", format_minsn_t(ins), e
+            self._warn_gap(
+                self.abstain_causes.latest() or CAUSE_UNCLASSIFIED,
+                environment=environment,
+                blk=blk,
+                ins=ins,
+                detail_fn=lambda: f"{format_minsn_t(ins)}: {e}",
+                def_sites=self.abstain_causes.latest_def_sites(),
             )
             if raise_exception:
                 raise e
@@ -1717,16 +1855,19 @@ class MicroCodeInterpreter(object):
         try:
             if environment is None:
                 environment = self.global_environment
+            self.abstain_causes.begin_step()
             res = self.eval(mop, environment)
             return res
         except EmulationException as e:
-            # Prefer canonical name for registers/stack vars; fall back to hash
-            name = get_stack_or_reg_name(mop)
-            emulator_log.warning(
-                "Can't get constant mop value: %s for mop '%s': %s",
-                name,
-                mop_type_to_string(mop.t),
-                e,
+            self._warn_gap(
+                self.abstain_causes.latest() or CAUSE_UNCLASSIFIED,
+                environment=environment,
+                detail_fn=lambda: (
+                    # Prefer the canonical register/stack name; fall back to hash.
+                    f"{get_stack_or_reg_name(mop)} "
+                    f"({mop_type_to_string(mop.t)}): {e}"
+                ),
+                def_sites=self.abstain_causes.latest_def_sites(),
             )
             # Dump environment for debugging
             if emulator_log.debug_on and environment is not None:

@@ -143,7 +143,14 @@ from d810.capabilities.semantic_routes import (
 from d810.capabilities.use_def_safety import UseDefSafetyCapability
 from d810.capabilities.value_range import ValRangeCapability
 from d810.core import logging
-from d810.core.observability_unflat import observe_unflat_candidate_outcome
+from d810.core.observability_emulator import (
+    begin_emulator_gap_attempt,
+    flush_emulator_gaps,
+)
+from d810.core.observability_unflat import (
+    observe_unflat_candidate_outcome,
+    unflat_counters,
+)
 from d810.core.observability_models import (
     BlockSnapshot as _DiagBlockSnapshot,
     DagEdge as _DiagDagEdge,
@@ -1472,6 +1479,34 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
             )
         except Exception:
             logger.debug("unflatten outcome record failed", exc_info=True)
+        self._close_emulator_gap_attempt(func_ea, maturity)
+
+    @staticmethod
+    def _close_emulator_gap_attempt(func_ea: int, maturity: IRMaturity) -> None:
+        """Summarise and reset this attempt's evaluator gaps (ticket d81-c6n7).
+
+        The terminal record is the one point per candidate attempt where every
+        emu-consult that fed it has already run, so it is where the deduped
+        gap WARNINGs are summed into a single line and published as facts --
+        and where the dedupe resets, so a retry warns again instead of going
+        silent (the module-scoped set it replaces never reset).
+
+        Diagnostics must never change an optimizer outcome, so every failure
+        here is swallowed.
+        """
+        try:
+            flush_emulator_gaps(
+                int(func_ea),
+                unresolved_state_writes=len(
+                    unflat_counters(int(func_ea)).unresolved_anchors
+                ),
+            )
+            begin_emulator_gap_attempt(
+                int(func_ea),
+                maturity=maturity_to_name(ir_maturity_to_ida(maturity)),
+            )
+        except Exception:
+            logger.debug("emulator gap attempt close failed", exc_info=True)
 
     def _finalize_dispatcher_round(
         self,

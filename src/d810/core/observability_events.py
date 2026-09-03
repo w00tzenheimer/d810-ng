@@ -1002,6 +1002,53 @@ class StateWriteResolutionObserved:
 
 
 @dataclass(frozen=True, slots=True)
+class EmulatorGapObserved:
+    """One DEDUPED evaluator gap the microcode emulator could not close.
+
+    The emulator's WARNINGs are a worklist, not noise (plan section 5.5): each
+    one is a real, individually fixable evaluator gap, and closing them is what
+    makes unflattening resolve more corridors.  This is the persisted form of a
+    single ``(function, attempt, cause, site)`` gap -- the same key the WARNING
+    line is deduped on -- carrying how many times it recurred within the
+    attempt and the definition sites the emulator considered.
+
+    Diagnostic only: nothing in the optimizer reads these records back.
+    """
+
+    func_ea: int
+    cause: str
+    site_ea: int
+    block_serial: int = -1
+    occurrences: int = 1
+    detail: str = ""
+    def_sites: tuple[tuple[int, int], ...] = ()
+    maturity: str = ""
+    attempt: int = 0
+    session_id: str = ""
+    timestamp: float = 0.0
+
+    def __post_init__(self) -> None:
+        if isinstance(self.func_ea, bool) or int(self.func_ea) < 0:
+            raise ValueError("func_ea must be non-negative")
+        if not isinstance(self.cause, str) or not self.cause.strip():
+            raise ValueError("emulator gap cause must be non-empty")
+        if isinstance(self.occurrences, bool) or int(self.occurrences) < 0:
+            raise ValueError("occurrences must be non-negative")
+        if isinstance(self.attempt, bool) or int(self.attempt) < 0:
+            raise ValueError("attempt must be non-negative")
+        object.__setattr__(self, "func_ea", int(self.func_ea))
+        object.__setattr__(self, "site_ea", int(self.site_ea))
+        object.__setattr__(self, "block_serial", int(self.block_serial))
+        object.__setattr__(self, "occurrences", int(self.occurrences))
+        object.__setattr__(self, "attempt", int(self.attempt))
+        object.__setattr__(
+            self,
+            "def_sites",
+            tuple((int(blk), int(ea)) for blk, ea in self.def_sites),
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class UnflattenCandidateOutcomeObserved:
     """The one authoritative terminal outcome for an unflatten candidate.
 
@@ -1582,6 +1629,7 @@ __all__ = [
     "UnflattenCandidateOutcomeObserved",
     "StateWriteResolutionObserved",
     "STATE_WRITE_RESOLUTION_OUTCOMES",
+    "EmulatorGapObserved",
     "MutationPlanTargetObserved",
     # Preanalysis
     "BranchOwnershipProofsObserved",

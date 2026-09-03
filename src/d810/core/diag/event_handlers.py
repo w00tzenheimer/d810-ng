@@ -48,6 +48,7 @@ from d810.core.diag.lifecycle import (
     persist_mutation_receipt,
     persist_recovery_search,
     persist_state_write_resolution,
+    persist_emulator_gap,
     persist_unflatten_candidate_outcome,
     persist_pass_contract_evidence,
     persist_semantic_fragment_route_oracle,
@@ -112,6 +113,7 @@ from d810.core.observability_events import (
     MutationPlanObserved,
     MutationReceiptObserved,
     RecoverySearchObserved,
+    EmulatorGapObserved,
     StateWriteResolutionObserved,
     UnflattenCandidateOutcomeObserved,
     OptblockCallbackExceptionObserved,
@@ -458,6 +460,16 @@ def _handle_state_write_resolution(ev: StateWriteResolutionObserved) -> None:
     if conn is not None:
         with conn:
             persist_state_write_resolution(conn, ev)
+
+
+def _handle_emulator_gap(ev: EmulatorGapObserved) -> None:
+    try:
+        conn = get_diag_conn(int(ev.func_ea))
+    except Exception:
+        return
+    if conn is not None:
+        with conn:
+            persist_emulator_gap(conn, ev)
 
 
 def _handle_cfg_transaction_attempt(ev: CfgTransactionAttemptObserved) -> None:
@@ -1194,6 +1206,7 @@ _HANDLERS: tuple[tuple[type, object], ...] = (
     (RecoverySearchObserved, _handle_recovery_search),
     (UnflattenCandidateOutcomeObserved, _handle_unflat_candidate_outcome),
     (StateWriteResolutionObserved, _handle_state_write_resolution),
+    (EmulatorGapObserved, _handle_emulator_gap),
     (CfgTransactionAttemptObserved, _handle_cfg_transaction_attempt),
     (
         SemanticFragmentRouteOracleComparedObserved,

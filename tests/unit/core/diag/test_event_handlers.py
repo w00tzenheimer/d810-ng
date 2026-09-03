@@ -34,6 +34,7 @@ from d810.core.observability_events import (
     InputIdentityResolutionObserved,
     ModificationsObserved,
     MutationPlanObserved,
+    EmulatorGapObserved,
     MutationReceiptObserved,
     PassContractEvidencePublished,
     SemanticOutputVerifiedObserved,
@@ -1560,4 +1561,80 @@ def test_state_write_resolution_rows_are_append_only(fake_conn):
         ("329", "resolved"),
         ("355>398", "resolved"),
         ("355>397", "no_def_within_hop_bound"),
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Emulator gap facts (ticket d81-c6n7, slice 5)
+# ---------------------------------------------------------------------------
+
+
+def _emulator_gap(**overrides):
+    kwargs = dict(
+        func_ea=0x7FFB0EB06E50,
+        cause="stack_slot_in_aliased_memory",
+        site_ea=0x7FFB0EB0CAB7,
+        block_serial=236,
+        occurrences=12,
+        detail="ldx ss.2, %var_3A0.8",
+        def_sites=((236, 0x7FFB0EB0CAB7),),
+        maturity="MMAT_GLBOPT1",
+        attempt=2,
+        session_id="sess-1",
+    )
+    kwargs.update(overrides)
+    return EmulatorGapObserved(**kwargs)
+
+
+def test_emulator_gap_writes_lifecycle_and_fact_rows(fake_conn):
+    emit(_emulator_gap())
+
+    kind, maturity, correlation, payload = fake_conn.execute(
+        "SELECT event_kind,maturity,correlation_id,payload_json "
+        "FROM lifecycle_events WHERE event_kind='emulator_gap'"
+    ).fetchone()
+    assert kind == "emulator_gap"
+    assert maturity == "MMAT_GLBOPT1"
+    assert correlation == "2:stack_slot_in_aliased_memory:0x00007ffb0eb0cab7"
+    body = json.loads(payload)
+    assert body["kind"] == "EmulatorGapFact"
+    assert body["cause"] == "stack_slot_in_aliased_memory"
+    assert body["occurrences"] == 12
+    assert body["block_serial"] == 236
+    assert body["def_sites"] == [[236, 0x7FFB0EB0CAB7]]
+
+    row = fake_conn.execute(
+        "SELECT func_ea_hex,cause,site_ea_hex,site_ea_i64,block_serial,"
+        "occurrences,detail,def_sites_json,maturity,attempt FROM emulator_gaps"
+    ).fetchone()
+    assert row[0] == "0x00007ffb0eb06e50"
+    assert row[1] == "stack_slot_in_aliased_memory"
+    assert row[2] == "0x00007ffb0eb0cab7"
+    assert row[3] == 0x7FFB0EB0CAB7
+    assert row[4] == 236
+    assert row[5] == 12
+    assert row[6] == "ldx ss.2, %var_3A0.8"
+    assert json.loads(row[7]) == [[236, 0x7FFB0EB0CAB7]]
+    assert row[8] == "MMAT_GLBOPT1"
+    assert row[9] == 2
+
+
+def test_emulator_gap_rows_are_append_only_per_attempt(fake_conn):
+    emit(_emulator_gap(attempt=1, occurrences=3))
+    emit(_emulator_gap(attempt=2, occurrences=4))
+    emit(
+        _emulator_gap(
+            attempt=2,
+            cause="unsupported_call_operand",
+            site_ea=0x7FFB0EB0BCF7,
+            occurrences=1,
+        )
+    )
+    rows = fake_conn.execute(
+        "SELECT attempt,cause,occurrences FROM emulator_gaps ORDER BY rowid"
+    ).fetchall()
+    assert rows == [
+        (1, "stack_slot_in_aliased_memory", 3),
+        (2, "stack_slot_in_aliased_memory", 4),
+        (2, "unsupported_call_operand", 1),
     ]
