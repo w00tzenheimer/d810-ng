@@ -121,7 +121,8 @@ class ProjectConfiguration:
             json.JSONDecodeError: If the file is not valid JSON.
         """
         config_path = pathlib.Path(path)
-        logger.info("Loading project configuration from %s", config_path)
+        if logger.debug_on:
+            logger.debug("Loading project configuration from %s", config_path)
         try:
             with config_path.open("r", encoding="utf-8") as fp:
                 data = json.load(fp)
@@ -340,10 +341,15 @@ class D810Configuration:
         config_paths.update(user_by_name)
 
         projects = []
-        # The list of configuration names should be persisted for the UI.
+        # The list of configuration names is kept in memory for the UI
+        # (ProjectManager.add/delete read it via get("configurations") and
+        # persist explicitly on that user-initiated change). Discovery
+        # itself must not rewrite options.json: it runs on every
+        # ProjectManager/D810State construction, so persisting here rewrote
+        # the file on every plugin load and project switch for no reason
+        # (slice 6, ticket d81-ebpz).
         cfg_names = sorted(config_paths.keys())
         self.set("configurations", cfg_names)
-        self.save()
 
         for name in cfg_names:
             path = config_paths[name]
@@ -354,6 +360,7 @@ class D810Configuration:
                 logger.error("Failed to load project config %s: %s", path, e)
                 continue
 
+        logger.info("discovered %d project configurations", len(projects))
         return projects
 
     def _resolve_config_path(self, cfg_name: str) -> pathlib.Path:

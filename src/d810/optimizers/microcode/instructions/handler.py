@@ -6,6 +6,7 @@ import builtins
 import ida_hexrays
 
 from d810.core import Registrant, getLogger, typing
+from d810.core.log_aggregates import RuleMatchAggregator
 from d810.core.plugins import PluginRuleServices
 from d810.errors import D810Exception
 from d810.hexrays.expr.ast import AstNode
@@ -331,6 +332,34 @@ class InstructionOptimizer(Registrant, typing.Generic[T_Rule]):
         self._pending_replacement_rule: InstructionOptimizationRule | None = None
         self._pending_replacement_context: MbaObservationContext | None = None
         self._provider_finalized_rules: set[int] = set()
+        # Per-(optimizer, maturity) rule-match aggregate. Slice 3 of
+        # unflat-diagnostics-legibility (d81-ymrt) demotes the per-match
+        # "Rule %s matched" dump to DEBUG; this is the replacement INFO
+        # signal, flushed once when the maturity being processed changes.
+        #
+        # NOTE: staleness is tracked via a *private* field, not
+        # ``self.cur_maturity``. ``HexraysInsnOptimizerAdapter`` externally
+        # assigns ``ins_optimizer.cur_maturity = self.current_maturity`` on
+        # every one of its own maturity transitions, for every registered
+        # optimizer -- including ones that then drop out of
+        # ``_active_optimizers`` and are never called again. Comparing
+        # against ``self.cur_maturity`` would therefore always observe it
+        # already updated to the new value before this method runs, so the
+        # flush could never fire (verified empirically: 0/852 aggregate
+        # lines emitted for a real decompile before this fix).
+        self._rule_match_aggregate = RuleMatchAggregator()
+        self._rule_match_aggregate_maturity = self.cur_maturity
+
+    def _maybe_flush_rule_match_aggregate(self, new_maturity: int) -> None:
+        """Emit one INFO summary line when the maturity being processed
+        changes, covering all rule matches accumulated for the maturity
+        just finished. No-op if nothing matched."""
+        if new_maturity != self._rule_match_aggregate_maturity:
+            self._rule_match_aggregate.flush(
+                optimizer_logger,
+                f"{self.name} {maturity_to_string(self._rule_match_aggregate_maturity)}",
+            )
+            self._rule_match_aggregate_maturity = new_maturity
 
     def set_run_later_callback(self, callback) -> None:
         self._run_later_callback = callback
@@ -487,13 +516,18 @@ class InstructionOptimizer(Registrant, typing.Generic[T_Rule]):
                 _maturity = int(blk.mba.maturity)
                 if _maturity == int(ida_hexrays.MMAT_GLBOPT1):
                     if not getattr(self, "_fence_logged_glbopt1", False):
-                        optimizer_logger.info(
-                            "FENCE_INSN_OPT_AT_GLBOPT1 active for %s"
-                            " (maturity=%s, env=%r)",
-                            type(self).__name__,
-                            maturity_to_string(_maturity),
-                            _fence_env,
-                        )
+                        # Diagnostic-only knob (causality test uee-b7ze):
+                        # DEBUG, not INFO -- pair with `d810.optimizer` at
+                        # DEBUG to see the confirmation when this env var
+                        # is deliberately set.
+                        if optimizer_logger.debug_on:
+                            optimizer_logger.debug(
+                                "FENCE_INSN_OPT_AT_GLBOPT1 active for %s"
+                                " (maturity=%s, env=%r)",
+                                type(self).__name__,
+                                maturity_to_string(_maturity),
+                                _fence_env,
+                            )
                         self._fence_logged_glbopt1 = True
                     return None
         except Exception as _exc:
@@ -514,6 +548,7 @@ class InstructionOptimizer(Registrant, typing.Generic[T_Rule]):
         except Exception:
             pass
         if blk is not None:
+            self._maybe_flush_rule_match_aggregate(blk.mba.maturity)
             self.cur_maturity = blk.mba.maturity
         # Optimizer-level maturity gate: skip entire optimizer if current
         # maturity is not in this optimizer's allowed maturities.
@@ -552,13 +587,15 @@ class InstructionOptimizer(Registrant, typing.Generic[T_Rule]):
                         self._run_later_callback(rule, self.cur_maturity)
                 if new_ins is not None:
                     self.last_matched_rule_name = rule_name
-                    optimizer_logger.info(
-                        "Rule %s matched in maturity %s:",
-                        rule.name,
-                        maturity_to_string(self.cur_maturity),
-                    )
-                    optimizer_logger.info("  orig: %s", format_minsn_t(ins))
-                    optimizer_logger.info("  new : %s", format_minsn_t(new_ins))
+                    self._rule_match_aggregate.record(rule.name)
+                    if optimizer_logger.debug_on:
+                        optimizer_logger.debug(
+                            "Rule %s matched in maturity %s:",
+                            rule.name,
+                            maturity_to_string(self.cur_maturity),
+                        )
+                        optimizer_logger.debug("  orig: %s", format_minsn_t(ins))
+                        optimizer_logger.debug("  new : %s", format_minsn_t(new_ins))
 
                     self._set_pending_replacement(
                         rule,

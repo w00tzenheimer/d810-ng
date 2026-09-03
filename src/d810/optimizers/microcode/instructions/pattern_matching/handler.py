@@ -587,6 +587,7 @@ class PatternOptimizer(InstructionOptimizer):
         self._pending_replacement_context = None
         self._provider_finalized_rules = set()
         if blk is not None:
+            self._maybe_flush_rule_match_aggregate(blk.mba.maturity)
             self.cur_maturity = blk.mba.maturity
         # Optimizer-level maturity gate removed: per-rule maturities are checked in the loop below
         # if self.cur_maturity not in self.maturities:
@@ -704,20 +705,20 @@ class PatternOptimizer(InstructionOptimizer):
         )
         if resolved is None or resolved is ast:
             if trace_tracker_resolution:
-                optimizer_logger.info(
+                optimizer_logger.debug(
                     "[PatternOptimizer] tracker unresolved for %s",
                     format_minsn_t(ins),
                 )
             return None
         if not self._has_usable_tracker_provenance(ins, resolved):
             if trace_tracker_resolution:
-                optimizer_logger.info(
+                optimizer_logger.debug(
                     "[PatternOptimizer] tracker provenance unavailable for %s; refusing fallback",
                     format_minsn_t(ins),
                 )
             return None
         if trace_tracker_resolution:
-            optimizer_logger.info(
+            optimizer_logger.debug(
                 "[PatternOptimizer] tracker resolved %s -> %s",
                 format_minsn_t(ins),
                 resolved,
@@ -1114,14 +1115,15 @@ class PatternOptimizer(InstructionOptimizer):
                     return None
 
                 if new_ins is not None:
-                    if optimizer_logger.info_on:
-                        optimizer_logger.info(
+                    self._rule_match_aggregate.record(str(rule_pattern_info.rule.name))
+                    if optimizer_logger.debug_on:
+                        optimizer_logger.debug(
                             "Rule %s matched in maturity %s:",
                             rule_pattern_info.rule.name,
                             self.cur_maturity,
                         )
-                        optimizer_logger.info("  orig: %s", format_minsn_t(ins))
-                        optimizer_logger.info(
+                        optimizer_logger.debug("  orig: %s", format_minsn_t(ins))
+                        optimizer_logger.debug(
                             "  new : %s",
                             format_minsn_t(new_ins),
                         )

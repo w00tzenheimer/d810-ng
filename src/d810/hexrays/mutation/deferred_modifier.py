@@ -8261,7 +8261,8 @@ class DeferredGraphModifier:
 
         # Capture pre-modification snapshot if enabled
         if enable_snapshot_rollback:
-            logger.info("Capturing pre-modification snapshot for rollback")
+            if logger.debug_on:
+                logger.debug("Capturing pre-modification snapshot for rollback")
             try:
                 self._pre_snapshot = lift(self.mba)
                 logger.debug(
@@ -8541,21 +8542,26 @@ class DeferredGraphModifier:
                 },
             )
 
-        # Log all queued modifications before applying
-        logger.info("=== QUEUED MODIFICATIONS (sorted by priority) ===")
+        # Log all queued modifications before applying (exploration detail;
+        # the pass-level "Applied N/M modifications" line below is the INFO
+        # outcome for this apply() call).
+        if logger.debug_on:
+            logger.debug("=== QUEUED MODIFICATIONS (sorted by priority) ===")
         for i, mod in enumerate(sorted_mods):
-            logger.info(
-                "  [%d] %s (priority=%d) target_blk=%d new_target=%s ref=%s",
-                i,
-                mod.mod_type.name,
-                mod.priority,
-                mod.block_serial,
-                mod.new_target,
-                mod.target_ref_kind.name,
-            )
+            if logger.debug_on:
+                logger.debug(
+                    "  [%d] %s (priority=%d) target_blk=%d new_target=%s ref=%s",
+                    i,
+                    mod.mod_type.name,
+                    mod.priority,
+                    mod.block_serial,
+                    mod.new_target,
+                    mod.target_ref_kind.name,
+                )
             try:
                 blk = self.mba.get_mblock(mod.block_serial)
-                logger.info("      BEFORE: %s", _format_block_info(blk))
+                if logger.debug_on:
+                    logger.debug("      BEFORE: %s", _format_block_info(blk))
             except Exception as exc:
                 logger.warning(
                     "Queued modification [%d] source introspection failed "
@@ -8564,9 +8570,10 @@ class DeferredGraphModifier:
                     type(exc).__name__,
                     exc,
                 )
-                logger.info(
-                    "      BEFORE: blk[%s] <introspection-failed>", mod.block_serial
-                )
+                if logger.debug_on:
+                    logger.debug(
+                        "      BEFORE: blk[%s] <introspection-failed>", mod.block_serial
+                    )
 
             if mod.new_target is not None:
                 try:
@@ -8576,14 +8583,16 @@ class DeferredGraphModifier:
                         or target_serial < 0
                         or target_serial >= self.mba.qty
                     ):
-                        logger.info(
-                            "      TARGET: future/unmaterialized serial=%s (current qty=%d)",
-                            target_serial,
-                            self.mba.qty,
-                        )
+                        if logger.debug_on:
+                            logger.debug(
+                                "      TARGET: future/unmaterialized serial=%s (current qty=%d)",
+                                target_serial,
+                                self.mba.qty,
+                            )
                     else:
                         target_blk = self.mba.get_mblock(target_serial)
-                        logger.info("      TARGET: %s", _format_block_info(target_blk))
+                        if logger.debug_on:
+                            logger.debug("      TARGET: %s", _format_block_info(target_blk))
                 except Exception as exc:
                     logger.warning(
                         "Queued modification [%d] target introspection failed "
@@ -8592,9 +8601,10 @@ class DeferredGraphModifier:
                         type(exc).__name__,
                         exc,
                     )
-                    logger.info(
-                        "      TARGET: blk[%s] <introspection-failed>", mod.new_target
-                    )
+                    if logger.debug_on:
+                        logger.debug(
+                            "      TARGET: blk[%s] <introspection-failed>", mod.new_target
+                        )
 
         successful = 0
         failed = pre_rejected
@@ -8663,8 +8673,9 @@ class DeferredGraphModifier:
                 )
                 mod.new_target = effective_new_target
             blk = self.mba.get_mblock(mod.block_serial)
-            logger.info("--- Applying [%d]: %s ---", i, mod.description)
-            logger.info("    BEFORE: %s", _format_block_info(blk))
+            if logger.debug_on:
+                logger.debug("--- Applying [%d]: %s ---", i, mod.description)
+                logger.debug("    BEFORE: %s", _format_block_info(blk))
 
             if self._is_watched_edge(mod.block_serial, mod.new_target):
                 logger.warning(
@@ -8704,7 +8715,8 @@ class DeferredGraphModifier:
                 result = self._apply_single(mod)
                 # Re-fetch block after modification
                 blk_after = self.mba.get_mblock(mod.block_serial)
-                logger.info("    AFTER:  %s", _format_block_info(blk_after))
+                if logger.debug_on:
+                    logger.debug("    AFTER:  %s", _format_block_info(blk_after))
 
                 # Watch-block delta audit: log when any watched block changed
                 # between the previous mod and this one, and persist each
@@ -8869,7 +8881,8 @@ class DeferredGraphModifier:
                             break
 
                     successful += 1
-                    logger.info("    RESULT: SUCCESS")
+                    if logger.debug_on:
+                        logger.debug("    RESULT: SUCCESS")
                     if self.event_emitter is not None:
                         _p = self._mod_payload(mod, i)
                         _p["result"] = "success"
