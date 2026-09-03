@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-import pytest
+import gc
+import weakref
 
 from d810.core.decompilation_session import DecompilationEvent
 from d810.core.observability_events import (
@@ -11,9 +12,9 @@ from d810.core.observability_events import (
     HostDecompilationOutcomeObserved,
 )
 from d810.core.observability_unflat import (
+    UnflattenOutcomeCounters,
     note_committed_batch,
     note_unflat_counters,
-    reset_unflat_counters,
     unflat_counters,
 )
 from d810.manager.decompilation_lifecycle import DecompilationLifecycleCoordinator
@@ -22,18 +23,12 @@ from tests.native_preanalysis import make_native_key
 
 NATIVE_KEY = make_native_key()
 
-
-@pytest.fixture(autouse=True)
-def _clean_unflat_counters():
-    """Isolate the unflatten counters process-global across every test here.
-
-    ``d810.core.observability_unflat._COUNTERS`` is process-global; without
-    this, a counters test could leak into an unrelated session test (or vice
-    versa) sharing the same ``0x401000`` func_ea.
-    """
-    reset_unflat_counters()
-    yield
-    reset_unflat_counters()
+# No cross-test isolation fixture needed here (ticket d81-pqrc): unflat
+# counters are owned by DecompilationSessionContext, not a process-global
+# dict. Each ``_coordinator()`` call below registers ITSELF as the active
+# provider (DecompilationLifecycleCoordinator.__post_init__), so a
+# later-constructed coordinator naturally supersedes an earlier one -- there
+# is nothing left to reset between tests.
 
 
 class _Emitter:
@@ -179,33 +174,18 @@ def test_final_host_outcome_closes_observability_after_lifecycle_events(monkeypa
     assert order == ["finished", "closed"]
 
 
-def test_new_session_resets_unflatten_counters_for_the_same_func_ea(monkeypatch) -> None:
-    """Ticket d81-pqrc: a fresh session must never inherit a stale run's counters.
+def test_two_sequential_sessions_at_the_same_func_ea_start_from_fresh_counters(
+    monkeypatch,
+) -> None:
+    """Ticket d81-pqrc: session-owned counters, not process-global function state.
 
-    Reproduces the reviewer's report verbatim: a prior session left
-    ``handlers_recovered=85``, a ``plan_id``, and one committed batch behind
-    for this func_ea; a brand new top-level session at the SAME func_ea must
-    start from zero, not silently read the old run's numbers.
+    Reproduces the reviewer's report verbatim: a prior session recorded
+    ``handlers_recovered=85``, a ``plan_id``, and one committed batch for
+    this func_ea, then finished. A brand new top-level session at the SAME
+    func_ea must get its OWN ``UnflattenOutcomeCounters`` object -- a
+    different identity, every field back at its default -- not silently
+    read the old run's numbers via any surviving global lookup.
     """
-    monkeypatch.setattr(
-        "d810.manager.decompilation_lifecycle.emit_diagnostic", lambda *a, **k: None
-    )
-    coordinator = _coordinator(_Emitter())
-
-    note_unflat_counters(0x401000, handlers_recovered=85, handlers_total=85, plan_id="plan-old")
-    note_committed_batch(0x401000)
-    assert unflat_counters(0x401000).handlers_recovered == 85
-
-    coordinator.ensure_hexrays_session(function_ea=0x401000, database_identity="sample.i64")
-
-    stale = unflat_counters(0x401000)
-    assert stale.handlers_recovered is None
-    assert stale.plan_id is None
-    assert stale.committed_batches == 0
-
-
-def test_finished_session_drops_unflatten_counters_for_its_func_ea(monkeypatch) -> None:
-    """Ticket d81-pqrc: counters must not outlive the session that owned them."""
     monkeypatch.setattr(
         "d810.manager.decompilation_lifecycle.emit_diagnostic", lambda *a, **k: None
     )
@@ -213,13 +193,65 @@ def test_finished_session_drops_unflatten_counters_for_its_func_ea(monkeypatch) 
         "d810.manager.decompilation_lifecycle.close_observability_session", lambda: None
     )
     coordinator = _coordinator(_Emitter())
-    coordinator.ensure_hexrays_session(function_ea=0x401000, database_identity="sample.i64")
+
+    session_old, _ = coordinator.ensure_hexrays_session(
+        function_ea=0x401000, database_identity="sample.i64"
+    )
+    note_unflat_counters(0x401000, handlers_recovered=85, handlers_total=85, plan_id="plan-old")
+    note_committed_batch(0x401000)
+    old_counters = unflat_counters(0x401000)
+    assert old_counters is session_old.unflat_counters
+    assert old_counters.handlers_recovered == 85
+    assert old_counters.committed_batches == 1
+
+    coordinator.mark_structural_complete()
+    assert coordinator.observe_host_outcome(0x401000, _rendered("headless")) is True
+    assert coordinator.current_session(0x401000) is None
+
+    session_new, created = coordinator.ensure_hexrays_session(
+        function_ea=0x401000, database_identity="sample.i64"
+    )
+    assert created is True
+
+    fresh = unflat_counters(0x401000)
+    assert fresh is session_new.unflat_counters
+    assert fresh is not old_counters
+    assert fresh == UnflattenOutcomeCounters()
+    assert fresh.handlers_recovered is None
+    assert fresh.plan_id is None
+    assert fresh.committed_batches == 0
+
+
+def test_finished_session_counters_are_unreachable_after_finish(monkeypatch) -> None:
+    """Ticket d81-pqrc: counters do not outlive the session that owned them.
+
+    Once the owning session is popped and nothing else references it, its
+    ``UnflattenOutcomeCounters`` is ordinary garbage -- not retained by any
+    module-level cache -- and the public accessor can no longer see it.
+    """
+    monkeypatch.setattr(
+        "d810.manager.decompilation_lifecycle.emit_diagnostic", lambda *a, **k: None
+    )
+    monkeypatch.setattr(
+        "d810.manager.decompilation_lifecycle.close_observability_session", lambda: None
+    )
+    coordinator = _coordinator(_Emitter())
+    session, _ = coordinator.ensure_hexrays_session(
+        function_ea=0x401000, database_identity="sample.i64"
+    )
     note_unflat_counters(0x401000, dag_nodes=59)
+    counters_ref = weakref.ref(session.unflat_counters)
     coordinator.mark_structural_complete()
 
     assert coordinator.observe_host_outcome(0x401000, _rendered("headless")) is True
 
+    # The public API sees nothing for this func_ea any more.
     assert unflat_counters(0x401000).dag_nodes is None
+
+    # And the object itself is genuinely gone, not merely unlisted.
+    del session
+    gc.collect()
+    assert counters_ref() is None
 
 
 def test_reentrant_activation_for_the_same_func_ea_keeps_its_counters(monkeypatch) -> None:
@@ -228,13 +260,19 @@ def test_reentrant_activation_for_the_same_func_ea_keeps_its_counters(monkeypatc
         "d810.manager.decompilation_lifecycle.emit_diagnostic", lambda *a, **k: None
     )
     coordinator = _coordinator(_Emitter())
-    coordinator.ensure_hexrays_session(function_ea=0x401000, database_identity="sample.i64")
+    session, _ = coordinator.ensure_hexrays_session(
+        function_ea=0x401000, database_identity="sample.i64"
+    )
     note_unflat_counters(0x401000, dag_nodes=59)
 
     # Same func_ea, same database identity, no active-session change: this is
     # the reentrant "current, False" branch and must not touch counters.
-    coordinator.ensure_hexrays_session(function_ea=0x401000, database_identity="sample.i64")
+    reentrant_session, created = coordinator.ensure_hexrays_session(
+        function_ea=0x401000, database_identity="sample.i64"
+    )
 
+    assert created is False
+    assert reentrant_session.unflat_counters is session.unflat_counters
     assert unflat_counters(0x401000).dag_nodes == 59
 
 

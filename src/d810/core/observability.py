@@ -377,6 +377,57 @@ def get_active_diag_func_ea() -> int | None:
         return None
 
 
+# ---------------------------------------------------------------------------
+# Unflatten outcome counters (ticket d81-pqrc)
+#
+# The counters a terminal unflatten outcome record quotes are owned by the
+# manager-layer DecompilationSessionContext -- minted with the session,
+# unreachable once it is popped and dropped. core.observability_unflat (and
+# its transforms/hexrays producers, which must not import d810.manager) reach
+# them only through this one registered indirection, never through a
+# process-global dict keyed by func_ea. Registered by
+# DecompilationLifecycleCoordinator.__post_init__, not at module import time
+# (there is no diag-style self-registering backend module here).
+# ---------------------------------------------------------------------------
+
+_active_unflat_counters_provider: Callable[[int], Any | None] | None = None
+
+
+def register_active_unflat_counters_provider(fn: Callable[[int], Any | None]) -> None:
+    """Register the lifecycle-owned unflatten counters accessor.
+
+    ``fn`` receives ``func_ea`` and returns the active session's counters
+    object, or ``None`` when no session owns that function. Idempotent: a
+    later coordinator construction (plugin reload) replaces the previous
+    registration, mirroring :func:`register_diag_session_handlers`.
+    """
+    global _active_unflat_counters_provider
+    with _session_lock:
+        _active_unflat_counters_provider = fn
+
+
+def get_active_unflat_counters(func_ea: int) -> Any | None:
+    """Return the active session's unflatten outcome counters, or ``None``.
+
+    ``None`` means either no lifecycle coordinator has registered itself yet
+    or no session currently owns ``func_ea`` -- both diagnostic-only, never
+    gating conditions for the caller.
+    """
+    provider = _active_unflat_counters_provider
+    if provider is None:
+        return None
+    try:
+        return provider(int(func_ea))
+    except Exception:
+        _logger.warning(
+            "active unflat-counters provider raised; treating as untracked "
+            "(func_ea=0x%x)",
+            int(func_ea),
+            exc_info=True,
+        )
+        return None
+
+
 _snapshot_id_resolver: Callable[["SnapshotRef"], int | None] | None = None
 
 
@@ -421,10 +472,12 @@ __all__ = [
     "get_active_diag_conn",
     "get_active_diag_func_ea",
     "get_active_diag_path",
+    "get_active_unflat_counters",
     "get_diag_latest_path_for_func",
     "has_subscribers",
     "new_snapshot_key",
     "open_observability_session",
+    "register_active_unflat_counters_provider",
     "register_diag_active_func_ea_provider",
     "register_diag_conn_provider",
     "register_diag_latest_path_for_func_provider",

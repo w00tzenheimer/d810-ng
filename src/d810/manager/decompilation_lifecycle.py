@@ -39,9 +39,10 @@ from d810.core.provider_phase import ProviderPhaseSnapshot
 from d810.core.observability import (
     close_observability_session,
     emit as emit_diagnostic,
+    register_active_unflat_counters_provider,
 )
 from d810.core.observability_emulator import flush_all_emulator_gaps
-from d810.core.observability_unflat import reset_unflat_counters
+from d810.core.observability_unflat import UnflattenOutcomeCounters
 from d810.core.observability_events import (
     DiagnosticSessionObserved,
     EvidenceGenerationObserved,
@@ -153,6 +154,13 @@ class DecompilationSessionContext:
     frontend_normalization_plan_authority: SessionFrontendNormalizationPlanAuthority = (
         field(init=False)
     )
+    #: Diagnostic-only counters a terminal unflatten outcome record quotes
+    #: (ticket d81-pqrc). Owned by this session: minted fresh with it via
+    #: ``default_factory`` and unreachable once the session is popped and
+    #: dropped -- never a process-global keyed by func_ea.
+    unflat_counters: UnflattenOutcomeCounters = field(
+        default_factory=UnflattenOutcomeCounters, repr=False
+    )
 
     def __post_init__(self) -> None:
         resolution = self.input_identity_resolution
@@ -257,6 +265,21 @@ class DecompilationLifecycleCoordinator:
         init=False,
         repr=False,
     )
+
+    def __post_init__(self) -> None:
+        # Session-owned unflatten outcome counters (ticket d81-pqrc) live on
+        # DecompilationSessionContext, not a process-global dict. core-layer
+        # producers (which must not import this manager-layer module) reach
+        # them through this one registered indirection -- the same
+        # dependency-inversion shape core.diag already uses for the active
+        # diag session. Idempotent: a later coordinator construction (plugin
+        # reload) simply replaces the previous registration.
+        register_active_unflat_counters_provider(self.unflat_counters_for)
+
+    def unflat_counters_for(self, function_ea: int) -> UnflattenOutcomeCounters | None:
+        """Return the active session's unflatten outcome counters, if any."""
+        session = self.current_session(function_ea)
+        return None if session is None else session.unflat_counters
 
     @property
     def has_active_sessions(self) -> bool:
@@ -604,20 +627,6 @@ class DecompilationLifecycleCoordinator:
 
         self._observe_session(session, "active")
         self._emit_session_event(DecompilationEvent.SESSION_STARTED, session.event)
-        # A new top-level session for this func_ea must never inherit the
-        # prior session's unflatten outcome counters (ticket d81-pqrc):
-        # handlers_recovered, plan_id, and committed_batches_before are
-        # session-scoped state, not per-function-forever state. Only this
-        # branch (a genuinely new ``DecompilationSessionContext``) reaches
-        # here; borrowed/reentrant activations for the same function return
-        # earlier and correctly keep accumulating into the live session.
-        try:
-            reset_unflat_counters(function_ea)
-        except Exception:
-            logger.exception(
-                "unflatten outcome counters reset failed for func=0x%x",
-                function_ea,
-            )
 
         preanalysis_runtime = self.preanalysis_runtime
         if preanalysis_runtime is not None:
@@ -1615,14 +1624,6 @@ class DecompilationLifecycleCoordinator:
                 flush_all_emulator_gaps()
             except Exception:  # noqa: BLE001 — diagnostics never break a run
                 logger.debug("emulator gap final flush failed", exc_info=True)
-            # Drop this function's unflatten outcome counters with the
-            # session that owned them (ticket d81-pqrc) so nothing lingers
-            # past the lifecycle boundary that created it, mirroring the
-            # per-session reset above.
-            try:
-                reset_unflat_counters(int(session.function_ea))
-            except Exception:  # noqa: BLE001 — diagnostics never break a run
-                logger.debug("unflatten outcome counters reset failed", exc_info=True)
             close_observability_session()
         return None
 

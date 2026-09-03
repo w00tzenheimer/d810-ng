@@ -4443,7 +4443,9 @@ class D810Manager:
             return
         try:
             func_ea = int(event.function_ea)
-            # Evaluate the gate BEFORE any note_* call: those create the slot.
+            # Evaluate the gate BEFORE any note_* call: those touch the
+            # active session's counters (ticket d81-pqrc), which would make
+            # this check true for an unrelated CFG transaction too.
             tracked = has_unflat_counters(func_ea)
             if not tracked and phase != "poisoned_restart_required":
                 return
