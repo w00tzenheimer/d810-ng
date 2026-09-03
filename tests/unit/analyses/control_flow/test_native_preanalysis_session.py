@@ -467,7 +467,9 @@ def test_poison_recovery_receipt_is_owned_by_manager_and_quarantines_mutation() 
         consumer=GeneratedRestartConsumer.MANAGER,
     ) == receipt
     assert state.pending_generated_restart is None
-    assert state.native_mutation_quarantined
+    # Consumption opens the recovery session the restart was requested for, so
+    # the quarantine lifts here; it re-arms only if poison recurs (d81-hzvr).
+    assert not state.native_mutation_quarantined
 
 
 def test_evidence_rebind_is_declined_after_manager_consumes_poison() -> None:
@@ -477,7 +479,7 @@ def test_evidence_rebind_is_declined_after_manager_consumes_poison() -> None:
     assert state.consume_generated_restart(
         consumer=GeneratedRestartConsumer.MANAGER,
     ) is not None
-    assert state.native_mutation_quarantined
+    assert not state.native_mutation_quarantined
 
     assert not state.request_generated_restart(
         evidence_family="ordinary_evidence",
@@ -2555,3 +2557,60 @@ def test_only_cfg_mutating_boundaries_are_blocked_by_a_quarantine() -> None:
 def test_quarantine_blocking_requires_a_typed_boundary() -> None:
     with pytest.raises(TypeError):
         native_mutation_quarantine_blocks("optinsn")
+
+
+def test_consumed_poison_restart_clears_the_mutation_quarantine() -> None:
+    """The recovery decompile the restart bought must not run quarantined.
+
+    A poisoned generation quarantines native mutation because the identities
+    the plans were bound to no longer describe the live MBA. Consuming the
+    restart is exactly the event that retires those identities: the recovery
+    decompile is a new session and has to be allowed to simplify, or the
+    restart buys a second fully inert decompile.
+    """
+    state = NativePreanalysisSessionState(evidence_generation=5)
+    assert state.request_poisoned_generation_restart(reason="INTERR 50856")
+    assert state.native_mutation_quarantined
+
+    assert state.consume_generated_restart(
+        consumer=GeneratedRestartConsumer.MANAGER,
+    ) is not None
+
+    assert not state.native_mutation_quarantined
+    assert state.is_poison_recovery_generation
+
+
+def test_poison_recurring_after_a_consumed_restart_requarantines() -> None:
+    """A second poison in the recovery session is terminal, not another retry."""
+    state = NativePreanalysisSessionState(evidence_generation=5)
+    assert state.request_poisoned_generation_restart(reason="first poison incident")
+    assert state.consume_generated_restart(
+        consumer=GeneratedRestartConsumer.MANAGER,
+    ) is not None
+    assert not state.native_mutation_quarantined
+
+    assert not state.request_poisoned_generation_restart(
+        reason="poison recurred inside the recovery decompile"
+    )
+
+    assert state.has_exhausted_poison_restart
+    assert state.native_mutation_quarantined
+
+
+def test_fresh_evidence_epoch_clears_the_consumed_poison_recovery_mark() -> None:
+    """A genuinely new evidence epoch owns none of the previous poison state."""
+    state = NativePreanalysisSessionState(evidence_generation=5)
+    state.normalization_published_postvalidated_generation = 5
+    assert state.request_poisoned_generation_restart(reason="poison incident")
+    assert state.consume_generated_restart(
+        consumer=GeneratedRestartConsumer.MANAGER,
+    ) is not None
+
+    state.mark_evidence_changed(
+        evidence_family="native_facts",
+        reason="genuinely changed native facts",
+    )
+
+    assert state.poison_recovery_consumed_generation is None
+    assert not state.native_mutation_quarantined
+    assert not state.is_poison_recovery_generation
