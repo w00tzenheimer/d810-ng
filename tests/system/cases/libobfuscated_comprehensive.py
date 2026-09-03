@@ -799,6 +799,27 @@ OLLVM_CASES = [
 
 DAC_MASM_CASES = [
     DeobfuscationCase(
+        function="sub_7FFB0E398850",
+        description=(
+            "Eidolon loader dispatcher (Wow_loader 12.1.0.69587) extracted with "
+            "`d810cli fixture`. Regression cover for d81-jlfw: a committed CFG "
+            "batch leaves one native block folded to an empty fall-through, and "
+            "the observed post-apply contract used to read that as a lost block "
+            "-- first as a native-origin identity failure, then as "
+            "structural_accounting:source_loss_unaccounted, then as a missing "
+            "lineage witness -- poisoning the generation and quarantining the "
+            "whole function after seven committed batches. The two comparands "
+            "below belong to the residual dispatcher chain that survives only "
+            "when that quarantine happens: with the contract fixed the "
+            "function renders in 314 lines instead of 1110 and the chain is "
+            "gone (measured headlessly on this exact MASM fixture)."
+        ),
+        project="eidolon_v4_const_simplify_solve.json",
+        deobfuscated_not_contains=["0x31DC4741", "0x31DC4742"],
+        must_change=True,
+        skip_if_function_absent=True,
+    ),
+    DeobfuscationCase(
         function="sub_7FF856533A20",
         description=(
             "Exact Eid v4 layered-control-flow fixture. The outer interval "
