@@ -30,6 +30,15 @@ from d810.ir.graph_fingerprint import (
     portable_graph_fingerprint_values,
     portable_graph_projection,
 )
+from .canonical_session import (
+    active_canonical_session,
+    record_canonical_bytes_reuse,
+    record_content_id_reuse,
+    record_deep_validation,
+    record_inventory_validation,
+    record_roundtrip_decode,
+    record_wire_encode,
+)
 
 _PREFIX = b"d810-unflatten-authority\0"
 SUBJECT_SCHEMA = "unflatten.subject.v1"
@@ -1031,9 +1040,93 @@ def _json_bytes(value: object) -> bytes:
     return json.dumps(value, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("ascii")
 
 
+def _occurrence_stamp(value: object, seen: set[int] | None = None) -> object:
+    """Return a non-authoritative structural snapshot for one cache entry.
+
+    This is an entry guard, never a cache key or an authority digest.  It
+    avoids dataclass equality and recursive hashing while detecting an
+    ``object.__setattr__`` mutation before a phase-local cached byte string or
+    record ID can be returned for the wrong live content.
+    """
+
+    seen = set() if seen is None else seen
+    if value is None or type(value) in (bool, int, str, bytes):
+        return ("atom", type(value), value)
+    if type(value) is float:
+        return ("float", value.hex())
+    if isinstance(value, Enum):
+        return ("enum", type(value), value.name)
+    if type(value) is dict or type(value) is MappingProxyType:
+        marker = id(value)
+        if marker in seen:
+            return ("cycle", marker)
+        seen.add(marker)
+        try:
+            mapping = _exact_canonical_mapping(value)
+            return (
+                "map", type(value), tuple(
+                    (key, _occurrence_stamp(item, seen))
+                    for key, item in dict.items(mapping)
+                ),
+            )
+        finally:
+            seen.remove(marker)
+    if type(value) in (list, tuple, frozenset):
+        marker = id(value)
+        if marker in seen:
+            return ("cycle", marker)
+        seen.add(marker)
+        try:
+            return (
+                "sequence", type(value),
+                tuple(_occurrence_stamp(item, seen) for item in value),
+            )
+        finally:
+            seen.remove(marker)
+    _ensure_registries()
+    names = _RECORD_FIELDS.get(type(value), _EXTERNAL_FIELDS.get(type(value)))
+    if names is not None:
+        marker = id(value)
+        if marker in seen:
+            return ("cycle", marker)
+        seen.add(marker)
+        try:
+            return (
+                "record", type(value), tuple(
+                    (
+                        name,
+                        _occurrence_stamp(
+                            type(value).SCHEMA_VERSION
+                            if type(value).__name__ == "NativePreanalysisKey"
+                            and name == "schema_version"
+                            else getattr(value, name),
+                            seen,
+                        ),
+                    )
+                    for name in names
+                ),
+            )
+        finally:
+            seen.remove(marker)
+    return ("unknown", type(value), id(value))
+
+
 def canonical_bytes(value: object) -> bytes:
+    session = active_canonical_session()
+    stamp = None if session is None else _occurrence_stamp(value)
+    if session is not None:
+        cached = session.cached_canonical_bytes(value, stamp)
+        if cached is not None:
+            record_canonical_bytes_reuse()
+            return cached
     _validate_canonical_value(value)
-    return _json_bytes(_wire(value))
+    record_deep_validation()
+    wire = _wire(value)
+    record_wire_encode()
+    data = _json_bytes(wire)
+    if session is not None:
+        session.store_canonical_bytes(value, stamp, data)
+    return data
 
 
 def _decode_wire(value: object, *, allow_index: bool = False) -> object:
@@ -1253,6 +1346,7 @@ def canonical_decode(encoded: bytes) -> object:
         raise ValueError("obligation indexes are evaluator-owned and require case context")
     if canonical_bytes(result) != encoded:
         raise ValueError("non-canonical canonical encoding")
+    record_roundtrip_decode()
     return result
 
 
@@ -1654,7 +1748,9 @@ def semantic_graph_inventory_digest(*fields: object) -> str:
         fields = (*fields, ())
     if len(fields) != 15:
         raise TypeError("semantic graph inventory digest requires fifteen fields")
-    return content_id(SEMANTIC_GRAPH_INVENTORY_SCHEMA, tuple(fields))
+    digest = content_id(SEMANTIC_GRAPH_INVENTORY_SCHEMA, tuple(fields))
+    record_inventory_validation()
+    return digest
 
 
 def bound_unflatten_binding_id(prepared: object, patch_binding: object) -> str:
@@ -1694,6 +1790,13 @@ def _subject_factory(cls: type[object], **kwargs: object) -> object:
 def _record_content_id(schema: str, value: object, omitted_field: str) -> str:
     if not is_dataclass(value) or isinstance(value, type):
         raise TypeError("content ID factory requires a registered record")
+    session = active_canonical_session()
+    stamp = None if session is None else _occurrence_stamp(value)
+    if session is not None:
+        cached = session.cached_content_id(value, schema, omitted_field, stamp)
+        if cached is not None:
+            record_content_id_reuse()
+            return cached
     _ensure_registries()
     if type(value) not in _RECORD_TYPES:
         raise TypeError(f"unregistered record type: {type(value).__name__}")
@@ -1709,9 +1812,13 @@ def _record_content_id(schema: str, value: object, omitted_field: str) -> str:
             if name != omitted_field
         ],
     }
-    return "sha256:" + hashlib.sha256(
+    record_wire_encode()
+    result = "sha256:" + hashlib.sha256(
         _PREFIX + schema.encode("ascii") + b"\0" + _json_bytes(wire)
     ).hexdigest()
+    if session is not None:
+        session.store_content_id(value, schema, omitted_field, stamp, result)
+    return result
 
 
 def _claim_factory(cls: type[object], *args: object, **kwargs: object) -> object:

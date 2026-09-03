@@ -15,6 +15,7 @@ from d810.transforms.cfg_transaction import TransactionAttemptId
 from d810.transforms.plan import PatchRedirectGoto
 
 from . import model
+from .canonical_session import CanonicalWorkMetrics, process_work_metrics
 from .ids import content_id
 from .legacy_codec import (
     NativeBoundTransitionRouteReceipt,
@@ -715,7 +716,29 @@ def phase_observation(
     )
 
 
+def canonical_work_counters() -> CanonicalWorkMetrics:
+    """Return this interpreter's cumulative canonical work counts.
+
+    The counts are non-authoritative measurement metadata.  They never enter a
+    canonical payload, an identity, or a verdict, and reading them has no
+    effect on validation.
+    """
+
+    return process_work_metrics()
+
+
+def canonical_work_payload() -> dict[str, int]:
+    """Project the cumulative canonical work counts as a sorted payload.
+
+    >>> sorted(canonical_work_payload())[0]
+    'canonical_bytes_reuses'
+    """
+
+    return process_work_metrics().as_payload()
+
+
 __all__ = [
     "CanonicalPhaseCounters", "PhaseTimings", "build_phase_payload",
+    "canonical_work_counters", "canonical_work_payload",
     "native_bound_transition_route_receipts_from_plan", "phase_observation",
 ]

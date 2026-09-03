@@ -3894,6 +3894,78 @@ def test_direct_observed_gate_consumes_one_exact_ledger_once(monkeypatch):
     assert seen == [observed.observed_acceptance.observed_ledger]
 
 
+def test_transaction_phases_own_distinct_closed_canonical_sessions(monkeypatch):
+    """Preparation seals its inventories once; observation starts fresh."""
+
+    from d810.hexrays.ir.mba_identity_index import MbaBlockIdentityIndex
+    from d810.hexrays.mutation.patch_binding import bind_patch_plan
+    from d810.transforms.unflatten_authority.canonical_session import (
+        CanonicalSessionPhase,
+        active_canonical_session,
+    )
+
+    fixture, source, plan, projected, gates = _c1_direct_preparation_case()
+    seen = []
+    builder = transaction_api._build_semantic_graph_inventory
+
+    def capture_session(*args, **kwargs):
+        seen.append((kwargs["phase"], active_canonical_session()))
+        return builder(*args, **kwargs)
+
+    monkeypatch.setattr(
+        transaction_api, "_build_semantic_graph_inventory", capture_session,
+    )
+    prepared = transaction_api.prepare_unflatten_authority(
+        source=source,
+        projection=CfgProjection(plan.plan_id, plan.snapshot_id, projected),
+        plan=plan,
+        attempt_id=fixture.attempt_id,
+        generic_gates=gates,
+    ).prepared
+    assert prepared is not None
+    refs = tuple(plan.source_coordinates)
+    index = MbaBlockIdentityIndex.from_bindings(
+        generation=fixture.attempt_id.generation,
+        maturity=None,
+        native_key=refs[0][0].identity.native_key,
+        snapshot_id=plan.snapshot_id,
+        session_id=fixture.attempt_id.session_id,
+        bindings=tuple((ref.identity, serial) for ref, serial in refs),
+    )
+    index.begin_transaction(fixture.attempt_id, quantity=len(source.blocks))
+    authority = transaction_api.bind_prepared_unflatten_authority(
+        prepared=prepared,
+        patch_binding=bind_patch_plan(plan, index, fixture.attempt_id).bound_plan,
+    ).authority
+    assert authority is not None
+    observed = transaction_api.revalidate_observed_unflatten_authority(
+        authority=authority,
+        observed=projected,
+        observed_generation=fixture.attempt_id.generation,
+        generic_gates=gates,
+        observed_patch_binding=observed_patch_binding_for_test(authority),
+    )
+    assert observed.accepted
+
+    assert [phase for phase, _session in seen] == [
+        model.UnflattenAuthorityPhase.PRODUCER_FORECAST,
+        model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY,
+    ]
+    projected_session = seen[0][1]
+    assert projected_session is seen[1][1]
+    assert projected_session.phase is CanonicalSessionPhase.PROJECTED_PREPARATION
+    # Each constructor still computes the supplied digest plus the strict
+    # public dataclass digest check.  The session removes later consumers'
+    # replays; internal single-digest minting remains a separate plan step.
+    assert projected_session.metrics.inventory_validations == 4
+    observed_session = seen[2][1]
+    assert observed_session is not projected_session
+    assert observed_session.phase is CanonicalSessionPhase.OBSERVED_REVALIDATION
+    assert projected_session.closed and observed_session.closed
+    assert active_canonical_session() is None
+
+
 def _prepared_lowered_conditional_observed_case(*, unrelated_same_owner_site=False):
     """Prepare the RF-1 fixture through the public observed boundary once."""
     from d810.hexrays.ir.mba_identity_index import MbaBlockIdentityIndex

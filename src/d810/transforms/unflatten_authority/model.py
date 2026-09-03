@@ -43,6 +43,7 @@ from d810.transforms.cfg_transaction import (
     TransactionAttemptId,
 )
 from .ids import (
+    _occurrence_stamp,
     _subject_id_from_record,
     _validate_id,
     authority_id,
@@ -75,6 +76,7 @@ from .ids import (
     CLONED_SEMANTIC_ORIGIN_SCHEMA,
     CLONED_SEMANTIC_PREFIX_SCHEMA,
 )
+from .canonical_session import active_canonical_session
 from .legacy_keys import LEGACY_UNFLATTEN_KEYS
 from .gates import GenericCfgGateFacts
 
@@ -6412,6 +6414,9 @@ class SemanticGraphInventory:
         )
         if self.inventory_digest != expected:
             raise ValueError("inventory_digest does not match inventory content")
+        session = active_canonical_session()
+        if session is not None:
+            session.seal_inventory(self, _occurrence_stamp(self))
 
 
 def validate_semantic_graph_inventory(value: object) -> SemanticGraphInventory:
@@ -6419,6 +6424,11 @@ def validate_semantic_graph_inventory(value: object) -> SemanticGraphInventory:
 
     if type(value) is not SemanticGraphInventory:
         raise TypeError("inventory must be SemanticGraphInventory")
+    session = active_canonical_session()
+    if session is not None and session.inventory_is_sealed(
+        value, _occurrence_stamp(value),
+    ):
+        return value
     value.__post_init__()
     return value
 

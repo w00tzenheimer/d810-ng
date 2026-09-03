@@ -77,6 +77,10 @@ from d810.transforms.unflatten_authority.gates import (
 from d810.transforms.unflatten_authority.diagnostics import PhaseTimings, phase_observation
 from d810.transforms.unflatten_authority.views import compatibility_projection
 from d810.transforms.exit_path_liveness_policy import exit_path_blocks_live_violations
+from .canonical_session import (
+    CanonicalSessionPhase,
+    _canonical_validation_session,
+)
 from .proposal import (
     CanonicalPatchStepDescriptor,
     _entry_liveness_route_proof_rejection_detail,
@@ -4751,7 +4755,7 @@ def realize_projected_routes(
     )
 
 
-def _prepare_unflatten_authority(*, source, projection, plan, attempt_id, generic_gates, _timings=None):
+def _prepare_unflatten_authority_in_session(*, source, projection, plan, attempt_id, generic_gates, _timings=None):
     """Prepare one immutable projected authority case before mutation."""
     from .model import (
         UnflattenAuthorityPreparationAccepted,
@@ -5247,6 +5251,18 @@ def _prepare_unflatten_authority(*, source, projection, plan, attempt_id, generi
         )
         return UnflattenAuthorityPreparationRejected(
             verdict,
+        )
+
+
+def _prepare_unflatten_authority(*, source, projection, plan, attempt_id, generic_gates, _timings=None):
+    """Run one complete projected preparation in its transaction-owned session."""
+
+    with _canonical_validation_session(
+        CanonicalSessionPhase.PROJECTED_PREPARATION,
+    ):
+        return _prepare_unflatten_authority_in_session(
+            source=source, projection=projection, plan=plan,
+            attempt_id=attempt_id, generic_gates=generic_gates, _timings=_timings,
         )
 
 
@@ -5783,7 +5799,7 @@ def _log_first_observed_authority_mismatch(
         break
 
 
-def _revalidate_observed_unflatten_authority(
+def _revalidate_observed_unflatten_authority_in_session(
     *, authority, observed, observed_generation, generic_gates,
     observed_patch_binding, _timings=None,
 ):
@@ -5963,6 +5979,22 @@ def _revalidate_observed_unflatten_authority(
     if _timings is not None:
         _timings.evaluation_ms = _elapsed_ms(evaluation_started_ns, perf_counter_ns())
     return verdict
+
+
+def _revalidate_observed_unflatten_authority(
+    *, authority, observed, observed_generation, generic_gates,
+    observed_patch_binding, _timings=None,
+):
+    """Run one observed revalidation in a fresh transaction-owned session."""
+
+    with _canonical_validation_session(
+        CanonicalSessionPhase.OBSERVED_REVALIDATION,
+    ):
+        return _revalidate_observed_unflatten_authority_in_session(
+            authority=authority, observed=observed,
+            observed_generation=observed_generation, generic_gates=generic_gates,
+            observed_patch_binding=observed_patch_binding, _timings=_timings,
+        )
 
 
 def revalidate_observed_unflatten_authority(
