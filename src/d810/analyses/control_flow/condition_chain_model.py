@@ -361,6 +361,12 @@ class ConditionChainAnalysisResult:
     state_var_stkoff: int | None = None
     state_var_lvar_idx: int | None = None
     state_var_reg: int | None = None
+    # Every state constant the function writes to the state variable.  A
+    # comparison-tree (BST) dispatcher publishes wide leaf intervals, so
+    # interval width alone cannot decide whether a row binds one concrete
+    # state; this set can (ticket d81-8xhg).  Empty means "not recovered",
+    # which keeps consumers on the conservative singleton-only exactness rule.
+    written_state_constants: frozenset[int] = frozenset()
 
 
 def resolve_target_via_condition_chain(

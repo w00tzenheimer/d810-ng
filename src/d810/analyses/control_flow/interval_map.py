@@ -11,7 +11,10 @@ from bisect import bisect_right
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from d810.core.logging import getLogger
-from d810.core.typing import Any, Mapping
+from d810.analyses.control_flow.route_exactness import (
+    normalize_written_state_constants,
+)
+from d810.core.typing import Any, Iterable, Mapping
 
 logger = getLogger(__name__)
 
@@ -407,9 +410,17 @@ class IntervalDispatcher:
 
     Args:
         rows: Pre-built list of IntervalRow objects.
+        written_state_constants: The state constants the analysed function
+            actually writes to the state variable.  A comparison-tree (BST)
+            dispatcher publishes wide leaf intervals, so interval width alone
+            cannot say whether a row binds one concrete state; carrying the
+            occurring values alongside the table lets
+            :mod:`d810.analyses.control_flow.route_exactness` decide that
+            (ticket d81-8xhg).  Empty -> consumers stay on the conservative
+            singleton-only behaviour.
     """
 
-    __slots__ = ("_rows", "_starts", "_default_target")
+    __slots__ = ("_rows", "_starts", "_default_target", "_written_state_constants")
 
     def __init__(
         self,
@@ -417,8 +428,12 @@ class IntervalDispatcher:
         *,
         default_target: Any | None = None,
         compute_default: bool = True,
+        written_state_constants: Iterable[Any] | None = None,
     ) -> None:
         self._rows: list[IntervalRow] = sorted(rows)
+        self._written_state_constants: frozenset[int] = (
+            normalize_written_state_constants(written_state_constants)
+        )
         # Validate no overlaps
         for i in range(len(self._rows) - 1):
             a = self._rows[i]
@@ -474,6 +489,39 @@ class IntervalDispatcher:
     def default_target(self) -> Any | None:
         """Block the dispatcher routes to when no handler state matches (the shared return)."""
         return self._default_target
+
+    @property
+    def written_state_constants(self) -> frozenset[int]:
+        """State constants the analysed function writes to the state variable.
+
+        Empty when the table was built without that evidence.  Consumers must
+        treat "empty" as "no evidence" and fall back to singleton-only route
+        exactness rather than concluding a range row is unambiguous.
+        """
+        return self._written_state_constants
+
+    def with_written_state_constants(
+        self,
+        written_state_constants: Iterable[Any] | None,
+    ) -> "IntervalDispatcher":
+        """Return a copy of this table carrying *written_state_constants*.
+
+        Copy-on-write: recovered dispatchers are shared by several consumers,
+        so the written-state evidence is attached by rebinding rather than by
+        mutating a table another analysis may already hold.
+
+        Args:
+            written_state_constants: Constants written to the state variable.
+
+        Returns:
+            A new dispatcher with identical rows and default target.
+        """
+        return IntervalDispatcher(
+            list(self._rows),
+            default_target=self._default_target,
+            compute_default=False,
+            written_state_constants=written_state_constants,
+        )
 
     def to_json(self) -> str:
         """Serialize rows as JSON for log diagnostics."""

@@ -48,6 +48,10 @@ from d810.analyses.control_flow.interval_map import (
     emit_dispatch_intervals,
     IntervalDispatcher,
 )
+from d810.analyses.control_flow.route_exactness import (
+    is_exact_route_interval,
+    written_states_in_interval,
+)
 from d810.ir.flowgraph import InsnSnapshot, MopSnapshot, OperandKind
 from d810.ir.instructions import Instruction
 from d810.ir.varnode import Space, varnode_from_mop_snapshot
@@ -1394,6 +1398,66 @@ def _forward_eval_insn(
     )
 
 
+# The smallest value treated as a dispatcher state constant.  Values below it
+# are ordinary small integers a handler may store in the same slot (flags,
+# counters), not selector values, and admitting them would let unrelated writes
+# poison route exactness.
+MIN_STATE_CONSTANT: int = 0x01000000
+
+
+def _collect_written_state_constants(
+    mba: object,
+    state_var_stkoff: Optional[int],
+    *,
+    state_var_lvar_idx: Optional[int] = None,
+    state_var_reg: Optional[int] = None,
+    initial_state: Optional[int] = None,
+) -> frozenset[int]:
+    """Collect every state constant the function writes to the state variable.
+
+    One linear scan over the blocks, reusing the same per-block extractor the
+    handler walk uses, so the set is exactly the values a selector can hold at
+    a dispatcher entry.  ``initial_state`` is included because the prologue
+    write is a real occurrence even when it lives outside the scanned shape.
+
+    This is the ground set for route exactness: a wide comparison-tree interval
+    is an exact binding for a state precisely when it contains one member of
+    this set (ticket d81-8xhg).
+
+    Args:
+        mba: The microcode block array.
+        state_var_stkoff: Stack offset of the state variable, when stack-resident.
+        state_var_lvar_idx: lvar index for ``mop_l`` matching.
+        state_var_reg: Register identity for a register-resident state variable.
+        initial_state: Recovered pre-header state constant, when known.
+
+    Returns:
+        The masked state constants written anywhere in the function.
+    """
+    if state_var_stkoff is None and state_var_reg is None:
+        return frozenset()
+    written: set[int] = set()
+    for serial in range(int(getattr(mba, "qty", 0) or 0)):
+        try:
+            blk = mba.get_mblock(serial)
+        except Exception:
+            blk = None
+        if blk is None:
+            continue
+        state = _extract_state_from_block(
+            blk,
+            state_var_stkoff,
+            state_var_lvar_idx=state_var_lvar_idx,
+            mba=mba,
+            state_var_reg=state_var_reg,
+        )
+        if state is not None and int(state) >= MIN_STATE_CONSTANT:
+            written.add(int(state) & 0xFFFFFFFF)
+    if initial_state is not None:
+        written.add(int(initial_state) & 0xFFFFFFFF)
+    return frozenset(written)
+
+
 def _extract_state_from_block(
     blk: object,
     state_var_stkoff: Optional[int],
@@ -2239,6 +2303,22 @@ def analyze_condition_chain_dispatcher(
             dispatcher_entry_serial,
         )
         dispatcher = None
+    # The set of state constants this function actually writes to the state
+    # variable.  It is the missing term in route exactness: a comparison-tree
+    # (BST) leaf publishes a WIDE interval, so interval width cannot say whether
+    # a row binds one concrete state, but the values that can actually occur
+    # can (ticket d81-8xhg).  Collected once here, before the back-fill, and
+    # carried on the dispatcher so every downstream consumer of the same table
+    # reaches the same verdict.
+    written_state_constants = _collect_written_state_constants(
+        mba,
+        state_var_stkoff,
+        state_var_lvar_idx=state_var_lvar_idx,
+        initial_state=result.initial_state,
+    )
+    result.written_state_constants = written_state_constants
+    if dispatcher is not None and written_state_constants:
+        dispatcher = dispatcher.with_written_state_constants(written_state_constants)
     result.dispatcher = dispatcher
     if dispatcher is not None:
         logger.info("INTERVAL_DISPATCHER_ROWS: %s", dispatcher.to_json())
@@ -2266,6 +2346,7 @@ def analyze_condition_chain_dispatcher(
     # missed by legacy walk (e.g., JNZ taken branches with range_is_pair=False)
     if dispatcher is not None:
         backfill_point = 0
+        backfill_isolated_range = 0
         backfill_range = 0
         for row in dispatcher._rows:
             if row.target is None or row.target in handler_state_map:
@@ -2275,15 +2356,37 @@ def analyze_condition_chain_dispatcher(
                 # Width-1 interval = exact state match
                 handler_state_map[row.target] = row.lo
                 backfill_point += 1
-            else:
-                # Wider interval — register in range map only
-                # IntervalRow uses exclusive hi; handler_range_map uses inclusive
-                handler_range_map[row.target] = (row.lo, row.hi - 1)
-                backfill_range += 1
-        if backfill_point or backfill_range:
+                continue
+            # Wider interval: exact only when a single written state constant
+            # falls inside it.  Such a leaf is unreachable by any other state
+            # the function can produce, so it names a concrete binding just as
+            # a width-1 row does (d81-8xhg).  Otherwise it stays a shared
+            # corridor and is registered in the range map only.
+            isolated = written_states_in_interval(
+                lo=row.lo, hi=row.hi, written_states=written_state_constants
+            )
+            if len(isolated) == 1:
+                only_state = next(iter(isolated))
+                if is_exact_route_interval(
+                    lo=row.lo,
+                    hi=row.hi,
+                    state=only_state,
+                    written_states=written_state_constants,
+                    target=row.target,
+                    site="interval_backfill",
+                ):
+                    handler_state_map[row.target] = only_state
+                    backfill_isolated_range += 1
+                    continue
+            # IntervalRow uses exclusive hi; handler_range_map uses inclusive
+            handler_range_map[row.target] = (row.lo, row.hi - 1)
+            backfill_range += 1
+        if backfill_point or backfill_isolated_range or backfill_range:
             logger.info(
-                "INTERVAL_BACKFILL: %d point + %d range handlers added",
+                "INTERVAL_BACKFILL: %d point + %d isolated-range + %d range "
+                "handlers added",
                 backfill_point,
+                backfill_isolated_range,
                 backfill_range,
             )
             # Update result after back-fill
@@ -2372,25 +2475,7 @@ def analyze_condition_chain_dispatcher(
         and getattr(_dag, "nodes", None)
         and state_var_stkoff is not None
     ):
-        _MIN_STATE = 0x01000000  # MIN_STATE_CONSTANT
-        written_states: set[int] = set()
-        for _serial in range(int(getattr(mba, "qty", 0) or 0)):
-            try:
-                _blk = mba.get_mblock(_serial)
-            except Exception:
-                _blk = None
-            if _blk is None:
-                continue
-            _st = _extract_state_from_block(
-                _blk,
-                int(state_var_stkoff),
-                state_var_lvar_idx=state_var_lvar_idx,
-                mba=mba,
-            )
-            if _st is not None and int(_st) >= _MIN_STATE:
-                written_states.add(int(_st))
-        if result.initial_state is not None:
-            written_states.add(int(result.initial_state))
+        written_states = set(written_state_constants)
         # UNION (not replace): keep the original equality-leaf handlers (correct
         # block identity + return classification) and ADD only the interval-interior
         # states they missed, routed via the decision_dag.

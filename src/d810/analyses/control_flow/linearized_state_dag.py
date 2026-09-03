@@ -12,6 +12,10 @@ from d810.ir.flowgraph import BlockKind, FlowGraph, InsnKind
 from d810.core import logging
 from d810.core.typing import Callable, Mapping
 from d810.analyses.control_flow.interval_map import IntervalDispatcher, IntervalRow
+from d810.analyses.control_flow.route_exactness import (
+    dispatcher_written_state_constants,
+    is_exact_route_interval,
+)
 from d810.analyses.control_flow.comparison_dispatcher_model import (
     build_partition,
     intervals_from_range_map,
@@ -1937,6 +1941,12 @@ def _is_range_backed_only_handoff_anchor(
     to rewrite as if it were an exact semantic handler for this state.  Exact
     dispatcher rows remain acceptable because they identify a concrete
     state-to-target binding.
+
+    "Exact" is decided by :func:`is_exact_route_interval`, not by interval
+    width: a comparison-tree leaf legitimately spans a wide range, and it still
+    names a concrete binding when the only state value the function writes
+    inside that range is this one (ticket d81-8xhg).  A row shared by two or
+    more written constants remains a corridor and stays refused.
     """
 
     masked = int(state_value) & 0xFFFFFFFF
@@ -1950,8 +1960,14 @@ def _is_range_backed_only_handoff_anchor(
     if (
         row is not None
         and int(row.target) == anchor_serial
-        and int(row.lo) == masked
-        and int(row.hi) == (masked + 1)
+        and is_exact_route_interval(
+            lo=int(row.lo),
+            hi=int(row.hi),
+            state=masked,
+            written_states=dispatcher_written_state_constants(dispatcher),
+            target=anchor_serial,
+            site="handoff_anchor",
+        )
     ):
         return False
 
