@@ -58,6 +58,10 @@ from d810.diagnostics.post_d810_handoff import (
     add_arguments as add_handoff_check_arguments,
     run as run_handoff_check,
 )
+from d810.diagnostics.unflat_why import (
+    add_arguments as add_unflat_why_arguments,
+    run as run_unflat_why,
+)
 
 from d810.diagnostics.alternate_correlation import (
     AlternateCorrelation,
@@ -2132,6 +2136,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     add_handoff_check_arguments(p_handoff)
 
+    p_unflat_why = sub.add_parser(
+        "unflat-why",
+        parents=[common],
+        help="Render, in causal order, why an unflatten candidate ended the way it did",
+    )
+    add_unflat_why_arguments(p_unflat_why)
+
     args = parser.parse_args(argv)
 
     if not args.command:
@@ -2159,6 +2170,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "handoff-check":
         return run_handoff_check(args)
+
+    if args.command == "unflat-why":
+        return run_unflat_why(args)
 
     if args.command == "indirect-transfer-map":
         from d810.diagnostics.indirect_state_transfer_map import (
