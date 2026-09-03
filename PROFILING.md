@@ -186,6 +186,98 @@ native capture (`D810_NO_CYTHON=1`). It helped establish that SCCP itself was
 not the dominant native stack, but it is not the controlled compiled
 overlay-on versus overlay-off comparison described above.
 
+## Profiling any system test
+
+The bounded-workload recipe above is the deepest investigation tool, but it
+is scoped to one attested SCCP function. `tests/system/conftest.py` also
+provides an env-gated, autouse `_profile_controller_hook` fixture that wires
+the built-in `ProfilingController` into *any* system test without editing
+the test itself.
+
+It is a no-op unless `D810_PROFILE_CONTROLLER=on`. Every other system test
+env var it reads is optional:
+
+| Variable | Effect |
+| --- | --- |
+| `D810_PROFILE_CONTROLLER` | `on` enables the hook for the test; unset/`""` disables it (default); any other value is a hard error. |
+| `D810_PROFILE_LABEL` | Basename used as the run's label directory. Defaults to `system-profile`. Must not contain path separators or `..`/`.`. |
+
+When enabled, the fixture:
+
+1. Resolves an output directory of
+   `<worktree>/.tmp/profiles/<D810_PROFILE_LABEL>/<sanitised nodeid>/`,
+   where the nodeid's `::` and `/` separators are flattened to `__` and any
+   other unsafe character (parametrize brackets, spaces, ...) becomes `_`.
+2. Ensures the live `D810State`/`D810Manager` singleton is loaded and
+   started (tearing back down anything it started itself, so it composes
+   with `d810_state`/`d810_state_all_rules`-based tests that manage their
+   own lifecycle).
+3. Points `state.manager.profiling.log_dir` at that directory and calls
+   `enable_profiling()`.
+4. Restores the previous `log_dir`/`enabled` state and disables the
+   controller when the test finishes.
+
+`ProfilingController.start`/`stop` are already tied to
+`DecompilationSessionEvent` (`D810Manager.start_profiling`/`stop_profiling`),
+so every `idaapi.decompile()` call inside the test dumps `d810_cprofile.prof`
+into the resolved directory, and `dump_profiling_segment` writes a
+per-maturity `d810_cprofile_MMAT_*.prof` snapshot (and resets the cProfile
+instance) on every maturity change. Because `ProfilingController` reuses the
+same `cProfile.Profile` object across `enable()`/`disable()` cycles and only
+resets it on a maturity-change snapshot, a test that decompiles more than
+once (e.g. a "before" pass with d810 stopped and an "after" pass with d810
+running) ends up with `d810_cprofile.prof` reflecting only the tail segment
+since the last maturity-change reset — effectively the last decompile's
+data, not a clean sum across every decompile in the test.
+
+`ProfilingController.stop()` only ever handles one profiler per call: it
+returns immediately after dumping `d810_cprofile.prof` when cProfile was
+running, without also stopping pyinstrument. In practice this means
+`d810_profile.html`/`.txt` is produced by whichever `stop()` call happens to
+land with cProfile already idle — observed here to be the fixture's own
+teardown call for tests with exactly one decompile session (cProfile stops
+at that session's end, pyinstrument keeps running until teardown), and
+*not* produced at all for a test that never reaches a decompile (a skip
+before `idaapi.decompile()` leaves cProfile running through teardown, so the
+early return keeps firing and pyinstrument's branch is never reached). Do
+not infer "no pyinstrument output" as "pyinstrument unavailable" without
+checking whether the test actually decompiled.
+
+Example, profiling the first 20 collected cases of the libobfuscated DSL
+suite in one batch:
+
+```bash
+D810_PROFILE_CONTROLLER=on \
+D810_PROFILE_LABEL=dsl-batch1 \
+./tools/scripts/run_system_tests_docker.sh test \
+  -w WORKTREE \
+  -o dsl_batch1_profile.txt \
+  -- tests/system/e2e/test_libdeobfuscated_dsl.py::... [... 19 more nodeids] -q
+```
+
+Output directory inside the worktree:
+
+```text
+.tmp/profiles/dsl-batch1/<sanitised nodeid>/d810_cprofile.prof
+```
+
+Aggregate multiple per-test `d810_cprofile.prof` files with `pstats`:
+
+```bash
+python -c '
+import pathlib, pstats
+profiles = sorted(pathlib.Path(".tmp/profiles/dsl-batch1").glob("*/d810_cprofile.prof"))
+stats = pstats.Stats(str(profiles[0]))
+for p in profiles[1:]:
+    stats.add(str(p))
+stats.strip_dirs().sort_stats("tottime").print_stats(40)
+'
+```
+
+Pure helper logic (label validation, nodeid sanitising, output-directory
+resolution) lives in `tests/system/helpers/profiling_hook.py` and is
+IDA-free; it is covered by `tests/unit/helpers/test_profiling_hook.py`.
+
 ## Reading cProfile by maturity
 
 `ProfilingController.dump_segment()` writes a snapshot each time the maturity

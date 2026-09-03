@@ -1068,6 +1068,72 @@ def d810_state_all_rules():
     return lambda: _d810_state_cm(all_rules=True)
 
 
+@pytest.fixture(autouse=True)
+def _profile_controller_hook(request):
+    """Env-gated ``ProfilingController`` hook for any system test.
+
+    No-op unless ``D810_PROFILE_CONTROLLER=on``. When enabled, this points
+    the live ``D810Manager``'s ``ProfilingController`` at a per-test
+    directory under ``.tmp/profiles/<D810_PROFILE_LABEL>/<sanitised
+    nodeid>/`` and enables it for the duration of the test. The controller's
+    start/stop is already tied to decompilation session events
+    (``D810Manager.start_profiling``/``stop_profiling``), so every
+    ``idaapi.decompile()`` call inside the test dumps ``d810_cprofile.prof``
+    (and pyinstrument HTML/text when available) into that directory. See
+    ``PROFILING.md`` for the full convention.
+    """
+    from tests.system.helpers.profiling_hook import (
+        profiling_hook_enabled,
+        resolve_profile_output_dir,
+    )
+
+    try:
+        enabled = profiling_hook_enabled(os.environ.get("D810_PROFILE_CONTROLLER"))
+    except ValueError as exc:
+        pytest.fail(str(exc), pytrace=False)
+
+    if not enabled:
+        yield
+        return
+
+    try:
+        output_dir = resolve_profile_output_dir(
+            pathlib.Path(__file__).resolve().parents[2],
+            os.environ.get("D810_PROFILE_LABEL"),
+            request.node.nodeid,
+        )
+    except ValueError as exc:
+        pytest.fail(str(exc), pytrace=False)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    from d810.manager import D810State
+
+    state = D810State()
+    owns_load = not state.is_loaded()
+    if owns_load:
+        state.load(gui=False)
+    owns_start = not state.manager.started
+    if owns_start:
+        state.start_d810()
+
+    controller = state.manager.profiling
+    previous_log_dir = controller.log_dir
+    previous_enabled = controller.enabled
+    controller.log_dir = output_dir
+    controller.enable()
+
+    try:
+        yield
+    finally:
+        controller.disable()
+        controller.log_dir = previous_log_dir
+        controller.enabled = previous_enabled
+        if owns_start:
+            state.stop_d810()
+        if owns_load:
+            state.unload(gui=False)
+
+
 # =============================================================================
 # Pytest Fixtures - Preanalysis Store (E2E pipeline assertions)
 # =============================================================================
