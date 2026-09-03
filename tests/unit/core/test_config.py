@@ -249,6 +249,56 @@ class TestConfiguration(unittest.TestCase):
                 self.assertIn("my_user_project.json", saved_configs)
                 self.assertIn("hodur_flag2.json", saved_configs)
 
+    def test_discover_projects_does_not_persist_options_json(self):
+        """Discovery must not rewrite options.json on every call (slice 6,
+        ticket d81-ebpz): it runs on every ProjectManager/D810State
+        construction, so persisting there rewrote options.json on every
+        plugin load and project switch. The discovered list stays available
+        in memory via get("configurations"); persistence happens only on an
+        explicit user change (ProjectManager.add/delete, D810Config.save())."""
+        with temp_ida_dir() as ida_dir:
+            with load_conf_classes() as (D810Configuration, _, _):
+                config = D810Configuration(ida_user_dir=ida_dir)
+                options_path = config.config_file
+                self.assertFalse(options_path.exists())
+
+                projects = config.discover_projects()
+
+                self.assertGreater(len(projects), 0)
+                self.assertIn(
+                    "default_instruction_only.json", config.get("configurations")
+                )
+                # discover_projects() itself must not have touched disk.
+                self.assertFalse(options_path.exists())
+
+    def test_discover_projects_logs_one_summary_not_per_file_lines(self):
+        """The per-file 'Loading project configuration from' line moves to
+        DEBUG; discovery emits exactly one INFO summary line instead
+        (slice 6, ticket d81-ebpz)."""
+        with temp_ida_dir() as ida_dir:
+            with load_conf_classes() as (D810Configuration, _, _):
+                config = D810Configuration(ida_user_dir=ida_dir)
+
+                with self.assertLogs("d810.core.config", level="INFO") as captured:
+                    projects = config.discover_projects()
+
+                per_file_lines = [
+                    m
+                    for m in captured.output
+                    if "Loading project configuration from" in m
+                ]
+                summary_lines = [
+                    m
+                    for m in captured.output
+                    if "discovered" in m and "project configurations" in m
+                ]
+                self.assertEqual(per_file_lines, [])
+                self.assertEqual(len(summary_lines), 1)
+                self.assertIn(
+                    f"discovered {len(projects)} project configurations",
+                    summary_lines[0],
+                )
+
     def test_eid_config_requires_recovered_transitions_before_lowering(self):
         config_path = (
             Path(__file__).parents[3] / "src/d810/conf/eidolon_v3_const_solve.json"
