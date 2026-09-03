@@ -59,9 +59,19 @@ class ExactResult:
 
 @dataclass(frozen=True, slots=True)
 class Abstain:
-    """The backend declines (precision unknown) -- stay abstract."""
+    """The backend declines (precision unknown) -- stay abstract.
+
+    ``cause`` is the machine-readable token behind ``reason`` (ticket
+    d81-qt4v): ``phi_multi_def``, ``no_reaching_defs``,
+    ``single_def_eval_failed``, ``synthetic_taint``, ``global_not_seeded``.
+    ``def_sites`` are the ``(block_serial, ins_ea)`` definitions the backend
+    considered.  Both default to empty, so an abstention that names nothing is
+    byte-identical to the historical one.
+    """
 
     reason: str = ""
+    cause: str = ""
+    def_sites: tuple[tuple[int, int], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

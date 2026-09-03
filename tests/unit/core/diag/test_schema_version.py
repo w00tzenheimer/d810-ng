@@ -57,5 +57,5 @@ def test_writer_creates_only_current_schema_without_legacy_views() -> None:
     assert legacy == []
 
 
-def test_case_producer_uses_schema_v13_after_unflatten_outcomes() -> None:
-    assert DIAGNOSTIC_SCHEMA_VERSION == 13
+def test_case_producer_uses_schema_v14_after_state_write_resolutions() -> None:
+    assert DIAGNOSTIC_SCHEMA_VERSION == 14
