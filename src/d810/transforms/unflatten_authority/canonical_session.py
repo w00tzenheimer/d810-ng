@@ -189,7 +189,10 @@ class CanonicalValidationSession:
     top-level phase call that created it.
     """
 
-    __slots__ = ("_phase", "_ledger", "_closed", "_bytes_cache", "_content_id_cache")
+    __slots__ = (
+        "_phase", "_ledger", "_closed", "_bytes_cache", "_content_id_cache",
+        "_inventory_seals",
+    )
 
     def __init__(self, phase: CanonicalSessionPhase) -> None:
         if type(phase) is not CanonicalSessionPhase:
@@ -197,8 +200,11 @@ class CanonicalValidationSession:
         self._phase = phase
         self._ledger = _WorkLedger()
         self._closed = False
-        self._bytes_cache: dict[int, tuple[object, bytes]] = {}
-        self._content_id_cache: dict[tuple[int, str, str], tuple[object, str]] = {}
+        self._bytes_cache: dict[int, tuple[object, object, bytes]] = {}
+        self._content_id_cache: dict[
+            tuple[int, str, str], tuple[object, object, str]
+        ] = {}
+        self._inventory_seals: dict[int, tuple[object, object]] = {}
 
     @property
     def phase(self) -> CanonicalSessionPhase:
@@ -242,7 +248,7 @@ class CanonicalValidationSession:
         self._require_open()
         self._ledger.content_id_reuses += 1
 
-    def cached_canonical_bytes(self, value: object) -> bytes | None:
+    def cached_canonical_bytes(self, value: object, stamp: object) -> bytes | None:
         """Return canonical bytes already validated for this exact occurrence.
 
         Returns ``None`` on any miss: an uncacheable primitive, no prior
@@ -253,11 +259,11 @@ class CanonicalValidationSession:
         if not _is_cacheable_occurrence(value):
             return None
         entry = self._bytes_cache.get(id(value))
-        if entry is None or entry[0] is not value:
+        if entry is None or entry[0] is not value or entry[1] != stamp:
             return None
-        return entry[1]
+        return entry[2]
 
-    def store_canonical_bytes(self, value: object, data: bytes) -> None:
+    def store_canonical_bytes(self, value: object, stamp: object, data: bytes) -> None:
         """Record canonical bytes for an occurrence that just validated."""
 
         self._require_open()
@@ -265,10 +271,10 @@ class CanonicalValidationSession:
             raise TypeError("canonical bytes must be exact bytes")
         if not _is_cacheable_occurrence(value):
             return
-        self._bytes_cache[id(value)] = (value, data)
+        self._bytes_cache[id(value)] = (value, stamp, data)
 
     def cached_content_id(
-        self, value: object, schema: str, omitted_field: str,
+        self, value: object, schema: str, omitted_field: str, stamp: object,
     ) -> str | None:
         """Return a record content ID already validated for this occurrence."""
 
@@ -276,12 +282,13 @@ class CanonicalValidationSession:
         if not _is_cacheable_occurrence(value):
             return None
         entry = self._content_id_cache.get((id(value), schema, omitted_field))
-        if entry is None or entry[0] is not value:
+        if entry is None or entry[0] is not value or entry[1] != stamp:
             return None
-        return entry[1]
+        return entry[2]
 
     def store_content_id(
-        self, value: object, schema: str, omitted_field: str, content_id: str,
+        self, value: object, schema: str, omitted_field: str, stamp: object,
+        content_id: str,
     ) -> None:
         """Record a content ID for an occurrence that just validated."""
 
@@ -291,8 +298,21 @@ class CanonicalValidationSession:
         if not _is_cacheable_occurrence(value):
             return
         self._content_id_cache[(id(value), schema, omitted_field)] = (
-            value, content_id,
+            value, stamp, content_id,
         )
+
+    def inventory_is_sealed(self, value: object, stamp: object) -> bool:
+        """Return whether this exact, unmutated inventory sealed in this session."""
+
+        self._require_open()
+        entry = self._inventory_seals.get(id(value))
+        return entry is not None and entry[0] is value and entry[1] == stamp
+
+    def seal_inventory(self, value: object, stamp: object) -> None:
+        """Record one fully validated inventory occurrence after success only."""
+
+        self._require_open()
+        self._inventory_seals[id(value)] = (value, stamp)
 
     def _close(self) -> None:
         self._closed = True

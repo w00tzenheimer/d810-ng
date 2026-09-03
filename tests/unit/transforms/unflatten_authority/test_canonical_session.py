@@ -280,6 +280,28 @@ def test_an_occurrence_that_fails_validation_is_never_served_from_cache() -> Non
     assert data == ids.canonical_bytes(fixture)
 
 
+def test_mutated_cached_occurrence_is_revalidated_before_reuse() -> None:
+    """An in-session mutation cannot receive canonical bytes from before it."""
+
+    from d810.transforms.unflatten_authority import model
+
+    fixture = ids.DigestFixture(
+        3, model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT, ("native",),
+    )
+    with _canonical_validation_session(
+        CanonicalSessionPhase.PROJECTED_PREPARATION,
+    ) as session:
+        before = ids.canonical_bytes(fixture)
+        object.__setattr__(fixture, "ea", 4)
+        after = ids.canonical_bytes(fixture)
+        metrics = session.metrics
+
+    assert after != before
+    assert ids.canonical_decode(after).ea == 4
+    assert metrics.deep_validations == 2
+    assert metrics.canonical_bytes_reuses == 0
+
+
 def test_deep_authority_roundtrip_repeats_work_for_one_exact_occurrence() -> None:
     """Freeze the repeated work `validate_canonical_roundtrip` costs today."""
 
@@ -357,8 +379,8 @@ def test_diagnostics_projects_the_process_counters_without_authority() -> None:
     assert diagnostics.canonical_work_payload()["deep_validations"] == 1
 
 
-def test_full_inventory_validation_is_counted_every_time() -> None:
-    """Each `validate_semantic_graph_inventory` re-digests the whole payload."""
+def test_full_inventory_validation_is_reused_for_one_unmutated_occurrence() -> None:
+    """One session seals an exact inventory after its first validation."""
 
     from d810.transforms.unflatten_authority import model
     from tests.unit.transforms.unflatten_authority.test_inventory_model import (
@@ -373,7 +395,7 @@ def test_full_inventory_validation_is_counted_every_time() -> None:
         model.validate_semantic_graph_inventory(inventory)
         metrics = session.metrics
 
-    assert metrics.inventory_validations == 2
-    assert metrics.deep_validations == 2
-    assert metrics.wire_encodes == 2
+    assert metrics.inventory_validations == 1
+    assert metrics.deep_validations == 1
+    assert metrics.wire_encodes == 1
     assert metrics.canonical_bytes_reuses == 0

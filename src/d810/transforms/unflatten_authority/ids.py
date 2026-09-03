@@ -1040,10 +1040,82 @@ def _json_bytes(value: object) -> bytes:
     return json.dumps(value, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("ascii")
 
 
+def _occurrence_stamp(value: object, seen: set[int] | None = None) -> object:
+    """Return a non-authoritative structural snapshot for one cache entry.
+
+    This is an entry guard, never a cache key or an authority digest.  It
+    avoids dataclass equality and recursive hashing while detecting an
+    ``object.__setattr__`` mutation before a phase-local cached byte string or
+    record ID can be returned for the wrong live content.
+    """
+
+    seen = set() if seen is None else seen
+    if value is None or type(value) in (bool, int, str, bytes):
+        return ("atom", type(value), value)
+    if type(value) is float:
+        return ("float", value.hex())
+    if isinstance(value, Enum):
+        return ("enum", type(value), value.name)
+    if type(value) is dict or type(value) is MappingProxyType:
+        marker = id(value)
+        if marker in seen:
+            return ("cycle", marker)
+        seen.add(marker)
+        try:
+            mapping = _exact_canonical_mapping(value)
+            return (
+                "map", type(value), tuple(
+                    (key, _occurrence_stamp(item, seen))
+                    for key, item in dict.items(mapping)
+                ),
+            )
+        finally:
+            seen.remove(marker)
+    if type(value) in (list, tuple, frozenset):
+        marker = id(value)
+        if marker in seen:
+            return ("cycle", marker)
+        seen.add(marker)
+        try:
+            return (
+                "sequence", type(value),
+                tuple(_occurrence_stamp(item, seen) for item in value),
+            )
+        finally:
+            seen.remove(marker)
+    _ensure_registries()
+    names = _RECORD_FIELDS.get(type(value), _EXTERNAL_FIELDS.get(type(value)))
+    if names is not None:
+        marker = id(value)
+        if marker in seen:
+            return ("cycle", marker)
+        seen.add(marker)
+        try:
+            return (
+                "record", type(value), tuple(
+                    (
+                        name,
+                        _occurrence_stamp(
+                            type(value).SCHEMA_VERSION
+                            if type(value).__name__ == "NativePreanalysisKey"
+                            and name == "schema_version"
+                            else getattr(value, name),
+                            seen,
+                        ),
+                    )
+                    for name in names
+                ),
+            )
+        finally:
+            seen.remove(marker)
+    return ("unknown", type(value), id(value))
+
+
 def canonical_bytes(value: object) -> bytes:
     session = active_canonical_session()
+    stamp = None if session is None else _occurrence_stamp(value)
     if session is not None:
-        cached = session.cached_canonical_bytes(value)
+        cached = session.cached_canonical_bytes(value, stamp)
         if cached is not None:
             record_canonical_bytes_reuse()
             return cached
@@ -1053,7 +1125,7 @@ def canonical_bytes(value: object) -> bytes:
     record_wire_encode()
     data = _json_bytes(wire)
     if session is not None:
-        session.store_canonical_bytes(value, data)
+        session.store_canonical_bytes(value, stamp, data)
     return data
 
 
@@ -1719,8 +1791,9 @@ def _record_content_id(schema: str, value: object, omitted_field: str) -> str:
     if not is_dataclass(value) or isinstance(value, type):
         raise TypeError("content ID factory requires a registered record")
     session = active_canonical_session()
+    stamp = None if session is None else _occurrence_stamp(value)
     if session is not None:
-        cached = session.cached_content_id(value, schema, omitted_field)
+        cached = session.cached_content_id(value, schema, omitted_field, stamp)
         if cached is not None:
             record_content_id_reuse()
             return cached
@@ -1744,7 +1817,7 @@ def _record_content_id(schema: str, value: object, omitted_field: str) -> str:
         _PREFIX + schema.encode("ascii") + b"\0" + _json_bytes(wire)
     ).hexdigest()
     if session is not None:
-        session.store_content_id(value, schema, omitted_field, result)
+        session.store_content_id(value, schema, omitted_field, stamp, result)
     return result
 
 
