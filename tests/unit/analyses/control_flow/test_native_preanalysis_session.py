@@ -46,11 +46,13 @@ from d810.analyses.control_flow.native_preanalysis_session import (
     GeneratedRestartConsumer,
     GeneratedRestartKind,
     GeneratedRestartReceipt,
+    NativeMutationBoundary,
     PreoptUnionPreparationResult,
     PrepatchPreoptUnionSource,
     NativePreanalysisSessionState,
     _patch_plan_frontend_proof,
     _without_superseded_frontier_patch_proofs,
+    native_mutation_quarantine_blocks,
 )
 from d810.core.fragment_authority import NormalizationWorkItemAuthority
 from d810.analyses.control_flow.residual_entry_bridge import EntryBridgeEvidence
@@ -2525,3 +2527,31 @@ def test_frontend_evidence_rejects_the_whole_ledger_without_a_flag_producer() ->
         match="complete predicate evidence",
     ):
         state.frontend_normalization_evidence_for(NATIVE_KEY)
+
+
+def test_only_cfg_mutating_boundaries_are_blocked_by_a_quarantine() -> None:
+    """A poisoned generation invalidates CFG authority, not instruction rewrites.
+
+    Quarantining every seam also silenced the instruction-level rules
+    (peephole/Z3/constant folding), which consume no block identity, so one
+    rejected CFG stage cost a function all of its remaining simplification.
+    """
+    blocked = {
+        boundary
+        for boundary in NativeMutationBoundary
+        if native_mutation_quarantine_blocks(boundary)
+    }
+
+    assert blocked == {
+        NativeMutationBoundary.OPTBLOCK,
+        NativeMutationBoundary.LOCOPT,
+        NativeMutationBoundary.GLBOPT,
+        NativeMutationBoundary.CTREE,
+    }
+    assert not native_mutation_quarantine_blocks(NativeMutationBoundary.OPTINSN)
+    assert not NativeMutationBoundary.OPTINSN.mutates_cfg
+
+
+def test_quarantine_blocking_requires_a_typed_boundary() -> None:
+    with pytest.raises(TypeError):
+        native_mutation_quarantine_blocks("optinsn")

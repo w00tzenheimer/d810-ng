@@ -9,6 +9,7 @@ from d810.analyses.control_flow.native_preanalysis_session import (
     GeneratedRestartConsumer,
     GeneratedRestartReceipt,
     NativeMutationBoundary,
+    native_mutation_quarantine_blocks,
     NativePreanalysisFacts,
     NativePreanalysisSessionState,
     ResolverEvidenceAttachment,
@@ -820,7 +821,14 @@ class DecompilationLifecycleCoordinator:
         maturity: int,
         boundary: NativeMutationBoundary,
     ) -> bool:
-        """Return the quarantine predicate and emit one boundary observation."""
+        """Return the quarantine predicate and emit one boundary observation.
+
+        The predicate answers "is this session quarantined", which is not the
+        same question as "must this boundary stop". Enforcement belongs to the
+        seam: ``native_mutation_quarantine_blocks`` scopes a poisoned
+        generation to the boundaries that actually consume CFG identity, so the
+        emitted observation records whether it was enforced there.
+        """
         if not isinstance(boundary, NativeMutationBoundary):
             raise TypeError("native mutation quarantine requires a typed boundary")
         session = self.current_session(int(function_ea))
@@ -845,12 +853,20 @@ class DecompilationLifecycleCoordinator:
                     evidence_generation=int(state.evidence_generation),
                     mba_generation_before=generation,
                     mba_generation_after=generation,
-                    summary=(f"native mutation quarantined at {boundary.value}"),
+                    summary=(
+                        f"native mutation quarantined at {boundary.value}"
+                        if native_mutation_quarantine_blocks(boundary)
+                        else (
+                            f"native mutation quarantine not enforced at "
+                            f"{boundary.value} (no CFG identity consumed)"
+                        )
+                    ),
                     payload={
                         "boundary": boundary.value,
                         "maturity": maturity,
                         "current_mba_generation": generation,
                         "reason": "poisoned native MBA generation",
+                        "enforced": native_mutation_quarantine_blocks(boundary),
                     },
                 )
             )

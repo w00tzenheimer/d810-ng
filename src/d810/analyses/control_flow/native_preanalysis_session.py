@@ -1192,6 +1192,31 @@ class NativeMutationBoundary(Enum):
     GLBOPT = "glbopt"
     CTREE = "ctree"
 
+    @property
+    def mutates_cfg(self) -> bool:
+        """Return whether work at this boundary consumes CFG block identity.
+
+        ``optinsn_t`` rewrites one instruction against the live block it was
+        handed; it reads no planned serial and no identity binding. Every other
+        boundary is where d810 lowers CFG transactions, whose coordinates only
+        mean something for the generation that produced them.
+        """
+        return self is not NativeMutationBoundary.OPTINSN
+
+
+def native_mutation_quarantine_blocks(boundary: NativeMutationBoundary) -> bool:
+    """Return whether a poisoned generation must stop work at ``boundary``.
+
+    A poisoned generation invalidates d810's *CFG* authority: the block
+    identities its plans were bound to no longer describe the live MBA. It says
+    nothing about instruction rewriting, so quarantining the ``optinsn`` seam
+    only costs the function its remaining peephole, Z3 and constant-folding
+    simplification for no safety gained.
+    """
+    if not isinstance(boundary, NativeMutationBoundary):
+        raise TypeError("mutation quarantine scope requires a typed boundary")
+    return boundary.mutates_cfg
+
 
 class GeneratedRestartKind(Enum):
     """Why a generated-MBA restart was staged."""
@@ -3449,6 +3474,7 @@ __all__ = [
     "GeneratedRestartKind",
     "GeneratedRestartReceipt",
     "NativeMutationBoundary",
+    "native_mutation_quarantine_blocks",
     "NativePreanalysisFacts",
     "NativePreanalysisSessionState",
     "PreoptUnionPreparationResult",
