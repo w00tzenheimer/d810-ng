@@ -4220,11 +4220,18 @@ def _phase_native_origin_subset_preserves_anchor(
     instruction origin. In that one case a strict projected/observed subset need not
     contain the anchor. If the canonical anchor is an exact instruction, it
     must remain present in the observed origin subset.
+
+    Total loss is the boundary case of that same subset, not a distinct
+    identity failure: a proven fake jump folded away leaves the physical block
+    in place with no surviving microinstruction. Its canonical anchor is then
+    the block entry, which still belongs to the native reference range, so the
+    row still denotes its own catalog block. What that block no longer carries
+    is a semantic-coverage question owned by the effect, terminal, and
+    topology obligations, which can name the subject they lost.
     """
 
     if (
-        not observed_instruction_eas
-        or not set(observed_instruction_eas) < set(expected_instruction_eas)
+        not set(observed_instruction_eas) < set(expected_instruction_eas)
         or anchor_ea is None
     ):
         return False
@@ -7495,6 +7502,7 @@ class UnflattenAuthorityVerdict:
     failed_obligations: tuple[FailedObligation, ...]
     observed_acceptance: "ObservedUnflattenAuthorityAccepted | None" = None
     loss_ledger: SemanticLossLedger | None = None
+    rejection_detail: str | None = None
 
     def __post_init__(self) -> None:
         if type(self.accepted) is not bool:
@@ -7590,6 +7598,16 @@ class UnflattenAuthorityVerdict:
             and self.loss_ledger is not self.observed_acceptance.observed_ledger
         ):
             raise ValueError("observed verdict must retain its exact observed ledger")
+        if self.rejection_detail is not None:
+            # A rejection that carries no subject-keyed obligation must still
+            # name what it rejected; an unexplained ``failed=()`` is not a
+            # readable verdict.
+            if type(self.rejection_detail) is not str or not self.rejection_detail:
+                raise TypeError("rejection_detail must be a nonempty string or None")
+            if self.accepted:
+                raise ValueError("an accepted verdict cannot carry a rejection detail")
+            if len(self.rejection_detail) > 640:
+                raise ValueError("rejection_detail must stay bounded")
 
 
 @dataclass(frozen=True, slots=True)

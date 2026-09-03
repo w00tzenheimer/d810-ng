@@ -1338,7 +1338,9 @@ def _unavailable_candidate_fingerprint(plan_id: str) -> str:
     return authority_id(("candidate-fingerprint-unavailable", plan_id))
 
 
-def _live_binding_failed_verdict() -> model.UnflattenAuthorityVerdict:
+def _live_binding_failed_verdict(
+    detail: str | None = None,
+) -> model.UnflattenAuthorityVerdict:
     """Return a total rejection without dereferencing an untrusted carrier."""
     return model.UnflattenAuthorityVerdict(
         False,
@@ -1350,6 +1352,7 @@ def _live_binding_failed_verdict() -> model.UnflattenAuthorityVerdict:
         _unavailable_candidate_fingerprint("observed-live-binding"),
         None,
         (),
+        rejection_detail=detail,
     )
 
 
@@ -1371,12 +1374,15 @@ def _observed_live_binding_failure(
         type(error).__name__,
         message,
     )
+    # A live-binding rejection precedes every subject-keyed obligation, so it
+    # can carry none.  Name the stage and cause instead of rejecting silently.
+    detail = f"stage={stage} cause={type(error).__name__}: {message}"
     if (
         authority_id_value is None
         and binding_id_value is None
         and candidate_fingerprint is None
     ):
-        return _live_binding_failed_verdict()
+        return _live_binding_failed_verdict(detail)
     return model.UnflattenAuthorityVerdict(
         False,
         model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY,
@@ -1387,6 +1393,7 @@ def _observed_live_binding_failure(
         candidate_fingerprint or _unavailable_candidate_fingerprint("observed-live-binding"),
         None,
         (),
+        rejection_detail=detail,
     )
 
 
