@@ -41,6 +41,7 @@ from d810.mba.provider_outcome import (  # noqa: E402
 from tools.scripts.mba_structural_matcher_certificate import (  # noqa: E402
     build_certificate,
 )
+from d810.core.log_aggregates import RuleMatchAggregator  # noqa: E402
 from d810.optimizers.microcode.instructions.pattern_matching.handler import (  # noqa: E402
     PatternOptimizer,
     RulePatternInfo,
@@ -48,6 +49,29 @@ from d810.optimizers.microcode.instructions.pattern_matching.handler import (  #
 from d810.optimizers.microcode.instructions.pattern_matching.engine import (  # noqa: E402
     get_engine_info,
 )
+
+
+def _bare_pattern_optimizer(**overrides: object) -> PatternOptimizer:
+    """Build a partially-constructed ``PatternOptimizer`` for direct
+    ``_try_matches`` exercises, bypassing ``InstructionOptimizer.__init__``
+    (which requires a live IDA session). Sets every attribute the match path
+    reads -- including ``_rule_match_aggregate``, mirrored from
+    ``InstructionOptimizer.__init__`` (see handler.py) -- so a future
+    hot-path attribute only needs one edit here instead of at every call
+    site. Pass keyword overrides to deviate from the defaults.
+    """
+    optimizer = object.__new__(PatternOptimizer)
+    optimizer.stats = None
+    optimizer.cur_maturity = 7
+    optimizer._use_nomut_matching = False
+    optimizer._use_legacy_storage = False
+    optimizer._run_later_callback = None
+    optimizer._pending_replacement_rule = None
+    optimizer._rule_match_aggregate = RuleMatchAggregator()
+    optimizer._rule_match_aggregate_maturity = optimizer.cur_maturity
+    for name, value in overrides.items():
+        setattr(optimizer, name, value)
+    return optimizer
 
 
 def _parity_digest(value: str) -> str:
@@ -1185,14 +1209,7 @@ def test_handler_records_truthful_terminal_receipt_for_active_stage_error(
             return "must-not-mutate"
 
     later = LaterRule()
-    optimizer = object.__new__(PatternOptimizer)
-    optimizer.stats = None
-    optimizer.cur_maturity = 7
-    optimizer._use_nomut_matching = False
-    optimizer._use_legacy_storage = False
-    optimizer._run_later_callback = None
-    optimizer._pending_replacement_rule = None
-    optimizer._get_candidates = lambda _candidate: []
+    optimizer = _bare_pattern_optimizer(_get_candidates=lambda _candidate: [])
     monkeypatch.setattr(
         optimizer,
         "_prepare_canonical_fallback",
@@ -1404,14 +1421,9 @@ def test_legacy_dispatch_does_not_shadow_or_collect_outcomes_by_default(
             return Instruction()
 
     rule = LegacyRule()
-    optimizer = object.__new__(PatternOptimizer)
-    optimizer.stats = None
-    optimizer.cur_maturity = 7
-    optimizer._use_nomut_matching = False
-    optimizer._use_legacy_storage = False
-    optimizer._run_later_callback = None
-    optimizer._pending_replacement_rule = None
-    optimizer._get_candidates = lambda _candidate: [RulePatternInfo(rule, object())]
+    optimizer = _bare_pattern_optimizer(
+        _get_candidates=lambda _candidate: [RulePatternInfo(rule, object())]
+    )
 
     assert (
         optimizer._try_matches(
@@ -1486,17 +1498,20 @@ def test_legacy_shadow_observation_failure_does_not_block_raw_hit(
         return raw_replacement
 
     monkeypatch.setattr(adapter, "check_pattern_and_replace", raw_hit)
-    optimizer = object.__new__(PatternOptimizer)
-    optimizer.stats = None
-    optimizer.cur_maturity = 7
-    optimizer._use_nomut_matching = False
-    optimizer._use_legacy_storage = False
-    optimizer._run_later_callback = None
-    optimizer._pending_replacement_rule = None
-    optimizer._get_candidates = lambda _candidate: [
-        RulePatternInfo(adapter, adapter.pattern_candidates[0])
-    ]
+    optimizer = _bare_pattern_optimizer(
+        _get_candidates=lambda _candidate: [
+            RulePatternInfo(adapter, adapter.pattern_candidates[0])
+        ]
+    )
     adapter.begin_provider_outcome_capture()
+    # The failed-closed shadow observation is logged via ``logger.debug``
+    # in ``d810.backends.mba.ida`` (unconditional, no ``debug_on`` guard).
+    # Before slice 3 of unflat-diagnostics-legibility (d81-ymrt) this
+    # assertion passed only incidentally, via the *unrelated* "Rule %s
+    # matched" INFO chatter that slice 3 correctly demoted to DEBUG -- the
+    # rule name happened to embed ``stage`` too. Capture the intended
+    # logger explicitly so the assertion checks the real signal.
+    caplog.set_level("DEBUG", logger="d810.backends.mba.ida")
 
     assert (
         optimizer._try_matches(
@@ -1553,14 +1568,9 @@ def test_pattern_optimizer_publishes_typed_raw_work_receipt(monkeypatch) -> None
             return Instruction()
 
     rule = LegacyRule()
-    optimizer = object.__new__(PatternOptimizer)
-    optimizer.stats = None
-    optimizer.cur_maturity = 7
-    optimizer._use_nomut_matching = False
-    optimizer._use_legacy_storage = False
-    optimizer._run_later_callback = None
-    optimizer._pending_replacement_rule = None
-    optimizer._get_candidates = lambda _candidate: [RulePatternInfo(rule, object())]
+    optimizer = _bare_pattern_optimizer(
+        _get_candidates=lambda _candidate: [RulePatternInfo(rule, object())]
+    )
 
     assert optimizer._try_matches(
         None,
@@ -1618,15 +1628,11 @@ def test_nomut_handler_receipt_uses_selected_engine_backend(
     )
     monkeypatch.setattr(handler_module, "_match_nomut", lambda *_args: True)
     rule = NomutRule()
-    optimizer = object.__new__(PatternOptimizer)
-    optimizer.stats = None
-    optimizer.cur_maturity = 7
-    optimizer._use_nomut_matching = True
-    optimizer._use_legacy_storage = False
-    optimizer._run_later_callback = None
-    optimizer._pending_replacement_rule = None
-    optimizer._match_bindings = handler_module.MatchBindings()
-    optimizer._get_candidates = lambda _candidate: [RulePatternInfo(rule, object())]
+    optimizer = _bare_pattern_optimizer(
+        _use_nomut_matching=True,
+        _match_bindings=handler_module.MatchBindings(),
+        _get_candidates=lambda _candidate: [RulePatternInfo(rule, object())],
+    )
 
     assert optimizer._try_matches(
         None,
@@ -1703,17 +1709,10 @@ def test_structural_dispatch_is_root_bucketed_and_reports_attempt_count(
             return Instruction()
 
     rule = StructuralRule()
-    optimizer = object.__new__(PatternOptimizer)
-    optimizer.stats = None
-    optimizer.cur_maturity = 7
-    optimizer._use_nomut_matching = False
-    optimizer._use_legacy_storage = False
-    optimizer._run_later_callback = None
-    optimizer._pending_replacement_rule = None
-    optimizer._canonical_fallback_rules_by_root_shape = {
-        ("add", 32, 2): [rule]
-    }
-    optimizer._get_candidates = lambda _ast: [RulePatternInfo(rule, object())]
+    optimizer = _bare_pattern_optimizer(
+        _canonical_fallback_rules_by_root_shape={("add", 32, 2): [rule]},
+        _get_candidates=lambda _ast: [RulePatternInfo(rule, object())],
+    )
 
     result = optimizer._try_matches(
         None,
@@ -1878,16 +1877,12 @@ def test_handler_clears_raw_rule_context_when_later_callback_raises() -> None:
             return None
 
     rule = Rule()
-    optimizer = object.__new__(PatternOptimizer)
-    optimizer.stats = None
-    optimizer.cur_maturity = 7
-    optimizer._use_nomut_matching = False
-    optimizer._use_legacy_storage = False
-    optimizer._run_later_callback = lambda *_args: (_ for _ in ()).throw(
-        RuntimeError("later callback failure")
+    optimizer = _bare_pattern_optimizer(
+        _run_later_callback=lambda *_args: (_ for _ in ()).throw(
+            RuntimeError("later callback failure")
+        ),
+        _get_candidates=lambda _candidate: [RulePatternInfo(rule, object())],
     )
-    optimizer._pending_replacement_rule = None
-    optimizer._get_candidates = lambda _candidate: [RulePatternInfo(rule, object())]
 
     with pytest.raises(RuntimeError, match="later callback failure"):
         optimizer._try_matches(
@@ -1937,16 +1932,12 @@ def test_handler_clears_fallback_rule_context_when_later_callback_raises(
             return None
 
     rule = Rule()
-    optimizer = object.__new__(PatternOptimizer)
-    optimizer.stats = None
-    optimizer.cur_maturity = 7
-    optimizer._use_nomut_matching = False
-    optimizer._use_legacy_storage = False
-    optimizer._run_later_callback = lambda *_args: (_ for _ in ()).throw(
-        RuntimeError("fallback later callback failure")
+    optimizer = _bare_pattern_optimizer(
+        _run_later_callback=lambda *_args: (_ for _ in ()).throw(
+            RuntimeError("fallback later callback failure")
+        ),
+        _get_candidates=lambda _candidate: [],
     )
-    optimizer._pending_replacement_rule = None
-    optimizer._get_candidates = lambda _candidate: []
     monkeypatch.setattr(
         optimizer,
         "_prepare_canonical_fallback",
@@ -2003,14 +1994,7 @@ def test_handler_shares_canonical_budget_across_multiple_fallback_adapters(
 
     first = Rule("first-fallback", 40)
     second = Rule("second-fallback", 20, replacement="replacement")
-    optimizer = object.__new__(PatternOptimizer)
-    optimizer.stats = None
-    optimizer.cur_maturity = 7
-    optimizer._use_nomut_matching = False
-    optimizer._use_legacy_storage = False
-    optimizer._run_later_callback = None
-    optimizer._pending_replacement_rule = None
-    optimizer._get_candidates = lambda _candidate: []
+    optimizer = _bare_pattern_optimizer(_get_candidates=lambda _candidate: [])
     monkeypatch.setattr(
         optimizer,
         "_prepare_canonical_fallback",
@@ -2124,14 +2108,7 @@ def test_terminal_fallback_error_abstains_root_before_later_adapter(monkeypatch)
 
     failing = FailingRule()
     later = LaterRule()
-    optimizer = object.__new__(PatternOptimizer)
-    optimizer.stats = None
-    optimizer.cur_maturity = 7
-    optimizer._use_nomut_matching = False
-    optimizer._use_legacy_storage = False
-    optimizer._run_later_callback = None
-    optimizer._pending_replacement_rule = None
-    optimizer._get_candidates = lambda _candidate: []
+    optimizer = _bare_pattern_optimizer(_get_candidates=lambda _candidate: [])
     monkeypatch.setattr(
         optimizer,
         "_prepare_canonical_fallback",
@@ -2231,17 +2208,10 @@ def test_try_matches_publishes_one_terminal_receipt_when_preparation_fails(
         return None
 
     monkeypatch.setattr(adapter, "prepare_structural_candidate", prepare)
-    optimizer = object.__new__(PatternOptimizer)
-    optimizer.stats = None
-    optimizer.cur_maturity = 7
-    optimizer._use_nomut_matching = False
-    optimizer._use_legacy_storage = False
-    optimizer._run_later_callback = None
-    optimizer._pending_replacement_rule = None
-    optimizer._canonical_fallback_rules_by_root_shape = {
-        ("add", 32, 2): [adapter]
-    }
-    optimizer._get_candidates = lambda _ast: []
+    optimizer = _bare_pattern_optimizer(
+        _canonical_fallback_rules_by_root_shape={("add", 32, 2): [adapter]},
+        _get_candidates=lambda _ast: [],
+    )
 
     assert (
         optimizer._try_matches(
