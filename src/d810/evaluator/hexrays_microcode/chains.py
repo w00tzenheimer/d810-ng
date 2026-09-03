@@ -23,6 +23,11 @@ import ida_hexrays
 
 from d810.core.logging import getLogger
 from d810.core.typing import NamedTuple, Optional
+from d810.analyses.value_flow.aliased_stack_reaching_defs import (
+    AliasedStackDefEvent,
+    AliasedStackDefSite,
+    collect_aliased_stack_reaching_defs,
+)
 
 logger = getLogger(__name__)
 
@@ -173,6 +178,118 @@ def _scan_block_for_stkvar_defs(
                 )
         cur_ins = cur_ins.next
     return results
+
+
+def _stack_cells_overlap(
+    left_offset: int,
+    left_size: int,
+    right_offset: int,
+    right_size: int,
+) -> bool:
+    """Return whether two positive-width stack intervals overlap."""
+    return (
+        left_size > 0
+        and right_size > 0
+        and left_offset < right_offset + right_size
+        and right_offset < left_offset + left_size
+    )
+
+
+def _stack_slot_is_aliased(mba: object, stkoff: int, size: int) -> bool:
+    """Check the MBA ivlset first, with ``minstkref`` as an SDK fallback."""
+    try:
+        interval = ida_hexrays.ivl_t(stkoff, size)
+        interval_set = ida_hexrays.ivlset_t(interval)
+        aliased_memory = mba.aliased_memory  # type: ignore[attr-defined]
+        if aliased_memory.includes(interval_set):
+            return True
+    except (AttributeError, RuntimeError, TypeError, ValueError):
+        pass
+    try:
+        return stkoff >= int(mba.minstkref) > 0  # type: ignore[attr-defined]
+    except (AttributeError, TypeError, ValueError):
+        return False
+
+
+def _aliased_stack_events_for_block(
+    mba: object,
+    blk_serial: int,
+    stkoff: int,
+    size: int,
+) -> tuple[AliasedStackDefEvent, ...]:
+    """Classify direct and MAY writes to one aliased stack cell in a block."""
+    blk = mba.get_mblock(blk_serial)  # type: ignore[attr-defined]
+    if blk is None:
+        return ()
+
+    events: list[AliasedStackDefEvent] = []
+    instruction = blk.head
+    call_opcodes = {
+        getattr(ida_hexrays, "m_call", -1),
+        getattr(ida_hexrays, "m_icall", -1),
+    }
+    while instruction is not None:
+        destination = getattr(instruction, "d", None)
+        site = AliasedStackDefSite(
+            block_serial=blk_serial,
+            ins_ea=getattr(instruction, "ea", 0),
+            opcode=getattr(instruction, "opcode", None),
+        )
+        if (
+            destination is not None
+            and destination.t == ida_hexrays.mop_S
+            and destination.s is not None
+        ):
+            destination_offset = int(destination.s.off)
+            destination_size = int(destination.size)
+            if _stack_cells_overlap(destination_offset, destination_size, stkoff, size):
+                # Only an exact cell write can replace its prior scalar value.
+                # A partial/larger overlap remains a MAY definition because the
+                # emulator cannot safely reconstruct the untouched bytes here.
+                events.append(
+                    AliasedStackDefEvent(
+                        site,
+                        replaces_cell=(
+                            destination_offset == stkoff and destination_size == size
+                        ),
+                    )
+                )
+        elif getattr(instruction, "opcode", None) == ida_hexrays.m_stx:
+            # An indirect store whose address is not a direct stack cell might
+            # alias any frame location. Do not drop earlier candidates.
+            events.append(AliasedStackDefEvent(site))
+        elif getattr(instruction, "opcode", None) in call_opcodes:
+            # Hex-Rays does not expose a portable per-cell call-effect proof in
+            # this read-only path. Without such a proof, every call is a MAY
+            # clobber and therefore remains a candidate rather than a kill.
+            events.append(AliasedStackDefEvent(site))
+        instruction = instruction.next
+    return tuple(events)
+
+
+def _find_reaching_defs_for_aliased_stkvar(
+    mba: object,
+    blk_serial: int,
+    stkoff: int,
+    size: int,
+) -> list[DefSite]:
+    """Run the bounded, per-query forward fallback for an aliased cell."""
+    sites = collect_aliased_stack_reaching_defs(
+        entry_block=0,
+        target_block=blk_serial,
+        successors_of=lambda serial: mba.get_mblock(serial).succset,  # type: ignore[attr-defined]
+        events_for_block=lambda serial: _aliased_stack_events_for_block(
+            mba, serial, stkoff, size
+        ),
+    )
+    return [
+        DefSite(
+            block_serial=site.block_serial,
+            ins_ea=site.ins_ea,
+            ins_opcode=site.opcode if site.opcode is not None else -1,
+        )
+        for site in sites
+    ]
 
 
 def _scan_block_for_reg_defs(
@@ -396,9 +513,11 @@ def find_reaching_defs_for_stkvar(
             stkoff,
             size,
         )
-        return []
+        chain = None
 
     if chain is None:
+        if _stack_slot_is_aliased(mba, stkoff, size):
+            return _find_reaching_defs_for_aliased_stkvar(mba, blk_serial, stkoff, size)
         return []
 
     # chain_t extends intvec_t — each element is a block serial where the
