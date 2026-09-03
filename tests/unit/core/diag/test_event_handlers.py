@@ -34,9 +34,11 @@ from d810.core.observability_events import (
     InputIdentityResolutionObserved,
     ModificationsObserved,
     MutationPlanObserved,
+    EmulatorGapObserved,
     MutationReceiptObserved,
     PassContractEvidencePublished,
     SemanticOutputVerifiedObserved,
+    StateWriteResolutionObserved,
     HostDecompilationOutcome,
     HostDecompilationOutcomeKind,
     HostDecompilationOutcomeObserved,
@@ -1442,3 +1444,197 @@ def test_unflat_candidate_outcome_persists_the_poisoned_class(fake_conn):
         "structural_accounting:source_catalog_block",
         7,
     )
+
+
+# ---------------------------------------------------------------------------
+# State-write resolution facts (ticket d81-qt4v, slice 4)
+# ---------------------------------------------------------------------------
+
+
+def _state_write_resolution(**overrides):
+    kwargs = dict(
+        func_ea=0x7FFB0EB06E50,
+        block_serial=330,
+        block_ea=0x7FFB0EB15239,
+        corridor=(355, 397),
+        outcome="abstain",
+        cause="no_def_within_hop_bound",
+        reason="emulator+history could not resolve state-var write",
+        store_cells=0,
+        folded_value=None,
+        def_sites=((329, 0x7FFB0EB1520A), (398, 0x7FFB0EB0BCF7)),
+        contributed_to_unresolved_transition=True,
+        maturity="MMAT_GLBOPT1",
+        session_id="sess-1",
+    )
+    kwargs.update(overrides)
+    return StateWriteResolutionObserved(**kwargs)
+
+
+def test_state_write_resolution_writes_lifecycle_and_fact_rows(fake_conn):
+    emit(_state_write_resolution())
+
+    kind, maturity, correlation, payload = fake_conn.execute(
+        "SELECT event_kind,maturity,correlation_id,payload_json "
+        "FROM lifecycle_events WHERE event_kind='state_write_resolution'"
+    ).fetchone()
+    assert kind == "state_write_resolution"
+    assert maturity == "MMAT_GLBOPT1"
+    assert correlation == "330:355>397"
+    body = json.loads(payload)
+    assert body["kind"] == "StateWriteResolutionFact"
+    assert body["cause"] == "no_def_within_hop_bound"
+    assert body["outcome"] == "abstain"
+    assert body["corridor"] == [355, 397]
+    assert body["def_sites"] == [[329, 0x7FFB0EB1520A], [398, 0x7FFB0EB0BCF7]]
+    assert body["contributed_to_unresolved_transition"] is True
+
+    row = fake_conn.execute(
+        "SELECT func_ea_hex,block_serial,block_ea_hex,corridor,outcome,cause,"
+        "store_cells,folded_value_hex,def_sites_json,"
+        "contributed_to_unresolved_transition,maturity "
+        "FROM state_write_resolutions"
+    ).fetchone()
+    assert row[0] == "0x00007ffb0eb06e50"
+    assert row[1] == 330
+    assert row[3] == "355>397"
+    assert row[4] == "abstain"
+    assert row[5] == "no_def_within_hop_bound"
+    assert row[6] == 0
+    assert row[7] is None
+    assert json.loads(row[8]) == [[329, 0x7FFB0EB1520A], [398, 0x7FFB0EB0BCF7]]
+    assert row[9] == 1
+    assert row[10] == "MMAT_GLBOPT1"
+
+
+def test_state_write_resolution_persists_a_resolved_corridor(fake_conn):
+    emit(
+        _state_write_resolution(
+            corridor=(329,),
+            outcome="exact_result",
+            cause="resolved",
+            reason="",
+            store_cells=2,
+            folded_value=0x4BCC8BEE,
+            def_sites=(),
+            contributed_to_unresolved_transition=False,
+        )
+    )
+    row = fake_conn.execute(
+        "SELECT corridor,outcome,cause,folded_value_hex,folded_value_i64,"
+        "contributed_to_unresolved_transition FROM state_write_resolutions"
+    ).fetchone()
+    assert row == (
+        "329",
+        "exact_result",
+        "resolved",
+        "0x000000004bcc8bee",
+        0x4BCC8BEE,
+        0,
+    )
+
+
+def test_state_write_resolution_rows_are_append_only(fake_conn):
+    emit(
+        _state_write_resolution(
+            corridor=(329,),
+            cause="resolved",
+            outcome="exact_result",
+            folded_value=1,
+            contributed_to_unresolved_transition=False,
+        )
+    )
+    emit(
+        _state_write_resolution(
+            corridor=(355, 398),
+            cause="resolved",
+            outcome="exact_result",
+            folded_value=2,
+            contributed_to_unresolved_transition=False,
+        )
+    )
+    emit(_state_write_resolution(corridor=(355, 397)))
+    rows = fake_conn.execute(
+        "SELECT corridor,cause FROM state_write_resolutions ORDER BY rowid"
+    ).fetchall()
+    assert rows == [
+        ("329", "resolved"),
+        ("355>398", "resolved"),
+        ("355>397", "no_def_within_hop_bound"),
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Emulator gap facts (ticket d81-c6n7, slice 5)
+# ---------------------------------------------------------------------------
+
+
+def _emulator_gap(**overrides):
+    kwargs = dict(
+        func_ea=0x7FFB0EB06E50,
+        cause="stack_slot_in_aliased_memory",
+        site_ea=0x7FFB0EB0CAB7,
+        block_serial=236,
+        occurrences=12,
+        detail="ldx ss.2, %var_3A0.8",
+        def_sites=((236, 0x7FFB0EB0CAB7),),
+        maturity="MMAT_GLBOPT1",
+        attempt=2,
+        session_id="sess-1",
+    )
+    kwargs.update(overrides)
+    return EmulatorGapObserved(**kwargs)
+
+
+def test_emulator_gap_writes_lifecycle_and_fact_rows(fake_conn):
+    emit(_emulator_gap())
+
+    kind, maturity, correlation, payload = fake_conn.execute(
+        "SELECT event_kind,maturity,correlation_id,payload_json "
+        "FROM lifecycle_events WHERE event_kind='emulator_gap'"
+    ).fetchone()
+    assert kind == "emulator_gap"
+    assert maturity == "MMAT_GLBOPT1"
+    assert correlation == "2:stack_slot_in_aliased_memory:0x00007ffb0eb0cab7"
+    body = json.loads(payload)
+    assert body["kind"] == "EmulatorGapFact"
+    assert body["cause"] == "stack_slot_in_aliased_memory"
+    assert body["occurrences"] == 12
+    assert body["block_serial"] == 236
+    assert body["def_sites"] == [[236, 0x7FFB0EB0CAB7]]
+
+    row = fake_conn.execute(
+        "SELECT func_ea_hex,cause,site_ea_hex,site_ea_i64,block_serial,"
+        "occurrences,detail,def_sites_json,maturity,attempt FROM emulator_gaps"
+    ).fetchone()
+    assert row[0] == "0x00007ffb0eb06e50"
+    assert row[1] == "stack_slot_in_aliased_memory"
+    assert row[2] == "0x00007ffb0eb0cab7"
+    assert row[3] == 0x7FFB0EB0CAB7
+    assert row[4] == 236
+    assert row[5] == 12
+    assert row[6] == "ldx ss.2, %var_3A0.8"
+    assert json.loads(row[7]) == [[236, 0x7FFB0EB0CAB7]]
+    assert row[8] == "MMAT_GLBOPT1"
+    assert row[9] == 2
+
+
+def test_emulator_gap_rows_are_append_only_per_attempt(fake_conn):
+    emit(_emulator_gap(attempt=1, occurrences=3))
+    emit(_emulator_gap(attempt=2, occurrences=4))
+    emit(
+        _emulator_gap(
+            attempt=2,
+            cause="unsupported_call_operand",
+            site_ea=0x7FFB0EB0BCF7,
+            occurrences=1,
+        )
+    )
+    rows = fake_conn.execute(
+        "SELECT attempt,cause,occurrences FROM emulator_gaps ORDER BY rowid"
+    ).fetchall()
+    assert rows == [
+        (1, "stack_slot_in_aliased_memory", 3),
+        (2, "stack_slot_in_aliased_memory", 4),
+        (2, "unsupported_call_operand", 1),
+    ]

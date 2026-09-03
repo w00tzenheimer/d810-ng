@@ -922,6 +922,132 @@ UNFLATTEN_CANDIDATE_DISPOSITIONS = frozenset(
 )
 
 
+#: Outcome shapes a state-write emu-consult can end in (ticket d81-qt4v).
+STATE_WRITE_RESOLUTION_OUTCOMES = frozenset(
+    {
+        # The emulator proved an exact next-state for this corridor.
+        "exact_result",
+        # The emulator declined (precision unknown).
+        "abstain",
+        # The op/shape is not modeled.
+        "unsupported",
+        # The emulator raised; a failure means "cannot prove", so it abstains.
+        "raised",
+        # The consult was never made (a gate short-circuited before it).
+        "skipped",
+    }
+)
+
+
+@dataclass(frozen=True, slots=True)
+class StateWriteResolutionObserved:
+    """One emu-consult decision in dispatcher state-write recovery.
+
+    The causal LEAF of an unflatten bail (plan section 3.4): a residual
+    dispatcher corridor is only legible once every consult that fed it names
+    its own outcome and cause.  Emitted once per ``(block, corridor path)``;
+    ``contributed_to_unresolved_transition`` is set by transition recovery
+    when the abstention is what left the transition unresolved, so a residual
+    count decomposes by cause instead of staying one opaque number.
+
+    Diagnostic only: nothing in the optimizer reads these records back.
+    """
+
+    func_ea: int
+    block_serial: int
+    block_ea: int
+    corridor: tuple[int, ...]
+    outcome: str
+    cause: str
+    reason: str = ""
+    store_cells: int = 0
+    folded_value: int | None = None
+    def_sites: tuple[tuple[int, int], ...] = ()
+    contributed_to_unresolved_transition: bool = False
+    maturity: str = ""
+    session_id: str = ""
+    timestamp: float = 0.0
+
+    def __post_init__(self) -> None:
+        if isinstance(self.func_ea, bool) or int(self.func_ea) < 0:
+            raise ValueError("func_ea must be non-negative")
+        if self.outcome not in STATE_WRITE_RESOLUTION_OUTCOMES:
+            raise ValueError(f"unknown state-write outcome: {self.outcome!r}")
+        if not isinstance(self.cause, str) or not self.cause.strip():
+            raise ValueError("state-write cause must be non-empty")
+        if isinstance(self.store_cells, bool) or int(self.store_cells) < 0:
+            raise ValueError("store_cells must be non-negative")
+        object.__setattr__(self, "func_ea", int(self.func_ea))
+        object.__setattr__(self, "block_serial", int(self.block_serial))
+        object.__setattr__(self, "block_ea", int(self.block_ea))
+        object.__setattr__(self, "store_cells", int(self.store_cells))
+        object.__setattr__(
+            self, "corridor", tuple(int(serial) for serial in self.corridor)
+        )
+        object.__setattr__(
+            self,
+            "def_sites",
+            tuple((int(blk), int(ea)) for blk, ea in self.def_sites),
+        )
+        object.__setattr__(
+            self,
+            "folded_value",
+            None if self.folded_value is None else int(self.folded_value),
+        )
+        object.__setattr__(
+            self,
+            "contributed_to_unresolved_transition",
+            bool(self.contributed_to_unresolved_transition),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class EmulatorGapObserved:
+    """One DEDUPED evaluator gap the microcode emulator could not close.
+
+    The emulator's WARNINGs are a worklist, not noise (plan section 5.5): each
+    one is a real, individually fixable evaluator gap, and closing them is what
+    makes unflattening resolve more corridors.  This is the persisted form of a
+    single ``(function, attempt, cause, site)`` gap -- the same key the WARNING
+    line is deduped on -- carrying how many times it recurred within the
+    attempt and the definition sites the emulator considered.
+
+    Diagnostic only: nothing in the optimizer reads these records back.
+    """
+
+    func_ea: int
+    cause: str
+    site_ea: int
+    block_serial: int = -1
+    occurrences: int = 1
+    detail: str = ""
+    def_sites: tuple[tuple[int, int], ...] = ()
+    maturity: str = ""
+    attempt: int = 0
+    session_id: str = ""
+    timestamp: float = 0.0
+
+    def __post_init__(self) -> None:
+        if isinstance(self.func_ea, bool) or int(self.func_ea) < 0:
+            raise ValueError("func_ea must be non-negative")
+        if not isinstance(self.cause, str) or not self.cause.strip():
+            raise ValueError("emulator gap cause must be non-empty")
+        if isinstance(self.occurrences, bool) or int(self.occurrences) < 0:
+            raise ValueError("occurrences must be non-negative")
+        if isinstance(self.attempt, bool) or int(self.attempt) < 0:
+            raise ValueError("attempt must be non-negative")
+        object.__setattr__(self, "func_ea", int(self.func_ea))
+        object.__setattr__(self, "site_ea", int(self.site_ea))
+        object.__setattr__(self, "block_serial", int(self.block_serial))
+        object.__setattr__(self, "occurrences", int(self.occurrences))
+        object.__setattr__(self, "attempt", int(self.attempt))
+        object.__setattr__(
+            self,
+            "def_sites",
+            tuple((int(blk), int(ea)) for blk, ea in self.def_sites),
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class UnflattenCandidateOutcomeObserved:
     """The one authoritative terminal outcome for an unflatten candidate.
@@ -1501,6 +1627,9 @@ __all__ = [
     "RecoverySearchObserved",
     "UNFLATTEN_CANDIDATE_DISPOSITIONS",
     "UnflattenCandidateOutcomeObserved",
+    "StateWriteResolutionObserved",
+    "STATE_WRITE_RESOLUTION_OUTCOMES",
+    "EmulatorGapObserved",
     "MutationPlanTargetObserved",
     # Preanalysis
     "BranchOwnershipProofsObserved",

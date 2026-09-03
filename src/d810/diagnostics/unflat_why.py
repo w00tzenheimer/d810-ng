@@ -116,6 +116,8 @@ def render_unflat_why(conn: sqlite3.Connection, func_ea: int) -> list[str]:
         lines.append(f"  next: {_next_step(deciding_row)}")
         lines.append("")
 
+    _render_state_write_resolutions(lines, conn, func_ea_i64)
+    _render_emulator_gaps(lines, conn, func_ea_i64)
     _render_recovery_search(lines, conn, func_ea_i64)
     return lines
 
@@ -410,6 +412,180 @@ def _next_step(row: sqlite3.Row) -> str:
     if template:
         return template
     return f"disposition={disposition}: no next-step guidance recorded for this disposition."
+
+
+#: How many unresolved corridors the report lists before it truncates.
+_TOP_UNRESOLVED_CORRIDORS = 10
+
+
+def _render_state_write_resolutions(
+    lines: list[str], conn: sqlite3.Connection, func_ea_i64: int
+) -> None:
+    """Decompose the residual dispatcher corridors by cause (ticket d81-qt4v).
+
+    A residual count on its own says nothing an operator can act on; the
+    per-cause split names which evaluator gap to close first, and the
+    contributor listing names the exact corridors blocked on each one.
+    """
+    if not _table_exists(conn, "state_write_resolutions"):
+        lines.append(
+            "state_write_resolutions: not recorded (schema predates ticket "
+            "d81-qt4v slice 4; this diag DB carries no StateWriteResolutionFact)"
+        )
+        return
+    rows = conn.execute(
+        """
+        SELECT block_serial, block_ea_hex, corridor, outcome, cause, reason,
+               store_cells, folded_value_hex, def_sites_json,
+               contributed_to_unresolved_transition
+        FROM state_write_resolutions
+        WHERE func_ea_i64 = ?
+        ORDER BY block_serial, corridor, rowid
+        """,
+        (int(func_ea_i64),),
+    ).fetchall()
+    if not rows:
+        lines.append(
+            "state_write_resolutions: not recorded (no StateWriteResolutionFact "
+            "for this function)"
+        )
+        return
+
+    counts: dict[str, int] = {}
+    for row in rows:
+        cause = row["cause"]
+        counts[cause] = counts.get(cause, 0) + 1
+    decomposition = " ".join(
+        f"{cause}={count}"
+        for cause, count in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+    )
+    contributors = [
+        row for row in rows if row["contributed_to_unresolved_transition"]
+    ]
+    lines.append(
+        f"state_write_resolutions: {len(rows)} corridor consult(s); "
+        f"{decomposition}"
+    )
+    for row in rows:
+        folded = row["folded_value_hex"]
+        value = "" if folded is None else f" value=0x{int(folded, 16):x}"
+        lines.append(
+            f"  blk{row['block_serial']}@{row['block_ea_hex']} "
+            f"corridor={row['corridor']} outcome={row['outcome']} "
+            f"cause={row['cause']} store_cells={row['store_cells']}{value}"
+        )
+    if not contributors:
+        lines.append(
+            "  unresolved corridors: none (no consult fed an unresolved "
+            "transition)"
+        )
+        return
+    shown = contributors[:_TOP_UNRESOLVED_CORRIDORS]
+    truncated = len(contributors) - len(shown)
+    header = f"  top unresolved corridors ({len(contributors)} contributor(s))"
+    if truncated > 0:
+        header += f", {truncated} more not shown"
+    lines.append(header + ":")
+    for row in shown:
+        def_sites = _safe_def_sites(row["def_sites_json"])
+        sites = (
+            ""
+            if not def_sites
+            else " defs=" + ",".join(f"blk{blk}@0x{ea:x}" for blk, ea in def_sites)
+        )
+        reason = f" reason={row['reason']}" if row["reason"] else ""
+        lines.append(
+            f"    blk{row['block_serial']} corridor={row['corridor']} "
+            f"cause={row['cause']}{sites}{reason}"
+        )
+
+
+def _safe_def_sites(text: object) -> list[tuple[int, int]]:
+    """Parse a ``def_sites_json`` column; a malformed value renders as empty."""
+    if not text:
+        return []
+    try:
+        loaded = json.loads(str(text))
+    except (TypeError, ValueError):
+        return []
+    sites: list[tuple[int, int]] = []
+    if not isinstance(loaded, list):
+        return []
+    for entry in loaded:
+        try:
+            blk, ea = entry
+            sites.append((int(blk), int(ea)))
+        except (TypeError, ValueError):
+            continue
+    return sites
+
+
+#: How many gap sites the report lists before it truncates.
+_TOP_EMULATOR_GAP_SITES = 20
+
+
+def _render_emulator_gaps(
+    lines: list[str], conn: sqlite3.Connection, func_ea_i64: int
+) -> None:
+    """List the evaluator gaps this function hit, by cause (ticket d81-c6n7).
+
+    The emulator's WARNINGs are a worklist: each cause is a real, individually
+    fixable gap, and the count says which one to close first.  ``occurrences``
+    is the pre-dedupe sighting count, so a single-site gap that fired 2,000
+    times is still visible as such.
+    """
+    if not _table_exists(conn, "emulator_gaps"):
+        lines.append(
+            "emulator_gaps: not recorded (schema predates ticket d81-c6n7 "
+            "slice 5; this diag DB carries no EmulatorGapFact)"
+        )
+        return
+    rows = conn.execute(
+        """
+        SELECT attempt, cause, site_ea_hex, block_serial, occurrences, detail,
+               def_sites_json
+        FROM emulator_gaps
+        WHERE func_ea_i64 = ?
+        ORDER BY attempt, cause, site_ea_i64, rowid
+        """,
+        (int(func_ea_i64),),
+    ).fetchall()
+    if not rows:
+        lines.append(
+            "emulator_gaps: not recorded (no EmulatorGapFact for this function)"
+        )
+        return
+
+    counts: dict[str, int] = {}
+    for row in rows:
+        cause = row["cause"]
+        counts[cause] = counts.get(cause, 0) + int(row["occurrences"])
+    decomposition = " ".join(
+        f"{cause}={count}"
+        for cause, count in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+    )
+    total = sum(counts.values())
+    lines.append(
+        f"emulator_gaps: {len(rows)} site(s), {total} sighting(s); "
+        f"{decomposition}"
+    )
+    shown = rows[:_TOP_EMULATOR_GAP_SITES]
+    truncated = len(rows) - len(shown)
+    for row in shown:
+        def_sites = _safe_def_sites(row["def_sites_json"])
+        sites = (
+            ""
+            if not def_sites
+            else " defs=" + ",".join(f"blk{blk}@0x{ea:x}" for blk, ea in def_sites)
+        )
+        detail = f" detail={row['detail']}" if row["detail"] else ""
+        lines.append(
+            f"  attempt{row['attempt']} cause={row['cause']} "
+            f"blk{row['block_serial']}@{row['site_ea_hex']} "
+            f"x{row['occurrences']}{sites}{detail}"
+        )
+    if truncated > 0:
+        lines.append(f"  ... {truncated} more gap site(s) not shown")
 
 
 def _render_recovery_search(

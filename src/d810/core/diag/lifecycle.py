@@ -6,8 +6,10 @@ import json
 import sqlite3
 import time
 
+from d810.core.observability_state_write import format_corridor
 from d810.core.observability_events import (
     CfgTransactionAttemptObserved,
+    EmulatorGapObserved,
     DiagnosticSessionObserved,
     EvidenceGenerationObserved,
     FrontendNormalizationPlanIntentObserved,
@@ -17,6 +19,7 @@ from d810.core.observability_events import (
     MutationPlanObserved,
     MutationReceiptObserved,
     RecoverySearchObserved,
+    StateWriteResolutionObserved,
     UnflattenCandidateOutcomeObserved,
     PassContractEvidencePublished,
     SemanticOutputVerifiedObserved,
@@ -887,6 +890,144 @@ def persist_unflatten_candidate_outcome(
     return event_id
 
 
+def persist_state_write_resolution(
+    conn: sqlite3.Connection,
+    event: StateWriteResolutionObserved,
+) -> int:
+    """Persist one per-corridor state-write resolution fact (d81-qt4v).
+
+    The corridor is stored in its rendered ``355>397`` form so a residual
+    listing groups on it directly; the raw serials stay in the lifecycle
+    payload for readers that need them.
+    """
+    corridor = format_corridor(event.corridor)
+    def_sites = [[int(blk), int(ea)] for blk, ea in event.def_sites]
+    event_id = persist_lifecycle_event(
+        conn,
+        LifecycleEventObserved(
+            session_id=event.session_id,
+            func_ea=event.func_ea,
+            event_kind="state_write_resolution",
+            provider="minimal_state_recovery",
+            maturity=event.maturity,
+            phase=event.outcome,
+            correlation_id=f"{int(event.block_serial)}:{corridor}",
+            summary=(
+                f"state write blk{int(event.block_serial)} corridor {corridor}: "
+                f"{event.outcome} ({event.cause})"
+            ),
+            payload={
+                "kind": "StateWriteResolutionFact",
+                "block_serial": int(event.block_serial),
+                "block_ea": int(event.block_ea),
+                "corridor": [int(serial) for serial in event.corridor],
+                "outcome": event.outcome,
+                "cause": event.cause,
+                "reason": event.reason,
+                "store_cells": int(event.store_cells),
+                "folded_value": event.folded_value,
+                "def_sites": def_sites,
+                "contributed_to_unresolved_transition": bool(
+                    event.contributed_to_unresolved_transition
+                ),
+            },
+            timestamp=event.timestamp,
+        ),
+        snapshot_id=None,
+    )
+    conn.execute(
+        "INSERT INTO state_write_resolutions "
+        "(event_id,session_id,func_ea_hex,func_ea_i64,maturity,block_serial,"
+        "block_ea_hex,block_ea_i64,corridor,outcome,cause,reason,store_cells,"
+        "folded_value_hex,folded_value_i64,def_sites_json,"
+        "contributed_to_unresolved_transition) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (
+            event_id,
+            event.session_id,
+            _func_hex(event.func_ea),
+            int(event.func_ea),
+            event.maturity,
+            int(event.block_serial),
+            _func_hex(event.block_ea),
+            int(event.block_ea),
+            corridor,
+            event.outcome,
+            event.cause,
+            event.reason,
+            int(event.store_cells),
+            None if event.folded_value is None else _func_hex(event.folded_value),
+            None if event.folded_value is None else int(event.folded_value),
+            json.dumps(def_sites, separators=(",", ":")),
+            1 if event.contributed_to_unresolved_transition else 0,
+        ),
+    )
+    return event_id
+
+
+def persist_emulator_gap(
+    conn: sqlite3.Connection,
+    event: EmulatorGapObserved,
+) -> int:
+    """Persist one deduped evaluator gap fact (ticket d81-c6n7).
+
+    The correlation id is the dedupe key the WARNING line uses, so a reader can
+    join a log line to its row without re-deriving anything.
+    """
+    def_sites = [[int(blk), int(ea)] for blk, ea in event.def_sites]
+    site_hex = _func_hex(event.site_ea)
+    event_id = persist_lifecycle_event(
+        conn,
+        LifecycleEventObserved(
+            session_id=event.session_id,
+            func_ea=event.func_ea,
+            event_kind="emulator_gap",
+            provider="hexrays_microcode_emulator",
+            maturity=event.maturity,
+            phase=event.cause,
+            correlation_id=f"{int(event.attempt)}:{event.cause}:{site_hex}",
+            summary=(
+                f"emulator gap {event.cause} at {site_hex} "
+                f"(x{int(event.occurrences)})"
+            ),
+            payload={
+                "kind": "EmulatorGapFact",
+                "cause": event.cause,
+                "site_ea": int(event.site_ea),
+                "block_serial": int(event.block_serial),
+                "occurrences": int(event.occurrences),
+                "attempt": int(event.attempt),
+                "detail": event.detail,
+                "def_sites": def_sites,
+            },
+            timestamp=event.timestamp,
+        ),
+        snapshot_id=None,
+    )
+    conn.execute(
+        "INSERT INTO emulator_gaps "
+        "(event_id,session_id,func_ea_hex,func_ea_i64,maturity,attempt,cause,"
+        "site_ea_hex,site_ea_i64,block_serial,occurrences,detail,def_sites_json) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (
+            event_id,
+            event.session_id,
+            _func_hex(event.func_ea),
+            int(event.func_ea),
+            event.maturity,
+            int(event.attempt),
+            event.cause,
+            site_hex,
+            int(event.site_ea),
+            int(event.block_serial),
+            int(event.occurrences),
+            event.detail,
+            json.dumps(def_sites, separators=(",", ":")),
+        ),
+    )
+    return event_id
+
+
 def persist_semantic_fragment_route_oracle(
     conn: sqlite3.Connection,
     event: SemanticFragmentRouteOracleComparedObserved,
@@ -1286,6 +1427,8 @@ __all__.extend(
         "persist_mutation_plan",
         "persist_recovery_search",
         "persist_unflatten_candidate_outcome",
+        "persist_state_write_resolution",
+        "persist_emulator_gap",
         "persist_mutation_receipt",
         "persist_semantic_fragment_route_oracle",
     ]

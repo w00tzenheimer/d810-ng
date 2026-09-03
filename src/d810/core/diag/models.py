@@ -478,6 +478,94 @@ class UnflattenCandidateOutcomeRecord(BaseModel):
         )
 
 
+class StateWriteResolutionRecord(BaseModel):
+    """One emu-consult decision in dispatcher state-write recovery (d81-qt4v).
+
+    Append-only causal leaf under a terminal unflatten outcome: one row per
+    ``(block, corridor path)``.  ``contributed_to_unresolved_transition`` is
+    written by transition recovery at build time -- it is never back-filled.
+    """
+
+    event = ForeignKeyField(
+        LifecycleEvent,
+        field="event_id",
+        column_name="event_id",
+        primary_key=True,
+        index=False,
+        null=False,
+    )
+    session_id = TextField()
+    func_ea_hex = TextField()
+    func_ea_i64 = IntegerField()
+    maturity = TextField()
+    block_serial = IntegerField()
+    block_ea_hex = TextField()
+    block_ea_i64 = IntegerField()
+    #: The incoming corridor, nearest block to the use first (``355>397``).
+    corridor = TextField()
+    outcome = TextField(
+        constraints=[
+            Check(
+                "outcome IN ('exact_result','abstain','unsupported','raised',"
+                "'skipped')"
+            )
+        ]
+    )
+    cause = TextField()
+    reason = TextField()
+    store_cells = IntegerField()
+    folded_value_hex = TextField(null=True)
+    folded_value_i64 = IntegerField(null=True)
+    def_sites_json = TextField()
+    contributed_to_unresolved_transition = IntegerField()
+
+    class Meta:
+        table_name = "state_write_resolutions"
+        indexes = (
+            ((('func_ea_i64', 'cause'), False),)
+            + ((('func_ea_i64', 'block_serial', 'corridor'), False),)
+        )
+
+
+class EmulatorGapRecord(BaseModel):
+    """One DEDUPED evaluator gap the emulator hit in one attempt (d81-c6n7).
+
+    The emulator's WARNINGs are a worklist: each row is a real, individually
+    fixable gap, keyed exactly as the WARNING line is deduped --
+    ``(function, attempt, cause, site)`` -- with ``occurrences`` keeping the
+    count the dedupe would otherwise hide.
+    """
+
+    event = ForeignKeyField(
+        LifecycleEvent,
+        field="event_id",
+        column_name="event_id",
+        primary_key=True,
+        index=False,
+        null=False,
+    )
+    session_id = TextField()
+    func_ea_hex = TextField()
+    func_ea_i64 = IntegerField()
+    maturity = TextField()
+    #: Attempt number within the function; the dedupe resets on each one.
+    attempt = IntegerField()
+    cause = TextField()
+    site_ea_hex = TextField()
+    site_ea_i64 = IntegerField()
+    block_serial = IntegerField()
+    occurrences = IntegerField()
+    detail = TextField()
+    def_sites_json = TextField()
+
+    class Meta:
+        table_name = "emulator_gaps"
+        indexes = (
+            ((('func_ea_i64', 'cause'), False),)
+            + ((('func_ea_i64', 'attempt', 'site_ea_i64'), False),)
+        )
+
+
 class FrontendNormalizationPlanIntent(BaseModel):
     """Typed receipt-backed frontend plan intent used by the case projector."""
 
@@ -1820,6 +1908,8 @@ MODELS = (
     MutationPlanItem,
     RecoverySearchOutcomeRecord,
     UnflattenCandidateOutcomeRecord,
+    StateWriteResolutionRecord,
+    EmulatorGapRecord,
     FrontendNormalizationPlanIntent,
     SemanticOutputVerdict,
     PassContractEvidencePublication,

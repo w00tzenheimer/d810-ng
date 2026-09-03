@@ -25,7 +25,9 @@ def _write_version(path: str, version: int | None) -> None:
     conn.close()
 
 
-@pytest.mark.parametrize("version", [None, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11])
+@pytest.mark.parametrize(
+    "version", [None, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
+)
 def test_reader_rejects_noncurrent_schema_without_mutating_file(
     tmp_path, version: int | None
 ) -> None:
@@ -57,5 +59,5 @@ def test_writer_creates_only_current_schema_without_legacy_views() -> None:
     assert legacy == []
 
 
-def test_case_producer_uses_schema_v13_after_unflatten_outcomes() -> None:
-    assert DIAGNOSTIC_SCHEMA_VERSION == 13
+def test_case_producer_uses_schema_v15_after_emulator_gaps() -> None:
+    assert DIAGNOSTIC_SCHEMA_VERSION == 15

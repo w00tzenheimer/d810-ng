@@ -32,6 +32,10 @@ import ida_hexrays
 from d810.core.logging import getLogger
 from d810.core.typing import Optional, Sequence
 
+from d810.core.observability_state_write import (
+    CAUSE_EMULATOR_RAISED,
+    CAUSE_SYNTHETIC_TAINT,
+)
 from d810.analyses.data_flow.concolic.emulation import (
     Abstain,
     ConcreteStore,
@@ -122,8 +126,8 @@ class HexRaysBlockEmulator:
         write_insn = self._find_first_state_write(block)
         if write_insn is None or getattr(write_insn, "d", None) is None:
             return Abstain("no state-var write in block")
+        interpreter = MicroCodeInterpreter(symbolic_mode=False)
         try:
-            interpreter = MicroCodeInterpreter(symbolic_mode=False)
             self._apply_predecessor_context(interpreter, block, pred_serial)
             env = MicroCodeEnvironment()
             resolved: Optional[int] = None
@@ -144,6 +148,7 @@ class HexRaysBlockEmulator:
                         ):
                             # Derived from a call the emulator MODELED rather than
                             # computed: not a proven next-state (ticket d81-0xzp).
+                            interpreter.abstain_causes.note(CAUSE_SYNTHETIC_TAINT)
                             logger.debug(
                                 "HexRaysBlockEmulator: state write derives from a "
                                 "synthetic call return; abstaining"
@@ -157,9 +162,19 @@ class HexRaysBlockEmulator:
             logger.debug(
                 "HexRaysBlockEmulator: history eval raised; abstaining", exc_info=True
             )
-            return Abstain("history eval raised")
+            return Abstain(
+                "history eval raised",
+                cause=CAUSE_EMULATOR_RAISED,
+                def_sites=interpreter.abstain_causes.def_sites(),
+            )
         if resolved is None:
-            return Abstain("emulator+history could not resolve state-var write")
+            # Name WHY, so a residual dispatcher corridor decomposes by cause
+            # instead of being one opaque "could not resolve" (d81-qt4v).
+            return Abstain(
+                "emulator+history could not resolve state-var write",
+                cause=interpreter.abstain_causes.dominant(),
+                def_sites=interpreter.abstain_causes.def_sites(),
+            )
         return ExactResult({self.state_cell: int(resolved) & 0xFFFFFFFFFFFFFFFF})
 
     # -- internal ----------------------------------------------------------
