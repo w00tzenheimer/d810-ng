@@ -30,6 +30,12 @@ from d810.ir.graph_fingerprint import (
     portable_graph_fingerprint_values,
     portable_graph_projection,
 )
+from .canonical_session import (
+    record_deep_validation,
+    record_inventory_validation,
+    record_roundtrip_decode,
+    record_wire_encode,
+)
 
 _PREFIX = b"d810-unflatten-authority\0"
 SUBJECT_SCHEMA = "unflatten.subject.v1"
@@ -1033,7 +1039,10 @@ def _json_bytes(value: object) -> bytes:
 
 def canonical_bytes(value: object) -> bytes:
     _validate_canonical_value(value)
-    return _json_bytes(_wire(value))
+    record_deep_validation()
+    wire = _wire(value)
+    record_wire_encode()
+    return _json_bytes(wire)
 
 
 def _decode_wire(value: object, *, allow_index: bool = False) -> object:
@@ -1253,6 +1262,7 @@ def canonical_decode(encoded: bytes) -> object:
         raise ValueError("obligation indexes are evaluator-owned and require case context")
     if canonical_bytes(result) != encoded:
         raise ValueError("non-canonical canonical encoding")
+    record_roundtrip_decode()
     return result
 
 
@@ -1654,7 +1664,9 @@ def semantic_graph_inventory_digest(*fields: object) -> str:
         fields = (*fields, ())
     if len(fields) != 15:
         raise TypeError("semantic graph inventory digest requires fifteen fields")
-    return content_id(SEMANTIC_GRAPH_INVENTORY_SCHEMA, tuple(fields))
+    digest = content_id(SEMANTIC_GRAPH_INVENTORY_SCHEMA, tuple(fields))
+    record_inventory_validation()
+    return digest
 
 
 def bound_unflatten_binding_id(prepared: object, patch_binding: object) -> str:
@@ -1709,6 +1721,7 @@ def _record_content_id(schema: str, value: object, omitted_field: str) -> str:
             if name != omitted_field
         ],
     }
+    record_wire_encode()
     return "sha256:" + hashlib.sha256(
         _PREFIX + schema.encode("ascii") + b"\0" + _json_bytes(wire)
     ).hexdigest()

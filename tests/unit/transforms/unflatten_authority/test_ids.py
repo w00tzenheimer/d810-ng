@@ -811,6 +811,40 @@ def test_validate_canonical_roundtrip_reencodes_deep_authority_only_in_decode() 
     ) == 2
 
 
+def test_validate_canonical_roundtrip_counts_every_nested_encode() -> None:
+    """The two root encodes hide many nested ones; the counters see them all."""
+    from d810.analyses.control_flow import semantic_route_evidence as route
+    from d810.transforms.unflatten_authority import ids
+    from d810.transforms.unflatten_authority.canonical_session import (
+        CanonicalSessionPhase,
+        _canonical_validation_session,
+    )
+    from tests.unit.transforms.unflatten_authority.test_bind import (
+        _compiler_corridor_unsupported_case,
+    )
+
+    authority, *_rest = _compiler_corridor_unsupported_case(
+        proof_kind=route.SemanticRouteProofKind.STATE_TRANSFORM,
+    )
+    with patch.object(ids, "canonical_bytes", wraps=ids.canonical_bytes) as encode:
+        with _canonical_validation_session(
+            CanonicalSessionPhase.PROJECTED_PREPARATION,
+        ) as session:
+            ids.validate_canonical_roundtrip(authority, type(authority))
+            metrics = session.metrics
+
+    root_encodes = sum(
+        type(call.args[0]) is type(authority) for call in encode.call_args_list
+    )
+    assert root_encodes == 2
+    assert metrics.roundtrip_decodes == 1
+    # The module-attribute mock only sees calls routed through `ids`; callers
+    # that imported `canonical_bytes` directly bypass it.  The counters see
+    # every top-level encode, so they are strictly the larger number.
+    assert metrics.deep_validations > len(encode.call_args_list) > root_encodes
+    assert metrics.canonical_bytes_reuses == 0
+
+
 def test_claim_and_evidence_factories_recompute_ids_and_reject_forgery() -> None:
     locator = model.BlockSubjectLocator(block_ref("authority"), 0x1000)
     subject = _subject_factory(
