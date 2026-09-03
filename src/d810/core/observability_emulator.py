@@ -172,6 +172,12 @@ class EmulatorGapScope:
     maturity: str = ""
     attempt: int = 0
     session_id: str = ""
+    #: ``True`` only for a scope a ``DecompilationSessionContext`` actually
+    #: owns (set in its ``__post_init__``). Defaults ``False`` so a scope
+    #: minted by :func:`emulator_gap_scope` for an unowned lookup is
+    #: explicitly typed as such rather than indistinguishable from a real
+    #: session's scope (ticket d81-dhs3).
+    owned: bool = False
     gaps: list[EmulatorGap] = field(default_factory=list)
     _index: dict[tuple[str, int, int], EmulatorGap] = field(default_factory=dict)
 
@@ -254,16 +260,40 @@ class EmulatorGapScope:
 #: import d810.manager directly).
 
 
-def emulator_gap_scope(func_ea: int) -> EmulatorGapScope:
-    """The active session's scope for ``func_ea``.
+#: Unowned scopes, keyed by ``func_ea``. Populated only when no lifecycle
+#: session backs a lookup (a bare adapter under test, or a caller invoked
+#: before/after a session's lifetime). A dict, not a fresh object per call:
+#: ``record_emulator_gap`` and ``format_emulator_gap`` must observe the SAME
+#: scope within one ``_warn_gap`` for dedupe to hold at all (ticket d81-dhs3
+#: -- minting a new ``EmulatorGapScope`` per lookup silently defeated dedupe
+#: between the two, and made every "no session" attempt/maturity render as
+#: attempt=0/maturity="" no matter what the caller had just recorded).
+#: Never claims session ownership (``owned`` stays ``False``); reclaimed
+#: once a real session takes over the same ``func_ea``.
+_unowned_emulator_gap_scopes: dict[int, EmulatorGapScope] = {}
 
-    Returns a fresh, unattached ``EmulatorGapScope`` when no session owns
-    ``func_ea`` -- callers never see ``None``, but dedupe only persists
-    across calls while a real session backs the lookup.
+
+def emulator_gap_scope(func_ea: int) -> EmulatorGapScope:
+    """The active session's scope for ``func_ea``, or a shared unowned one.
+
+    Returns the lifecycle-owned scope when a session owns ``func_ea``.
+    Otherwise returns the SAME unowned, explicitly ``owned=False``
+    ``EmulatorGapScope`` on every call for this ``func_ea`` -- callers never
+    see ``None``, and dedupe still holds across repeat lookups, but the
+    scope never impersonates a real session (ticket d81-dhs3).
     """
     key = int(func_ea)
     existing = get_active_emulator_gap_scope(key)
-    return EmulatorGapScope(func_ea=key) if existing is None else existing
+    if existing is not None:
+        # A real session now owns this func_ea; forget any stale unowned
+        # scope so a later gap here never dedupes against leftovers.
+        _unowned_emulator_gap_scopes.pop(key, None)
+        return existing
+    scope = _unowned_emulator_gap_scopes.get(key)
+    if scope is None:
+        scope = EmulatorGapScope(func_ea=key, owned=False)
+        _unowned_emulator_gap_scopes[key] = scope
+    return scope
 
 
 def begin_emulator_gap_attempt(

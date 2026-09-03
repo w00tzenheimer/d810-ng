@@ -190,8 +190,10 @@ def _lifecycle_execution_attempt_context(
     )
 
 
-def _lifecycle_diag_session_id(lifecycle: object | None, function_ea: int) -> str:
-    """Diag-DB session identity owned by the lifecycle coordinator, if any.
+def _lifecycle_diag_session_id(
+    lifecycle: object | None, function_ea: int
+) -> str | None:
+    """Diag-DB session identity owned by the lifecycle coordinator, or ``None``.
 
     ``DecompilationSessionContext.identity_key`` is the same session_id every
     other unflatten outcome producer publishes (``manager.py``,
@@ -199,9 +201,16 @@ def _lifecycle_diag_session_id(lifecycle: object | None, function_ea: int) -> st
     ``diagnostic_sessions.session_id`` is keyed on -- reusing it here lets a
     skipped-maturity record join the rest of this decompile's diagnostic rows
     instead of minting an unrelated, unjoinable identity per callback
-    (ticket d81-y3oi). Falls back to a synthetic per-function id only when no
-    lifecycle session is attached (for example a bare adapter under test), so
-    this never raises for a diagnostic reason.
+    (ticket d81-y3oi).
+
+    Returns ``None`` -- never a synthetic id -- when no lifecycle session is
+    attached (for example a bare adapter under test). A fabricated id like
+    the previous ``f"optblock:{function_ea:x}"`` can never join
+    ``diagnostic_sessions``/``unflatten_candidate_outcomes`` for a real
+    decompile; it would silently impersonate a session for any reader that
+    trusts the column, including ``unflat-why --session`` (ticket d81-dhs3).
+    Callers must treat ``None`` as "abstain from recording this diagnostic",
+    not as a usable id. Never raises for a diagnostic reason.
     """
     current_session = getattr(lifecycle, "current_session", None)
     if callable(current_session):
@@ -217,7 +226,7 @@ def _lifecycle_diag_session_id(lifecycle: object | None, function_ea: int) -> st
         identity_key = getattr(session, "identity_key", None)
         if identity_key:
             return str(identity_key)
-    return f"optblock:{int(function_ea):x}"
+    return None
 
 
 def _optblock_callback_exception_context(
@@ -806,6 +815,12 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
             session_id = _lifecycle_diag_session_id(
                 getattr(self, "_decompilation_lifecycle", None), func_ea
             )
+            if session_id is None:
+                # Abstain: no lifecycle session owns this callback, so there
+                # is no real diagnostic_sessions row for a skipped-maturity
+                # record to join. Recording under a fabricated id would
+                # impersonate a session (ticket d81-dhs3).
+                return
             for maturity_name in skipped:
                 observe_unflat_candidate_outcome(
                     session_id=session_id,

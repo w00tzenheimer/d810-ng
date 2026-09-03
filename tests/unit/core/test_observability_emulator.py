@@ -336,6 +336,78 @@ def test_a_gap_is_hashable_and_carries_its_key():
     assert gap.key() == (CAUSE_NULL_DEREF, 0x10, 3)
 
 
+class TestUnownedScopeSharing:
+    """No lifecycle session backs ``func_ea`` (ticket d81-dhs3).
+
+    ``emulator_gap_scope()`` must not impersonate a session by minting a
+    fresh, unattached ``EmulatorGapScope`` on every lookup -- that silently
+    breaks dedupe between the ``record_emulator_gap`` and
+    ``format_emulator_gap`` calls inside one ``_warn_gap`` (they see two
+    different objects) and defeats the "warn once per attempt" contract
+    entirely. Unowned lookups must share ONE typed-unowned scope per
+    ``func_ea`` instead.
+    """
+
+    UNOWNED_FUNC = 0x7FFB0EB99999
+
+    @pytest.fixture(autouse=True)
+    def _no_session_provider(self, monkeypatch):
+        """Simulate NO lifecycle session anywhere (provider unregistered)."""
+        monkeypatch.setattr(observability, "_active_emulator_gap_scope_provider", None)
+        monkeypatch.setattr(
+            observability, "_pending_emulator_gap_scopes_provider", None
+        )
+        from d810.core import observability_emulator as _mod
+
+        _mod._unowned_emulator_gap_scopes.clear()
+        yield
+        _mod._unowned_emulator_gap_scopes.clear()
+
+    def test_repeat_lookups_return_the_same_unowned_scope(self):
+        first = emulator_gap_scope(self.UNOWNED_FUNC)
+        second = emulator_gap_scope(self.UNOWNED_FUNC)
+        assert first is second
+        assert first.owned is False
+
+    def test_a_session_owned_scope_is_typed_owned(self):
+        owned = EmulatorGapScope(func_ea=self.UNOWNED_FUNC)
+        assert owned.owned is False  # default: caller must opt in
+        owned.owned = True
+        assert owned.owned is True
+
+    def test_record_and_format_dedupe_against_the_same_unowned_scope(self):
+        first = record_emulator_gap(
+            self.UNOWNED_FUNC, CAUSE_NULL_DEREF, site_ea=0x20
+        )
+        assert first is not None
+        # A repeat at the same site can only dedupe if record_emulator_gap
+        # and the scope format_emulator_gap renders from are the SAME
+        # object -- two independently-minted fresh scopes would each think
+        # this is a first sighting.
+        repeat = record_emulator_gap(
+            self.UNOWNED_FUNC, CAUSE_NULL_DEREF, site_ea=0x20
+        )
+        assert repeat is None
+        scope_for_format = emulator_gap_scope(self.UNOWNED_FUNC)
+        assert len(scope_for_format.gaps) == 1
+        assert scope_for_format.gaps[0].occurrences == 2
+
+    def test_no_new_scope_is_constructed_on_the_second_lookup(self, monkeypatch):
+        constructed: list[object] = []
+        original_init = EmulatorGapScope.__init__
+
+        def _tracking_init(self, *args, **kwargs):
+            constructed.append(self)
+            return original_init(self, *args, **kwargs)
+
+        monkeypatch.setattr(EmulatorGapScope, "__init__", _tracking_init)
+
+        emulator_gap_scope(self.UNOWNED_FUNC)
+        emulator_gap_scope(self.UNOWNED_FUNC)
+
+        assert len(constructed) == 1
+
+
 class TestFlushAll:
     """The LAST attempt must not lose its facts (measured on sub_7FFB0EB06E50).
 
