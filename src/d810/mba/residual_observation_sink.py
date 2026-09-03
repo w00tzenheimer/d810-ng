@@ -13,6 +13,7 @@ from d810.core.plugins import PassImplementationCandidate, PluginIdentity
 from d810.mba.discovery_models import DiscoveryAttempt
 from d810.mba.discovery_store import MbaDiscoveryStore
 from d810.mba.extension_api import (
+    D810_MBA_RESIDUAL_OBSERVATION_CAPABILITY,
     MbaResidualObservationSink,
     MbaResidualReceipt,
     MbaResidualRecord,
@@ -51,6 +52,40 @@ def provider_kind_for_implementation(
     )
 
 
+# The capability registry is a process-wide singleton and only one D810Manager
+# generation may hold the registration at a time, so the "which sink is live
+# right now" answer is process-wide too.  A sink only becomes the active
+# generation when a host lifecycle publishes it; standalone sinks (tests, ad
+# hoc tooling) never join the chain and keep failing closed.
+_ACTIVE_SINK_LOCK = threading.RLock()
+_ACTIVE_SINK: "SqliteMbaResidualObservationSink | None" = None
+
+
+def install_active_residual_sink(sink: "SqliteMbaResidualObservationSink") -> None:
+    """Publish *sink* as the generation every issued view resolves to."""
+    global _ACTIVE_SINK
+    if not isinstance(sink, SqliteMbaResidualObservationSink):
+        raise TypeError("only a host-owned sink can become the active generation")
+    with _ACTIVE_SINK_LOCK:
+        _ACTIVE_SINK = sink
+
+
+def clear_active_residual_sink(
+    sink: "SqliteMbaResidualObservationSink | None" = None,
+) -> None:
+    """Retire the active generation, ignoring a sink that was already replaced."""
+    global _ACTIVE_SINK
+    with _ACTIVE_SINK_LOCK:
+        if sink is None or _ACTIVE_SINK is sink:
+            _ACTIVE_SINK = None
+
+
+def active_residual_sink() -> "SqliteMbaResidualObservationSink | None":
+    """Return the sink generation the host currently owns, if any."""
+    with _ACTIVE_SINK_LOCK:
+        return _ACTIVE_SINK
+
+
 class SqliteMbaResidualObservationSink(MbaResidualObservationSink):
     """Validate and translate residual records into the D810 discovery store."""
 
@@ -73,6 +108,22 @@ class SqliteMbaResidualObservationSink(MbaResidualObservationSink):
         # same raw term reaches this sink once per re-visit of the same
         # instruction, so memoizing keeps the check while paying for it once.
         self._canonical_views: dict[TypedBvTerm, object] = {}
+        self._stored = 0
+        self._duplicate = 0
+        self._rejected_count = 0
+        self._forwarded = 0
+        self._warned_closed = False
+        self._rebind_logged = False
+
+    def traffic(self) -> tuple[int, int, int, int]:
+        """Return ``(stored, duplicate, rejected, forwarded)`` seen so far."""
+        with self._lock:
+            return (
+                self._stored,
+                self._duplicate,
+                self._rejected_count,
+                self._forwarded,
+            )
 
     @staticmethod
     def _rejected(reason: str) -> MbaResidualReceipt:
@@ -214,7 +265,7 @@ class SqliteMbaResidualObservationSink(MbaResidualObservationSink):
         # and used to be invisible, so measure it here instead of inferring it
         # from wall-clock division after the fact.
         started = perf_counter() if logger.debug_on else None
-        receipt = self._record_locked(
+        receipt = self._record_generation(
             observation, activation_identity, expected_provider
         )
         if started is not None:
@@ -231,40 +282,103 @@ class SqliteMbaResidualObservationSink(MbaResidualObservationSink):
             )
         return receipt
 
+    def _record_generation(
+        self,
+        observation: MbaResidualRecord,
+        activation_identity: PluginIdentity | None,
+        expected_provider: MbaProviderKind | None = None,
+    ) -> MbaResidualReceipt:
+        """Record through the sink generation the host owns *right now*.
+
+        Activation views are immutable snapshots and a provider rule caches the
+        one it was handed at ``bind_plugin_services`` time, so a manager restart
+        (``state.load_project``) leaves that rule holding a closed generation.
+        Resolving the successor here — instead of trying to reach into every
+        already-issued view — keeps the capability contract intact: the plugin
+        still holds an opaque, identity-scoped, immutable facade, and the host
+        still owns the store lifetime.  Authority (activation identity and the
+        exact selected implementation) is forwarded unchanged, so a stale view
+        gains nothing it did not already have.
+        """
+        with self._lock:
+            if not self._closed:
+                return self._record_locked(
+                    observation,
+                    activation_identity,
+                    expected_provider,
+                )
+            successor = active_residual_sink()
+            if successor is None or successor is self:
+                self._rejected_count += 1
+                self._warn_closed_once()
+                return self._rejected("closed")
+            self._forwarded += 1
+            self._note_rebind_once()
+        return successor._record_generation(
+            observation,
+            activation_identity,
+            expected_provider,
+        )
+
+    def _note_rebind_once(self) -> None:
+        """Make the orphan-and-rebind event visible once per stale generation."""
+        if self._rebind_logged:
+            return
+        self._rebind_logged = True
+        logger.info(
+            "mba residual observation rebound capability=%s: a view bound before "
+            "the manager restart now records into the replacement sink",
+            D810_MBA_RESIDUAL_OBSERVATION_CAPABILITY,
+        )
+
+    def _warn_closed_once(self) -> None:
+        """Name the capability the first time a session loses an observation."""
+        if self._warned_closed:
+            return
+        self._warned_closed = True
+        logger.warning(
+            "MBA residual observation dropped: capability %s has no open sink; "
+            "every further observation from this view is rejected 'closed'",
+            D810_MBA_RESIDUAL_OBSERVATION_CAPABILITY,
+        )
+
     def _record_locked(
         self,
         observation: MbaResidualRecord,
         activation_identity: PluginIdentity | None,
         expected_provider: MbaProviderKind | None = None,
     ) -> MbaResidualReceipt:
-        with self._lock:
-            try:
-                if self._closed:
-                    return self._rejected("closed")
-                if not self._recording_enabled:
-                    # Deliberately before validation: the point of the switch
-                    # is that no observation costs anything.
-                    return self._rejected("recording_disabled")
-                attempt = self._validate(
-                    observation,
-                    activation_identity,
-                    expected_provider,
-                )
-                receipt = self._store.record_attempt(attempt)
-                status = getattr(receipt, "status", None)
-                status_value = getattr(status, "value", status)
-                if status_value == "stored":
-                    return MbaResidualReceipt("stored")
-                if status_value == "duplicate":
-                    return MbaResidualReceipt("duplicate")
-                reason = getattr(receipt, "reason", None) or "store_refused"
-                return self._rejected(str(reason))
-            except (TypeError, ValueError) as exc:
-                reason = str(exc) or "invalid_observation"
-                return self._rejected(reason)
-            except BaseException as exc:
-                self._safe_log(observation, exc)
-                return self._rejected("storage_error")
+        try:
+            if not self._recording_enabled:
+                # Deliberately before validation: the point of the switch
+                # is that no observation costs anything.
+                self._rejected_count += 1
+                return self._rejected("recording_disabled")
+            attempt = self._validate(
+                observation,
+                activation_identity,
+                expected_provider,
+            )
+            receipt = self._store.record_attempt(attempt)
+            status = getattr(receipt, "status", None)
+            status_value = getattr(status, "value", status)
+            if status_value == "stored":
+                self._stored += 1
+                return MbaResidualReceipt("stored")
+            if status_value == "duplicate":
+                self._duplicate += 1
+                return MbaResidualReceipt("duplicate")
+            reason = getattr(receipt, "reason", None) or "store_refused"
+            self._rejected_count += 1
+            return self._rejected(str(reason))
+        except (TypeError, ValueError) as exc:
+            reason = str(exc) or "invalid_observation"
+            self._rejected_count += 1
+            return self._rejected(reason)
+        except BaseException as exc:
+            self._safe_log(observation, exc)
+            self._rejected_count += 1
+            return self._rejected("storage_error")
 
     def record(self, observation: MbaResidualRecord) -> MbaResidualReceipt:
         """Record one observation without allowing errors through callbacks."""
@@ -288,13 +402,28 @@ class SqliteMbaResidualObservationSink(MbaResidualObservationSink):
                     stats.contents,
                     stats.clears,
                 )
+            clear_active_residual_sink(self)
+            traffic = (self._stored, self._duplicate, self._rejected_count)
             close = getattr(self._store, "close", None)
             if callable(close):
                 close()
+        # A close that reports zero traffic is the d81-uncr signature: it means
+        # the generation was orphaned before any provider reached it.  Records
+        # this generation forwards to a successor are counted by the successor,
+        # which is closed later, so every attempt is reported exactly once.
+        logger.info(
+            "mba residual observation sink close capability=%s stored=%d "
+            "duplicate=%d rejected=%d",
+            D810_MBA_RESIDUAL_OBSERVATION_CAPABILITY,
+            *traffic,
+        )
 
 
 __all__ = [
     "SqliteMbaResidualObservationSink",
+    "active_residual_sink",
+    "clear_active_residual_sink",
+    "install_active_residual_sink",
     "provider_kind_for_implementation",
 ]
 
