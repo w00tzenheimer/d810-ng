@@ -30,7 +30,7 @@ from dataclasses import dataclass
 import ida_hexrays
 
 from d810.core.logging import getLogger
-from d810.core.typing import Optional
+from d810.core.typing import Optional, Sequence
 
 from d810.analyses.data_flow.concolic.emulation import (
     Abstain,
@@ -88,7 +88,7 @@ class HexRaysBlockEmulator:
         block: object,
         store: ConcreteStore,
         *,
-        pred_serial: int | None = None,
+        pred_serial: int | Sequence[int] | None = None,
     ) -> EmulationOutcome:
         """Prove the concrete state-var constant ``block`` writes, or abstain.
 
@@ -139,6 +139,16 @@ class HexRaysBlockEmulator:
                             value = interpreter.eval_mop(
                                 write_insn.d, environment=env, raise_exception=False
                             )
+                        if value is not None and interpreter.is_tainted_mop(
+                            write_insn.d, env
+                        ):
+                            # Derived from a call the emulator MODELED rather than
+                            # computed: not a proven next-state (ticket d81-0xzp).
+                            logger.debug(
+                                "HexRaysBlockEmulator: state write derives from a "
+                                "synthetic call return; abstaining"
+                            )
+                            value = None
                         if value is not None:
                             resolved = int(value)
                     break
@@ -155,15 +165,27 @@ class HexRaysBlockEmulator:
     # -- internal ----------------------------------------------------------
     @staticmethod
     def _apply_predecessor_context(
-        interpreter: MicroCodeInterpreter, block: object, pred_serial: Optional[int]
+        interpreter: MicroCodeInterpreter,
+        block: object,
+        pred_serial: Optional[int] | Sequence[int],
     ) -> None:
-        """Give the interpreter the incoming edge, when it is a real predecessor.
+        """Give the interpreter the incoming edge (or path), when it is real.
 
         Guarded on the LIVE ``predset``: a serial from a stale/portable graph that
         is not a predecessor of the live block would select the wrong definition,
-        so it is dropped and the consult stays path-insensitive.
+        so it is dropped and the consult stays path-insensitive.  A PATH is
+        accepted the same way -- only its NEAREST element has to be a live
+        predecessor of ``block``; the rest are the corridor the consumer walked
+        (ticket d81-182q) and are its own to justify.
         """
         if pred_serial is None:
+            return
+        path = (
+            (int(pred_serial),)
+            if isinstance(pred_serial, int)
+            else tuple(int(serial) for serial in pred_serial)
+        )
+        if not path:
             return
         serial = getattr(block, "serial", None)
         if serial is None:
@@ -172,16 +194,16 @@ class HexRaysBlockEmulator:
             preds = {int(p) for p in getattr(block, "predset", ()) or ()}
         except (TypeError, ValueError):  # defensive: unusable predset -> no context
             return
-        if int(pred_serial) not in preds:
+        if path[0] not in preds:
             logger.debug(
                 "HexRaysBlockEmulator: pred %s is not a live predecessor of blk %s "
                 "(preds=%s); staying path-insensitive",
-                pred_serial,
+                path[0],
                 serial,
                 sorted(preds),
             )
             return
-        interpreter.set_merge_predecessor_context(int(serial), int(pred_serial))
+        interpreter.set_merge_predecessor_context(int(serial), path)
 
     def _find_first_state_write(self, block: object):
         """The first instruction in ``block`` whose destination IS the state var.
