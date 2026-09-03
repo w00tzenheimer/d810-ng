@@ -83,7 +83,13 @@ class HexRaysBlockEmulator:
         """
         return Unsupported("HexRaysBlockEmulator models whole live blocks, not InsnRef")
 
-    def eval_block(self, block: object, store: ConcreteStore) -> EmulationOutcome:
+    def eval_block(
+        self,
+        block: object,
+        store: ConcreteStore,
+        *,
+        pred_serial: int | None = None,
+    ) -> EmulationOutcome:
         """Prove the concrete state-var constant ``block`` writes, or abstain.
 
         Resolves the block's FIRST state-variable write by stepping the live block
@@ -98,6 +104,15 @@ class HexRaysBlockEmulator:
         now advisory -- the live history is authoritative, so an empty store no
         longer forces an abstain.
 
+        ``pred_serial`` (ticket d81-yrkv) names the incoming edge this consult is
+        for.  A merge block reads operands with SEVERAL reaching definitions -- one
+        per incoming path -- which the concrete interpreter refuses to merge.  When
+        the caller names the edge (and it really is a live predecessor of
+        ``block``), the interpreter resolves those reads to the definition arriving
+        along THAT edge, so the per-predecessor consult yields that edge's
+        next-state instead of abstaining.  A serial that is not a live predecessor
+        is ignored (path-insensitive, the previous behaviour).
+
         NEVER a wrong fold: the interpreter yields ``None`` for an operand whose
         reaching definition is not a unique constant, so a multi-path-ambiguous
         next-state abstains rather than guessing.
@@ -109,6 +124,7 @@ class HexRaysBlockEmulator:
             return Abstain("no state-var write in block")
         try:
             interpreter = MicroCodeInterpreter(symbolic_mode=False)
+            self._apply_predecessor_context(interpreter, block, pred_serial)
             env = MicroCodeEnvironment()
             resolved: Optional[int] = None
             insn = getattr(block, "head", None)
@@ -137,6 +153,36 @@ class HexRaysBlockEmulator:
         return ExactResult({self.state_cell: int(resolved) & 0xFFFFFFFFFFFFFFFF})
 
     # -- internal ----------------------------------------------------------
+    @staticmethod
+    def _apply_predecessor_context(
+        interpreter: MicroCodeInterpreter, block: object, pred_serial: Optional[int]
+    ) -> None:
+        """Give the interpreter the incoming edge, when it is a real predecessor.
+
+        Guarded on the LIVE ``predset``: a serial from a stale/portable graph that
+        is not a predecessor of the live block would select the wrong definition,
+        so it is dropped and the consult stays path-insensitive.
+        """
+        if pred_serial is None:
+            return
+        serial = getattr(block, "serial", None)
+        if serial is None:
+            return
+        try:
+            preds = {int(p) for p in getattr(block, "predset", ()) or ()}
+        except (TypeError, ValueError):  # defensive: unusable predset -> no context
+            return
+        if int(pred_serial) not in preds:
+            logger.debug(
+                "HexRaysBlockEmulator: pred %s is not a live predecessor of blk %s "
+                "(preds=%s); staying path-insensitive",
+                pred_serial,
+                serial,
+                sorted(preds),
+            )
+            return
+        interpreter.set_merge_predecessor_context(int(serial), int(pred_serial))
+
     def _find_first_state_write(self, block: object):
         """The first instruction in ``block`` whose destination IS the state var.
 

@@ -29,6 +29,13 @@ from .chains import (
     find_reaching_defs_for_reg,
     find_reaching_defs_for_stkvar,
 )
+from .p_multi_def import agreed_value, select_def_index_for_predecessor
+
+#: Upper bound on the reaching definitions the path-INSENSITIVE agreement leg
+#: will evaluate at one merge.  A merge with more incoming definitions than this
+#: abstains without evaluating any of them, so the historical "give up" cost is
+#: preserved for wide merges (ticket d81-yrkv).
+_MAX_AGREEMENT_DEFS = 4
 
 # Try to import Cython speedups if CythonMode is enabled
 get_stack_or_reg_name = None
@@ -413,6 +420,11 @@ class MicroCodeInterpreter(object):
         self.mask_subreg_reads: bool = mask_subreg_reads
         # Cache for def-use chain resolutions during the current emulation pass
         self._def_use_cache: dict[tuple, int | None] = {}
+        # ``(block_serial, pred_serial)``: the incoming edge a consumer declared it
+        # is evaluating, so a phi-like merge read in that block resolves to the
+        # definition arriving along THAT edge (ticket d81-yrkv).  ``None`` -> the
+        # historical path-insensitive behaviour.
+        self._merge_pred_context: tuple[int, int] | None = None
         # Resolution strategies (tried in order after env lookup, before def-use chains)
         if strategies is not None:
             self._strategies: list[MopResolutionStrategy] = strategies
@@ -422,6 +434,21 @@ class MicroCodeInterpreter(object):
         #     self._strategies = [SCCPStrategy()]
         else:
             self._strategies = []
+
+    def set_merge_predecessor_context(
+        self, block_serial: int | None, pred_serial: int | None
+    ) -> None:
+        """Declare which incoming edge of *block_serial* is being evaluated.
+
+        A consumer that steps one block once per immediate predecessor (the
+        reduced-product concrete leg does exactly that) can name the edge; a
+        phi-like merge read inside that block then resolves to the definition
+        arriving along it instead of abstaining.  Pass ``None`` to clear.
+        """
+        if block_serial is None or pred_serial is None:
+            self._merge_pred_context = None
+        else:
+            self._merge_pred_context = (int(block_serial), int(pred_serial))
 
     def _resolve_segment_register(self, mreg: int) -> int | None:
         """Resolve a segment register to its selector value.
@@ -480,20 +507,10 @@ class MicroCodeInterpreter(object):
         if mba is None:
             return None
 
-        if mop.t == ida_hexrays.mop_r:
-            reg_mreg = mop.r
-            size = mop.size
-            blk_serial = (
-                environment.cur_blk.serial if environment.cur_blk is not None else 0
-            )
-            defs = find_reaching_defs_for_reg(mba, blk_serial, reg_mreg, size)
-        else:  # mop_S
-            stkoff = mop.s.off
-            size = mop.size
-            blk_serial = (
-                environment.cur_blk.serial if environment.cur_blk is not None else 0
-            )
-            defs = find_reaching_defs_for_stkvar(mba, blk_serial, stkoff, size)
+        blk_serial = (
+            environment.cur_blk.serial if environment.cur_blk is not None else 0
+        )
+        defs = self._reaching_defs_at(mba, blk_serial, mop)
 
         # Handle multiple definitions (phi-node situations)
         if len(defs) == 0:
@@ -505,25 +522,127 @@ class MicroCodeInterpreter(object):
                 )
             return None
         elif len(defs) > 1:
-            # Multiple reaching definitions - in symbolic mode, we could build a phi node
-            # For now, in concrete mode, we conservatively give up
+            # Multiple reaching definitions (a phi-like merge).
             if self.symbolic_mode:
                 # In symbolic mode, return a synthetic value that represents the merge
                 value = self.synthetic_call.get(mop)
                 self._def_use_cache[mop_key] = value
                 return value
-            else:
-                if emulator_log.debug_on:
-                    emulator_log.debug(
-                        "DEF-USE-DIAG: blk=%d var=%s ndefs=%d defs=%s (phi, giving up)",
-                        blk_serial,
-                        get_mop_key(mop),
-                        len(defs),
-                        defs[:3],
-                    )
-                return None
+            # Concrete mode: resolve the merge only when it is PROVEN -- along the
+            # known incoming edge, or by every reaching def agreeing.  Never
+            # fabricate a merge value (ticket d81-yrkv).
+            merged = self._resolve_multi_def(mop, defs, mba, environment, blk_serial)
+            if merged is not None:
+                self._def_use_cache[mop_key] = merged
+            return merged
 
         def_site = defs[0]
+        value = self._eval_def_site(def_site, mop, mba, environment)
+        if value is not None:
+            self._def_use_cache[mop_key] = value
+        return value
+
+    def _reaching_defs_at(
+        self, mba: object, blk_serial: int, mop: ida_hexrays.mop_t
+    ) -> list:
+        """Reaching definitions of *mop* (``mop_r`` / ``mop_S``) at *blk_serial*."""
+        if mop.t == ida_hexrays.mop_r:
+            return find_reaching_defs_for_reg(mba, blk_serial, mop.r, mop.size)
+        if mop.t == ida_hexrays.mop_S and mop.s is not None:
+            return find_reaching_defs_for_stkvar(mba, blk_serial, mop.s.off, mop.size)
+        return []
+
+    def _select_predecessor_def(
+        self, mop: ida_hexrays.mop_t, defs: list, mba: object, blk_serial: int
+    ):
+        """The single reaching def of *mop* that arrives along the known edge.
+
+        Only fires when a consumer declared WHICH incoming edge of *blk_serial* it
+        is evaluating (:meth:`set_merge_predecessor_context`); returns ``None``
+        (abstain) for any other block, or when the edge does not single out one
+        definition.
+        """
+        context = self._merge_pred_context
+        if context is None:
+            return None
+        context_blk, pred_serial = context
+        if context_blk != blk_serial:
+            return None
+        pred_defs = self._reaching_defs_at(mba, pred_serial, mop)
+        index = select_def_index_for_predecessor(
+            [(d.block_serial, d.ins_ea) for d in defs],
+            pred_serial,
+            {(d.block_serial, d.ins_ea) for d in pred_defs},
+        )
+        return None if index is None else defs[index]
+
+    def _resolve_multi_def(
+        self,
+        mop: ida_hexrays.mop_t,
+        defs: list,
+        mba: object,
+        environment: MicroCodeEnvironment,
+        blk_serial: int,
+    ) -> int | None:
+        """Prove the value of a phi-like merge read, or abstain.
+
+        Path-sensitive first (the def reaching along the consumer's incoming
+        edge), then path-insensitive (every reaching def evaluates to the same
+        concrete value).  Otherwise ``None``, logged as ``phi_multi_def`` with the
+        def sites and the values that differed.
+        """
+        chosen = self._select_predecessor_def(mop, defs, mba, blk_serial)
+        if chosen is not None:
+            value = self._eval_def_site(chosen, mop, mba, environment)
+            if emulator_log.debug_on:
+                emulator_log.debug(
+                    "DEF-USE-DIAG: blk=%d var=%s ndefs=%d pred=%d def_site=blk%d@%#x "
+                    "eval=%s (predecessor-selected)",
+                    blk_serial,
+                    get_mop_key(mop),
+                    len(defs),
+                    self._merge_pred_context[1],
+                    chosen.block_serial,
+                    chosen.ins_ea,
+                    "None" if value is None else hex(value),
+                )
+            if value is not None:
+                return value
+        values: list[int | None] = []
+        if len(defs) <= _MAX_AGREEMENT_DEFS:
+            values = [
+                self._eval_def_site(def_site, mop, mba, environment)
+                for def_site in defs
+            ]
+        merged = agreed_value(values)
+        if merged is None and emulator_log.debug_on:
+            emulator_log.debug(
+                "DEF-USE-DIAG: blk=%d var=%s ndefs=%d defs=%s values=%s "
+                "(phi_multi_def, abstain)",
+                blk_serial,
+                get_mop_key(mop),
+                len(defs),
+                [(d.block_serial, hex(d.ins_ea)) for d in defs],
+                ["None" if v is None else hex(v) for v in values],
+            )
+        return merged
+
+    def _eval_def_site(
+        self,
+        def_site,
+        mop: ida_hexrays.mop_t,
+        mba: object,
+        environment: MicroCodeEnvironment,
+    ) -> int | None:
+        """Evaluate ONE definition site of *mop*, or ``None``.
+
+        Caching of the resolved value is the caller's job; this only installs (and
+        removes) the recursion sentinel keyed on *mop*.
+        """
+        mop_key = get_mop_key(mop)
+        blk_serial = (
+            environment.cur_blk.serial if environment.cur_blk is not None else 0
+        )
         # Get the defining instruction from the block
         blk = mba.get_mblock(def_site.block_serial)
         if blk is None:
@@ -564,13 +683,14 @@ class MicroCodeInterpreter(object):
                     else AND_TABLE[mop.size]
                 )
                 value = value & res_mask
-                self._def_use_cache[mop_key] = value
+                if mop_key in self._def_use_cache:
+                    del self._def_use_cache[mop_key]
                 return value
             else:
                 # Evaluation failed, remove from cache
                 if emulator_log.debug_on:
                     emulator_log.debug(
-                        "DEF-USE-DIAG: blk=%d var=%s ndefs=1 def_site=blk%d@%#x eval=None (single def eval failed)",
+                        "DEF-USE-DIAG: blk=%d var=%s def_site=blk%d@%#x eval=None (def eval failed)",
                         blk_serial,
                         get_mop_key(mop),
                         def_site.block_serial,
@@ -583,7 +703,7 @@ class MicroCodeInterpreter(object):
             # Evaluation failed due to an exception, remove from cache
             if emulator_log.debug_on:
                 emulator_log.debug(
-                    "DEF-USE-DIAG: blk=%d var=%s ndefs=1 def_site=blk%d@%#x exc=%s",
+                    "DEF-USE-DIAG: blk=%d var=%s def_site=blk%d@%#x exc=%s",
                     blk_serial,
                     get_mop_key(mop),
                     def_site.block_serial,
