@@ -31,6 +31,9 @@ from d810.ir.graph_fingerprint import (
     portable_graph_projection,
 )
 from .canonical_session import (
+    active_canonical_session,
+    record_canonical_bytes_reuse,
+    record_content_id_reuse,
     record_deep_validation,
     record_inventory_validation,
     record_roundtrip_decode,
@@ -1038,11 +1041,20 @@ def _json_bytes(value: object) -> bytes:
 
 
 def canonical_bytes(value: object) -> bytes:
+    session = active_canonical_session()
+    if session is not None:
+        cached = session.cached_canonical_bytes(value)
+        if cached is not None:
+            record_canonical_bytes_reuse()
+            return cached
     _validate_canonical_value(value)
     record_deep_validation()
     wire = _wire(value)
     record_wire_encode()
-    return _json_bytes(wire)
+    data = _json_bytes(wire)
+    if session is not None:
+        session.store_canonical_bytes(value, data)
+    return data
 
 
 def _decode_wire(value: object, *, allow_index: bool = False) -> object:

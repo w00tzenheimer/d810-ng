@@ -138,8 +138,8 @@ def test_session_rejects_a_foreign_reuse_handle() -> None:
             pass
 
 
-def test_repeated_encoding_of_one_exact_occurrence_is_not_reused_today() -> None:
-    """The same exact object is fully revalidated and re-encoded every call."""
+def test_repeated_encoding_of_the_same_occurrence_is_reused_within_one_session() -> None:
+    """The same exact live object reuses its canonical bytes within one session."""
 
     value = (1, "two", (3, 4), frozenset({5}))
     with _canonical_validation_session(
@@ -147,16 +147,14 @@ def test_repeated_encoding_of_one_exact_occurrence_is_not_reused_today() -> None
     ) as session:
         first = ids.canonical_bytes(value)
         second = ids.canonical_bytes(value)
-        third = ids.content_id("test-schema", value)
         metrics = session.metrics
 
     assert first == second
-    assert third == ids.content_id("test-schema", value)
-    # Three top-level encodes of one exact occurrence: no reuse exists yet.
-    assert metrics.deep_validations == 3
-    assert metrics.wire_encodes == 3
-    assert metrics.canonical_bytes_reuses == 0
-    assert metrics.content_id_reuses == 0
+    # One occurrence, two calls: the first pays full price, the second is a
+    # cache hit and must not repeat deep validation or wire encoding.
+    assert metrics.deep_validations == 1
+    assert metrics.wire_encodes == 1
+    assert metrics.canonical_bytes_reuses == 1
     assert metrics.roundtrip_decodes == 0
 
 

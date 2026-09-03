@@ -157,15 +157,39 @@ class _WorkLedger:
             setattr(self, name, 0)
 
 
+#: Types excluded from identity-keyed reuse.  CPython may intern or recycle
+#: ``id()`` for these (small ints, short strings, ``True``/``False``/``None``),
+#: so identity alone cannot distinguish "the same occurrence" from "an equal
+#: but distinct value".  They are also cheap enough that caching buys nothing.
+_UNCACHEABLE_OCCURRENCE_TYPES = (type(None), bool, int, str, bytes, float)
+
+
+def _is_cacheable_occurrence(value: object) -> bool:
+    """Report whether ``value`` may be reused by exact-occurrence identity."""
+
+    if type(value) in _UNCACHEABLE_OCCURRENCE_TYPES:
+        return False
+    if isinstance(value, Enum):
+        return False
+    return True
+
+
 class CanonicalValidationSession:
     """One phase-local validation session.
 
-    The session is deliberately inert in this step: it counts work and owns a
-    lifecycle, but it never authorises skipping validation.  It must not
-    outlive the top-level phase call that created it.
+    Beyond counting work, the session holds a strong-reference-guarded cache
+    of canonical bytes and record content IDs for exact object occurrences
+    that already validated successfully in this session.  A cache hit is
+    served only when the stored reference ``is`` the queried object; an
+    equal-but-distinct occurrence, a foreign session, or a fresh session
+    (including one created after this one closed) always misses.  Nothing
+    is ever cached before its underlying validation has fully succeeded, so
+    a raising validation can never populate a reusable entry.  The cache is
+    released when the session is garbage collected; it must not outlive the
+    top-level phase call that created it.
     """
 
-    __slots__ = ("_phase", "_ledger", "_closed")
+    __slots__ = ("_phase", "_ledger", "_closed", "_bytes_cache", "_content_id_cache")
 
     def __init__(self, phase: CanonicalSessionPhase) -> None:
         if type(phase) is not CanonicalSessionPhase:
@@ -173,6 +197,8 @@ class CanonicalValidationSession:
         self._phase = phase
         self._ledger = _WorkLedger()
         self._closed = False
+        self._bytes_cache: dict[int, tuple[object, bytes]] = {}
+        self._content_id_cache: dict[tuple[int, str, str], tuple[object, str]] = {}
 
     @property
     def phase(self) -> CanonicalSessionPhase:
@@ -215,6 +241,58 @@ class CanonicalValidationSession:
     def record_content_id_reuse(self) -> None:
         self._require_open()
         self._ledger.content_id_reuses += 1
+
+    def cached_canonical_bytes(self, value: object) -> bytes | None:
+        """Return canonical bytes already validated for this exact occurrence.
+
+        Returns ``None`` on any miss: an uncacheable primitive, no prior
+        entry, or an ``id()`` collision against a different live object.
+        """
+
+        self._require_open()
+        if not _is_cacheable_occurrence(value):
+            return None
+        entry = self._bytes_cache.get(id(value))
+        if entry is None or entry[0] is not value:
+            return None
+        return entry[1]
+
+    def store_canonical_bytes(self, value: object, data: bytes) -> None:
+        """Record canonical bytes for an occurrence that just validated."""
+
+        self._require_open()
+        if type(data) is not bytes:
+            raise TypeError("canonical bytes must be exact bytes")
+        if not _is_cacheable_occurrence(value):
+            return
+        self._bytes_cache[id(value)] = (value, data)
+
+    def cached_content_id(
+        self, value: object, schema: str, omitted_field: str,
+    ) -> str | None:
+        """Return a record content ID already validated for this occurrence."""
+
+        self._require_open()
+        if not _is_cacheable_occurrence(value):
+            return None
+        entry = self._content_id_cache.get((id(value), schema, omitted_field))
+        if entry is None or entry[0] is not value:
+            return None
+        return entry[1]
+
+    def store_content_id(
+        self, value: object, schema: str, omitted_field: str, content_id: str,
+    ) -> None:
+        """Record a content ID for an occurrence that just validated."""
+
+        self._require_open()
+        if type(content_id) is not str:
+            raise TypeError("content ID must be an exact str")
+        if not _is_cacheable_occurrence(value):
+            return
+        self._content_id_cache[(id(value), schema, omitted_field)] = (
+            value, content_id,
+        )
 
     def _close(self) -> None:
         self._closed = True
