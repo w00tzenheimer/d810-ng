@@ -172,12 +172,6 @@ class EmulatorGapScope:
     maturity: str = ""
     attempt: int = 0
     session_id: str = ""
-    #: ``True`` only for a scope a ``DecompilationSessionContext`` actually
-    #: owns (set in its ``__post_init__``). Defaults ``False`` so a scope
-    #: minted by :func:`emulator_gap_scope` for an unowned lookup is
-    #: explicitly typed as such rather than indistinguishable from a real
-    #: session's scope (ticket d81-dhs3).
-    owned: bool = False
     gaps: list[EmulatorGap] = field(default_factory=list)
     _index: dict[tuple[str, int, int], EmulatorGap] = field(default_factory=dict)
 
@@ -258,62 +252,57 @@ class EmulatorGapScope:
 #: popped and dropped. Reached only through the registered indirection in
 #: ``d810.core.observability`` (transforms/evaluator producers must not
 #: import d810.manager directly).
+#:
+#: There is deliberately NO process-global fallback scope here (ticket
+#: d81-10hk, superseding d81-dhs3's single-slot holder). The reviewer on
+#: a07d9c1b5 ruled that a scope minted for an "unowned" lookup fabricates
+#: ownership -- it pairs a WARNING with a session/attempt/maturity nobody
+#: actually holds -- and that the correct fallback when no lifecycle
+#: session backs ``func_ea`` is ABSTENTION, the same shape the optblock
+#: pass already uses. Every helper below returns ``None`` in that case
+#: instead of constructing anything.
 
 
-#: The one unowned scope currently cached, or ``None``. Populated only when
-#: no lifecycle session backs a lookup (a bare adapter under test, or a
-#: caller invoked before/after a session's lifetime). A SINGLE-SLOT holder,
-#: not a dict keyed by func_ea (ticket d81-dhs3 follow-up: a dict is the
-#: exact per-function-forever growth shape ticket d81-e0uy just removed
-#: from this module, and with no session backing it, nothing ever evicts an
-#: entry). A lookup for a DIFFERENT func_ea, or a session taking over THIS
-#: func_ea, replaces/clears the slot -- memory stays bounded to one scope
-#: and it can never carry state across functions. Within the SAME func_ea,
-#: ``record_emulator_gap`` and ``format_emulator_gap`` still observe the
-#: SAME object, so dedupe holds within one attempt (the original d81-dhs3
-#: fix: minting a fresh ``EmulatorGapScope`` per lookup silently defeated
-#: dedupe between the two and made every "no session" attempt/maturity
-#: render as attempt=0/maturity="" no matter what had just been recorded).
-_unowned_emulator_gap_scope: EmulatorGapScope | None = None
+def emulator_gap_scope(func_ea: int) -> EmulatorGapScope | None:
+    """The active lifecycle session's scope for ``func_ea``, or ``None``.
 
-
-def emulator_gap_scope(func_ea: int) -> EmulatorGapScope:
-    """The active session's scope for ``func_ea``, or the shared unowned one.
-
-    Returns the lifecycle-owned scope when a session owns ``func_ea``.
-    Otherwise returns the single cached, explicitly ``owned=False``
-    ``EmulatorGapScope`` -- callers never see ``None``, and dedupe still
-    holds across repeat lookups for the SAME func_ea, but the holder never
-    grows past one entry and never impersonates a real session (ticket
-    d81-dhs3).
+    ``None`` means no session owns ``func_ea`` right now (a bare adapter
+    under test, or a caller invoked before/after a session's lifetime).
+    Callers must abstain rather than invent a scope to warn against.
     """
-    global _unowned_emulator_gap_scope
-    key = int(func_ea)
-    existing = get_active_emulator_gap_scope(key)
-    if existing is not None:
-        # A real session now owns this func_ea; forget a stale unowned
-        # holder for it so a later gap here never dedupes against leftovers.
-        if (
-            _unowned_emulator_gap_scope is not None
-            and _unowned_emulator_gap_scope.func_ea == key
-        ):
-            _unowned_emulator_gap_scope = None
-        return existing
-    if (
-        _unowned_emulator_gap_scope is None
-        or _unowned_emulator_gap_scope.func_ea != key
-    ):
-        _unowned_emulator_gap_scope = EmulatorGapScope(func_ea=key, owned=False)
-    return _unowned_emulator_gap_scope
+    return get_active_emulator_gap_scope(int(func_ea))
 
 
 def begin_emulator_gap_attempt(
     func_ea: int, *, maturity: str = "", session_id: str = ""
-) -> EmulatorGapScope:
-    """Open the next attempt for ``func_ea`` and reset its dedupe state."""
+) -> EmulatorGapScope | None:
+    """Open the next attempt for ``func_ea`` and reset its dedupe state.
+
+    Returns ``None`` -- abstains -- when no session owns ``func_ea``.
+    """
     scope = emulator_gap_scope(func_ea)
+    if scope is None:
+        return None
     scope.begin_attempt(maturity=maturity, session_id=session_id)
     return scope
+
+
+@dataclass(frozen=True, slots=True)
+class RecordedEmulatorGap:
+    """A first-sighting gap paired with the scope it was recorded against.
+
+    ``record_emulator_gap`` and ``format_emulator_gap`` must observe the
+    SAME scope object for one warning -- a fresh lookup between the two
+    calls is exactly the reentrancy hazard the reviewer described on
+    a07d9c1b5 (a lookup for a different ``func_ea`` in between could
+    otherwise pair the gap with the wrong scope). Returning them paired
+    makes that a type guarantee instead of a "call
+    :func:`emulator_gap_scope` again and hope nothing reentered in
+    between" convention (ticket d81-10hk).
+    """
+
+    scope: EmulatorGapScope
+    gap: EmulatorGap
 
 
 def record_emulator_gap(
@@ -325,8 +314,18 @@ def record_emulator_gap(
     maturity: str = "",
     detail: str = "",
     def_sites: Sequence[tuple[int, int]] = (),
-) -> EmulatorGap | None:
-    """Record one gap sighting; ``None`` means "already warned this attempt".
+) -> RecordedEmulatorGap | None:
+    """Record one gap sighting against the session that owns ``func_ea``.
+
+    Returns ``None`` -- abstain -- both for a repeat sighting within one
+    attempt AND when no lifecycle session owns ``func_ea`` at all. With no
+    session there is no scope to dedupe against or attribute a WARNING to;
+    minting one from a process-global slot is the fabricated ownership
+    ticket d81-10hk removes. The two ``None`` cases share a value because
+    both mean "nothing to warn" to the caller, but only the no-session case
+    is additionally logged, once, at DEBUG, with no scope/session/func_ea
+    identity in the line -- an aggregate WARNING attributed to nobody would
+    repeat the same fabricated-ownership shape this ticket removes.
 
     A ``maturity`` that disagrees with the scope's ROTATES the attempt first:
     the emulator crosses maturities without any explicit attempt boundary, and
@@ -337,6 +336,12 @@ def record_emulator_gap(
     """
     try:
         scope = emulator_gap_scope(func_ea)
+        if scope is None:
+            logger.debug(
+                "emulator gap seen with no owning lifecycle session; "
+                "abstaining rather than attributing it to a fabricated scope"
+            )
+            return None
         if maturity and scope.maturity and str(maturity) != scope.maturity:
             _flush_scope(scope, log=logger, emit_fn=None)
             scope.begin_attempt(maturity=str(maturity))
@@ -346,13 +351,16 @@ def record_emulator_gap(
                 scope.attempt = 1
         elif scope.attempt == 0:
             scope.attempt = 1
-        return scope.record(
+        gap = scope.record(
             cause,
             site_ea=site_ea,
             block_serial=block_serial,
             detail=detail,
             def_sites=def_sites,
         )
+        if gap is None:
+            return None
+        return RecordedEmulatorGap(scope=scope, gap=gap)
     except Exception:  # noqa: BLE001 — diagnostics never break an evaluation
         logger.debug("emulator gap record failed", exc_info=True)
         return None
@@ -574,6 +582,7 @@ __all__ = [
     "EMULATOR_GAP_TICKETS",
     "EmulatorGap",
     "EmulatorGapScope",
+    "RecordedEmulatorGap",
     "active_gap_db_path",
     "begin_emulator_gap_attempt",
     "build_emulator_gap_events",

@@ -198,10 +198,6 @@ class DecompilationSessionContext:
             )
         )
         self.emulator_gap_scope.func_ea = int(self.function_ea)
-        # This session genuinely owns the scope from here on -- distinguishes
-        # it from the unowned, shared fallback ``emulator_gap_scope()``
-        # returns when no session backs a lookup (ticket d81-dhs3).
-        self.emulator_gap_scope.owned = True
 
     @property
     def identity_key(self) -> str:

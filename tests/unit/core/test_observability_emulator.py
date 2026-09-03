@@ -11,6 +11,8 @@ lives in ``d810.core.observability_emulator`` and never touches a live ``mba``.
 
 from __future__ import annotations
 
+import logging
+
 import pytest
 
 from d810.core import observability
@@ -197,7 +199,7 @@ class TestDedupeKeying:
 class TestFormatting:
     def test_a_gap_line_carries_cause_site_block_maturity_and_next(self):
         scope = begin_emulator_gap_attempt(FUNC, maturity="MMAT_GLBOPT1")
-        gap = record_emulator_gap(
+        recorded = record_emulator_gap(
             FUNC,
             CAUSE_PHI_MULTI_DEF,
             site_ea=0x7FFB0EB15239,
@@ -205,7 +207,7 @@ class TestFormatting:
             def_sites=((329, 0x7FFB0EB1520A), (398, 0x7FFB0EB0BCF7)),
             detail="mov eax, ecx",
         )
-        line = format_emulator_gap(scope, gap, db_path="/tmp/cap.sqlite3")
+        line = format_emulator_gap(scope, recorded.gap, db_path="/tmp/cap.sqlite3")
         assert "EMULATOR_GAP" in line
         assert "cause=phi_multi_def" in line
         assert f"func=0x{FUNC:x}" in line
@@ -221,8 +223,8 @@ class TestFormatting:
 
     def test_a_gap_line_without_a_capture_still_names_the_command(self):
         scope = begin_emulator_gap_attempt(FUNC, maturity="MMAT_GLBOPT1")
-        gap = record_emulator_gap(FUNC, CAUSE_NULL_DEREF, site_ea=0)
-        line = format_emulator_gap(scope, gap, db_path=None)
+        recorded = record_emulator_gap(FUNC, CAUSE_NULL_DEREF, site_ea=0)
+        line = format_emulator_gap(scope, recorded.gap, db_path=None)
         assert "unflat-why --db <diag-db>" in line
 
     def test_the_aggregate_counts_every_cause_most_frequent_first(self):
@@ -336,18 +338,19 @@ def test_a_gap_is_hashable_and_carries_its_key():
     assert gap.key() == (CAUSE_NULL_DEREF, 0x10, 3)
 
 
-class TestUnownedScopeSharing:
-    """No lifecycle session backs ``func_ea`` (ticket d81-dhs3).
+class TestNoSessionAbstention:
+    """No lifecycle session backs ``func_ea`` (ticket d81-10hk).
 
-    ``emulator_gap_scope()`` must not impersonate a session by minting a
-    fresh, unattached ``EmulatorGapScope`` on every lookup -- that silently
-    breaks dedupe between the ``record_emulator_gap`` and
-    ``format_emulator_gap`` calls inside one ``_warn_gap`` (they see two
-    different objects) and defeats the "warn once per attempt" contract
-    entirely. Unowned lookups must share ONE typed-unowned scope for the
-    SAME ``func_ea`` instead -- but that scope is a single-slot holder, not
-    a dict keyed by func_ea, so it never grows one entry per function
-    forever (ticket d81-dhs3 follow-up).
+    The predecessor fallback (ticket d81-dhs3) minted a process-global
+    "unowned" scope so a caller never saw ``None``.  The review on
+    a07d9c1b5 ruled that this fabricates ownership: it pairs a WARNING with
+    a session/attempt/maturity nobody actually holds.  The correct fallback
+    when no session owns ``func_ea`` is ABSTENTION -- the same shape the
+    optblock pass already uses.  ``test_repeat_lookups_return_the_same_
+    unowned_scope``, ``test_no_new_scope_is_constructed_on_the_second_
+    lookup`` and ``test_unowned_scope_holder_keeps_at_most_one_entry`` are
+    superseded by this class: the single-slot holder they exercised no
+    longer exists.
     """
 
     UNOWNED_FUNC = 0x7FFB0EB99999
@@ -359,42 +362,18 @@ class TestUnownedScopeSharing:
         monkeypatch.setattr(
             observability, "_pending_emulator_gap_scopes_provider", None
         )
-        from d810.core import observability_emulator as _mod
-
-        _mod._unowned_emulator_gap_scope = None
         yield
-        _mod._unowned_emulator_gap_scope = None
 
-    def test_repeat_lookups_return_the_same_unowned_scope(self):
-        first = emulator_gap_scope(self.UNOWNED_FUNC)
-        second = emulator_gap_scope(self.UNOWNED_FUNC)
-        assert first is second
-        assert first.owned is False
+    def test_emulator_gap_scope_abstains_with_none(self):
+        assert emulator_gap_scope(self.UNOWNED_FUNC) is None
 
-    def test_a_session_owned_scope_is_typed_owned(self):
-        owned = EmulatorGapScope(func_ea=self.UNOWNED_FUNC)
-        assert owned.owned is False  # default: caller must opt in
-        owned.owned = True
-        assert owned.owned is True
-
-    def test_record_and_format_dedupe_against_the_same_unowned_scope(self):
-        first = record_emulator_gap(
-            self.UNOWNED_FUNC, CAUSE_NULL_DEREF, site_ea=0x20
+    def test_begin_attempt_abstains_with_none(self):
+        assert (
+            begin_emulator_gap_attempt(self.UNOWNED_FUNC, maturity="MMAT_GLBOPT1")
+            is None
         )
-        assert first is not None
-        # A repeat at the same site can only dedupe if record_emulator_gap
-        # and the scope format_emulator_gap renders from are the SAME
-        # object -- two independently-minted fresh scopes would each think
-        # this is a first sighting.
-        repeat = record_emulator_gap(
-            self.UNOWNED_FUNC, CAUSE_NULL_DEREF, site_ea=0x20
-        )
-        assert repeat is None
-        scope_for_format = emulator_gap_scope(self.UNOWNED_FUNC)
-        assert len(scope_for_format.gaps) == 1
-        assert scope_for_format.gaps[0].occurrences == 2
 
-    def test_no_new_scope_is_constructed_on_the_second_lookup(self, monkeypatch):
+    def test_record_abstains_and_constructs_no_scope(self, monkeypatch):
         constructed: list[object] = []
         original_init = EmulatorGapScope.__init__
 
@@ -404,29 +383,61 @@ class TestUnownedScopeSharing:
 
         monkeypatch.setattr(EmulatorGapScope, "__init__", _tracking_init)
 
-        emulator_gap_scope(self.UNOWNED_FUNC)
-        emulator_gap_scope(self.UNOWNED_FUNC)
+        result = record_emulator_gap(self.UNOWNED_FUNC, CAUSE_NULL_DEREF, site_ea=0x20)
 
-        assert len(constructed) == 1
+        assert result is None
+        assert constructed == []
 
-    def test_unowned_scope_holder_keeps_at_most_one_entry(self):
-        from d810.core import observability_emulator as _mod
+    def test_record_logs_at_debug_with_no_scope_or_session_identity(self, caplog):
+        with caplog.at_level(logging.DEBUG, logger="d810.evaluator.gaps"):
+            result = record_emulator_gap(
+                self.UNOWNED_FUNC, CAUSE_NULL_DEREF, site_ea=0x20
+            )
 
-        first_scope = emulator_gap_scope(self.UNOWNED_FUNC)
-        other_func = self.UNOWNED_FUNC + 0x1000
+        assert result is None
+        debug_lines = [
+            record.getMessage()
+            for record in caplog.records
+            if record.levelno == logging.DEBUG
+        ]
+        assert debug_lines
+        for message in debug_lines:
+            # No IDENTITY leaks into the line: no func_ea, no scope/session
+            # id -- just the fact that a gap was seen with nothing to
+            # attribute it to. Describing *why* ("no owning session") is
+            # fine; naming *which* session/function is not.
+            assert f"0x{self.UNOWNED_FUNC:x}" not in message
+            assert "func=" not in message
+            assert "session_id" not in message
+            assert "session=" not in message
 
-        other_scope = emulator_gap_scope(other_func)
 
-        assert other_scope is not first_scope
-        assert other_scope.func_ea == other_func
-        # Single-slot holder: a lookup for a DIFFERENT func_ea evicts the
-        # first scope entirely, so re-acquiring the original func_ea mints
-        # a brand-new scope rather than resuming stale dedupe state. Memory
-        # never grows past one cached entry.
-        assert _mod._unowned_emulator_gap_scope is other_scope
-        reacquired_first = emulator_gap_scope(self.UNOWNED_FUNC)
-        assert reacquired_first is not first_scope
-        assert _mod._unowned_emulator_gap_scope is reacquired_first
+class TestRecordFormatPairing:
+    """``record_emulator_gap`` and ``format_emulator_gap`` share ONE lookup.
+
+    The reviewer on a07d9c1b5 described a reentrancy hazard: ``_warn_gap``
+    used to call ``record_emulator_gap`` and then independently
+    ``emulator_gap_scope`` again for ``format_emulator_gap``, so a lookup
+    for a DIFFERENT ``func_ea`` in between the two calls could replace a
+    shared slot and pair the gap with the wrong scope.  ``record_emulator_
+    gap`` now returns the scope it recorded against alongside the gap, so
+    there is nothing to re-look-up (ticket d81-10hk).
+    """
+
+    def test_record_and_format_share_the_same_scope_despite_reentrant_lookups(self):
+        begin_emulator_gap_attempt(FUNC, maturity="MMAT_GLBOPT1")
+        recorded = record_emulator_gap(FUNC, CAUSE_NULL_DEREF, site_ea=0x20)
+        assert recorded is not None
+
+        # Reentrancy: a lookup for a DIFFERENT func_ea happens between the
+        # record and the format calls.
+        begin_emulator_gap_attempt(FUNC + 0x100, maturity="MMAT_GLBOPT1")
+        emulator_gap_scope(FUNC + 0x100)
+
+        line = format_emulator_gap(recorded.scope, recorded.gap, db_path=None)
+
+        assert recorded.scope is emulator_gap_scope(FUNC)
+        assert f"func=0x{FUNC:x}" in line
 
 
 class TestFlushAll:
