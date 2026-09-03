@@ -23,6 +23,7 @@ import os
 import re
 import subprocess
 import sys
+import threading
 import time
 import uuid
 
@@ -124,6 +125,59 @@ def _augment_pytest_args_with_durations(
     return tuple(pytest_args) + (f"--durations={durations}",)
 
 
+def _stream_and_capture(
+    command: Sequence[str],
+    *,
+    popen: Callable[..., subprocess.Popen] = subprocess.Popen,
+    stdout_sink=None,
+    stderr_sink=None,
+) -> subprocess.CompletedProcess:
+    """Run *command*, tee-ing stdout/stderr to the parent live while also
+    capturing full text for the ``--durations`` and jsonl-record parsers.
+
+    A 20-minute batch previously produced no output at all until it exited
+    (``capture_output=True`` buffers everything), which looked hung. This
+    reads both pipes concurrently in dedicated threads -- never sequentially
+    -- so a full buffer on one stream can never block progress on the other,
+    and writes each line to the parent as soon as it arrives.
+    """
+    out_sink = stdout_sink if stdout_sink is not None else sys.stdout
+    err_sink = stderr_sink if stderr_sink is not None else sys.stderr
+    process = popen(
+        list(command),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        bufsize=1,
+    )
+    captured: dict[str, list[str]] = {"stdout": [], "stderr": []}
+
+    def _pump(pipe, sink, key: str) -> None:
+        try:
+            for line in iter(pipe.readline, ""):
+                sink.write(line)
+                sink.flush()
+                captured[key].append(line)
+        finally:
+            pipe.close()
+
+    threads = (
+        threading.Thread(target=_pump, args=(process.stdout, out_sink, "stdout")),
+        threading.Thread(target=_pump, args=(process.stderr, err_sink, "stderr")),
+    )
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    returncode = process.wait()
+    return subprocess.CompletedProcess(
+        list(command),
+        returncode,
+        stdout="".join(captured["stdout"]),
+        stderr="".join(captured["stderr"]),
+    )
+
+
 def _write_batch_record(log_dir: str, record: dict) -> None:
     os.makedirs(log_dir, exist_ok=True)
     path = os.path.join(log_dir, BATCH_LOG_FILENAME)
@@ -148,6 +202,7 @@ def run_batches(
     batch_size: int,
     start_batch: int = 1,
     run: Run = subprocess.run,
+    popen: Callable[..., subprocess.Popen] = subprocess.Popen,
     log_dir: str | None = None,
     run_id: str | None = None,
     durations: int = DEFAULT_DURATIONS,
@@ -203,10 +258,8 @@ def run_batches(
         command = [python, "-m", "pytest", "-v", *batch, *augmented_pytest_args]
         start_epoch = now()
         if log_dir is not None:
-            completed = run(command, check=False, capture_output=True, text=True)
+            completed = _stream_and_capture(command, popen=popen)
             end_epoch = now()
-            sys.stdout.write(completed.stdout or "")
-            sys.stderr.write(completed.stderr or "")
             combined_output = (completed.stdout or "") + (completed.stderr or "")
             record = {
                 "run_id": effective_run_id,

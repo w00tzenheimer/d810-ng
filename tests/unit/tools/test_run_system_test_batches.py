@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import importlib.util
+import io
 import json
 from pathlib import Path
 import subprocess
+import sys
+import time
 
 import pytest
 
@@ -18,6 +21,44 @@ def _module():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+class _FakePopen:
+    """Minimal ``subprocess.Popen`` stand-in for batch-execution tests.
+
+    Serves canned stdout/stderr text through ``.readline()``-compatible
+    ``io.StringIO`` pipes (matching what ``_stream_and_capture`` reads), so
+    tests never spawn a real ``/runtime/python`` process.
+    """
+
+    def __init__(self, command, *, stdout_text: str, stderr_text: str, returncode: int):
+        self.args = list(command)
+        self.stdout = io.StringIO(stdout_text)
+        self.stderr = io.StringIO(stderr_text)
+        self._returncode = returncode
+
+    def wait(self) -> int:
+        return self._returncode
+
+
+def _fake_popen_factory(results: list[tuple[str, str, int]]):
+    """Return a ``popen`` callable that yields *results* in call order."""
+
+    calls: list[list[str]] = []
+    remaining = list(results)
+
+    def fake_popen(command, **kwargs):
+        calls.append(list(command))
+        stdout_text, stderr_text, returncode = remaining.pop(0)
+        return _FakePopen(
+            command,
+            stdout_text=stdout_text,
+            stderr_text=stderr_text,
+            returncode=returncode,
+        )
+
+    fake_popen.calls = calls
+    return fake_popen
 
 
 def test_parse_collected_nodeids_ignores_summary_and_warnings() -> None:
@@ -217,17 +258,19 @@ def test_run_batches_writes_one_jsonl_record_per_batch(tmp_path) -> None:
 
     def fake_run(command, **kwargs):
         calls.append(list(command))
-        if "--collect-only" in command:
-            return subprocess.CompletedProcess(
-                command,
-                0,
-                stdout="\n".join(
-                    f"tests/system/test_x.py::test_{index}" for index in range(4)
-                ),
-                stderr="",
-            )
-        return subprocess.CompletedProcess(command, 0, stdout=batch_output, stderr="")
+        assert "--collect-only" in command
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout="\n".join(
+                f"tests/system/test_x.py::test_{index}" for index in range(4)
+            ),
+            stderr="",
+        )
 
+    fake_popen = _fake_popen_factory(
+        [(batch_output, "", 0), (batch_output, "", 0)]
+    )
     times = iter([100.0, 101.5, 200.0, 202.0])
 
     result = module.run_batches(
@@ -236,6 +279,7 @@ def test_run_batches_writes_one_jsonl_record_per_batch(tmp_path) -> None:
         pytest_args=(),
         batch_size=2,
         run=fake_run,
+        popen=fake_popen,
         log_dir=str(tmp_path),
         run_id="run-abc",
         now=lambda: next(times),
@@ -271,17 +315,14 @@ def test_run_batches_resume_appends_to_the_same_jsonl_file(tmp_path) -> None:
     module = _module()
 
     def fake_run(command, **kwargs):
-        if "--collect-only" in command:
-            return subprocess.CompletedProcess(
-                command,
-                0,
-                stdout="\n".join(
-                    f"tests/system/test_x.py::test_{index}" for index in range(4)
-                ),
-                stderr="",
-            )
+        assert "--collect-only" in command
         return subprocess.CompletedProcess(
-            command, 0, stdout="2 passed in 0.10s\n", stderr=""
+            command,
+            0,
+            stdout="\n".join(
+                f"tests/system/test_x.py::test_{index}" for index in range(4)
+            ),
+            stderr="",
         )
 
     module.run_batches(
@@ -290,6 +331,9 @@ def test_run_batches_resume_appends_to_the_same_jsonl_file(tmp_path) -> None:
         pytest_args=(),
         batch_size=2,
         run=fake_run,
+        popen=_fake_popen_factory(
+            [("2 passed in 0.10s\n", "", 0), ("2 passed in 0.10s\n", "", 0)]
+        ),
         log_dir=str(tmp_path),
         run_id="run-one",
     )
@@ -300,6 +344,7 @@ def test_run_batches_resume_appends_to_the_same_jsonl_file(tmp_path) -> None:
         batch_size=2,
         start_batch=2,
         run=fake_run,
+        popen=_fake_popen_factory([("2 passed in 0.10s\n", "", 0)]),
         log_dir=str(tmp_path),
         run_id="run-two",
     )
@@ -357,3 +402,56 @@ def test_main_wires_log_dir_through_to_run_batches(monkeypatch, tmp_path) -> Non
 
     module.main(["tests/system"])
     assert captured["log_dir"] is None
+
+
+def test_stream_and_capture_tees_output_live_not_after_exit(tmp_path) -> None:
+    """A line printed by the child must reach the parent's sink while the
+    child is still running, not be buffered until it exits.
+
+    Regression for the ``capture_output=True`` bug: a 20-minute batch
+    produced nothing until it finished, looking hung. Runs a real
+    subprocess (not a fake) that prints, sleeps, then prints again, and
+    asserts the first line's arrival timestamp precedes the second by
+    roughly the sleep duration -- proof it was teed line-by-line rather
+    than delivered in one bulk write after the process exited.
+    """
+    module = _module()
+
+    script = tmp_path / "slow_child.py"
+    script.write_text(
+        "import sys, time\n"
+        "print('first-line', flush=True)\n"
+        "time.sleep(0.3)\n"
+        "print('second-line', flush=True)\n",
+        encoding="utf-8",
+    )
+
+    class _RecordingStream:
+        def __init__(self) -> None:
+            self.events: list[tuple[str, float]] = []
+
+        def write(self, text: str) -> None:
+            if text.strip():
+                self.events.append((text, time.monotonic()))
+
+        def flush(self) -> None:
+            pass
+
+    out = _RecordingStream()
+    err = _RecordingStream()
+
+    completed = module._stream_and_capture(
+        [sys.executable, str(script)],
+        stdout_sink=out,
+        stderr_sink=err,
+    )
+
+    assert completed.returncode == 0
+    assert completed.stdout == "first-line\nsecond-line\n"
+
+    first_ts = next(ts for text, ts in out.events if "first-line" in text)
+    second_ts = next(ts for text, ts in out.events if "second-line" in text)
+    # A batched/capture_output-style implementation would deliver both
+    # lines together after the child exits, so this gap would collapse to
+    # ~0s. True line-by-line teeing preserves the sleep gap.
+    assert second_ts - first_ts > 0.2
