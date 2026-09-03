@@ -801,8 +801,9 @@ DAC_MASM_CASES = [
     DeobfuscationCase(
         function="sub_7FFB0E398850",
         description=(
-            "Eidolon loader dispatcher (Wow_loader 12.1.0.69587) extracted with "
-            "`d810cli fixture`. Regression cover for d81-jlfw: a committed CFG "
+            "Third-party loader dispatcher (loader build 12.1.0.69587) "
+            "extracted with `d810cli fixture`. Regression cover for d81-jlfw: "
+            "a committed CFG "
             "batch leaves one native block folded to an empty fall-through, and "
             "the observed post-apply contract used to read that as a lost block "
             "-- first as a native-origin identity failure, then as "
