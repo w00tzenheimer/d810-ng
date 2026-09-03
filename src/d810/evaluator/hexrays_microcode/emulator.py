@@ -428,11 +428,12 @@ class MicroCodeInterpreter(object):
         # Call sites already reported as unsupported, so one bypassed call logs
         # once instead of once per emulation pass.
         self._warned_call_sites: set[tuple[int, int]] = set()
-        # ``(block_serial, pred_serial)``: the incoming edge a consumer declared it
-        # is evaluating, so a phi-like merge read in that block resolves to the
-        # definition arriving along THAT edge (ticket d81-yrkv).  ``None`` -> the
-        # historical path-insensitive behaviour.
-        self._merge_pred_context: tuple[int, int] | None = None
+        # ``(block_serial, path)``: the incoming edge -- or the whole incoming
+        # PATH, nearest block first -- a consumer declared it is evaluating, so a
+        # phi-like merge read in that block resolves to the definition arriving
+        # along it (tickets d81-yrkv, d81-182q).  ``None`` -> the historical
+        # path-insensitive behaviour.
+        self._merge_pred_context: tuple[int, tuple[int, ...]] | None = None
         # Resolution strategies (tried in order after env lookup, before def-use chains)
         if strategies is not None:
             self._strategies: list[MopResolutionStrategy] = strategies
@@ -444,19 +445,32 @@ class MicroCodeInterpreter(object):
             self._strategies = []
 
     def set_merge_predecessor_context(
-        self, block_serial: int | None, pred_serial: int | None
+        self,
+        block_serial: int | None,
+        pred_serial: int | typing.Sequence[int] | None,
     ) -> None:
-        """Declare which incoming edge of *block_serial* is being evaluated.
+        """Declare which incoming edge -- or path -- of *block_serial* is evaluated.
 
         A consumer that steps one block once per immediate predecessor (the
         reduced-product concrete leg does exactly that) can name the edge; a
         phi-like merge read inside that block then resolves to the definition
-        arriving along it instead of abstaining.  Pass ``None`` to clear.
+        arriving along it.  When the immediate predecessor is a pass-through /
+        glue block the consumer may name the whole path instead, NEAREST block
+        first (``(355, 398)`` = "arrived at 330 from 398 through 355"), and the
+        definition is taken from the first block on that path that defines the
+        operand (ticket d81-182q).  Pass ``None`` to clear.
         """
         if block_serial is None or pred_serial is None:
             self._merge_pred_context = None
+            return
+        if isinstance(pred_serial, int):
+            path: tuple[int, ...] = (int(pred_serial),)
         else:
-            self._merge_pred_context = (int(block_serial), int(pred_serial))
+            path = tuple(int(serial) for serial in pred_serial)
+        if not path:
+            self._merge_pred_context = None
+            return
+        self._merge_pred_context = (int(block_serial), path)
 
     # -- synthetic-return taint (ticket d81-0xzp) --------------------------
     @staticmethod
@@ -627,13 +641,14 @@ class MicroCodeInterpreter(object):
         context = self._merge_pred_context
         if context is None:
             return None
-        context_blk, pred_serial = context
+        context_blk, pred_path = context
         if context_blk != blk_serial:
             return None
+        pred_serial = pred_path[0]
         pred_defs = self._reaching_defs_at(mba, pred_serial, mop)
         index = select_def_index_for_predecessor(
             [(d.block_serial, d.ins_ea) for d in defs],
-            pred_serial,
+            pred_path,
             {(d.block_serial, d.ins_ea) for d in pred_defs},
         )
         if index is None and emulator_log.debug_on:
@@ -643,11 +658,11 @@ class MicroCodeInterpreter(object):
             # merge.
             pred_blk = mba.get_mblock(pred_serial)
             emulator_log.debug(
-                "DEF-USE-DIAG: blk=%d var=%s pred=%d pred_preds=%s pred_defs=%s "
+                "DEF-USE-DIAG: blk=%d var=%s pred=%s pred_preds=%s pred_defs=%s "
                 "(edge did not single out a def)",
                 blk_serial,
                 get_mop_key(mop),
-                pred_serial,
+                pred_path if len(pred_path) > 1 else pred_serial,
                 (
                     sorted(int(p) for p in pred_blk.predset)
                     if pred_blk is not None
@@ -676,13 +691,14 @@ class MicroCodeInterpreter(object):
         if chosen is not None:
             value = self._eval_def_site(chosen, mop, mba, environment)
             if emulator_log.debug_on:
+                context_path = self._merge_pred_context[1]
                 emulator_log.debug(
-                    "DEF-USE-DIAG: blk=%d var=%s ndefs=%d pred=%d def_site=blk%d@%#x "
+                    "DEF-USE-DIAG: blk=%d var=%s ndefs=%d pred=%s def_site=blk%d@%#x "
                     "eval=%s (predecessor-selected)",
                     blk_serial,
                     get_mop_key(mop),
                     len(defs),
-                    self._merge_pred_context[1],
+                    context_path if len(context_path) > 1 else context_path[0],
                     chosen.block_serial,
                     chosen.ins_ea,
                     "None" if value is None else hex(value),

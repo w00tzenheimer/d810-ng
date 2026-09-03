@@ -136,7 +136,8 @@ class TestMultiDefPredecessorResolution:
 
         real = min(int(p) for p in blk.predset)
         emu._apply_predecessor_context(interpreter, blk, real)
-        assert interpreter._merge_pred_context == (blk.serial, real)
+        # normalized to a path, nearest first (ticket d81-182q)
+        assert interpreter._merge_pred_context == (blk.serial, (real,))
 
     def test_eval_block_accepts_the_pred_serial_keyword(self, merge_read):
         mba, blk, insn, mop, defs = merge_read
@@ -148,3 +149,31 @@ class TestMultiDefPredecessorResolution:
         )
         # No state var at that offset -> a clean abstain, not a TypeError.
         assert outcome is not None
+
+    def test_a_path_context_selects_the_def_on_that_path(self, merge_read):
+        """Ticket d81-182q: the def is picked by PATH membership, not by chains."""
+        mba, blk, insn, mop, defs = merge_read
+        interpreter = MicroCodeInterpreter(symbolic_mode=False)
+        pred = min(int(p) for p in blk.predset)
+        # Name a corridor whose FAR element is a real definition block: the def
+        # there must be selected even though the nearest block defines nothing
+        # and its use-driven chain query returns nothing.
+        far = [d for d in defs if d.block_serial != pred]
+        if not far:
+            pytest.skip("every reaching def lives in the immediate predecessor")
+        target = far[-1]
+        interpreter.set_merge_predecessor_context(
+            blk.serial, (pred, target.block_serial)
+        )
+        chosen = interpreter._select_predecessor_def(mop, defs, mba, blk.serial)
+        assert chosen is not None
+        if pred not in {d.block_serial for d in defs}:
+            # nothing on the nearer end of the path shadows it
+            assert chosen.block_serial == target.block_serial
+
+    def test_a_path_with_no_def_on_it_abstains(self, merge_read):
+        mba, blk, insn, mop, defs = merge_read
+        interpreter = MicroCodeInterpreter(symbolic_mode=False)
+        unrelated = max(d.block_serial for d in defs) + 5000
+        interpreter.set_merge_predecessor_context(blk.serial, (unrelated, unrelated + 1))
+        assert interpreter._select_predecessor_def(mop, defs, mba, blk.serial) is None

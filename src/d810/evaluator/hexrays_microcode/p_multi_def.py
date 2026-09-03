@@ -20,48 +20,70 @@ definitions disagree (or any one of them is unresolved), the caller must abstain
 
 from __future__ import annotations
 
-from d810.core.typing import Collection, Optional, Sequence
+from d810.core.typing import Collection, Optional, Sequence, Union
 
 __all__ = ["DefKey", "agreed_value", "select_def_index_for_predecessor"]
 
 #: ``(block_serial, ins_ea)`` identity of one definition site.
 DefKey = tuple[int, int]
 
+#: One incoming edge, or a whole incoming PATH (nearest block to the use first).
+PredecessorPath = Union[int, Sequence[int]]
+
+
+def _as_path(pred_serial: PredecessorPath) -> tuple[int, ...]:
+    """Normalize a single serial or a path (nearest first) to a tuple."""
+    if isinstance(pred_serial, int):
+        return (pred_serial,)
+    return tuple(int(serial) for serial in pred_serial)
+
 
 def select_def_index_for_predecessor(
     def_keys: Sequence[DefKey],
-    pred_serial: int,
+    pred_serial: PredecessorPath,
     pred_reaching_keys: Collection[DefKey],
 ) -> Optional[int]:
-    """Index into *def_keys* of the definition reaching along *pred_serial*.
+    """Index into *def_keys* of the definition arriving along *pred_serial*.
 
     ``def_keys`` are the definitions reaching the merge block, in scan order
-    (definitions inside one block appear in instruction order).
-    ``pred_reaching_keys`` are the definitions that reach the predecessor block
-    itself (its own UD chain).
+    (definitions inside one block appear in instruction order) -- they are
+    already exact, so the only question is WHICH of them the incoming edge
+    carries.  ``pred_serial`` is the immediate predecessor, or the whole path
+    the consumer arrived along with the block NEAREST the use first.
+    ``pred_reaching_keys`` are the definitions that reach the nearest block by
+    its own UD chain (advisory: those chains are use-driven, so a block that
+    never READS the operand reports none).
 
-    Two cases resolve, both sound:
+    Resolution, in order, all sound:
 
-    1. The predecessor block *itself* defines the operand: instructions inside a
-       basic block execute in order, so the LAST such definition is live on the
-       edge.
-    2. The predecessor does not redefine it, and exactly one of the merge's
-       definitions reaches the predecessor: that one flows through.
+    1. **Path membership** -- walk the path from the use outwards and take the
+       first block that defines the operand; inside that block instructions
+       execute in order, so the LAST definition there is the live one.  A def on
+       a nearer block shadows one further up the same path.
+    2. **Through-flow** -- no block on the path redefines it and exactly one of
+       the merge's definitions reaches the nearest block: that one flows through.
 
-    Anything else (no match, or several distinct definitions still reaching the
-    predecessor) returns ``None`` -- the caller must not guess.
+    Anything else returns ``None`` -- the caller must not guess.
 
     >>> select_def_index_for_predecessor([(329, 0x1000), (398, 0x2000)], 329, set())
     0
+    >>> select_def_index_for_predecessor(
+    ...     [(329, 0x1000), (398, 0x2000)], (355, 398), set()
+    ... )
+    1
     >>> select_def_index_for_predecessor(
     ...     [(329, 0x1000), (415, 0x2000)], 398, {(415, 0x2000)}
     ... )
     1
     >>> select_def_index_for_predecessor([(329, 0x1000), (415, 0x2000)], 398, set())
     """
-    own = [i for i, (blk, _) in enumerate(def_keys) if blk == pred_serial]
-    if own:
-        return own[-1]
+    path = _as_path(pred_serial)
+    for serial in path:
+        own = [i for i, (blk, _) in enumerate(def_keys) if blk == serial]
+        if own:
+            return own[-1]
+    if not path:
+        return None
     reaching = set(pred_reaching_keys)
     candidates = [i for i, key in enumerate(def_keys) if key in reaching]
     if not candidates:

@@ -7925,11 +7925,12 @@ def _provider_emulation(ctx, pred, block, arm, ambiguous):
         return None
     if ctx.emu is None or ctx.live_block_for is None or ctx.state_cell is None:
         return None
-    emu_states = _emulate_partition_states(
+    emulated = _emulate_partition_states(
         ctx.emu, ctx.live_block_for, ctx.state_cell, ctx.fp, block, pred
     )
-    if emu_states is None:
+    if emulated is None:
         return None
+    emu_states, next_hops = emulated
     out: list[StateWriteTransition] = []
     _emit_partition_transitions(
         out,
@@ -7942,6 +7943,7 @@ def _provider_emulation(ctx, pred, block, arm, ambiguous):
         oracle_kind=_EMULATION_ORACLE,
         single_kind=_KIND_BACK_EDGE_CONCRETE_FOLD,
         split_kind=_KIND_CONCRETE_FOLD_PARTITIONED,
+        next_hops=next_hops,
     )
     return out
 
@@ -8959,21 +8961,121 @@ def _emulate_partition_states(emu, live_block_for, state_cell, fp, block, pred):
     this function is asking for.
     """
     edge_states: dict[int, int] = {}
+    next_hops: dict[int, int] = {}
     for ip in sorted(int(p) for p in block.preds):
-        concrete = _emulate_unresolved_state(
-            emu,
-            live_block_for(int(pred)),
-            _seed_concrete_store(
-                dict(fp.out_stk_maps.get(ip, {})),
-                dict(fp.out_reg_maps.get(ip, {})),
-            ),
-            state_cell,
-            pred_serial=int(ip),
+        seeded_store = _seed_concrete_store(
+            dict(fp.out_stk_maps.get(ip, {})),
+            dict(fp.out_reg_maps.get(ip, {})),
         )
-        if concrete is None:
-            return None  # any ⊥ residual -> abstain wholesale (stay seeded/unresolved)
-        edge_states[int(ip)] = int(concrete) & 0xFFFFFFFF
-    return edge_states or None
+
+        def consult(path: tuple[int, ...]) -> int | None:
+            return _emulate_unresolved_state(
+                emu,
+                live_block_for(int(pred)),
+                seeded_store,
+                state_cell,
+                pred_serial=path,
+            )
+
+        resolved = _resolve_incoming_corridor(
+            consult, live_block_for, int(ip), int(pred), bool(seeded_store.cells)
+        )
+        if resolved is None:
+            # any ⊥ residual -> abstain wholesale (stay seeded/unresolved)
+            return None
+        for path, concrete in resolved:
+            source = int(path[-1])
+            state = int(concrete) & 0xFFFFFFFF
+            if source in edge_states and edge_states[source] != state:
+                # The same source reached through two corridors with two different
+                # next-states: nothing here says which one an edge takes.
+                return None
+            edge_states[source] = state
+            next_hops[source] = int(path[-2]) if len(path) > 1 else int(pred)
+    return (edge_states, next_hops) if edge_states else None
+
+
+#: How far above an immediate predecessor the concrete leg follows a corridor
+#: before giving up (ticket d81-182q).
+_GLUE_HOP_BOUND = 2
+
+
+def _live_preds(live_block_for, serial: int) -> tuple[int, ...]:
+    """Predecessors of *serial* in the LIVE graph, sorted; empty when unusable."""
+    try:
+        blk = live_block_for(int(serial))
+    except (KeyError, IndexError, TypeError, ValueError):
+        return ()
+    if blk is None:
+        return ()
+    try:
+        return tuple(sorted(int(x) for x in getattr(blk, "predset", ()) or ()))
+    except (TypeError, ValueError):
+        return ()
+
+
+def _resolve_incoming_corridor(
+    consult,
+    live_block_for,
+    ip: int,
+    pred: int,
+    has_store: bool,
+) -> list[tuple[tuple[int, ...], int]] | None:
+    """Resolve one incoming edge of the state-write block, or ``None`` to abstain.
+
+    Normally the edge is named on its own (``(ip,)``).  When the immediate
+    predecessor carries NO converged store it is a glue/merge block that neither
+    defines the state operands nor tells the emulator which path it is on; the
+    corridor is then split into its incoming paths and each is consulted
+    separately, walking up at most :data:`_GLUE_HOP_BOUND` blocks while a path
+    keeps failing (ticket d81-182q).
+
+    Returns ``[(path, state), ...]`` -- one entry per distinct incoming corridor,
+    kept SEPARATE because the state write may legitimately differ per path.
+    """
+    direct = consult((ip,))
+    if direct is not None:
+        return [((ip,), direct)]
+    if has_store:
+        return None  # a real predecessor that simply does not resolve
+    results: list[tuple[tuple[int, ...], int]] = []
+    unresolved: list[tuple[int, ...]] = []
+    for parent in _live_preds(live_block_for, ip):
+        path = (ip, int(parent))
+        state = consult(path)
+        hops = 1
+        while state is None and hops < _GLUE_HOP_BOUND:
+            extended = None
+            for grandparent in _live_preds(live_block_for, path[-1]):
+                if grandparent in path:
+                    continue  # a cycle in the corridor proves nothing
+                candidate = path + (int(grandparent),)
+                state = consult(candidate)
+                if state is not None:
+                    extended = candidate
+                    break
+            if extended is None:
+                break
+            path = extended
+            hops += 1
+        if state is None:
+            # Record and keep going: every corridor is consulted so the log names
+            # ALL of them, and so one dead corridor does not hide a resolvable
+            # sibling.  The verdict below is still all-or-nothing.
+            unresolved.append(path)
+            continue
+        results.append((path, state))
+    if unresolved:
+        if logger.info_on:
+            logger.info(
+                "emu-corridor: blk=%s glue=%s resolved=%s unresolved=%s -> abstain",
+                pred,
+                ip,
+                [(path, "0x%x" % state) for path, state in results],
+                unresolved,
+            )
+        return None  # one unresolved corridor -> abstain wholesale
+    return results or None
 
 
 def _emit_partition_transitions(
@@ -8988,6 +9090,7 @@ def _emit_partition_transitions(
     oracle_kind: str,
     single_kind: str,
     split_kind: str,
+    next_hops: dict[int, int] | None = None,
 ) -> None:
     """Emit the back-edge redirect(s) for a per-predecessor state map.
 
@@ -9015,7 +9118,11 @@ def _emit_partition_transitions(
     for ip, state in sorted(edge_states.items()):
         target, is_ret = classify(state)
         ip_block = flow_graph.get_block(int(ip))
-        ip_arm = arm_of(ip_block, pred) if ip_block is not None else None
+        # ``next_hops`` names the block each source branches INTO: the state-write
+        # block for an immediate predecessor, the glue block for a source reached
+        # through one (ticket d81-182q).  The arm is only meaningful there.
+        hop = int((next_hops or {}).get(int(ip), pred))
+        ip_arm = arm_of(ip_block, hop) if ip_block is not None else None
         out.append(
             StateWriteTransition(
                 int(ip),

@@ -84,3 +84,40 @@ class TestAgreedValue:
 
     def test_empty_abstains(self):
         assert agreed_value([]) is None
+
+
+class TestSelectDefIndexOnPath:
+    """Path-membership selection (ticket d81-182q).
+
+    The reaching defs AT THE USE are already exact, so the def that arrives along
+    a known path is the unique one whose block lies ON that path.  No block-level
+    search and no use-driven chain query is involved.
+    """
+
+    def test_unique_def_on_the_path_is_selected(self):
+        # path 398 -> 355 -> 330, nearest first: the def in 398 is the one.
+        defs = [(329, 0x1000), (398, 0x2000)]
+        assert select_def_index_for_predecessor(defs, (355, 398), set()) == 1
+
+    def test_the_nearest_def_on_the_path_wins(self):
+        # Two defs on the path: the one nearest the use dominates the later read.
+        defs = [(398, 0x2000), (355, 0x3000)]
+        assert select_def_index_for_predecessor(defs, (355, 398), set()) == 1
+
+    def test_two_defs_in_the_same_nearest_block_take_the_last(self):
+        defs = [(355, 0x3000), (355, 0x3004), (398, 0x2000)]
+        assert select_def_index_for_predecessor(defs, (355, 398), set()) == 1
+
+    def test_no_def_on_the_path_abstains(self):
+        defs = [(329, 0x1000), (415, 0x2000)]
+        assert select_def_index_for_predecessor(defs, (355, 397), set()) is None
+
+    def test_a_single_serial_path_is_the_one_hop_rule(self):
+        defs = [(329, 0x1000), (398, 0x2000)]
+        assert select_def_index_for_predecessor(defs, (329,), set()) == 0
+
+    def test_path_membership_does_not_need_the_reaching_set(self):
+        # The through-flow query is use-driven and returns nothing for a
+        # pass-through block; path membership must not depend on it.
+        defs = [(329, 0x1000), (398, 0x2000)]
+        assert select_def_index_for_predecessor(defs, (355, 398), set()) == 1
