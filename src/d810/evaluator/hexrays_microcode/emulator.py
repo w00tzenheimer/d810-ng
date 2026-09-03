@@ -574,6 +574,19 @@ class MicroCodeInterpreter(object):
             pred_serial,
             {(d.block_serial, d.ins_ea) for d in pred_defs},
         )
+        if index is None and emulator_log.debug_on:
+            # WHY the named edge did not single out a definition: an empty
+            # ``pred_defs`` means the edge carries none of them (look one block
+            # further up the corridor), several means the predecessor is itself a
+            # merge.
+            emulator_log.debug(
+                "DEF-USE-DIAG: blk=%d var=%s pred=%d pred_defs=%s (edge did not "
+                "single out a def)",
+                blk_serial,
+                get_mop_key(mop),
+                pred_serial,
+                [(d.block_serial, hex(d.ins_ea)) for d in pred_defs],
+            )
         return None if index is None else defs[index]
 
     def _resolve_multi_def(

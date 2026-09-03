@@ -30,7 +30,7 @@ from d810.evaluator.hexrays_microcode.emulator import (
     MicroCodeInterpreter,
 )
 
-from tests.system.runtime.conftest import gen_microcode_at_maturity, get_func_ea
+from tests.system.runtime.conftest import gen_microcode_at_maturity
 
 
 def _get_default_binary() -> str:
@@ -45,13 +45,8 @@ def _get_default_binary() -> str:
     return "libobfuscated.so"
 
 
-_CANDIDATE_FUNCS = (
-    "test_opaque_predicate",
-    "test_mba_guessing",
-    "test_cst_simplification",
-    "test_chained_add",
-    "test_xor",
-)
+#: Cap the search so a miss costs seconds, not minutes.
+_MAX_FUNCS = 200
 
 
 def _first_multi_def_read(mba):
@@ -73,33 +68,34 @@ def _first_multi_def_read(mba):
     return None
 
 
+@pytest.fixture(scope="class")
+def merge_read(libobfuscated_setup):
+    """A live ``(mba, blk, insn, mop, defs)`` merge read from the sample binary."""
+    import idautils
+
+    for index, func_ea in enumerate(idautils.Functions()):
+        if index >= _MAX_FUNCS:
+            break
+        mba = gen_microcode_at_maturity(func_ea, ida_hexrays.MMAT_GLBOPT1)
+        if mba is None:
+            continue
+        found = _first_multi_def_read(mba)
+        if found is not None:
+            return (mba,) + found
+    pytest.skip("no multi-def register read found in the sample binary")
+
+
 class TestMultiDefPredecessorResolution:
     binary_name = _get_default_binary()
-
-    @pytest.fixture(scope="class")
-    def merge_read(self, libobfuscated_setup):
-        import idaapi
-
-        for name in _CANDIDATE_FUNCS:
-            func_ea = get_func_ea(name)
-            if func_ea == idaapi.BADADDR:
-                continue
-            mba = gen_microcode_at_maturity(func_ea, ida_hexrays.MMAT_GLBOPT1)
-            if mba is None:
-                continue
-            found = _first_multi_def_read(mba)
-            if found is not None:
-                return (mba,) + found
-        pytest.skip("no multi-def register read found in the sample binary")
 
     def test_without_edge_context_a_multi_def_read_abstains(self, merge_read):
         mba, blk, insn, mop, defs = merge_read
         interpreter = MicroCodeInterpreter(symbolic_mode=False)
         env = MicroCodeEnvironment()
         env.set_cur_flow(blk, insn)
-        # No predecessor context and (in general) no agreement between the defs:
-        # the read must not invent a merge value.  If the defs DO agree the value
-        # is proven on every path, which is also sound -- assert one of the two.
+        # No predecessor context: the read may only resolve if every reaching
+        # definition proves the SAME value (path-insensitive agreement); it must
+        # never invent a merge value.
         value = interpreter._resolve_mop_via_def_use(mop, env)
         assert value is None or isinstance(value, int)
 
@@ -123,7 +119,9 @@ class TestMultiDefPredecessorResolution:
         mba, blk, insn, mop, defs = merge_read
         interpreter = MicroCodeInterpreter(symbolic_mode=False)
         # Context declared for a DIFFERENT block must never steer this block.
-        interpreter.set_merge_predecessor_context(blk.serial + 1000, next(iter(blk.predset)))
+        interpreter.set_merge_predecessor_context(
+            blk.serial + 1000, next(iter(blk.predset))
+        )
         assert interpreter._select_predecessor_def(mop, defs, mba, blk.serial) is None
 
     def test_emulator_drops_a_serial_that_is_not_a_live_predecessor(self, merge_read):
@@ -145,8 +143,8 @@ class TestMultiDefPredecessorResolution:
         emu = HexRaysBlockEmulator(
             mba=mba, state_var_stkoff=0x7FFFFFFF, state_cell=LocationRef.stack(0, 8)
         )
-        outcome = emu.eval_block(blk, ConcreteStore.of({}), pred_serial=min(
-            int(p) for p in blk.predset
-        ))
+        outcome = emu.eval_block(
+            blk, ConcreteStore.of({}), pred_serial=min(int(p) for p in blk.predset)
+        )
         # No state var at that offset -> a clean abstain, not a TypeError.
         assert outcome is not None
