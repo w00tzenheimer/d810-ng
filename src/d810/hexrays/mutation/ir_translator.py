@@ -1183,6 +1183,13 @@ class IDAIRTranslator:
         # the gateway before observation, or the realization inventory reads a
         # benign deduplication as a lost operation and poisons the generation.
         patch_gateway.record_coalesced_supersessions(modifier.take_superseded_count())
+        # The apply preflight rejects operations whose live binding cannot be
+        # resolved (a guarded removal whose block identity is gone) before the
+        # batch writes anything. Those planned steps need the same treatment as
+        # coalescing, or a safe pre-apply rejection reads as a lost operation.
+        patch_gateway.record_preflight_dropped_operations(
+            modifier.take_preflight_dropped_count()
+        )
 
         # If verify failed (even after rollback attempt), signal the pipeline
         # to stop by returning 0. A positive result with verify_failed=True

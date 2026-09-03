@@ -718,8 +718,12 @@ class MbaMutationGateway:
     _planned_operation_count: int = field(default=0, init=False)
     # Planned steps that coalescing removed as redundant before they could be
     # applied. Reconciling the realization inventory needs these back:
-    # applied + superseded == planned.
+    # applied + superseded + preflight_dropped == planned.
     _superseded_operation_count: int = field(default=0, init=False)
+    # Planned steps a pre-apply preflight rejected because their live binding
+    # could not be resolved. They never touched the MBA, so they are accounted
+    # for rather than mourned.
+    _preflight_dropped_operation_count: int = field(default=0, init=False)
     _active_plan_items: tuple[MbaMutationPlanItem, ...] = field(
         default=(),
         init=False,
@@ -1351,9 +1355,10 @@ class MbaMutationGateway:
         )
         self._affected_identities.clear()
         self._operation_count = 0
-        # Scope the tally to this batch: a count left by an earlier batch must
+        # Scope the tallies to this batch: a count left by an earlier batch must
         # never reconcile this one's inventory.
         self._superseded_operation_count = 0
+        self._preflight_dropped_operation_count = 0
         self._emit_observation(
             phase="planned",
             event_type=MbaMutationPlanned,
@@ -1463,6 +1468,23 @@ class MbaMutationGateway:
             raise ValueError("superseded operation count must be non-negative")
         self._superseded_operation_count = superseded
 
+    def record_preflight_dropped_operations(self, count: int) -> None:
+        """Record planned steps a pre-apply preflight rejected before writing.
+
+        A guarded instruction removal is proven against a block identity. When
+        an earlier stage renumbers serials, the removal is rebound through that
+        identity, and when the identity is gone the removal is dropped before
+        the batch writes anything. Such a step is deliberately not applied and
+        never mutated the MBA, so the realization inventory has to hold a term
+        for it; otherwise a safe rejection is indistinguishable from a lost
+        operation and poisons the CFG generation.
+        """
+        self._require_active()
+        dropped = int(count)
+        if dropped < 0:
+            raise ValueError("preflight dropped operation count must be non-negative")
+        self._preflight_dropped_operation_count = dropped
+
     def register_post_filter_plan_items(
         self,
         plan_items: Iterable[MbaMutationPlanItem],
@@ -1501,11 +1523,13 @@ class MbaMutationGateway:
         # resolution deliberately superseded it as redundant. Comparing applied
         # against planned alone reads a benign deduplication as corruption.
         superseded = int(self._superseded_operation_count)
-        if applied + superseded != self._planned_operation_count:
+        preflight_dropped = int(self._preflight_dropped_operation_count)
+        if applied + superseded + preflight_dropped != self._planned_operation_count:
             raise RuntimeError(
                 "patch realization operation inventory mismatch: "
                 f"planned={self._planned_operation_count} applied={applied} "
-                f"superseded={superseded}"
+                f"superseded={superseded} "
+                f"preflight_dropped={preflight_dropped}"
             )
         if set(self._cfg_creation_receipts) != set(self._cfg_plan_refs):
             raise RuntimeError("patch observation lacks complete creation receipts")
@@ -2951,14 +2975,17 @@ class MbaMutationGateway:
             # Same reconciliation as observe_patch_realization: a planned step
             # is accounted for when it was applied OR when conflict resolution
             # deliberately superseded it as redundant.
-            and self._operation_count + self._superseded_operation_count
+            and self._operation_count
+            + self._superseded_operation_count
+            + self._preflight_dropped_operation_count
             != self._planned_operation_count
         ):
             raise RuntimeError(
                 "patch realization operation inventory mismatch: "
                 f"planned={self._planned_operation_count} "
                 f"applied={self._operation_count} "
-                f"superseded={self._superseded_operation_count}"
+                f"superseded={self._superseded_operation_count} "
+                f"preflight_dropped={self._preflight_dropped_operation_count}"
             )
         version_transitions = self.identity_index.commit_proxy_transaction(
             str(self._active_batch_id)

@@ -8013,6 +8013,23 @@ class DeferredGraphModifier:
         self._superseded_count = 0
         return count
 
+    def take_preflight_dropped_count(self) -> int:
+        """Consume the count of planned steps the apply preflight dropped.
+
+        A guarded removal whose block identity no longer exists in the live MBA
+        is dropped before the batch writes anything.  It is a planned step that
+        was deliberately not applied, so the realization inventory reconciles as
+        ``applied + superseded + preflight_dropped == planned``.  Without this
+        term a safe pre-apply rejection reads as a lost operation and poisons
+        the CFG generation - the same accounting shape as coalescing.
+
+        Reading is one-shot and ``apply`` zeroes it per cycle, so a stale value
+        can never balance a later transaction's inventory.
+        """
+        count = int(getattr(self, "_preflight_dropped_instruction_ops", 0))
+        self._preflight_dropped_instruction_ops = 0
+        return count
+
     def apply(
         self,
         run_optimize_local: bool = True,
@@ -8624,7 +8641,14 @@ class DeferredGraphModifier:
                         )
 
         successful = 0
-        failed = pre_rejected
+        # Pre-rejections start the batch already failed, because a rejected CFG
+        # edit means the plan did not land. A guarded removal dropped for a
+        # missing block identity is not that: it is an instruction-only
+        # operation that was deliberately, safely, and loudly declined before
+        # anything was written, and it is carried by the preflight-drop term
+        # instead.
+        failed = pre_rejected - dropped_guarded_removals
+        safely_skipped = 0
         rolled_back = 0
         recent_modifications: list[dict] = []
 
@@ -8923,6 +8947,24 @@ class DeferredGraphModifier:
                             mod.description,
                         )
                         continue
+                    # A guarded removal that rejects has, by construction,
+                    # changed nothing: its whole contract is to revalidate the
+                    # full instruction fingerprint before touching the block.
+                    # An earlier modification in this same batch can invalidate
+                    # it after the apply preflight ran, and that is a safe
+                    # rejection of one instruction-only operation - not CFG
+                    # corruption, and no reason to abandon the other 62.
+                    if mod.mod_type == ModificationType.INSN_GUARDED_REMOVE:
+                        failed -= 1
+                        safely_skipped += 1
+                        self._preflight_dropped_instruction_ops += 1
+                        logger.warning(
+                            "Skipping rejected guarded removal [%d] and continuing "
+                            "(instruction-only revalidation, no MBA change): %s",
+                            i,
+                            mod.description,
+                        )
+                        continue
                     logger.warning(
                         "Aborting deferred apply after first failed modification "
                         "to avoid compounding CFG corruption"
@@ -8977,7 +9019,19 @@ class DeferredGraphModifier:
             failed,
             rolled_back,
         )
-        self.transaction_complete = failed == 0 and successful == len(sorted_mods)
+        if safely_skipped:
+            logger.info(
+                "Safely skipped %d instruction-only operation(s) whose guard "
+                "rejected after the apply preflight",
+                safely_skipped,
+            )
+        # A safely skipped instruction-only operation is accounted for, not
+        # lost: it never mutated the MBA and its planned step is carried by the
+        # preflight-drop term. Treating it as a lost operation is what poisoned
+        # the generation and cost the function every later simplification.
+        self.transaction_complete = (
+            failed == 0 and successful + safely_skipped == len(sorted_mods)
+        )
 
         if successful > 0:
             # Publish the structural receipt before diagnostic capture,
