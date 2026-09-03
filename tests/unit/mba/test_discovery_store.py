@@ -70,6 +70,7 @@ def _attempt(
     canonical: TypedBvTerm | None = None,
     eligible: bool = True,
     value: int = 1,
+    instruction_ea: int = 0x401002,
 ) -> DiscoveryAttempt:
     raw = raw or _term(value)
     canonical = canonical or canonicalize_ac_term(raw)
@@ -87,7 +88,7 @@ def _attempt(
             plugin_identity=PluginIdentity(
                 name="plugin", distribution="plugin-dist", version="1.0", origin="test"
             ),
-            instruction_ea=0x401002,
+            instruction_ea=instruction_ea,
             block_serial=3,
             block_ea=0x401000,
         ),
@@ -4900,7 +4901,9 @@ def test_group_run_history_rejects_impossible_sequences_and_revisions(
         store.finish_no_proposal(
             first.claim.run.run_id, first.claim.run.claimed_revision
         )
-        store.record_attempt(_attempt())
+        # A second observation of the same term is only new evidence when it
+        # comes from a different instruction; an exact repeat is deduplicated.
+        store.record_attempt(_attempt(instruction_ea=0x401006))
         second = store.claim_next_group("miner", "budget")
         assert second.claim is not None
         if corruption == "claimed_before_evidence":

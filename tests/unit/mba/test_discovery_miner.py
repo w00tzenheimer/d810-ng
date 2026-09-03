@@ -68,7 +68,7 @@ class _PostCommitInterruptConnection:
             raise SystemExit("controlled interruption after successful commit")
 
 
-def _attempt(term: TypedBvTerm) -> DiscoveryAttempt:
+def _attempt(term: TypedBvTerm, *, instruction_ea: int = 0x401010) -> DiscoveryAttempt:
     identity = FunctionExecutionIdentity(
         input_identity="idb-local:12345678-1234-5678-1234-567812345678",
         input_identity_provenance="current_idb",
@@ -89,7 +89,7 @@ def _attempt(term: TypedBvTerm) -> DiscoveryAttempt:
         context=MbaObservationContext(
             function_identity=identity,
             plugin_identity=PluginIdentity("egglog", "egglog", "1", "test"),
-            instruction_ea=0x401010,
+            instruction_ea=instruction_ea,
             block_serial=1,
             block_ea=0x401000,
         ),
@@ -776,14 +776,14 @@ def test_mined_proposal_survives_later_evidence_before_materialization(tmp_path)
     published = miner.mine_claim(claim)
     assert published.status == "published"
     assert published.proposal_id is not None
-    later = store.record_attempt(_attempt(source))
+    later = store.record_attempt(_attempt(source, instruction_ea=0x401020))
     assert later.status.value == "stored"
     snapshot = store.proposal_snapshot(published.proposal_id)
     assert snapshot is not None
     assert snapshot.group.revision == claim.run.claimed_revision + 1
     output = tmp_path / "later-evidence-review"
     materialize_proposal(store, published.proposal_id, output)
-    latest = store.record_attempt(_attempt(source))
+    latest = store.record_attempt(_attempt(source, instruction_ea=0x401030))
     assert latest.status.value == "stored"
     materialized = store.proposal_snapshot(published.proposal_id)
     assert materialized is not None
@@ -875,7 +875,7 @@ def test_materialization_stale_revision_refusal_preserves_adoptable_tree(
         nonlocal inserted
         if not inserted:
             inserted = True
-            store.record_attempt(_attempt(snapshot.group.raw_terms[0]))
+            store.record_attempt(_attempt(snapshot.group.raw_terms[0], instruction_ea=0x401040))
         return original_mark(*args, **kwargs)
 
     monkeypatch.setattr(store, "mark_materialized", add_evidence_at_cas)
@@ -920,7 +920,7 @@ def test_stale_revision_refusal_cannot_delete_competitor_adoption(
 
     def refuse_then_compete(*args, **kwargs):
         nonlocal stale_receipt, competitor_result
-        store.record_attempt(_attempt(initial.group.raw_terms[0]))
+        store.record_attempt(_attempt(initial.group.raw_terms[0], instruction_ea=0x401050))
         stale_receipt = original_mark(*args, **kwargs)
         assert stale_receipt.status is ReceiptStatus.REFUSED
         assert stale_receipt.reason == "stale_revision"

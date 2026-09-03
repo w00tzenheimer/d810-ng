@@ -875,6 +875,11 @@ _PROPOSAL_FIELDS = frozenset(
 )
 _PROOF_FIELDS = frozenset({"width", "verdict", "elapsed_ms", "counterexample", "error"})
 
+#: Upper bound on the per-store retry memo.  One decompile of a heavily
+#: obfuscated function produces a few hundred attempts, so this never
+#: evicts in practice while still bounding a long-lived plugin session.
+_RECORDED_ATTEMPT_MEMO_LIMIT = 4096
+
 
 def _tupleize(value: object) -> object:
     if isinstance(value, list):
@@ -1324,6 +1329,22 @@ class MbaDiscoveryStore:
         self._uuid_factory = uuid_factory
         self._lock = threading.RLock()
         self._closed = False
+        # Token of the database state whose causal domain this store has
+        # already validated in full.  ``None`` forces the next transaction to
+        # sweep every group.  See ``_causal_domain_token``.
+        self._validated_causal_domain: tuple[int, int] | None = None
+        # content identity -> (attempt_id, term_id, raw_term_id).  Lets a
+        # repeat observation of the same term, at the same instruction, in the
+        # same evidence generation, with the same outcome answer DUPLICATE
+        # without serializing either term or opening a transaction.
+        #
+        # Keyed on CONTENT, not on ``attempt_uuid``: the uuid is the row's
+        # primary key and each attempt must keep a fresh one.  A provider
+        # cannot derive a safe deterministic uuid itself because it cannot see
+        # the session id, top-level epoch or evidence generation, so a
+        # plugin-side content uuid would collide across decompilations and the
+        # store would answer ``attempt_uuid_conflict``.
+        self._recorded_attempts: dict[tuple[object, ...], tuple[int, int, int]] = {}
         self._connection = sqlite3.connect(
             self.path, timeout=5.0, check_same_thread=False
         )
@@ -1411,12 +1432,19 @@ class MbaDiscoveryStore:
                 )
             try:
                 self._connection.execute("BEGIN IMMEDIATE" if immediate else "BEGIN")
-                self._validate_causal_domain(self._connection)
+                self._ensure_causal_domain_validated(self._connection)
                 yield self._connection
                 if pre_commit_guard is not None:
                     pre_commit_guard()
                 self._connection.commit()
+                # Everything this transaction wrote was validated against the
+                # relational lifecycle before it committed, so the domain is
+                # still known-good at the post-commit token.
+                self._validated_causal_domain = self._causal_domain_token(
+                    self._connection
+                )
             except BaseException:
+                self._validated_causal_domain = None
                 self._connection.rollback()
                 raise
         finally:
@@ -1937,10 +1965,20 @@ class MbaDiscoveryStore:
         )
 
     def _term(
-        self, conn: sqlite3.Connection, attempt: DiscoveryAttempt
+        self,
+        conn: sqlite3.Connection,
+        attempt: DiscoveryAttempt,
+        *,
+        canonical: bytes | None = None,
+        raw: bytes | None = None,
     ) -> tuple[int, int, bytes, bytes]:
-        canonical = _term_bytes(attempt.canonical_term, name="canonical term")
-        raw = _term_bytes(attempt.raw_term, name="raw term")
+        # The caller has usually already paid for these; ``_term_bytes`` is a
+        # dumps -> strict loads -> reconstruct -> deep-compare round trip and
+        # doing it twice per attempt buys nothing.
+        if canonical is None:
+            canonical = _term_bytes(attempt.canonical_term, name="canonical term")
+        if raw is None:
+            raw = _term_bytes(attempt.raw_term, name="raw term")
         fingerprint = term_fingerprint(attempt.canonical_term)
         row = conn.execute(
             "SELECT * FROM terms WHERE canonical_fingerprint=?", (fingerprint,)
@@ -2103,9 +2141,135 @@ class MbaDiscoveryStore:
         _parse_timestamp(row["created_at"], name="created_at")
         return eligible, outcome, context
 
+    @staticmethod
+    def _attempt_identity(attempt: DiscoveryAttempt) -> tuple[object, ...]:
+        """Return the full content identity of one attempt, cheaply.
+
+        Every column ``record_attempt``'s duplicate fast-path compares is
+        covered here, plus both term fingerprints, so two attempts with equal
+        identities necessarily serialize to the same stored bytes.  Computing
+        it costs two fingerprints instead of three JSON round trips.
+        """
+        identity = attempt.context.function_identity
+        context = attempt.context
+        outcome = attempt.outcome
+        input_cost = outcome.input_cost or (None, None)
+        output_cost = outcome.output_cost or (None, None)
+        return (
+            term_fingerprint(attempt.canonical_term),
+            term_fingerprint(attempt.raw_term),
+            attempt.canonical_term.width,
+            attempt.raw_term.width,
+            identity.input_identity,
+            identity.input_identity_provenance,
+            identity.external_evidence_allowed,
+            identity.database_uuid,
+            identity.database_identity,
+            identity.function_ea,
+            identity.function_rva,
+            identity.function_fingerprint,
+            identity.decompilation_session_id,
+            identity.top_level_epoch,
+            identity.evidence_generation,
+            identity.maturity,
+            context.instruction_ea,
+            context.block_serial,
+            context.block_ea,
+            context.plugin_identity.name,
+            context.plugin_identity.distribution,
+            context.plugin_identity.version,
+            context.plugin_identity.origin,
+            outcome.provider.value,
+            outcome.status.value,
+            input_cost[0],
+            input_cost[1],
+            output_cost[0],
+            output_cost[1],
+            outcome.proof_verdict,
+            outcome.elapsed_ms,
+            outcome.refusal_reason,
+            outcome.fingerprint,
+            attempt.eligible_for_mining,
+        )
+
+    def _memoized_duplicate(
+        self, attempt: DiscoveryAttempt
+    ) -> DiscoveryReceipt | None:
+        """Answer a byte-identical retry without serializing or writing.
+
+        Only the group's live revision/state is read, so the receipt is never
+        stale.  The expensive parts -- both term round trips, the outcome
+        payload, ``BEGIN IMMEDIATE`` and the causal-domain validation it drags
+        in -- are skipped entirely.
+        """
+        with self._lock:
+            self._ensure_open()
+            if not self._recorded_attempts:
+                return None
+            # The memo asserts what the store itself wrote and validated.  Any
+            # mutation it did not make -- a direct connection write, another
+            # process -- moves the causal-domain token away from the last
+            # validated one, and the memo must not answer for a database it
+            # can no longer vouch for.
+            if (
+                self._causal_domain_token(self._connection)
+                != self._validated_causal_domain
+            ):
+                self._recorded_attempts.clear()
+                return None
+            identity = self._attempt_identity(attempt)
+            memo = self._recorded_attempts.get(identity)
+            if memo is None:
+                return None
+            attempt_id, term_id, raw_term_id = memo
+            row = self._connection.execute(
+                "SELECT group_id, state, revision FROM residual_groups WHERE term_id=?",
+                (term_id,),
+            ).fetchone()
+            if row is None:
+                self._recorded_attempts.pop(identity, None)
+                return None
+            try:
+                state = ResidualGroupState(row[1])
+            except ValueError:
+                self._recorded_attempts.pop(identity, None)
+                return None
+            return DiscoveryReceipt(
+                ReceiptStatus.DUPLICATE,
+                attempt_id=attempt_id,
+                group_id=int(row[0]),
+                term_id=term_id,
+                raw_term_id=raw_term_id,
+                revision=int(row[2]),
+                state=state,
+            )
+
+    def _memoize_attempt(
+        self,
+        identity: tuple[object, ...],
+        receipt: DiscoveryReceipt,
+    ) -> None:
+        if (
+            receipt.attempt_id is None
+            or receipt.term_id is None
+            or receipt.raw_term_id is None
+        ):
+            return
+        if len(self._recorded_attempts) >= _RECORDED_ATTEMPT_MEMO_LIMIT:
+            self._recorded_attempts.clear()
+        self._recorded_attempts[identity] = (
+            int(receipt.attempt_id),
+            int(receipt.term_id),
+            int(receipt.raw_term_id),
+        )
+
     def record_attempt(self, attempt: DiscoveryAttempt) -> DiscoveryReceipt:
         if not isinstance(attempt, DiscoveryAttempt):
             raise TypeError("attempt must be a DiscoveryAttempt")
+        memoized = self._memoized_duplicate(attempt)
+        if memoized is not None:
+            return memoized
+        attempt_identity = self._attempt_identity(attempt)
         canonical = _term_bytes(attempt.canonical_term, name="canonical term")
         raw = _term_bytes(attempt.raw_term, name="raw term")
         outcome_payload = _attempt_payload_bytes(attempt)
@@ -2210,7 +2374,7 @@ class MbaDiscoveryStore:
                     if group is not None:
                         self._validate_relational_lifecycle(conn, int(group[0]))
                     if exact and group is not None:
-                        return DiscoveryReceipt(
+                        duplicate = DiscoveryReceipt(
                             ReceiptStatus.DUPLICATE,
                             attempt_id=int(existing["attempt_id"]),
                             group_id=int(group["group_id"]),
@@ -2219,13 +2383,17 @@ class MbaDiscoveryStore:
                             revision=int(group["revision"]),
                             state=ResidualGroupState(group["state"]),
                         )
+                        self._memoize_attempt(attempt_identity, duplicate)
+                        return duplicate
                     return DiscoveryReceipt(
                         ReceiptStatus.REFUSED, reason="attempt_uuid_conflict"
                     )
                 input_id = self._input(conn, attempt)
                 database_id = self._database(conn, attempt, input_id)
                 function_id = self._function(conn, attempt, database_id)
-                term_id, raw_id, canonical, raw = self._term(conn, attempt)
+                term_id, raw_id, canonical, raw = self._term(
+                    conn, attempt, canonical=canonical, raw=raw
+                )
                 existing_group = conn.execute(
                     "SELECT group_id FROM residual_groups WHERE term_id=?", (term_id,)
                 ).fetchone()
@@ -2284,7 +2452,7 @@ class MbaDiscoveryStore:
                     occurred_at=now,
                 )
                 self._validate_relational_lifecycle(conn, group_id)
-                return DiscoveryReceipt(
+                stored = DiscoveryReceipt(
                     ReceiptStatus.STORED,
                     attempt_id=attempt_id,
                     group_id=group_id,
@@ -2293,6 +2461,8 @@ class MbaDiscoveryStore:
                     revision=revision,
                     state=state,
                 )
+                self._memoize_attempt(attempt_identity, stored)
+                return stored
         except _StoreBusy:
             return DiscoveryReceipt(ReceiptStatus.REFUSED, reason="storage_busy")
         except sqlite3.OperationalError as exc:
@@ -2904,6 +3074,33 @@ class MbaDiscoveryStore:
 
         if latest_revision != group.revision:
             raise ValueError("causal revision does not match group")
+
+    def _causal_domain_token(self, conn: sqlite3.Connection) -> tuple[int, int]:
+        """Return a token that changes on ANY modification of this database.
+
+        ``PRAGMA data_version`` moves whenever another connection commits;
+        ``total_changes`` moves whenever *this* connection modifies a row,
+        including a direct ``store._connection.execute`` that bypasses the
+        store API and including rows a later rollback discards.  Together they
+        cover every mutation the full sweep could possibly detect, so reusing
+        a validation across an unchanged token weakens no guarantee.
+        """
+        version = conn.execute("PRAGMA data_version").fetchone()[0]
+        return (int(version), int(conn.total_changes))
+
+    def _ensure_causal_domain_validated(self, conn: sqlite3.Connection) -> None:
+        """Sweep the whole causal domain only when the database may have moved.
+
+        The sweep is O(all provider attempts in the database) because it JSON
+        decodes both terms and the outcome payload of every stored attempt.
+        Running it on every transaction made one recorded attempt cost 16.4 s
+        against a 49 MB database and the whole decompile quadratic.
+        """
+        token = self._causal_domain_token(conn)
+        if self._validated_causal_domain == token:
+            return
+        self._validate_causal_domain(conn)
+        self._validated_causal_domain = token
 
     def _validate_causal_domain(self, conn: sqlite3.Connection) -> None:
         """Reject unowned event rows before any global read or write."""
