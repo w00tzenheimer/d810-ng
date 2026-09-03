@@ -27,6 +27,9 @@ from d810.core.settings import reset_settings
 from d810.backends.mba.ida import IDAPatternAdapter
 from d810.mba.provider_outcome import ProviderOutcomeStatus
 from d810.mba.typed_term import TypedBvTerm
+from tests.system.runtime.support.pattern_optimizer import (
+    bare_pattern_optimizer,
+)
 
 import ida_hexrays
 
@@ -68,11 +71,12 @@ def _resolved_register_ast(*mops):
 def test_tracker_fallback_is_disabled_before_locopt(monkeypatch):
     """Tracker reconstruction waits for the native provenance lifecycle boundary."""
 
-    optimizer = object.__new__(PatternOptimizer)
-    optimizer._use_tracker_resolution_fallback = True
-    optimizer._tracker_resolution_opcodes = {ida_hexrays.m_sub}
-    optimizer._trace_tracker_resolution = False
-    optimizer.cur_maturity = ida_hexrays.MMAT_PREOPTIMIZED
+    optimizer = bare_pattern_optimizer(
+        _use_tracker_resolution_fallback=True,
+        _tracker_resolution_opcodes={ida_hexrays.m_sub},
+        _trace_tracker_resolution=False,
+        cur_maturity=ida_hexrays.MMAT_PREOPTIMIZED,
+    )
     blk = SimpleNamespace(mba=SimpleNamespace(maturity=ida_hexrays.MMAT_PREOPTIMIZED))
     ins = SimpleNamespace(opcode=ida_hexrays.m_sub)
     raw_ast = object()
@@ -92,11 +96,12 @@ def test_tracker_fallback_is_disabled_before_locopt(monkeypatch):
 def test_tracker_fallback_rejects_unversioned_borrowed_register_at_locopt(monkeypatch):
     """A clobbered raw register cannot safely carry a tracker replacement."""
 
-    optimizer = object.__new__(PatternOptimizer)
-    optimizer._use_tracker_resolution_fallback = True
-    optimizer._tracker_resolution_opcodes = {ida_hexrays.m_sub}
-    optimizer._trace_tracker_resolution = False
-    optimizer.cur_maturity = ida_hexrays.MMAT_LOCOPT
+    optimizer = bare_pattern_optimizer(
+        _use_tracker_resolution_fallback=True,
+        _tracker_resolution_opcodes={ida_hexrays.m_sub},
+        _trace_tracker_resolution=False,
+        cur_maturity=ida_hexrays.MMAT_LOCOPT,
+    )
     blk = SimpleNamespace(mba=SimpleNamespace(maturity=ida_hexrays.MMAT_LOCOPT))
     destination = _register_mop(1, valnum=0)
     ins = SimpleNamespace(opcode=ida_hexrays.m_sub, d=destination)
@@ -121,11 +126,12 @@ def test_tracker_fallback_rejects_unversioned_borrowed_register_at_locopt(monkey
 def test_tracker_fallback_accepts_native_versioned_locopt_provenance(monkeypatch):
     """LOCOPT tracker matching remains available when native versions prove it."""
 
-    optimizer = object.__new__(PatternOptimizer)
-    optimizer._use_tracker_resolution_fallback = True
-    optimizer._tracker_resolution_opcodes = {ida_hexrays.m_sub}
-    optimizer._trace_tracker_resolution = False
-    optimizer.cur_maturity = ida_hexrays.MMAT_LOCOPT
+    optimizer = bare_pattern_optimizer(
+        _use_tracker_resolution_fallback=True,
+        _tracker_resolution_opcodes={ida_hexrays.m_sub},
+        _trace_tracker_resolution=False,
+        cur_maturity=ida_hexrays.MMAT_LOCOPT,
+    )
     blk = SimpleNamespace(mba=SimpleNamespace(maturity=ida_hexrays.MMAT_LOCOPT))
     destination = _register_snapshot(1, valnum=2)
     ins = SimpleNamespace(opcode=ida_hexrays.m_sub, d=destination)
@@ -150,11 +156,11 @@ def test_tracker_fallback_accepts_native_versioned_locopt_provenance(monkeypatch
 def test_direct_locopt_match_preempts_tracker_provenance_gate(monkeypatch):
     """The safety gate applies only to tracker fallback, never direct matches."""
 
-    optimizer = object.__new__(PatternOptimizer)
-    optimizer.rules = [object()]
-    optimizer._allowed_root_opcodes = {ida_hexrays.m_sub}
-    optimizer._use_tracker_resolution_fallback = True
-    optimizer._pending_replacement_rule = None
+    optimizer = bare_pattern_optimizer(
+        rules=[object()],
+        _allowed_root_opcodes={ida_hexrays.m_sub},
+        _use_tracker_resolution_fallback=True,
+    )
     labels = []
     sentinel = object()
     raw_ast = object()
@@ -181,15 +187,13 @@ def test_direct_locopt_match_preempts_tracker_provenance_gate(monkeypatch):
 def test_canonical_inventory_bypasses_outer_opcode_gate(monkeypatch):
     """A root-opcode miss still enters matching when fallback inventory exists."""
 
-    optimizer = object.__new__(PatternOptimizer)
-    optimizer.rules = [object()]
-    optimizer._allowed_root_opcodes = {ida_hexrays.m_add}
-    optimizer._canonical_fallback_rules_by_root_shape = {
-        ("add", 32, 2): [object()]
-    }
-    optimizer._use_tracker_resolution_fallback = False
-    optimizer._pending_replacement_rule = None
-    optimizer._try_matches = lambda *_args, **_kwargs: "fallback-entry"
+    optimizer = bare_pattern_optimizer(
+        rules=[object()],
+        _allowed_root_opcodes={ida_hexrays.m_add},
+        _canonical_fallback_rules_by_root_shape={("add", 32, 2): [object()]},
+        _use_tracker_resolution_fallback=False,
+        _try_matches=lambda *_args, **_kwargs: "fallback-entry",
+    )
     monkeypatch.setattr(pattern_handler, "minsn_to_ast", lambda _ins: object())
     blk = SimpleNamespace(mba=SimpleNamespace(maturity=ida_hexrays.MMAT_LOCOPT))
     ins = SimpleNamespace(opcode=ida_hexrays.m_sub)
@@ -197,63 +201,100 @@ def test_canonical_inventory_bypasses_outer_opcode_gate(monkeypatch):
     assert optimizer.get_optimized_instruction(blk, ins) == "fallback-entry"
 
 
-def test_terminal_raw_abstention_stops_later_raw_candidates():
-    """An ordinary raw exception cannot be bypassed by a later raw hit."""
+class _RawExceptionRule:
+    """A raw catalogue candidate that can raise or return on demand."""
 
-    optimizer = object.__new__(PatternOptimizer)
-    optimizer.cur_maturity = 7
-    optimizer.stats = None
-    optimizer._use_nomut_matching = False
-    optimizer._use_legacy_storage = False
-    optimizer._run_later_callback = None
-    optimizer._pending_replacement_rule = None
-    optimizer._canonical_fallback_rules_by_root_shape = {}
-    calls = []
+    canonical_fallback_enabled = False
+    maturities = [7]
 
-    class Rule:
-        canonical_fallback_enabled = False
-        maturities = [7]
+    def __init__(self, name, calls, result=None, error=None):
+        self.name = name
+        self._calls = calls
+        self.result = result
+        self.error = error
 
-        def __init__(self, name, result=None, error=None):
-            self.name = name
-            self.result = result
-            self.error = error
+    def check_pattern_and_replace(self, _pattern, _candidate):
+        self._calls.append(self.name)
+        if self.error is not None:
+            raise self.error
+        return self.result
 
-        def check_pattern_and_replace(self, _pattern, _candidate):
-            calls.append(self.name)
-            if self.error is not None:
-                raise ValueError(self.error)
-            return self.result
 
-    first = Rule("terminal", error="provider failed")
-    later = Rule("later", result="must-not-hit")
+def _raw_exception_optimizer(calls, error):
+    """Two raw candidates: the first raises ``error``, the second can hit."""
+
+    optimizer = bare_pattern_optimizer(
+        _canonical_fallback_rules_by_root_shape={},
+    )
+    first = _RawExceptionRule("terminal", calls, error=error)
+    later = _RawExceptionRule("later", calls, result="later-hit")
     optimizer._get_candidates = lambda _ast: [
         RulePatternInfo(first, object()),
         RulePatternInfo(later, object()),
     ]
+    return optimizer
 
-    assert optimizer._try_matches(
-        None,
-        SimpleNamespace(ea=0x401001, _print=lambda: "terminal"),
-        object(),
-        allowed_rule_names=None,
-        scheduled_rule_names=None,
-        source_label="terminal",
-    ) is None
+
+def test_unexpected_raw_exception_stops_later_raw_candidates():
+    """An unexpected raw exception type is not contained: it propagates.
+
+    ``PatternOptimizer`` mirrors the provider policy its base class documents
+    at ``instructions/handler.py`` (``except BaseException``: "internal fatal
+    exceptions must retain normal Python propagation semantics"). Only
+    ``RuntimeError`` is a contained raw provider failure here; every other type
+    is a defect, so the handler finalizes the provider row as
+    ``provider_exception`` and re-raises rather than swallowing it. Either way
+    a later raw candidate can never rewrite the instruction behind the failure.
+
+    Terminal raw *abstention* is a separate, declared mechanism --
+    ``raw_stop_reason`` / ``_last_provider_outcome.status`` read by
+    ``_raw_attempt_abstains`` -- covered by
+    ``test_typed_raw_abstention_states_do_not_fall_through``.
+    """
+
+    calls = []
+    optimizer = _raw_exception_optimizer(calls, ValueError("provider failed"))
+
+    with pytest.raises(ValueError, match="provider failed"):
+        optimizer._try_matches(
+            None,
+            SimpleNamespace(ea=0x401001, _print=lambda: "terminal"),
+            object(),
+            allowed_rule_names=None,
+            scheduled_rule_names=None,
+            source_label="terminal",
+        )
     assert calls == ["terminal"]
+
+
+def test_contained_raw_runtime_error_yields_to_the_next_raw_candidate():
+    """A contained raw failure retires that rule only, not the instruction."""
+
+    calls = []
+    optimizer = _raw_exception_optimizer(
+        calls, RuntimeError("raw matcher budget exhausted")
+    )
+
+    assert (
+        optimizer._try_matches(
+            None,
+            SimpleNamespace(ea=0x401001, _print=lambda: "terminal"),
+            object(),
+            allowed_rule_names=None,
+            scheduled_rule_names=None,
+            source_label="terminal",
+        )
+        == "later-hit"
+    )
+    assert calls == ["terminal", "later"]
 
 
 def test_shadow_observation_skips_fallback_enabled_raw_candidate(monkeypatch):
     """Shadow DSL observation is deferred until the canonical fallback phase."""
 
-    optimizer = object.__new__(PatternOptimizer)
-    optimizer.cur_maturity = 7
-    optimizer.stats = None
-    optimizer._use_nomut_matching = False
-    optimizer._use_legacy_storage = False
-    optimizer._run_later_callback = None
-    optimizer._pending_replacement_rule = None
-    optimizer._canonical_fallback_rules_by_root_shape = {}
+    optimizer = bare_pattern_optimizer(
+        _canonical_fallback_rules_by_root_shape={},
+    )
     monkeypatch.setenv("D810_SHADOW_DSL_MATCHING", "1")
     monkeypatch.setattr(pattern_handler, "format_minsn_t", lambda _value: "formatted")
     calls = []
@@ -286,13 +327,7 @@ def test_shadow_observation_skips_fallback_enabled_raw_candidate(monkeypatch):
 def test_ineligible_fallback_inventory_does_not_lower():
     """Maturity filtering happens before canonical lowering."""
 
-    optimizer = object.__new__(PatternOptimizer)
-    optimizer.cur_maturity = 7
-    optimizer.stats = None
-    optimizer._use_nomut_matching = False
-    optimizer._use_legacy_storage = False
-    optimizer._run_later_callback = None
-    optimizer._pending_replacement_rule = None
+    optimizer = bare_pattern_optimizer()
     lowering_calls = []
 
     class Rule:
@@ -330,14 +365,9 @@ def test_legacy_structural_alias_enables_fallback_when_flag_is_false():
 def test_fallback_extension_exception_fails_closed_without_escape():
     """An extension-style fallback exception is recorded and does not escape."""
 
-    optimizer = object.__new__(PatternOptimizer)
-    optimizer.cur_maturity = 7
-    optimizer.stats = None
-    optimizer._use_nomut_matching = False
-    optimizer._use_legacy_storage = False
-    optimizer._run_later_callback = None
-    optimizer._pending_replacement_rule = None
-    optimizer._canonical_fallback_rules_by_root_shape = {}
+    optimizer = bare_pattern_optimizer(
+        _canonical_fallback_rules_by_root_shape={},
+    )
     errors = []
 
     class Rule:
@@ -381,13 +411,7 @@ def test_fallback_extension_exception_fails_closed_without_escape():
 def test_raw_hit_skips_canonical_lowering_and_fallback(monkeypatch):
     """A clean raw hit must never prepare or invoke the canonical fallback."""
 
-    optimizer = object.__new__(PatternOptimizer)
-    optimizer.cur_maturity = 7
-    optimizer.stats = None
-    optimizer._use_nomut_matching = False
-    optimizer._use_legacy_storage = False
-    optimizer._run_later_callback = None
-    optimizer._pending_replacement_rule = None
+    optimizer = bare_pattern_optimizer()
     calls = []
 
     class Rule:
@@ -435,13 +459,7 @@ def test_raw_hit_skips_canonical_lowering_and_fallback(monkeypatch):
 def test_clean_raw_miss_runs_certified_fallback_in_declaration_order():
     """Fallback adapters share one lowering and stop at the first certified hit."""
 
-    optimizer = object.__new__(PatternOptimizer)
-    optimizer.cur_maturity = 7
-    optimizer.stats = None
-    optimizer._use_nomut_matching = False
-    optimizer._use_legacy_storage = False
-    optimizer._run_later_callback = None
-    optimizer._pending_replacement_rule = None
+    optimizer = bare_pattern_optimizer()
     lowering_calls = []
     attempts = []
     leaf = TypedBvTerm(None, 32, leaf_key=("mop", "x"))
@@ -516,13 +534,7 @@ def test_clean_raw_miss_runs_certified_fallback_in_declaration_order():
 def test_raw_match_error_abstains_without_canonical_fallback():
     """A raw matcher error is terminal for this instruction, not a fallback miss."""
 
-    optimizer = object.__new__(PatternOptimizer)
-    optimizer.cur_maturity = 7
-    optimizer.stats = None
-    optimizer._use_nomut_matching = False
-    optimizer._use_legacy_storage = False
-    optimizer._run_later_callback = None
-    optimizer._pending_replacement_rule = None
+    optimizer = bare_pattern_optimizer()
     fallback_calls = []
 
     class Rule:
@@ -567,13 +579,7 @@ def test_raw_match_error_abstains_without_canonical_fallback():
 def test_typed_raw_abstention_states_do_not_fall_through(raw_reason):
     """Typed raw budget/unsupported outcomes are terminal for this instruction."""
 
-    optimizer = object.__new__(PatternOptimizer)
-    optimizer.cur_maturity = 7
-    optimizer.stats = None
-    optimizer._use_nomut_matching = False
-    optimizer._use_legacy_storage = False
-    optimizer._run_later_callback = None
-    optimizer._pending_replacement_rule = None
+    optimizer = bare_pattern_optimizer()
     fallback_calls = []
 
     class Rule:
@@ -792,18 +798,14 @@ class TestNomutMatchingHotPath:
                 return []
 
         def build_optimizer(*, use_nomut, indexed, legacy):
-            optimizer = object.__new__(PatternOptimizer)
-            optimizer.cur_maturity = 7
-            optimizer.stats = None
-            optimizer._use_nomut_matching = use_nomut
-            optimizer._use_legacy_storage = False
-            optimizer._use_indexed_legacy_fallback = False
-            optimizer._indexed_storage = indexed
-            optimizer.pattern_storage = legacy
-            optimizer._canonical_fallback_rules_by_root_shape = {}
-            optimizer._match_bindings = pattern_handler.MatchBindings()
-            optimizer._run_later_callback = None
-            optimizer._pending_replacement_rule = None
+            optimizer = bare_pattern_optimizer(
+                _use_nomut_matching=use_nomut,
+                _use_indexed_legacy_fallback=False,
+                _indexed_storage=indexed,
+                pattern_storage=legacy,
+                _canonical_fallback_rules_by_root_shape={},
+                _match_bindings=pattern_handler.MatchBindings(),
+            )
             optimizer._get_candidates = PatternOptimizer._get_candidates.__get__(
                 optimizer
             )
@@ -894,14 +896,10 @@ def test_pattern_optimizer_forwards_catalogue_outcome_to_central_statistics():
             return "unit-ins"
 
     stats = OptimizationStatistics()
-    optimizer = object.__new__(PatternOptimizer)
-    optimizer.stats = stats
-    optimizer.cur_maturity = 7
-    optimizer._use_nomut_matching = False
-    optimizer._use_legacy_storage = False
-    optimizer._run_later_callback = None
-    optimizer._pending_replacement_rule = None
-    optimizer._get_candidates = lambda _ast: [RulePatternInfo(Rule(), object())]
+    optimizer = bare_pattern_optimizer(
+        stats=stats,
+        _get_candidates=lambda _ast: [RulePatternInfo(Rule(), object())],
+    )
 
     result = optimizer._try_matches(
         None,
@@ -937,14 +935,10 @@ def test_pattern_optimizer_skips_cycle_quarantined_custom_candidates():
             Rule.calls += 1
             return object()
 
-    optimizer = object.__new__(PatternOptimizer)
-    optimizer.cur_maturity = 7
-    optimizer._use_nomut_matching = False
-    optimizer._use_legacy_storage = False
-    optimizer._run_later_callback = None
-    optimizer._pending_replacement_rule = None
-    optimizer._cycle_quarantined_rule_names = frozenset({"QuarantinedRule"})
-    optimizer._get_candidates = lambda _ast: [RulePatternInfo(Rule(), object())]
+    optimizer = bare_pattern_optimizer(
+        _cycle_quarantined_rule_names=frozenset({"QuarantinedRule"}),
+        _get_candidates=lambda _ast: [RulePatternInfo(Rule(), object())],
+    )
 
     result = optimizer._try_matches(
         None,
@@ -997,13 +991,10 @@ def test_nomut_success_records_the_bound_catalogue_replacement_outcome(monkeypat
             return {}
 
     adapter = Adapter()
-    optimizer = object.__new__(PatternOptimizer)
-    optimizer.stats = None
-    optimizer.cur_maturity = 7
-    optimizer._use_nomut_matching = True
-    optimizer._use_legacy_storage = False
-    optimizer._match_bindings = pattern_handler.MatchBindings()
-    optimizer._run_later_callback = None
+    optimizer = bare_pattern_optimizer(
+        _use_nomut_matching=True,
+        _match_bindings=pattern_handler.MatchBindings(),
+    )
     pattern = object()
     test_ast = object()
     optimizer._get_candidates = lambda _ast: [RulePatternInfo(adapter, pattern)]
@@ -1056,13 +1047,9 @@ def test_pattern_runtime_error_notifies_attempt_context_before_clear(monkeypatch
             self.cleared += 1
 
     adapter = Adapter()
-    optimizer = object.__new__(PatternOptimizer)
-    optimizer.stats = None
-    optimizer.cur_maturity = 7
-    optimizer._use_nomut_matching = False
-    optimizer._use_legacy_storage = False
-    optimizer._run_later_callback = None
-    optimizer._get_candidates = lambda _ast: [RulePatternInfo(adapter, object())]
+    optimizer = bare_pattern_optimizer(
+        _get_candidates=lambda _ast: [RulePatternInfo(adapter, object())],
+    )
 
     result = optimizer._try_matches(
         None,
