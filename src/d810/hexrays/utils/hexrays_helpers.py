@@ -711,11 +711,17 @@ class UseDefFlags(enum.IntEnum):
     """For build_def_list() & MAY_ACCESS: do not include global memory into the spoiled list of a call."""
 
 
-# Hex-Rays mop equality checking
-_EQUAL_BNOT_CACHE: dict[tuple[int, int], bool] = {}
-_EQUAL_BNOT_MAX = 8192
-_EQUAL_IGN_CACHE: dict[tuple[int, int], bool] = {}
-_EQUAL_IGN_MAX = 8192
+# Hex-Rays mop equality checking.
+#
+# There is deliberately NO memoization keyed on ``structural_mop_hash`` here.
+# Without the Cython hasher that function degrades to
+# ``mop_quick_key_ignore_size``, which documents itself as a *bucketing* key:
+# every ``mop_d`` collapses to ``d:<opcode>``.  Memoizing an equality answer
+# under a key that does not imply equality let the first comparison of any two
+# same-opcode expressions in the process decide every later one, across
+# instructions, functions, projects and tests (d81-jvtp).  Callers that need
+# the speedup must bucket by the hash and still verify with these predicates,
+# the way ``ChainSimplification.get_simplified_non_constant`` does.
 
 
 def _mop_cache_key(op: ida_hexrays.mop_t) -> str:
@@ -836,17 +842,6 @@ def equal_bnot_cst(lo: ida_hexrays.mop_t, ro: ida_hexrays.mop_t, mop_size=None) 
 def equal_bnot_mop(
     lo: ida_hexrays.mop_t, ro: ida_hexrays.mop_t, test_two_sides=True
 ) -> bool:
-    # Try cache first (symmetry-aware)
-    try:
-        h1 = int(structural_mop_hash(lo, 0))
-        h2 = int(structural_mop_hash(ro, 0))
-        key = (h1, h2) if h1 <= h2 else (h2, h1)
-    except Exception:
-        key = (id(lo), id(ro)) if id(lo) <= id(ro) else (id(ro), id(lo))
-    cached = _EQUAL_BNOT_CACHE.get(key)
-    if cached is not None:
-        return cached
-
     result = False
     if lo.t == ida_hexrays.mop_n:
         result = equal_bnot_cst(lo, ro)
@@ -877,9 +872,6 @@ def equal_bnot_mop(
         if not result and test_two_sides:
             result = equal_bnot_mop(ro, lo, test_two_sides=False)
 
-    if len(_EQUAL_BNOT_CACHE) > _EQUAL_BNOT_MAX:
-        _EQUAL_BNOT_CACHE.clear()
-    _EQUAL_BNOT_CACHE[key] = result
     return result
 
 
@@ -911,16 +903,6 @@ def equal_mops_ignore_size(lo: ida_hexrays.mop_t, ro: ida_hexrays.mop_t) -> bool
     # Cheap type check first
     if lo.t != ro.t:
         return False
-    # Symmetry-aware bounded cache using structural hash (fast path)
-    try:
-        h1 = int(structural_mop_hash(lo, 0))
-        h2 = int(structural_mop_hash(ro, 0))
-        key = (h1, h2) if h1 <= h2 else (h2, h1)
-        cached = _EQUAL_IGN_CACHE.get(key)
-        if cached is not None:
-            return cached
-    except Exception:
-        key = None  # fallback
     if lo.t == ida_hexrays.mop_z:
         result = True
     elif lo.t == ida_hexrays.mop_fn:
@@ -954,10 +936,6 @@ def equal_mops_ignore_size(lo: ida_hexrays.mop_t, ro: ida_hexrays.mop_t) -> bool
             result = False
         else:
             result = equal_mops_ignore_size(lo.a, ro.a)
-        if key is not None:
-            if len(_EQUAL_IGN_CACHE) > _EQUAL_IGN_MAX:
-                _EQUAL_IGN_CACHE.clear()
-            _EQUAL_IGN_CACHE[key] = result
         return result
     elif lo.t == ida_hexrays.mop_h:
         result = ro.helper == lo.helper
@@ -974,10 +952,6 @@ def equal_mops_ignore_size(lo: ida_hexrays.mop_t, ro: ida_hexrays.mop_t) -> bool
     else:
         result = False
 
-    if key is not None:
-        if len(_EQUAL_IGN_CACHE) > _EQUAL_IGN_MAX:
-            _EQUAL_IGN_CACHE.clear()
-        _EQUAL_IGN_CACHE[key] = result
     return result
 
 
