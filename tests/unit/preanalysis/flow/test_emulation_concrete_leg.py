@@ -187,7 +187,7 @@ class _FakeEmulator:
     def eval_insn(self, insn, store):  # pragma: no cover - not exercised here
         return Abstain("InsnRef not modeled")
 
-    def eval_block(self, block, store):
+    def eval_block(self, block, store, *, pred_serial=None):
         self.consulted.append(block)
         if block is None:
             return Abstain("no live block")
@@ -391,7 +391,7 @@ def test_emulator_abstain_leaves_back_edge_unresolved(_seam) -> None:
         def eval_insn(self, insn, store):
             return Abstain("never")
 
-        def eval_block(self, block, store):
+        def eval_block(self, block, store, *, pred_serial=None):
             return Abstain("cannot prove")
 
     by_block = {

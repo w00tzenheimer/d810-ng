@@ -416,6 +416,7 @@ def _emulate_unresolved_state(
     *,
     spine_floor: "AbstractEvidence | None" = None,
     strict_floor: bool = False,
+    pred_serial: int | None = None,
 ) -> int | None:
     """Consult the concrete leg for a single ⊥ back-edge, or ``None`` on abstain.
 
@@ -456,7 +457,7 @@ def _emulate_unresolved_state(
             logger.info("emu-consult: no live block -> abstain")
         return None
     try:
-        outcome = emu.eval_block(live_block, seeded_store)
+        outcome = emu.eval_block(live_block, seeded_store, pred_serial=pred_serial)
     except Exception:  # noqa: BLE001 — an emulator failure means "cannot prove" -> abstain
         logger.debug("emulation concrete leg raised; abstaining", exc_info=True)
         if logger.info_on:
@@ -479,8 +480,9 @@ def _emulate_unresolved_state(
     # the proof histogram.
     if logger.info_on:
         logger.info(
-            "emu-consult: blk=%s store_cells=%d outcome=%s reason=%r folded=%s%s",
+            "emu-consult: blk=%s pred=%s store_cells=%d outcome=%s reason=%r folded=%s%s",
             getattr(live_block, "serial", "?"),
+            "?" if pred_serial is None else pred_serial,
             len(getattr(seeded_store, "cells", {})),
             type(outcome).__name__,
             getattr(outcome, "reason", ""),
@@ -8959,6 +8961,13 @@ def _emulate_partition_states(emu, live_block_for, state_cell, fp, block, pred):
     is trusted.  Returns ``{ip -> state}`` only when EVERY incoming edge resolves;
     ``None`` on the first abstain (the caller then falls through to the unchanged
     seeded/unresolved logic -- a partial emulation never half-resolves a back-edge).
+
+    ``ip`` is also passed to the emulator as ``pred_serial`` (ticket d81-yrkv): the
+    seeded store alone cannot tell a MERGE block which path it is on, so a
+    next-state written from operands with one reaching definition per incoming
+    edge used to abstain on every consult.  Naming the edge lets the emulator read
+    the definition that arrives along it -- which is exactly the per-edge state
+    this function is asking for.
     """
     edge_states: dict[int, int] = {}
     for ip in sorted(int(p) for p in block.preds):
@@ -8970,6 +8979,7 @@ def _emulate_partition_states(emu, live_block_for, state_cell, fp, block, pred):
                 dict(fp.out_reg_maps.get(ip, {})),
             ),
             state_cell,
+            pred_serial=int(ip),
         )
         if concrete is None:
             return None  # any ⊥ residual -> abstain wholesale (stay seeded/unresolved)

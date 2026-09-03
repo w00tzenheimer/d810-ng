@@ -108,11 +108,24 @@ class InsnRef:
 
 
 class EmulationCapability(Protocol):
-    """Concrete precision oracle: prove-exact-or-abstain (never wrong)."""
+    """Concrete precision oracle: prove-exact-or-abstain (never wrong).
+
+    ``eval_block``'s optional ``pred_serial`` names the incoming edge the caller is
+    evaluating the block for (a consumer that steps one merge block once per
+    immediate predecessor knows it).  An implementation may use it to resolve a
+    phi-like operand read to the definition arriving along that edge; ignoring it
+    is always sound (ticket ``d81-yrkv``).
+    """
 
     def eval_insn(self, insn: InsnRef, store: ConcreteStore) -> EmulationOutcome: ...
 
-    def eval_block(self, block: object, store: ConcreteStore) -> EmulationOutcome: ...
+    def eval_block(
+        self,
+        block: object,
+        store: ConcreteStore,
+        *,
+        pred_serial: int | None = None,
+    ) -> EmulationOutcome: ...
 
 
 # -- the pure reference implementation -----------------------------------------
@@ -168,7 +181,13 @@ class ReferenceEmulator:
 
         return ExactResult({insn.dest: result})
 
-    def eval_block(self, block: object, store: ConcreteStore) -> EmulationOutcome:
+    def eval_block(
+        self,
+        block: object,
+        store: ConcreteStore,
+        *,
+        pred_serial: int | None = None,
+    ) -> EmulationOutcome:
         # Block-stepping is the Hex-Rays impl's job (over forward_eval_insn); the
         # pure reference emulator models single instructions only.
         return Unsupported("block stepping not modeled in the reference emulator")
