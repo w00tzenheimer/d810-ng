@@ -216,6 +216,34 @@ def test_cache_does_not_survive_across_sessions_or_after_the_phase_ends() -> Non
     assert after.canonical_bytes_reuses == before.canonical_bytes_reuses
 
 
+def test_persistence_boundary_roundtrip_still_fully_validates_a_cached_occurrence() -> None:
+    """A cached encode never shortcuts the decode/reconstruct/compare check."""
+
+    from d810.transforms.unflatten_authority import model
+
+    fixture = ids.DigestFixture(
+        3, model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT, ("native",),
+    )
+    with _canonical_validation_session(
+        CanonicalSessionPhase.PROJECTED_PREPARATION,
+    ) as session:
+        # Seed the cache: this exact occurrence is now a validated hit.
+        ids.canonical_bytes(fixture)
+        before = session.metrics
+        decoded = ids.validate_canonical_roundtrip(fixture, ids.DigestFixture)
+        after = session.metrics
+
+    assert decoded == fixture
+    # The roundtrip's own top-level encode of `fixture` reuses the seeded
+    # cache entry...
+    assert after.canonical_bytes_reuses == before.canonical_bytes_reuses + 1
+    # ...but the persistence-boundary decode/reconstruct/compare integrity
+    # check builds a brand-new object and is never skipped or served stale.
+    assert after.roundtrip_decodes == before.roundtrip_decodes + 1
+    assert after.deep_validations == before.deep_validations + 1
+    assert after.wire_encodes == before.wire_encodes + 1
+
+
 def test_deep_authority_roundtrip_repeats_work_for_one_exact_occurrence() -> None:
     """Freeze the repeated work `validate_canonical_roundtrip` costs today."""
 
