@@ -19,6 +19,7 @@ they can act on before any mutation happens.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import Enum
 
@@ -28,7 +29,11 @@ __all__ = [
     "GuardedRemovalCandidateBlock",
     "GuardedRemovalCandidateInstruction",
     "GuardedRemovalFingerprint",
+    "GuardedRemovalPlanDisposition",
+    "GuardedRemovalPlanVerdict",
     "bind_guarded_removal",
+    "decide_guarded_removal_preflight",
+    "decide_post_write_guard_rejection",
 ]
 
 
@@ -181,5 +186,118 @@ def bind_guarded_removal(
             f"{len(matches)} live blocks carry "
             f"0x{int(fingerprint.block_start_ea):x}"
             f"+0x{int(fingerprint.insn_ea):x}: {matches}"
+        ),
+    )
+
+
+class GuardedRemovalPlanDisposition(Enum):
+    """What the enclosing batch must do about a guarded removal it cannot honour.
+
+    The names are the transaction outcomes the mutation gateway already
+    speaks - a clean rejection, a completed rollback, a poisoned generation -
+    so a verdict here maps onto one recorded phase and never onto a private
+    "skipped" state that reads as success.
+    """
+
+    APPLY_PLAN = "apply_plan"
+    REJECT_PLAN_CLEAN = "reject_plan_clean"
+    ROLL_BACK_PLAN = "roll_back_plan"
+    POISON_GENERATION = "poison_generation"
+
+
+@dataclass(frozen=True)
+class GuardedRemovalPlanVerdict:
+    """The disposition of one plan that contains an unhonourable removal."""
+
+    disposition: GuardedRemovalPlanDisposition
+    reason: str
+
+    @property
+    def refuses_plan(self) -> bool:
+        """Return whether this verdict forbids reporting the plan as applied."""
+        return self.disposition is not GuardedRemovalPlanDisposition.APPLY_PLAN
+
+
+def decide_guarded_removal_preflight(
+    *,
+    unbindable: Sequence[str],
+) -> GuardedRemovalPlanVerdict:
+    """Decide a batch's fate when preflight cannot bind every guarded removal.
+
+    A plan is one authority's complete proposal.  "Instruction-only" describes
+    what a single operation writes; it does not prove that operation is
+    independent of the sibling CFG edits queued beside it in the same
+    transaction.  Dropping the unbindable one and applying the rest therefore
+    declares a completion nobody authorized, so the whole plan is refused - and
+    because the preflight runs before any write, refusing costs nothing.
+
+    Args:
+        unbindable: One reason per guarded removal that would not bind.
+
+    Returns:
+        ``APPLY_PLAN`` when every removal bound, otherwise a clean refusal of
+        the complete operation set.
+    """
+    reasons = tuple(str(reason) for reason in unbindable)
+    if not reasons:
+        return GuardedRemovalPlanVerdict(
+            disposition=GuardedRemovalPlanDisposition.APPLY_PLAN,
+            reason="every guarded removal bound to live block identity",
+        )
+    return GuardedRemovalPlanVerdict(
+        disposition=GuardedRemovalPlanDisposition.REJECT_PLAN_CLEAN,
+        reason=(
+            f"{len(reasons)} guarded removal(s) cannot bind to live block "
+            f"identity; refusing the complete plan before any write: "
+            + "; ".join(reasons)
+        ),
+    )
+
+
+def decide_post_write_guard_rejection(
+    *,
+    description: str,
+    live_mutation_started: bool,
+    rollback_available: bool,
+) -> GuardedRemovalPlanVerdict:
+    """Decide a batch's fate when a guard rejects after the preflight passed.
+
+    The removal itself changed nothing - that is what its fingerprint
+    revalidation guarantees - but the operations that already wrote in this
+    transaction did.  Reporting the batch as complete after omitting a planned
+    operation is the failure this exists to prevent, so the only outcomes are
+    undoing those writes or poisoning the generation that carries them.
+
+    Args:
+        description: The rejected modification, for the recorded reason.
+        live_mutation_started: Whether this transaction has crossed the
+            irreversible write boundary.
+        rollback_available: Whether a pre-apply snapshot can restore the MBA.
+
+    Returns:
+        A refusal naming the recovery the batch must perform.
+    """
+    detail = str(description)
+    if not live_mutation_started:
+        return GuardedRemovalPlanVerdict(
+            disposition=GuardedRemovalPlanDisposition.REJECT_PLAN_CLEAN,
+            reason=(
+                f"guarded removal rejected before any write, refusing the "
+                f"complete plan: {detail}"
+            ),
+        )
+    if rollback_available:
+        return GuardedRemovalPlanVerdict(
+            disposition=GuardedRemovalPlanDisposition.ROLL_BACK_PLAN,
+            reason=(
+                f"guarded removal rejected after sibling operations wrote; "
+                f"rolling the transaction back: {detail}"
+            ),
+        )
+    return GuardedRemovalPlanVerdict(
+        disposition=GuardedRemovalPlanDisposition.POISON_GENERATION,
+        reason=(
+            f"guarded removal rejected after sibling operations wrote and no "
+            f"rollback is available; poisoning the generation: {detail}"
         ),
     )

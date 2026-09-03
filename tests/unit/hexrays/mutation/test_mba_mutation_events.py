@@ -1256,19 +1256,50 @@ def _patch_gateway_with_attempt(
     return gateway, attempt
 
 
-def test_preflight_dropped_steps_reconcile_the_realization_inventory() -> None:
-    """A step dropped before any write is accounted for, not read as a loss."""
+def test_whole_plan_preflight_refusal_reconciles_the_realization_inventory() -> None:
+    """A refused plan is accounted for as a refusal, not read as a loss.
+
+    A preflight rejection refuses the *complete* operation set the authority
+    proposed, so the term it contributes is the whole plan and the applied
+    count is zero.
+    """
     gateway, _ = _patch_gateway_with_attempt(3)
 
-    gateway.record_preflight_dropped_operations(1)
+    assert gateway.planned_operation_count == 3
+    gateway.record_preflight_dropped_operations(3)
     gateway.observe_patch_realization(
         _one_block_graph(),
-        applied_operation_count=2,
+        applied_operation_count=0,
     )
     receipt = gateway.commit()
 
     assert receipt.planned_operation_count == 3
-    assert receipt.operation_count == 2
+    assert receipt.operation_count == 0
+
+
+def test_partial_preflight_drop_is_not_a_legal_refusal() -> None:
+    """Omitting one planned step and applying the rest is not a refusal.
+
+    The authority proposed a complete operation set; declaring completion for
+    all-but-one silently fragments that authority. Only a whole-plan refusal
+    is expressible.
+    """
+    gateway, _ = _patch_gateway_with_attempt(3)
+
+    with pytest.raises(ValueError, match="whole plan"):
+        gateway.record_preflight_dropped_operations(1)
+
+
+def test_refused_plan_cannot_also_report_applied_operations() -> None:
+    """A refusal and a partial application are mutually exclusive claims."""
+    gateway, _ = _patch_gateway_with_attempt(3)
+
+    gateway.record_preflight_dropped_operations(3)
+    with pytest.raises(RuntimeError, match="refused plan"):
+        gateway.observe_patch_realization(
+            _one_block_graph(),
+            applied_operation_count=3,
+        )
 
 
 def test_unaccounted_missing_step_still_fails_the_inventory() -> None:

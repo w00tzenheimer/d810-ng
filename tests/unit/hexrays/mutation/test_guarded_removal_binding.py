@@ -17,7 +17,10 @@ from d810.hexrays.mutation.guarded_removal_binding import (
     GuardedRemovalCandidateBlock,
     GuardedRemovalCandidateInstruction,
     GuardedRemovalFingerprint,
+    GuardedRemovalPlanDisposition,
     bind_guarded_removal,
+    decide_guarded_removal_preflight,
+    decide_post_write_guard_rejection,
 )
 
 
@@ -172,3 +175,63 @@ def test_missing_planned_block_still_rebinds_by_identity() -> None:
 
     assert binding.outcome is GuardedRemovalBindingOutcome.REBOUND
     assert binding.serial == 12
+
+
+def test_unbindable_removal_refuses_the_whole_plan() -> None:
+    """One unbindable guarded removal refuses the complete operation set.
+
+    The authority proposed a complete set of operations. Silently omitting one
+    of them and applying the rest declares a completion the authority never
+    authorized - the plan has to be refused as a whole, before any write.
+    """
+    verdict = decide_guarded_removal_preflight(
+        unbindable=("no live block carries 0x401000+0x401004 at ordinal 2",),
+    )
+
+    assert verdict.disposition is GuardedRemovalPlanDisposition.REJECT_PLAN_CLEAN
+    assert verdict.refuses_plan
+    assert "1" in verdict.reason
+    assert "no live block carries" in verdict.reason
+
+
+def test_fully_bindable_removals_let_the_plan_apply() -> None:
+    """Nothing to refuse means the batch proceeds untouched."""
+    verdict = decide_guarded_removal_preflight(unbindable=())
+
+    assert verdict.disposition is GuardedRemovalPlanDisposition.APPLY_PLAN
+    assert not verdict.refuses_plan
+
+
+def test_guard_rejection_before_any_write_is_a_clean_plan_rejection() -> None:
+    """A rejection that precedes every write costs nothing to refuse."""
+    verdict = decide_post_write_guard_rejection(
+        description="guarded removal blk 12 ord 2",
+        live_mutation_started=False,
+        rollback_available=False,
+    )
+
+    assert verdict.disposition is GuardedRemovalPlanDisposition.REJECT_PLAN_CLEAN
+
+
+def test_guard_rejection_after_a_write_rolls_back_when_it_can() -> None:
+    """A guard that rejects once siblings have written must undo them."""
+    verdict = decide_post_write_guard_rejection(
+        description="guarded removal blk 12 ord 2",
+        live_mutation_started=True,
+        rollback_available=True,
+    )
+
+    assert verdict.disposition is GuardedRemovalPlanDisposition.ROLL_BACK_PLAN
+    assert "guarded removal blk 12 ord 2" in verdict.reason
+
+
+def test_guard_rejection_after_a_write_poisons_when_it_cannot_roll_back() -> None:
+    """Without recovery the transaction is poisoned, never counted complete."""
+    verdict = decide_post_write_guard_rejection(
+        description="guarded removal blk 12 ord 2",
+        live_mutation_started=True,
+        rollback_available=False,
+    )
+
+    assert verdict.disposition is GuardedRemovalPlanDisposition.POISON_GENERATION
+    assert verdict.refuses_plan

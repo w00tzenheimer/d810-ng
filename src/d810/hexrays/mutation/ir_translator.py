@@ -1183,10 +1183,11 @@ class IDAIRTranslator:
         # the gateway before observation, or the realization inventory reads a
         # benign deduplication as a lost operation and poisons the generation.
         patch_gateway.record_coalesced_supersessions(modifier.take_superseded_count())
-        # The apply preflight rejects operations whose live binding cannot be
-        # resolved (a guarded removal whose block identity is gone) before the
-        # batch writes anything. Those planned steps need the same treatment as
-        # coalescing, or a safe pre-apply rejection reads as a lost operation.
+        # The apply preflight refuses the *complete* plan when an operation's
+        # live binding cannot be resolved (a guarded removal whose block
+        # identity is gone), before the batch writes anything. That refusal
+        # owns every planned step, so the realization inventory reconciles as
+        # applied=0 + superseded=0 + preflight_dropped=planned.
         patch_gateway.record_preflight_dropped_operations(
             modifier.take_preflight_dropped_count()
         )
@@ -1210,9 +1211,10 @@ class IDAIRTranslator:
                     "DeferredGraphModifier.verify_failed is set after apply; "
                     "returning 0 to prevent pipeline from treating changes as successful"
                 )
+                refusal = getattr(modifier, "plan_refusal_reason", None)
                 self._fail_patch_attempt(
                     patch_gateway,
-                    RuntimeError("post-apply native verification failed"),
+                    RuntimeError(refusal or "post-apply native verification failed"),
                     failure_phase=(self._last_lowering_phase or "native_verify"),
                 )
                 return 0
@@ -1222,9 +1224,12 @@ class IDAIRTranslator:
             self._last_lowering_subphase = modifier.last_apply_subphase
 
         if result_count <= 0:
+            # A refused plan names why it was refused; only a plan that ran and
+            # landed nothing falls back to the generic message.
+            refusal = getattr(modifier, "plan_refusal_reason", None)
             self._fail_patch_attempt(
                 patch_gateway,
-                RuntimeError("PatchPlan applied no operations"),
+                RuntimeError(refusal or "PatchPlan applied no operations"),
                 failure_phase=(self._last_lowering_phase or "backend_apply"),
             )
             return 0

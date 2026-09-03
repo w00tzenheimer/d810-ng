@@ -213,7 +213,11 @@ from d810.hexrays.mutation.guarded_removal_binding import (
     GuardedRemovalCandidateBlock,
     GuardedRemovalCandidateInstruction,
     GuardedRemovalFingerprint,
+    GuardedRemovalPlanDisposition,
+    GuardedRemovalPlanVerdict,
     bind_guarded_removal,
+    decide_guarded_removal_preflight,
+    decide_post_write_guard_rejection,
 )
 from d810.hexrays.mutation.mba_mutation_events import (
     MbaMutationGateway,
@@ -1261,6 +1265,10 @@ class DeferredGraphModifier:
     transaction_complete: bool = False
     last_apply_phase: str | None = None
     last_apply_subphase: str | None = None
+    # Set when a preflight or a post-preflight guard rejection refused the
+    # complete plan. Callers report the refusal with this reason instead of the
+    # generic "applied no operations".
+    plan_refusal_reason: str | None = None
     last_stale_serial_scan: dict | None = None
     _pre_snapshot: FlowGraph | None = None
     # Optional event emitter; when None, no events are emitted (zero overhead).
@@ -8048,6 +8056,7 @@ class DeferredGraphModifier:
         # earlier transaction must never reconcile a later inventory.
         self._superseded_count = 0
         self._preflight_dropped_instruction_ops = 0
+        self.plan_refusal_reason = None
         try:
             return self._apply(
                 run_optimize_local=run_optimize_local,
@@ -8211,6 +8220,20 @@ class DeferredGraphModifier:
                 self._applied = True
                 self.verify_failed = True
                 return 0
+
+        # Preflight, not mid-apply discovery, and strictly before the write
+        # boundary: every guarded removal is resolved against the live MBA
+        # here, so a serial shifted by an earlier block-creating stage is
+        # rebound. An identity that is genuinely gone refuses the complete
+        # plan while a refusal is still free - once realization starts, the
+        # same rejection can only be rolled back or poisoned.
+        guarded_removal_verdict = self._rebind_guarded_insn_removals(
+            self.modifications
+        )
+        if guarded_removal_verdict.refuses_plan:
+            self._refuse_plan_before_write(guarded_removal_verdict)
+            self._applied = True
+            return 0
 
         self._begin_patch_plan_realization()
         self._set_apply_phase("backend_apply", "pre_apply_verify")
@@ -8419,20 +8442,11 @@ class DeferredGraphModifier:
         sorted_mods, pre_rejected_trampolines = self._pre_reject_edge_split_trampolines(
             sorted_mods
         )
-        # Preflight, not mid-apply discovery: every guarded removal is resolved
-        # against the live MBA here, so a serial shifted by an earlier
-        # block-creating stage is rebound and an identity that is genuinely
-        # gone is dropped before the batch writes anything.
-        sorted_mods, dropped_guarded_removals = self._rebind_guarded_insn_removals(
-            sorted_mods
-        )
-        self._preflight_dropped_instruction_ops += int(dropped_guarded_removals)
         pre_rejected = (
             pre_rejected_create
             + pre_rejected_duplicate
             + pre_rejected_clone_goto
             + pre_rejected_trampolines
-            + dropped_guarded_removals
         )
         total_mod_count = len(sorted_mods) + pre_rejected
         self._begin_mutation_batch(
@@ -8641,14 +8655,11 @@ class DeferredGraphModifier:
                         )
 
         successful = 0
-        # Pre-rejections start the batch already failed, because a rejected CFG
-        # edit means the plan did not land. A guarded removal dropped for a
-        # missing block identity is not that: it is an instruction-only
-        # operation that was deliberately, safely, and loudly declined before
-        # anything was written, and it is carried by the preflight-drop term
-        # instead.
-        failed = pre_rejected - dropped_guarded_removals
-        safely_skipped = 0
+        failed = pre_rejected
+        # Set when a guarded removal's guard rejects after the preflight bound
+        # it. The batch has already written by then, so the verdict names the
+        # recovery it owes - never a skip that reads as completion.
+        guard_rejection: GuardedRemovalPlanVerdict | None = None
         rolled_back = 0
         recent_modifications: list[dict] = []
 
@@ -8947,24 +8958,33 @@ class DeferredGraphModifier:
                             mod.description,
                         )
                         continue
-                    # A guarded removal that rejects has, by construction,
-                    # changed nothing: its whole contract is to revalidate the
-                    # full instruction fingerprint before touching the block.
-                    # An earlier modification in this same batch can invalidate
-                    # it after the apply preflight ran, and that is a safe
-                    # rejection of one instruction-only operation - not CFG
-                    # corruption, and no reason to abandon the other 62.
+                    # A guarded removal that rejects changed nothing itself -
+                    # its contract is to revalidate the full instruction
+                    # fingerprint before touching the block. The sibling
+                    # operations that already wrote in this transaction did
+                    # change something, and the authority proposed all of them
+                    # together, so omitting this one and reporting the batch
+                    # complete fragments that authority. Stop and recover.
                     if mod.mod_type == ModificationType.INSN_GUARDED_REMOVE:
-                        failed -= 1
-                        safely_skipped += 1
-                        self._preflight_dropped_instruction_ops += 1
-                        logger.warning(
-                            "Skipping rejected guarded removal [%d] and continuing "
-                            "(instruction-only revalidation, no MBA change): %s",
-                            i,
-                            mod.description,
+                        _gw = self._mutation_gateway
+                        guard_rejection = decide_post_write_guard_rejection(
+                            description=str(mod.description),
+                            live_mutation_started=bool(
+                                successful > 0
+                                or (_gw is not None and _gw.mutation_started)
+                            ),
+                            rollback_available=bool(
+                                enable_snapshot_rollback
+                                and self._pre_snapshot is not None
+                            ),
                         )
-                        continue
+                        logger.warning(
+                            "Guarded removal [%d] rejected after the apply "
+                            "preflight: %s",
+                            i,
+                            guard_rejection.reason,
+                        )
+                        break
                     logger.warning(
                         "Aborting deferred apply after first failed modification "
                         "to avoid compounding CFG corruption"
@@ -9019,21 +9039,13 @@ class DeferredGraphModifier:
             failed,
             rolled_back,
         )
-        if safely_skipped:
-            logger.info(
-                "Safely skipped %d instruction-only operation(s) whose guard "
-                "rejected after the apply preflight",
-                safely_skipped,
-            )
-        # A safely skipped instruction-only operation is accounted for, not
-        # lost: it never mutated the MBA and its planned step is carried by the
-        # preflight-drop term. Treating it as a lost operation is what poisoned
-        # the generation and cost the function every later simplification.
         self.transaction_complete = (
-            failed == 0 and successful + safely_skipped == len(sorted_mods)
+            guard_rejection is None
+            and failed == 0
+            and successful == len(sorted_mods)
         )
 
-        if successful > 0:
+        if successful > 0 and guard_rejection is None:
             # Publish the structural receipt before diagnostic capture,
             # cleanup, or Hex-Rays re-entry can transfer control away from this
             # Python frame. A later snapshot restore is a distinct compensating
@@ -9099,6 +9111,48 @@ class DeferredGraphModifier:
                 )
                 self._emit(DeferredEvent.DEFERRED_APPLY_FINISHED, _fp)
             return result_count
+
+        # A guarded removal whose guard rejected after the preflight bound it.
+        # It wrote nothing, but the operations before it in this batch did, and
+        # the plan they belong to is now incomplete. The only honest outcomes
+        # are undoing those writes or poisoning the generation that carries
+        # them; reporting the batch as complete is what fragmented the
+        # authority in the first place.
+        if guard_rejection is not None:
+            self.transaction_complete = False
+            if (
+                guard_rejection.disposition
+                is GuardedRemovalPlanDisposition.REJECT_PLAN_CLEAN
+            ):
+                self._refuse_plan_before_write(guard_rejection)
+                return _finish(0)
+            if (
+                guard_rejection.disposition
+                is GuardedRemovalPlanDisposition.ROLL_BACK_PLAN
+                and self._pre_snapshot is not None
+                and self._restore_from_snapshot(self._pre_snapshot)
+            ):
+                self._record_snapshot_rollback(guard_rejection.reason)
+                self.verify_failed = False
+                self.plan_refusal_reason = guard_rejection.reason
+                self._set_apply_phase("backend_apply", "guarded_removal_rollback")
+                logger.warning(
+                    "Rolled the deferred batch back after a post-preflight "
+                    "guarded-removal rejection (%d applied before it): %s",
+                    successful,
+                    guard_rejection.reason,
+                )
+                return _finish(0)
+            self.verify_failed = True
+            self.plan_refusal_reason = guard_rejection.reason
+            self._set_apply_phase("backend_apply", "guarded_removal_unrecoverable")
+            logger.error(
+                "Poisoning the generation after a post-preflight "
+                "guarded-removal rejection with %d unrecoverable write(s): %s",
+                successful,
+                guard_rejection.reason,
+            )
+            return _finish(0)
 
         # Transactional mid-batch abort: when the apply loop broke early
         # (first-failure-aborts policy), restore from the pre-snapshot so the
@@ -16815,8 +16869,8 @@ class DeferredGraphModifier:
 
     def _rebind_guarded_insn_removals(
         self,
-        sorted_mods: list[QueuedModification],
-    ) -> tuple[list[QueuedModification], int]:
+        mods: list[QueuedModification],
+    ) -> GuardedRemovalPlanVerdict:
         """Bind guarded removals to live identity before any mutation runs.
 
         A guarded removal was proven against a serial of an earlier MBA
@@ -16824,29 +16878,30 @@ class DeferredGraphModifier:
         planned serial can address a different block by apply time - which is
         exactly what aborted a 64-operation batch at operation 2 and poisoned
         the generation.  Resolve every removal through its own fingerprint
-        here, and drop the ones whose identity is gone *before* the batch
-        starts writing, so a stale binding can never fail mid-apply.
+        here, before the batch writes anything.
+
+        A removal whose identity is gone is *not* dropped from the plan. The
+        plan is one authority's complete proposal, and "instruction-only"
+        describes what the operation writes, not whether it is independent of
+        the sibling CFG edits queued beside it. Applying the rest would declare
+        a completion the authority never proposed, so the verdict refuses the
+        whole plan - which is free here, because nothing has been written.
         """
         guarded = [
             mod
-            for mod in sorted_mods
+            for mod in mods
             if mod.mod_type == ModificationType.INSN_GUARDED_REMOVE
         ]
         if not guarded:
-            return sorted_mods, 0
+            return decide_guarded_removal_preflight(unbindable=())
 
         candidates = self._project_guarded_removal_candidates()
-        dropped: set[int] = set()
-        rebound = 0
+        unbindable: list[str] = []
+        rebindings: list[tuple[QueuedModification, int]] = []
         for mod in guarded:
             fingerprint = self._guarded_removal_fingerprint(mod)
             if fingerprint is None:
-                dropped.add(id(mod))
-                logger.warning(
-                    "Dropping guarded removal before live apply: "
-                    "incomplete fingerprint (%s)",
-                    mod.description,
-                )
+                unbindable.append(f"incomplete fingerprint ({mod.description})")
                 continue
             binding = bind_guarded_removal(
                 fingerprint,
@@ -16854,37 +16909,57 @@ class DeferredGraphModifier:
                 blocks=candidates,
             )
             if not binding.bound:
-                dropped.add(id(mod))
-                logger.warning(
-                    "Dropping guarded removal before live apply: %s (%s)",
-                    binding.reason,
-                    binding.outcome.value,
-                )
+                unbindable.append(f"{binding.reason} ({binding.outcome.value})")
                 continue
             if binding.outcome is GuardedRemovalBindingOutcome.REBOUND:
-                rebound += 1
-                logger.info(
-                    "current-MBA serial bindings applied to guarded removal: %s",
-                    binding.reason,
-                )
-                mod.block_serial = int(binding.serial)
+                rebindings.append((mod, int(binding.serial)))
 
-        if not dropped:
-            if rebound:
-                logger.info(
-                    "Rebound %d guarded instruction removal(s) to live block identity",
-                    rebound,
-                )
-            return sorted_mods, 0
+        verdict = decide_guarded_removal_preflight(unbindable=unbindable)
+        if verdict.refuses_plan:
+            return verdict
 
-        filtered_mods = [mod for mod in sorted_mods if id(mod) not in dropped]
+        for mod, serial in rebindings:
+            logger.info(
+                "current-MBA serial binding applied to guarded removal: "
+                "%s -> serial %d",
+                mod.description,
+                serial,
+            )
+            mod.block_serial = serial
+        if rebindings:
+            logger.info(
+                "Rebound %d guarded instruction removal(s) to live block identity",
+                len(rebindings),
+            )
+        return verdict
+
+    def _refuse_plan_before_write(self, verdict: GuardedRemovalPlanVerdict) -> None:
+        """Account for a complete plan refused without mutating the MBA.
+
+        The refusal owns every planned step, so the realization inventory reads
+        ``applied=0``, ``superseded=0`` and ``preflight_dropped=planned``. A
+        partial term here would be the very thing being refused: a plan
+        reported complete with one of its operations quietly missing.
+        """
+        gateway = self._mutation_gateway
+        planned = len(self.modifications)
+        if (
+            gateway is not None
+            and gateway.active
+            and gateway.current_transaction_attempt is not None
+        ):
+            planned = int(gateway.planned_operation_count)
+        self._superseded_count = 0
+        self._preflight_dropped_instruction_ops = planned
+        self.plan_refusal_reason = verdict.reason
+        self.transaction_complete = False
+        self._set_apply_phase("preflight", "guarded_removal_unbindable")
         logger.warning(
-            "Dropped %d unbindable guarded instruction removal(s) before live apply "
-            "(rebound %d)",
-            len(dropped),
-            rebound,
+            "Refusing the complete deferred plan (%d planned operation(s)) "
+            "before any write: %s",
+            planned,
+            verdict.reason,
         )
-        return filtered_mods, len(dropped)
 
     def _pre_reject_duplicate_blocks(
         self,

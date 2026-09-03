@@ -887,6 +887,16 @@ class MbaMutationGateway:
         return bool(self._mutation_started or self.identity_index.generation_poisoned)
 
     @property
+    def planned_operation_count(self) -> int:
+        """Return how many operations the active authority proposed.
+
+        A preflight refusal has to name the whole plan, so the backend that
+        performs the refusal needs to read the size of the plan it is refusing
+        rather than infer it from its own post-filter queue.
+        """
+        return int(self._planned_operation_count)
+
+    @property
     def generation_poisoned(self) -> bool:
         return self.identity_index.generation_poisoned
 
@@ -1469,20 +1479,29 @@ class MbaMutationGateway:
         self._superseded_operation_count = superseded
 
     def record_preflight_dropped_operations(self, count: int) -> None:
-        """Record planned steps a pre-apply preflight rejected before writing.
+        """Record that a pre-apply preflight refused this plan before writing.
 
         A guarded instruction removal is proven against a block identity. When
         an earlier stage renumbers serials, the removal is rebound through that
-        identity, and when the identity is gone the removal is dropped before
-        the batch writes anything. Such a step is deliberately not applied and
-        never mutated the MBA, so the realization inventory has to hold a term
-        for it; otherwise a safe rejection is indistinguishable from a lost
-        operation and poisons the CFG generation.
+        identity; when the identity is gone the removal cannot be honoured.
+
+        The refusal is all-or-nothing. A plan is one authority's complete
+        proposal, and "instruction-only" describes what an operation writes,
+        not whether it is independent of the sibling CFG edits queued beside it
+        in the same transaction. Omitting one step and declaring the rest
+        complete fragments that authority, so the only expressible refusal is
+        of the whole plan: this term is either zero or the planned count, and
+        it can never coexist with applied operations.
         """
         self._require_active()
         dropped = int(count)
         if dropped < 0:
             raise ValueError("preflight dropped operation count must be non-negative")
+        if dropped not in (0, int(self._planned_operation_count)):
+            raise ValueError(
+                "a preflight rejection refuses the whole plan: "
+                f"planned={self._planned_operation_count} dropped={dropped}"
+            )
         self._preflight_dropped_operation_count = dropped
 
     def register_post_filter_plan_items(
@@ -1524,6 +1543,12 @@ class MbaMutationGateway:
         # against planned alone reads a benign deduplication as corruption.
         superseded = int(self._superseded_operation_count)
         preflight_dropped = int(self._preflight_dropped_operation_count)
+        if preflight_dropped and applied:
+            raise RuntimeError(
+                "a refused plan cannot also report applied operations: "
+                f"planned={self._planned_operation_count} applied={applied} "
+                f"preflight_dropped={preflight_dropped}"
+            )
         if applied + superseded + preflight_dropped != self._planned_operation_count:
             raise RuntimeError(
                 "patch realization operation inventory mismatch: "
@@ -2968,6 +2993,17 @@ class MbaMutationGateway:
                 "fragment publication operation inventory mismatch: "
                 f"planned={self._planned_operation_count} "
                 f"applied={self._operation_count}"
+            )
+        if (
+            self._current_transaction_attempt is not None
+            and self._preflight_dropped_operation_count
+            and self._operation_count
+        ):
+            raise RuntimeError(
+                "a refused plan cannot also report applied operations: "
+                f"planned={self._planned_operation_count} "
+                f"applied={self._operation_count} "
+                f"preflight_dropped={self._preflight_dropped_operation_count}"
             )
         if (
             self._current_transaction_attempt is not None
