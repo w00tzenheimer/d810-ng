@@ -32,6 +32,12 @@ from .chains import (
 from .p_multi_def import agreed_value, select_def_index_for_predecessor
 from .p_taint import any_tainted, taint_result
 
+#: Call sites already reported as unsupported.  Module scope on purpose: the
+#: pipeline builds a FRESH interpreter for nearly every evaluation (one per
+#: tracked path, one per block consult), so an instance-scoped set still emitted
+#: ~1100 warnings for 3 distinct call sites (ticket d81-0xzp).
+_WARNED_CALL_SITES: set[tuple[int, int]] = set()
+
 #: Upper bound on the reaching definitions the path-INSENSITIVE agreement leg
 #: will evaluate at one merge.  A merge with more incoming definitions than this
 #: abstains without evaluating any of them, so the historical "give up" cost is
@@ -425,9 +431,7 @@ class MicroCodeInterpreter(object):
         # INVENTED (a modeled call return, a dereference of a synthetic pointer).
         # Values derived from these are not proven -- see ``p_taint`` (d81-0xzp).
         self._synthetic_result_sites: set[tuple[int, int]] = set()
-        # Call sites already reported as unsupported, so one bypassed call logs
-        # once instead of once per emulation pass.
-        self._warned_call_sites: set[tuple[int, int]] = set()
+        # (call-site dedupe lives at module scope: ``_WARNED_CALL_SITES``)
         # ``(block_serial, path)``: the incoming edge -- or the whole incoming
         # PATH, nearest block first -- a consumer declared it is evaluating, so a
         # phi-like merge read in that block resolves to the definition arriving
@@ -1437,9 +1441,9 @@ class MicroCodeInterpreter(object):
     ) -> None:
         """Warn once per call SITE instead of once per emulation pass."""
         site = self._site_of(ins)
-        if site in self._warned_call_sites:
+        if site in _WARNED_CALL_SITES:
             return
-        self._warned_call_sites.add(site)
+        _WARNED_CALL_SITES.add(site)
         emulator_log.warning(message, subject, format_minsn_t(ins))
 
     def eval(self, mop: ida_hexrays.mop_t, environment: MicroCodeEnvironment) -> int:
