@@ -180,13 +180,22 @@ class TestSyntheticCallTaint:
         assert not interpreter.is_tainted_mop(other, env)
 
     def test_the_unsupported_call_warns_once_per_site(self, live_call, caplog):
+        """Dedupe must survive a FRESH interpreter: the pipeline builds one per
+        tracked path and per block consult, so an instance-scoped set still
+        emitted ~1100 warnings for 3 call sites (ticket d81-0xzp)."""
+        from d810.evaluator.hexrays_microcode import emulator as emulator_module
+
         mba, blk, call_insn = live_call
-        interpreter = MicroCodeInterpreter(symbolic_mode=False)
-        env = MicroCodeEnvironment()
-        env.set_cur_flow(blk, call_insn)
-        with caplog.at_level("WARNING", logger="d810.evaluator.hexrays_microcode.emulator"):
-            interpreter._eval_call(call_insn, env)
-            interpreter._eval_call(call_insn, env)
-            interpreter._eval_call(call_insn, env)
+        emulator_module._WARNED_CALL_SITES.discard(
+            MicroCodeInterpreter._site_of(call_insn)
+        )
+        with caplog.at_level(
+            "WARNING", logger="d810.evaluator.hexrays_microcode.emulator"
+        ):
+            for _ in range(3):
+                interpreter = MicroCodeInterpreter(symbolic_mode=False)
+                env = MicroCodeEnvironment()
+                env.set_cur_flow(blk, call_insn)
+                interpreter._eval_call(call_insn, env)
         warnings = [r for r in caplog.records if "synthetic return" in r.getMessage()]
         assert len(warnings) == 1, [r.getMessage() for r in warnings]
