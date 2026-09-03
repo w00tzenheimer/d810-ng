@@ -201,45 +201,92 @@ def test_canonical_inventory_bypasses_outer_opcode_gate(monkeypatch):
     assert optimizer.get_optimized_instruction(blk, ins) == "fallback-entry"
 
 
-def test_terminal_raw_abstention_stops_later_raw_candidates():
-    """An ordinary raw exception cannot be bypassed by a later raw hit."""
+class _RawExceptionRule:
+    """A raw catalogue candidate that can raise or return on demand."""
+
+    canonical_fallback_enabled = False
+    maturities = [7]
+
+    def __init__(self, name, calls, result=None, error=None):
+        self.name = name
+        self._calls = calls
+        self.result = result
+        self.error = error
+
+    def check_pattern_and_replace(self, _pattern, _candidate):
+        self._calls.append(self.name)
+        if self.error is not None:
+            raise self.error
+        return self.result
+
+
+def _raw_exception_optimizer(calls, error):
+    """Two raw candidates: the first raises ``error``, the second can hit."""
 
     optimizer = bare_pattern_optimizer(
         _canonical_fallback_rules_by_root_shape={},
     )
-    calls = []
-
-    class Rule:
-        canonical_fallback_enabled = False
-        maturities = [7]
-
-        def __init__(self, name, result=None, error=None):
-            self.name = name
-            self.result = result
-            self.error = error
-
-        def check_pattern_and_replace(self, _pattern, _candidate):
-            calls.append(self.name)
-            if self.error is not None:
-                raise ValueError(self.error)
-            return self.result
-
-    first = Rule("terminal", error="provider failed")
-    later = Rule("later", result="must-not-hit")
+    first = _RawExceptionRule("terminal", calls, error=error)
+    later = _RawExceptionRule("later", calls, result="later-hit")
     optimizer._get_candidates = lambda _ast: [
         RulePatternInfo(first, object()),
         RulePatternInfo(later, object()),
     ]
+    return optimizer
 
-    assert optimizer._try_matches(
-        None,
-        SimpleNamespace(ea=0x401001, _print=lambda: "terminal"),
-        object(),
-        allowed_rule_names=None,
-        scheduled_rule_names=None,
-        source_label="terminal",
-    ) is None
+
+def test_unexpected_raw_exception_stops_later_raw_candidates():
+    """An unexpected raw exception type is not contained: it propagates.
+
+    ``PatternOptimizer`` mirrors the provider policy its base class documents
+    at ``instructions/handler.py`` (``except BaseException``: "internal fatal
+    exceptions must retain normal Python propagation semantics"). Only
+    ``RuntimeError`` is a contained raw provider failure here; every other type
+    is a defect, so the handler finalizes the provider row as
+    ``provider_exception`` and re-raises rather than swallowing it. Either way
+    a later raw candidate can never rewrite the instruction behind the failure.
+
+    Terminal raw *abstention* is a separate, declared mechanism --
+    ``raw_stop_reason`` / ``_last_provider_outcome.status`` read by
+    ``_raw_attempt_abstains`` -- covered by
+    ``test_typed_raw_abstention_states_do_not_fall_through``.
+    """
+
+    calls = []
+    optimizer = _raw_exception_optimizer(calls, ValueError("provider failed"))
+
+    with pytest.raises(ValueError, match="provider failed"):
+        optimizer._try_matches(
+            None,
+            SimpleNamespace(ea=0x401001, _print=lambda: "terminal"),
+            object(),
+            allowed_rule_names=None,
+            scheduled_rule_names=None,
+            source_label="terminal",
+        )
     assert calls == ["terminal"]
+
+
+def test_contained_raw_runtime_error_yields_to_the_next_raw_candidate():
+    """A contained raw failure retires that rule only, not the instruction."""
+
+    calls = []
+    optimizer = _raw_exception_optimizer(
+        calls, RuntimeError("raw matcher budget exhausted")
+    )
+
+    assert (
+        optimizer._try_matches(
+            None,
+            SimpleNamespace(ea=0x401001, _print=lambda: "terminal"),
+            object(),
+            allowed_rule_names=None,
+            scheduled_rule_names=None,
+            source_label="terminal",
+        )
+        == "later-hit"
+    )
+    assert calls == ["terminal", "later"]
 
 
 def test_shadow_observation_skips_fallback_enabled_raw_candidate(monkeypatch):
