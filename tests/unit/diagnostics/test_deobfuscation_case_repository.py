@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from d810.core.deobfuscation_case import CaseEvidenceLevel, CaseFindingKind
+from d810.core.diag.schema import DIAGNOSTIC_SCHEMA_VERSION
 from d810.diagnostics.deobfuscation_case_repository import (
     CaseDiagnosticRow,
     DeobfuscationCaseEvidenceError,
@@ -141,7 +142,10 @@ def _closed_case_database(
         );
         """
     )
-    connection.execute("INSERT INTO diagnostic_schema VALUES (1, 12)")
+    connection.execute(
+        "INSERT INTO diagnostic_schema VALUES (1, ?)",
+        (DIAGNOSTIC_SCHEMA_VERSION,),
+    )
     connection.execute("INSERT INTO diagnostic_sessions VALUES ('run-1', ?)", (0x1800020F0,))
     connection.execute(
         "INSERT INTO deobfuscation_cases VALUES "

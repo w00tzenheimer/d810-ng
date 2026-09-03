@@ -26,6 +26,10 @@ from d810.core.execution_journal import (
     ExecutionEffectRef,
 )
 from d810.core.execution_journal_store import TerminalExecutionAttempt
+from d810.core.observability_unflat import (
+    observe_unflat_candidate_outcome,
+    skipped_maturities,
+)
 from d810.core.execution_scope import ExecutionPipeline, ExecutionStageIdentity
 from d810.errors import D810Exception
 from d810.hexrays.hooks.callback_mutation_diagnostics import (
@@ -760,6 +764,43 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
             self._pass_count = self._max_passes_current + 1
         return 0
 
+    def _observe_skipped_maturities(self, mba: ida_hexrays.mbl_array_t) -> None:
+        """Record every maturity that advanced without one optblock callback."""
+        if not self._state_machine_rule_registered():
+            return
+        try:
+            skipped = skipped_maturities(self.current_maturity, int(mba.maturity))
+            if not skipped:
+                return
+            func_ea = int(getattr(mba, "entry_ea", 0) or 0)
+            for maturity_name in skipped:
+                observe_unflat_candidate_outcome(
+                    session_id=f"optblock:{func_ea:x}",
+                    func_ea=func_ea,
+                    maturity=maturity_name,
+                    graph_fingerprint="",
+                    candidate_identity="",
+                    attempt=0,
+                    disposition="maturity_no_callbacks",
+                    reason="hexrays_delivered_no_optblock_callback",
+                )
+        except Exception:
+            optimizer_logger.debug(
+                "skipped-maturity outcome record failed",
+                exc_info=True,
+            )
+
+    def _state_machine_rule_registered(self) -> bool:
+        """Whether the state-machine unflattener is installed on this adapter.
+
+        Matched by class name: the hooks layer must not import optimizer rule
+        classes (rule ``no-hexrays-hook-direct-optimizer-imports``).
+        """
+        return any(
+            type(rule).__name__ == "StateMachineCffUnflattener"
+            for rule in getattr(self, "cfg_rules", ())
+        )
+
     def log_info_on_input(self, blk: ida_hexrays.mblock_t):
         mba: ida_hexrays.mbl_array_t = blk.mba
 
@@ -808,6 +849,13 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
                     int(self.current_maturity),
                     _post_snap_ref,
                 )
+
+            # Ticket d81-rhu6 / plan 4.4: entering a maturity requires a block
+            # callback, so any maturity Hex-Rays skipped between the previous
+            # observed one and this one delivered none at all and the
+            # unflattener was never entered.  That silence used to leave
+            # nothing in the log or the capture.
+            self._observe_skipped_maturities(mba)
 
             if (
                 self._pass_pipeline is not None

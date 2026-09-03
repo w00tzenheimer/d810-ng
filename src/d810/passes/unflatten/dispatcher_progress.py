@@ -92,6 +92,22 @@ class DispatcherProgressLedger:
         )
         self._no_progress_counts[key] = self._no_progress_counts.get(key, 0) + 1
 
+    def no_progress_count(
+        self,
+        func_ea: int,
+        maturity: IRMaturity,
+        graph_fingerprint: str,
+        identity: DispatcherCandidateIdentity,
+    ) -> int:
+        """Attempts recorded for this exact candidate.  Diagnostic only."""
+        key = (
+            int(func_ea),
+            maturity,
+            str(graph_fingerprint),
+            identity,
+        )
+        return int(self._no_progress_counts.get(key, 0))
+
     def record_clean_noop(
         self,
         func_ea: int,

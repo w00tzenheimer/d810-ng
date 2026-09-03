@@ -18,7 +18,14 @@ from d810.core.decompilation_session import (
 )
 from d810.core.logging import getLogger
 from d810.core import native_perf
+from d810.core.maturity_labels import mmat_name
 from d810.core.observability import get_active_diag_path
+from d810.core.observability_unflat import (
+    has_unflat_counters,
+    note_committed_batch,
+    note_unflat_counters,
+    observe_unflat_candidate_outcome,
+)
 from d810.core.provider_phase import ProviderPhaseSnapshot
 from d810.core.project import (
     emit_preanalysis_fact_collector_registration,
@@ -4412,6 +4419,58 @@ class D810Manager:
                 creation_witnesses=tuple(witnesses),
             )
         )
+        D810Manager._observe_transaction_unflatten_outcome(event, failure)
+
+    @staticmethod
+    def _observe_transaction_unflatten_outcome(event, failure) -> None:
+        """Close the unflatten record a CFG transaction terminates (d81-rhu6).
+
+        A transaction that commits, is cleanly rejected, or poisons the
+        generation is a terminal outcome for the candidate that submitted it.
+        The poisoned class is always recorded -- it is the one that used to
+        leave only a WARNING behind after earlier batches had already
+        committed.  Diagnostics never change an outcome, so failures here are
+        swallowed.
+        """
+        phase = event.phase.value
+        dispositions = {
+            "committed": "applied_observed",
+            "rejected_clean": "rejected_preflight",
+            "poisoned_restart_required": "poisoned_restart_required",
+        }
+        disposition = dispositions.get(phase)
+        if disposition is None:
+            return
+        try:
+            func_ea = int(event.function_ea)
+            # Evaluate the gate BEFORE any note_* call: those create the slot.
+            tracked = has_unflat_counters(func_ea)
+            if not tracked and phase != "poisoned_restart_required":
+                return
+            plan_id = event.attempt_id.plan_id
+            note_unflat_counters(func_ea, plan_id=plan_id)
+            committed_before = (
+                note_committed_batch(func_ea) - 1
+                if phase == "committed"
+                else None
+            )
+            reason = None
+            if failure is not None:
+                reason = failure.first_failed_obligation or failure.reason
+            observe_unflat_candidate_outcome(
+                session_id=str(event.session_id),
+                func_ea=func_ea,
+                maturity=mmat_name(int(event.maturity)),
+                graph_fingerprint=plan_id,
+                candidate_identity=event.attempt_id.attempt_id,
+                attempt=int(event.phase_index),
+                disposition=disposition,
+                reason=reason if reason else f"cfg_transaction_{phase}",
+                plan_id=plan_id,
+                committed_batches_before=committed_before,
+            )
+        except Exception:
+            logger.debug("unflatten transaction outcome record failed", exc_info=True)
 
     def _install_hooks(self):
         from d810.hexrays.mutation.mba_mutation_events import (

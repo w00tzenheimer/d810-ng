@@ -143,6 +143,7 @@ from d810.capabilities.semantic_routes import (
 from d810.capabilities.use_def_safety import UseDefSafetyCapability
 from d810.capabilities.value_range import ValRangeCapability
 from d810.core import logging
+from d810.core.observability_unflat import observe_unflat_candidate_outcome
 from d810.core.observability_models import (
     BlockSnapshot as _DiagBlockSnapshot,
     DagEdge as _DiagDagEdge,
@@ -166,7 +167,11 @@ from d810.evaluator.hexrays_microcode.value_range_capability import (
 )
 from d810.families.registry import registered_families, select_family
 from d810.hexrays.ir.mba_identity_index import MbaBlockIdentityIndex
-from d810.hexrays.ir_maturity import ida_maturity_to_ir, ir_maturity_to_ida
+from d810.hexrays.ir_maturity import (
+    ida_maturity_to_ir,
+    ir_maturity_to_ida,
+    maturity_to_name,
+)
 from d810.ir.block_identity import (
     BlockHandleProvenance,
     NativeEaInterval,
@@ -246,6 +251,12 @@ from d810.transforms.state_machine_unflatten import lower_to_direct_graph
 _DIAGNOSTIC_LIVE_DAG_WORK_BUDGET = 256
 
 logger = logging.getLogger("d810.unflat", logging.DEBUG)
+
+
+def _unflat_session_id(flow_context: object) -> str:
+    """Diagnostic session identity for the terminal unflatten record."""
+    session_id = getattr(flow_context, "session_id", None)
+    return str(session_id) if session_id else "unflat"
 
 
 def _unflatten_recovery_epoch_generation(
@@ -1428,6 +1439,40 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
         transient = pending if rejected_plan_deferral_enabled else frozenset()
         return ordinary, transient, frozenset(ordinary | transient)
 
+    def _observe_candidate_outcome(
+        self,
+        *,
+        func_ea: int,
+        maturity: IRMaturity,
+        graph_fingerprint: str,
+        candidate_identity: object,
+        attempt: int,
+        disposition: str,
+        reason: str | None = None,
+    ) -> None:
+        """Publish the terminal record for one candidate (ticket d81-rhu6).
+
+        Diagnostics must never change an optimizer outcome, so every failure
+        here is swallowed.
+        """
+        try:
+            observe_unflat_candidate_outcome(
+                session_id=_unflat_session_id(getattr(self, "flow_context", None)),
+                func_ea=int(func_ea),
+                # The record joins provider-spelled rows, so publish the
+                # ``MMAT_*`` name rather than the portable enum member name.
+                maturity=maturity_to_name(ir_maturity_to_ida(maturity)),
+                graph_fingerprint=str(graph_fingerprint),
+                candidate_identity=(
+                    "" if candidate_identity is None else repr(candidate_identity)
+                ),
+                attempt=int(attempt),
+                disposition=disposition,
+                reason=reason,
+            )
+        except Exception:
+            logger.debug("unflatten outcome record failed", exc_info=True)
+
     def _finalize_dispatcher_round(
         self,
         *,
@@ -1507,6 +1552,16 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                 graph_fingerprint,
                 excluded_next,
             )
+            self._observe_candidate_outcome(
+                func_ea=func_ea,
+                maturity=maturity,
+                graph_fingerprint=graph_fingerprint,
+                candidate_identity=identity,
+                attempt=self._dispatcher_progress.no_progress_count(
+                    func_ea, maturity, graph_fingerprint, identity
+                ),
+                disposition="not_submitted_safe_bail",
+            )
             return
 
         # A selected/recovered dispatcher without the new provenance remains
@@ -1538,6 +1593,17 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                 maturity.name,
                 graph_fingerprint,
                 tuple(sorted(excluded_identities, key=repr)),
+            )
+            self._observe_candidate_outcome(
+                func_ea=func_ea,
+                maturity=maturity,
+                graph_fingerprint=graph_fingerprint,
+                candidate_identity=",".join(
+                    repr(item) for item in sorted(excluded_identities, key=repr)
+                ),
+                attempt=len(excluded_identities),
+                disposition="exhausted",
+                reason="all_candidates_excluded_for_graph",
             )
             return
         self._mark_ea_converged(func_ea)

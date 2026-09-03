@@ -903,6 +903,102 @@ class RecoverySearchObserved:
         object.__setattr__(self, "consumed", int(self.consumed))
 
 
+UNFLATTEN_CANDIDATE_DISPOSITIONS = frozenset(
+    {
+        # The candidate never reached a CFG transaction; d810 declined safely.
+        "not_submitted_safe_bail",
+        # A plan existed and a preflight/obligation guard rejected it cleanly.
+        "rejected_preflight",
+        # A CFG transaction for this candidate committed and was observed.
+        "applied_observed",
+        # Live mutation began and a later guard poisoned the generation.
+        "poisoned_restart_required",
+        # Hex-Rays delivered no block-optimization callback at that maturity,
+        # so the unflattener was never entered (plan 4.4).
+        "maturity_no_callbacks",
+        # Every candidate for this exact graph fingerprint is stalled.
+        "exhausted",
+    }
+)
+
+
+@dataclass(frozen=True, slots=True)
+class UnflattenCandidateOutcomeObserved:
+    """The one authoritative terminal outcome for an unflatten candidate.
+
+    Emitted at every site that ends an unflatten attempt, including the two
+    silent classes: a maturity that received no optblock callback, and a CFG
+    transaction poisoned after earlier batches already committed.  The record
+    is append-only; it never back-fills the corridor coverage summary it
+    closes (readers join on ``plan_id``).
+    """
+
+    session_id: str
+    func_ea: int
+    maturity: str
+    graph_fingerprint: str
+    candidate_identity: str
+    attempt: int
+    disposition: str
+    reason: str
+    plan_id: str | None = None
+    handlers_recovered: int | None = None
+    handlers_total: int | None = None
+    dag_nodes: int | None = None
+    dag_edges: int | None = None
+    coverage_covered: int | None = None
+    coverage_residual: int | None = None
+    unresolved_anchors: tuple[tuple[int, int], ...] = ()
+    committed_batches_before: int = 0
+    next_hint: str = ""
+    timestamp: float = 0.0
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.session_id, str) or not self.session_id.strip():
+            raise ValueError("session_id must be non-empty")
+        if isinstance(self.func_ea, bool) or int(self.func_ea) < 0:
+            raise ValueError("func_ea must be non-negative")
+        if not isinstance(self.maturity, str) or not self.maturity.strip():
+            raise ValueError("unflatten outcome maturity must be non-empty")
+        if self.disposition not in UNFLATTEN_CANDIDATE_DISPOSITIONS:
+            raise ValueError("unflatten candidate disposition is invalid")
+        if not isinstance(self.reason, str) or not self.reason.strip():
+            raise ValueError("unflatten candidate reason must be non-empty")
+        if isinstance(self.attempt, bool) or int(self.attempt) < 0:
+            raise ValueError("unflatten candidate attempt must be non-negative")
+        if isinstance(self.committed_batches_before, bool) or (
+            int(self.committed_batches_before) < 0
+        ):
+            raise ValueError("committed batch count must be non-negative")
+        for field_name in (
+            "handlers_recovered",
+            "handlers_total",
+            "dag_nodes",
+            "dag_edges",
+            "coverage_covered",
+            "coverage_residual",
+        ):
+            value = getattr(self, field_name)
+            if value is None:
+                continue
+            if isinstance(value, bool) or int(value) < 0:
+                raise ValueError(f"{field_name} must be non-negative")
+            object.__setattr__(self, field_name, int(value))
+        anchors = tuple(
+            (int(serial), int(ea)) for serial, ea in self.unresolved_anchors
+        )
+        if any(serial < 0 or ea < 0 for serial, ea in anchors):
+            raise ValueError("unresolved anchors must be non-negative")
+        object.__setattr__(
+            self, "unresolved_anchors", tuple(sorted(set(anchors)))
+        )
+        object.__setattr__(self, "func_ea", int(self.func_ea))
+        object.__setattr__(self, "attempt", int(self.attempt))
+        object.__setattr__(
+            self, "committed_batches_before", int(self.committed_batches_before)
+        )
+
+
 @dataclass(frozen=True)
 class SemanticFragmentRouteOracleComparedObserved:
     """One pre-root detached-route comparison batch for a fragment plan."""
@@ -1403,6 +1499,8 @@ __all__ = [
     "SemanticOutputVerifiedObserved",
     "SemanticFragmentFailureObserved",
     "RecoverySearchObserved",
+    "UNFLATTEN_CANDIDATE_DISPOSITIONS",
+    "UnflattenCandidateOutcomeObserved",
     "MutationPlanTargetObserved",
     # Preanalysis
     "BranchOwnershipProofsObserved",

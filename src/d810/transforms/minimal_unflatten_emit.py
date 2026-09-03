@@ -181,6 +181,7 @@ from d810.analyses.value_flow import (
 )
 from d810.core import logging
 from d810.core.native_preanalysis_key import NativePreanalysisKey
+from d810.core.observability_unflat import note_unflat_counters
 from d810.core.typing import Mapping
 from d810.core.observability_preanalysis import (
     observe_branch_witness_decisions,
@@ -14425,6 +14426,17 @@ def emit_minimal_unflatten(
                     len(exit_path_effect_plan.exit_path_effect_summaries),
                     ",".join(str(anchor) for anchor in sorted(terminal_anchors)),
                 )
+    try:
+        reached_handlers, total_handlers, _ = _reachability(
+            flow_graph, dispatcher, mods, int(dispatcher_entry_serial)
+        )
+        note_unflat_counters(
+            int(flow_graph.func_ea),
+            handlers_recovered=reached_handlers,
+            handlers_total=total_handlers,
+        )
+    except Exception:
+        logger.debug("unflatten handler counters failed", exc_info=True)
     if logger.info_on:
         n_return = sum(1 for t in transitions if t.is_return)
         n_transition_rows_unresolved = sum(
@@ -14854,6 +14866,17 @@ def emit_minimal_unflatten(
         dispatcher_entry_serial=dispatcher_entry_serial,
         semantic_exclusions=candidate_prefix_alternate_corridor_proofs,
     )
+    # Terminal-record counters (ticket d81-rhu6) come from the coverage OBJECT,
+    # not from the INFO line: ``log_dispatcher_coverage`` runs only on the
+    # legacy path, and it is additionally gated on ``logger.info_on``.
+    try:
+        note_unflat_counters(
+            int(coverage.function_ea),
+            coverage_covered=len(coverage.covered_corridors),
+            coverage_residual=len(coverage.residual_corridors),
+        )
+    except Exception:
+        logger.debug("unflatten coverage counters failed", exc_info=True)
     # Once canonical route evidence is supplied, this is the typed authority
     # path. Its fragment-wide witness is decisive: an unavailable audit and
     # an actionable non-state severance both reject the complete fragment,
