@@ -208,6 +208,13 @@ import idaapi
 from d810.core import getLogger
 from d810.hexrays.mutation.block_retention import release_committed_block_retention
 from d810.hexrays.mutation.deferred_events import DeferredEvent, EventEmitter
+from d810.hexrays.mutation.guarded_removal_binding import (
+    GuardedRemovalBindingOutcome,
+    GuardedRemovalCandidateBlock,
+    GuardedRemovalCandidateInstruction,
+    GuardedRemovalFingerprint,
+    bind_guarded_removal,
+)
 from d810.hexrays.mutation.mba_mutation_events import (
     MbaMutationGateway,
     MbaMutationPlanItem,
@@ -8023,6 +8030,7 @@ class DeferredGraphModifier:
         # Scope the coalescing tally to this cycle: a count left over from an
         # earlier transaction must never reconcile a later inventory.
         self._superseded_count = 0
+        self._preflight_dropped_instruction_ops = 0
         try:
             return self._apply(
                 run_optimize_local=run_optimize_local,
@@ -8394,11 +8402,20 @@ class DeferredGraphModifier:
         sorted_mods, pre_rejected_trampolines = self._pre_reject_edge_split_trampolines(
             sorted_mods
         )
+        # Preflight, not mid-apply discovery: every guarded removal is resolved
+        # against the live MBA here, so a serial shifted by an earlier
+        # block-creating stage is rebound and an identity that is genuinely
+        # gone is dropped before the batch writes anything.
+        sorted_mods, dropped_guarded_removals = self._rebind_guarded_insn_removals(
+            sorted_mods
+        )
+        self._preflight_dropped_instruction_ops += int(dropped_guarded_removals)
         pre_rejected = (
             pre_rejected_create
             + pre_rejected_duplicate
             + pre_rejected_clone_goto
             + pre_rejected_trampolines
+            + dropped_guarded_removals
         )
         total_mod_count = len(sorted_mods) + pre_rejected
         self._begin_mutation_batch(
@@ -10988,6 +11005,12 @@ class DeferredGraphModifier:
             returned_serial
         )
 
+    # Guarded instruction removals whose identity no longer exists in the live
+    # MBA and which the apply preflight therefore dropped before writing. They
+    # are planned steps that were deliberately not applied, so an inventory
+    # reconciliation needs them back as their own term.
+    _preflight_dropped_instruction_ops: int = field(default=0, init=False)
+
     # BISECT denylist: (block_serial, new_target) pairs to skip.
     # Set via environment: D810_BISECT_SKIP="173:111,76:158"
     _bisect_skip: set[tuple[int, int]] = field(default_factory=set, init=False)
@@ -11025,6 +11048,14 @@ class DeferredGraphModifier:
                 "final_target",
                 "original_redirect_target",
             ):
+                if (
+                    mod.mod_type == ModificationType.INSN_GUARDED_REMOVE
+                    and attr == "block_serial"
+                ):
+                    # Already bound by identity in the apply preflight. Passing
+                    # a live serial back through the planned-serial resolver
+                    # would shift it a second time.
+                    continue
                 if (
                     mod.mod_type == ModificationType.LOWER_CONDITIONAL_STATE_TRANSITION
                     and attr == "old_target"
@@ -16654,6 +16685,152 @@ class DeferredGraphModifier:
             )
 
         return filtered_mods, pre_rejected
+
+    def _project_guarded_removal_candidates(
+        self,
+    ) -> tuple[GuardedRemovalCandidateBlock, ...]:
+        """Project every live block into IDA-free guarded-removal candidates."""
+        candidates: list[GuardedRemovalCandidateBlock] = []
+        for serial in range(int(self.mba.qty)):
+            blk = self.mba.get_mblock(serial)
+            if blk is None:
+                continue
+            instructions: list[GuardedRemovalCandidateInstruction] = []
+            insn = blk.head
+            while insn is not None:
+                destination = getattr(insn, "d", None)
+                kind: str | None = None
+                identifier: int | None = None
+                size: int | None = None
+                if destination is not None:
+                    destination_type = int(getattr(destination, "t", -1))
+                    if destination_type == int(ida_hexrays.mop_S):
+                        stack_operand = getattr(destination, "s", None)
+                        if stack_operand is not None:
+                            kind = "stack"
+                            identifier = int(getattr(stack_operand, "off", -1))
+                    elif destination_type == int(ida_hexrays.mop_r):
+                        kind = "register"
+                        identifier = int(getattr(destination, "r", -1))
+                    if kind is not None:
+                        size = int(getattr(destination, "size", -1))
+                instructions.append(
+                    GuardedRemovalCandidateInstruction(
+                        ea=int(getattr(insn, "ea", -1)),
+                        opcode=int(getattr(insn, "opcode", -1)),
+                        destination_kind=kind,
+                        destination_id=identifier,
+                        destination_size=size,
+                    )
+                )
+                insn = insn.next
+            candidates.append(
+                GuardedRemovalCandidateBlock(
+                    serial=int(serial),
+                    start_ea=int(getattr(blk, "start", -1)),
+                    instructions=tuple(instructions),
+                )
+            )
+        return tuple(candidates)
+
+    @staticmethod
+    def _guarded_removal_fingerprint(
+        mod: QueuedModification,
+    ) -> GuardedRemovalFingerprint | None:
+        """Return the stable identity of one guarded removal, if complete."""
+        fields = (
+            mod.block_start_ea,
+            mod.insn_ea,
+            mod.expected_ordinal,
+            mod.expected_opcode,
+            mod.expected_destination_kind,
+            mod.expected_destination_id,
+            mod.expected_destination_size,
+        )
+        if any(value is None for value in fields):
+            return None
+        return GuardedRemovalFingerprint(
+            block_start_ea=int(mod.block_start_ea),
+            insn_ea=int(mod.insn_ea),
+            ordinal=int(mod.expected_ordinal),
+            opcode=int(mod.expected_opcode),
+            destination_kind=str(mod.expected_destination_kind),
+            destination_id=int(mod.expected_destination_id),
+            destination_size=int(mod.expected_destination_size),
+        )
+
+    def _rebind_guarded_insn_removals(
+        self,
+        sorted_mods: list[QueuedModification],
+    ) -> tuple[list[QueuedModification], int]:
+        """Bind guarded removals to live identity before any mutation runs.
+
+        A guarded removal was proven against a serial of an earlier MBA
+        generation.  A stage that creates blocks renumbers serials, so the
+        planned serial can address a different block by apply time - which is
+        exactly what aborted a 64-operation batch at operation 2 and poisoned
+        the generation.  Resolve every removal through its own fingerprint
+        here, and drop the ones whose identity is gone *before* the batch
+        starts writing, so a stale binding can never fail mid-apply.
+        """
+        guarded = [
+            mod
+            for mod in sorted_mods
+            if mod.mod_type == ModificationType.INSN_GUARDED_REMOVE
+        ]
+        if not guarded:
+            return sorted_mods, 0
+
+        candidates = self._project_guarded_removal_candidates()
+        dropped: set[int] = set()
+        rebound = 0
+        for mod in guarded:
+            fingerprint = self._guarded_removal_fingerprint(mod)
+            if fingerprint is None:
+                dropped.add(id(mod))
+                logger.warning(
+                    "Dropping guarded removal before live apply: "
+                    "incomplete fingerprint (%s)",
+                    mod.description,
+                )
+                continue
+            binding = bind_guarded_removal(
+                fingerprint,
+                planned_serial=int(mod.block_serial),
+                blocks=candidates,
+            )
+            if not binding.bound:
+                dropped.add(id(mod))
+                logger.warning(
+                    "Dropping guarded removal before live apply: %s (%s)",
+                    binding.reason,
+                    binding.outcome.value,
+                )
+                continue
+            if binding.outcome is GuardedRemovalBindingOutcome.REBOUND:
+                rebound += 1
+                logger.info(
+                    "current-MBA serial bindings applied to guarded removal: %s",
+                    binding.reason,
+                )
+                mod.block_serial = int(binding.serial)
+
+        if not dropped:
+            if rebound:
+                logger.info(
+                    "Rebound %d guarded instruction removal(s) to live block identity",
+                    rebound,
+                )
+            return sorted_mods, 0
+
+        filtered_mods = [mod for mod in sorted_mods if id(mod) not in dropped]
+        logger.warning(
+            "Dropped %d unbindable guarded instruction removal(s) before live apply "
+            "(rebound %d)",
+            len(dropped),
+            rebound,
+        )
+        return filtered_mods, len(dropped)
 
     def _pre_reject_duplicate_blocks(
         self,
