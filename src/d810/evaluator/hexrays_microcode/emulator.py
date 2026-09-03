@@ -688,7 +688,7 @@ class MicroCodeInterpreter(object):
         integer would pick an arbitrary-but-stable branch, so it raises here
         instead (ticket d81-1t9x).
         """
-        value = self.eval(mop, environment)
+        value = self._eval(mop, environment)
         if self.is_tainted_mop(mop, environment):
             self.abstain_causes.note(CAUSE_SYNTHETIC_TAINT)
             raise TaintedOperandException(
@@ -1090,58 +1090,58 @@ class MicroCodeInterpreter(object):
         elif ins.opcode == ida_hexrays.m_stx:
             return self._eval_store(ins, environment)
         elif ins.opcode == ida_hexrays.m_mov:
-            return (self.eval(ins.l, environment)) & res_mask
+            return (self._eval(ins.l, environment)) & res_mask
         elif ins.opcode == ida_hexrays.m_neg:
-            return (-self.eval(ins.l, environment)) & res_mask
+            return (-self._eval(ins.l, environment)) & res_mask
         elif ins.opcode == ida_hexrays.m_lnot:
             # Logical NOT: returns 1 when operand is zero, 0 otherwise (!x in C).
-            return int(self.eval(ins.l, environment) == 0) & res_mask
+            return int(self._eval(ins.l, environment) == 0) & res_mask
         elif ins.opcode == ida_hexrays.m_bnot:
-            return (self.eval(ins.l, environment) ^ res_mask) & res_mask
+            return (self._eval(ins.l, environment) ^ res_mask) & res_mask
         elif ins.opcode == ida_hexrays.m_xds:
             left_value_signed = unsigned_to_signed(
-                self.eval(ins.l, environment), ins.l.size
+                self._eval(ins.l, environment), ins.l.size
             )
             return signed_to_unsigned(left_value_signed, ins.d.size) & res_mask
         elif ins.opcode == ida_hexrays.m_xdu:
-            return (self.eval(ins.l, environment)) & res_mask
+            return (self._eval(ins.l, environment)) & res_mask
         elif ins.opcode == ida_hexrays.m_low:
-            return (self.eval(ins.l, environment)) & res_mask
+            return (self._eval(ins.l, environment)) & res_mask
         elif ins.opcode == ida_hexrays.m_high:
             # Extract the upper half of the operand. We shift by the size
             # of the destination (in bytes) converted to bits, then mask.
             shift_bits = ins.d.size * 8 if ins.d and ins.d.size else 0
-            return (self.eval(ins.l, environment) >> shift_bits) & res_mask
+            return (self._eval(ins.l, environment) >> shift_bits) & res_mask
         elif ins.opcode == ida_hexrays.m_add:
             return (
-                self.eval(ins.l, environment) + self.eval(ins.r, environment)
+                self._eval(ins.l, environment) + self._eval(ins.r, environment)
             ) & res_mask
         elif ins.opcode == ida_hexrays.m_sub:
             return (
-                self.eval(ins.l, environment) - self.eval(ins.r, environment)
+                self._eval(ins.l, environment) - self._eval(ins.r, environment)
             ) & res_mask
         elif ins.opcode == ida_hexrays.m_mul:
             return (
-                self.eval(ins.l, environment) * self.eval(ins.r, environment)
+                self._eval(ins.l, environment) * self._eval(ins.r, environment)
             ) & res_mask
         elif ins.opcode == ida_hexrays.m_udiv:
             return (
-                self.eval(ins.l, environment) // self.eval(ins.r, environment)
+                self._eval(ins.l, environment) // self._eval(ins.r, environment)
             ) & res_mask
         elif ins.opcode == ida_hexrays.m_sdiv:
-            left_value = unsigned_to_signed(self.eval(ins.l, environment), ins.l.size)
-            right_value = unsigned_to_signed(self.eval(ins.r, environment), ins.r.size)
+            left_value = unsigned_to_signed(self._eval(ins.l, environment), ins.l.size)
+            right_value = unsigned_to_signed(self._eval(ins.r, environment), ins.r.size)
             quotient = (abs(left_value) // abs(right_value)) * (
                 -1 if (left_value < 0) ^ (right_value < 0) else 1
             )
             return signed_to_unsigned(quotient, ins.d.size) & res_mask
         elif ins.opcode == ida_hexrays.m_umod:
             return (
-                self.eval(ins.l, environment) % self.eval(ins.r, environment)
+                self._eval(ins.l, environment) % self._eval(ins.r, environment)
             ) & res_mask
         elif ins.opcode == ida_hexrays.m_smod:
-            left_value = unsigned_to_signed(self.eval(ins.l, environment), ins.l.size)
-            right_value = unsigned_to_signed(self.eval(ins.r, environment), ins.r.size)
+            left_value = unsigned_to_signed(self._eval(ins.l, environment), ins.l.size)
+            right_value = unsigned_to_signed(self._eval(ins.r, environment), ins.r.size)
             quotient = (abs(left_value) // abs(right_value)) * (
                 -1 if (left_value < 0) ^ (right_value < 0) else 1
             )
@@ -1149,119 +1149,119 @@ class MicroCodeInterpreter(object):
             return signed_to_unsigned(remainder, ins.d.size) & res_mask
         elif ins.opcode == ida_hexrays.m_or:
             return (
-                self.eval(ins.l, environment) | self.eval(ins.r, environment)
+                self._eval(ins.l, environment) | self._eval(ins.r, environment)
             ) & res_mask
         elif ins.opcode == ida_hexrays.m_and:
             return (
-                self.eval(ins.l, environment) & self.eval(ins.r, environment)
+                self._eval(ins.l, environment) & self._eval(ins.r, environment)
             ) & res_mask
         elif ins.opcode == ida_hexrays.m_xor:
             return (
-                self.eval(ins.l, environment) ^ self.eval(ins.r, environment)
+                self._eval(ins.l, environment) ^ self._eval(ins.r, environment)
             ) & res_mask
         elif ins.opcode == ida_hexrays.m_shl:
             return (
-                self.eval(ins.l, environment) << self.eval(ins.r, environment)
+                self._eval(ins.l, environment) << self._eval(ins.r, environment)
             ) & res_mask
         elif ins.opcode == ida_hexrays.m_shr:
             return (
-                self.eval(ins.l, environment) >> self.eval(ins.r, environment)
+                self._eval(ins.l, environment) >> self._eval(ins.r, environment)
             ) & res_mask
         elif ins.opcode == ida_hexrays.m_sar:
             res_signed = unsigned_to_signed(
-                self.eval(ins.l, environment), ins.l.size
-            ) >> self.eval(ins.r, environment)
+                self._eval(ins.l, environment), ins.l.size
+            ) >> self._eval(ins.r, environment)
             return signed_to_unsigned(res_signed, ins.d.size) & res_mask
         elif ins.opcode == ida_hexrays.m_cfadd:
             tmp = get_add_cf(
-                self.eval(ins.l, environment), self.eval(ins.r, environment), ins.l.size
+                self._eval(ins.l, environment), self._eval(ins.r, environment), ins.l.size
             )
             return tmp & res_mask
         elif ins.opcode == ida_hexrays.m_ofadd:
             tmp = get_add_of(
-                self.eval(ins.l, environment), self.eval(ins.r, environment), ins.l.size
+                self._eval(ins.l, environment), self._eval(ins.r, environment), ins.l.size
             )
             return tmp & res_mask
         elif ins.opcode == ida_hexrays.m_sets:
             left_value_signed = unsigned_to_signed(
-                self.eval(ins.l, environment), ins.l.size
+                self._eval(ins.l, environment), ins.l.size
             )
             res = 1 if left_value_signed < 0 else 0
             return res & res_mask
         elif ins.opcode == ida_hexrays.m_seto:
             left_value_signed = unsigned_to_signed(
-                self.eval(ins.l, environment), ins.l.size
+                self._eval(ins.l, environment), ins.l.size
             )
             right_value_signed = unsigned_to_signed(
-                self.eval(ins.r, environment), ins.r.size
+                self._eval(ins.r, environment), ins.r.size
             )
             sub_overflow = get_sub_of(left_value_signed, right_value_signed, ins.l.size)
             return sub_overflow & res_mask
         elif ins.opcode == ida_hexrays.m_setnz:
             res = (
                 1
-                if self.eval(ins.l, environment) != self.eval(ins.r, environment)
+                if self._eval(ins.l, environment) != self._eval(ins.r, environment)
                 else 0
             )
             return res & res_mask
         elif ins.opcode == ida_hexrays.m_setz:
             res = (
                 1
-                if self.eval(ins.l, environment) == self.eval(ins.r, environment)
+                if self._eval(ins.l, environment) == self._eval(ins.r, environment)
                 else 0
             )
             return res & res_mask
         elif ins.opcode == ida_hexrays.m_setae:
             res = (
                 1
-                if self.eval(ins.l, environment) >= self.eval(ins.r, environment)
+                if self._eval(ins.l, environment) >= self._eval(ins.r, environment)
                 else 0
             )
             return res & res_mask
         elif ins.opcode == ida_hexrays.m_setb:
             res = (
                 1
-                if self.eval(ins.l, environment) < self.eval(ins.r, environment)
+                if self._eval(ins.l, environment) < self._eval(ins.r, environment)
                 else 0
             )
             return res & res_mask
         elif ins.opcode == ida_hexrays.m_seta:
             res = (
                 1
-                if self.eval(ins.l, environment) > self.eval(ins.r, environment)
+                if self._eval(ins.l, environment) > self._eval(ins.r, environment)
                 else 0
             )
             return res & res_mask
         elif ins.opcode == ida_hexrays.m_setbe:
             res = (
                 1
-                if self.eval(ins.l, environment) <= self.eval(ins.r, environment)
+                if self._eval(ins.l, environment) <= self._eval(ins.r, environment)
                 else 0
             )
             return res & res_mask
         elif ins.opcode == ida_hexrays.m_setg:
-            left_value = unsigned_to_signed(self.eval(ins.l, environment), ins.l.size)
-            right_value = unsigned_to_signed(self.eval(ins.r, environment), ins.r.size)
+            left_value = unsigned_to_signed(self._eval(ins.l, environment), ins.l.size)
+            right_value = unsigned_to_signed(self._eval(ins.r, environment), ins.r.size)
             res = 1 if left_value > right_value else 0
             return res & res_mask
         elif ins.opcode == ida_hexrays.m_setge:
-            left_value = unsigned_to_signed(self.eval(ins.l, environment), ins.l.size)
-            right_value = unsigned_to_signed(self.eval(ins.r, environment), ins.r.size)
+            left_value = unsigned_to_signed(self._eval(ins.l, environment), ins.l.size)
+            right_value = unsigned_to_signed(self._eval(ins.r, environment), ins.r.size)
             res = 1 if left_value >= right_value else 0
             return res & res_mask
         elif ins.opcode == ida_hexrays.m_setl:
-            left_value = unsigned_to_signed(self.eval(ins.l, environment), ins.l.size)
-            right_value = unsigned_to_signed(self.eval(ins.r, environment), ins.r.size)
+            left_value = unsigned_to_signed(self._eval(ins.l, environment), ins.l.size)
+            right_value = unsigned_to_signed(self._eval(ins.r, environment), ins.r.size)
             res = 1 if left_value < right_value else 0
             return res & res_mask
         elif ins.opcode == ida_hexrays.m_setle:
-            left_value = unsigned_to_signed(self.eval(ins.l, environment), ins.l.size)
-            right_value = unsigned_to_signed(self.eval(ins.r, environment), ins.r.size)
+            left_value = unsigned_to_signed(self._eval(ins.l, environment), ins.l.size)
+            right_value = unsigned_to_signed(self._eval(ins.r, environment), ins.r.size)
             res = 1 if left_value <= right_value else 0
             return res & res_mask
         elif ins.opcode == ida_hexrays.m_setp:
             res = get_parity_flag(
-                self.eval(ins.l, environment), self.eval(ins.r, environment), ins.l.size
+                self._eval(ins.l, environment), self._eval(ins.r, environment), ins.l.size
             )
             return res & res_mask
         raise EmulationException(
@@ -1296,7 +1296,7 @@ class MicroCodeInterpreter(object):
                 )
             )
         direct_child_serial = cur_blk.nextb.serial
-        # ``_require_exact``, never ``eval``: a synthetic call return is a
+        # ``_require_exact``, never ``_eval``: a synthetic call return is a
         # concrete integer, so comparing it silently picks an
         # arbitrary-but-stable branch (ticket d81-1t9x).
         if ins.opcode == ida_hexrays.m_jcnd:
@@ -1471,8 +1471,8 @@ class MicroCodeInterpreter(object):
                         helper_name,
                     )
                 return None
-            data_1 = self.eval(args_list.f.args[0], environment)
-            data_2 = self.eval(args_list.f.args[1], environment)
+            data_1 = self._eval(args_list.f.args[0], environment)
+            data_2 = self._eval(args_list.f.args[1], environment)
             if data_1 is None or data_2 is None:
                 if emulator_log.debug_on:
                     emulator_log.debug(
@@ -1504,7 +1504,7 @@ class MicroCodeInterpreter(object):
             if seg_val is not None:
                 environment.define(ins.l, seg_val)
 
-        load_address = self.eval(ins.r, environment)
+        load_address = self._eval(ins.r, environment)
         formatted_seg_register = format_mop_t(ins.l)
         # formatted segment register: <mop_t type=mop_r size=2 dstr=ds.2>
         if formatted_seg_register == "ss.2":
@@ -1618,10 +1618,10 @@ class MicroCodeInterpreter(object):
                     environment.define(ins.r, seg_val)
 
             # Evaluate the value to store
-            store_value = self.eval(ins.l, environment)
+            store_value = self._eval(ins.l, environment)
 
             # Evaluate the address (ins.d for stx, NOT ins.r which is the segment)
-            store_address = self.eval(ins.d, environment)
+            store_address = self._eval(ins.d, environment)
         except EmulationException as e:
             # If we can't evaluate operands and symbolic mode is off, bypass
             if not self.symbolic_mode:
@@ -1716,7 +1716,7 @@ class MicroCodeInterpreter(object):
         mask = AND_TABLE.get(getattr(ins.d, "size", 0) or 0)
         return value & mask if mask is not None else value
 
-    def eval(self, mop: ida_hexrays.mop_t, environment: MicroCodeEnvironment) -> int:
+    def _eval(self, mop: ida_hexrays.mop_t, environment: MicroCodeEnvironment) -> int:
         """RAW evaluation -- the value, with no claim about how far it is proven.
 
         This is the PROPAGATION path: it deliberately keeps carrying a value
@@ -1726,6 +1726,10 @@ class MicroCodeInterpreter(object):
         target, a published state constant -- must go through
         :meth:`eval_mop` / :meth:`eval_mop_result` / :meth:`_require_exact`,
         which are EXACT-or-``None`` (ticket d81-1t9x).
+
+        Private by construction (ticket d81-3xer): callers OUTSIDE this
+        module must never reach for the raw value directly, so this method
+        carries no public alias. Use :meth:`eval_mop` / :meth:`eval_mop_result`.
         """
         # Check for invalid mop sizes (e.g., function references have size=-1)
         if mop.size < 0:
@@ -2005,7 +2009,7 @@ class MicroCodeInterpreter(object):
             if environment is None:
                 environment = self.global_environment
             self.abstain_causes.begin_step()
-            res = self.eval(mop, environment)
+            res = self._eval(mop, environment)
             if self.is_tainted_mop(mop, environment):
                 self.abstain_causes.note(CAUSE_SYNTHETIC_TAINT)
                 if raise_exception:

@@ -31,6 +31,7 @@ if _package_name not in sys.modules:
 from d810.evaluator.hexrays_microcode.p_taint import (  # noqa: E402
     EvalResult,
     Exactness,
+    address_from_eval_result,
     any_tainted,
     taint_location_key,
     taint_result,
@@ -139,3 +140,42 @@ class TestTaintLocationKey:
 
     def test_registers_and_stack_slots_do_not_collide(self):
         assert taint_location_key(1, 8) != taint_location_key(2, 8)
+
+
+class TestAddressFromEvalResult:
+    """A fold decision must not treat a tainted value as a resolved pointer
+    (ticket d81-3xer): ``fold_readonlydata.py`` used to accept ANY integer
+    ``> 0x10000`` from the raw ``MicroCodeInterpreter.eval()`` propagation
+    path, so a value derived from a synthetic (invented) call return could
+    still be folded as an address.
+    """
+
+    TABLE_EA = 0x1800296A0
+
+    def test_an_exact_result_above_the_floor_yields_the_address(self):
+        assert (
+            address_from_eval_result(EvalResult.exact(self.TABLE_EA))
+            == self.TABLE_EA
+        )
+
+    def test_a_tainted_result_never_yields_an_address(self):
+        # This is the regression: a synthetic-call-derived value must not
+        # become a fold address just because it LOOKS like a plausible EA.
+        assert address_from_eval_result(EvalResult.tainted(self.TABLE_EA)) is None
+
+    def test_an_unknown_result_yields_no_address(self):
+        assert address_from_eval_result(EvalResult.unknown()) is None
+
+    def test_an_exact_result_at_or_below_the_floor_is_rejected(self):
+        assert address_from_eval_result(EvalResult.exact(0x10000)) is None
+        assert address_from_eval_result(EvalResult.exact(0x100)) is None
+
+    def test_the_floor_is_configurable(self):
+        assert (
+            address_from_eval_result(EvalResult.exact(0x20000), min_address=0x30000)
+            is None
+        )
+        assert (
+            address_from_eval_result(EvalResult.exact(0x40000), min_address=0x30000)
+            == 0x40000
+        )

@@ -28,6 +28,7 @@ from d810.core.typing import Collection, Hashable, Iterable
 __all__ = [
     "EvalResult",
     "Exactness",
+    "address_from_eval_result",
     "any_tainted",
     "taint_location_key",
     "taint_result",
@@ -156,3 +157,29 @@ def taint_result(
     if produces_synthetic:
         return True
     return any_tainted(source_keys, tainted_keys)
+
+
+def address_from_eval_result(
+    result: EvalResult, *, min_address: int = 0x10000
+) -> int | None:
+    """The address a memory-fold decision may use, or ``None``.
+
+    Only an ``EXACT`` evaluation may become a fold address: a value derived
+    from a synthetic call return (:attr:`Exactness.TAINTED`) must never be
+    treated as a resolved pointer, no matter how plausible its magnitude looks
+    (ticket ``d81-3xer``).  A value at or below *min_address* is also rejected
+    as an implausible virtual address.
+
+    >>> address_from_eval_result(EvalResult.exact(0x1800296A0))
+    6442620576
+    >>> address_from_eval_result(EvalResult.tainted(0x1800296A0)) is None
+    True
+    >>> address_from_eval_result(EvalResult.exact(0x100)) is None
+    True
+    >>> address_from_eval_result(EvalResult.unknown()) is None
+    True
+    """
+    value = result.exact_value
+    if value is None or value <= min_address:
+        return None
+    return value
