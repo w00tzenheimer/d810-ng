@@ -158,6 +158,33 @@ def test_repeated_encoding_of_the_same_occurrence_is_reused_within_one_session()
     assert metrics.roundtrip_decodes == 0
 
 
+def test_equal_but_distinct_occurrences_never_reuse_each_others_bytes() -> None:
+    """A dataclass-equal copy is a different occurrence: it must not hit."""
+
+    from d810.transforms.unflatten_authority import model
+
+    first_fixture = ids.DigestFixture(
+        3, model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT, ("native",),
+    )
+    second_fixture = ids.DigestFixture(
+        3, model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT, ("native",),
+    )
+    assert first_fixture == second_fixture
+    assert first_fixture is not second_fixture
+    with _canonical_validation_session(
+        CanonicalSessionPhase.PROJECTED_PREPARATION,
+    ) as session:
+        first_bytes = ids.canonical_bytes(first_fixture)
+        second_bytes = ids.canonical_bytes(second_fixture)
+        metrics = session.metrics
+
+    # Equal content, but two distinct live occurrences: both pay full price.
+    assert first_bytes == second_bytes
+    assert metrics.deep_validations == 2
+    assert metrics.wire_encodes == 2
+    assert metrics.canonical_bytes_reuses == 0
+
+
 def test_deep_authority_roundtrip_repeats_work_for_one_exact_occurrence() -> None:
     """Freeze the repeated work `validate_canonical_roundtrip` costs today."""
 
