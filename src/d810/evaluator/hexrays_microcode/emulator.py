@@ -579,12 +579,18 @@ class MicroCodeInterpreter(object):
             # ``pred_defs`` means the edge carries none of them (look one block
             # further up the corridor), several means the predecessor is itself a
             # merge.
+            pred_blk = mba.get_mblock(pred_serial)
             emulator_log.debug(
-                "DEF-USE-DIAG: blk=%d var=%s pred=%d pred_defs=%s (edge did not "
-                "single out a def)",
+                "DEF-USE-DIAG: blk=%d var=%s pred=%d pred_preds=%s pred_defs=%s "
+                "(edge did not single out a def)",
                 blk_serial,
                 get_mop_key(mop),
                 pred_serial,
+                (
+                    sorted(int(p) for p in pred_blk.predset)
+                    if pred_blk is not None
+                    else None
+                ),
                 [(d.block_serial, hex(d.ins_ea)) for d in pred_defs],
             )
         return None if index is None else defs[index]
