@@ -7,12 +7,22 @@ log noise.  No IDA import, no diag DB.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
-from d810.core import diag as _diag_backend  # noqa: F401
+from d810.core import diag as _diag_backend
 from d810.core import observability
-from d810.core.observability import reset_diagnostic_bus, subscribe
-from d810.core.observability_events import UnflattenCandidateOutcomeObserved
+from d810.core.observability import (
+    emit as _emit_diagnostic,
+    get_active_diag_path,
+    reset_diagnostic_bus,
+    subscribe,
+)
+from d810.core.observability_events import (
+    DiagnosticSessionObserved,
+    UnflattenCandidateOutcomeObserved,
+)
 from d810.core.observability_unflat import (
     UNFLAT_OUTCOME_DISPOSITIONS,
     build_unflat_candidate_outcome,
@@ -316,6 +326,131 @@ def test_observe_keeps_the_db_path_when_the_active_session_matches(monkeypatch):
         "python -m d810.diagnostics unflat-why "
         "--db /tmp/own_func.diag.sqlite3 --func 0x7ffb0f2726e0"
     )
+
+
+# ---------------------------------------------------------------------------
+# d81-y3oi(c): a multi-function batch must resolve each function's own
+# capture via the disk-based fallback rather than rendering the placeholder.
+# ---------------------------------------------------------------------------
+
+
+def test_observe_falls_back_to_disk_lookup_when_the_live_path_is_stale(monkeypatch):
+    # The live pointer still names an unrelated function's capture (a
+    # multi-function batch, or a session that legitimately stays un-rotated
+    # across nested callbacks) -- resolve_unflat_hint_db_path drops it.
+    monkeypatch.setattr(
+        observability, "_diag_path_provider", lambda: "/tmp/first_func.diag.sqlite3"
+    )
+    monkeypatch.setattr(
+        observability, "_diag_active_func_ea_provider", lambda: 0x7FFB0EB06E50
+    )
+    monkeypatch.setattr(
+        observability,
+        "_diag_latest_path_for_func_provider",
+        lambda func_ea: f"/tmp/own_capture_0x{func_ea:x}.diag.sqlite3",
+    )
+    record = observe_unflat_candidate_outcome(
+        session_id="s1",
+        func_ea=0x7FFB0F2726E0,
+        maturity="MMAT_GLBOPT1",
+        graph_fingerprint="",
+        candidate_identity="",
+        attempt=0,
+        disposition="maturity_no_callbacks",
+        reason="hexrays_delivered_no_optblock_callback",
+    )
+    assert record is not None
+    assert record.next_hint == (
+        "python -m d810.diagnostics unflat-why "
+        "--db /tmp/own_capture_0x7ffb0f2726e0.diag.sqlite3 --func 0x7ffb0f2726e0"
+    )
+
+
+def test_observe_uses_the_placeholder_only_when_the_disk_lookup_also_finds_nothing(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        observability, "_diag_path_provider", lambda: "/tmp/first_func.diag.sqlite3"
+    )
+    monkeypatch.setattr(
+        observability, "_diag_active_func_ea_provider", lambda: 0x7FFB0EB06E50
+    )
+    monkeypatch.setattr(
+        observability, "_diag_latest_path_for_func_provider", lambda func_ea: None
+    )
+    record = observe_unflat_candidate_outcome(
+        session_id="s1",
+        func_ea=0x7FFB0F2726E0,
+        maturity="MMAT_GLBOPT1",
+        graph_fingerprint="",
+        candidate_identity="",
+        attempt=0,
+        disposition="maturity_no_callbacks",
+        reason="hexrays_delivered_no_optblock_callback",
+    )
+    assert record is not None
+    assert record.next_hint == (
+        "python -m d810.diagnostics unflat-why --db <diag-db> --func 0x7ffb0f2726e0"
+    )
+
+
+def test_multi_function_batch_resolves_each_functions_own_capture_end_to_end(
+    tmp_path, monkeypatch
+):
+    """Real backend: func2's row lands in func1's un-rotated capture file.
+
+    Reproduces the confirmed real-batch shape from ``resolve_unflat_hint_db_path``'s
+    own docstring: a session that never rotates keeps the live pointer on the
+    *first* function while later functions' rows still land in that same
+    file. The disk fallback must still resolve an executable ``--db`` for
+    the later function instead of the placeholder.
+    """
+    monkeypatch.setattr(
+        _diag_backend, "get_settings", lambda: SimpleNamespace(diag_snapshots=True)
+    )
+    # The registered disk-fallback provider (like production) calls
+    # find_latest_diag_db_path with no explicit log_dir, so it must resolve
+    # to the same directory the test's session was opened in.
+    monkeypatch.setattr(_diag_backend, "_resolve_log_dir", lambda _log_dir=None: tmp_path)
+    func1, func2 = 0x7FFB0EB06E50, 0x7FFB0F2726E0
+    # A prior test elsewhere in the suite can leak an open session (the
+    # process-global ``_current_db``); without this, ``open_diag_session``'s
+    # own "already open, no rotation" guard would silently no-op below and
+    # this test would observe someone else's stale capture path.
+    _diag_backend.close_diag_session()
+    _diag_backend.open_diag_session(func1, log_dir=str(tmp_path))
+    try:
+        live_path = get_active_diag_path()
+        assert live_path is not None
+        # func2's own session (a nested/reentrant callback within the same
+        # un-rotated capture) is still persisted with its OWN func_ea.
+        _emit_diagnostic(
+            DiagnosticSessionObserved(
+                session_id="func2-session",
+                func_ea=func2,
+                top_level_epoch=1,
+                native_key_json="{}",
+                status="active",
+            )
+        )
+
+        record = observe_unflat_candidate_outcome(
+            session_id="func2-session",
+            func_ea=func2,
+            maturity="MMAT_GLBOPT1",
+            graph_fingerprint="",
+            candidate_identity="",
+            attempt=0,
+            disposition="maturity_no_callbacks",
+            reason="hexrays_delivered_no_optblock_callback",
+        )
+        assert record is not None
+        assert record.next_hint != (
+            f"python -m d810.diagnostics unflat-why --db <diag-db> --func 0x{func2:x}"
+        )
+        assert live_path in record.next_hint
+    finally:
+        _diag_backend.close_diag_session()
 
 
 def test_log_line_is_one_dense_anchored_line():

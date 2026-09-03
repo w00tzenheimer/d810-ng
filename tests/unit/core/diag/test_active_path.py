@@ -27,33 +27,33 @@ def test_active_diag_func_ea_reports_the_session_opening_func_ea(monkeypatch):
 
 
 def test_observability_path_provider_does_not_request_or_create_a_connection(monkeypatch):
+    # ``register_diag_path_provider`` mutates the module global directly (the
+    # real registration path); routing the mutation itself through
+    # ``monkeypatch.setattr`` -- rather than calling the register function
+    # and restoring by hand afterward -- is what makes pytest's teardown
+    # actually undo it. A hand-rolled try/finally restore here previously
+    # leaked this lambda as the process-global provider for every later test.
     calls = []
-    old_provider = observability._diag_path_provider
-    try:
-        observability.register_diag_path_provider(
-            lambda: calls.append("path") or "/tmp/current.diag.sqlite3"
-        )
-        assert observability.get_active_diag_path() == "/tmp/current.diag.sqlite3"
-        assert calls == ["path"]
-    finally:
-        monkeypatch.setattr(observability, "_diag_path_provider", old_provider)
+    monkeypatch.setattr(
+        observability,
+        "_diag_path_provider",
+        lambda: calls.append("path") or "/tmp/current.diag.sqlite3",
+    )
+    assert observability.get_active_diag_path() == "/tmp/current.diag.sqlite3"
+    assert calls == ["path"]
 
 
 def test_observability_active_func_ea_provider_does_not_request_or_create_a_connection(
     monkeypatch,
 ):
     calls = []
-    old_provider = observability._diag_active_func_ea_provider
-    try:
-        observability.register_diag_active_func_ea_provider(
-            lambda: calls.append("func_ea") or 0x7FFB0EB06E50
-        )
-        assert observability.get_active_diag_func_ea() == 0x7FFB0EB06E50
-        assert calls == ["func_ea"]
-    finally:
-        monkeypatch.setattr(
-            observability, "_diag_active_func_ea_provider", old_provider
-        )
+    monkeypatch.setattr(
+        observability,
+        "_diag_active_func_ea_provider",
+        lambda: calls.append("func_ea") or 0x7FFB0EB06E50,
+    )
+    assert observability.get_active_diag_func_ea() == 0x7FFB0EB06E50
+    assert calls == ["func_ea"]
 
 
 def test_observability_active_func_ea_defaults_to_none_with_no_provider(monkeypatch):

@@ -190,6 +190,36 @@ def _lifecycle_execution_attempt_context(
     )
 
 
+def _lifecycle_diag_session_id(lifecycle: object | None, function_ea: int) -> str:
+    """Diag-DB session identity owned by the lifecycle coordinator, if any.
+
+    ``DecompilationSessionContext.identity_key`` is the same session_id every
+    other unflatten outcome producer publishes (``manager.py``,
+    ``state_machine_cff_unflattener.py``), and the same value
+    ``diagnostic_sessions.session_id`` is keyed on -- reusing it here lets a
+    skipped-maturity record join the rest of this decompile's diagnostic rows
+    instead of minting an unrelated, unjoinable identity per callback
+    (ticket d81-y3oi). Falls back to a synthetic per-function id only when no
+    lifecycle session is attached (for example a bare adapter under test), so
+    this never raises for a diagnostic reason.
+    """
+    current_session = getattr(lifecycle, "current_session", None)
+    if callable(current_session):
+        try:
+            session = current_session(int(function_ea))
+        except Exception:
+            optimizer_logger.debug(
+                "lifecycle session lookup failed for func=0x%x",
+                int(function_ea),
+                exc_info=True,
+            )
+            session = None
+        identity_key = getattr(session, "identity_key", None)
+        if identity_key:
+            return str(identity_key)
+    return f"optblock:{int(function_ea):x}"
+
+
 def _optblock_callback_exception_context(
     blk: object,
 ) -> tuple[int, str, int | None, int | None, str]:
@@ -773,9 +803,12 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
             if not skipped:
                 return
             func_ea = int(getattr(mba, "entry_ea", 0) or 0)
+            session_id = _lifecycle_diag_session_id(
+                getattr(self, "_decompilation_lifecycle", None), func_ea
+            )
             for maturity_name in skipped:
                 observe_unflat_candidate_outcome(
-                    session_id=f"optblock:{func_ea:x}",
+                    session_id=session_id,
                     func_ea=func_ea,
                     maturity=maturity_name,
                     graph_fingerprint="",

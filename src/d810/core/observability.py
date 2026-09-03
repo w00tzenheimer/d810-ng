@@ -160,6 +160,7 @@ _session_open_handler: Callable[[int], None] | None = None
 _session_close_handler: Callable[[], None] | None = None
 _diag_conn_provider: Callable[..., Any] | None = None
 _diag_path_provider: Callable[[], str | None] | None = None
+_diag_latest_path_for_func_provider: Callable[[int], str | None] | None = None
 
 
 def register_diag_session_handlers(
@@ -195,6 +196,25 @@ def register_diag_path_provider(fn: Callable[[], str | None]) -> None:
     global _diag_path_provider
     with _session_lock:
         _diag_path_provider = fn
+
+
+def register_diag_latest_path_for_func_provider(
+    fn: Callable[[int], str | None],
+) -> None:
+    """Register a disk-based lookup for a function's own capture DB.
+
+    The live in-process pointer (:func:`get_active_diag_path`) can lag or
+    stay intentionally un-rotated across nested/reentrant callbacks that
+    legitimately share one top-level capture file (see
+    :func:`get_active_diag_func_ea`). The registered callable receives
+    ``func_ea`` and scans capture files on disk for the newest one whose
+    ``diagnostic_sessions`` table actually recorded a session for that
+    function, regardless of which function currently owns the live pointer.
+    """
+
+    global _diag_latest_path_for_func_provider
+    with _session_lock:
+        _diag_latest_path_for_func_provider = fn
 
 
 def _ensure_backend_loaded() -> None:
@@ -295,6 +315,30 @@ def get_active_diag_path() -> str | None:
         return None
 
 
+def get_diag_latest_path_for_func(func_ea: int) -> str | None:
+    """Return the newest on-disk capture DB that recorded a session for ``func_ea``.
+
+    A read-only, non-creating disk lookup: use this only after
+    :func:`get_active_diag_path` / :func:`resolve_unflat_hint_db_path`'s live
+    pointer fails to name ``func_ea``'s own capture. ``None`` when no backend
+    is registered or the lookup finds nothing.
+    """
+    _ensure_backend_loaded()
+    provider = _diag_latest_path_for_func_provider
+    if provider is None:
+        return None
+    try:
+        return provider(int(func_ea))
+    except Exception:
+        _logger.warning(
+            "diag latest-path-for-func provider raised; treating as no capture "
+            "(func_ea=0x%x)",
+            int(func_ea),
+            exc_info=True,
+        )
+        return None
+
+
 _diag_active_func_ea_provider: Callable[[], int | None] | None = None
 
 
@@ -377,11 +421,13 @@ __all__ = [
     "get_active_diag_conn",
     "get_active_diag_func_ea",
     "get_active_diag_path",
+    "get_diag_latest_path_for_func",
     "has_subscribers",
     "new_snapshot_key",
     "open_observability_session",
     "register_diag_active_func_ea_provider",
     "register_diag_conn_provider",
+    "register_diag_latest_path_for_func_provider",
     "register_diag_path_provider",
     "register_diag_session_handlers",
     "register_snapshot_id_resolver",

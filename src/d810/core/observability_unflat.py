@@ -27,7 +27,12 @@ from d810.core.maturity_labels import (
     MaturityNumbering,
     mmat_name,
 )
-from d810.core.observability import emit, get_active_diag_func_ea, get_active_diag_path
+from d810.core.observability import (
+    emit,
+    get_active_diag_func_ea,
+    get_active_diag_path,
+    get_diag_latest_path_for_func,
+)
 from d810.core.observability_events import (
     UNFLATTEN_CANDIDATE_DISPOSITIONS,
     UnflattenCandidateOutcomeObserved,
@@ -306,6 +311,18 @@ def observe_unflat_candidate_outcome(
     except Exception:
         db_path = None
     db_path = resolve_unflat_hint_db_path(func_ea, db_path, get_active_diag_func_ea())
+    if db_path is None:
+        # The live in-process pointer either names a different function's
+        # capture or is absent entirely (multi-function batch, or a session
+        # that legitimately stays un-rotated across nested callbacks). Before
+        # falling back to the placeholder, check whether func_ea's own
+        # session was actually recorded on disk somewhere -- it usually was
+        # (ticket d81-y3oi): the `next_hint` command only needs to be
+        # executable, not name the *live* file.
+        try:
+            db_path = get_diag_latest_path_for_func(func_ea)
+        except Exception:
+            db_path = None
     record = build_unflat_candidate_outcome(
         session_id=session_id,
         func_ea=func_ea,
