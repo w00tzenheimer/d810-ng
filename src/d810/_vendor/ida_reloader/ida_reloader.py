@@ -1062,7 +1062,18 @@ class ReloadablePluginBase(LateInitPlugin):
     def _import_plugin_cls(self):
         self.plugin_module, self.plugin_class_name = self.plugin_class.rsplit(".", 1)
         mod = importlib.import_module(self.plugin_module)
-        return getattr(mod, self.plugin_class_name)()
+        plugin_cls = getattr(mod, self.plugin_class_name)
+        # Both call sites (first construction here, and plugin_setup_reload()
+        # below) invoke .load() on the result immediately after. If the
+        # plugin class exposes a "defer_initial_reset" context manager, use
+        # it so construction does not do a full reset just to have load()
+        # discard it a few lines later (d810 ticket d81-43c8). Plugins
+        # without that hook behave exactly as before.
+        defer_initial_reset = getattr(plugin_cls, "defer_initial_reset", None)
+        if callable(defer_initial_reset):
+            with defer_initial_reset():
+                return plugin_cls()
+        return plugin_cls()
 
     @override
     def late_init(self):
@@ -1091,8 +1102,13 @@ class ReloadablePluginBase(LateInitPlugin):
         # Construct only after the caller has rebuilt its package.  Creating
         # the replacement before ``yield`` leaves it bound to the old class
         # generation even though its modules are reloaded underneath it.
+        #
+        # No explicit reset() here: _import_plugin_cls() already runs
+        # __init__ (which resets unless deferred, see its docstring), and
+        # plugin.load() below resets again -- a third, redundant reset here
+        # discarded a full D810Manager rebuild (~20s) every reload (ticket
+        # d81-43c8).
         self.plugin = self._import_plugin_cls()
-        self.plugin.reset()
         self.register_reload_action()
         print(f"{self.global_name} reloading...")
         self.add_plugin_to_console()
