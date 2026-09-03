@@ -28,6 +28,7 @@ from d810.core.observability_emulator import (
     build_emulator_gap_events,
     emulator_gap_counts,
     emulator_gap_scope,
+    flush_all_emulator_gaps,
     flush_emulator_gaps,
     format_emulator_gap,
     format_emulator_gap_aggregate,
@@ -314,3 +315,39 @@ class TestEmulatorGapEvent:
 def test_a_gap_is_hashable_and_carries_its_key():
     gap = EmulatorGap(cause=CAUSE_NULL_DEREF, site_ea=0x10, block_serial=3)
     assert gap.key() == (CAUSE_NULL_DEREF, 0x10, 3)
+
+
+class TestFlushAll:
+    """The LAST attempt must not lose its facts (measured on sub_7FFB0EB06E50).
+
+    The per-attempt flush hangs off the terminal candidate outcome, so an
+    attempt with no terminal record after it -- the last one of a
+    decompilation -- warned three times and published nothing.  The lifecycle
+    coordinator closes that hole when the session finishes.
+    """
+
+    def test_every_tracked_function_is_flushed(self):
+        published: list[object] = []
+        begin_emulator_gap_attempt(FUNC, maturity="MMAT_GLBOPT1")
+        begin_emulator_gap_attempt(FUNC + 0x100, maturity="MMAT_GLBOPT1")
+        record_emulator_gap(FUNC, CAUSE_NULL_DEREF, site_ea=0x20)
+        record_emulator_gap(FUNC + 0x100, CAUSE_HELPER_NOT_IMPLEMENTED, site_ea=0x30)
+        lines = flush_all_emulator_gaps(emit_fn=published.append)
+        assert len(lines) == 2
+        assert len(published) == 2
+        assert emulator_gap_counts(FUNC) == {}
+        assert emulator_gap_counts(FUNC + 0x100) == {}
+
+    def test_flush_all_is_a_noop_when_nothing_was_recorded(self):
+        published: list[object] = []
+        begin_emulator_gap_attempt(FUNC, maturity="MMAT_GLBOPT1")
+        assert flush_all_emulator_gaps(emit_fn=published.append) == ()
+        assert published == []
+
+    def test_flush_all_never_raises(self):
+        def _boom(_event):
+            raise RuntimeError("bus down")
+
+        begin_emulator_gap_attempt(FUNC, maturity="MMAT_GLBOPT1")
+        record_emulator_gap(FUNC, CAUSE_NULL_DEREF, site_ea=0x20)
+        assert len(flush_all_emulator_gaps(emit_fn=_boom)) == 1

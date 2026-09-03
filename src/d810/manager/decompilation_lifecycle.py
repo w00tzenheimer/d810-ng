@@ -40,6 +40,7 @@ from d810.core.observability import (
     close_observability_session,
     emit as emit_diagnostic,
 )
+from d810.core.observability_emulator import flush_all_emulator_gaps
 from d810.core.observability_events import (
     DiagnosticSessionObserved,
     EvidenceGenerationObserved,
@@ -1590,6 +1591,15 @@ class DecompilationLifecycleCoordinator:
         # next-prolog-abandoned outcomes without splitting a nested owner from
         # its still-active parent.
         if not self._active_sessions:
+            # Publish the LAST attempt's evaluator gaps before the session
+            # closes.  The per-attempt flush hangs off the terminal candidate
+            # outcome, so an attempt with no terminal record after it -- the
+            # final one of a decompilation -- warned and published nothing
+            # (ticket d81-c6n7).
+            try:
+                flush_all_emulator_gaps()
+            except Exception:  # noqa: BLE001 — diagnostics never break a run
+                logger.debug("emulator gap final flush failed", exc_info=True)
             close_observability_session()
         return None
 

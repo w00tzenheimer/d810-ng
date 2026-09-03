@@ -488,6 +488,30 @@ def flush_emulator_gaps(
         return None
 
 
+def flush_all_emulator_gaps(
+    *,
+    log: object | None = None,
+    emit_fn: Callable[[object], object] | None = None,
+) -> tuple[str, ...]:
+    """Flush every tracked function; returns the aggregate lines produced.
+
+    The per-attempt flush hangs off the terminal candidate outcome, so the LAST
+    attempt of a decompilation -- the one with no terminal record after it --
+    would warn and then publish nothing.  Measured on ``sub_7FFB0EB06E50``:
+    attempt 6 emitted 3 WARNING lines and 0 facts.  The lifecycle coordinator
+    calls this when a top-level session finishes, before the observability
+    session closes, so log lines and facts reconcile exactly.
+
+    Never raises for a diagnostic reason.
+    """
+    lines: list[str] = []
+    for func_ea in tuple(_SCOPES):
+        line = flush_emulator_gaps(func_ea, log=log, emit_fn=emit_fn)
+        if line:
+            lines.append(line)
+    return tuple(lines)
+
+
 __all__ = [
     "CAUSE_GLOBAL_NOT_SEEDED",
     "CAUSE_HELPER_NOT_IMPLEMENTED",
@@ -511,6 +535,7 @@ __all__ = [
     "build_emulator_gap_events",
     "emulator_gap_counts",
     "emulator_gap_scope",
+    "flush_all_emulator_gaps",
     "flush_emulator_gaps",
     "format_emulator_gap",
     "format_emulator_gap_aggregate",
