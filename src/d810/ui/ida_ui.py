@@ -394,6 +394,9 @@ class PluginConfigurationFileForm_t(QtWidgets.QDialog):
         )
         self.runtime_native_perf = bool(runtime_settings.native_perf)
         self.runtime_nomut_matching = bool(runtime_settings.nomut_matching)
+        self.runtime_mba_residual_recording = bool(
+            runtime_settings.mba_residual_recording
+        )
         self.speedup_availability = probe_speedup_availability()
         raw_storage = self.state.d810_config.get(
             "function_recipe_storage",
@@ -626,6 +629,19 @@ class PluginConfigurationFileForm_t(QtWidgets.QDialog):
         self.checkbox_nomut_matching.setChecked(self.runtime_nomut_matching)
         performance_layout.addRow(self.checkbox_nomut_matching)
 
+        self.checkbox_mba_residual_recording = QtWidgets.QCheckBox(
+            "Record MBA provider residual observations", self
+        )
+        self.checkbox_mba_residual_recording.setToolTip(
+            "Persist every non-applied MBA provider attempt to "
+            "d810_mba_discovery.sqlite3 for later rule mining. Turning this "
+            "off keeps mba-solve rewriting and only stops the bookkeeping."
+        )
+        self.checkbox_mba_residual_recording.setChecked(
+            self.runtime_mba_residual_recording
+        )
+        performance_layout.addRow(self.checkbox_mba_residual_recording)
+
         self.checkbox_disable_cython = QtWidgets.QCheckBox(
             "Do not use Cython speedups", self
         )
@@ -766,6 +782,9 @@ class PluginConfigurationFileForm_t(QtWidgets.QDialog):
         runtime_overrides.update(
             native_perf=self.checkbox_native_perf.isChecked(),
             nomut_matching=self.checkbox_nomut_matching.isChecked(),
+            mba_residual_recording=(
+                self.checkbox_mba_residual_recording.isChecked()
+            ),
         )
         apply_runtime_settings(runtime_overrides)
         set_capture = getattr(self.state, "set_diagnostics_capture_enabled", None)
