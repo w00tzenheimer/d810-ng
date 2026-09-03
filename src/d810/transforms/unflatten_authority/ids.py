@@ -1718,6 +1718,12 @@ def _subject_factory(cls: type[object], **kwargs: object) -> object:
 def _record_content_id(schema: str, value: object, omitted_field: str) -> str:
     if not is_dataclass(value) or isinstance(value, type):
         raise TypeError("content ID factory requires a registered record")
+    session = active_canonical_session()
+    if session is not None:
+        cached = session.cached_content_id(value, schema, omitted_field)
+        if cached is not None:
+            record_content_id_reuse()
+            return cached
     _ensure_registries()
     if type(value) not in _RECORD_TYPES:
         raise TypeError(f"unregistered record type: {type(value).__name__}")
@@ -1734,9 +1740,12 @@ def _record_content_id(schema: str, value: object, omitted_field: str) -> str:
         ],
     }
     record_wire_encode()
-    return "sha256:" + hashlib.sha256(
+    result = "sha256:" + hashlib.sha256(
         _PREFIX + schema.encode("ascii") + b"\0" + _json_bytes(wire)
     ).hexdigest()
+    if session is not None:
+        session.store_content_id(value, schema, omitted_field, result)
+    return result
 
 
 def _claim_factory(cls: type[object], *args: object, **kwargs: object) -> object:

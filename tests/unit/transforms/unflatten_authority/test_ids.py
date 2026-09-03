@@ -884,6 +884,74 @@ def test_claim_and_evidence_factories_recompute_ids_and_reject_forgery() -> None
         replace(evidence, evidence_id="sha256:" + "0" * 64)
 
 
+def test_record_content_id_reuses_the_same_live_claim_occurrence() -> None:
+    """Two `claim_id` calls on the same exact claim reuse the sealed ID."""
+    from d810.transforms.unflatten_authority.canonical_session import (
+        CanonicalSessionPhase,
+        _canonical_validation_session,
+    )
+
+    locator = model.BlockSubjectLocator(block_ref("authority"), 0x1000)
+    subject = _subject_factory(
+        model.SemanticSubjectRef,
+        kind=model.SemanticSubjectKind.BLOCK,
+        role=model.SemanticSubjectRole.EFFECT_SITE,
+        block_ref=locator.block_ref,
+        anchor_ea=locator.anchor_ea,
+        locator=locator,
+    )
+    claim = _claim_factory(
+        model.LocalAliasEffectScalarizationClaim,
+        kind=model.UnflattenClaimKind.LOCAL_ALIAS_EFFECT_SCALARIZATION,
+        owner_subject=subject,
+        step_index=0,
+        host_ea=0x1000,
+        host_opcode=1,
+        alias_token="alias",
+        base_token="base",
+        host_text_sha1=None,
+        value_size=None,
+        step_digest="sha256:" + "1" * 64,
+        source_generation=0,
+    )
+    with _canonical_validation_session(
+        CanonicalSessionPhase.PROJECTED_PREPARATION,
+    ) as session:
+        first = claim_id(claim)
+        second = claim_id(claim)
+        metrics = session.metrics
+
+    assert first == second == claim.claim_id
+    assert metrics.wire_encodes == 1
+    assert metrics.content_id_reuses == 1
+
+    # An equal-but-distinct claim occurrence must not reuse another claim's
+    # sealed content ID even though it recomputes to the same string.
+    other_claim = _claim_factory(
+        model.LocalAliasEffectScalarizationClaim,
+        kind=model.UnflattenClaimKind.LOCAL_ALIAS_EFFECT_SCALARIZATION,
+        owner_subject=subject,
+        step_index=0,
+        host_ea=0x1000,
+        host_opcode=1,
+        alias_token="alias",
+        base_token="base",
+        host_text_sha1=None,
+        value_size=None,
+        step_digest="sha256:" + "1" * 64,
+        source_generation=0,
+    )
+    assert other_claim is not claim
+    with _canonical_validation_session(
+        CanonicalSessionPhase.PROJECTED_PREPARATION,
+    ) as session:
+        claim_id(claim)
+        claim_id(other_claim)
+        metrics = session.metrics
+    assert metrics.wire_encodes == 2
+    assert metrics.content_id_reuses == 0
+
+
 def test_graph_projection_has_pinned_record_shapes_and_rejects_malformed_graphs() -> None:
     graph = _graph()
     projected = _graph_projection(graph)
