@@ -49,13 +49,21 @@ def _deep_authority() -> object:
 
 def test_work_metrics_are_exact_non_negative_ints() -> None:
     metrics = CanonicalWorkMetrics()
-    assert metrics.tuple == (0, 0, 0, 0, 0, 0)
+    assert metrics.tuple == (0,) * 14
     assert metrics.total == 0
     assert tuple(metrics.as_payload()) == (
+        "bytes_lookup_hits",
+        "bytes_lookup_misses",
         "canonical_bytes_reuses",
+        "content_id_lookup_hits",
+        "content_id_lookup_misses",
         "content_id_reuses",
         "deep_validations",
+        "inventory_seal_checks",
+        "inventory_seal_hits",
+        "inventory_seal_mints",
         "inventory_validations",
+        "occurrence_stamps",
         "roundtrip_decodes",
         "wire_encodes",
     )
@@ -399,3 +407,107 @@ def test_full_inventory_validation_is_reused_for_one_unmutated_occurrence() -> N
     assert metrics.deep_validations == 1
     assert metrics.wire_encodes == 1
     assert metrics.canonical_bytes_reuses == 0
+
+
+def _stamp_partition(metrics: CanonicalWorkMetrics) -> int:
+    """Sum of every path that performs exactly one stamp walk in strict mode."""
+
+    return (
+        metrics.bytes_lookup_hits + metrics.bytes_lookup_misses
+        + metrics.content_id_lookup_hits + metrics.content_id_lookup_misses
+        + metrics.inventory_seal_mints + metrics.inventory_seal_checks
+    )
+
+
+def test_occurrence_stamps_are_attributed_to_bytes_and_content_id_lookups() -> None:
+    """Direct and content-ID lookups each cost one stamp walk, hit or miss."""
+
+    from d810.transforms.unflatten_authority import model
+
+    fixture = ids.DigestFixture(
+        3, model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT, ("native",),
+    )
+    with _canonical_validation_session(
+        CanonicalSessionPhase.PROJECTED_PREPARATION,
+    ) as session:
+        ids.canonical_bytes(fixture)      # direct miss
+        ids.canonical_bytes(fixture)      # direct hit
+        ids.authority_id(fixture)         # content-ID hit on the shared entry
+        ids.authority_id((fixture,))      # content-ID miss: fresh tuple
+        metrics = session.metrics
+
+    assert metrics.bytes_lookup_hits == 1
+    assert metrics.bytes_lookup_misses == 1
+    assert metrics.content_id_lookup_hits == 1
+    assert metrics.content_id_lookup_misses == 1
+    assert metrics.inventory_seal_mints == 0
+    assert metrics.inventory_seal_checks == 0
+    assert metrics.occurrence_stamps == 4
+    assert metrics.occurrence_stamps == _stamp_partition(metrics)
+    # The legacy reuse counter still sees both hits; the attribution splits it.
+    assert metrics.canonical_bytes_reuses == 2
+    assert metrics.deep_validations == 2
+
+
+def test_occurrence_stamps_are_attributed_to_record_content_id_lookups() -> None:
+    """The record preimage builder is a content-ID lookup, hit or miss."""
+
+    authority = _deep_authority()
+    claim = authority.proposal.claims[0]
+    with _canonical_validation_session(
+        CanonicalSessionPhase.PROJECTED_PREPARATION,
+    ) as session:
+        first = ids.claim_id(claim)
+        second = ids.claim_id(claim)
+        metrics = session.metrics
+
+    assert first == second == claim.claim_id
+    assert metrics.content_id_lookup_misses == 1
+    assert metrics.content_id_lookup_hits == 1
+    assert metrics.content_id_reuses == 1
+    assert metrics.bytes_lookup_hits == metrics.bytes_lookup_misses == 0
+    assert metrics.occurrence_stamps == 2
+    assert metrics.occurrence_stamps == _stamp_partition(metrics)
+
+
+def test_occurrence_stamps_are_attributed_to_inventory_seals() -> None:
+    """A seal mint and every seal check each cost one stamp walk."""
+
+    from d810.transforms.unflatten_authority import model
+    from tests.unit.transforms.unflatten_authority.test_inventory_model import (
+        _inventory,
+    )
+
+    inventory = _inventory()
+    with _canonical_validation_session(
+        CanonicalSessionPhase.OBSERVED_REVALIDATION,
+    ) as session:
+        model.validate_semantic_graph_inventory(inventory)
+        first = session.metrics
+        model.validate_semantic_graph_inventory(inventory)
+        second = session.metrics.delta(first)
+
+    # First consumption: one failed seal check, one full validation whose
+    # digest costs one content-ID miss, then one seal mint.
+    assert first.inventory_seal_checks == 1
+    assert first.inventory_seal_hits == 0
+    assert first.inventory_seal_mints == 1
+    assert first.inventory_validations == 1
+    assert first.content_id_lookup_misses == 1
+    assert first.occurrence_stamps == 3
+    assert first.occurrence_stamps == _stamp_partition(first)
+    # Second consumption: exactly one seal check that hits, nothing else.
+    assert second.inventory_seal_checks == 1
+    assert second.inventory_seal_hits == 1
+    assert second.occurrence_stamps == 1
+    assert second.total == 3
+
+
+def test_process_report_carries_the_attribution_counters() -> None:
+    ids.canonical_bytes(("attributed",))
+    line = format_work_report(process_work_metrics(), pid=7)
+    for name in canonical_session._COUNTER_NAMES:
+        assert f'"{name}":' in line
+    # Outside a session there is no lookup and therefore no stamp walk.
+    assert '"occurrence_stamps":0' in line
+    assert '"bytes_lookup_misses":0' in line

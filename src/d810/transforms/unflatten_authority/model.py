@@ -76,7 +76,11 @@ from .ids import (
     CLONED_SEMANTIC_ORIGIN_SCHEMA,
     CLONED_SEMANTIC_PREFIX_SCHEMA,
 )
-from .canonical_session import active_canonical_session
+from .canonical_session import (
+    active_canonical_session,
+    record_inventory_seal_check,
+    record_inventory_seal_mint,
+)
 from .legacy_keys import LEGACY_UNFLATTEN_KEYS
 from .gates import GenericCfgGateFacts
 
@@ -6417,6 +6421,7 @@ class SemanticGraphInventory:
         session = active_canonical_session()
         if session is not None:
             session.seal_inventory(self, _occurrence_stamp(self))
+            record_inventory_seal_mint()
 
 
 def validate_semantic_graph_inventory(value: object) -> SemanticGraphInventory:
@@ -6425,10 +6430,11 @@ def validate_semantic_graph_inventory(value: object) -> SemanticGraphInventory:
     if type(value) is not SemanticGraphInventory:
         raise TypeError("inventory must be SemanticGraphInventory")
     session = active_canonical_session()
-    if session is not None and session.inventory_is_sealed(
-        value, _occurrence_stamp(value),
-    ):
-        return value
+    if session is not None:
+        sealed = session.inventory_is_sealed(value, _occurrence_stamp(value))
+        record_inventory_seal_check(sealed)
+        if sealed:
+            return value
     value.__post_init__()
     return value
 

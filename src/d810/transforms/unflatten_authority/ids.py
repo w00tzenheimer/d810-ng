@@ -33,10 +33,13 @@ from d810.ir.graph_fingerprint import (
 )
 from .canonical_session import (
     active_canonical_session,
+    record_bytes_lookup,
     record_canonical_bytes_reuse,
+    record_content_id_lookup,
     record_content_id_reuse,
     record_deep_validation,
     record_inventory_validation,
+    record_occurrence_stamp,
     record_roundtrip_decode,
     record_wire_encode,
 )
@@ -1212,16 +1215,27 @@ def _occurrence_stamp(value: object) -> OccurrenceDigest:
     in constant space.
     """
 
+    # One attribution per root stamp.  Every call to this function is a
+    # root: the recursion lives in ``_feed_occurrence``, which must never
+    # record, or the per-lookup counters would count nodes, not walks.
+    record_occurrence_stamp()
     hasher = hashlib.blake2b(digest_size=32)
     _feed_occurrence(value, hasher, set())
     return OccurrenceDigest(hasher.digest())
 
 
 def canonical_bytes(value: object) -> bytes:
+    return _canonical_bytes(value, record_bytes_lookup)
+
+
+def _canonical_bytes(value: object, record_lookup: object) -> bytes:
+    """Encode ``value``; ``record_lookup`` attributes the session lookup path."""
+
     session = active_canonical_session()
     stamp = None if session is None else _occurrence_stamp(value)
     if session is not None:
         cached = session.cached_canonical_bytes(value, stamp)
+        record_lookup(cached is not None)
         if cached is not None:
             record_canonical_bytes_reuse()
             return cached
@@ -1469,7 +1483,9 @@ def validate_canonical_roundtrip(value: object, expected_type: type[object]) -> 
 def content_id(schema: str, value: object) -> str:
     if not isinstance(schema, str) or not schema.isascii() or not schema.strip():
         raise ValueError("schema must be non-empty ASCII")
-    preimage = _PREFIX + schema.encode("ascii") + b"\0" + canonical_bytes(value)
+    preimage = _PREFIX + schema.encode("ascii") + b"\0" + _canonical_bytes(
+        value, record_content_id_lookup,
+    )
     return "sha256:" + hashlib.sha256(preimage).hexdigest()
 
 
@@ -1900,6 +1916,7 @@ def _record_content_id(schema: str, value: object, omitted_field: str) -> str:
     stamp = None if session is None else _occurrence_stamp(value)
     if session is not None:
         cached = session.cached_content_id(value, schema, omitted_field, stamp)
+        record_content_id_lookup(cached is not None)
         if cached is not None:
             record_content_id_reuse()
             return cached

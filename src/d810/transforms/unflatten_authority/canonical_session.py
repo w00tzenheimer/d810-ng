@@ -31,6 +31,26 @@ per recursive node):
     zero until phase-local reuse exists; they are declared now so the baseline
     and the improved run share one schema.
 
+Attribution counters (added for the canonical hot-path work).  Every session
+cache lookup is attributed to exactly one path, so the four ``*_lookup_*``
+counters partition the lookups and ``occurrence_stamps`` says how many
+top-level recursive :func:`d810.transforms.unflatten_authority.ids._occurrence_stamp`
+walks those lookups (plus the inventory seals) cost.  In strict mode each
+lookup and each seal mint/check performs exactly one walk, so the walk total
+equals the sum of the attributed paths:
+
+``bytes_lookup_hits`` / ``bytes_lookup_misses``
+    ``canonical_bytes`` lookups made directly (not on behalf of a content ID).
+``content_id_lookup_hits`` / ``content_id_lookup_misses``
+    Lookups made by ``content_id``/``authority_id`` (through ``canonical_bytes``)
+    and by the record content-ID preimage builder.
+``inventory_seal_mints`` / ``inventory_seal_checks`` / ``inventory_seal_hits``
+    Semantic-graph-inventory seals recorded after a full validation, seal
+    checks performed before an authority consumption, and the checks that
+    were satisfied by a seal.
+``occurrence_stamps``
+    Top-level recursive structural walks performed by ``_occurrence_stamp``.
+
 Set ``D810_AUTHORITY_WORK_COUNTERS`` to a value other than ``""``/``"0"`` to
 have the process totals written to standard error at interpreter exit.  That
 switch only adds a report; the counters themselves are always maintained.
@@ -39,6 +59,7 @@ switch only adds a report; the counters themselves are always maintained.
 from __future__ import annotations
 
 import atexit
+import builtins
 import contextlib
 from collections.abc import Iterator, Mapping
 from contextvars import ContextVar
@@ -55,6 +76,14 @@ _COUNTER_NAMES: tuple[str, ...] = (
     "inventory_validations",
     "canonical_bytes_reuses",
     "content_id_reuses",
+    "bytes_lookup_hits",
+    "bytes_lookup_misses",
+    "content_id_lookup_hits",
+    "content_id_lookup_misses",
+    "inventory_seal_mints",
+    "inventory_seal_checks",
+    "inventory_seal_hits",
+    "occurrence_stamps",
 )
 
 _REPORT_ENV = "D810_AUTHORITY_WORK_COUNTERS"
@@ -78,6 +107,14 @@ class CanonicalWorkMetrics:
     inventory_validations: int = 0
     canonical_bytes_reuses: int = 0
     content_id_reuses: int = 0
+    bytes_lookup_hits: int = 0
+    bytes_lookup_misses: int = 0
+    content_id_lookup_hits: int = 0
+    content_id_lookup_misses: int = 0
+    inventory_seal_mints: int = 0
+    inventory_seal_checks: int = 0
+    inventory_seal_hits: int = 0
+    occurrence_stamps: int = 0
 
     def __post_init__(self) -> None:
         for name in _COUNTER_NAMES:
@@ -88,17 +125,10 @@ class CanonicalWorkMetrics:
                 raise TypeError(f"{name} must be non-negative")
 
     @property
-    def tuple(self) -> tuple[int, int, int, int, int, int]:
+    def tuple(self) -> tuple[int, ...]:
         """Return the counts in declaration order."""
 
-        return (
-            self.deep_validations,
-            self.wire_encodes,
-            self.roundtrip_decodes,
-            self.inventory_validations,
-            self.canonical_bytes_reuses,
-            self.content_id_reuses,
-        )
+        return builtins.tuple(getattr(self, name) for name in _COUNTER_NAMES)
 
     @property
     def total(self) -> int:
@@ -135,21 +165,11 @@ class _WorkLedger:
     __slots__ = _COUNTER_NAMES
 
     def __init__(self) -> None:
-        self.deep_validations = 0
-        self.wire_encodes = 0
-        self.roundtrip_decodes = 0
-        self.inventory_validations = 0
-        self.canonical_bytes_reuses = 0
-        self.content_id_reuses = 0
+        self.reset()
 
     def snapshot(self) -> CanonicalWorkMetrics:
         return CanonicalWorkMetrics(
-            deep_validations=self.deep_validations,
-            wire_encodes=self.wire_encodes,
-            roundtrip_decodes=self.roundtrip_decodes,
-            inventory_validations=self.inventory_validations,
-            canonical_bytes_reuses=self.canonical_bytes_reuses,
-            content_id_reuses=self.content_id_reuses,
+            **{name: getattr(self, name) for name in _COUNTER_NAMES}
         )
 
     def reset(self) -> None:
@@ -247,6 +267,34 @@ class CanonicalValidationSession:
     def record_content_id_reuse(self) -> None:
         self._require_open()
         self._ledger.content_id_reuses += 1
+
+    def record_bytes_lookup(self, hit: bool) -> None:
+        self._require_open()
+        if hit:
+            self._ledger.bytes_lookup_hits += 1
+        else:
+            self._ledger.bytes_lookup_misses += 1
+
+    def record_content_id_lookup(self, hit: bool) -> None:
+        self._require_open()
+        if hit:
+            self._ledger.content_id_lookup_hits += 1
+        else:
+            self._ledger.content_id_lookup_misses += 1
+
+    def record_inventory_seal_mint(self) -> None:
+        self._require_open()
+        self._ledger.inventory_seal_mints += 1
+
+    def record_inventory_seal_check(self, hit: bool) -> None:
+        self._require_open()
+        self._ledger.inventory_seal_checks += 1
+        if hit:
+            self._ledger.inventory_seal_hits += 1
+
+    def record_occurrence_stamp(self) -> None:
+        self._require_open()
+        self._ledger.occurrence_stamps += 1
 
     def cached_canonical_bytes(self, value: object, stamp: object) -> bytes | None:
         """Return canonical bytes already validated for this exact occurrence.
@@ -419,6 +467,59 @@ def record_content_id_reuse() -> None:
         session.record_content_id_reuse()
 
 
+def record_bytes_lookup(hit: bool) -> None:
+    """Attribute one direct ``canonical_bytes`` session lookup to hit or miss."""
+
+    if hit:
+        _PROCESS_LEDGER.bytes_lookup_hits += 1
+    else:
+        _PROCESS_LEDGER.bytes_lookup_misses += 1
+    session = _ACTIVE_SESSION.get()
+    if session is not None:
+        session.record_bytes_lookup(hit)
+
+
+def record_content_id_lookup(hit: bool) -> None:
+    """Attribute one content-ID-driven session lookup to hit or miss."""
+
+    if hit:
+        _PROCESS_LEDGER.content_id_lookup_hits += 1
+    else:
+        _PROCESS_LEDGER.content_id_lookup_misses += 1
+    session = _ACTIVE_SESSION.get()
+    if session is not None:
+        session.record_content_id_lookup(hit)
+
+
+def record_inventory_seal_mint() -> None:
+    """Count one inventory seal recorded after a complete validation."""
+
+    _PROCESS_LEDGER.inventory_seal_mints += 1
+    session = _ACTIVE_SESSION.get()
+    if session is not None:
+        session.record_inventory_seal_mint()
+
+
+def record_inventory_seal_check(hit: bool) -> None:
+    """Count one inventory seal check and whether the seal satisfied it."""
+
+    _PROCESS_LEDGER.inventory_seal_checks += 1
+    if hit:
+        _PROCESS_LEDGER.inventory_seal_hits += 1
+    session = _ACTIVE_SESSION.get()
+    if session is not None:
+        session.record_inventory_seal_check(hit)
+
+
+def record_occurrence_stamp() -> None:
+    """Count one top-level recursive occurrence-stamp walk."""
+
+    _PROCESS_LEDGER.occurrence_stamps += 1
+    session = _ACTIVE_SESSION.get()
+    if session is not None:
+        session.record_occurrence_stamp()
+
+
 def process_work_metrics() -> CanonicalWorkMetrics:
     """Return the cumulative counts for this interpreter."""
 
@@ -472,10 +573,15 @@ __all__ = [
     "emit_process_work_report",
     "format_work_report",
     "process_work_metrics",
+    "record_bytes_lookup",
     "record_canonical_bytes_reuse",
+    "record_content_id_lookup",
     "record_content_id_reuse",
     "record_deep_validation",
+    "record_inventory_seal_check",
+    "record_inventory_seal_mint",
     "record_inventory_validation",
+    "record_occurrence_stamp",
     "record_roundtrip_decode",
     "record_wire_encode",
     "reset_process_work_metrics",
