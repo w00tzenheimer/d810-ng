@@ -1187,6 +1187,8 @@ class _FakeDeferredGraphModifier:
         self.bound_plan = None
         self.mutation_gateway = None
         self.superseded_count = 0
+        self.preflight_dropped_count = 0
+        self.rollback_outcome = None
 
     def take_superseded_count(self) -> int:
         """Mirror the real modifier: one-shot read of the coalescing tally.
@@ -1198,6 +1200,18 @@ class _FakeDeferredGraphModifier:
         count = int(self.superseded_count)
         self.superseded_count = 0
         return count
+
+    def take_preflight_dropped_count(self) -> int:
+        """Mirror the real modifier's one-shot preflight-drop tally."""
+        count = int(self.preflight_dropped_count)
+        self.preflight_dropped_count = 0
+        return count
+
+    def take_rollback_outcome(self) -> object | None:
+        """Mirror the real modifier's one-shot rollback-outcome handoff."""
+        outcome = self.rollback_outcome
+        self.rollback_outcome = None
+        return outcome
 
     def configure_patch_bindings(
         self,
