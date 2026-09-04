@@ -555,6 +555,22 @@ def test_trust_sealed_is_off_by_default_and_explicit_per_session(monkeypatch) ->
     assert canonical_session._trust_sealed_default() is False
 
 
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    ((None, False), ("", False), ("0", False), ("1", True)),
+)
+def test_trust_sealed_default_selects_strict_unless_explicitly_enabled(
+    monkeypatch, value: str | None, expected: bool,
+) -> None:
+    """Unset and empty select strict mode; only an explicit value opts in."""
+
+    if value is None:
+        monkeypatch.delenv(canonical_session._TRUST_ENV, raising=False)
+    else:
+        monkeypatch.setenv(canonical_session._TRUST_ENV, value)
+    assert canonical_session._trust_sealed_default() is expected
+
+
 def test_trusted_hit_performs_zero_recursive_walks() -> None:
     """(a) A trusted-mode hit costs no ``_occurrence_stamp`` walk at all."""
 
@@ -631,10 +647,11 @@ def test_trusted_mode_observes_in_place_child_mutation_at_the_child() -> None:
 
     This also characterizes the experiment's trust boundary: the parent's
     guard holds the child by identity, so the parent is only re-encoded once
-    a lookup observes the mutation.  The authority object model mutates only
-    ``self`` during construction/``__post_init__`` and fresh factory objects,
-    which is why the boundary is acceptable for the experiment; strict mode
-    (the default) still detects it through the recursive stamp.
+    a lookup observes the mutation.  When the mutated child is never presented
+    on its own the parent's stale answer stands - see
+    ``test_sealed_trust_boundary_is_rejected_by_descendant_mutation`` for why
+    that keeps the mode opt-in.  Strict mode (the default) detects the
+    mutation through the recursive stamp either way.
     """
 
     child = _fixture()
@@ -654,6 +671,61 @@ def test_trusted_mode_observes_in_place_child_mutation_at_the_child() -> None:
         assert metrics.bytes_lookup_hits == parent_hits
         if not trust_sealed:
             assert ids.canonical_decode(parent_bytes)[1].ea == 5
+
+
+def test_sealed_trust_boundary_is_rejected_by_descendant_mutation(
+    monkeypatch,
+) -> None:
+    """Step 2 decision: REJECT.  Sealed mode can answer with stale content.
+
+    The falsified hypothesis was "a sealed session never answers with content
+    that is not the live content of the presented occurrence".  A sealed guard
+    holds the presented occurrence's *direct* children by identity, so an
+    in-place ``object.__setattr__`` two levels down leaves every one of those
+    identities intact and the cached answer is served unchanged.  Here the
+    mutated field is an inventory block's ``anchor_ea`` - the native address a
+    patch is anchored to - so the masked difference is safety-relevant, not
+    cosmetic.  Strict mode's recursive stamp observes the same mutation.
+
+    No call-site proof exists that production cannot reach this shape, so the
+    sealed mode stays opt-in and the default stays strict.
+    """
+
+    from tests.unit.transforms.unflatten_authority.helpers import (
+        projected_site_fixture,
+    )
+
+    answers: dict[bool, tuple[bytes, bytes, bytes, CanonicalWorkMetrics]] = {}
+    for trust_sealed in (False, True):
+        inventory = projected_site_fixture().source_inventory
+        block = inventory.blocks[0]
+        assert block.anchor_ea == 0x1000
+        with _canonical_validation_session(
+            CanonicalSessionPhase.PROJECTED_PREPARATION, trust_sealed=trust_sealed,
+        ) as session:
+            cached = ids.canonical_bytes(inventory)
+            seeded = session.metrics
+            # Only the descendant changes, and only the parent is presented.
+            object.__setattr__(block, "anchor_ea", 0x1040)
+            answer = ids.canonical_bytes(inventory)
+            delta = session.metrics.delta(seeded)
+        answers[trust_sealed] = (cached, answer, ids.canonical_bytes(inventory), delta)
+
+    stale, strict_answer, strict_live, strict_delta = answers[False]
+    assert strict_answer == strict_live != stale
+    assert strict_delta.bytes_lookup_misses == 1
+    assert strict_delta.bytes_lookup_hits == 0
+    assert strict_delta.occurrence_stamps == 1
+
+    stale, sealed_answer, sealed_live, sealed_delta = answers[True]
+    assert sealed_answer == stale != sealed_live
+    assert sealed_delta.bytes_lookup_hits == 1
+    assert sealed_delta.bytes_lookup_misses == 0
+    assert sealed_delta.occurrence_stamps == 0
+
+    # The decision, encoded: an unconfigured process still selects strict.
+    monkeypatch.delenv(canonical_session._TRUST_ENV, raising=False)
+    assert canonical_session._trust_sealed_default() is False
 
 
 def test_trusted_mode_accepts_a_content_equal_child_replacement_once() -> None:

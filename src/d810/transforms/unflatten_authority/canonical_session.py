@@ -55,8 +55,8 @@ Set ``D810_AUTHORITY_WORK_COUNTERS`` to a value other than ``""``/``"0"`` to
 have the process totals written to standard error at interpreter exit.  That
 switch only adds a report; the counters themselves are always maintained.
 
-Sealed-occurrence trust (experiment, default OFF)
-------------------------------------------------
+Sealed-occurrence trust (experiment, opt-in, default OFF)
+--------------------------------------------------------
 
 A session created with ``trust_sealed=True`` (or, for every transaction-owned
 session, ``D810_AUTHORITY_TRUST_SEALED`` set to a value other than
@@ -64,14 +64,31 @@ session, ``D810_AUTHORITY_TRUST_SEALED`` set to a value other than
 recursive occurrence stamp.  The sealed guard holds strong references to the
 occurrence's direct children and is compared by identity per child, falling
 back to a content comparison only for a replaced child.  A cache hit therefore
-costs O(fields) instead of one full recursive walk.  The trust boundary is
-unchanged: a fresh session starts empty, so every projected/observed boundary
-object is deep-validated on first sight, and a replaced or mutated direct field
-of a presented occurrence is always observed.  What the sealed guard cannot
-observe is an in-place ``object.__setattr__`` on a *descendant* performed after
-the parent was cached and never re-presented through that descendant; the
-authority object model only mutates ``self`` during construction/``__post_init__``
-and fresh factory objects, so no production path does that.
+costs O(fields) instead of one full recursive walk.
+
+The trust boundary, stated exactly.  A fresh session starts empty, so every
+projected/observed boundary object is deep-validated on first sight, and a
+*replaced* direct child - or a changed atom-valued direct field - of a
+presented occurrence is always observed.  What a sealed guard cannot observe is
+an in-place ``object.__setattr__`` below the presented occurrence's direct
+children: every identity the guard holds is still the same object, so the
+cached answer is served unchanged.  That hole is real and safety-relevant, not
+hypothetical - mutating one inventory block's ``anchor_ea`` and then presenting
+only its inventory yields the pre-mutation canonical bytes, which
+``test_sealed_trust_boundary_is_rejected_by_descendant_mutation`` pins.
+
+Accepting the boundary would need call-site proof that an occurrence cached in
+a session is never mutated afterwards, and that proof does not exist.  Mutating
+an already-presented occurrence is a normal authority pattern: the two-phase
+identity mints (``ids._evidence_factory``, ``bind._site_mint``,
+``bind._site_binding_mint``, ``model.PreparationAuthorityReceipt.mint``) write a
+placeholder digest, take a content ID over the live object - which caches it -
+and then overwrite that field.  Those particular writes land on a *direct*
+child, so a sealed guard still catches them, but that is a property of the
+current mint order rather than an invariant the object model enforces, and the
+values presented at the session boundary are built outside this package.
+The mode therefore stays opt-in and the default stays strict; flipping it
+needs its own evidence.
 """
 
 from __future__ import annotations
