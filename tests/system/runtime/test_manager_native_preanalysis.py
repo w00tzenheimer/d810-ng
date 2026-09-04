@@ -1600,7 +1600,12 @@ def test_decompile_controller_routes_poison_to_manager_fresh_recovery(
             )
             return next(outputs)
         assert collectors[0].closed is True
-        assert state.native_mutation_quarantined
+        # The recovery decompile the restart bought must be allowed to mutate:
+        # consuming the restart retires the poisoned block identities and lifts
+        # the quarantine, while the epoch stays owned by poison recovery so an
+        # ordinary MERR_REDO cannot pre-empt it (d81-hzvr).
+        assert not state.native_mutation_quarantined
+        assert state.is_poison_recovery_generation
         return next(outputs)
 
     result = manager.decompile_with_native_preanalysis(
@@ -1666,10 +1671,15 @@ def test_decompile_controller_refuses_second_poison_after_manager_recovery(
                 reason="first poison",
             )
             return "poisoned-first"
-        assert state.native_mutation_quarantined
+        assert not state.native_mutation_quarantined
+        assert state.is_poison_recovery_generation
         assert not state.request_poisoned_generation_restart(
             reason="second poison",
         )
+        # A second poison inside the recovery session spends the epoch's only
+        # retry and re-arms the quarantine terminally (d81-hzvr).
+        assert state.has_exhausted_poison_restart
+        assert state.native_mutation_quarantined
         return "poisoned-second"
 
     with pytest.raises(RuntimeError, match="poison restart exhausted"):

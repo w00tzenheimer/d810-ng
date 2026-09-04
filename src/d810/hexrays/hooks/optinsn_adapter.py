@@ -20,6 +20,7 @@ from d810.core.decompilation_session import DecompilationEvent
 from d810.core.execution_scope import ExecutionPipeline, ExecutionStageIdentity
 from d810.analyses.control_flow.native_preanalysis_session import (
     NativeMutationBoundary,
+    native_mutation_quarantine_blocks,
 )
 from d810.core.execution_journal import (
     ExecutionAttemptStatus,
@@ -1387,11 +1388,19 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
             if lifecycle is None
             else getattr(lifecycle, "observe_native_mutation_quarantine", None)
         )
-        if callable(observe_quarantine) and observe_quarantine(
+        quarantined = callable(observe_quarantine) and observe_quarantine(
             function_ea=function_ea,
             maturity=journal_maturity,
             boundary=NativeMutationBoundary.OPTINSN,
+        )
+        if quarantined and native_mutation_quarantine_blocks(
+            NativeMutationBoundary.OPTINSN
         ):
+            # A poisoned generation voids d810's CFG authority, not its
+            # instruction rewriting: this seam is handed the live block and
+            # consumes no planned serial or identity binding. Stopping here
+            # cost whole functions their remaining peephole/Z3/fold work for
+            # a rejected stage they never depended on.
             return False
         # ``optinsn_t`` is a direct MBA mutation seam.  Record its observable
         # callback outcome under the manager-owned session, but never let a

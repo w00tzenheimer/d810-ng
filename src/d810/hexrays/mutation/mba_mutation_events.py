@@ -718,8 +718,16 @@ class MbaMutationGateway:
     _planned_operation_count: int = field(default=0, init=False)
     # Planned steps that coalescing removed as redundant before they could be
     # applied. Reconciling the realization inventory needs these back:
-    # applied + superseded == planned.
+    # applied + superseded + preflight_dropped == planned.
     _superseded_operation_count: int = field(default=0, init=False)
+    # Planned steps a pre-apply preflight rejected because their live binding
+    # could not be resolved. They never touched the MBA, so they are accounted
+    # for rather than mourned.
+    _preflight_dropped_operation_count: int = field(default=0, init=False)
+    # Planned steps a completed rollback undid after the batch had already
+    # written. The MBA was restored, so they are accounted for as undone work
+    # rather than as a poisoned generation.
+    _rolled_back_operation_count: int = field(default=0, init=False)
     _active_plan_items: tuple[MbaMutationPlanItem, ...] = field(
         default=(),
         init=False,
@@ -881,6 +889,16 @@ class MbaMutationGateway:
     @property
     def mutation_started(self) -> bool:
         return bool(self._mutation_started or self.identity_index.generation_poisoned)
+
+    @property
+    def planned_operation_count(self) -> int:
+        """Return how many operations the active authority proposed.
+
+        A preflight refusal has to name the whole plan, so the backend that
+        performs the refusal needs to read the size of the plan it is refusing
+        rather than infer it from its own post-filter queue.
+        """
+        return int(self._planned_operation_count)
 
     @property
     def generation_poisoned(self) -> bool:
@@ -1351,9 +1369,11 @@ class MbaMutationGateway:
         )
         self._affected_identities.clear()
         self._operation_count = 0
-        # Scope the tally to this batch: a count left by an earlier batch must
+        # Scope the tallies to this batch: a count left by an earlier batch must
         # never reconcile this one's inventory.
         self._superseded_operation_count = 0
+        self._preflight_dropped_operation_count = 0
+        self._rolled_back_operation_count = 0
         self._emit_observation(
             phase="planned",
             event_type=MbaMutationPlanned,
@@ -1463,6 +1483,71 @@ class MbaMutationGateway:
             raise ValueError("superseded operation count must be non-negative")
         self._superseded_operation_count = superseded
 
+    def record_preflight_dropped_operations(self, count: int) -> None:
+        """Record that a pre-apply preflight refused this plan before writing.
+
+        A guarded instruction removal is proven against a block identity. When
+        an earlier stage renumbers serials, the removal is rebound through that
+        identity; when the identity is gone the removal cannot be honoured.
+
+        The refusal is all-or-nothing. A plan is one authority's complete
+        proposal, and "instruction-only" describes what an operation writes,
+        not whether it is independent of the sibling CFG edits queued beside it
+        in the same transaction. Omitting one step and declaring the rest
+        complete fragments that authority, so the only expressible refusal is
+        of the whole plan: this term is either zero or the planned count, and
+        it can never coexist with applied operations.
+        """
+        self._require_active()
+        dropped = int(count)
+        if dropped < 0:
+            raise ValueError("preflight dropped operation count must be non-negative")
+        if dropped not in (0, int(self._planned_operation_count)):
+            raise ValueError(
+                "a preflight rejection refuses the whole plan: "
+                f"planned={self._planned_operation_count} dropped={dropped}"
+            )
+        self._preflight_dropped_operation_count = dropped
+
+    def record_completed_rollback(self, *, rolled_back_operation_count: int) -> None:
+        """Record that a completed rollback undid every write of this batch.
+
+        A rollback is neither a lost operation nor a poisoned generation: the
+        MBA was restored from its pre-apply snapshot, so the transaction can
+        close as an exact recorded failure and the generation stays usable.
+
+        The term is the whole planned inventory, the same shape as a preflight
+        refusal. A snapshot restores the pre-apply state, so a partial term
+        would describe a plan that ended half-applied - which is precisely what
+        a completed rollback did not do. The applied count goes back to zero
+        for the same reason: those writes no longer exist.
+
+        This is also the recovery proof ``_record_rolled_back_cfg_failure``
+        requires before it will name the ROLLED_BACK_CLEAN phase, so a rollback
+        can never be *claimed* by a caller that did not perform one.
+        """
+        self._require_active()
+        if self._current_transaction_attempt is None:
+            raise RuntimeError("a rolled-back plan has no transaction attempt")
+        if self._active_fragment_plan is not None:
+            raise RuntimeError("fragment publication records its own rollback")
+        if not self._mutation_started:
+            raise RuntimeError(
+                "a rollback with no live mutation is a clean rejection"
+            )
+        count = int(rolled_back_operation_count)
+        if count < 0:
+            raise ValueError("rolled-back operation count must be non-negative")
+        if count != int(self._planned_operation_count):
+            raise ValueError(
+                "a completed rollback undoes the whole plan: "
+                f"planned={self._planned_operation_count} rolled_back={count}"
+            )
+        self._rolled_back_operation_count = count
+        self._operation_count = 0
+        self._active_rollback_attempted = True
+        self._active_rollback_succeeded = True
+
     def register_post_filter_plan_items(
         self,
         plan_items: Iterable[MbaMutationPlanItem],
@@ -1501,11 +1586,30 @@ class MbaMutationGateway:
         # resolution deliberately superseded it as redundant. Comparing applied
         # against planned alone reads a benign deduplication as corruption.
         superseded = int(self._superseded_operation_count)
-        if applied + superseded != self._planned_operation_count:
+        preflight_dropped = int(self._preflight_dropped_operation_count)
+        rolled_back = int(self._rolled_back_operation_count)
+        if preflight_dropped and applied:
+            raise RuntimeError(
+                "a refused plan cannot also report applied operations: "
+                f"planned={self._planned_operation_count} applied={applied} "
+                f"preflight_dropped={preflight_dropped}"
+            )
+        if rolled_back and applied:
+            raise RuntimeError(
+                "a rolled-back plan cannot also report applied operations: "
+                f"planned={self._planned_operation_count} applied={applied} "
+                f"rolled_back={rolled_back}"
+            )
+        if (
+            applied + superseded + preflight_dropped + rolled_back
+            != self._planned_operation_count
+        ):
             raise RuntimeError(
                 "patch realization operation inventory mismatch: "
                 f"planned={self._planned_operation_count} applied={applied} "
-                f"superseded={superseded}"
+                f"superseded={superseded} "
+                f"preflight_dropped={preflight_dropped} "
+                f"rolled_back={rolled_back}"
             )
         if set(self._cfg_creation_receipts) != set(self._cfg_plan_refs):
             raise RuntimeError("patch observation lacks complete creation receipts")
@@ -2947,18 +3051,46 @@ class MbaMutationGateway:
             )
         if (
             self._current_transaction_attempt is not None
+            and self._preflight_dropped_operation_count
+            and self._operation_count
+        ):
+            raise RuntimeError(
+                "a refused plan cannot also report applied operations: "
+                f"planned={self._planned_operation_count} "
+                f"applied={self._operation_count} "
+                f"preflight_dropped={self._preflight_dropped_operation_count}"
+            )
+        if (
+            self._current_transaction_attempt is not None
+            and self._rolled_back_operation_count
+            and self._operation_count
+        ):
+            raise RuntimeError(
+                "a rolled-back plan cannot also report applied operations: "
+                f"planned={self._planned_operation_count} "
+                f"applied={self._operation_count} "
+                f"rolled_back={self._rolled_back_operation_count}"
+            )
+        if (
+            self._current_transaction_attempt is not None
             and self._active_kind is not StructuralMutationKind.FRAGMENT_PUBLICATION
             # Same reconciliation as observe_patch_realization: a planned step
             # is accounted for when it was applied OR when conflict resolution
-            # deliberately superseded it as redundant.
-            and self._operation_count + self._superseded_operation_count
+            # deliberately superseded it as redundant OR when a refusal or a
+            # completed rollback claimed the whole plan.
+            and self._operation_count
+            + self._superseded_operation_count
+            + self._preflight_dropped_operation_count
+            + self._rolled_back_operation_count
             != self._planned_operation_count
         ):
             raise RuntimeError(
                 "patch realization operation inventory mismatch: "
                 f"planned={self._planned_operation_count} "
                 f"applied={self._operation_count} "
-                f"superseded={self._superseded_operation_count}"
+                f"superseded={self._superseded_operation_count} "
+                f"preflight_dropped={self._preflight_dropped_operation_count} "
+                f"rolled_back={self._rolled_back_operation_count}"
             )
         version_transitions = self.identity_index.commit_proxy_transaction(
             str(self._active_batch_id)

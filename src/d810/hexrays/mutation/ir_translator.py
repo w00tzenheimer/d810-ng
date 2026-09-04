@@ -87,6 +87,7 @@ from d810.hexrays.mutation.insn_snapshot_materializer import (
 )
 from d810.hexrays.mutation.mba_mutation_events import MbaMutationGateway
 from d810.hexrays.mutation.mba_mutation_events import StructuralMutationKind
+from d810.hexrays.mutation.rollback_outcome import RollbackOutcome
 from d810.hexrays.mutation.patch_binding import (
     BoundModifier,
 )
@@ -1178,11 +1179,7 @@ class IDAIRTranslator:
             )
             raise
 
-        # Coalescing collapses queued modifications that describe the same edge,
-        # so fewer operations apply than the plan has steps. Hand that tally to
-        # the gateway before observation, or the realization inventory reads a
-        # benign deduplication as a lost operation and poisons the generation.
-        patch_gateway.record_coalesced_supersessions(modifier.take_superseded_count())
+        rollback = self._hand_over_realization_accounting(patch_gateway, modifier)
 
         # If verify failed (even after rollback attempt), signal the pipeline
         # to stop by returning 0. A positive result with verify_failed=True
@@ -1203,10 +1200,12 @@ class IDAIRTranslator:
                     "DeferredGraphModifier.verify_failed is set after apply; "
                     "returning 0 to prevent pipeline from treating changes as successful"
                 )
+                refusal = getattr(modifier, "plan_refusal_reason", None)
                 self._fail_patch_attempt(
                     patch_gateway,
-                    RuntimeError("post-apply native verification failed"),
+                    RuntimeError(refusal or "post-apply native verification failed"),
                     failure_phase=(self._last_lowering_phase or "native_verify"),
+                    rollback=rollback,
                 )
                 return 0
 
@@ -1215,10 +1214,14 @@ class IDAIRTranslator:
             self._last_lowering_subphase = modifier.last_apply_subphase
 
         if result_count <= 0:
+            # A refused plan names why it was refused; only a plan that ran and
+            # landed nothing falls back to the generic message.
+            refusal = getattr(modifier, "plan_refusal_reason", None)
             self._fail_patch_attempt(
                 patch_gateway,
-                RuntimeError("PatchPlan applied no operations"),
+                RuntimeError(refusal or "PatchPlan applied no operations"),
                 failure_phase=(self._last_lowering_phase or "backend_apply"),
+                rollback=rollback,
             )
             return 0
 
@@ -1242,17 +1245,67 @@ class IDAIRTranslator:
         return result_count
 
     @staticmethod
+    def _hand_over_realization_accounting(
+        patch_gateway: MbaMutationGateway,
+        modifier: "DeferredGraphModifierType",
+    ) -> RollbackOutcome | None:
+        """Hand every post-apply accounting term to the still-open transaction.
+
+        This runs before any closure decision, and the gateway is still active
+        for exactly that reason: the modifier reports outcomes, the authority
+        that opened the batch records them and closes it. The realization
+        inventory reconciles as::
+
+            applied + superseded + preflight_dropped + rolled_back == planned
+
+        Coalescing collapses queued modifications that describe the same edge,
+        so fewer operations apply than the plan has steps; without that term a
+        benign deduplication reads as a lost operation and poisons the
+        generation. A preflight refusal and a completed rollback each own the
+        *whole* plan, so their term is the planned count and applied is zero.
+
+        Returns:
+            The completed rollback this cycle performed, or None. A rollback
+            reported before the write boundary is discarded: nothing was
+            written, so a clean rejection already describes it exactly.
+        """
+        patch_gateway.record_coalesced_supersessions(modifier.take_superseded_count())
+        patch_gateway.record_preflight_dropped_operations(
+            modifier.take_preflight_dropped_count()
+        )
+        rollback = modifier.take_rollback_outcome()
+        if rollback is None or not patch_gateway.mutation_started:
+            return None
+        patch_gateway.record_completed_rollback(
+            rolled_back_operation_count=rollback.operation_count
+        )
+        return rollback
+
+    @staticmethod
     def _fail_patch_attempt(
         patch_gateway: MbaMutationGateway,
         error: Exception,
         *,
         failure_phase: str,
+        rollback: RollbackOutcome | None = None,
     ) -> None:
         if not patch_gateway.active:
             return
         reason = str(error) or type(error).__name__
         obligation = f"runtime:{failure_phase}"
         if patch_gateway.mutation_started:
+            if rollback is not None:
+                # Every write of this transaction was undone and the gateway
+                # holds the recovery proof, so the generation is intact: record
+                # the exact rolled-back failure and close. Poisoning here would
+                # discard a generation nothing is wrong with.
+                patch_gateway._record_rolled_back_cfg_failure(
+                    reason=reason,
+                    failure_phase=failure_phase,
+                    first_failed_obligation=obligation,
+                )
+                patch_gateway.abort(reason=reason)
+                return
             failure = patch_gateway._poison_cfg_generation(
                 reason=reason,
                 failure_phase=failure_phase,

@@ -528,7 +528,11 @@ def test_flowchart_abstains_after_manager_consumes_poison_before_evidence_reques
     assert state.native_preanalysis.consume_generated_restart(
         consumer=GeneratedRestartConsumer.MANAGER,
     ) is not None
-    assert state.native_preanalysis.native_mutation_quarantined
+    # Consumption lifts the quarantine so the recovery decompile can mutate;
+    # the epoch stays owned by poison recovery, which is what declines the
+    # evidence rebind below (d81-hzvr).
+    assert not state.native_preanalysis.native_mutation_quarantined
+    assert state.native_preanalysis.is_poison_recovery_generation
     assert not state.native_preanalysis.request_generated_restart(
         evidence_family="bootstrap_routes",
         reason="evidence arrived during poison recovery",
@@ -563,6 +567,16 @@ def test_calls_done_does_not_stage_evidence_during_poison_recovery(monkeypatch) 
     assert state.native_preanalysis.consume_generated_restart(
         consumer=GeneratedRestartConsumer.MANAGER,
     ) is not None
+    # Consuming the restart opens the recovery session and lifts the
+    # quarantine so that decompile can do real work. Poison recurring inside
+    # the recovery session finds the epoch's one retry spent and re-arms the
+    # quarantine terminally; that is the state this callback must abstain in
+    # (d81-hzvr).
+    assert not state.native_preanalysis.request_poisoned_generation_restart(
+        reason="poison recurred inside the recovery decompile",
+    )
+    assert state.native_preanalysis.has_exhausted_poison_restart
+    assert state.native_preanalysis.native_mutation_quarantined
 
     monkeypatch.setattr(
         detached_handler_island,

@@ -1222,3 +1222,99 @@ def test_patch_attempt_cannot_commit_without_complete_observation() -> None:
 
     with pytest.raises(RuntimeError, match="operation inventory mismatch"):
         gateway.commit()
+
+
+def _patch_gateway_with_attempt(
+    planned_operation_count: int,
+) -> tuple[MbaMutationGateway, TransactionAttemptId]:
+    index = MbaBlockIdentityIndex.from_bindings(
+        session_id="mutation-session",
+        generation=3,
+        bindings=(),
+        native_key=NATIVE_KEY,
+    )
+    gateway = MbaMutationGateway(
+        generation=3,
+        session_id="mutation-session",
+        identity_index=index,
+        native_key=NATIVE_KEY,
+    )
+    attempt = TransactionAttemptId(
+        plan_id="plan-preflight",
+        session_id=index.session_id,
+        generation=index.generation,
+        attempt_id="attempt-preflight",
+    )
+    gateway.begin_batch(
+        StructuralMutationKind.BLOCK_REPLACE,
+        serial_quantity=1,
+        planned_operation_count=planned_operation_count,
+        transaction_attempt=attempt,
+        patch_plan_id=attempt.plan_id,
+    )
+    gateway.begin_patch_realization(attempt, plan_refs=())
+    return gateway, attempt
+
+
+def test_whole_plan_preflight_refusal_reconciles_the_realization_inventory() -> None:
+    """A refused plan is accounted for as a refusal, not read as a loss.
+
+    A preflight rejection refuses the *complete* operation set the authority
+    proposed, so the term it contributes is the whole plan and the applied
+    count is zero.
+    """
+    gateway, _ = _patch_gateway_with_attempt(3)
+
+    assert gateway.planned_operation_count == 3
+    gateway.record_preflight_dropped_operations(3)
+    gateway.observe_patch_realization(
+        _one_block_graph(),
+        applied_operation_count=0,
+    )
+    receipt = gateway.commit()
+
+    assert receipt.planned_operation_count == 3
+    assert receipt.operation_count == 0
+
+
+def test_partial_preflight_drop_is_not_a_legal_refusal() -> None:
+    """Omitting one planned step and applying the rest is not a refusal.
+
+    The authority proposed a complete operation set; declaring completion for
+    all-but-one silently fragments that authority. Only a whole-plan refusal
+    is expressible.
+    """
+    gateway, _ = _patch_gateway_with_attempt(3)
+
+    with pytest.raises(ValueError, match="whole plan"):
+        gateway.record_preflight_dropped_operations(1)
+
+
+def test_refused_plan_cannot_also_report_applied_operations() -> None:
+    """A refusal and a partial application are mutually exclusive claims."""
+    gateway, _ = _patch_gateway_with_attempt(3)
+
+    gateway.record_preflight_dropped_operations(3)
+    with pytest.raises(RuntimeError, match="refused plan"):
+        gateway.observe_patch_realization(
+            _one_block_graph(),
+            applied_operation_count=3,
+        )
+
+
+def test_unaccounted_missing_step_still_fails_the_inventory() -> None:
+    """The reconciliation stays strict for steps nobody claims responsibility for."""
+    gateway, _ = _patch_gateway_with_attempt(3)
+
+    with pytest.raises(RuntimeError, match="operation inventory mismatch"):
+        gateway.observe_patch_realization(
+            _one_block_graph(),
+            applied_operation_count=2,
+        )
+
+
+def test_preflight_drop_count_must_be_non_negative() -> None:
+    gateway, _ = _patch_gateway_with_attempt(1)
+
+    with pytest.raises(ValueError):
+        gateway.record_preflight_dropped_operations(-1)

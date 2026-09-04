@@ -1192,6 +1192,31 @@ class NativeMutationBoundary(Enum):
     GLBOPT = "glbopt"
     CTREE = "ctree"
 
+    @property
+    def mutates_cfg(self) -> bool:
+        """Return whether work at this boundary consumes CFG block identity.
+
+        ``optinsn_t`` rewrites one instruction against the live block it was
+        handed; it reads no planned serial and no identity binding. Every other
+        boundary is where d810 lowers CFG transactions, whose coordinates only
+        mean something for the generation that produced them.
+        """
+        return self is not NativeMutationBoundary.OPTINSN
+
+
+def native_mutation_quarantine_blocks(boundary: NativeMutationBoundary) -> bool:
+    """Return whether a poisoned generation must stop work at ``boundary``.
+
+    A poisoned generation invalidates d810's *CFG* authority: the block
+    identities its plans were bound to no longer describe the live MBA. It says
+    nothing about instruction rewriting, so quarantining the ``optinsn`` seam
+    only costs the function its remaining peephole, Z3 and constant-folding
+    simplification for no safety gained.
+    """
+    if not isinstance(boundary, NativeMutationBoundary):
+        raise TypeError("mutation quarantine scope requires a typed boundary")
+    return boundary.mutates_cfg
+
 
 class GeneratedRestartKind(Enum):
     """Why a generated-MBA restart was staged."""
@@ -1367,6 +1392,12 @@ class NativePreanalysisSessionState:
     generated_restart_consumed_count: int = 0
     poisoned_restart_generation: int | None = None
     exhausted_poison_restart_generation: int | None = None
+    # The epoch whose poison-recovery restart a consumer actually took
+    # delivery of. ``poisoned_restart_generation`` answers "has this epoch
+    # already spent its one recovery retry"; it must not also answer "is
+    # native mutation still quarantined", because the whole point of the
+    # restart is to open a session where mutation is allowed again.
+    poison_recovery_consumed_generation: int | None = None
     event_observer: Callable[[EvidenceLifecycleTransition], None] | None = field(
         default=None,
         repr=False,
@@ -2973,6 +3004,7 @@ class NativePreanalysisSessionState:
             self.evidence_generation if poisoned_restart_pending else None
         )
         self.exhausted_poison_restart_generation = None
+        self.poison_recovery_consumed_generation = None
         self.committed_semantic_publications = ()
         self.committed_logical_batch_receipts.clear()
         self._observe_transition(
@@ -3165,18 +3197,34 @@ class NativePreanalysisSessionState:
         return self.poisoned_restart_generation == self.evidence_generation
 
     @property
+    def has_consumed_poison_recovery_restart(self) -> bool:
+        """Whether this epoch's poison-recovery restart reached its consumer."""
+        return self.poison_recovery_consumed_generation == self.evidence_generation
+
+    @property
     def native_mutation_quarantined(self) -> bool:
-        """Whether native mutation is quarantined for the current evidence epoch."""
+        """Whether native mutation is quarantined for the current evidence epoch.
+
+        The quarantine exists because a poisoned generation invalidates the
+        block identities every plan was bound to. Consuming the restart is
+        precisely the event that retires those identities: the controller
+        begins a fresh decompile, and quarantining that one too means the
+        restart bought a second fully inert pass instead of a recovery. A
+        poison that recurs *after* the consumption re-arms the quarantine
+        through ``has_exhausted_poison_restart``, which is terminal.
+        """
         receipt = self.pending_generated_restart
-        return bool(
-            (
-                receipt is not None
-                and receipt.evidence_generation == self.evidence_generation
-                and receipt.kind is GeneratedRestartKind.POISON_RECOVERY
-            )
-            or self.is_poison_recovery_generation
-            or self.has_exhausted_poison_restart
-        )
+        if (
+            receipt is not None
+            and receipt.evidence_generation == self.evidence_generation
+            and receipt.kind is GeneratedRestartKind.POISON_RECOVERY
+        ):
+            return True
+        if self.has_exhausted_poison_restart:
+            return True
+        if self.has_consumed_poison_recovery_restart:
+            return False
+        return self.is_poison_recovery_generation
 
     def request_generated_restart(
         self,
@@ -3201,15 +3249,18 @@ class NativePreanalysisSessionState:
         if not reason:
             raise ValueError("generated restart reason must not be blank")
         generation = int(self.evidence_generation)
-        if self.native_mutation_quarantined:
+        # An epoch that has entered poison recovery owns its restart budget,
+        # whether or not native mutation is still quarantined: the recovery
+        # decompile must not be pre-empted by an ordinary MERR_REDO.
+        if self.native_mutation_quarantined or self.is_poison_recovery_generation:
             self._observe_transition(
                 operation="generated_restart_requested",
                 previous_generation=generation,
                 evidence_family=evidence_family,
                 outcome="abstained",
                 reason=(
-                    f"{reason}; native mutation remains quarantined for poison "
-                    f"recovery in evidence generation {generation}"
+                    f"{reason}; evidence generation {generation} is owned by "
+                    f"poison recovery"
                 ),
                 restart_kind=GeneratedRestartKind.POISON_RECOVERY,
                 requester="native_preanalysis",
@@ -3354,6 +3405,10 @@ class NativePreanalysisSessionState:
         generation = int(self.evidence_generation)
         self._pending_generated_restart = None
         self.generated_restart_consumed_count += 1
+        if receipt.kind is GeneratedRestartKind.POISON_RECOVERY:
+            # The recovery session starts clean: its decompile must be allowed
+            # to mutate, or the restart produces nothing at all.
+            self.poison_recovery_consumed_generation = generation
         self._observe_transition(
             operation="generated_restart_consumed",
             previous_generation=generation,
@@ -3449,6 +3504,7 @@ __all__ = [
     "GeneratedRestartKind",
     "GeneratedRestartReceipt",
     "NativeMutationBoundary",
+    "native_mutation_quarantine_blocks",
     "NativePreanalysisFacts",
     "NativePreanalysisSessionState",
     "PreoptUnionPreparationResult",
