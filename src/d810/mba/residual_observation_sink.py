@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+from time import perf_counter
 from collections.abc import Mapping
 from dataclasses import replace
 
@@ -18,10 +19,14 @@ from d810.mba.extension_api import (
 )
 from d810.mba.provider_routing import MbaProviderKind
 from d810.mba.semantic_canonicalization import canonicalize_mba_term
-from d810.mba.typed_term import term_fingerprint
+from d810.mba.typed_term import TypedBvTerm, term_fingerprint
 
 
 logger = getLogger(__name__)
+
+#: Upper bound on the per-sink canonicalization memo.  One decompile of a
+#: heavily obfuscated function observes a few hundred distinct terms.
+_CANONICAL_VIEW_MEMO_LIMIT = 4096
 
 # This is deliberately the only provider authorization policy used by the
 # sink. It consumes the exact selected manifest implementation, never a plugin
@@ -49,12 +54,25 @@ def provider_kind_for_implementation(
 class SqliteMbaResidualObservationSink(MbaResidualObservationSink):
     """Validate and translate residual records into the D810 discovery store."""
 
-    def __init__(self, store: MbaDiscoveryStore) -> None:
+    def __init__(
+        self,
+        store: MbaDiscoveryStore,
+        *,
+        recording_enabled: bool = True,
+    ) -> None:
         if not callable(getattr(store, "record_attempt", None)):
             raise TypeError("store must provide record_attempt(attempt)")
+        if type(recording_enabled) is not bool:
+            raise TypeError("recording_enabled must be a bool")
         self._store = store
         self._lock = threading.RLock()
         self._closed = False
+        self._recording_enabled = recording_enabled
+        # raw term -> canonical view.  The tamper check below re-derives the
+        # canonical term the extension host already computed on capture; the
+        # same raw term reaches this sink once per re-visit of the same
+        # instruction, so memoizing keeps the check while paying for it once.
+        self._canonical_views: dict[TypedBvTerm, object] = {}
 
     @staticmethod
     def _rejected(reason: str) -> MbaResidualReceipt:
@@ -118,6 +136,17 @@ class SqliteMbaResidualObservationSink(MbaResidualObservationSink):
             raise TypeError("implementation binding requires an owned activation view")
         return activation_view._bind_selected_implementation(candidate)
 
+    def _canonical_view(self, raw: TypedBvTerm) -> object:
+        """Return the memoized canonical view of one raw term."""
+
+        view = self._canonical_views.get(raw)
+        if view is None:
+            view = canonicalize_mba_term(raw)
+            if len(self._canonical_views) >= _CANONICAL_VIEW_MEMO_LIMIT:
+                self._canonical_views.clear()
+            self._canonical_views[raw] = view
+        return view
+
     def _validate(
         self,
         observation: MbaResidualRecord,
@@ -133,7 +162,7 @@ class SqliteMbaResidualObservationSink(MbaResidualObservationSink):
         canonical = observation.canonical_term
         if raw.width != canonical.width or raw.width not in {8, 16, 32, 64}:
             raise ValueError("term_width_mismatch")
-        canonical_view = canonicalize_mba_term(raw)
+        canonical_view = self._canonical_view(raw)
         if canonical_view.canonical_term != canonical:
             raise ValueError("canonical_term_mismatch")
         if term_fingerprint(canonical) != observation.outcome.fingerprint:
@@ -180,10 +209,42 @@ class SqliteMbaResidualObservationSink(MbaResidualObservationSink):
         activation_identity: PluginIdentity | None,
         expected_provider: MbaProviderKind | None = None,
     ) -> MbaResidualReceipt:
+        # ``MbaProviderOutcome.elapsed_ms`` only wraps the provider's own
+        # solve/prove.  Publishing is the other half of the per-attempt cost
+        # and used to be invisible, so measure it here instead of inferring it
+        # from wall-clock division after the fact.
+        started = perf_counter() if logger.debug_on else None
+        receipt = self._record_locked(
+            observation, activation_identity, expected_provider
+        )
+        if started is not None:
+            # ``uuid`` is logged so an acceptance run can prove the providers
+            # really do mint a fresh one per attempt -- the whole reason the
+            # attempt memo is keyed on the content and not on the row.
+            logger.debug(
+                "residual observation publish uuid=%s status=%s reason=%s "
+                "harness_ms=%.3f",
+                getattr(observation, "attempt_uuid", None),
+                receipt.status,
+                receipt.reason,
+                (perf_counter() - started) * 1000.0,
+            )
+        return receipt
+
+    def _record_locked(
+        self,
+        observation: MbaResidualRecord,
+        activation_identity: PluginIdentity | None,
+        expected_provider: MbaProviderKind | None = None,
+    ) -> MbaResidualReceipt:
         with self._lock:
             try:
                 if self._closed:
                     return self._rejected("closed")
+                if not self._recording_enabled:
+                    # Deliberately before validation: the point of the switch
+                    # is that no observation costs anything.
+                    return self._rejected("recording_disabled")
                 attempt = self._validate(
                     observation,
                     activation_identity,
@@ -214,6 +275,19 @@ class SqliteMbaResidualObservationSink(MbaResidualObservationSink):
             if self._closed:
                 return
             self._closed = True
+            # One INFO line, once per session: the duplicate fast path is only
+            # worth its complexity if it actually hits at runtime, and that is
+            # not observable from the stored rows alone.
+            memo_stats = getattr(self._store, "attempt_memo_stats", None)
+            if callable(memo_stats):
+                stats = memo_stats()
+                logger.info(
+                    "mba attempt memo hits=%d misses=%d contents=%d clears=%d",
+                    stats.hits,
+                    stats.misses,
+                    stats.contents,
+                    stats.clears,
+                )
             close = getattr(self._store, "close", None)
             if callable(close):
                 close()

@@ -200,6 +200,11 @@ def _expr_source(
 class MbaRuleProposal:
     proposal_fingerprint: str | None
     source_fingerprints: tuple[str, ...]
+    #: Legacy persisted name (JSON schema field in ``discovery_store``'s
+    #: proposal payload; do not rename without a migration).  Under the
+    #: accepted attempt-memo content-key policy (see
+    #: ``discovery_store.AttemptContentKey``) this counts distinct-content
+    #: observations that fed the proposal, not individual provider visits.
     occurrence_count: int
     pattern: TypedBvTerm
     replacement: TypedBvTerm

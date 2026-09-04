@@ -79,6 +79,7 @@ _RUNTIME_SETTING_ENVIRONMENT = {
     "trace_decompile_callers": "D810_TRACE_DECOMPILE_CALLERS",
     "native_perf": "D810_NATIVE_PERF",
     "nomut_matching": "D810_NOMUT_MATCHING",
+    "mba_residual_recording": "D810_MBA_RESIDUAL_RECORDING",
 }
 
 
@@ -188,6 +189,17 @@ class D810Settings:
     nomut_matching: bool = False
     """Use non-mutating pattern matching (D810_NOMUT_MATCHING)."""
 
+    mba_residual_recording: bool = True
+    """Persist MBA provider residual observations (D810_MBA_RESIDUAL_RECORDING=0 disables).
+
+    The host sink stays registered either way: ``d810-cobra`` declares
+    ``d810.mba.residual-observation.v1`` as a required capability, so leaving
+    it unregistered would fail the whole activation and stop cobra-solve from
+    rewriting anything.  Turning this off only skips the sqlite write, which
+    is the interim escape hatch when a large accumulated
+    ``d810_mba_discovery.sqlite3`` makes a decompile unusable.
+    """
+
     @classmethod
     def _from_env(cls) -> D810Settings:
         return cls(
@@ -210,6 +222,9 @@ class D810Settings:
             ),
             native_perf=_env_bool("D810_NATIVE_PERF"),
             nomut_matching=_env_bool("D810_NOMUT_MATCHING"),
+            mba_residual_recording=_env_bool(
+                "D810_MBA_RESIDUAL_RECORDING", default=True
+            ),
         )
 
 

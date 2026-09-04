@@ -856,7 +856,10 @@ class D810Manager:
 
         self.log_dir.mkdir(parents=True, exist_ok=True)
         store = MbaDiscoveryStore(self.log_dir / "d810_mba_discovery.sqlite3")
-        sink = SqliteMbaResidualObservationSink(store)
+        sink = SqliteMbaResidualObservationSink(
+            store,
+            recording_enabled=get_settings().mba_residual_recording,
+        )
         try:
             lease = _host_capability_registry().register(
                 D810_MBA_RESIDUAL_OBSERVATION_CAPABILITY,

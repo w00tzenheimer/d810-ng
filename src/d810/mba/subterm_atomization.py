@@ -109,6 +109,11 @@ def _count_operator_subterms(
 class MbaAtomBinding:
     leaf_key: tuple[object, ...]
     original_subterm: TypedBvTerm
+    #: Legacy persisted name (JSON schema field, serialized via
+    #: ``discovery_store``'s proposal payload; do not rename without a
+    #: migration).  This counts structural occurrences of ``original_subterm``
+    #: within one term during atomization -- unrelated to the attempt-memo's
+    #: content-vs-visit distinction (see ``discovery_store.AttemptContentKey``).
     occurrence_count: int
     saved_operator_nodes: int
 

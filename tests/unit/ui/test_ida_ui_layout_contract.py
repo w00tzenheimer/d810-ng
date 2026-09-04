@@ -455,6 +455,7 @@ def test_plugin_save_preserves_env_precedence_and_persists_checkbox_values(
         checkbox_trace_decompile_callers=_Check(False),
         checkbox_native_perf=_Check(False),
         checkbox_nomut_matching=_Check(True),
+        checkbox_mba_residual_recording=_Check(True),
         checkbox_erase_logs_on_reload=_Check(False),
         checkbox_generate_z3_code=_Check(False),
         checkbox_dump_intermediate_microcode=_Check(False),
