@@ -10,6 +10,7 @@ import pytest
 from d810.analyses.control_flow.native_preanalysis_session import (
     GeneratedRestartConsumer,
     NativeMutationBoundary,
+    native_mutation_quarantine_blocks,
 )
 from d810.core.stats import OptimizationStatistics
 from d810.hexrays.hooks.ctree_hooks import (
@@ -43,28 +44,41 @@ class _CountingLifecycle:
         return self.quarantined
 
 
-def test_instruction_callback_abstains_before_optimizer_and_nested_visitor() -> None:
+def test_instruction_callback_observes_quarantine_without_abstaining() -> None:
+    """``optinsn`` consumes no CFG identity, so the quarantine does not stop it.
+
+    A poisoned generation voids d810's *CFG* authority: the block identities
+    its plans were bound to no longer describe the live MBA. Instruction
+    rewriting is handed the live block and binds no planned serial, so
+    stopping here only cost the function its remaining peephole, Z3 and
+    constant-folding work. The boundary observation is still emitted, which is
+    what keeps a not-enforced seam visible rather than silent.
+    """
     lifecycle = _CountingLifecycle()
     counts = {"log": 0, "optimizer": 0, "visitor": 0}
     manager = object.__new__(InstructionOptimizerManager)
     manager._decompilation_lifecycle = lifecycle
+    manager._fact_consumer_callback = None
     manager.log_info_on_input = lambda *_args: counts.__setitem__(
         "log", counts["log"] + 1
     )
     manager.optimize = lambda *_args: counts.__setitem__(
         "optimizer", counts["optimizer"] + 1
     )
-    manager.instruction_visitor = SimpleNamespace(
-        __call__=lambda *_args: counts.__setitem__(
-            "visitor", counts["visitor"] + 1
-        )
-    )
+    manager.instruction_visitor = SimpleNamespace()
     mba = SimpleNamespace(entry_ea=FUNCTION_EA, maturity=ida_hexrays.MMAT_LOCOPT)
     block = SimpleNamespace(mba=mba)
-    instruction = SimpleNamespace(ea=FUNCTION_EA + 1)
+    instruction = SimpleNamespace(
+        ea=FUNCTION_EA + 1,
+        for_all_insns=lambda *_args: counts.__setitem__(
+            "visitor", counts["visitor"] + 1
+        )
+        or False,
+    )
 
     assert manager.func(block, instruction) is False
-    assert counts == {"log": 0, "optimizer": 0, "visitor": 0}
+    assert counts == {"log": 1, "optimizer": 1, "visitor": 1}
+    assert not native_mutation_quarantine_blocks(NativeMutationBoundary.OPTINSN)
     assert lifecycle.observations == [
         (FUNCTION_EA, ida_hexrays.MMAT_LOCOPT, NativeMutationBoundary.OPTINSN)
     ]
@@ -229,6 +243,15 @@ def test_coordinator_deduplicates_quarantine_events_per_generation_boundary(
         FUNCTION_EA,
         consumer=GeneratedRestartConsumer.MANAGER,
     ) is not None
+    # Consuming the restart opens the recovery session and lifts the
+    # quarantine so that decompile can mutate. Poison recurring inside the
+    # recovery session finds the epoch's one retry already spent, which
+    # re-arms the quarantine terminally - the state exercised below (d81-hzvr).
+    assert not session.native_preanalysis.request_poisoned_generation_restart(
+        reason="poison recurred inside the recovery decompile"
+    )
+    assert session.native_preanalysis.has_exhausted_poison_restart
+    assert session.native_preanalysis.native_mutation_quarantined
 
     assert coordinator.observe_native_mutation_quarantine(
         function_ea=FUNCTION_EA,
@@ -279,6 +302,15 @@ def test_adapter_quarantine_events_use_real_coordinator_deduplication(
         FUNCTION_EA,
         consumer=GeneratedRestartConsumer.MANAGER,
     ) is not None
+    # Consuming the restart opens the recovery session and lifts the
+    # quarantine so that decompile can mutate. Poison recurring inside the
+    # recovery session finds the epoch's one retry already spent, which
+    # re-arms the quarantine terminally - the state exercised below (d81-hzvr).
+    assert not session.native_preanalysis.request_poisoned_generation_restart(
+        reason="poison recurred inside the recovery decompile"
+    )
+    assert session.native_preanalysis.has_exhausted_poison_restart
+    assert session.native_preanalysis.native_mutation_quarantined
 
     mba = SimpleNamespace(entry_ea=FUNCTION_EA, maturity=ida_hexrays.MMAT_LOCOPT)
     block = SimpleNamespace(mba=mba)
@@ -286,6 +318,14 @@ def test_adapter_quarantine_events_use_real_coordinator_deduplication(
 
     instruction_manager = object.__new__(InstructionOptimizerManager)
     instruction_manager._decompilation_lifecycle = coordinator
+    instruction_manager._fact_consumer_callback = None
+    # ``optinsn`` is not a CFG-consuming boundary, so the quarantine records
+    # the observation and lets the seam run; stub only the optimizer internals
+    # this test does not exercise.
+    instruction_manager.log_info_on_input = lambda *_args: False
+    instruction_manager.optimize = lambda *_args: False
+    instruction_manager.instruction_visitor = SimpleNamespace()
+    instruction.for_all_insns = lambda *_args: False
     assert instruction_manager.func(block, instruction) is False
     assert instruction_manager.func(block, instruction) is False
 
@@ -450,6 +490,15 @@ def test_real_coordinator_quarantines_glbopt_in_poison_and_recovery_generations(
         FUNCTION_EA,
         consumer=GeneratedRestartConsumer.MANAGER,
     ) is not None
+    # Consuming the restart opens the recovery session and lifts the
+    # quarantine so that decompile can mutate. Poison recurring inside the
+    # recovery session finds the epoch's one retry already spent, which
+    # re-arms the quarantine terminally - the state exercised below (d81-hzvr).
+    assert not session.native_preanalysis.request_poisoned_generation_restart(
+        reason="poison recurred inside the recovery decompile"
+    )
+    assert session.native_preanalysis.has_exhausted_poison_restart
+    assert session.native_preanalysis.native_mutation_quarantined
 
     decisions: list[str] = []
     mutations: list[str] = []
@@ -536,6 +585,15 @@ def test_coordinator_does_not_create_gateway_while_quarantined() -> None:
         FUNCTION_EA,
         consumer=GeneratedRestartConsumer.MANAGER,
     ) is not None
+    # Consuming the restart opens the recovery session and lifts the
+    # quarantine so that decompile can mutate. Poison recurring inside the
+    # recovery session finds the epoch's one retry already spent, which
+    # re-arms the quarantine terminally - the state exercised below (d81-hzvr).
+    assert not session.native_preanalysis.request_poisoned_generation_restart(
+        reason="poison recurred inside the recovery decompile"
+    )
+    assert session.native_preanalysis.has_exhausted_poison_restart
+    assert session.native_preanalysis.native_mutation_quarantined
 
     assert (
         coordinator.new_current_mba_mutation_gateway(

@@ -93,7 +93,13 @@ def test_poisoned_generation_restart_does_not_yield_hook_merr_redo(
     assert state.consume_generated_restart(
         consumer=GeneratedRestartConsumer.MANAGER,
     ) is not None
-    assert state.native_mutation_quarantined
+    # The invariant here is that the poison-recovery epoch is never pre-empted
+    # by an ordinary hook MERR_REDO. That is ``is_poison_recovery_generation``,
+    # not the mutation quarantine: consuming the restart opens the recovery
+    # session and deliberately lifts the quarantine so the recovery decompile
+    # can actually simplify something (d81-hzvr).
+    assert state.is_poison_recovery_generation
+    assert not state.native_mutation_quarantined
     decision["request_redo"] = False
     assert (
         HexraysDecompilationHook.flowchart(
@@ -170,7 +176,11 @@ def test_coordinator_projects_restart_owners_and_observability(monkeypatch) -> N
         )
         == poison_receipt
     )
-    assert coordinator.native_mutation_quarantined(0x40A560) is True
+    assert coordinator.pending_generated_restart(0x40A560) is None
+    # Consuming the poison restart is what opens the recovery session, so the
+    # quarantine lifts here; the epoch stays owned by poison recovery (d81-hzvr).
+    assert coordinator.native_mutation_quarantined(0x40A560) is False
+    assert state.is_poison_recovery_generation
 
     restart_events = [
         event
@@ -209,8 +219,16 @@ def test_coordinator_projects_restart_owners_and_observability(monkeypatch) -> N
         "evidence_generation_after": 0,
         "native_inputs_changed": False,
         "recovery_mode": "fresh_decompile",
-        "native_mutation_quarantined": True,
+        "native_mutation_quarantined": False,
     }
+
+    # Poison recurring inside the recovery session finds the retry spent and
+    # re-arms the quarantine, which is terminal.
+    assert not state.request_poisoned_generation_restart(
+        reason="poison recurred inside the recovery decompile"
+    )
+    assert state.has_exhausted_poison_restart
+    assert coordinator.native_mutation_quarantined(0x40A560) is True
 
 
 def test_instruction_preopt_callback_propagates_poison_instead_of_continuing() -> None:
