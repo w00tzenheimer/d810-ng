@@ -37,6 +37,8 @@ from d810.core.observability import (
     emit,
     get_active_diag_func_ea,
     get_active_diag_path,
+    get_active_emulator_gap_scope,
+    get_pending_emulator_gap_scopes,
 )
 from d810.core.observability_events import EmulatorGapObserved
 from d810.core.observability_state_write import (
@@ -152,13 +154,18 @@ class EmulatorGap:
         return (str(self.cause), int(self.site_ea), int(self.block_serial))
 
 
-@dataclass(slots=True)
+@dataclass(slots=True, weakref_slot=True)
 class EmulatorGapScope:
     """Every gap one ``(function, attempt)`` recorded.
 
     Bounded on purpose: a pathological function must not turn diagnostics into
     a memory leak, so a scope keeps at most :data:`MAX_GAPS` distinct gaps and
     each gap at most :data:`MAX_DEF_SITES` definition sites.
+
+    Owned by the manager-layer ``DecompilationSessionContext`` (ticket
+    d81-e0uy); ``weakref_slot=True`` lets tests observe that a finished
+    session's scope is ordinary garbage once dropped, not retained by any
+    module-level cache.
     """
 
     func_ea: int
@@ -239,35 +246,63 @@ class EmulatorGapScope:
         self._index.clear()
 
 
-# -- the per-function scope table --------------------------------------------
-#: Bound on the functions tracked at once.  Insertion-ordered, so the least
-#: recently started function is evicted first.
-_MAX_TRACKED_FUNCTIONS = 32
+# -- the per-function scope -----------------------------------------------
+#: Owned by the manager-layer DecompilationSessionContext (ticket d81-e0uy),
+#: not a module dict: minted with the session, unreachable once it is
+#: popped and dropped. Reached only through the registered indirection in
+#: ``d810.core.observability`` (transforms/evaluator producers must not
+#: import d810.manager directly).
+#:
+#: There is deliberately NO process-global fallback scope here (ticket
+#: d81-10hk, superseding d81-dhs3's single-slot holder). The reviewer on
+#: a07d9c1b5 ruled that a scope minted for an "unowned" lookup fabricates
+#: ownership -- it pairs a WARNING with a session/attempt/maturity nobody
+#: actually holds -- and that the correct fallback when no lifecycle
+#: session backs ``func_ea`` is ABSTENTION, the same shape the optblock
+#: pass already uses. Every helper below returns ``None`` in that case
+#: instead of constructing anything.
 
-_SCOPES: dict[int, EmulatorGapScope] = {}
 
+def emulator_gap_scope(func_ea: int) -> EmulatorGapScope | None:
+    """The active lifecycle session's scope for ``func_ea``, or ``None``.
 
-def emulator_gap_scope(func_ea: int) -> EmulatorGapScope:
-    """The scope for ``func_ea``, created on first use."""
-    key = int(func_ea)
-    existing = _SCOPES.get(key)
-    if existing is not None:
-        return existing
-    if len(_SCOPES) >= _MAX_TRACKED_FUNCTIONS:
-        evicted = next(iter(_SCOPES))
-        _flush_scope(_SCOPES.pop(evicted), log=logger, emit_fn=None)
-    created = EmulatorGapScope(func_ea=key)
-    _SCOPES[key] = created
-    return created
+    ``None`` means no session owns ``func_ea`` right now (a bare adapter
+    under test, or a caller invoked before/after a session's lifetime).
+    Callers must abstain rather than invent a scope to warn against.
+    """
+    return get_active_emulator_gap_scope(int(func_ea))
 
 
 def begin_emulator_gap_attempt(
     func_ea: int, *, maturity: str = "", session_id: str = ""
-) -> EmulatorGapScope:
-    """Open the next attempt for ``func_ea`` and reset its dedupe state."""
+) -> EmulatorGapScope | None:
+    """Open the next attempt for ``func_ea`` and reset its dedupe state.
+
+    Returns ``None`` -- abstains -- when no session owns ``func_ea``.
+    """
     scope = emulator_gap_scope(func_ea)
+    if scope is None:
+        return None
     scope.begin_attempt(maturity=maturity, session_id=session_id)
     return scope
+
+
+@dataclass(frozen=True, slots=True)
+class RecordedEmulatorGap:
+    """A first-sighting gap paired with the scope it was recorded against.
+
+    ``record_emulator_gap`` and ``format_emulator_gap`` must observe the
+    SAME scope object for one warning -- a fresh lookup between the two
+    calls is exactly the reentrancy hazard the reviewer described on
+    a07d9c1b5 (a lookup for a different ``func_ea`` in between could
+    otherwise pair the gap with the wrong scope). Returning them paired
+    makes that a type guarantee instead of a "call
+    :func:`emulator_gap_scope` again and hope nothing reentered in
+    between" convention (ticket d81-10hk).
+    """
+
+    scope: EmulatorGapScope
+    gap: EmulatorGap
 
 
 def record_emulator_gap(
@@ -279,8 +314,18 @@ def record_emulator_gap(
     maturity: str = "",
     detail: str = "",
     def_sites: Sequence[tuple[int, int]] = (),
-) -> EmulatorGap | None:
-    """Record one gap sighting; ``None`` means "already warned this attempt".
+) -> RecordedEmulatorGap | None:
+    """Record one gap sighting against the session that owns ``func_ea``.
+
+    Returns ``None`` -- abstain -- both for a repeat sighting within one
+    attempt AND when no lifecycle session owns ``func_ea`` at all. With no
+    session there is no scope to dedupe against or attribute a WARNING to;
+    minting one from a process-global slot is the fabricated ownership
+    ticket d81-10hk removes. The two ``None`` cases share a value because
+    both mean "nothing to warn" to the caller, but only the no-session case
+    is additionally logged, once, at DEBUG, with no scope/session/func_ea
+    identity in the line -- an aggregate WARNING attributed to nobody would
+    repeat the same fabricated-ownership shape this ticket removes.
 
     A ``maturity`` that disagrees with the scope's ROTATES the attempt first:
     the emulator crosses maturities without any explicit attempt boundary, and
@@ -291,6 +336,12 @@ def record_emulator_gap(
     """
     try:
         scope = emulator_gap_scope(func_ea)
+        if scope is None:
+            logger.debug(
+                "emulator gap seen with no owning lifecycle session; "
+                "abstaining rather than attributing it to a fabricated scope"
+            )
+            return None
         if maturity and scope.maturity and str(maturity) != scope.maturity:
             _flush_scope(scope, log=logger, emit_fn=None)
             scope.begin_attempt(maturity=str(maturity))
@@ -300,13 +351,16 @@ def record_emulator_gap(
                 scope.attempt = 1
         elif scope.attempt == 0:
             scope.attempt = 1
-        return scope.record(
+        gap = scope.record(
             cause,
             site_ea=site_ea,
             block_serial=block_serial,
             detail=detail,
             def_sites=def_sites,
         )
+        if gap is None:
+            return None
+        return RecordedEmulatorGap(scope=scope, gap=gap)
     except Exception:  # noqa: BLE001 — diagnostics never break an evaluation
         logger.debug("emulator gap record failed", exc_info=True)
         return None
@@ -314,16 +368,8 @@ def record_emulator_gap(
 
 def emulator_gap_counts(func_ea: int) -> dict[str, int]:
     """Sightings per cause for ``func_ea``'s current attempt."""
-    scope = _SCOPES.get(int(func_ea))
+    scope = get_active_emulator_gap_scope(int(func_ea))
     return {} if scope is None else scope.counts()
-
-
-def reset_emulator_gaps(func_ea: int | None = None) -> None:
-    """Drop the scope for one function, or for every function."""
-    if func_ea is None:
-        _SCOPES.clear()
-        return
-    _SCOPES.pop(int(func_ea), None)
 
 
 def active_gap_db_path(func_ea: int) -> str | None:
@@ -472,7 +518,7 @@ def flush_emulator_gaps(
     Returns the aggregate line, or ``None`` when the attempt hit no gap.  Never
     raises for a diagnostic reason.
     """
-    scope = _SCOPES.get(int(func_ea))
+    scope = get_active_emulator_gap_scope(int(func_ea))
     if scope is None:
         return None
     try:
@@ -505,8 +551,14 @@ def flush_all_emulator_gaps(
     Never raises for a diagnostic reason.
     """
     lines: list[str] = []
-    for func_ea in tuple(_SCOPES):
-        line = flush_emulator_gaps(func_ea, log=log, emit_fn=emit_fn)
+    for scope in get_pending_emulator_gap_scopes():
+        try:
+            line = _flush_scope(
+                scope, log=logger if log is None else log, emit_fn=emit_fn
+            )
+        except Exception:  # noqa: BLE001 — diagnostics never break a run
+            logger.debug("emulator gap flush-all failed", exc_info=True)
+            continue
         if line:
             lines.append(line)
     return tuple(lines)
@@ -530,6 +582,7 @@ __all__ = [
     "EMULATOR_GAP_TICKETS",
     "EmulatorGap",
     "EmulatorGapScope",
+    "RecordedEmulatorGap",
     "active_gap_db_path",
     "begin_emulator_gap_attempt",
     "build_emulator_gap_events",
@@ -541,5 +594,4 @@ __all__ = [
     "format_emulator_gap_aggregate",
     "is_stack_slot_in_aliased_memory",
     "record_emulator_gap",
-    "reset_emulator_gaps",
 ]

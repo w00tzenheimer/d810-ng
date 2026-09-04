@@ -160,6 +160,7 @@ _session_open_handler: Callable[[int], None] | None = None
 _session_close_handler: Callable[[], None] | None = None
 _diag_conn_provider: Callable[..., Any] | None = None
 _diag_path_provider: Callable[[], str | None] | None = None
+_diag_latest_path_for_func_provider: Callable[[int], str | None] | None = None
 
 
 def register_diag_session_handlers(
@@ -195,6 +196,25 @@ def register_diag_path_provider(fn: Callable[[], str | None]) -> None:
     global _diag_path_provider
     with _session_lock:
         _diag_path_provider = fn
+
+
+def register_diag_latest_path_for_func_provider(
+    fn: Callable[[int], str | None],
+) -> None:
+    """Register a disk-based lookup for a function's own capture DB.
+
+    The live in-process pointer (:func:`get_active_diag_path`) can lag or
+    stay intentionally un-rotated across nested/reentrant callbacks that
+    legitimately share one top-level capture file (see
+    :func:`get_active_diag_func_ea`). The registered callable receives
+    ``func_ea`` and scans capture files on disk for the newest one whose
+    ``diagnostic_sessions`` table actually recorded a session for that
+    function, regardless of which function currently owns the live pointer.
+    """
+
+    global _diag_latest_path_for_func_provider
+    with _session_lock:
+        _diag_latest_path_for_func_provider = fn
 
 
 def _ensure_backend_loaded() -> None:
@@ -295,6 +315,30 @@ def get_active_diag_path() -> str | None:
         return None
 
 
+def get_diag_latest_path_for_func(func_ea: int) -> str | None:
+    """Return the newest on-disk capture DB that recorded a session for ``func_ea``.
+
+    A read-only, non-creating disk lookup: use this only after
+    :func:`get_active_diag_path` / :func:`resolve_unflat_hint_db_path`'s live
+    pointer fails to name ``func_ea``'s own capture. ``None`` when no backend
+    is registered or the lookup finds nothing.
+    """
+    _ensure_backend_loaded()
+    provider = _diag_latest_path_for_func_provider
+    if provider is None:
+        return None
+    try:
+        return provider(int(func_ea))
+    except Exception:
+        _logger.warning(
+            "diag latest-path-for-func provider raised; treating as no capture "
+            "(func_ea=0x%x)",
+            int(func_ea),
+            exc_info=True,
+        )
+        return None
+
+
 _diag_active_func_ea_provider: Callable[[], int | None] | None = None
 
 
@@ -331,6 +375,136 @@ def get_active_diag_func_ea() -> int | None:
             exc_info=True,
         )
         return None
+
+
+# ---------------------------------------------------------------------------
+# Unflatten outcome counters (ticket d81-pqrc)
+#
+# The counters a terminal unflatten outcome record quotes are owned by the
+# manager-layer DecompilationSessionContext -- minted with the session,
+# unreachable once it is popped and dropped. core.observability_unflat (and
+# its transforms/hexrays producers, which must not import d810.manager) reach
+# them only through this one registered indirection, never through a
+# process-global dict keyed by func_ea. Registered by
+# DecompilationLifecycleCoordinator.__post_init__, not at module import time
+# (there is no diag-style self-registering backend module here).
+# ---------------------------------------------------------------------------
+
+_active_unflat_counters_provider: Callable[[int], Any | None] | None = None
+
+
+def register_active_unflat_counters_provider(fn: Callable[[int], Any | None]) -> None:
+    """Register the lifecycle-owned unflatten counters accessor.
+
+    ``fn`` receives ``func_ea`` and returns the active session's counters
+    object, or ``None`` when no session owns that function. Idempotent: a
+    later coordinator construction (plugin reload) replaces the previous
+    registration, mirroring :func:`register_diag_session_handlers`.
+    """
+    global _active_unflat_counters_provider
+    with _session_lock:
+        _active_unflat_counters_provider = fn
+
+
+def get_active_unflat_counters(func_ea: int) -> Any | None:
+    """Return the active session's unflatten outcome counters, or ``None``.
+
+    ``None`` means either no lifecycle coordinator has registered itself yet
+    or no session currently owns ``func_ea`` -- both diagnostic-only, never
+    gating conditions for the caller.
+    """
+    provider = _active_unflat_counters_provider
+    if provider is None:
+        return None
+    try:
+        return provider(int(func_ea))
+    except Exception:
+        _logger.warning(
+            "active unflat-counters provider raised; treating as untracked "
+            "(func_ea=0x%x)",
+            int(func_ea),
+            exc_info=True,
+        )
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Emulator gap scopes (ticket d81-e0uy)
+#
+# Same shape as the unflatten counters above: EmulatorGapScope is owned by
+# the manager-layer DecompilationSessionContext, unreachable once the
+# session is popped and dropped. core.observability_emulator (and the
+# evaluator-layer producer, which must not import d810.manager) reach the
+# active session's scope through one registered per-function lookup, and
+# every not-yet-flushed scope through a second registered enumeration --
+# needed because flush_all_emulator_gaps must publish every function's last
+# attempt at session end, not just one. Both registered by
+# DecompilationLifecycleCoordinator.__post_init__.
+# ---------------------------------------------------------------------------
+
+_active_emulator_gap_scope_provider: Callable[[int], Any | None] | None = None
+_pending_emulator_gap_scopes_provider: Callable[[], Any] | None = None
+
+
+def register_active_emulator_gap_scope_provider(
+    fn: Callable[[int], Any | None],
+) -> None:
+    """Register the lifecycle-owned emulator gap scope accessor.
+
+    ``fn`` receives ``func_ea`` and returns the active session's
+    ``EmulatorGapScope``, or ``None`` when no session owns that function.
+    Idempotent: a later coordinator construction (plugin reload) replaces
+    the previous registration.
+    """
+    global _active_emulator_gap_scope_provider
+    with _session_lock:
+        _active_emulator_gap_scope_provider = fn
+
+
+def get_active_emulator_gap_scope(func_ea: int) -> Any | None:
+    """Return the active session's emulator gap scope, or ``None``."""
+    provider = _active_emulator_gap_scope_provider
+    if provider is None:
+        return None
+    try:
+        return provider(int(func_ea))
+    except Exception:
+        _logger.warning(
+            "active emulator-gap-scope provider raised; treating as "
+            "untracked (func_ea=0x%x)",
+            int(func_ea),
+            exc_info=True,
+        )
+        return None
+
+
+def register_pending_emulator_gap_scopes_provider(
+    fn: Callable[[], Any],
+) -> None:
+    """Register the enumerator of every scope not yet flushed.
+
+    ``fn`` takes no arguments and returns an iterable of every
+    ``EmulatorGapScope`` created since the last full flush -- the set
+    ``flush_all_emulator_gaps`` must drain at session end.
+    """
+    global _pending_emulator_gap_scopes_provider
+    with _session_lock:
+        _pending_emulator_gap_scopes_provider = fn
+
+
+def get_pending_emulator_gap_scopes() -> tuple[Any, ...]:
+    """Return every not-yet-flushed emulator gap scope, oldest first."""
+    provider = _pending_emulator_gap_scopes_provider
+    if provider is None:
+        return ()
+    try:
+        return tuple(provider())
+    except Exception:
+        _logger.warning(
+            "pending emulator-gap-scopes provider raised; treating as empty",
+            exc_info=True,
+        )
+        return ()
 
 
 _snapshot_id_resolver: Callable[["SnapshotRef"], int | None] | None = None
@@ -377,13 +551,21 @@ __all__ = [
     "get_active_diag_conn",
     "get_active_diag_func_ea",
     "get_active_diag_path",
+    "get_active_emulator_gap_scope",
+    "get_active_unflat_counters",
+    "get_diag_latest_path_for_func",
+    "get_pending_emulator_gap_scopes",
     "has_subscribers",
     "new_snapshot_key",
     "open_observability_session",
+    "register_active_emulator_gap_scope_provider",
+    "register_active_unflat_counters_provider",
     "register_diag_active_func_ea_provider",
     "register_diag_conn_provider",
+    "register_diag_latest_path_for_func_provider",
     "register_diag_path_provider",
     "register_diag_session_handlers",
+    "register_pending_emulator_gap_scopes_provider",
     "register_snapshot_id_resolver",
     "reset_diagnostic_bus",
     "resolve_snapshot_id_for",

@@ -16,7 +16,7 @@ import pytest
 
 from d810.core.diag import create_diag_database
 from d810.diagnostics.__main__ import main
-from d810.diagnostics.unflat_why import render_unflat_why
+from d810.diagnostics.unflat_why import render_session_list, render_unflat_why
 
 FUNC_EA = 0x7FFB0EB06E50
 FUNC_EA_HEX = "0x00007ffb0eb06e50"
@@ -798,3 +798,162 @@ def test_emulator_gaps_absent_renders_not_recorded(tmp_path):
     text = "\n".join(render_unflat_why(conn, FUNC_EA))
     assert "emulator_gaps: not recorded" in text
     assert "EmulatorGapFact" in text
+
+
+# ---------------------------------------------------------------------------
+# Session selection (ticket d81-y3oi): repeated decompiles of the same
+# function must not merge into one indistinguishable history.
+# ---------------------------------------------------------------------------
+
+
+def _insert_session(
+    conn: sqlite3.Connection,
+    *,
+    session_id: str,
+    func_ea: int = FUNC_EA,
+    func_ea_hex: str = FUNC_EA_HEX,
+    top_level_epoch: int = 1,
+    started_at: float = 0.0,
+    finished_at: float | None = None,
+    status: str = "finished",
+) -> None:
+    conn.execute(
+        """
+        INSERT INTO diagnostic_sessions
+            (session_id, func_ea_hex, func_ea_i64, top_level_epoch,
+             native_key_json, started_at, finished_at, status,
+             diagnostic_error_count)
+        VALUES (?, ?, ?, ?, '{}', ?, ?, ?, 0)
+        """,
+        (session_id, func_ea_hex, func_ea, top_level_epoch, started_at, finished_at, status),
+    )
+
+
+def _two_session_capture(conn: sqlite3.Connection) -> None:
+    """Two decompiles of the same function: an older run and the current one.
+
+    Mirrors the reviewer's exact repro shape: the first (older) session
+    recovered 85/85 handlers and committed a batch; the second (newer,
+    completed) session recovered nothing and bailed clean.
+    """
+    _insert_session(
+        conn, session_id="s-old", top_level_epoch=1, started_at=1.0, finished_at=2.0,
+        status="finished",
+    )
+    _insert_outcome(
+        conn,
+        event_id=1,
+        session_id="s-old",
+        disposition="applied_observed",
+        reason="cfg_transaction_committed",
+        handlers_recovered=85,
+        handlers_total=85,
+        plan_id="plan-old",
+    )
+    _insert_session(
+        conn, session_id="s-new", top_level_epoch=2, started_at=3.0, finished_at=4.0,
+        status="finished",
+    )
+    _insert_outcome(
+        conn,
+        event_id=2,
+        session_id="s-new",
+        disposition="not_submitted_safe_bail",
+        reason="no_plan_submitted",
+    )
+    conn.commit()
+
+
+class TestSessionSelection:
+    def test_default_resolves_to_the_newest_completed_session(self, tmp_path):
+        conn, _ = _make_db(tmp_path)
+        _two_session_capture(conn)
+
+        text = "\n".join(render_unflat_why(conn, FUNC_EA))
+        assert "session=s-new" in text
+        assert "disposition=not_submitted_safe_bail" in text
+        # The older session's row must not leak into the newer session's report.
+        assert "disposition=applied_observed" not in text
+        assert "handlers=85/85" not in text
+
+    def test_explicit_session_overrides_the_default(self, tmp_path):
+        conn, _ = _make_db(tmp_path)
+        _two_session_capture(conn)
+
+        text = "\n".join(render_unflat_why(conn, FUNC_EA, session_id="s-old"))
+        assert "session=s-old" in text
+        assert "disposition=applied_observed" in text
+        assert "handlers=85/85" in text
+        assert "disposition=not_submitted_safe_bail" not in text
+
+    def test_active_session_is_not_selected_as_the_default(self, tmp_path):
+        """An in-progress (``active``) session never wins over a completed one."""
+        conn, _ = _make_db(tmp_path)
+        _two_session_capture(conn)
+        _insert_session(
+            conn, session_id="s-live", top_level_epoch=3, started_at=5.0,
+            finished_at=None, status="active",
+        )
+        _insert_outcome(
+            conn,
+            event_id=3,
+            session_id="s-live",
+            disposition="not_submitted_safe_bail",
+            reason="no_plan_submitted",
+            handlers_recovered=1,
+        )
+        conn.commit()
+
+        text = "\n".join(render_unflat_why(conn, FUNC_EA))
+        assert "session=s-new" in text
+        assert "handlers=1/" not in text
+
+    def test_no_diagnostic_sessions_table_falls_back_to_merged_history(self, tmp_path):
+        conn, _ = _make_db(tmp_path)
+        _insert_outcome(conn, event_id=1, disposition="applied_observed", reason="x")
+        conn.commit()
+
+        text = "\n".join(render_unflat_why(conn, FUNC_EA))
+        assert "session=ALL" in text
+        assert "merged history" in text
+        assert "disposition=applied_observed" in text
+
+    def test_list_sessions_renders_every_session_newest_first(self, tmp_path):
+        conn, _ = _make_db(tmp_path)
+        _two_session_capture(conn)
+
+        text = "\n".join(render_session_list(conn, FUNC_EA))
+        s_new_idx = text.index("session_id=s-new")
+        s_old_idx = text.index("session_id=s-old")
+        assert s_new_idx < s_old_idx
+        assert "status=finished" in text
+        assert "outcome_rows=1" in text
+
+    def test_main_list_sessions_flag(self, tmp_path, capsys):
+        conn, db_path = _make_db(tmp_path)
+        _two_session_capture(conn)
+
+        rc = main(
+            ["unflat-why", "--db", str(db_path), "--func", hex(FUNC_EA), "--list-sessions"]
+        )
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "session_id=s-new" in out
+        assert "session_id=s-old" in out
+        # --list-sessions must not also render the causal-order report.
+        assert "disposition=" not in out
+
+    def test_main_session_flag_selects_one_session(self, tmp_path, capsys):
+        conn, db_path = _make_db(tmp_path)
+        _two_session_capture(conn)
+
+        rc = main(
+            [
+                "unflat-why", "--db", str(db_path), "--func", hex(FUNC_EA),
+                "--session", "s-old",
+            ]
+        )
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "session=s-old" in out
+        assert "disposition=applied_observed" in out

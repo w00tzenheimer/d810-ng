@@ -27,7 +27,13 @@ from d810.core.maturity_labels import (
     MaturityNumbering,
     mmat_name,
 )
-from d810.core.observability import emit, get_active_diag_func_ea, get_active_diag_path
+from d810.core.observability import (
+    emit,
+    get_active_diag_func_ea,
+    get_active_diag_path,
+    get_active_unflat_counters,
+    get_diag_latest_path_for_func,
+)
 from d810.core.observability_events import (
     UNFLATTEN_CANDIDATE_DISPOSITIONS,
     UnflattenCandidateOutcomeObserved,
@@ -38,17 +44,18 @@ logger = logging.getLogger("d810.unflat.outcome")
 #: Re-exported so emit sites name a disposition without importing the event.
 UNFLAT_OUTCOME_DISPOSITIONS = UNFLATTEN_CANDIDATE_DISPOSITIONS
 
-#: Bound on the per-function counter table so a long headless batch cannot
-#: grow it without limit.  Diagnostics must never become a memory leak.
-_MAX_TRACKED_FUNCTIONS = 64
-
 _UNFLAT_WHY_COMMAND = "python -m d810.diagnostics unflat-why"
 _NO_ACTIVE_CAPTURE = "<diag-db>"
 
 
-@dataclass(slots=True)
+@dataclass(slots=True, weakref_slot=True)
 class UnflattenOutcomeCounters:
-    """Counters a terminal record quotes.  Never a decision input."""
+    """Counters a terminal record quotes.  Never a decision input.
+
+    ``weakref_slot=True`` lets tests observe that a finished session's
+    counters are ordinary garbage once dropped (ticket d81-pqrc), not
+    retained by any module-level cache.
+    """
 
     handlers_recovered: int | None = None
     handlers_total: int | None = None
@@ -73,28 +80,28 @@ _COUNTER_FIELDS = frozenset(
     }
 )
 
-_COUNTERS: dict[int, UnflattenOutcomeCounters] = {}
+def _active_slot(func_ea: int) -> UnflattenOutcomeCounters | None:
+    """Return the lifecycle-owned counters object for ``func_ea``, if any.
+
+    Owned entirely by the active DecompilationSessionContext (ticket
+    d81-pqrc): minted with that session, unreachable once it is popped and
+    dropped. This module never stores counters itself -- ``None`` here means
+    either no lifecycle coordinator is registered yet or no session
+    currently owns ``func_ea``, both diagnostic-only conditions.
+    """
+    return get_active_unflat_counters(func_ea)
 
 
-def _slot(func_ea: int) -> UnflattenOutcomeCounters:
-    key = int(func_ea)
-    existing = _COUNTERS.get(key)
-    if existing is not None:
-        return existing
-    if len(_COUNTERS) >= _MAX_TRACKED_FUNCTIONS:
-        # Insertion-ordered dict: drop the least recently started function.
-        _COUNTERS.pop(next(iter(_COUNTERS)))
-    created = UnflattenOutcomeCounters()
-    _COUNTERS[key] = created
-    return created
-
-
-def note_unflat_counters(func_ea: int, **fields: object) -> UnflattenOutcomeCounters:
-    """Record counters for ``func_ea``; ``None`` values keep the prior value."""
+def note_unflat_counters(func_ea: int, **fields: object) -> UnflattenOutcomeCounters | None:
+    """Record counters for ``func_ea``'s active session; ``None`` values keep
+    the prior value. A no-op (returns ``None``) when no session owns
+    ``func_ea`` -- diagnostics never gate or fabricate a session."""
     unknown = set(fields) - _COUNTER_FIELDS
     if unknown:
         raise ValueError(f"unknown unflatten counter(s): {sorted(unknown)}")
-    slot = _slot(func_ea)
+    slot = _active_slot(func_ea)
+    if slot is None:
+        return None
     for name, value in fields.items():
         if value is None:
             continue
@@ -104,7 +111,9 @@ def note_unflat_counters(func_ea: int, **fields: object) -> UnflattenOutcomeCoun
 
 def note_unresolved_state_write(func_ea: int, block_serial: int, ea: int) -> None:
     """Record one state write the recovery could not resolve."""
-    slot = _slot(func_ea)
+    slot = _active_slot(func_ea)
+    if slot is None:
+        return
     anchor = (int(block_serial), int(ea))
     if anchor in slot.unresolved_anchors:
         return
@@ -112,28 +121,36 @@ def note_unresolved_state_write(func_ea: int, block_serial: int, ea: int) -> Non
 
 
 def note_committed_batch(func_ea: int) -> int:
-    """Count one committed CFG transaction and return the running total."""
-    slot = _slot(func_ea)
+    """Count one committed CFG transaction and return the running total.
+
+    Returns 0 when no session owns ``func_ea`` -- callers gate on
+    :func:`has_unflat_counters` first, so this only happens for a genuinely
+    untracked function, never mid-candidate.
+    """
+    slot = _active_slot(func_ea)
+    if slot is None:
+        return 0
     slot.committed_batches += 1
     return slot.committed_batches
 
 
 def unflat_counters(func_ea: int) -> UnflattenOutcomeCounters:
-    """Return the counters observed for ``func_ea`` so far."""
-    return _COUNTERS.get(int(func_ea), UnflattenOutcomeCounters())
+    """Return the counters observed for ``func_ea``'s active session so far.
+
+    Returns a fresh, unattached ``UnflattenOutcomeCounters()`` when no
+    session owns ``func_ea`` -- callers never see ``None``.
+    """
+    slot = _active_slot(func_ea)
+    return UnflattenOutcomeCounters() if slot is None else slot
 
 
 def has_unflat_counters(func_ea: int) -> bool:
-    """Whether any unflatten work has been observed for ``func_ea``."""
-    return int(func_ea) in _COUNTERS
-
-
-def reset_unflat_counters(func_ea: int | None = None) -> None:
-    """Drop counters for one function, or for every function."""
-    if func_ea is None:
-        _COUNTERS.clear()
-        return
-    _COUNTERS.pop(int(func_ea), None)
+    """Whether any unflatten work has been observed for ``func_ea``'s active
+    session. A session's counters exist (are minted) for its whole
+    lifetime, so "observed" means at least one field differs from a blank
+    ``UnflattenOutcomeCounters()``, not merely that a session is open."""
+    slot = _active_slot(func_ea)
+    return slot is not None and slot != UnflattenOutcomeCounters()
 
 
 def derive_bail_reason(counters: UnflattenOutcomeCounters) -> str:
@@ -306,6 +323,18 @@ def observe_unflat_candidate_outcome(
     except Exception:
         db_path = None
     db_path = resolve_unflat_hint_db_path(func_ea, db_path, get_active_diag_func_ea())
+    if db_path is None:
+        # The live in-process pointer either names a different function's
+        # capture or is absent entirely (multi-function batch, or a session
+        # that legitimately stays un-rotated across nested callbacks). Before
+        # falling back to the placeholder, check whether func_ea's own
+        # session was actually recorded on disk somewhere -- it usually was
+        # (ticket d81-y3oi): the `next_hint` command only needs to be
+        # executable, not name the *live* file.
+        try:
+            db_path = get_diag_latest_path_for_func(func_ea)
+        except Exception:
+            db_path = None
     record = build_unflat_candidate_outcome(
         session_id=session_id,
         func_ea=func_ea,
@@ -335,7 +364,6 @@ __all__ = [
     "note_unflat_counters",
     "note_unresolved_state_write",
     "observe_unflat_candidate_outcome",
-    "reset_unflat_counters",
     "resolve_unflat_hint_db_path",
     "skipped_maturities",
     "unflat_counters",

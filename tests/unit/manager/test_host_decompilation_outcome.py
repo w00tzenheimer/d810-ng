@@ -2,17 +2,41 @@
 
 from __future__ import annotations
 
+import gc
+import weakref
+
 from d810.core.decompilation_session import DecompilationEvent
+from d810.core.observability_emulator import (
+    CAUSE_HELPER_NOT_IMPLEMENTED,
+    CAUSE_NULL_DEREF,
+    EmulatorGapScope,
+    begin_emulator_gap_attempt,
+    record_emulator_gap,
+)
 from d810.core.observability_events import (
+    EmulatorGapObserved,
     HostDecompilationOutcome,
     HostDecompilationOutcomeKind,
     HostDecompilationOutcomeObserved,
+)
+from d810.core.observability_unflat import (
+    UnflattenOutcomeCounters,
+    note_committed_batch,
+    note_unflat_counters,
+    unflat_counters,
 )
 from d810.manager.decompilation_lifecycle import DecompilationLifecycleCoordinator
 from tests.native_preanalysis import make_native_key
 
 
 NATIVE_KEY = make_native_key()
+
+# No cross-test isolation fixture needed here (ticket d81-pqrc): unflat
+# counters are owned by DecompilationSessionContext, not a process-global
+# dict. Each ``_coordinator()`` call below registers ITSELF as the active
+# provider (DecompilationLifecycleCoordinator.__post_init__), so a
+# later-constructed coordinator naturally supersedes an earlier one -- there
+# is nothing left to reset between tests.
 
 
 class _Emitter:
@@ -156,6 +180,221 @@ def test_final_host_outcome_closes_observability_after_lifecycle_events(monkeypa
         DecompilationEvent.SESSION_FINISHED,
     ]
     assert order == ["finished", "closed"]
+
+
+def test_two_sequential_sessions_at_the_same_func_ea_start_from_fresh_counters(
+    monkeypatch,
+) -> None:
+    """Ticket d81-pqrc: session-owned counters, not process-global function state.
+
+    Reproduces the reviewer's report verbatim: a prior session recorded
+    ``handlers_recovered=85``, a ``plan_id``, and one committed batch for
+    this func_ea, then finished. A brand new top-level session at the SAME
+    func_ea must get its OWN ``UnflattenOutcomeCounters`` object -- a
+    different identity, every field back at its default -- not silently
+    read the old run's numbers via any surviving global lookup.
+    """
+    monkeypatch.setattr(
+        "d810.manager.decompilation_lifecycle.emit_diagnostic", lambda *a, **k: None
+    )
+    monkeypatch.setattr(
+        "d810.manager.decompilation_lifecycle.close_observability_session", lambda: None
+    )
+    coordinator = _coordinator(_Emitter())
+
+    session_old, _ = coordinator.ensure_hexrays_session(
+        function_ea=0x401000, database_identity="sample.i64"
+    )
+    note_unflat_counters(0x401000, handlers_recovered=85, handlers_total=85, plan_id="plan-old")
+    note_committed_batch(0x401000)
+    old_counters = unflat_counters(0x401000)
+    assert old_counters is session_old.unflat_counters
+    assert old_counters.handlers_recovered == 85
+    assert old_counters.committed_batches == 1
+
+    coordinator.mark_structural_complete()
+    assert coordinator.observe_host_outcome(0x401000, _rendered("headless")) is True
+    assert coordinator.current_session(0x401000) is None
+
+    session_new, created = coordinator.ensure_hexrays_session(
+        function_ea=0x401000, database_identity="sample.i64"
+    )
+    assert created is True
+
+    fresh = unflat_counters(0x401000)
+    assert fresh is session_new.unflat_counters
+    assert fresh is not old_counters
+    assert fresh == UnflattenOutcomeCounters()
+    assert fresh.handlers_recovered is None
+    assert fresh.plan_id is None
+    assert fresh.committed_batches == 0
+
+
+def test_finished_session_counters_are_unreachable_after_finish(monkeypatch) -> None:
+    """Ticket d81-pqrc: counters do not outlive the session that owned them.
+
+    Once the owning session is popped and nothing else references it, its
+    ``UnflattenOutcomeCounters`` is ordinary garbage -- not retained by any
+    module-level cache -- and the public accessor can no longer see it.
+    """
+    monkeypatch.setattr(
+        "d810.manager.decompilation_lifecycle.emit_diagnostic", lambda *a, **k: None
+    )
+    monkeypatch.setattr(
+        "d810.manager.decompilation_lifecycle.close_observability_session", lambda: None
+    )
+    coordinator = _coordinator(_Emitter())
+    session, _ = coordinator.ensure_hexrays_session(
+        function_ea=0x401000, database_identity="sample.i64"
+    )
+    note_unflat_counters(0x401000, dag_nodes=59)
+    counters_ref = weakref.ref(session.unflat_counters)
+    coordinator.mark_structural_complete()
+
+    assert coordinator.observe_host_outcome(0x401000, _rendered("headless")) is True
+
+    # The public API sees nothing for this func_ea any more.
+    assert unflat_counters(0x401000).dag_nodes is None
+
+    # And the object itself is genuinely gone, not merely unlisted.
+    del session
+    gc.collect()
+    assert counters_ref() is None
+
+
+def test_reentrant_activation_for_the_same_func_ea_keeps_its_counters(monkeypatch) -> None:
+    """A borrowed/reentrant activation must not reset counters mid-session."""
+    monkeypatch.setattr(
+        "d810.manager.decompilation_lifecycle.emit_diagnostic", lambda *a, **k: None
+    )
+    coordinator = _coordinator(_Emitter())
+    session, _ = coordinator.ensure_hexrays_session(
+        function_ea=0x401000, database_identity="sample.i64"
+    )
+    note_unflat_counters(0x401000, dag_nodes=59)
+
+    # Same func_ea, same database identity, no active-session change: this is
+    # the reentrant "current, False" branch and must not touch counters.
+    reentrant_session, created = coordinator.ensure_hexrays_session(
+        function_ea=0x401000, database_identity="sample.i64"
+    )
+
+    assert created is False
+    assert reentrant_session.unflat_counters is session.unflat_counters
+    assert unflat_counters(0x401000).dag_nodes == 59
+
+
+def test_two_sequential_sessions_at_one_ea_get_distinct_emulator_gap_scopes(
+    monkeypatch,
+) -> None:
+    """Ticket d81-e0uy: session-owned emulator gap scopes, not process-global.
+
+    Same defect class as d81-pqrc's unflat counters:
+    ``observability_emulator._SCOPES`` was a process-global dict keyed by
+    func_ea with insertion-order eviction. Two sequential sessions at the
+    SAME func_ea must get distinct, independently-empty scope objects.
+    """
+    monkeypatch.setattr(
+        "d810.manager.decompilation_lifecycle.emit_diagnostic", lambda *a, **k: None
+    )
+    monkeypatch.setattr(
+        "d810.manager.decompilation_lifecycle.close_observability_session", lambda: None
+    )
+    coordinator = _coordinator(_Emitter())
+
+    session_old, _ = coordinator.ensure_hexrays_session(
+        function_ea=0x401000, database_identity="sample.i64"
+    )
+    begin_emulator_gap_attempt(0x401000, maturity="MMAT_GLBOPT1")
+    record_emulator_gap(0x401000, CAUSE_NULL_DEREF, site_ea=0x20)
+    assert session_old.emulator_gap_scope.is_empty() is False
+
+    coordinator.mark_structural_complete()
+    assert coordinator.observe_host_outcome(0x401000, _rendered("headless")) is True
+    assert coordinator.current_session(0x401000) is None
+
+    session_new, created = coordinator.ensure_hexrays_session(
+        function_ea=0x401000, database_identity="sample.i64"
+    )
+    assert created is True
+    assert session_new.emulator_gap_scope is not session_old.emulator_gap_scope
+    assert session_new.emulator_gap_scope.is_empty() is True
+    assert session_new.emulator_gap_scope.func_ea == 0x401000
+
+
+def test_finished_session_emulator_gap_scope_is_unreachable_after_finish(
+    monkeypatch,
+) -> None:
+    """Ticket d81-e0uy: the scope does not outlive the session that owned it."""
+    monkeypatch.setattr(
+        "d810.manager.decompilation_lifecycle.emit_diagnostic", lambda *a, **k: None
+    )
+    monkeypatch.setattr(
+        "d810.manager.decompilation_lifecycle.close_observability_session", lambda: None
+    )
+    monkeypatch.setattr(
+        "d810.core.observability_emulator.emit", lambda *_a, **_k: None
+    )
+    coordinator = _coordinator(_Emitter())
+    session, _ = coordinator.ensure_hexrays_session(
+        function_ea=0x401000, database_identity="sample.i64"
+    )
+    begin_emulator_gap_attempt(0x401000, maturity="MMAT_GLBOPT1")
+    record_emulator_gap(0x401000, CAUSE_NULL_DEREF, site_ea=0x20)
+    scope_ref = weakref.ref(session.emulator_gap_scope)
+    coordinator.mark_structural_complete()
+
+    assert coordinator.observe_host_outcome(0x401000, _rendered("headless")) is True
+
+    del session
+    gc.collect()
+    assert scope_ref() is None
+
+
+def test_session_emulator_gaps_are_flushed_exactly_once_at_session_finish(
+    monkeypatch,
+) -> None:
+    """Ticket d81-e0uy: keep slice 5's flush-once-at-finish semantics.
+
+    Two distinct gap sites recorded in one session must publish exactly
+    two ``EmulatorGapObserved`` facts when that session finishes -- not
+    zero (lost, the original d81-c6n7 bug) and not four (double-flushed by
+    the coordinator's own pending-scope bookkeeping).
+    """
+    monkeypatch.setattr(
+        "d810.manager.decompilation_lifecycle.emit_diagnostic", lambda *a, **k: None
+    )
+    monkeypatch.setattr(
+        "d810.manager.decompilation_lifecycle.close_observability_session", lambda: None
+    )
+    published: list[object] = []
+    monkeypatch.setattr(
+        "d810.core.observability_emulator.emit", published.append
+    )
+    coordinator = _coordinator(_Emitter())
+    coordinator.ensure_hexrays_session(
+        function_ea=0x401000, database_identity="sample.i64"
+    )
+    begin_emulator_gap_attempt(0x401000, maturity="MMAT_GLBOPT1")
+    record_emulator_gap(0x401000, CAUSE_NULL_DEREF, site_ea=0x20)
+    record_emulator_gap(0x401000, CAUSE_HELPER_NOT_IMPLEMENTED, site_ea=0x30)
+    coordinator.mark_structural_complete()
+
+    assert coordinator.observe_host_outcome(0x401000, _rendered("headless")) is True
+
+    gap_events = [e for e in published if isinstance(e, EmulatorGapObserved)]
+    assert len(gap_events) == 2
+    assert {e.cause for e in gap_events} == {CAUSE_NULL_DEREF, CAUSE_HELPER_NOT_IMPLEMENTED}
+
+    # A second, unrelated session finishing afterward must not re-publish
+    # the first session's already-flushed (and by now unreferenced) gaps.
+    published.clear()
+    coordinator.ensure_hexrays_session(
+        function_ea=0x402000, database_identity="sample.i64"
+    )
+    coordinator.mark_structural_complete()
+    assert coordinator.observe_host_outcome(0x402000, _rendered("headless")) is True
+    assert [e for e in published if isinstance(e, EmulatorGapObserved)] == []
 
 
 def test_next_prolog_abandonment_closes_before_new_owner_opens(monkeypatch) -> None:

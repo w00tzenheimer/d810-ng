@@ -420,11 +420,20 @@ def get_diag_conn(
 from d810.core.observability import (
     register_diag_active_func_ea_provider as _register_diag_active_func_ea_provider,
     register_diag_conn_provider as _register_diag_conn_provider,
+    register_diag_latest_path_for_func_provider as _register_diag_latest_path_for_func_provider,
     register_diag_path_provider as _register_diag_path_provider,
     register_diag_session_handlers as _register_diag_session_handlers,
 )
+
+
+def _latest_path_for_func(func_ea: int) -> str | None:
+    """Disk-based fallback: the newest capture DB that recorded ``func_ea``."""
+    found = find_latest_diag_db_path(func_ea)
+    return str(found) if found is not None else None
+
 
 _register_diag_session_handlers(open_diag_session, close_diag_session)
 _register_diag_conn_provider(get_diag_conn)
 _register_diag_path_provider(get_active_diag_path)
 _register_diag_active_func_ea_provider(get_active_diag_func_ea)
+_register_diag_latest_path_for_func_provider(_latest_path_for_func)

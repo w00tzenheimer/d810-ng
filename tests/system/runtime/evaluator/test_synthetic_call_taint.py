@@ -23,12 +23,13 @@ import platform
 import ida_hexrays
 import pytest
 
+from d810.core import observability
 from d810.core.observability_emulator import (
     CAUSE_UNSUPPORTED_CALL_OPERAND,
+    EmulatorGapScope,
     begin_emulator_gap_attempt,
     emulator_gap_counts,
     flush_emulator_gaps,
-    reset_emulator_gaps,
 )
 from d810.evaluator.hexrays_microcode.emulator import (
     MicroCodeEnvironment,
@@ -94,6 +95,32 @@ def live_call(libobfuscated_setup):
 
 class TestSyntheticCallTaint:
     binary_name = _get_default_binary()
+
+    @pytest.fixture(autouse=True)
+    def _fake_emulator_gap_session_store(self, monkeypatch):
+        """Stand in for a lifecycle-owned session store (ticket d81-e0uy).
+
+        No DecompilationLifecycleCoordinator runs in this test module; a
+        plain per-test dict keyed by func_ea gives ``record_emulator_gap`` /
+        ``begin_emulator_gap_attempt`` somewhere to persist dedupe state
+        across calls, exactly like production's session-owned scope.
+        """
+        store: dict[int, EmulatorGapScope] = {}
+
+        def _scope_provider(func_ea):
+            return store.setdefault(
+                int(func_ea), EmulatorGapScope(func_ea=int(func_ea))
+            )
+
+        monkeypatch.setattr(
+            observability, "_active_emulator_gap_scope_provider", _scope_provider
+        )
+        monkeypatch.setattr(
+            observability,
+            "_pending_emulator_gap_scopes_provider",
+            lambda: tuple(store.values()),
+        )
+        yield store
 
     def test_unmodeled_call_returns_a_value_instead_of_none(self, live_call):
         mba, blk, call_insn = live_call
@@ -192,7 +219,6 @@ class TestSyntheticCallTaint:
         emitted ~1100 warnings for 3 call sites (ticket d81-0xzp).  Slice 5
         (d81-c6n7) moved the key to ``(function, attempt, cause, site)``."""
         mba, blk, call_insn = live_call
-        reset_emulator_gaps()
         with caplog.at_level(
             "WARNING", logger="d810.evaluator.hexrays_microcode.emulator"
         ):
@@ -212,7 +238,6 @@ class TestSyntheticCallTaint:
         """A retry must not go silent: the module-scoped set it replaces never
         reset, so the second and third attempts lost their warnings."""
         mba, blk, call_insn = live_call
-        reset_emulator_gaps()
         func_ea = int(mba.entry_ea)
         with caplog.at_level(
             "WARNING", logger="d810.evaluator.hexrays_microcode.emulator"
@@ -232,7 +257,6 @@ class TestSyntheticCallTaint:
 
     def test_the_gap_line_is_anchored_and_actionable(self, live_call, caplog):
         mba, blk, call_insn = live_call
-        reset_emulator_gaps()
         with caplog.at_level(
             "WARNING", logger="d810.evaluator.hexrays_microcode.emulator"
         ):
@@ -254,7 +278,6 @@ class TestSyntheticCallTaint:
 
     def test_a_repeat_still_counts_toward_the_aggregate(self, live_call):
         mba, blk, call_insn = live_call
-        reset_emulator_gaps()
         func_ea = int(mba.entry_ea)
         begin_emulator_gap_attempt(func_ea, maturity="MMAT_CALLS")
         for _ in range(4):
@@ -267,7 +290,6 @@ class TestSyntheticCallTaint:
 
     def test_the_attempt_publishes_one_fact_per_site(self, live_call):
         mba, blk, call_insn = live_call
-        reset_emulator_gaps()
         func_ea = int(mba.entry_ea)
         begin_emulator_gap_attempt(func_ea, maturity="MMAT_CALLS")
         for _ in range(3):

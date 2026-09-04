@@ -31,7 +31,6 @@ from d810.core.observability_emulator import (
     CAUSE_UNSUPPORTED_CALL_OPERAND,
     EmulatorGapScope,
     active_gap_db_path,
-    emulator_gap_scope,
     format_emulator_gap,
     is_stack_slot_in_aliased_memory,
     record_emulator_gap,
@@ -597,7 +596,7 @@ class MicroCodeInterpreter(object):
         func_ea, block_serial, maturity, site_ea = self._gap_context(
             environment, blk, ins
         )
-        gap = record_emulator_gap(
+        recorded = record_emulator_gap(
             func_ea,
             cause,
             site_ea=site_ea,
@@ -605,18 +604,18 @@ class MicroCodeInterpreter(object):
             maturity=maturity,
             def_sites=def_sites,
         )
-        if gap is None:
+        if recorded is None:
             return False
         if detail_fn is not None:
             try:
-                gap.detail = str(detail_fn())[: EmulatorGapScope.MAX_DETAIL]
+                recorded.gap.detail = str(detail_fn())[: EmulatorGapScope.MAX_DETAIL]
             except Exception:  # noqa: BLE001 — a render must never break a run
-                gap.detail = ""
+                recorded.gap.detail = ""
         emulator_log.warning(
             "%s",
             format_emulator_gap(
-                emulator_gap_scope(func_ea),
-                gap,
+                recorded.scope,
+                recorded.gap,
                 db_path=active_gap_db_path(func_ea),
             ),
         )

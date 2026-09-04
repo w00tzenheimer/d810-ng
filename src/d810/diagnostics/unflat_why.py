@@ -64,6 +64,21 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         required=True,
         help="Function EA in hex (for example 0x7FFB0EB06E50)",
     )
+    parser.add_argument(
+        "--session",
+        default=None,
+        help=(
+            "Restrict the report to one diagnostic session_id (default: the "
+            "newest completed -- status finished/failed -- session recorded "
+            "for --func; repeated decompiles of the same function otherwise "
+            "render as one merged history)."
+        ),
+    )
+    parser.add_argument(
+        "--list-sessions",
+        action="store_true",
+        help="List diagnostic sessions recorded for --func and exit",
+    )
 
 
 def run(args: argparse.Namespace) -> int:
@@ -77,7 +92,12 @@ def run(args: argparse.Namespace) -> int:
     conn.row_factory = sqlite3.Row
     out = get_output(args)
     try:
-        for line in render_unflat_why(conn, func_ea):
+        if getattr(args, "list_sessions", False):
+            for line in render_session_list(conn, func_ea):
+                write_output(out, line)
+            return 0
+        session_id = getattr(args, "session", None)
+        for line in render_unflat_why(conn, func_ea, session_id=session_id):
             write_output(out, line)
     finally:
         conn.close()
@@ -89,10 +109,30 @@ def run(args: argparse.Namespace) -> int:
 # ---------------------------------------------------------------------------
 
 
-def render_unflat_why(conn: sqlite3.Connection, func_ea: int) -> list[str]:
-    """Render the full causal-order report for ``func_ea``."""
+def render_unflat_why(
+    conn: sqlite3.Connection, func_ea: int, *, session_id: str | None = None
+) -> list[str]:
+    """Render the full causal-order report for ``func_ea``.
+
+    Repeated decompiles of the same function each mint their own diagnostic
+    session (``diagnostic_sessions.session_id``); without a session filter
+    their terminal outcome rows merge into one indistinguishable history
+    (ticket d81-y3oi). ``session_id`` pins the report to one session --
+    explicitly when given, otherwise the newest *completed* (``finished`` or
+    ``failed``) session recorded for ``func_ea``. When no session can be
+    resolved (an older diag DB predating ``diagnostic_sessions``, or no
+    completed session for this function yet) the report falls back to the
+    old merged-history behavior and says so in the header rather than
+    silently narrowing to nothing.
+    """
     func_ea_i64 = int(func_ea)
-    lines: list[str] = [f"unflat-why func=0x{func_ea_i64:x}"]
+    resolved_session_id, session_note = _resolve_session_id(
+        conn, func_ea_i64, session_id
+    )
+    header = f"unflat-why func=0x{func_ea_i64:x} session={resolved_session_id or 'ALL'}"
+    if session_note:
+        header += f" ({session_note})"
+    lines: list[str] = [header]
 
     if not _table_exists(conn, "unflatten_candidate_outcomes"):
         lines.append(
@@ -100,13 +140,13 @@ def render_unflat_why(conn: sqlite3.Connection, func_ea: int) -> list[str]:
             "ticket d81-rhu6 slice 1; this diag DB has no terminal outcome "
             "table)"
         )
-        _render_fallback_cfg_transactions(lines, conn, func_ea_i64)
+        _render_fallback_cfg_transactions(lines, conn, func_ea_i64, resolved_session_id)
         return lines
 
-    rows = _fetch_outcome_rows(conn, func_ea_i64)
+    rows = _fetch_outcome_rows(conn, func_ea_i64, resolved_session_id)
     if not rows:
         lines.append("unflatten_candidate_outcomes: no rows for this function")
-        _render_fallback_cfg_transactions(lines, conn, func_ea_i64)
+        _render_fallback_cfg_transactions(lines, conn, func_ea_i64, resolved_session_id)
         return lines
 
     groups = _build_groups(rows)
@@ -116,9 +156,9 @@ def render_unflat_why(conn: sqlite3.Connection, func_ea: int) -> list[str]:
         lines.append(f"  next: {_next_step(deciding_row)}")
         lines.append("")
 
-    _render_state_write_resolutions(lines, conn, func_ea_i64)
-    _render_emulator_gaps(lines, conn, func_ea_i64)
-    _render_recovery_search(lines, conn, func_ea_i64)
+    _render_state_write_resolutions(lines, conn, func_ea_i64, resolved_session_id)
+    _render_emulator_gaps(lines, conn, func_ea_i64, resolved_session_id)
+    _render_recovery_search(lines, conn, func_ea_i64, resolved_session_id)
     return lines
 
 
@@ -128,6 +168,75 @@ def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
         (table_name,),
     ).fetchone()
     return row is not None
+
+
+#: Session statuses this command treats as "closed" -- a terminal outcome
+#: row or a session-close marker was recorded, as opposed to ``active``
+#: (still being written by a live decompile).
+_COMPLETED_SESSION_STATUSES = ("finished", "failed")
+
+
+def _resolve_session_id(
+    conn: sqlite3.Connection, func_ea_i64: int, requested: str | None
+) -> tuple[str | None, str | None]:
+    """Return ``(session_id, note)`` for the report header.
+
+    ``note`` is ``None`` when the resolution is unremarkable (an explicit
+    ``--session``, or a clean default resolution); it explains itself only
+    when the report is about to render merged history across every session.
+    """
+    if requested:
+        return str(requested), None
+    if not _table_exists(conn, "diagnostic_sessions"):
+        return None, "no diagnostic_sessions table; showing merged history across all sessions"
+    placeholders = ",".join("?" for _ in _COMPLETED_SESSION_STATUSES)
+    row = conn.execute(
+        f"""
+        SELECT session_id FROM diagnostic_sessions
+        WHERE func_ea_i64 = ? AND status IN ({placeholders})
+        ORDER BY finished_at DESC, started_at DESC
+        LIMIT 1
+        """,
+        (int(func_ea_i64), *_COMPLETED_SESSION_STATUSES),
+    ).fetchone()
+    if row is not None:
+        return str(row["session_id"]), None
+    return None, "no completed session recorded; showing merged history across all sessions"
+
+
+def render_session_list(conn: sqlite3.Connection, func_ea: int) -> list[str]:
+    """Render every diagnostic session recorded for ``func_ea``, newest first."""
+    func_ea_i64 = int(func_ea)
+    lines = [f"unflat-why --list-sessions func=0x{func_ea_i64:x}"]
+    if not _table_exists(conn, "diagnostic_sessions"):
+        lines.append(
+            "diagnostic_sessions: not recorded (this diag DB predates the "
+            "session table)"
+        )
+        return lines
+    rows = conn.execute(
+        """
+        SELECT session_id, status, started_at, finished_at, top_level_epoch
+        FROM diagnostic_sessions
+        WHERE func_ea_i64 = ?
+        ORDER BY started_at DESC
+        """,
+        (int(func_ea_i64),),
+    ).fetchall()
+    if not rows:
+        lines.append("diagnostic_sessions: no sessions recorded for this function")
+        return lines
+    for row in rows:
+        outcome_count = conn.execute(
+            "SELECT count(*) FROM unflatten_candidate_outcomes WHERE session_id = ?",
+            (row["session_id"],),
+        ).fetchone()[0] if _table_exists(conn, "unflatten_candidate_outcomes") else 0
+        lines.append(
+            f"  session_id={row['session_id']} status={row['status']} "
+            f"epoch={row['top_level_epoch']} started_at={row['started_at']} "
+            f"finished_at={row['finished_at']} outcome_rows={outcome_count}"
+        )
+    return lines
 
 
 def _pair(left: object, right: object) -> str:
@@ -150,10 +259,9 @@ def _safe_json(text: object) -> dict:
 
 
 def _fetch_outcome_rows(
-    conn: sqlite3.Connection, func_ea_i64: int
+    conn: sqlite3.Connection, func_ea_i64: int, session_id: str | None = None
 ) -> list[sqlite3.Row]:
-    return conn.execute(
-        """
+    query = """
         SELECT maturity, graph_fingerprint, candidate_identity, attempt,
                disposition, reason, plan_id, handlers_recovered,
                handlers_total, dag_nodes, dag_edges, coverage_covered,
@@ -161,10 +269,13 @@ def _fetch_outcome_rows(
                unresolved_anchors_json, next_hint
         FROM unflatten_candidate_outcomes
         WHERE func_ea_i64 = ?
-        ORDER BY rowid
-        """,
-        (int(func_ea_i64),),
-    ).fetchall()
+    """
+    params: list[object] = [int(func_ea_i64)]
+    if session_id is not None:
+        query += " AND session_id = ?"
+        params.append(str(session_id))
+    query += " ORDER BY rowid"
+    return conn.execute(query, params).fetchall()
 
 
 def _group_key(row: sqlite3.Row) -> tuple[str, str, str]:
@@ -419,7 +530,10 @@ _TOP_UNRESOLVED_CORRIDORS = 10
 
 
 def _render_state_write_resolutions(
-    lines: list[str], conn: sqlite3.Connection, func_ea_i64: int
+    lines: list[str],
+    conn: sqlite3.Connection,
+    func_ea_i64: int,
+    session_id: str | None = None,
 ) -> None:
     """Decompose the residual dispatcher corridors by cause (ticket d81-qt4v).
 
@@ -433,17 +547,19 @@ def _render_state_write_resolutions(
             "d81-qt4v slice 4; this diag DB carries no StateWriteResolutionFact)"
         )
         return
-    rows = conn.execute(
-        """
+    query = """
         SELECT block_serial, block_ea_hex, corridor, outcome, cause, reason,
                store_cells, folded_value_hex, def_sites_json,
                contributed_to_unresolved_transition
         FROM state_write_resolutions
         WHERE func_ea_i64 = ?
-        ORDER BY block_serial, corridor, rowid
-        """,
-        (int(func_ea_i64),),
-    ).fetchall()
+    """
+    params: list[object] = [int(func_ea_i64)]
+    if session_id is not None:
+        query += " AND session_id = ?"
+        params.append(str(session_id))
+    query += " ORDER BY block_serial, corridor, rowid"
+    rows = conn.execute(query, params).fetchall()
     if not rows:
         lines.append(
             "state_write_resolutions: not recorded (no StateWriteResolutionFact "
@@ -525,7 +641,10 @@ _TOP_EMULATOR_GAP_SITES = 20
 
 
 def _render_emulator_gaps(
-    lines: list[str], conn: sqlite3.Connection, func_ea_i64: int
+    lines: list[str],
+    conn: sqlite3.Connection,
+    func_ea_i64: int,
+    session_id: str | None = None,
 ) -> None:
     """List the evaluator gaps this function hit, by cause (ticket d81-c6n7).
 
@@ -540,16 +659,18 @@ def _render_emulator_gaps(
             "slice 5; this diag DB carries no EmulatorGapFact)"
         )
         return
-    rows = conn.execute(
-        """
+    query = """
         SELECT attempt, cause, site_ea_hex, block_serial, occurrences, detail,
                def_sites_json
         FROM emulator_gaps
         WHERE func_ea_i64 = ?
-        ORDER BY attempt, cause, site_ea_i64, rowid
-        """,
-        (int(func_ea_i64),),
-    ).fetchall()
+    """
+    params: list[object] = [int(func_ea_i64)]
+    if session_id is not None:
+        query += " AND session_id = ?"
+        params.append(str(session_id))
+    query += " ORDER BY attempt, cause, site_ea_i64, rowid"
+    rows = conn.execute(query, params).fetchall()
     if not rows:
         lines.append(
             "emulator_gaps: not recorded (no EmulatorGapFact for this function)"
@@ -589,20 +710,25 @@ def _render_emulator_gaps(
 
 
 def _render_recovery_search(
-    lines: list[str], conn: sqlite3.Connection, func_ea_i64: int
+    lines: list[str],
+    conn: sqlite3.Connection,
+    func_ea_i64: int,
+    session_id: str | None = None,
 ) -> None:
     if not _table_exists(conn, "recovery_search_outcomes"):
         lines.append("recovery_search_outcomes: not recorded (table absent)")
         return
-    rows = conn.execute(
-        """
+    query = """
         SELECT provider, outcome, budget, consumed, reason
         FROM recovery_search_outcomes
         WHERE func_ea_i64 = ?
-        ORDER BY rowid
-        """,
-        (int(func_ea_i64),),
-    ).fetchall()
+    """
+    params: list[object] = [int(func_ea_i64)]
+    if session_id is not None:
+        query += " AND session_id = ?"
+        params.append(str(session_id))
+    query += " ORDER BY rowid"
+    rows = conn.execute(query, params).fetchall()
     if not rows:
         lines.append("recovery_search_outcomes: not recorded")
         return
@@ -625,22 +751,27 @@ def _render_recovery_search(
 
 
 def _render_fallback_cfg_transactions(
-    lines: list[str], conn: sqlite3.Connection, func_ea_i64: int
+    lines: list[str],
+    conn: sqlite3.Connection,
+    func_ea_i64: int,
+    session_id: str | None = None,
 ) -> None:
     if not _table_exists(conn, "cfg_transaction_attempts"):
         lines.append("cfg_transaction_attempts: not recorded (table absent)")
         return
-    rows = conn.execute(
-        """
+    query = """
         SELECT plan_id, attempt_id, current_phase, mutation_started, poisoned,
                first_failure_obligation, first_failure_phase,
                first_failure_reason, interr_code
         FROM cfg_transaction_attempts
         WHERE func_ea_i64 = ?
-        ORDER BY rowid
-        """,
-        (int(func_ea_i64),),
-    ).fetchall()
+    """
+    params: list[object] = [int(func_ea_i64)]
+    if session_id is not None:
+        query += " AND session_id = ?"
+        params.append(str(session_id))
+    query += " ORDER BY rowid"
+    rows = conn.execute(query, params).fetchall()
     if not rows:
         lines.append("cfg_transaction_attempts: no rows for this function")
         return

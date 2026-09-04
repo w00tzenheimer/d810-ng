@@ -7,22 +7,33 @@ log noise.  No IDA import, no diag DB.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
-from d810.core import diag as _diag_backend  # noqa: F401
+from d810.core import diag as _diag_backend
 from d810.core import observability
-from d810.core.observability import reset_diagnostic_bus, subscribe
-from d810.core.observability_events import UnflattenCandidateOutcomeObserved
+from d810.core.observability import (
+    emit as _emit_diagnostic,
+    get_active_diag_path,
+    reset_diagnostic_bus,
+    subscribe,
+)
+from d810.core.observability_events import (
+    DiagnosticSessionObserved,
+    UnflattenCandidateOutcomeObserved,
+)
 from d810.core.observability_unflat import (
     UNFLAT_OUTCOME_DISPOSITIONS,
+    UnflattenOutcomeCounters,
     build_unflat_candidate_outcome,
     derive_bail_reason,
     format_unflat_outcome,
+    has_unflat_counters,
     note_committed_batch,
     note_unflat_counters,
     note_unresolved_state_write,
     observe_unflat_candidate_outcome,
-    reset_unflat_counters,
     resolve_unflat_hint_db_path,
     skipped_maturities,
     unflat_counters,
@@ -31,10 +42,24 @@ from d810.core.observability_unflat import (
 
 
 @pytest.fixture(autouse=True)
-def _clean_counters():
-    reset_unflat_counters()
-    yield
-    reset_unflat_counters()
+def _fake_unflat_counters_session_store(monkeypatch):
+    """Stand in for a lifecycle-owned session store (ticket d81-pqrc).
+
+    Production counters live on ``DecompilationSessionContext.unflat_counters``
+    and are reached only through the registered
+    ``d810.core.observability`` provider
+    (:func:`register_active_unflat_counters_provider`); this module owns no
+    counters storage of its own anymore. A plain per-test dict keyed by
+    func_ea stands in for "a session exists and owns these counters" without
+    pulling in the manager-layer lifecycle coordinator.
+    """
+    store: dict[int, UnflattenOutcomeCounters] = {}
+
+    def _provider(func_ea):
+        return store.setdefault(int(func_ea), UnflattenOutcomeCounters())
+
+    monkeypatch.setattr(observability, "_active_unflat_counters_provider", _provider)
+    yield store
 
 
 # ---------------------------------------------------------------------------
@@ -125,12 +150,74 @@ def test_committed_batches_count():
     assert unflat_counters(0x1000).committed_batches == 2
 
 
-def test_reset_clears_one_function_only():
+def test_has_unflat_counters_is_false_without_an_active_session():
+    """No provider mapping for this func_ea -> no session owns it (d81-pqrc)."""
+    assert has_unflat_counters(0x9999) is False
+
+
+def test_has_unflat_counters_is_false_for_an_untouched_session():
+    """A session exists but nothing has been recorded into it yet."""
+    assert unflat_counters(0x1000) == UnflattenOutcomeCounters()
+    assert has_unflat_counters(0x1000) is False
+
+
+def test_has_unflat_counters_is_true_once_a_field_is_recorded():
     note_unflat_counters(0x1000, dag_nodes=1)
-    note_unflat_counters(0x2000, dag_nodes=2)
-    reset_unflat_counters(0x1000)
-    assert unflat_counters(0x1000).dag_nodes is None
-    assert unflat_counters(0x2000).dag_nodes == 2
+    assert has_unflat_counters(0x1000) is True
+
+
+def test_two_sessions_at_the_same_func_ea_never_share_a_counters_object():
+    """Ticket d81-pqrc: session-owned counters, not a process-global dict.
+
+    Reproduces the reviewer's report: an "old" session's counters must be a
+    different object from a "new" session's counters at the same func_ea,
+    and the new one must start blank regardless of what the old one held.
+    """
+    note_unflat_counters(0x1000, handlers_recovered=85, plan_id="plan-old")
+    note_committed_batch(0x1000)
+    old_counters = unflat_counters(0x1000)
+    assert old_counters.handlers_recovered == 85
+    assert old_counters.committed_batches == 1
+
+    # A fresh session at the SAME func_ea: a new provider mapping, exactly
+    # as a new DecompilationSessionContext would mint a fresh
+    # UnflattenOutcomeCounters() rather than reusing the finished session's.
+
+    def _fresh_session_provider(func_ea, _cache={}):
+        return _cache.setdefault(int(func_ea), UnflattenOutcomeCounters())
+
+    previous = observability._active_unflat_counters_provider
+    observability._active_unflat_counters_provider = _fresh_session_provider
+    try:
+        new_counters = unflat_counters(0x1000)
+        assert new_counters is not old_counters
+        assert new_counters == UnflattenOutcomeCounters()
+        assert new_counters.handlers_recovered is None
+        assert new_counters.plan_id is None
+        assert new_counters.committed_batches == 0
+    finally:
+        observability._active_unflat_counters_provider = previous
+
+
+def test_counters_are_unreachable_once_no_session_owns_the_func_ea():
+    """A finished session's counters vanish from the public API's view.
+
+    ``unflat_counters``/``has_unflat_counters`` never expose the old
+    object once the provider stops naming it -- there is no fallback global
+    to read it from.
+    """
+    note_unflat_counters(0x1000, handlers_recovered=85)
+    assert has_unflat_counters(0x1000) is True
+
+    previous = observability._active_unflat_counters_provider
+    observability._active_unflat_counters_provider = lambda func_ea: None
+    try:
+        assert has_unflat_counters(0x1000) is False
+        assert unflat_counters(0x1000) == UnflattenOutcomeCounters()
+        assert note_unflat_counters(0x1000, dag_nodes=1) is None
+        assert note_committed_batch(0x1000) == 0
+    finally:
+        observability._active_unflat_counters_provider = previous
 
 
 # ---------------------------------------------------------------------------
@@ -316,6 +403,131 @@ def test_observe_keeps_the_db_path_when_the_active_session_matches(monkeypatch):
         "python -m d810.diagnostics unflat-why "
         "--db /tmp/own_func.diag.sqlite3 --func 0x7ffb0f2726e0"
     )
+
+
+# ---------------------------------------------------------------------------
+# d81-y3oi(c): a multi-function batch must resolve each function's own
+# capture via the disk-based fallback rather than rendering the placeholder.
+# ---------------------------------------------------------------------------
+
+
+def test_observe_falls_back_to_disk_lookup_when_the_live_path_is_stale(monkeypatch):
+    # The live pointer still names an unrelated function's capture (a
+    # multi-function batch, or a session that legitimately stays un-rotated
+    # across nested callbacks) -- resolve_unflat_hint_db_path drops it.
+    monkeypatch.setattr(
+        observability, "_diag_path_provider", lambda: "/tmp/first_func.diag.sqlite3"
+    )
+    monkeypatch.setattr(
+        observability, "_diag_active_func_ea_provider", lambda: 0x7FFB0EB06E50
+    )
+    monkeypatch.setattr(
+        observability,
+        "_diag_latest_path_for_func_provider",
+        lambda func_ea: f"/tmp/own_capture_0x{func_ea:x}.diag.sqlite3",
+    )
+    record = observe_unflat_candidate_outcome(
+        session_id="s1",
+        func_ea=0x7FFB0F2726E0,
+        maturity="MMAT_GLBOPT1",
+        graph_fingerprint="",
+        candidate_identity="",
+        attempt=0,
+        disposition="maturity_no_callbacks",
+        reason="hexrays_delivered_no_optblock_callback",
+    )
+    assert record is not None
+    assert record.next_hint == (
+        "python -m d810.diagnostics unflat-why "
+        "--db /tmp/own_capture_0x7ffb0f2726e0.diag.sqlite3 --func 0x7ffb0f2726e0"
+    )
+
+
+def test_observe_uses_the_placeholder_only_when_the_disk_lookup_also_finds_nothing(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        observability, "_diag_path_provider", lambda: "/tmp/first_func.diag.sqlite3"
+    )
+    monkeypatch.setattr(
+        observability, "_diag_active_func_ea_provider", lambda: 0x7FFB0EB06E50
+    )
+    monkeypatch.setattr(
+        observability, "_diag_latest_path_for_func_provider", lambda func_ea: None
+    )
+    record = observe_unflat_candidate_outcome(
+        session_id="s1",
+        func_ea=0x7FFB0F2726E0,
+        maturity="MMAT_GLBOPT1",
+        graph_fingerprint="",
+        candidate_identity="",
+        attempt=0,
+        disposition="maturity_no_callbacks",
+        reason="hexrays_delivered_no_optblock_callback",
+    )
+    assert record is not None
+    assert record.next_hint == (
+        "python -m d810.diagnostics unflat-why --db <diag-db> --func 0x7ffb0f2726e0"
+    )
+
+
+def test_multi_function_batch_resolves_each_functions_own_capture_end_to_end(
+    tmp_path, monkeypatch
+):
+    """Real backend: func2's row lands in func1's un-rotated capture file.
+
+    Reproduces the confirmed real-batch shape from ``resolve_unflat_hint_db_path``'s
+    own docstring: a session that never rotates keeps the live pointer on the
+    *first* function while later functions' rows still land in that same
+    file. The disk fallback must still resolve an executable ``--db`` for
+    the later function instead of the placeholder.
+    """
+    monkeypatch.setattr(
+        _diag_backend, "get_settings", lambda: SimpleNamespace(diag_snapshots=True)
+    )
+    # The registered disk-fallback provider (like production) calls
+    # find_latest_diag_db_path with no explicit log_dir, so it must resolve
+    # to the same directory the test's session was opened in.
+    monkeypatch.setattr(_diag_backend, "_resolve_log_dir", lambda _log_dir=None: tmp_path)
+    func1, func2 = 0x7FFB0EB06E50, 0x7FFB0F2726E0
+    # A prior test elsewhere in the suite can leak an open session (the
+    # process-global ``_current_db``); without this, ``open_diag_session``'s
+    # own "already open, no rotation" guard would silently no-op below and
+    # this test would observe someone else's stale capture path.
+    _diag_backend.close_diag_session()
+    _diag_backend.open_diag_session(func1, log_dir=str(tmp_path))
+    try:
+        live_path = get_active_diag_path()
+        assert live_path is not None
+        # func2's own session (a nested/reentrant callback within the same
+        # un-rotated capture) is still persisted with its OWN func_ea.
+        _emit_diagnostic(
+            DiagnosticSessionObserved(
+                session_id="func2-session",
+                func_ea=func2,
+                top_level_epoch=1,
+                native_key_json="{}",
+                status="active",
+            )
+        )
+
+        record = observe_unflat_candidate_outcome(
+            session_id="func2-session",
+            func_ea=func2,
+            maturity="MMAT_GLBOPT1",
+            graph_fingerprint="",
+            candidate_identity="",
+            attempt=0,
+            disposition="maturity_no_callbacks",
+            reason="hexrays_delivered_no_optblock_callback",
+        )
+        assert record is not None
+        assert record.next_hint != (
+            f"python -m d810.diagnostics unflat-why --db <diag-db> --func 0x{func2:x}"
+        )
+        assert live_path in record.next_hint
+    finally:
+        _diag_backend.close_diag_session()
 
 
 def test_log_line_is_one_dense_anchored_line():
