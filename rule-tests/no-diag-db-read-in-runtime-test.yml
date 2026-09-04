@@ -1,0 +1,42 @@
+id: no-diag-db-read-in-runtime
+
+valid:
+  - |
+      from d810.core.diag import open_diag_database
+
+      def load_report(db_path):
+          _diag_db = open_diag_database(db_path)
+          conn = _diag_db.connection()
+          return conn
+  - |
+      from d810.core.observability import emit
+
+      def on_block_split(event):
+          emit(BlockSplitObserved(event.serial, event.anchor_ea))
+  - |
+      import sqlite3
+
+      def load_cache(cache_path):
+          conn = sqlite3.connect(cache_path)
+          return conn
+
+invalid:
+  - |
+      from d810.core.observability import get_active_diag_conn
+
+      def resolve_hint(func_ea):
+          conn = get_active_diag_conn(func_ea)
+          return conn
+  - |
+      from d810.core.observability import get_active_diag_conn as gac
+
+      def resolve_hint(func_ea):
+          return gac(func_ea)
+  - |
+      def resolve_hint(func_ea):
+          conn = get_active_diag_conn(func_ea)
+          return conn
+  - |
+      def resolve_hint(self, func_ea):
+          conn = self.tracker.get_active_diag_conn(func_ea)
+          return conn
