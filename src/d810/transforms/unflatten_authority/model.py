@@ -43,7 +43,7 @@ from d810.transforms.cfg_transaction import (
     TransactionAttemptId,
 )
 from .ids import (
-    _occurrence_stamp,
+    _occurrence_guard,
     _subject_id_from_record,
     _validate_id,
     authority_id,
@@ -6420,7 +6420,7 @@ class SemanticGraphInventory:
             raise ValueError("inventory_digest does not match inventory content")
         session = active_canonical_session()
         if session is not None:
-            session.seal_inventory(self, _occurrence_stamp(self))
+            session.seal_inventory(self, _occurrence_guard(session, self))
             record_inventory_seal_mint()
 
 
@@ -6431,7 +6431,9 @@ def validate_semantic_graph_inventory(value: object) -> SemanticGraphInventory:
         raise TypeError("inventory must be SemanticGraphInventory")
     session = active_canonical_session()
     if session is not None:
-        sealed = session.inventory_is_sealed(value, _occurrence_stamp(value))
+        sealed = session.inventory_is_sealed(
+            value, _occurrence_guard(session, value),
+        )
         record_inventory_seal_check(sealed)
         if sealed:
             return value

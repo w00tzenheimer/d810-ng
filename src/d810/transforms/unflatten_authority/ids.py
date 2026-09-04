@@ -1224,18 +1224,99 @@ def _occurrence_stamp(value: object) -> OccurrenceDigest:
     return OccurrenceDigest(hasher.digest())
 
 
-def canonical_bytes(value: object) -> bytes:
-    return _canonical_bytes(value, record_bytes_lookup)
+_SEALED_ATOM_TYPES = (int, str, bytes)
 
 
-def _canonical_bytes(value: object, record_lookup: object) -> bytes:
-    """Encode ``value``; ``record_lookup`` attributes the session lookup path."""
+class _SealedGuard:
+    """Identity guard over one occurrence's direct children (trusted mode).
+
+    Holds strong references to the children so their ``id()`` values cannot be
+    recycled while the entry lives.  Two guards are equal when every child is
+    the same object, an equal atom of the same exact type, or (for a replaced
+    child only) a structurally equal occurrence per :func:`_occurrence_stamp`.
+    Never an authority digest, never a cache key.
+    """
+
+    __slots__ = ("children",)
+
+    def __init__(self, children: tuple[object, ...]) -> None:
+        self.children = children
+
+    def __eq__(self, other: object) -> bool:
+        if type(other) is not _SealedGuard:
+            return NotImplemented
+        mine = self.children
+        theirs = other.children
+        if len(mine) != len(theirs):
+            return False
+        for item, live in zip(mine, theirs):
+            if item is live:
+                continue
+            item_type = type(item)
+            if item_type is not type(live):
+                return False
+            if item_type in _SEALED_ATOM_TYPES:
+                if item == live:
+                    continue
+                return False
+            if _occurrence_stamp(item) != _occurrence_stamp(live):
+                return False
+        return True
+
+    __hash__ = None
+
+
+def _sealed_guard(value: object) -> _SealedGuard:
+    """Return the direct-children guard for one occurrence (no recursion)."""
+
+    if value is None or type(value) in (bool, int, str, bytes, float):
+        return _SealedGuard((value,))
+    if isinstance(value, Enum):
+        return _SealedGuard((value,))
+    if type(value) is dict or type(value) is MappingProxyType:
+        mapping = _exact_canonical_mapping(value)
+        children: list[object] = []
+        for key, item in dict.items(mapping):
+            children.append(key)
+            children.append(item)
+        return _SealedGuard(tuple(children))
+    if type(value) in (list, tuple, frozenset):
+        return _SealedGuard(tuple(value))
+    _ensure_registries()
+    names = _RECORD_FIELDS.get(type(value), _EXTERNAL_FIELDS.get(type(value)))
+    if names is not None:
+        if type(value).__name__ == "NativePreanalysisKey":
+            return _SealedGuard(tuple(
+                type(value).SCHEMA_VERSION if name == "schema_version"
+                else getattr(value, name)
+                for name in names
+            ))
+        return _SealedGuard(tuple(getattr(value, name) for name in names))
+    return _SealedGuard((("unknown", type(value), id(value)),))
+
+
+def _occurrence_guard(session: object, value: object) -> object:
+    """Return the cache-entry guard the active session's mode requires."""
+
+    if session.trust_sealed:
+        return _sealed_guard(value)
+    return _occurrence_stamp(value)
+
+
+def canonical_bytes(
+    value: object, *, _record_lookup: object = record_bytes_lookup,
+) -> bytes:
+    """Encode ``value``; ``_record_lookup`` attributes the session lookup path.
+
+    Content-ID callers pass their own attribution but still enter through this
+    public function, so a module-attribute wrapper observes every root encode.
+    """
 
     session = active_canonical_session()
-    stamp = None if session is None else _occurrence_stamp(value)
+    stamp = None if session is None else _occurrence_guard(session, value)
     if session is not None:
         cached = session.cached_canonical_bytes(value, stamp)
-        record_lookup(cached is not None)
+        _record_lookup(cached is not None)
         if cached is not None:
             record_canonical_bytes_reuse()
             return cached
@@ -1483,8 +1564,8 @@ def validate_canonical_roundtrip(value: object, expected_type: type[object]) -> 
 def content_id(schema: str, value: object) -> str:
     if not isinstance(schema, str) or not schema.isascii() or not schema.strip():
         raise ValueError("schema must be non-empty ASCII")
-    preimage = _PREFIX + schema.encode("ascii") + b"\0" + _canonical_bytes(
-        value, record_content_id_lookup,
+    preimage = _PREFIX + schema.encode("ascii") + b"\0" + canonical_bytes(
+        value, _record_lookup=record_content_id_lookup,
     )
     return "sha256:" + hashlib.sha256(preimage).hexdigest()
 
@@ -1913,7 +1994,7 @@ def _record_content_id(schema: str, value: object, omitted_field: str) -> str:
     if not is_dataclass(value) or isinstance(value, type):
         raise TypeError("content ID factory requires a registered record")
     session = active_canonical_session()
-    stamp = None if session is None else _occurrence_stamp(value)
+    stamp = None if session is None else _occurrence_guard(session, value)
     if session is not None:
         cached = session.cached_content_id(value, schema, omitted_field, stamp)
         record_content_id_lookup(cached is not None)

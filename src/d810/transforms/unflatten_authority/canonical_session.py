@@ -54,6 +54,24 @@ equals the sum of the attributed paths:
 Set ``D810_AUTHORITY_WORK_COUNTERS`` to a value other than ``""``/``"0"`` to
 have the process totals written to standard error at interpreter exit.  That
 switch only adds a report; the counters themselves are always maintained.
+
+Sealed-occurrence trust (experiment, default OFF)
+------------------------------------------------
+
+A session created with ``trust_sealed=True`` (or, for every transaction-owned
+session, ``D810_AUTHORITY_TRUST_SEALED`` set to a value other than
+``""``/``"0"``) guards its cache entries with a *sealed guard* instead of the
+recursive occurrence stamp.  The sealed guard holds strong references to the
+occurrence's direct children and is compared by identity per child, falling
+back to a content comparison only for a replaced child.  A cache hit therefore
+costs O(fields) instead of one full recursive walk.  The trust boundary is
+unchanged: a fresh session starts empty, so every projected/observed boundary
+object is deep-validated on first sight, and a replaced or mutated direct field
+of a presented occurrence is always observed.  What the sealed guard cannot
+observe is an in-place ``object.__setattr__`` on a *descendant* performed after
+the parent was cached and never re-presented through that descendant; the
+authority object model only mutates ``self`` during construction/``__post_init__``
+and fresh factory objects, so no production path does that.
 """
 
 from __future__ import annotations
@@ -88,6 +106,8 @@ _COUNTER_NAMES: tuple[str, ...] = (
 
 _REPORT_ENV = "D810_AUTHORITY_WORK_COUNTERS"
 _REPORT_PREFIX = "d810-authority-work-counters"
+_SESSION_REPORT_PREFIX = "d810-authority-work-counters-session"
+_TRUST_ENV = "D810_AUTHORITY_TRUST_SEALED"
 
 
 class CanonicalSessionPhase(Enum):
@@ -211,15 +231,20 @@ class CanonicalValidationSession:
 
     __slots__ = (
         "_phase", "_ledger", "_closed", "_bytes_cache", "_content_id_cache",
-        "_inventory_seals",
+        "_inventory_seals", "_trust_sealed",
     )
 
-    def __init__(self, phase: CanonicalSessionPhase) -> None:
+    def __init__(
+        self, phase: CanonicalSessionPhase, *, trust_sealed: bool = False,
+    ) -> None:
         if type(phase) is not CanonicalSessionPhase:
             raise TypeError("phase must be a CanonicalSessionPhase")
+        if type(trust_sealed) is not bool:
+            raise TypeError("trust_sealed must be a bool")
         self._phase = phase
         self._ledger = _WorkLedger()
         self._closed = False
+        self._trust_sealed = trust_sealed
         self._bytes_cache: dict[int, tuple[object, object, bytes]] = {}
         self._content_id_cache: dict[
             tuple[int, str, str], tuple[object, object, str]
@@ -233,6 +258,12 @@ class CanonicalValidationSession:
     @property
     def closed(self) -> bool:
         return self._closed
+
+    @property
+    def trust_sealed(self) -> bool:
+        """Whether cache entries are guarded by sealed guards, not deep stamps."""
+
+        return self._trust_sealed
 
     @property
     def metrics(self) -> CanonicalWorkMetrics:
@@ -309,6 +340,10 @@ class CanonicalValidationSession:
         entry = self._bytes_cache.get(id(value))
         if entry is None or entry[0] is not value or entry[1] != stamp:
             return None
+        if entry[1] is not stamp:
+            # Adopt the live guard: an accepted content-equal replacement of a
+            # child becomes an identity match on the next lookup.
+            self._bytes_cache[id(value)] = (value, stamp, entry[2])
         return entry[2]
 
     def store_canonical_bytes(self, value: object, stamp: object, data: bytes) -> None:
@@ -329,9 +364,12 @@ class CanonicalValidationSession:
         self._require_open()
         if not _is_cacheable_occurrence(value):
             return None
-        entry = self._content_id_cache.get((id(value), schema, omitted_field))
+        key = (id(value), schema, omitted_field)
+        entry = self._content_id_cache.get(key)
         if entry is None or entry[0] is not value or entry[1] != stamp:
             return None
+        if entry[1] is not stamp:
+            self._content_id_cache[key] = (value, stamp, entry[2])
         return entry[2]
 
     def store_content_id(
@@ -354,7 +392,11 @@ class CanonicalValidationSession:
 
         self._require_open()
         entry = self._inventory_seals.get(id(value))
-        return entry is not None and entry[0] is value and entry[1] == stamp
+        if entry is None or entry[0] is not value or entry[1] != stamp:
+            return False
+        if entry[1] is not stamp:
+            self._inventory_seals[id(value)] = (value, stamp)
+        return True
 
     def seal_inventory(self, value: object, stamp: object) -> None:
         """Record one fully validated inventory occurrence after success only."""
@@ -378,11 +420,21 @@ def active_canonical_session() -> CanonicalValidationSession | None:
     return _ACTIVE_SESSION.get()
 
 
+def _trust_sealed_default() -> bool:
+    """Read the sealed-occurrence trust switch once at import."""
+
+    return os.environ.get(_TRUST_ENV, "") not in ("", "0")
+
+
+_TRUST_SEALED_DEFAULT = _trust_sealed_default()
+
+
 @contextlib.contextmanager
 def _canonical_validation_session(
     phase: CanonicalSessionPhase,
     *,
     reuse: CanonicalValidationSession | None = None,
+    trust_sealed: bool | None = None,
 ) -> Iterator[CanonicalValidationSession]:
     """Own one phase-local canonical validation session.
 
@@ -390,10 +442,13 @@ def _canonical_validation_session(
     already active for the same phase, which yields it unchanged instead of
     creating a second one.  The context variable token is always reset, so a
     raising phase body cannot leak a session into the next phase.
+    ``trust_sealed=None`` takes the process default (``D810_AUTHORITY_TRUST_SEALED``).
     """
 
     if type(phase) is not CanonicalSessionPhase:
         raise TypeError("phase must be a CanonicalSessionPhase")
+    if trust_sealed is None:
+        trust_sealed = _TRUST_SEALED_DEFAULT
     active = _ACTIVE_SESSION.get()
     if reuse is not None:
         if reuse is not active:
@@ -404,13 +459,15 @@ def _canonical_validation_session(
         return
     if active is not None:
         raise RuntimeError("a canonical validation session is already active")
-    session = CanonicalValidationSession(phase)
+    session = CanonicalValidationSession(phase, trust_sealed=trust_sealed)
     token = _ACTIVE_SESSION.set(session)
     try:
         yield session
     finally:
         _ACTIVE_SESSION.reset(token)
         session._close()
+        if _REPORT_ENABLED:
+            emit_session_work_report(session)
 
 
 def record_deep_validation() -> None:
@@ -557,11 +614,50 @@ def emit_process_work_report(stream: object = None) -> None:
         flush()
 
 
+def format_session_work_report(
+    session: CanonicalValidationSession, *, pid: int,
+) -> str:
+    """Return one greppable JSON line for a closed session's own counts."""
+
+    if type(session) is not CanonicalValidationSession:
+        raise TypeError("report requires a CanonicalValidationSession")
+    if type(pid) is not int:
+        raise TypeError("pid must be an exact int")
+    payload: Mapping[str, object] = {
+        "pid": pid,
+        "phase": session.phase.value,
+        "trust_sealed": session.trust_sealed,
+        **session.metrics.as_payload(),
+    }
+    return _SESSION_REPORT_PREFIX + " " + json.dumps(
+        payload, sort_keys=True, separators=(",", ":"),
+    )
+
+
+def emit_session_work_report(
+    session: CanonicalValidationSession, stream: object = None,
+) -> None:
+    """Write one session's counts as one line when it closes.
+
+    Emitted per phase so the totals survive a process that never reaches its
+    ``atexit`` handlers (for example a profiling container stopped during
+    teardown).
+    """
+
+    target = sys.stderr if stream is None else stream
+    target.write(format_session_work_report(session, pid=os.getpid()) + "\n")
+    flush = getattr(target, "flush", None)
+    if flush is not None:
+        flush()
+
+
 def _report_enabled() -> bool:
     return os.environ.get(_REPORT_ENV, "") not in ("", "0")
 
 
-if _report_enabled():
+_REPORT_ENABLED = _report_enabled()
+
+if _REPORT_ENABLED:
     atexit.register(emit_process_work_report)
 
 
@@ -571,6 +667,8 @@ __all__ = [
     "CanonicalWorkMetrics",
     "active_canonical_session",
     "emit_process_work_report",
+    "emit_session_work_report",
+    "format_session_work_report",
     "format_work_report",
     "process_work_metrics",
     "record_bytes_lookup",

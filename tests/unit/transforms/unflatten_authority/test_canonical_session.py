@@ -428,7 +428,7 @@ def test_occurrence_stamps_are_attributed_to_bytes_and_content_id_lookups() -> N
         3, model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT, ("native",),
     )
     with _canonical_validation_session(
-        CanonicalSessionPhase.PROJECTED_PREPARATION,
+        CanonicalSessionPhase.PROJECTED_PREPARATION, trust_sealed=False,
     ) as session:
         ids.canonical_bytes(fixture)      # direct miss
         ids.canonical_bytes(fixture)      # direct hit
@@ -455,7 +455,7 @@ def test_occurrence_stamps_are_attributed_to_record_content_id_lookups() -> None
     authority = _deep_authority()
     claim = authority.proposal.claims[0]
     with _canonical_validation_session(
-        CanonicalSessionPhase.PROJECTED_PREPARATION,
+        CanonicalSessionPhase.PROJECTED_PREPARATION, trust_sealed=False,
     ) as session:
         first = ids.claim_id(claim)
         second = ids.claim_id(claim)
@@ -480,7 +480,7 @@ def test_occurrence_stamps_are_attributed_to_inventory_seals() -> None:
 
     inventory = _inventory()
     with _canonical_validation_session(
-        CanonicalSessionPhase.OBSERVED_REVALIDATION,
+        CanonicalSessionPhase.OBSERVED_REVALIDATION, trust_sealed=False,
     ) as session:
         model.validate_semantic_graph_inventory(inventory)
         first = session.metrics
@@ -511,3 +511,340 @@ def test_process_report_carries_the_attribution_counters() -> None:
     # Outside a session there is no lookup and therefore no stamp walk.
     assert '"occurrence_stamps":0' in line
     assert '"bytes_lookup_misses":0' in line
+
+
+# --- sealed-occurrence trust experiment (opt-in, default OFF) ---------------
+
+
+def _fixture(ea: int = 3) -> object:
+    from d810.transforms.unflatten_authority import model
+
+    return ids.DigestFixture(
+        ea, model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT, ("native",),
+    )
+
+
+def test_trust_sealed_is_off_by_default_and_explicit_per_session(monkeypatch) -> None:
+    monkeypatch.delenv(canonical_session._TRUST_ENV, raising=False)
+    assert canonical_session._trust_sealed_default() is False
+    monkeypatch.setattr(canonical_session, "_TRUST_SEALED_DEFAULT", False)
+    with _canonical_validation_session(
+        CanonicalSessionPhase.PROJECTED_PREPARATION,
+    ) as session:
+        assert session.trust_sealed is False
+    with _canonical_validation_session(
+        CanonicalSessionPhase.PROJECTED_PREPARATION, trust_sealed=True,
+    ) as session:
+        assert session.trust_sealed is True
+    monkeypatch.setattr(canonical_session, "_TRUST_SEALED_DEFAULT", True)
+    with _canonical_validation_session(
+        CanonicalSessionPhase.OBSERVED_REVALIDATION,
+    ) as session:
+        assert session.trust_sealed is True
+    with _canonical_validation_session(
+        CanonicalSessionPhase.OBSERVED_REVALIDATION, trust_sealed=False,
+    ) as session:
+        assert session.trust_sealed is False
+    with pytest.raises(TypeError):
+        CanonicalValidationSession(
+            CanonicalSessionPhase.OBSERVED_REVALIDATION, trust_sealed=1,
+        )
+    monkeypatch.setenv(canonical_session._TRUST_ENV, "1")
+    assert canonical_session._trust_sealed_default() is True
+    monkeypatch.setenv(canonical_session._TRUST_ENV, "0")
+    assert canonical_session._trust_sealed_default() is False
+
+
+def test_trusted_hit_performs_zero_recursive_walks() -> None:
+    """(a) A trusted-mode hit costs no ``_occurrence_stamp`` walk at all."""
+
+    from d810.transforms.unflatten_authority import model
+    from tests.unit.transforms.unflatten_authority.test_inventory_model import (
+        _inventory,
+    )
+
+    fixture = _fixture()
+    nested = ("outer", fixture, frozenset({7}), {"k": [fixture]})
+    authority = _deep_authority()
+    claim = authority.proposal.claims[0]
+    inventory = _inventory()
+    with _canonical_validation_session(
+        CanonicalSessionPhase.PROJECTED_PREPARATION, trust_sealed=True,
+    ) as session:
+        first = ids.canonical_bytes(nested)
+        ids.authority_id(authority)
+        ids.claim_id(claim)
+        model.validate_semantic_graph_inventory(inventory)
+        seeded = session.metrics
+        second = ids.canonical_bytes(nested)
+        ids.authority_id(authority)
+        ids.claim_id(claim)
+        model.validate_semantic_graph_inventory(inventory)
+        hits = session.metrics.delta(seeded)
+
+    assert first == second
+    # Misses never walk a stamp either: the guard is O(direct children).
+    assert seeded.occurrence_stamps == 0
+    assert seeded.deep_validations >= 2
+    # Every repeated lookup is a hit and none of them recursed.
+    assert hits.occurrence_stamps == 0
+    assert hits.bytes_lookup_hits == 1
+    assert hits.content_id_lookup_hits == 2
+    assert hits.inventory_seal_hits == hits.inventory_seal_checks == 1
+    assert hits.bytes_lookup_misses == hits.content_id_lookup_misses == 0
+    assert hits.deep_validations == hits.wire_encodes == 0
+    assert hits.inventory_validations == 0
+
+
+def test_trusted_mode_never_serves_a_mutated_occurrence() -> None:
+    """(b) Any change to a presented occurrence's fields misses the cache."""
+
+    fixture = _fixture()
+    with _canonical_validation_session(
+        CanonicalSessionPhase.PROJECTED_PREPARATION, trust_sealed=True,
+    ) as session:
+        before = ids.canonical_bytes(fixture)
+        # A nested atom field changes: the guard sees an unequal int.
+        object.__setattr__(fixture, "ea", 4)
+        after_ea = ids.canonical_bytes(fixture)
+        # A nested container field is replaced with different content.
+        object.__setattr__(fixture, "refs", ("other",))
+        after_refs = ids.canonical_bytes(fixture)
+        # Same value, different exact type (True is not 1).
+        object.__setattr__(fixture, "ea", True)
+        with pytest.raises(TypeError):
+            ids.canonical_bytes(fixture)
+        metrics = session.metrics
+
+    assert ids.canonical_decode(before).ea == 3
+    assert ids.canonical_decode(after_ea).ea == 4
+    assert ids.canonical_decode(after_refs).refs == ("other",)
+    assert metrics.bytes_lookup_misses == 4
+    assert metrics.bytes_lookup_hits == 0
+    assert metrics.deep_validations == 3
+    # Only the replaced ``refs`` tuple was compared by content (old vs new).
+    assert metrics.occurrence_stamps == 2
+
+
+def test_trusted_mode_observes_in_place_child_mutation_at_the_child() -> None:
+    """(b) A descendant mutated in place misses as soon as it is presented.
+
+    This also characterizes the experiment's trust boundary: the parent's
+    guard holds the child by identity, so the parent is only re-encoded once
+    a lookup observes the mutation.  The authority object model mutates only
+    ``self`` during construction/``__post_init__`` and fresh factory objects,
+    which is why the boundary is acceptable for the experiment; strict mode
+    (the default) still detects it through the recursive stamp.
+    """
+
+    child = _fixture()
+    parent = ("parent", child)
+    for trust_sealed, parent_hits in ((False, 0), (True, 1)):
+        with _canonical_validation_session(
+            CanonicalSessionPhase.PROJECTED_PREPARATION, trust_sealed=trust_sealed,
+        ) as session:
+            ids.canonical_bytes(parent)
+            ids.canonical_bytes(child)
+            object.__setattr__(child, "ea", 5)
+            child_bytes = ids.canonical_bytes(child)
+            parent_bytes = ids.canonical_bytes(parent)
+            metrics = session.metrics
+            object.__setattr__(child, "ea", 3)
+        assert ids.canonical_decode(child_bytes).ea == 5
+        assert metrics.bytes_lookup_hits == parent_hits
+        if not trust_sealed:
+            assert ids.canonical_decode(parent_bytes)[1].ea == 5
+
+
+def test_trusted_mode_accepts_a_content_equal_child_replacement_once() -> None:
+    """A replaced-but-equal child costs one partial check, then identity."""
+
+    fixture = _fixture()
+    holder = ("holder", fixture)
+    with _canonical_validation_session(
+        CanonicalSessionPhase.PROJECTED_PREPARATION, trust_sealed=True,
+    ) as session:
+        first = ids.canonical_bytes(fixture)
+        holder_bytes = ids.canonical_bytes(holder)
+        seeded = session.metrics
+        # Re-normalization pattern: a field is re-set to an equal, distinct
+        # object (as a re-run __post_init__ does with tuple(sorted(...))).
+        replacement = tuple(["native"])   # equal, but a distinct object
+        assert replacement is not fixture.refs
+        object.__setattr__(fixture, "refs", replacement)
+        second = ids.canonical_bytes(fixture)
+        after_first_presentation = session.metrics.delta(seeded)
+        third = ids.canonical_bytes(fixture)
+        after_second_presentation = session.metrics.delta(seeded).delta(
+            after_first_presentation,
+        )
+        # The holder still references the same child object: identity hit.
+        assert ids.canonical_bytes(holder) == holder_bytes
+        assert session.metrics.occurrence_stamps == 2
+
+    assert first == second == third == ids.canonical_bytes(fixture)
+    assert seeded.occurrence_stamps == 0
+    # The first presentation after the replacement was a hit that paid two
+    # stamps (old child, new child) and adopted the live guard ...
+    assert after_first_presentation.bytes_lookup_hits == 1
+    assert after_first_presentation.occurrence_stamps == 2
+    # ... so the next presentation is an identity hit with no walk.
+    assert after_second_presentation.bytes_lookup_hits == 1
+    assert after_second_presentation.occurrence_stamps == 0
+
+
+def test_trusted_mode_guards_mutable_and_mapping_children() -> None:
+    items = [1, 2]
+    mapping = {"a": items, "b": 2.5}
+    with _canonical_validation_session(
+        CanonicalSessionPhase.PROJECTED_PREPARATION, trust_sealed=True,
+    ) as session:
+        ids.canonical_bytes(items)
+        items.append(3)
+        grown = ids.canonical_bytes(items)
+        with pytest.raises(TypeError):
+            ids.canonical_bytes(mapping)  # a bare float has no encoding
+        mapping["b"] = 3
+        ids.canonical_bytes(mapping)
+        mapping["a"] = [9]
+        ids.canonical_bytes(mapping)
+        metrics = session.metrics
+    assert ids.canonical_decode(grown) == [1, 2, 3]
+    assert metrics.bytes_lookup_hits == 0
+    assert metrics.bytes_lookup_misses == 5
+    # The replaced list was compared by content against the retained one.
+    assert metrics.occurrence_stamps == 2
+
+
+def test_trusted_mode_keeps_the_strict_boundary() -> None:
+    """(c) Boundary decode and fresh sessions still deep-validate."""
+
+    fixture = _fixture()
+    with _canonical_validation_session(
+        CanonicalSessionPhase.PROJECTED_PREPARATION, trust_sealed=True,
+    ) as projected:
+        # First sight of any occurrence is a full deep validation.
+        ids.canonical_bytes(fixture)
+        assert projected.metrics.deep_validations == 1
+        before = projected.metrics
+        decoded = ids.validate_canonical_roundtrip(fixture, ids.DigestFixture)
+        after = projected.metrics
+    assert decoded == fixture
+    assert after.canonical_bytes_reuses == before.canonical_bytes_reuses + 1
+    assert after.roundtrip_decodes == before.roundtrip_decodes + 1
+    assert after.deep_validations == before.deep_validations + 1
+    assert after.wire_encodes == before.wire_encodes + 1
+
+    # The fresh observed session starts empty: nothing is trusted across it.
+    with _canonical_validation_session(
+        CanonicalSessionPhase.OBSERVED_REVALIDATION, trust_sealed=True,
+    ) as observed:
+        ids.canonical_bytes(fixture)
+        metrics = observed.metrics
+    assert metrics.deep_validations == 1
+    assert metrics.bytes_lookup_misses == 1
+    assert metrics.canonical_bytes_reuses == 0
+
+    # A raising validation still never populates a trusted entry.
+    with _canonical_validation_session(
+        CanonicalSessionPhase.OBSERVED_REVALIDATION, trust_sealed=True,
+    ) as failing:
+        object.__setattr__(fixture, "ea", "not-an-int")
+        with pytest.raises(TypeError):
+            ids.canonical_bytes(fixture)
+        object.__setattr__(fixture, "ea", 3)
+        ids.canonical_bytes(fixture)
+        metrics = failing.metrics
+    assert metrics.deep_validations == 1
+    assert metrics.bytes_lookup_hits == 0
+
+
+_CORPUS_LABELS = (
+    "digest-fixture", "nested-containers", "deep-authority", "authority-proposal",
+    "claim", "inventory", "site-source-inventory", "site-projected-inventory",
+    "site-source-authority", "site-claims", "site-patch-step-facts", "site-raw-fact",
+)
+
+
+def _corpus_value(label: str) -> object:
+    from tests.unit.transforms.unflatten_authority.helpers import (
+        projected_site_fixture,
+    )
+    from tests.unit.transforms.unflatten_authority.test_inventory_model import (
+        _inventory,
+    )
+
+    if label == "digest-fixture":
+        return _fixture()
+    if label == "nested-containers":
+        return ("x", _fixture(), frozenset({1, "s"}), {"m": [_fixture(9)]})
+    if label == "inventory":
+        return _inventory()
+    if label.startswith("site-"):
+        site = projected_site_fixture()
+        return getattr(site, label[len("site-"):].replace("-", "_"))
+    authority = _deep_authority()
+    if label == "deep-authority":
+        return authority
+    if label == "authority-proposal":
+        return authority.proposal
+    if label == "claim":
+        return authority.proposal.claims[0]
+    raise KeyError(label)
+
+
+@pytest.mark.parametrize("label", _CORPUS_LABELS)
+def test_trusted_mode_is_byte_identical_to_strict_mode(label: str) -> None:
+    """(d) Strict and trusted sessions agree byte-for-byte on the corpus."""
+
+    value = _corpus_value(label)
+    outside = ids.canonical_bytes(value)
+    outside_id = ids.authority_id(value)
+    results = {}
+    for trust_sealed in (False, True):
+        with _canonical_validation_session(
+            CanonicalSessionPhase.PROJECTED_PREPARATION, trust_sealed=trust_sealed,
+        ) as session:
+            first = ids.canonical_bytes(value)
+            first_id = ids.authority_id(value)
+            second = ids.canonical_bytes(value)
+            second_id = ids.authority_id(value)
+            results[trust_sealed] = (first, first_id, second, second_id, session.metrics)
+    strict, trusted = results[False], results[True]
+    assert strict[0] == strict[2] == trusted[0] == trusted[2] == outside
+    assert strict[1] == strict[3] == trusted[1] == trusted[3] == outside_id
+    # Same hit/miss profile, but the trusted session walked no stamps.
+    assert strict[4].bytes_lookup_hits == trusted[4].bytes_lookup_hits == 1
+    assert strict[4].content_id_lookup_hits == trusted[4].content_id_lookup_hits == 2
+    assert strict[4].occurrence_stamps == 4
+    assert trusted[4].occurrence_stamps == 0
+
+
+def test_session_report_is_one_line_per_closed_session(monkeypatch) -> None:
+    stream = io.StringIO()
+    with _canonical_validation_session(
+        CanonicalSessionPhase.OBSERVED_REVALIDATION, trust_sealed=True,
+    ) as session:
+        ids.canonical_bytes(("session-report",))
+    canonical_session.emit_session_work_report(session, stream=stream)
+    line = stream.getvalue()
+    assert line.startswith("d810-authority-work-counters-session ")
+    assert line.endswith("\n")
+    assert '"phase":"observed-revalidation"' in line
+    assert '"trust_sealed":true' in line
+    assert '"bytes_lookup_misses":1' in line
+    assert '"occurrence_stamps":0' in line
+    assert line.rstrip("\n") == canonical_session.format_session_work_report(
+        session, pid=__import__("os").getpid(),
+    )
+    with pytest.raises(TypeError):
+        canonical_session.format_session_work_report(object(), pid=1)
+
+    # When reporting is enabled the context manager emits the line at close.
+    captured = io.StringIO()
+    monkeypatch.setattr(canonical_session, "_REPORT_ENABLED", True)
+    monkeypatch.setattr(canonical_session.sys, "stderr", captured)
+    with _canonical_validation_session(CanonicalSessionPhase.PROJECTED_PREPARATION):
+        pass
+    assert captured.getvalue().startswith("d810-authority-work-counters-session ")
+    assert '"phase":"projected-preparation"' in captured.getvalue()
