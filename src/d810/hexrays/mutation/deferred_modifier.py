@@ -219,6 +219,7 @@ from d810.hexrays.mutation.guarded_removal_binding import (
     decide_guarded_removal_preflight,
     decide_post_write_guard_rejection,
 )
+from d810.hexrays.mutation.rollback_outcome import RollbackOutcome
 from d810.hexrays.mutation.mba_mutation_events import (
     MbaMutationGateway,
     MbaMutationPlanItem,
@@ -1269,6 +1270,10 @@ class DeferredGraphModifier:
     # complete plan. Callers report the refusal with this reason instead of the
     # generic "applied no operations".
     plan_refusal_reason: str | None = None
+    # Set when this cycle restored the pre-apply snapshot. The transaction
+    # authority consumes it, records the typed rolled-back failure and closes
+    # the gateway; the modifier never closes a transaction it does not own.
+    rollback_outcome: RollbackOutcome | None = None
     last_stale_serial_scan: dict | None = None
     _pre_snapshot: FlowGraph | None = None
     # Optional event emitter; when None, no events are emitted (zero overhead).
@@ -8057,6 +8062,7 @@ class DeferredGraphModifier:
         self._superseded_count = 0
         self._preflight_dropped_instruction_ops = 0
         self.plan_refusal_reason = None
+        self.rollback_outcome = None
         try:
             return self._apply(
                 run_optimize_local=run_optimize_local,
@@ -8085,10 +8091,52 @@ class DeferredGraphModifier:
         except Exception:
             logger.debug("failed to abort open mutation batch", exc_info=True)
 
+    def take_rollback_outcome(self) -> RollbackOutcome | None:
+        """Consume the completed rollback this apply cycle performed, if any.
+
+        Reading is one-shot, and ``apply`` clears it at the start of every
+        cycle, so an outcome belonging to an earlier transaction can never
+        close a later one as cleanly rolled back.
+        """
+        outcome = self.rollback_outcome
+        self.rollback_outcome = None
+        return outcome
+
     def _record_snapshot_rollback(self, reason: str) -> None:
-        """Publish rollback as either an abort or a compensating generation."""
+        """Report a completed rollback; its authority records and closes it.
+
+        A typed patch transaction is closed by the authority that opened it -
+        the translator - exactly as ``_finish_mutation_batch`` already defers
+        to it. That authority still has accounting to hand over (coalesced
+        supersessions, preflight drops) and a ROLLED_BACK_CLEAN failure to
+        record. Aborting from here closed the batch underneath that hand-over,
+        so ``record_coalesced_supersessions`` raised on an inactive gateway and
+        the rollback never completed through the clean path at all.
+
+        The restore undid the whole batch, so no other inventory term may claim
+        a step: the outcome owns every planned operation and the applied,
+        superseded and preflight-dropped terms are all zero.
+        """
         gateway = self._mutation_gateway
-        if gateway is None:
+        typed_attempt = (
+            gateway is not None
+            and gateway.active
+            and gateway.current_transaction_attempt is not None
+        )
+        planned = (
+            int(gateway.planned_operation_count)
+            if typed_attempt
+            else len(self.modifications)
+        )
+        self._superseded_count = 0
+        self._preflight_dropped_instruction_ops = 0
+        self.rollback_outcome = RollbackOutcome(
+            reason=str(reason),
+            operation_count=planned,
+        )
+        self.plan_refusal_reason = str(reason)
+        self.transaction_complete = False
+        if gateway is None or typed_attempt:
             return
         if gateway.active:
             gateway.abort(reason=str(reason))
@@ -9119,38 +9167,9 @@ class DeferredGraphModifier:
         # them; reporting the batch as complete is what fragmented the
         # authority in the first place.
         if guard_rejection is not None:
-            self.transaction_complete = False
-            if (
-                guard_rejection.disposition
-                is GuardedRemovalPlanDisposition.REJECT_PLAN_CLEAN
-            ):
-                self._refuse_plan_before_write(guard_rejection)
-                return _finish(0)
-            if (
-                guard_rejection.disposition
-                is GuardedRemovalPlanDisposition.ROLL_BACK_PLAN
-                and self._pre_snapshot is not None
-                and self._restore_from_snapshot(self._pre_snapshot)
-            ):
-                self._record_snapshot_rollback(guard_rejection.reason)
-                self.verify_failed = False
-                self.plan_refusal_reason = guard_rejection.reason
-                self._set_apply_phase("backend_apply", "guarded_removal_rollback")
-                logger.warning(
-                    "Rolled the deferred batch back after a post-preflight "
-                    "guarded-removal rejection (%d applied before it): %s",
-                    successful,
-                    guard_rejection.reason,
-                )
-                return _finish(0)
-            self.verify_failed = True
-            self.plan_refusal_reason = guard_rejection.reason
-            self._set_apply_phase("backend_apply", "guarded_removal_unrecoverable")
-            logger.error(
-                "Poisoning the generation after a post-preflight "
-                "guarded-removal rejection with %d unrecoverable write(s): %s",
-                successful,
-                guard_rejection.reason,
+            self._settle_post_write_guard_rejection(
+                guard_rejection,
+                applied_before_rejection=successful,
             )
             return _finish(0)
 
@@ -16958,6 +16977,52 @@ class DeferredGraphModifier:
             "Refusing the complete deferred plan (%d planned operation(s)) "
             "before any write: %s",
             planned,
+            verdict.reason,
+        )
+
+    def _settle_post_write_guard_rejection(
+        self,
+        verdict: GuardedRemovalPlanVerdict,
+        *,
+        applied_before_rejection: int,
+    ) -> None:
+        """Resolve a guard that rejected after sibling operations already wrote.
+
+        The rejected removal changed nothing - that is what its fingerprint
+        revalidation guarantees - but the operations queued before it in this
+        transaction did. So the batch either undoes those writes or poisons the
+        generation carrying them; it never reports itself complete.
+
+        Each branch leaves state the transaction authority reads, never a
+        closed gateway: a rollback publishes a ``RollbackOutcome``, and an
+        unrecoverable rejection sets ``verify_failed`` so the authority poisons.
+        """
+        self.transaction_complete = False
+        if verdict.disposition is GuardedRemovalPlanDisposition.REJECT_PLAN_CLEAN:
+            self._refuse_plan_before_write(verdict)
+            return
+        if (
+            verdict.disposition is GuardedRemovalPlanDisposition.ROLL_BACK_PLAN
+            and self._pre_snapshot is not None
+            and self._restore_from_snapshot(self._pre_snapshot)
+        ):
+            self._record_snapshot_rollback(verdict.reason)
+            self.verify_failed = False
+            self._set_apply_phase("backend_apply", "guarded_removal_rollback")
+            logger.warning(
+                "Rolled the deferred batch back after a post-preflight "
+                "guarded-removal rejection (%d applied before it): %s",
+                applied_before_rejection,
+                verdict.reason,
+            )
+            return
+        self.verify_failed = True
+        self.plan_refusal_reason = verdict.reason
+        self._set_apply_phase("backend_apply", "guarded_removal_unrecoverable")
+        logger.error(
+            "Poisoning the generation after a post-preflight "
+            "guarded-removal rejection with %d unrecoverable write(s): %s",
+            applied_before_rejection,
             verdict.reason,
         )
 
