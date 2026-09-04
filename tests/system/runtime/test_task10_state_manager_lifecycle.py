@@ -34,9 +34,9 @@ def test_load_releases_old_manager_before_acquiring_a_fresh_lease() -> None:
             order.append("activations")
             close_activations()
 
-        def release() -> None:
+        def release(*args, **kwargs) -> None:
             order.append("lease")
-            release_observation()
+            release_observation(*args, **kwargs)
 
         def close_store() -> None:
             order.append("store")

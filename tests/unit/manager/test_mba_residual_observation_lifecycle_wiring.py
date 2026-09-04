@@ -47,9 +47,49 @@ def test_initialize_delegates_to_the_residual_observation_lifecycle() -> None:
     assert "register" not in calls
 
 
-def test_release_stops_the_lifecycle_and_drops_every_reference() -> None:
+def test_initialize_reuses_the_one_lifecycle_this_manager_already_owns() -> None:
+    """d81-mcqr: the relay every issued view names must survive a restart.
+
+    A per-start lifecycle would build a fresh relay, so a provider rule that
+    bound the capability before ``state.load_project()`` would keep a routing
+    point nothing ever targets again -- the d81-uncr symptom, reintroduced.
+    """
+    method = _method("D810Manager", "_initialize_mba_residual_observation")
+    source = ast.dump(method)
+    assert "_mba_residual_observation_lifecycle" in source
+    # The construction must be conditional on there not already being one.
+    constructed = [
+        node
+        for node in ast.walk(method)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "MbaResidualObservationLifecycle"
+    ]
+    assert len(constructed) == 1
+    guarded = any(
+        any(
+            isinstance(inner, ast.Call)
+            and isinstance(inner.func, ast.Name)
+            and inner.func.id == "MbaResidualObservationLifecycle"
+            for inner in ast.walk(branch)
+        )
+        for node in ast.walk(method)
+        if isinstance(node, ast.If)
+        for branch in node.body
+    )
+    assert guarded, "the lifecycle must only be built when the manager has none"
+    assert "restart" in _calls(method)
+
+
+def test_release_stops_the_lifecycle_and_only_retires_it_on_full_cleanup() -> None:
     method = _method("D810Manager", "_release_mba_residual_observation")
-    assert "stop" in _calls(method)
+    argument_names = {argument.arg for argument in method.args.args}
+    assert "full_cleanup" in argument_names
+    calls = _calls(method)
+    assert "stop" in calls
+    # Only a full cleanup may retire the relay; a plain stop must keep it so
+    # the views already issued can be re-targeted by the next start.
+    assert "close" in calls
     cleared = {
         target.attr
         for node in ast.walk(method)

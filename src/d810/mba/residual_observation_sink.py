@@ -52,38 +52,173 @@ def provider_kind_for_implementation(
     )
 
 
-# The capability registry is a process-wide singleton and only one D810Manager
-# generation may hold the registration at a time, so the "which sink is live
-# right now" answer is process-wide too.  A sink only becomes the active
-# generation when a host lifecycle publishes it; standalone sinks (tests, ad
-# hoc tooling) never join the chain and keep failing closed.
-_ACTIVE_SINK_LOCK = threading.RLock()
-_ACTIVE_SINK: "SqliteMbaResidualObservationSink | None" = None
+def _issue_activation_view(
+    owner: object, identity: PluginIdentity
+) -> MbaResidualObservationSink:
+    """Freeze one identity-scoped, record-only view of *owner*."""
+    if not isinstance(identity, PluginIdentity):
+        raise TypeError("activation binding requires a PluginIdentity")
+    return _ActivationScopedResidualSink(owner, identity)
 
 
-def install_active_residual_sink(sink: "SqliteMbaResidualObservationSink") -> None:
-    """Publish *sink* as the generation every issued view resolves to."""
-    global _ACTIVE_SINK
-    if not isinstance(sink, SqliteMbaResidualObservationSink):
-        raise TypeError("only a host-owned sink can become the active generation")
-    with _ACTIVE_SINK_LOCK:
-        _ACTIVE_SINK = sink
+def _issue_implementation_view(
+    owner: object,
+    activation_view: object,
+    candidate: PassImplementationCandidate,
+) -> MbaResidualObservationSink:
+    """Narrow an owned activation view to one exact selected implementation."""
+    if (
+        not isinstance(activation_view, _ActivationScopedResidualSink)
+        or activation_view._owner is not owner
+    ):
+        raise TypeError("implementation binding requires an owned activation view")
+    return activation_view._bind_selected_implementation(candidate)
 
 
-def clear_active_residual_sink(
-    sink: "SqliteMbaResidualObservationSink | None" = None,
-) -> None:
-    """Retire the active generation, ignoring a sink that was already replaced."""
-    global _ACTIVE_SINK
-    with _ACTIVE_SINK_LOCK:
-        if sink is None or _ACTIVE_SINK is sink:
-            _ACTIVE_SINK = None
+class MbaResidualSinkRelay:
+    """The stable routing point one host lifecycle owns for its whole life.
 
+    A capability view is frozen the moment a provider resolves it, so it must
+    not name a sink *generation*: ``state.load_project()`` restarts the manager
+    and closes that generation while the provider rule keeps recording into the
+    view it already holds (d81-uncr).  Views therefore name this relay, and a
+    restart only retargets the relay.
 
-def active_residual_sink() -> "SqliteMbaResidualObservationSink | None":
-    """Return the sink generation the host currently owns, if any."""
-    with _ACTIVE_SINK_LOCK:
-        return _ACTIVE_SINK
+    The relay belongs to exactly one
+    :class:`~d810.mba.residual_observation_lifecycle.MbaResidualObservationLifecycle`
+    and is created with it; it is never a module-level or otherwise shared
+    object.  That is what bounds the rebind: a view issued by lifecycle A can
+    only ever reach a sink A installed, so once A is retired its views fail
+    closed exactly like an unpublished sink, even while lifecycle B is running
+    (d81-mcqr).
+    """
+
+    __slots__ = (
+        "_lock",
+        "_target",
+        "_generations",
+        "_closed",
+        "_warned_closed",
+        "_rebind_logged",
+    )
+
+    def __init__(self) -> None:
+        self._lock = threading.RLock()
+        self._target: SqliteMbaResidualObservationSink | None = None
+        self._generations = 0
+        self._closed = False
+        self._warned_closed = False
+        self._rebind_logged = False
+
+    # The three observers below deliberately read without the lock.  Recording
+    # holds the relay lock for the whole store write, so a locking accessor
+    # would make a diagnostic probe block behind provider traffic; a single
+    # attribute read is atomic and always sees a fully installed generation.
+    @property
+    def target(self) -> "SqliteMbaResidualObservationSink | None":
+        """Return the sink generation this relay routes to right now."""
+        return self._target
+
+    @property
+    def closed(self) -> bool:
+        """True once the owning lifecycle retired the relay for good."""
+        return self._closed
+
+    @property
+    def generations(self) -> int:
+        """Number of sinks installed so far, for restart-aware diagnostics."""
+        return self._generations
+
+    def install(self, sink: "SqliteMbaResidualObservationSink") -> None:
+        """Atomically retarget: close the old generation, publish *sink*.
+
+        The whole swap happens under the relay lock, and recording takes the
+        same lock, so a record racing a restart lands wholly in the old or
+        wholly in the new sink -- it is never rejected and never split.
+        """
+        if not isinstance(sink, SqliteMbaResidualObservationSink):
+            raise TypeError("only a host-owned sink can back a residual relay")
+        with self._lock:
+            if self._closed:
+                raise RuntimeError("a retired residual relay cannot be retargeted")
+            previous = self._target
+            if previous is sink:
+                return
+            self._target = sink
+            self._generations += 1
+            if previous is not None:
+                previous.close()
+
+    def retire(self) -> None:
+        """Drop the current generation; views fail closed until reinstalled."""
+        with self._lock:
+            previous = self._target
+            self._target = None
+            if previous is not None:
+                previous.close()
+
+    def close(self) -> None:
+        """Retire the relay permanently: no successor can ever be installed."""
+        with self._lock:
+            self._closed = True
+            self.retire()
+
+    def bind_activation(self, identity: PluginIdentity) -> MbaResidualObservationSink:
+        """Return the only plugin-facing view routed by this relay."""
+        return _issue_activation_view(self, identity)
+
+    def bind_implementation(
+        self,
+        activation_view: object,
+        candidate: PassImplementationCandidate,
+    ) -> MbaResidualObservationSink:
+        """Bind exact registry-selected authority without exposing a plugin API."""
+        return _issue_implementation_view(self, activation_view, candidate)
+
+    def record(self, observation: MbaResidualRecord) -> MbaResidualReceipt:
+        """Record one observation into the generation this relay owns."""
+        return self._record(observation, None)
+
+    def _record(
+        self,
+        observation: MbaResidualRecord,
+        activation_identity: PluginIdentity | None,
+        expected_provider: MbaProviderKind | None = None,
+    ) -> MbaResidualReceipt:
+        with self._lock:
+            target = self._target
+            if target is None:
+                self._warn_closed_once()
+                return MbaResidualReceipt("rejected", "closed")
+            if self._generations > 1:
+                self._note_rebind_once()
+            return target._record(
+                observation,
+                activation_identity,
+                expected_provider,
+            )
+
+    def _note_rebind_once(self) -> None:
+        """Make the orphan-and-rebind event visible once per relay."""
+        if self._rebind_logged:
+            return
+        self._rebind_logged = True
+        logger.info(
+            "mba residual observation rebound capability=%s: a view bound before "
+            "the manager restart now records into the replacement sink",
+            D810_MBA_RESIDUAL_OBSERVATION_CAPABILITY,
+        )
+
+    def _warn_closed_once(self) -> None:
+        """Name the capability the first time this relay loses an observation."""
+        if self._warned_closed:
+            return
+        self._warned_closed = True
+        logger.warning(
+            "MBA residual observation dropped: capability %s has no open sink; "
+            "every further observation from this view is rejected 'closed'",
+            D810_MBA_RESIDUAL_OBSERVATION_CAPABILITY,
+        )
 
 
 class SqliteMbaResidualObservationSink(MbaResidualObservationSink):
@@ -111,19 +246,12 @@ class SqliteMbaResidualObservationSink(MbaResidualObservationSink):
         self._stored = 0
         self._duplicate = 0
         self._rejected_count = 0
-        self._forwarded = 0
         self._warned_closed = False
-        self._rebind_logged = False
 
-    def traffic(self) -> tuple[int, int, int, int]:
-        """Return ``(stored, duplicate, rejected, forwarded)`` seen so far."""
+    def traffic(self) -> tuple[int, int, int]:
+        """Return ``(stored, duplicate, rejected)`` this generation saw."""
         with self._lock:
-            return (
-                self._stored,
-                self._duplicate,
-                self._rejected_count,
-                self._forwarded,
-            )
+            return (self._stored, self._duplicate, self._rejected_count)
 
     @staticmethod
     def _rejected(reason: str) -> MbaResidualReceipt:
@@ -170,9 +298,7 @@ class SqliteMbaResidualObservationSink(MbaResidualObservationSink):
 
     def bind_activation(self, identity: PluginIdentity) -> MbaResidualObservationSink:
         """Return the only plugin-facing view of this host-owned sink."""
-        if not isinstance(identity, PluginIdentity):
-            raise TypeError("activation binding requires a PluginIdentity")
-        return _ActivationScopedResidualSink(self, identity)
+        return _issue_activation_view(self, identity)
 
     def bind_implementation(
         self,
@@ -180,12 +306,7 @@ class SqliteMbaResidualObservationSink(MbaResidualObservationSink):
         candidate: PassImplementationCandidate,
     ) -> MbaResidualObservationSink:
         """Bind exact registry-selected authority without exposing a plugin API."""
-        if (
-            not isinstance(activation_view, _ActivationScopedResidualSink)
-            or activation_view._sink is not self
-        ):
-            raise TypeError("implementation binding requires an owned activation view")
-        return activation_view._bind_selected_implementation(candidate)
+        return _issue_implementation_view(self, activation_view, candidate)
 
     def _canonical_view(self, raw: TypedBvTerm) -> object:
         """Return the memoized canonical view of one raw term."""
@@ -288,48 +409,23 @@ class SqliteMbaResidualObservationSink(MbaResidualObservationSink):
         activation_identity: PluginIdentity | None,
         expected_provider: MbaProviderKind | None = None,
     ) -> MbaResidualReceipt:
-        """Record through the sink generation the host owns *right now*.
+        """Record into this generation, or fail closed once it is closed.
 
-        Activation views are immutable snapshots and a provider rule caches the
-        one it was handed at ``bind_plugin_services`` time, so a manager restart
-        (``state.load_project``) leaves that rule holding a closed generation.
-        Resolving the successor here — instead of trying to reach into every
-        already-issued view — keeps the capability contract intact: the plugin
-        still holds an opaque, identity-scoped, immutable facade, and the host
-        still owns the store lifetime.  Authority (activation identity and the
-        exact selected implementation) is forwarded unchanged, so a stale view
-        gains nothing it did not already have.
+        A sink never reaches past itself.  Rebinding a view that outlived a
+        manager restart is the relay's job (:class:`MbaResidualSinkRelay`),
+        which is owned by exactly one host lifecycle -- so a closed generation
+        can only be succeeded by another generation of the *same* lifecycle.
         """
         with self._lock:
-            if not self._closed:
-                return self._record_locked(
-                    observation,
-                    activation_identity,
-                    expected_provider,
-                )
-            successor = active_residual_sink()
-            if successor is None or successor is self:
+            if self._closed:
                 self._rejected_count += 1
                 self._warn_closed_once()
                 return self._rejected("closed")
-            self._forwarded += 1
-            self._note_rebind_once()
-        return successor._record_generation(
-            observation,
-            activation_identity,
-            expected_provider,
-        )
-
-    def _note_rebind_once(self) -> None:
-        """Make the orphan-and-rebind event visible once per stale generation."""
-        if self._rebind_logged:
-            return
-        self._rebind_logged = True
-        logger.info(
-            "mba residual observation rebound capability=%s: a view bound before "
-            "the manager restart now records into the replacement sink",
-            D810_MBA_RESIDUAL_OBSERVATION_CAPABILITY,
-        )
+            return self._record_locked(
+                observation,
+                activation_identity,
+                expected_provider,
+            )
 
     def _warn_closed_once(self) -> None:
         """Name the capability the first time a session loses an observation."""
@@ -402,7 +498,6 @@ class SqliteMbaResidualObservationSink(MbaResidualObservationSink):
                     stats.contents,
                     stats.clears,
                 )
-            clear_active_residual_sink(self)
             traffic = (self._stored, self._duplicate, self._rejected_count)
             close = getattr(self._store, "close", None)
             if callable(close):
@@ -420,27 +515,28 @@ class SqliteMbaResidualObservationSink(MbaResidualObservationSink):
 
 
 __all__ = [
+    "MbaResidualSinkRelay",
     "SqliteMbaResidualObservationSink",
-    "active_residual_sink",
-    "clear_active_residual_sink",
-    "install_active_residual_sink",
     "provider_kind_for_implementation",
 ]
 
 
 class _ActivationScopedResidualSink:
-    """Minimal record-only facade bound to one host-created identity."""
+    """Minimal record-only facade bound to one host-created identity.
 
-    __slots__ = ("_sink", "_identity")
+    ``_owner`` is the relay of the issuing lifecycle in the hosted flow, and a
+    standalone sink in the ad hoc/test flow.  Either way it is a fixed object
+    chosen by the host at issue time, never resolved from process state.
+    """
 
-    def __init__(
-        self, sink: SqliteMbaResidualObservationSink, identity: PluginIdentity
-    ):
-        self._sink = sink
+    __slots__ = ("_owner", "_identity")
+
+    def __init__(self, owner: object, identity: PluginIdentity):
+        self._owner = owner
         self._identity = identity
 
     def record(self, observation: MbaResidualRecord) -> MbaResidualReceipt:
-        return self._sink._record(observation, self._identity)
+        return self._owner._record(observation, self._identity)
 
     def _bind_selected_implementation(
         self, candidate: PassImplementationCandidate
@@ -458,7 +554,7 @@ class _ActivationScopedResidualSink:
         if provider is None:
             raise ValueError("unknown_provider_implementation")
         return _ImplementationScopedResidualSink(
-            self._sink,
+            self._owner,
             self._identity,
             provider,
         )
@@ -467,20 +563,20 @@ class _ActivationScopedResidualSink:
 class _ImplementationScopedResidualSink:
     """Record-only facade carrying exact selected implementation authority."""
 
-    __slots__ = ("_sink", "_identity", "_provider")
+    __slots__ = ("_owner", "_identity", "_provider")
 
     def __init__(
         self,
-        sink: SqliteMbaResidualObservationSink,
+        owner: object,
         identity: PluginIdentity,
         provider: MbaProviderKind,
     ) -> None:
-        self._sink = sink
+        self._owner = owner
         self._identity = identity
         self._provider = provider
 
     def record(self, observation: MbaResidualRecord) -> MbaResidualReceipt:
-        return self._sink._record(
+        return self._owner._record(
             observation,
             self._identity,
             self._provider,

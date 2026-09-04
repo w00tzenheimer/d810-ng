@@ -45,9 +45,9 @@ def test_full_cleanup_and_activation_release_order(tmp_path: Path) -> None:
         order.append("activations")
         close_activations()
 
-    def release() -> None:
+    def release(*args, **kwargs) -> None:
         order.append("lease")
-        original_release()
+        original_release(*args, **kwargs)
 
     sink_close = sink.close
 

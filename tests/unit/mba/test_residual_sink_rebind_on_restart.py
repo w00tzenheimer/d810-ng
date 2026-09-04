@@ -11,6 +11,7 @@ the discovery store stayed empty (1,044 attempts, 0 rows, headless dump of
 from __future__ import annotations
 
 import logging
+import threading
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -30,10 +31,7 @@ from d810.mba.extension_api import (
 from d810.mba.provider_outcome import MbaProviderOutcome, ProviderOutcomeStatus
 from d810.mba.provider_routing import MbaProviderKind
 from d810.mba.residual_observation_lifecycle import MbaResidualObservationLifecycle
-from d810.mba.residual_observation_sink import (
-    SqliteMbaResidualObservationSink,
-    active_residual_sink,
-)
+from d810.mba.residual_observation_sink import SqliteMbaResidualObservationSink
 from d810.mba.semantic_canonicalization import canonicalize_mba_term
 from d810.mba.typed_term import TypedBvTerm, term_fingerprint
 
@@ -181,14 +179,15 @@ def test_the_closed_generation_receives_nothing_after_restart(lifecycle) -> None
     assert len(lifecycle.stores[1].attempts) == 3
 
 
-def test_the_active_generation_is_the_started_sink_and_nothing_after_stop(
+def test_the_relay_target_is_the_started_sink_and_nothing_after_stop(
     lifecycle,
 ) -> None:
-    assert active_residual_sink() is None
+    """The routing point is owned by *this* lifecycle, not by the process."""
+    assert lifecycle.relay.target is None
     lifecycle.start()
-    assert active_residual_sink() is lifecycle.sink
+    assert lifecycle.relay.target is lifecycle.sink
     lifecycle.stop()
-    assert active_residual_sink() is None
+    assert lifecycle.relay.target is None
 
 
 def test_a_closed_sink_without_a_replacement_still_fails_closed() -> None:
@@ -242,8 +241,8 @@ def test_every_sink_close_in_a_load_project_flow_reports_the_traffic_it_saw(
     assert [item[1:] for item in closes] == [(1, 0, 0), (2, 0, 0), (0, 0, 0)]
     # Every attempt is reported exactly once, by whichever generation stored it.
     assert sum(item[1] for item in closes) == 3
-    # The forwarding generation keeps its own tally: 1 direct, 2 forwarded.
-    assert generation_zero.traffic() == (1, 0, 0, 2)
+    # A sink only ever counts what it stored itself; the relay routes.
+    assert generation_zero.traffic() == (1, 0, 0)
     rebinds = [
         item
         for item in caplog.records
@@ -251,3 +250,130 @@ def test_every_sink_close_in_a_load_project_flow_reports_the_traffic_it_saw(
     ]
     assert len(rebinds) == 1
     assert D810_MBA_RESIDUAL_OBSERVATION_CAPABILITY in rebinds[0].getMessage()
+
+
+def _lifecycle_on(registry: PluginHostCapabilityRegistry, label: str):
+    """Build one lifecycle sharing *registry*, exposing its own store list."""
+    stores: list[_FakeStore] = []
+
+    def store_factory() -> _FakeStore:
+        store = _FakeStore(f"{label}-{len(stores)}")
+        stores.append(store)
+        return store
+
+    subject = MbaResidualObservationLifecycle(
+        store_factory=store_factory,
+        registry_factory=lambda: registry,
+    )
+    subject.registry = registry
+    subject.stores = stores
+    return subject
+
+
+def _rows(subject) -> int:
+    return sum(len(store.attempts) for store in subject.stores)
+
+
+def test_a_view_from_a_retired_lifecycle_never_reaches_the_next_lifecycle() -> None:
+    """d81-mcqr: capability ownership, not "whoever is active right now".
+
+    A stale view issued by lifecycle A used to resolve a process-global active
+    sink, so once lifecycle B took that global the A view recorded into B's
+    store (``receipt=stored a_rows=0 b_rows=1``).  A view must fail closed the
+    same way an unpublished sink does, no matter who else is running.
+    """
+    registry = PluginHostCapabilityRegistry()
+    lifecycle_a = _lifecycle_on(registry, "a")
+    lifecycle_b = _lifecycle_on(registry, "b")
+    try:
+        lifecycle_a.start()
+        stale_view = _provider_view(registry)
+        lifecycle_a.stop()
+
+        lifecycle_b.start()
+        receipt = stale_view.record(_record())
+
+        assert receipt.status == "rejected"
+        assert receipt.reason == "closed"
+        assert (_rows(lifecycle_a), _rows(lifecycle_b)) == (0, 0)
+    finally:
+        lifecycle_b.stop()
+        lifecycle_a.stop()
+
+
+def test_a_closed_lifecycle_keeps_failing_closed_while_another_one_runs() -> None:
+    """An explicitly retired lifecycle can never be revived by a successor."""
+    registry = PluginHostCapabilityRegistry()
+    lifecycle_a = _lifecycle_on(registry, "a")
+    lifecycle_b = _lifecycle_on(registry, "b")
+    try:
+        lifecycle_a.start()
+        stale_view = _provider_view(registry)
+        lifecycle_a.close()
+
+        lifecycle_b.start()
+        for offset in range(3):
+            receipt = stale_view.record(_record(left=30 + offset))
+            assert receipt.reason == "closed"
+
+        assert (_rows(lifecycle_a), _rows(lifecycle_b)) == (0, 0)
+        with pytest.raises(RuntimeError):
+            lifecycle_a.start()
+    finally:
+        lifecycle_b.stop()
+
+
+def test_a_record_racing_the_relay_swap_lands_wholly_in_one_generation() -> None:
+    """The swap is atomic: never rejected, never split across two stores."""
+    registry = PluginHostCapabilityRegistry()
+    entered = threading.Event()
+    resume = threading.Event()
+    stores: list[_FakeStore] = []
+
+    class _BlockingStore(_FakeStore):
+        def record_attempt(self, attempt):
+            entered.set()
+            assert resume.wait(10)
+            return super().record_attempt(attempt)
+
+    def store_factory() -> _FakeStore:
+        store = (_BlockingStore if not stores else _FakeStore)(
+            f"generation-{len(stores)}"
+        )
+        stores.append(store)
+        return store
+
+    subject = MbaResidualObservationLifecycle(
+        store_factory=store_factory,
+        registry_factory=lambda: registry,
+    )
+    try:
+        first = subject.start()
+        bound = _provider_view(registry)
+        receipts: list[object] = []
+
+        recorder = threading.Thread(
+            target=lambda: receipts.append(bound.record(_record()))
+        )
+        recorder.start()
+        assert entered.wait(10)
+
+        swapper = threading.Thread(target=subject.restart)
+        swapper.start()
+        # The in-flight record holds the relay, so the swap cannot land yet.
+        swapper.join(0.2)
+        assert swapper.is_alive()
+        assert subject.sink is subject.relay.target is first
+
+        resume.set()
+        recorder.join(10)
+        swapper.join(10)
+
+        assert receipts and receipts[0].status == "stored"
+        assert [len(store.attempts) for store in stores] == [1, 0]
+        assert subject.relay.target is subject.sink is not first
+        assert bound.record(_record(left=40)).status == "stored"
+        assert [len(store.attempts) for store in stores] == [1, 1]
+    finally:
+        resume.set()
+        subject.stop()
