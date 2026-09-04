@@ -138,9 +138,8 @@ from d810.manager.function_recipe_activation import (
 )
 from d810.core.function_storage_config import FunctionRecipeStorageConfig
 from d810.mba.discovery_store import MbaDiscoveryStore
-from d810.mba.extension_api import (
-    D810_MBA_RESIDUAL_OBSERVATION_CAPABILITY,
-    MbaResidualObservationSink,
+from d810.mba.residual_observation_lifecycle import (
+    MbaResidualObservationLifecycle,
 )
 from d810.mba.residual_observation_sink import SqliteMbaResidualObservationSink
 from d810.manager.hexrays_pass_pipeline import build_hexrays_flowgraph_pipeline
@@ -749,6 +748,9 @@ class D810Manager:
     _mba_residual_observation_lease: typing.Any = dataclasses.field(
         default=None, init=False, repr=False
     )
+    _mba_residual_observation_lifecycle: typing.Any = dataclasses.field(
+        default=None, init=False, repr=False
+    )
     instruction_optimizer: InstructionOptimizerManager = dataclasses.field(init=False)
     block_optimizer: BlockOptimizerManager = dataclasses.field(init=False)
     ctree_optimizer: CtreeOptimizerManager = dataclasses.field(init=False)
@@ -855,36 +857,48 @@ class D810Manager:
         from d810.backends import _host_capability_registry
 
         self.log_dir.mkdir(parents=True, exist_ok=True)
-        store = MbaDiscoveryStore(self.log_dir / "d810_mba_discovery.sqlite3")
-        sink = SqliteMbaResidualObservationSink(
-            store,
-            recording_enabled=get_settings().mba_residual_recording,
-        )
-        try:
-            lease = _host_capability_registry().register(
-                D810_MBA_RESIDUAL_OBSERVATION_CAPABILITY,
-                MbaResidualObservationSink,
-                sink,
-                activation_binder=sink.bind_activation,
-                implementation_binder=sink.bind_implementation,
+        lifecycle = self._mba_residual_observation_lifecycle
+        if lifecycle is None:
+            # Exactly one lifecycle per manager.  It owns the relay that every
+            # capability view a provider resolves is frozen against, so it has
+            # to outlive a stop/start cycle: ``state.load_project()`` restarts
+            # the manager after the rules have already bound (d81-uncr).  A
+            # per-start lifecycle would hand each rule a dead routing point.
+            lifecycle = MbaResidualObservationLifecycle(
+                store_factory=lambda: MbaDiscoveryStore(
+                    self.log_dir / "d810_mba_discovery.sqlite3"
+                ),
+                registry_factory=_host_capability_registry,
+                # Read per generation, so a restart picks up a settings change.
+                sink_factory=lambda store: SqliteMbaResidualObservationSink(
+                    store,
+                    recording_enabled=get_settings().mba_residual_recording,
+                ),
             )
-        except BaseException:
-            sink.close()
-            raise
-        self._mba_residual_observation_sink = sink
-        self._mba_residual_observation_lease = lease
+            self._mba_residual_observation_lifecycle = lifecycle
+        if lifecycle.started:
+            lifecycle.restart()
+        else:
+            lifecycle.start()
+        self._mba_residual_observation_sink = lifecycle.sink
+        self._mba_residual_observation_lease = lifecycle.lease
 
-    def _release_mba_residual_observation(self) -> None:
-        lease = self._mba_residual_observation_lease
+    def _release_mba_residual_observation(self, full_cleanup: bool = False) -> None:
+        lifecycle = self._mba_residual_observation_lifecycle
         self._mba_residual_observation_lease = None
-        try:
-            if lease is not None:
-                lease.release()
-        finally:
-            sink = self._mba_residual_observation_sink
-            self._mba_residual_observation_sink = None
-            if sink is not None:
-                sink.close()
+        self._mba_residual_observation_sink = None
+        if lifecycle is None:
+            return
+        if not full_cleanup:
+            # A plain stop only retires the generation: the relay stays, so a
+            # later start re-targets the views this manager already issued.
+            lifecycle.stop()
+            return
+        # The manager is going away for good, so nothing may ever be routed
+        # again.  Retiring the relay makes every view it issued fail closed
+        # instead of reaching a later manager's store (d81-mcqr).
+        self._mba_residual_observation_lifecycle = None
+        lifecycle.close()
 
     @_mba_residual_post_init_guard
     def __post_init__(self) -> None:
@@ -4933,6 +4947,7 @@ class D810Manager:
             self._safe_lifecycle_step(
                 "mba residual observation.release",
                 self._release_mba_residual_observation,
+                full_cleanup,
             )
             return None
         self._started = False
@@ -5066,6 +5081,7 @@ class D810Manager:
         self._safe_lifecycle_step(
             "mba residual observation.release",
             self._release_mba_residual_observation,
+            full_cleanup,
         )
         if full_cleanup:
             self._cleanup_errors = cleanup_errors
