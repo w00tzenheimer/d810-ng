@@ -7,9 +7,12 @@ a synthetic call return is not a proven value" is testable without a live
 
 from __future__ import annotations
 
+import dataclasses
 import sys
 import types
 from pathlib import Path
+
+import pytest
 
 _package_name = "d810.evaluator.hexrays_microcode"
 if _package_name not in sys.modules:
@@ -26,7 +29,11 @@ if _package_name not in sys.modules:
     sys.modules[_package_name] = _package
 
 from d810.evaluator.hexrays_microcode.p_taint import (  # noqa: E402
+    EvalResult,
+    Exactness,
+    address_from_eval_result,
     any_tainted,
+    taint_location_key,
     taint_result,
 )
 
@@ -74,3 +81,101 @@ class TestAnyTainted:
 
     def test_empty_taint_set_is_clean(self):
         assert not any_tainted((RAX, RCX, STK), set())
+
+
+class TestEvalResult:
+    """The evaluator's RESULT carries exactness (ticket d81-1t9x).
+
+    A consumer that only accepts ``int`` must receive ``None`` for a tainted or
+    unknown evaluation; asking for the raw value has to be an explicit act.
+    """
+
+    def test_an_exact_result_exposes_its_value(self):
+        result = EvalResult.exact(0x1234)
+        assert result.exactness is Exactness.EXACT
+        assert result.is_exact
+        assert result.exact_value == 0x1234
+
+    def test_a_tainted_result_hides_its_value_from_exact_consumers(self):
+        result = EvalResult.tainted(0x1234)
+        assert result.exactness is Exactness.TAINTED
+        assert not result.is_exact
+        assert result.exact_value is None
+        # The value is still reachable for propagation -- explicitly.
+        assert result.value == 0x1234
+
+    def test_an_unknown_result_has_no_value_at_all(self):
+        result = EvalResult.unknown()
+        assert result.exactness is Exactness.UNKNOWN
+        assert not result.is_exact
+        assert result.exact_value is None
+        assert result.value is None
+
+    def test_exact_with_no_value_is_not_exact(self):
+        # Defensive: a caller that builds the dataclass directly cannot smuggle
+        # a ``None`` through ``exact_value``.
+        assert EvalResult(value=None, exactness=Exactness.EXACT).exact_value is None
+
+    def test_results_are_immutable(self):
+        result = EvalResult.exact(1)
+        with pytest.raises(dataclasses.FrozenInstanceError):
+            result.value = 2  # type: ignore[misc]
+
+
+class TestTaintLocationKey:
+    """Taint keys must classify locations exactly as the VALUE store does.
+
+    ``MicroCodeEnvironment`` matches stored values with
+    ``equal_mops_ignore_size`` (``lo.r == ro.r`` for a register, ``s.off`` for a
+    stack slot), so a taint key that includes the operand SIZE loses the taint
+    the moment the value is read back at another width -- ``rax.8`` tainted,
+    ``rax.4`` clean (ticket d81-1t9x).
+    """
+
+    def test_the_same_register_at_two_widths_shares_one_key(self):
+        assert taint_location_key(1, 8) == taint_location_key(1, 8)
+
+    def test_different_registers_do_not_share_a_key(self):
+        assert taint_location_key(1, 8) != taint_location_key(1, 24)
+
+    def test_registers_and_stack_slots_do_not_collide(self):
+        assert taint_location_key(1, 8) != taint_location_key(2, 8)
+
+
+class TestAddressFromEvalResult:
+    """A fold decision must not treat a tainted value as a resolved pointer
+    (ticket d81-3xer): ``fold_readonlydata.py`` used to accept ANY integer
+    ``> 0x10000`` from the raw ``MicroCodeInterpreter.eval()`` propagation
+    path, so a value derived from a synthetic (invented) call return could
+    still be folded as an address.
+    """
+
+    TABLE_EA = 0x1800296A0
+
+    def test_an_exact_result_above_the_floor_yields_the_address(self):
+        assert (
+            address_from_eval_result(EvalResult.exact(self.TABLE_EA))
+            == self.TABLE_EA
+        )
+
+    def test_a_tainted_result_never_yields_an_address(self):
+        # This is the regression: a synthetic-call-derived value must not
+        # become a fold address just because it LOOKS like a plausible EA.
+        assert address_from_eval_result(EvalResult.tainted(self.TABLE_EA)) is None
+
+    def test_an_unknown_result_yields_no_address(self):
+        assert address_from_eval_result(EvalResult.unknown()) is None
+
+    def test_an_exact_result_at_or_below_the_floor_is_rejected(self):
+        assert address_from_eval_result(EvalResult.exact(0x10000)) is None
+        assert address_from_eval_result(EvalResult.exact(0x100)) is None
+
+    def test_the_floor_is_configurable(self):
+        assert (
+            address_from_eval_result(EvalResult.exact(0x20000), min_address=0x30000)
+            is None
+        )
+        assert (
+            address_from_eval_result(EvalResult.exact(0x40000), min_address=0x30000)
+            == 0x40000
+        )

@@ -1,7 +1,7 @@
 """System tests for opaque table folding using real IDA APIs.
 
 Tests three layers of opaque table folding support:
-1. MicroCodeInterpreter.eval() reads mop_v from writable segments with no write xrefs
+1. MicroCodeInterpreter._eval() reads mop_v from writable segments with no write xrefs
 2. MopTracker.try_resolve_memory_mops() resolves mop_v operands
 3. FoldReadonlyDataRule._is_foldable_address() and configure() handle writable constants
 
@@ -150,7 +150,7 @@ def libobfuscated_setup(ida_database, configure_hexrays):
 # Test: Emulator reads mop_v from writable segment with no write xrefs
 # ===================================================================
 class TestEmulatorMopVWritableNoXrefs:
-    """Test that MicroCodeInterpreter.eval() reads mop_v from writable
+    """Test that MicroCodeInterpreter._eval() reads mop_v from writable
     segments when is_never_written_var() returns True.
     """
 
@@ -181,7 +181,7 @@ class TestEmulatorMopVWritableNoXrefs:
 
         # Get the value from emulator
         try:
-            result = interp.eval(mop, env)
+            result = interp._eval(mop, env)
             print(
                 f"\n  Block {serial}, {op_name} operand: addr=0x{addr:x}, size={size}, value=0x{result:x}"
             )
@@ -228,7 +228,7 @@ class TestEmulatorMopVWritableNoXrefs:
                 )
 
                 try:
-                    result = interp.eval(mop, env)
+                    result = interp._eval(mop, env)
                     print(f"    eval() = 0x{result:x}")
                     assert isinstance(result, int)
                 except Exception as e:

@@ -329,6 +329,11 @@ class ComputedStateTransitionResolver:
 
         max_iterations = 100
         for _ in range(max_iterations):
+            if cur_blk is None:
+                # The emulator published UNKNOWN flow (an operand it could not
+                # prove -- e.g. a synthetic call return); no target may be
+                # resolved from that (ticket d81-1t9x).
+                return None
             if not self.dispatcher_info.should_emulation_continue(cur_blk):
                 return cur_blk
 

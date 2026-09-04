@@ -593,16 +593,22 @@ class FoldReadonlyDataRule(PeepholeSimplificationRule):
                 MicroCodeEnvironment,
                 MicroCodeInterpreter,
             )
+            from d810.evaluator.hexrays_microcode.p_taint import (
+                address_from_eval_result,
+            )
 
             env = MicroCodeEnvironment()
             env.set_cur_flow(blk, ins)
             interpreter = MicroCodeInterpreter(symbolic_mode=False)
 
-            result = interpreter.eval(addr_mop, env)
-
-            # Validate: result must be a plausible virtual address.
-            if result is not None and result > 0x10000:
-                return result
+            # NEVER use the raw MicroCodeInterpreter.eval() propagation path
+            # here: it carries no exactness information, so a value derived
+            # from a synthetic (invented) call return could be mistaken for a
+            # proven address (ticket d81-3xer). eval_mop_result() tags the
+            # value with its Exactness, and address_from_eval_result() only
+            # accepts an EXACT, plausibly-sized value as a fold address.
+            result = interpreter.eval_mop_result(addr_mop, env)
+            return address_from_eval_result(result)
         except Exception:
             pass
         return None

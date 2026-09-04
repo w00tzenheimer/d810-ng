@@ -337,20 +337,11 @@ class MopHistory(object):
             self._mc_current_environment.dump(
                 f"Tracker environment before eval_mop for {format_mop_t(searched_mop)}"
             )
-        if self._mc_interpreter.is_tainted_mop(
-            searched_mop, self._mc_current_environment
-        ):
-            # The path executed, but this value descends from a call the emulator
-            # MODELED rather than computed (ticket d81-0xzp).  A tracked value
-            # must be proven, so report it unresolved -- the pre-d81-0xzp
-            # behaviour for this operand, while an unrelated (dead) synthetic
-            # result no longer discards the whole path.
-            logger.debug(
-                "get_mop_constant_value: %s derives from a synthetic call return, "
-                "reporting unresolved",
-                format_mop_t(searched_mop),
-            )
-            return None
+        # ``eval_mop`` is EXACT-or-``None``: a value descending from a call the
+        # emulator MODELED rather than computed comes back unresolved on its own
+        # (ticket d81-1t9x), so no per-consumer taint check is needed here.  An
+        # unrelated (dead) synthetic result still no longer discards the whole
+        # path (ticket d81-0xzp).
         return self._mc_interpreter.eval_mop(searched_mop, self._mc_current_environment)
 
     def print_info(self, detailed_info=False):
