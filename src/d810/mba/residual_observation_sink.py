@@ -220,7 +220,7 @@ class SqliteMbaResidualObservationSink(MbaResidualObservationSink):
         if started is not None:
             # ``uuid`` is logged so an acceptance run can prove the providers
             # really do mint a fresh one per attempt -- the whole reason the
-            # attempt memo is keyed on the occurrence and not on the row.
+            # attempt memo is keyed on the content and not on the row.
             logger.debug(
                 "residual observation publish uuid=%s status=%s reason=%s "
                 "harness_ms=%.3f",
@@ -282,10 +282,10 @@ class SqliteMbaResidualObservationSink(MbaResidualObservationSink):
             if callable(memo_stats):
                 stats = memo_stats()
                 logger.info(
-                    "mba attempt memo hits=%d misses=%d occurrences=%d clears=%d",
+                    "mba attempt memo hits=%d misses=%d contents=%d clears=%d",
                     stats.hits,
                     stats.misses,
-                    stats.occurrences,
+                    stats.contents,
                     stats.clears,
                 )
             close = getattr(self._store, "close", None)

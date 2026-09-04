@@ -1,4 +1,4 @@
-"""Occurrence-identity invariants for the recorded-attempt memo.
+"""Content-identity invariants for the recorded-attempt memo.
 
 ``MbaDiscoveryStore`` answers a repeated observation from an in-memory memo
 instead of re-serializing and re-writing the attempt.  Every real provider
@@ -7,11 +7,13 @@ mints a fresh ``uuid4`` per attempt (``d810-cobra``'s ``cobra_solve`` and
 persisted row verbatim: that key would miss on every retry and the store would
 be paid for in full each time.
 
-The memo is therefore keyed on an :class:`AttemptOccurrenceKey` -- every
+The memo is therefore keyed on an :class:`AttemptContentKey` -- every
 semantic field the store persists *except* the deliberately volatile UUID.  Two
-observations that agree on all of it are the same occurrence and the second one
-is a duplicate; two that differ anywhere in it are different occurrences and
-the second one must be stored.  These tests vary exactly one field at a time.
+observations that agree on all of it have the same content and the second one
+is a duplicate; two that differ anywhere in it have different content and the
+second one must be stored.  Repeated identical visits are not independent
+semantic evidence for this memo; visit telemetry, if ever needed, would be
+stored separately.  These tests vary exactly one field at a time.
 """
 
 from __future__ import annotations
@@ -141,10 +143,10 @@ def _attempt_rows(store: MbaDiscoveryStore) -> int:
 def _assert_conflict_not_duplicate(
     tmp_path: Path, name: str, **variation: object
 ) -> None:
-    """One attempt UUID, two different occurrences: never a silent duplicate.
+    """One attempt UUID, two different contents: never a silent duplicate.
 
     Only ``variation`` differs between the two attempts, so a memo keyed on the
-    whole occurrence must miss and let the real path speak.  The real path
+    whole content must miss and let the real path speak.  The real path
     finds the stored row under the same UUID, sees different bytes, and
     refuses.  Reporting ``DUPLICATE`` here hands back the *first* attempt's
     identifiers for content that was never stored.
@@ -205,8 +207,8 @@ def test_differing_matcher_metadata_is_not_reported_as_a_duplicate(
     )
 
 
-def test_repeated_occurrence_with_a_fresh_uuid_is_a_memo_hit(tmp_path: Path) -> None:
-    """The same occurrence under a new ``uuid4`` must hit the memo.
+def test_repeated_content_with_a_fresh_uuid_is_a_memo_hit(tmp_path: Path) -> None:
+    """The same content under a new ``uuid4`` must hit the memo.
 
     This is the runtime shape: ``d810-cobra`` and ``d810-egglog`` mint a fresh
     ``uuid4`` for every attempt, so keying the memo on the persisted row -- the
@@ -222,7 +224,7 @@ def test_repeated_occurrence_with_a_fresh_uuid_is_a_memo_hit(tmp_path: Path) -> 
             repeat = store.record_attempt(_attempt(attempt_uuid=str(uuid4())))
             assert (
                 repeat.status is ReceiptStatus.DUPLICATE
-            ), "a repeated occurrence with a fresh UUID missed the memo"
+            ), "repeated content with a fresh UUID missed the memo"
             assert repeat.attempt_id == first.attempt_id
             assert repeat.term_id == first.term_id
             assert repeat.raw_term_id == first.raw_term_id
@@ -277,7 +279,7 @@ _VARIATIONS: dict[str, dict[str, object]] = {
 def test_varying_one_semantic_field_stores_a_second_row(
     tmp_path: Path, field_name: str
 ) -> None:
-    """A different occurrence must miss the memo and be written.
+    """A different content must miss the memo and be written.
 
     Each case changes exactly one semantic field the store persists.  A memo
     that answered ``DUPLICATE`` here would silently drop a real observation.
@@ -300,37 +302,37 @@ def test_varying_one_semantic_field_stores_a_second_row(
 
 
 @pytest.mark.parametrize("field_name", sorted(_VARIATIONS))
-def test_varying_one_semantic_field_changes_the_occurrence_key(
+def test_varying_one_semantic_field_changes_the_content_key(
     field_name: str,
 ) -> None:
-    """The occurrence key itself must move for every semantic field."""
+    """The content key itself must move for every semantic field."""
 
     base = _attempt(attempt_uuid=str(uuid4()))
     varied = _attempt(attempt_uuid=str(uuid4()), **_VARIATIONS[field_name])  # type: ignore[arg-type]
-    assert discovery_store_module.attempt_occurrence_key(
+    assert discovery_store_module.attempt_content_key(
         base
-    ) != discovery_store_module.attempt_occurrence_key(varied)
+    ) != discovery_store_module.attempt_content_key(varied)
 
 
-def test_the_attempt_uuid_alone_does_not_change_the_occurrence_key() -> None:
-    """The UUID is the row's event identity, never part of the occurrence."""
+def test_the_attempt_uuid_alone_does_not_change_the_content_key() -> None:
+    """The UUID is the row's event identity, never part of the content key."""
 
     first = _attempt(attempt_uuid=str(uuid4()))
     second = _attempt(attempt_uuid=str(uuid4()))
     assert first.attempt_uuid != second.attempt_uuid
-    assert discovery_store_module.attempt_occurrence_key(
+    assert discovery_store_module.attempt_content_key(
         first
-    ) == discovery_store_module.attempt_occurrence_key(second)
+    ) == discovery_store_module.attempt_content_key(second)
 
 
-def test_the_occurrence_key_omits_exactly_the_attempt_uuid() -> None:
-    """The stored payload and the occurrence key may differ only in the UUID.
+def test_the_content_key_omits_exactly_the_attempt_uuid() -> None:
+    """The stored payload and the content key may differ only in the UUID.
 
     ``outcome_payload`` is classified MEMO_KEYED, which is only true because
-    the sole payload member missing from the occurrence content is the UUID
+    the sole payload member missing from the content key material is the UUID
     that is itself classified VOLATILE.  A payload member added without
-    extending the occurrence content would break that classification, so it is
-    pinned here rather than asserted in a comment.
+    extending the content key material would break that classification, so it
+    is pinned here rather than asserted in a comment.
     """
 
     attempt = _attempt(
@@ -341,20 +343,20 @@ def test_the_occurrence_key_omits_exactly_the_attempt_uuid() -> None:
     payload = discovery_store_module._strict_loads(
         discovery_store_module._attempt_payload_bytes(attempt)
     )
-    occurrence = discovery_store_module._strict_loads(
-        discovery_store_module._attempt_occurrence_bytes(attempt)
+    content = discovery_store_module._strict_loads(
+        discovery_store_module._attempt_content_bytes(attempt)
     )
     assert payload.pop("attempt_uuid") == attempt.attempt_uuid
-    assert payload == occurrence
+    assert payload == content
 
 
 def test_attempt_identity_covers_every_persisted_attempt_column() -> None:
     """Every persisted column is classified, and classified exactly once.
 
-    ``MEMO_KEYED`` columns are fixed by the occurrence key, ``DERIVED`` columns
+    ``MEMO_KEYED`` columns are fixed by the content key, ``DERIVED`` columns
     are resolved from memo-keyed content, and ``VOLATILE`` columns legitimately
-    differ between two equal occurrences.  A new column that is none of those
-    fails here instead of silently joining or leaving the memo key.
+    differ between two rows with equal content.  A new column that is none of
+    those fails here instead of silently joining or leaving the memo key.
     """
 
     columns = frozenset(discovery_store_module.attempt_insert_columns())
@@ -390,7 +392,7 @@ def test_the_memo_reports_the_hits_and_misses_it_actually_served(
     store = MbaDiscoveryStore(tmp_path / "memo-stats.sqlite3")
     try:
         assert store.attempt_memo_stats() == discovery_store_module.AttemptMemoStats(
-            hits=0, misses=0, occurrences=0, clears=0
+            hits=0, misses=0, contents=0, clears=0
         )
         store.record_attempt(_attempt(attempt_uuid=str(uuid4())))
         store.record_attempt(_attempt(attempt_uuid=str(uuid4())))
@@ -399,15 +401,15 @@ def test_the_memo_reports_the_hits_and_misses_it_actually_served(
             _attempt(attempt_uuid=str(uuid4()), instruction_ea=0x401008)
         )
         stats = store.attempt_memo_stats()
-        assert (stats.hits, stats.misses, stats.occurrences) == (2, 2, 2)
+        assert (stats.hits, stats.misses, stats.contents) == (2, 2, 2)
         assert stats.clears == 0
-        # The declared policy: one row per distinct occurrence, not per attempt.
+        # The declared policy: one row per distinct content, not per attempt.
         assert _attempt_rows(store) == stats.misses == 2
     finally:
         store.close()
 
 
-def test_a_repeated_occurrence_does_not_raise_the_group_observation_count(
+def test_a_repeated_content_does_not_raise_the_group_observation_count(
     tmp_path: Path,
 ) -> None:
     """A content repeat carries no new evidence, so it adds no weight.

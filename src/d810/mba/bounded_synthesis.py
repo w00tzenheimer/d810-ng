@@ -63,6 +63,12 @@ class MbaSynthesisBudget:
 class GrammarAllOnesOrigin:
     """One exact occurrence of the grammar-injected all-ones terminal."""
 
+    #: Legacy persisted name (JSON schema field, serialized via
+    #: ``discovery_store``'s proposal payload; do not rename without a
+    #: migration).  This is a structural child-index path locating one
+    #: occurrence of the all-ones terminal within a term -- unrelated to the
+    #: attempt-memo's content-vs-visit distinction (see
+    #: ``discovery_store.AttemptContentKey``).
     occurrence_path: tuple[int, ...]
     terminal_fingerprint: str
     source_width: int
