@@ -41,7 +41,9 @@ from d810.analyses.control_flow.native_semantic_closure import (
 from d810.analyses.control_flow.residual_entry_bridge import EntryBridgeEvidence
 from d810.analyses.control_flow.semantic_route_evidence import (
     CanonicalSemanticEvidence,
+    RouteAuthorityPhase,
     canonical_semantic_evidence_from_proofs,
+    use_route_authority_phase,
     SemanticCarrierProof,
     SemanticCorridorPoint,
     SemanticPredicateKind,
@@ -1403,6 +1405,15 @@ class NativePreanalysisSessionState:
         repr=False,
         compare=False,
     )
+    # The lifecycle owner of every runtime authority arena this session mints.
+    # It is created on first use and released by ``close_route_authority`` at
+    # top-level session completion; it is never module level and never shared
+    # between sessions.  See ``route_authority``.
+    _route_authority: RouteAuthorityPhase | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
 
     def __post_init__(self) -> None:
         generation = int(self.evidence_generation)
@@ -2115,6 +2126,34 @@ class NativePreanalysisSessionState:
             native_cfg=native_cfg,
         )
 
+    def route_authority(self) -> RouteAuthorityPhase:
+        """Return the phase that owns every route arena this session mints.
+
+        The bundles this session projects are consumed much later than they are
+        produced -- the pass that publishes canonical semantic evidence runs
+        long before the emission that joins on it -- so their arenas cannot be
+        owned by the region that mints them.  They are owned by the session,
+        created on first use here and released by
+        :meth:`close_route_authority` when the top-level lifecycle session
+        completes.  Before this owner existed the arenas were released only by
+        garbage collection, which is not a lifecycle: the closed-arena branch
+        never ran outside tests.
+        """
+
+        phase = self._route_authority
+        if phase is None or phase.closed:
+            phase = RouteAuthorityPhase("native-preanalysis-session")
+            self._route_authority = phase
+        return phase
+
+    def close_route_authority(self) -> None:
+        """Release every route arena this session owns.  Idempotent."""
+
+        phase = self._route_authority
+        self._route_authority = None
+        if phase is not None:
+            phase.close()
+
     def canonical_semantic_evidence_for(
         self,
         key: NativePreanalysisKey,
@@ -2270,11 +2309,15 @@ class NativePreanalysisSessionState:
                     return None
                 conditional_proofs.append(proof)
         proofs = (*direct_proofs, *conditional_proofs)
-        return canonical_semantic_evidence_from_proofs(
-            native_key=key,
-            generation=generation,
-            proofs=proofs,
-        )
+        # The bundle's runtime authority arena is opened by the factory and
+        # adopted by the session's phase, so it dies when the session ends
+        # instead of when the garbage collector notices the bundle.
+        with use_route_authority_phase(self.route_authority()):
+            return canonical_semantic_evidence_from_proofs(
+                native_key=key,
+                generation=generation,
+                proofs=proofs,
+            )
 
     def _replace_resolver_evidence(
         self,

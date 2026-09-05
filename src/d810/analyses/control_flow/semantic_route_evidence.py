@@ -3705,12 +3705,23 @@ class RouteAuthorityPhase:
         return self._closed
 
     def adopt(self, arena: RuntimeAuthorityArena) -> None:
-        """Take ownership of one arena opened while this phase is running."""
+        """Take ownership of one arena opened while this phase is running.
+
+        Adopting into a *closed* phase is a lifecycle error, not a join
+        decision, so it raises :class:`RuntimeAuthorityArenaError` (a
+        ``RuntimeError``) rather than :class:`RuntimeJoinRejected` (a
+        ``ValueError``).  The distinction is load bearing: the pipeline's
+        abstention contract is ``except (TypeError, ValueError)``, so a
+        ``ValueError`` here would let a caller that reopened work under a phase
+        it had already ended quietly produce no plan instead of reporting that
+        its own lifecycle is wrong.  Nothing about the records in hand is
+        inadmissible; the *owner* is.
+        """
 
         if type(arena) is not RuntimeAuthorityArena:
             raise TypeError("route authority phase owns runtime authority arenas")
         if self._closed:
-            raise RuntimeJoinRejected(
+            raise RuntimeAuthorityArenaError(
                 "route authority phase is closed and cannot own a new arena"
             )
         self._arenas.append(arena)
@@ -3774,20 +3785,70 @@ def route_authority_phase(label: str) -> Iterator[RouteAuthorityPhase]:
         phase.close()
 
 
+@contextlib.contextmanager
+def use_route_authority_phase(
+    phase: RouteAuthorityPhase,
+) -> Iterator[RouteAuthorityPhase]:
+    """Make an already-owned ``phase`` the active owner for one region.
+
+    :func:`route_authority_phase` both *creates* and *ends* a phase.  A
+    longer-lived owner -- a lifecycle session that outlives any single region
+    of its own code -- needs the other half only: publish the phase it already
+    owns so that arenas minted here are adopted by it, and leave closing to the
+    owner.  This context manager therefore never calls :meth:`close`.
+
+    A closed phase is refused up front rather than at the first mint, so the
+    lifecycle error is reported where the mistake is (activating an ended
+    phase) instead of deep inside a producer factory.
+
+    >>> from d810.core.runtime_identity import RuntimeAuthorityArena
+    >>> owner = RouteAuthorityPhase("session")
+    >>> with use_route_authority_phase(owner):
+    ...     active_route_authority_phase() is owner
+    True
+    >>> owner.closed
+    False
+    >>> owner.close()
+    """
+
+    if type(phase) is not RouteAuthorityPhase:
+        raise TypeError("route authority activation requires a phase")
+    if phase.closed:
+        raise RuntimeAuthorityArenaError(
+            "route authority phase is closed and cannot be made active"
+        )
+    token = _ACTIVE_ROUTE_AUTHORITY_PHASE.set(phase)
+    try:
+        yield phase
+    finally:
+        _ACTIVE_ROUTE_AUTHORITY_PHASE.reset(token)
+
+
 def _mint_route_binding(
     arena: RuntimeAuthorityArena,
     *,
+    own: bool,
     native_key: NativePreanalysisKey,
     generation: int,
     atomic_group_id: str,
     route_proofs: tuple["SemanticRouteProof", ...],
 ) -> RouteAuthorityBinding:
-    """Mint one group reference and one reference per proof, in bundle order."""
+    """Mint one group reference and one reference per proof, in bundle order.
+
+    ``own`` says whether this mint is also the arena's *creation*.  Only the
+    two producer factories, which construct the arena in the same expression,
+    pass ``own=True``; they are the sites where handing the arena to the active
+    phase is the truth.  A caller that supplies its own arena -- every
+    :func:`bind_route_evidence` rebind -- passes ``own=False``, because a phase
+    must never close an arena it did not open.
+    """
 
     if type(arena) is not RuntimeAuthorityArena:
         raise TypeError("route binding requires a runtime authority arena")
+    if type(own) is not bool:
+        raise TypeError("route binding ownership must be an exact bool")
     phase = _ACTIVE_ROUTE_AUTHORITY_PHASE.get()
-    if phase is not None:
+    if own and phase is not None:
         # Ownership is taken before anything is minted, so an arena can never
         # be populated and then orphaned by a failure part way through.
         phase.adopt(arena)
@@ -6655,6 +6716,7 @@ def canonical_semantic_evidence_from_proofs(
             RuntimeAuthorityArena(
                 runtime_semantic_route_scope(native_key, generation)
             ),
+            own=True,
             native_key=native_key,
             generation=generation,
             atomic_group_id=group_id,
@@ -6889,6 +6951,7 @@ def runtime_semantic_evidence_from_proofs(
         ),
         _runtime_binding=_mint_route_binding(
             RuntimeAuthorityArena(scope),
+            own=True,
             native_key=native_key,
             generation=generation,
             atomic_group_id=group_id,
@@ -6969,6 +7032,11 @@ def bind_route_evidence(
         _runtime_identity=evidence.runtime_identity,
         _runtime_binding=_mint_route_binding(
             arena,
+            # The caller opened this arena and the caller closes it.  A phase
+            # that happens to be active around the rebind never becomes its
+            # owner: adopting here would let the phase close an arena whose
+            # lifetime it knows nothing about.
+            own=False,
             native_key=evidence.native_key,
             generation=evidence.generation,
             atomic_group_id=evidence.atomic_group_id,
@@ -9939,6 +10007,7 @@ __all__ = [
     "runtime_semantic_evidence_from_proofs",
     "runtime_semantic_route_scope",
     "semantic_evidence_with_additional_proofs",
+    "use_route_authority_phase",
     "build_canonical_semantic_evidence",
     "CanonicalRouteMaterialization",
     "capture_source_route_materialization",

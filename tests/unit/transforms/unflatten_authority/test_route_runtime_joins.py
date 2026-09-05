@@ -33,6 +33,7 @@ from d810.analyses.control_flow.semantic_route_evidence import (
 from d810.core.runtime_identity import (
     RUNTIME_AUTHORITY_SIDECAR_FIELDS,
     RuntimeAuthorityArena,
+    RuntimeAuthorityArenaError,
     RuntimeAuthorityKind,
     RuntimeJoinRejected,
 )
@@ -356,6 +357,101 @@ def test_a_bundle_produced_outside_a_phase_keeps_its_arena() -> None:
     assert bundle_route_proof_refs(
         outside, outside.route_proofs, rejection=REJECTION,
     )
+
+
+def test_a_phase_never_owns_an_arena_the_caller_opened() -> None:
+    """A rebind hands the arena in; it does not hand ownership over.
+
+    ``bind_route_evidence(evidence, arena=...)`` is the named rebind at the
+    decode boundary and its caller already owns that arena.  Adopting it into
+    whatever phase happens to be active would let the phase close an arena
+    whose lifetime it knows nothing about -- a caller's cache, a longer-lived
+    session -- so the rebind mints into it without taking it.
+    """
+
+    caller_owned = RuntimeAuthorityArena(
+        runtime_semantic_route_scope(NATIVE_KEY, 7)
+    )
+    unbound = materialize_route_evidence(_bundle())
+
+    with route_authority_phase("unit-test-rebind") as phase:
+        rebound = bind_route_evidence(unbound, arena=caller_owned)
+        # The phase minted nothing of its own, and it did not take the
+        # caller's arena either.
+        assert len(phase) == 0
+
+    assert phase.closed
+    assert not caller_owned.is_closed
+    assert rebound.route_binding is not None
+    assert rebound.route_binding.is_live
+    assert bundle_route_proof_refs(
+        rebound, rebound.route_proofs, rejection=REJECTION,
+    )
+    caller_owned.close()
+
+
+def test_a_phase_still_owns_the_arenas_the_producer_factories_open() -> None:
+    """Only the two arena-creating sites hand the arena to the active phase."""
+
+    with route_authority_phase("unit-test-own") as phase:
+        produced = _bundle()
+        assert len(phase) == 1
+        caller_owned = RuntimeAuthorityArena(
+            runtime_semantic_route_scope(NATIVE_KEY, 9)
+        )
+        bind_route_evidence(materialize_route_evidence(produced), arena=caller_owned)
+        assert len(phase) == 1
+
+    assert not produced.route_binding.is_live
+    assert not caller_owned.is_closed
+    caller_owned.close()
+
+
+def test_adopting_into_a_closed_phase_is_a_lifecycle_error_not_an_abstention() -> None:
+    """The owner is wrong, not the records: this must not read as a join refusal.
+
+    Every abstention handler in the pipeline is ``except (TypeError, ValueError)``.
+    A ``RuntimeJoinRejected`` here -- it is a ``ValueError`` -- would turn
+    "you reopened work under a phase you already ended" into a silent
+    "produce no plan", which hides a lifecycle bug behind a normal decline.
+    """
+
+    phase = route_evidence.RouteAuthorityPhase("unit-test-closed")
+    phase.close()
+    arena = RuntimeAuthorityArena(runtime_semantic_route_scope(NATIVE_KEY, 11))
+
+    with pytest.raises(RuntimeAuthorityArenaError, match="phase is closed") as adopted:
+        phase.adopt(arena)
+    assert not isinstance(adopted.value, ValueError)
+
+    with pytest.raises(RuntimeAuthorityArenaError, match="cannot be made active"):
+        with route_evidence.use_route_authority_phase(phase):
+            pass  # pragma: no cover - the context manager refuses on entry
+    arena.close()
+
+
+def test_activating_an_owned_phase_never_closes_it() -> None:
+    """The other half of the phase API: publish an owner, do not end it.
+
+    A lifecycle session outlives every region of its own code that mints, so
+    it needs activation without termination.  ``route_authority_phase`` is the
+    create-and-end form; this is the publish-only form.
+    """
+
+    owner = route_evidence.RouteAuthorityPhase("unit-test-session-owner")
+
+    with route_evidence.use_route_authority_phase(owner) as active:
+        assert active is owner
+        assert route_evidence.active_route_authority_phase() is owner
+        evidence = _bundle()
+        assert len(owner) == 1
+
+    assert route_evidence.active_route_authority_phase() is None
+    assert not owner.closed
+    assert evidence.route_binding.is_live
+
+    owner.close()
+    assert not evidence.route_binding.is_live
 
 
 def test_content_derived_id_validation_stays_content_keyed() -> None:

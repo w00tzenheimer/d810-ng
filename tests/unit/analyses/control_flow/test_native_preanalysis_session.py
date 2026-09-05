@@ -27,10 +27,12 @@ from d810.analyses.control_flow.frontend_normalization import (
 )
 from d810.analyses.control_flow.semantic_route_evidence import (
     canonical_terminal_state_targets,
+    route_join_binding,
     SemanticPredicateKind,
     SemanticRouteProofKind,
     SemanticRouteShape,
 )
+from d810.core.runtime_identity import RuntimeJoinRejected
 from d810.analyses.control_flow.terminal_return_carrier_evidence import (
     TerminalReturnCarrierEvidence,
     TerminalReturnCarrierEvidenceRejected,
@@ -2614,3 +2616,114 @@ def test_fresh_evidence_epoch_clears_the_consumed_poison_recovery_mark() -> None
     assert state.poison_recovery_consumed_generation is None
     assert not state.native_mutation_quarantined
     assert not state.is_poison_recovery_generation
+
+
+def _session_with_one_published_route() -> NativePreanalysisSessionState:
+    """Return a session whose postvalidated generation projects one route."""
+
+    write_identity = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x40A5A0, 0x40A5B8),),
+        native_key=NATIVE_KEY,
+        exact_instruction_eas=(0x40A5B2,),
+    )
+    delivery_identity = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x40A5B8, 0x40A5CD),),
+        native_key=NATIVE_KEY,
+        exact_instruction_eas=(0x40A5C8,),
+    )
+    target_identity = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x40BECC, 0x40BED0),),
+        native_key=NATIVE_KEY,
+        exact_instruction_eas=(0x40BECC,),
+    )
+    route = PortableStateWriteRouteEvidence(
+        write_identity=write_identity,
+        delivery_identity=delivery_identity,
+        source_write_ea=0x40A5B2,
+        delivery_ea=0x40A5C8,
+        delivery_region_start_ea=0x40A5B8,
+        delivery_region_end_ea=0x40A5CD,
+        corridor_instruction_eas=(0x40A5B2, 0x40A5B8, 0x40A5C2, 0x40A5C8),
+        state_var_reg=16,
+        state_constant=0xABB95547,
+        target_identity=target_identity,
+        target_ea=0x40BECC,
+        authority_transfer_ea=None,
+        preserved_call_instruction_eas=(),
+        proof_kind=StateWriteRouteProofKind.STATE_ASSIGNMENT,
+        delivery_kind=StateWriteRouteDeliveryKind.DIRECT_TARGET,
+    )
+    state = NativePreanalysisSessionState()
+    assert state.merge_state_write_routes(NATIVE_KEY, (route,))
+    _publish_normalization(state)
+    return state
+
+
+def test_the_session_owns_the_arena_of_every_bundle_it_projects() -> None:
+    """The dominant producer path has a lifecycle owner, not a collector.
+
+    ``canonical_semantic_evidence_for`` mints a bundle long before the emission
+    that joins on it, so the bundle's arena cannot be owned by the region that
+    mints it.  Before this owner existed it was released only by garbage
+    collection: the closed-arena branch of ``route_join_binding`` was
+    unreachable on the production path, which is the defect this pins.
+    """
+
+    state = _session_with_one_published_route()
+    evidence = state.canonical_semantic_evidence_for(NATIVE_KEY)
+
+    assert evidence is not None
+    phase = state.route_authority()
+    assert len(phase) == 1
+    binding = route_join_binding(evidence)
+    assert binding.is_live
+    assert binding.proof_for(binding.proof_refs[0]) is evidence.route_proofs[0]
+
+    state.close_route_authority()
+
+    assert phase.closed
+    with pytest.raises(RuntimeJoinRejected, match="arena of this route bundle is closed"):
+        route_join_binding(evidence)
+
+
+def test_a_session_that_closed_its_route_authority_opens_a_fresh_one() -> None:
+    """Closing the owner ends those arenas; it does not disable the session."""
+
+    state = _session_with_one_published_route()
+    first = state.canonical_semantic_evidence_for(NATIVE_KEY)
+    assert first is not None
+    first_phase = state.route_authority()
+
+    state.close_route_authority()
+    state.close_route_authority()  # idempotent
+
+    second = state.canonical_semantic_evidence_for(NATIVE_KEY)
+    assert second is not None
+    second_phase = state.route_authority()
+    assert second_phase is not first_phase
+    assert not second_phase.closed
+    assert route_join_binding(second).is_live
+    # The two bundles are the same *content* and never the same authority.
+    assert second == first
+    with pytest.raises(RuntimeJoinRejected):
+        route_join_binding(first)
+
+
+def test_the_session_route_authority_is_outside_equality_and_repr() -> None:
+    """The owner is lifecycle state, not evidence: it moves no session value."""
+
+    state = _session_with_one_published_route()
+    other = _session_with_one_published_route()
+    assert state == other
+
+    assert state.canonical_semantic_evidence_for(NATIVE_KEY) is not None
+    assert len(state.route_authority()) == 1
+    assert state._route_authority is not None
+    assert other._route_authority is None
+    assert state == other
+    assert "_route_authority" not in repr(state)
+    assert all(
+        not field.compare and not field.repr
+        for field in fields(NativePreanalysisSessionState)
+        if field.name == "_route_authority"
+    )
