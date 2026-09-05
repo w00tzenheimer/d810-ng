@@ -74,6 +74,14 @@
 #   D810_SYSTEM_BATCH_SIZE  Tests per fresh interpreter in system mode (default: 20).
 #   D810_EGGLOG_ROOT       Optional absolute host path to a d810-egglog checkout
 #   D810_COBRA_ROOT        Optional absolute host path to the pinned d810-cobra checkout
+#   D810_COBRA_WHEEL       Optional absolute host path to a recorded prebuilt d810-cobra
+#                          wheel (.whl). Installing it skips the in-container clone,
+#                          toolchain install and C++ build entirely. Mutually exclusive
+#                          with D810_COBRA_ROOT; requires D810_COBRA_WHEEL_SHA256. The
+#                          recorded wheels live in _gitless/resource/cobra-wheels/0.1.5/.
+#   D810_COBRA_WHEEL_SHA256  Required with D810_COBRA_WHEEL: 64 lowercase hex characters.
+#                          Must match both the bytes on disk and a wheel recorded in this
+#                          script; an unrecorded wheel is rejected before any docker run.
 #   D810_DOCKER_MEMORY      Memory limit for container (default: 4g). OOM-kills if exceeded.
 #
 # Examples:
@@ -272,6 +280,140 @@ COBRA_EXTENSION_ENABLED=1
 COBRA_SOURCE_MODE="pinned-remote"
 COBRA_PARENT_SOURCE_ID="$COBRA_SOURCE_REVISION"
 COBRA_CORE_SOURCE_ID="$COBRA_CORE_SOURCE_REVISION"
+# A recorded prebuilt wheel is the immutable fast path: it installs in seconds
+# and skips the clone, the cmake/ninja provisioning and the 55-object C++
+# build. The table below is the entire allow-list. Its parent/core commits are
+# the provenance recorded when each artifact was published (both 0.1.5 rows
+# come from release commit 55540ab84d95bde080a5c1223f034b61fb483492, and both
+# currently equal COBRA_SOURCE_REVISION / COBRA_CORE_SOURCE_REVISION above).
+# They are kept literal on purpose: a later revision bump must not silently
+# re-label an already published wheel.
+# Columns: <sha256> <version>|<arch>|<parent commit>|<core commit>
+COBRA_RECORDED_WHEELS="b71d40e45146004a968a96a1b17493b16ac04f2a98e41c12a1f87a38ddf3ab25 0.1.5|aarch64|3b3c406270f1efd8e222f0b05040ae4e074b27d5|72f616f822f538a0cfbea3c880f9d1e68bb9a8f1
+c642e6a6d61f8b841d97df78375c6e1da43fc05a56c3b68218230ed23beaa762 0.1.5|x86_64|3b3c406270f1efd8e222f0b05040ae4e074b27d5|72f616f822f538a0cfbea3c880f9d1e68bb9a8f1"
+
+_cobra_recorded_wheel_record() {
+  local wanted="$1" digest record
+  while read -r digest record; do
+    [ -n "$digest" ] || continue
+    if [ "$digest" = "$wanted" ]; then
+      printf '%s' "$record"
+      return 0
+    fi
+  done <<< "$COBRA_RECORDED_WHEELS"
+  return 1
+}
+
+_sha256_of_file() {
+  # macOS hosts ship shasum; Linux hosts ship sha256sum. Either is authoritative.
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$1" | awk '{ print $1 }'
+  elif command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | awk '{ print $1 }'
+  else
+    return 1
+  fi
+}
+
+# D810_COBRA_WHEEL selects the recorded-wheel mode. The two variables are
+# required together: a path without its hash cannot be verified, and a hash
+# without a path verifies nothing. Every check is host-side and fails closed
+# before any container starts; only the engine-architecture probe touches
+# Docker, and it never runs a container.
+COBRA_WHEEL_BASENAME=""
+COBRA_WHEEL_SHA256=""
+COBRA_WHEEL_VERSION=""
+COBRA_WHEEL_ARCH=""
+COBRA_WHEEL_CONTAINER_PATH=""
+if [ -n "${D810_COBRA_WHEEL+x}" ] || [ -n "${D810_COBRA_WHEEL_SHA256+x}" ]; then
+  if [ -z "${D810_COBRA_WHEEL:-}" ]; then
+    echo "ERROR: D810_COBRA_WHEEL_SHA256 requires D810_COBRA_WHEEL (absolute path to a recorded .whl file)" >&2
+    exit 1
+  fi
+  if [ -z "${D810_COBRA_WHEEL_SHA256:-}" ]; then
+    echo "ERROR: D810_COBRA_WHEEL requires D810_COBRA_WHEEL_SHA256 (64 lowercase hex characters)" >&2
+    exit 1
+  fi
+  if [ -n "${D810_COBRA_ROOT+x}" ]; then
+    echo "ERROR: D810_COBRA_WHEEL and D810_COBRA_ROOT are mutually exclusive; unset one of them" >&2
+    exit 1
+  fi
+  if [[ "$D810_COBRA_WHEEL" != /* ]] || [ ! -f "$D810_COBRA_WHEEL" ]; then
+    echo "ERROR: D810_COBRA_WHEEL must be an absolute path to an existing .whl file: $D810_COBRA_WHEEL" >&2
+    exit 1
+  fi
+  case "$D810_COBRA_WHEEL" in
+    *.whl) ;;
+    *)
+      echo "ERROR: D810_COBRA_WHEEL must be an absolute path to an existing .whl file: $D810_COBRA_WHEEL" >&2
+      exit 1
+      ;;
+  esac
+  if [[ ! "$D810_COBRA_WHEEL_SHA256" =~ ^[0-9a-f]{64}$ ]]; then
+    echo "ERROR: D810_COBRA_WHEEL_SHA256 must be 64 lowercase hex characters: $D810_COBRA_WHEEL_SHA256" >&2
+    exit 1
+  fi
+  COBRA_WHEEL_ACTUAL_SHA256="$(_sha256_of_file "$D810_COBRA_WHEEL" || true)"
+  if [ -z "$COBRA_WHEEL_ACTUAL_SHA256" ]; then
+    echo "ERROR: D810_COBRA_WHEEL cannot be verified: neither shasum nor sha256sum is on PATH" >&2
+    exit 1
+  fi
+  if [ "$COBRA_WHEEL_ACTUAL_SHA256" != "$D810_COBRA_WHEEL_SHA256" ]; then
+    echo "ERROR: D810_COBRA_WHEEL sha256 mismatch: $D810_COBRA_WHEEL hashes to $COBRA_WHEEL_ACTUAL_SHA256, D810_COBRA_WHEEL_SHA256 declares $D810_COBRA_WHEEL_SHA256" >&2
+    exit 1
+  fi
+  if ! COBRA_WHEEL_RECORD="$(_cobra_recorded_wheel_record "$D810_COBRA_WHEEL_SHA256")"; then
+    echo "ERROR: D810_COBRA_WHEEL_SHA256 $D810_COBRA_WHEEL_SHA256 is not a recorded d810-cobra wheel; recorded wheels live in _gitless/resource/cobra-wheels/" >&2
+    exit 1
+  fi
+  COBRA_WHEEL_VERSION="${COBRA_WHEEL_RECORD%%|*}"
+  COBRA_WHEEL_RECORD_TAIL="${COBRA_WHEEL_RECORD#*|}"
+  COBRA_WHEEL_ARCH="${COBRA_WHEEL_RECORD_TAIL%%|*}"
+  COBRA_WHEEL_RECORD_TAIL="${COBRA_WHEEL_RECORD_TAIL#*|}"
+  COBRA_WHEEL_PARENT="${COBRA_WHEEL_RECORD_TAIL%%|*}"
+  COBRA_WHEEL_CORE="${COBRA_WHEEL_RECORD_TAIL#*|}"
+  # pip refuses a renamed wheel, so the basename must still describe the
+  # artifact the hash identifies: same version, same CPython ABI, same arch.
+  COBRA_WHEEL_BASENAME="$(basename "$D810_COBRA_WHEEL")"
+  if [[ ! "$COBRA_WHEEL_BASENAME" =~ ^d810_cobra-([0-9A-Za-z.]+)-cp313-cp313-([0-9A-Za-z._]+)\.whl$ ]]; then
+    echo "ERROR: D810_COBRA_WHEEL basename must be d810_cobra-<version>-cp313-cp313-<platform>.whl: $COBRA_WHEEL_BASENAME" >&2
+    exit 1
+  fi
+  COBRA_WHEEL_NAME_VERSION="${BASH_REMATCH[1]}"
+  COBRA_WHEEL_NAME_PLATFORM="${BASH_REMATCH[2]}"
+  if [ "$COBRA_WHEEL_NAME_VERSION" != "$COBRA_WHEEL_VERSION" ]; then
+    echo "ERROR: D810_COBRA_WHEEL basename declares version $COBRA_WHEEL_NAME_VERSION but the recorded wheel is $COBRA_WHEEL_VERSION: $COBRA_WHEEL_BASENAME" >&2
+    exit 1
+  fi
+  case "$COBRA_WHEEL_NAME_PLATFORM" in
+    *"$COBRA_WHEEL_ARCH"*) ;;
+    *)
+      echo "ERROR: D810_COBRA_WHEEL platform tag $COBRA_WHEEL_NAME_PLATFORM does not carry the recorded architecture $COBRA_WHEEL_ARCH: $COBRA_WHEEL_BASENAME" >&2
+      exit 1
+      ;;
+  esac
+  # A wheel carries native code, so the engine architecture decides which of
+  # the recorded wheels is installable. Ask the engine rather than the host:
+  # a remote or emulated engine need not match this machine.
+  COBRA_DOCKER_SERVER_ARCH="$(docker version --format '{{.Server.Arch}}' 2>/dev/null || true)"
+  case "$COBRA_DOCKER_SERVER_ARCH" in
+    arm64) COBRA_DOCKER_ENGINE_ARCH="aarch64" ;;
+    amd64) COBRA_DOCKER_ENGINE_ARCH="x86_64" ;;
+    *)
+      echo "ERROR: D810_COBRA_WHEEL needs a known Docker engine architecture; docker version --format '{{.Server.Arch}}' returned '$COBRA_DOCKER_SERVER_ARCH' (expected arm64 or amd64)" >&2
+      exit 1
+      ;;
+  esac
+  if [ "$COBRA_DOCKER_ENGINE_ARCH" != "$COBRA_WHEEL_ARCH" ]; then
+    echo "ERROR: D810_COBRA_WHEEL is a $COBRA_WHEEL_ARCH wheel but the Docker engine is $COBRA_DOCKER_ENGINE_ARCH (docker server arch $COBRA_DOCKER_SERVER_ARCH); use the recorded $COBRA_DOCKER_ENGINE_ARCH wheel" >&2
+    exit 1
+  fi
+  COBRA_WHEEL_SHA256="$D810_COBRA_WHEEL_SHA256"
+  COBRA_WHEEL_CONTAINER_PATH="/opt/d810-cobra-wheel/$COBRA_WHEEL_BASENAME"
+  COBRA_SOURCE_MODE="wheel"
+  COBRA_PARENT_SOURCE_ID="$COBRA_WHEEL_PARENT"
+  COBRA_CORE_SOURCE_ID="$COBRA_WHEEL_CORE"
+fi
 if [ -n "${D810_COBRA_ROOT+x}" ]; then
   if [ -z "$D810_COBRA_ROOT" ] || [[ "$D810_COBRA_ROOT" != /* ]]; then
     echo "ERROR: D810_COBRA_ROOT must be an absolute existing directory" >&2
@@ -520,6 +662,7 @@ _materialize_canonical_git_tree() {
 }
 VOL_COBRA=()
 VOL_COBRA_CACHE=()
+VOL_COBRA_WHEEL=()
 COBRA_CACHE_DIR=""
 if [ "$COBRA_SOURCE_MODE" = "mounted-pinned" ]; then
   # A worktree's .git file can point at an object database outside its root,
@@ -540,12 +683,19 @@ if [ "$COBRA_SOURCE_MODE" = "mounted-pinned" ]; then
   rm -f "$COBRA_SOURCE_ARCHIVE_DIR/parent.entries" "$COBRA_SOURCE_ARCHIVE_DIR/core.entries"
   VOL_COBRA=(-v "${COBRA_SOURCE_TREE}:/opt/d810-cobra-source:ro")
 fi
-# Build outputs are Linux-only and belong to this task's ignored artifact
-# area. Keeping them outside both source forms makes repeated focused runs
-# reuse one pinned build without ever linking a Darwin archive.
-COBRA_CACHE_DIR="${WORK_DIR}/.tmp/cobra-linux"
-mkdir -p "$COBRA_CACHE_DIR"
-VOL_COBRA_CACHE=(-v "${COBRA_CACHE_DIR}:/opt/d810-cobra-cache:rw")
+if [ "$COBRA_SOURCE_MODE" = "wheel" ]; then
+  # A recorded wheel needs no build cache and no source tree. Mount only the
+  # wheel, read-only and under its real basename: pip rejects a renamed wheel
+  # because the filename is the artifact's version/ABI/platform declaration.
+  VOL_COBRA_WHEEL=(-v "${D810_COBRA_WHEEL}:${COBRA_WHEEL_CONTAINER_PATH}:ro")
+else
+  # Build outputs are Linux-only and belong to this task's ignored artifact
+  # area. Keeping them outside both source forms makes repeated focused runs
+  # reuse one pinned build without ever linking a Darwin archive.
+  COBRA_CACHE_DIR="${WORK_DIR}/.tmp/cobra-linux"
+  mkdir -p "$COBRA_CACHE_DIR"
+  VOL_COBRA_CACHE=(-v "${COBRA_CACHE_DIR}:/opt/d810-cobra-cache:rw")
+fi
 COBRA_IMAGE_ID="$(docker image inspect --format '{{.Id}}' "$DOCKER_IMAGE" 2>/dev/null || printf '%s' unknown)"
 
 # Plan: print what we're about to do so agents see worktree, output path, and options
@@ -578,13 +728,18 @@ if [ "$EGGLOG_EXTENSION_ENABLED" = "1" ]; then
   echo "  extension: d810-egglog (mount ${D810_EGGLOG_ROOT}:/opt/d810-egglog:ro)"
 fi
 if [ "$COBRA_EXTENSION_ENABLED" = "1" ]; then
-  echo "  extension: d810-cobra ($COBRA_SOURCE_MODE $COBRA_SOURCE_REVISION)"
-  if [ "$COBRA_SOURCE_MODE" = "mounted-pinned" ]; then
-    echo "  cobra source: canonical archive from $D810_COBRA_ROOT -> /opt/d810-cobra-source (read-only)"
+  if [ "$COBRA_SOURCE_MODE" = "wheel" ]; then
+    echo "  extension: d810-cobra (wheel $COBRA_WHEEL_BASENAME)"
+    echo "  cobra wheel: $D810_COBRA_WHEEL -> $COBRA_WHEEL_CONTAINER_PATH (read-only) sha256 $COBRA_WHEEL_SHA256; recorded $COBRA_WHEEL_VERSION parent $COBRA_PARENT_SOURCE_ID core $COBRA_CORE_SOURCE_ID"
   else
-    echo "  cobra source: $COBRA_SOURCE_URL@$COBRA_SOURCE_REVISION"
+    echo "  extension: d810-cobra ($COBRA_SOURCE_MODE $COBRA_SOURCE_REVISION)"
+    if [ "$COBRA_SOURCE_MODE" = "mounted-pinned" ]; then
+      echo "  cobra source: canonical archive from $D810_COBRA_ROOT -> /opt/d810-cobra-source (read-only)"
+    else
+      echo "  cobra source: $COBRA_SOURCE_URL@$COBRA_SOURCE_REVISION"
+    fi
+    echo "  cobra cache: $COBRA_CACHE_DIR -> /opt/d810-cobra-cache (Linux artifacts)"
   fi
-  echo "  cobra cache: $COBRA_CACHE_DIR -> /opt/d810-cobra-cache (Linux artifacts)"
 fi
 case "$CMD" in
   system)
@@ -630,7 +785,7 @@ fi
 # Forward every set D810_* env var to the container via docker -e flags.
 # Wrapper-only vars (those that only affect this script) are excluded.
 _d810_extra_env_flags() {
-  local _skip=" D810_DOCKER_IMAGE D810_DOCKER_MEMORY D810_EGGLOG_ROOT D810_COBRA_ROOT D810_REPO_ROOT D810_WORKTREE_ROOT D810_MEMORY_LIMIT_BYTES D810_SYSTEM_BATCH_SIZE "
+  local _skip=" D810_DOCKER_IMAGE D810_DOCKER_MEMORY D810_EGGLOG_ROOT D810_COBRA_ROOT D810_COBRA_WHEEL D810_COBRA_WHEEL_SHA256 D810_REPO_ROOT D810_WORKTREE_ROOT D810_MEMORY_LIMIT_BYTES D810_SYSTEM_BATCH_SIZE "
   local _out=""
   local _var _val
   for _var in ${!D810_@}; do
@@ -694,18 +849,27 @@ if [ "$EGGLOG_EXTENSION_ENABLED" = "1" ]; then
   EXTENSION_SETUP="EXTENSION_BUILD_DIR=\$(mktemp -d) && cp -a /opt/d810-egglog/. \"\$EXTENSION_BUILD_DIR/\" && $IDA_VENV_PYTHON -c 'import re, sys, tomllib; project=tomllib.load(open(sys.argv[1], \"rb\"))[\"project\"]; deps=project.get(\"dependencies\", []) + project.get(\"optional-dependencies\", {}).get(\"test\", []); print(\"\\n\".join(dep for dep in deps if re.match(r\"[A-Za-z0-9_.-]+\", dep.strip()).group(0).lower().replace(\"_\", \"-\").replace(\".\", \"-\") != \"d810-ng\"))' \"\$EXTENSION_BUILD_DIR/pyproject.toml\" > \"\$EXTENSION_BUILD_DIR/requirements.txt\" && $IDA_VENV_PIP install \"\$EXTENSION_BUILD_DIR[test]\" --no-deps -q --force-reinstall --no-cache-dir && $IDA_VENV_PIP install -r \"\$EXTENSION_BUILD_DIR/requirements.txt\" -q && $IDA_VENV_PYTHON -c 'import d810_egglog, egglog'"
 fi
 if [ "$COBRA_EXTENSION_ENABLED" = "1" ]; then
-  # CoBRA's test extras are not enough to describe its runtime dependencies;
-  # derive the project metadata exactly as for Egglog, while omitting the
-  # mounted D810 package so the tested worktree remains authoritative.
-  if [ "$COBRA_SOURCE_MODE" = "mounted-pinned" ]; then
-    COBRA_SOURCE_SETUP="COBRA_BUILD_DIR=\$(mktemp -d) && cp -a /opt/d810-cobra-source/. \"\$COBRA_BUILD_DIR/\""
+  if [ "$COBRA_SOURCE_MODE" = "wheel" ]; then
+    # The recorded wheel is re-hashed inside the container before pip sees
+    # it, so a mount that does not deliver the verified bytes fails setup
+    # instead of installing an unknown artifact. Runtime dependencies come
+    # from the installed distribution's own metadata, minus the mounted
+    # D810 package and minus every extra, exactly as the source path does.
+    COBRA_SETUP="printf '%s  %s\\n' '$COBRA_WHEEL_SHA256' '$COBRA_WHEEL_CONTAINER_PATH' | sha256sum -c - && $IDA_VENV_PIP install --no-deps --force-reinstall --no-cache-dir -q $COBRA_WHEEL_CONTAINER_PATH && COBRA_REQUIREMENTS=\$(mktemp) && $IDA_VENV_PYTHON -c 'import importlib.metadata, re; reqs=importlib.metadata.requires(\"d810-cobra\") or []; keep=[req for req in reqs if not re.search(r\"extra\\s*==\", req) and re.match(r\"[A-Za-z0-9_.-]+\", req.strip()).group(0).lower().replace(\"_\", \"-\").replace(\".\", \"-\") != \"d810-ng\"]; print(\"\\n\".join(keep))' > \"\$COBRA_REQUIREMENTS\" && $IDA_VENV_PIP install -r \"\$COBRA_REQUIREMENTS\" -q && $IDA_VENV_PYTHON -c 'import d810_cobra; manifest=d810_cobra.MANIFEST; assert manifest[\"api_version\"] == 1; assert manifest[\"implements\"] == {\"mba-solve\": \"cobra-solve\"}; from d810_cobra.expr import parse_cobra_output; from d810_cobra.prove import ProofResult, prove_equivalent; from d810_cobra.solve import SolveStatus, binding_available, solve_signature; assert binding_available(); tree=parse_cobra_output(\"(x0 | x1) - (x0 & x1)\", [\"a\", \"b\"]); solved=solve_signature(tree, [\"a\", \"b\"], 32); assert solved.status is SolveStatus.SOLVED and solved.tree is not None; assert prove_equivalent(tree, solved.tree, [\"a\", \"b\"], 32) is ProofResult.PROVED; import d810_cobra._cobra; import importlib.metadata, os, sysconfig; assert importlib.metadata.version(\"d810-cobra\") == \"$COBRA_WHEEL_VERSION\"; binary=os.path.realpath(d810_cobra._cobra.__file__); assert \"$COBRA_WHEEL_ARCH\" in os.path.basename(binary), binary; site_dirs=[os.path.realpath(sysconfig.get_paths()[key]) for key in (\"purelib\", \"platlib\")]; assert any(binary.startswith(site + os.sep) for site in site_dirs), binary'"
   else
-    # ENV_GIT pins D810's mounted common Git dir for provenance, but a source
-    # checkout needs its own writable .git directory.  Scope the unset to the
-    # CoBRA acquisition commands; D810's test provenance keeps ENV_GIT.
-    COBRA_SOURCE_SETUP="COBRA_BUILD_DIR=\$(mktemp -d) && env -u GIT_DIR git clone --no-checkout '$COBRA_SOURCE_URL' \"\$COBRA_BUILD_DIR\" && env -u GIT_DIR git -C \"\$COBRA_BUILD_DIR\" fetch --depth=1 origin '$COBRA_SOURCE_REVISION' && env -u GIT_DIR git -C \"\$COBRA_BUILD_DIR\" checkout --detach FETCH_HEAD && test \"\$(env -u GIT_DIR git -C \"\$COBRA_BUILD_DIR\" rev-parse HEAD)\" = '$COBRA_SOURCE_REVISION' && env -u GIT_DIR git -C \"\$COBRA_BUILD_DIR\" submodule update --init --recursive --depth=1 && test \"\$(env -u GIT_DIR git -C \"\$COBRA_BUILD_DIR/third_party/cobra\" rev-parse HEAD)\" = '$COBRA_CORE_SOURCE_REVISION'"
+    # CoBRA's test extras are not enough to describe its runtime dependencies;
+    # derive the project metadata exactly as for Egglog, while omitting the
+    # mounted D810 package so the tested worktree remains authoritative.
+    if [ "$COBRA_SOURCE_MODE" = "mounted-pinned" ]; then
+      COBRA_SOURCE_SETUP="COBRA_BUILD_DIR=\$(mktemp -d) && cp -a /opt/d810-cobra-source/. \"\$COBRA_BUILD_DIR/\""
+    else
+      # ENV_GIT pins D810's mounted common Git dir for provenance, but a source
+      # checkout needs its own writable .git directory.  Scope the unset to the
+      # CoBRA acquisition commands; D810's test provenance keeps ENV_GIT.
+      COBRA_SOURCE_SETUP="COBRA_BUILD_DIR=\$(mktemp -d) && env -u GIT_DIR git clone --no-checkout '$COBRA_SOURCE_URL' \"\$COBRA_BUILD_DIR\" && env -u GIT_DIR git -C \"\$COBRA_BUILD_DIR\" fetch --depth=1 origin '$COBRA_SOURCE_REVISION' && env -u GIT_DIR git -C \"\$COBRA_BUILD_DIR\" checkout --detach FETCH_HEAD && test \"\$(env -u GIT_DIR git -C \"\$COBRA_BUILD_DIR\" rev-parse HEAD)\" = '$COBRA_SOURCE_REVISION' && env -u GIT_DIR git -C \"\$COBRA_BUILD_DIR\" submodule update --init --recursive --depth=1 && test \"\$(env -u GIT_DIR git -C \"\$COBRA_BUILD_DIR/third_party/cobra\" rev-parse HEAD)\" = '$COBRA_CORE_SOURCE_REVISION'"
+    fi
+    COBRA_SETUP="$COBRA_SOURCE_SETUP && export COBRA_ROOT=/opt/d810-cobra-cache && export COBRA_SOURCE_KEY='$COBRA_PARENT_SOURCE_ID:$COBRA_CORE_SOURCE_ID:$COBRA_IMAGE_ID' && COBRA_TOOLCHAIN_KEY=\$(if ! command -v cmake >/dev/null 2>&1 || ! command -v ninja >/dev/null 2>&1 || ! command -v c++ >/dev/null 2>&1; then apt-get update >/dev/null 2>&1 && apt-get install -y --no-install-recommends cmake ninja-build build-essential >/dev/null 2>&1; fi; cmake --version | head -1; ninja --version; c++ --version | head -1) && COBRA_MARKER=\"linux-cobra-core-v2:\$COBRA_SOURCE_KEY:\$COBRA_TOOLCHAIN_KEY\" && if [ ! -f \"\$COBRA_ROOT/.linux-build-ok\" ] || [ \"\$(<\"\$COBRA_ROOT/.linux-build-ok\")\" != \"\$COBRA_MARKER\" ]; then rm -rf \"\$COBRA_ROOT\"/* \"\$COBRA_ROOT\"/.[!.]* \"\$COBRA_ROOT\"/..?* 2>/dev/null || true; cp -a \"\$COBRA_BUILD_DIR/third_party/cobra/.\" \"\$COBRA_ROOT/\"; $IDA_VENV_PYTHON \"\$COBRA_BUILD_DIR/tools/build_cobra.py\" --root \"\$COBRA_ROOT\" && printf '%s\\n' \"\$COBRA_MARKER\" > \"\$COBRA_ROOT/.linux-build-ok\"; fi && $IDA_VENV_PYTHON -c 'import re, sys, tomllib; project=tomllib.load(open(sys.argv[1], \"rb\"))[\"project\"]; deps=project.get(\"dependencies\", []) + project.get(\"optional-dependencies\", {}).get(\"test\", []); print(\"\\n\".join(dep for dep in deps if re.match(r\"[A-Za-z0-9_.-]+\", dep.strip()).group(0).lower().replace(\"_\", \"-\").replace(\".\", \"-\") != \"d810-ng\"))' \"\$COBRA_BUILD_DIR/pyproject.toml\" > \"\$COBRA_BUILD_DIR/requirements.txt\" && $IDA_VENV_PIP install \"\$COBRA_BUILD_DIR[test]\" --no-deps -q --force-reinstall --no-cache-dir && $IDA_VENV_PIP install -r \"\$COBRA_BUILD_DIR/requirements.txt\" -q && $IDA_VENV_PYTHON -c 'import d810_cobra; manifest=d810_cobra.MANIFEST; assert manifest[\"api_version\"] == 1; assert manifest[\"implements\"] == {\"mba-solve\": \"cobra-solve\"}; from d810_cobra.expr import parse_cobra_output; from d810_cobra.prove import ProofResult, prove_equivalent; from d810_cobra.solve import SolveStatus, binding_available, solve_signature; assert binding_available(); tree=parse_cobra_output(\"(x0 | x1) - (x0 & x1)\", [\"a\", \"b\"]); solved=solve_signature(tree, [\"a\", \"b\"], 32); assert solved.status is SolveStatus.SOLVED and solved.tree is not None; assert prove_equivalent(tree, solved.tree, [\"a\", \"b\"], 32) is ProofResult.PROVED; import d810_cobra._cobra'"
   fi
-  COBRA_SETUP="$COBRA_SOURCE_SETUP && export COBRA_ROOT=/opt/d810-cobra-cache && export COBRA_SOURCE_KEY='$COBRA_PARENT_SOURCE_ID:$COBRA_CORE_SOURCE_ID:$COBRA_IMAGE_ID' && COBRA_TOOLCHAIN_KEY=\$(if ! command -v cmake >/dev/null 2>&1 || ! command -v ninja >/dev/null 2>&1 || ! command -v c++ >/dev/null 2>&1; then apt-get update >/dev/null 2>&1 && apt-get install -y --no-install-recommends cmake ninja-build build-essential >/dev/null 2>&1; fi; cmake --version | head -1; ninja --version; c++ --version | head -1) && COBRA_MARKER=\"linux-cobra-core-v2:\$COBRA_SOURCE_KEY:\$COBRA_TOOLCHAIN_KEY\" && if [ ! -f \"\$COBRA_ROOT/.linux-build-ok\" ] || [ \"\$(<\"\$COBRA_ROOT/.linux-build-ok\")\" != \"\$COBRA_MARKER\" ]; then rm -rf \"\$COBRA_ROOT\"/* \"\$COBRA_ROOT\"/.[!.]* \"\$COBRA_ROOT\"/..?* 2>/dev/null || true; cp -a \"\$COBRA_BUILD_DIR/third_party/cobra/.\" \"\$COBRA_ROOT/\"; $IDA_VENV_PYTHON \"\$COBRA_BUILD_DIR/tools/build_cobra.py\" --root \"\$COBRA_ROOT\" && printf '%s\\n' \"\$COBRA_MARKER\" > \"\$COBRA_ROOT/.linux-build-ok\"; fi && $IDA_VENV_PYTHON -c 'import re, sys, tomllib; project=tomllib.load(open(sys.argv[1], \"rb\"))[\"project\"]; deps=project.get(\"dependencies\", []) + project.get(\"optional-dependencies\", {}).get(\"test\", []); print(\"\\n\".join(dep for dep in deps if re.match(r\"[A-Za-z0-9_.-]+\", dep.strip()).group(0).lower().replace(\"_\", \"-\").replace(\".\", \"-\") != \"d810-ng\"))' \"\$COBRA_BUILD_DIR/pyproject.toml\" > \"\$COBRA_BUILD_DIR/requirements.txt\" && $IDA_VENV_PIP install \"\$COBRA_BUILD_DIR[test]\" --no-deps -q --force-reinstall --no-cache-dir && $IDA_VENV_PIP install -r \"\$COBRA_BUILD_DIR/requirements.txt\" -q && $IDA_VENV_PYTHON -c 'import d810_cobra; manifest=d810_cobra.MANIFEST; assert manifest[\"api_version\"] == 1; assert manifest[\"implements\"] == {\"mba-solve\": \"cobra-solve\"}; from d810_cobra.expr import parse_cobra_output; from d810_cobra.prove import ProofResult, prove_equivalent; from d810_cobra.solve import SolveStatus, binding_available, solve_signature; assert binding_available(); tree=parse_cobra_output(\"(x0 | x1) - (x0 & x1)\", [\"a\", \"b\"]); solved=solve_signature(tree, [\"a\", \"b\"], 32); assert solved.status is SolveStatus.SOLVED and solved.tree is not None; assert prove_equivalent(tree, solved.tree, [\"a\", \"b\"], 32) is ProofResult.PROVED; import d810_cobra._cobra'"
   if [ -n "$EXTENSION_SETUP" ]; then
     EXTENSION_SETUP="$EXTENSION_SETUP && $COBRA_SETUP"
   else
@@ -760,6 +924,7 @@ run_bash() {
     "${VOL_EGGLOG[@]}" \
     "${VOL_COBRA[@]}" \
     "${VOL_COBRA_CACHE[@]}" \
+    "${VOL_COBRA_WHEEL[@]}" \
     -w /work \
     --entrypoint /bin/bash "$DOCKER_IMAGE" -lc "$inner"
 }
@@ -778,6 +943,7 @@ run_bash_it() {
     "${VOL_EGGLOG[@]}" \
     "${VOL_COBRA[@]}" \
     "${VOL_COBRA_CACHE[@]}" \
+    "${VOL_COBRA_WHEEL[@]}" \
     -w /work \
     -e "CMD=$CMD" \
     -e "PYTHON=$IDA_VENV_PYTHON" \
@@ -802,6 +968,7 @@ run_bash_exec() {
     "${VOL_EGGLOG[@]}" \
     "${VOL_COBRA[@]}" \
     "${VOL_COBRA_CACHE[@]}" \
+    "${VOL_COBRA_WHEEL[@]}" \
     -w /work \
     -e "CMD=exec" \
     -e "PYTHON=$IDA_VENV_PYTHON" \
