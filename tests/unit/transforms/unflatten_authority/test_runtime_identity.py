@@ -111,6 +111,8 @@ def test_runtime_reference_rejects_invalid_construction() -> None:
 
     with pytest.raises(TypeError, match="runtime authority kind"):
         RuntimeAuthorityRef(2, 1, ref._owner)
+    with pytest.raises(TypeError, match="ordinal must be an exact int"):
+        RuntimeAuthorityRef(RuntimeAuthorityKind.ROUTE_PROOF, True, ref._owner)
     with pytest.raises(ValueError, match="positive"):
         RuntimeAuthorityRef(RuntimeAuthorityKind.ROUTE_PROOF, 0, ref._owner)
     with pytest.raises(TypeError, match="owner token"):

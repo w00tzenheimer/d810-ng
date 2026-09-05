@@ -3263,6 +3263,212 @@ def test_evidence_rejects_mixed_runtime_and_content_identities() -> None:
         CanonicalSemanticEvidence.__post_init__(forged)
 
 
+def test_runtime_route_identity_rejects_every_malformed_shape() -> None:
+    scope = runtime_semantic_route_scope(NATIVE_KEY, 3)
+    group_ref = scope.mint(RuntimeAuthorityKind.ROUTE_GROUP)
+    proof_ref = scope.mint(RuntimeAuthorityKind.ROUTE_PROOF)
+
+    with pytest.raises(TypeError, match="requires a runtime scope"):
+        RuntimeRouteIdentity(
+            scope="0x1000:g3", group_ref=group_ref, proof_refs=(proof_ref,),
+        )
+    with pytest.raises(TypeError, match="requires a group reference"):
+        RuntimeRouteIdentity(
+            scope=scope, group_ref=None, proof_refs=(proof_ref,),
+        )
+    with pytest.raises(TypeError, match="requires exact proof references"):
+        RuntimeRouteIdentity(
+            scope=scope, group_ref=group_ref, proof_refs=[proof_ref],
+        )
+    with pytest.raises(TypeError, match="requires exact proof references"):
+        RuntimeRouteIdentity(scope=scope, group_ref=group_ref, proof_refs=())
+    with pytest.raises(
+        SemanticRouteEvidenceRejected,
+        match="group reference has the wrong kind",
+    ):
+        RuntimeRouteIdentity(
+            scope=scope, group_ref=proof_ref, proof_refs=(proof_ref,),
+        )
+    with pytest.raises(
+        SemanticRouteEvidenceRejected,
+        match="proof references have the wrong kind",
+    ):
+        RuntimeRouteIdentity(
+            scope=scope, group_ref=group_ref, proof_refs=(group_ref,),
+        )
+    with pytest.raises(
+        SemanticRouteEvidenceRejected,
+        match="proof references have the wrong kind",
+    ):
+        RuntimeRouteIdentity(
+            scope=scope, group_ref=group_ref, proof_refs=("route_proof000001",),
+        )
+    with pytest.raises(
+        SemanticRouteEvidenceRejected,
+        match="duplicate proof references",
+    ):
+        RuntimeRouteIdentity(
+            scope=scope, group_ref=group_ref, proof_refs=(proof_ref, proof_ref),
+        )
+
+
+def test_runtime_route_scope_and_factory_reject_untyped_inputs() -> None:
+    scope = runtime_semantic_route_scope(NATIVE_KEY, 3)
+
+    with pytest.raises(TypeError, match="requires a native key"):
+        runtime_semantic_route_scope("0x1000", 3)
+    with pytest.raises(TypeError, match="requires a runtime scope"):
+        runtime_semantic_evidence_from_proofs(
+            NATIVE_KEY, 3, (_proof(),), scope=RuntimeAuthorityScope("0x1000:g3").namespace,
+        )
+    with pytest.raises(
+        SemanticRouteEvidenceRejected, match="requires route proofs",
+    ):
+        runtime_semantic_evidence_from_proofs(NATIVE_KEY, 3, (), scope=scope)
+    with pytest.raises(TypeError, match="remint requires canonical evidence"):
+        semantic_evidence_with_additional_proofs(_proof(), (_proof(),))
+
+
+def test_runtime_merge_rejects_one_input_id_with_divergent_payload() -> None:
+    proof = _proof()
+    divergent = replace(
+        proof,
+        destinations=(replace(proof.destinations[0], target_anchor_ea=0x1201),),
+    )
+
+    with pytest.raises(
+        SemanticRouteEvidenceRejected,
+        match="divergent authoritative payload",
+    ) as rejection:
+        runtime_semantic_evidence_from_proofs(
+            NATIVE_KEY,
+            3,
+            (proof, divergent),
+            scope=runtime_semantic_route_scope(NATIVE_KEY, 3),
+        )
+    assert "destinations" in str(rejection.value)
+    assert repr(proof.proof_id) in str(rejection.value)
+
+
+def test_runtime_merge_exempts_scope_local_ids_from_the_divergence_check() -> None:
+    """Two scopes over one namespace render the same ids for unlike bundles."""
+
+    first = runtime_semantic_evidence_from_proofs(
+        NATIVE_KEY, 3, (_proof(),), scope=runtime_semantic_route_scope(NATIVE_KEY, 3),
+    )
+    second = runtime_semantic_evidence_from_proofs(
+        NATIVE_KEY,
+        3,
+        (_storage_choice_proof(),),
+        scope=runtime_semantic_route_scope(NATIVE_KEY, 3),
+    )
+    assert (
+        first.route_proofs[0].proof_id == second.route_proofs[0].proof_id
+    )
+
+    merged = runtime_semantic_evidence_from_proofs(
+        NATIVE_KEY,
+        3,
+        (*first.route_proofs, *second.route_proofs),
+        scope=runtime_semantic_route_scope(NATIVE_KEY, 3),
+    )
+    assert len(merged.route_proofs) == 2
+
+
+def test_runtime_evidence_rejects_every_inconsistent_identity_pairing() -> None:
+    scope = runtime_semantic_route_scope(NATIVE_KEY, 3)
+    evidence = runtime_semantic_evidence_from_proofs(
+        NATIVE_KEY, 3, (_proof(),), scope=scope,
+    )
+    canonical = canonical_semantic_evidence_from_proofs(NATIVE_KEY, 3, (_proof(),))
+
+    # Runtime group id, content-derived proof id.
+    mixed = _unsafe_evidence(
+        evidence,
+        (replace(
+            evidence.route_proofs[0],
+            proof_id=canonical.route_proofs[0].proof_id,
+        ),),
+    )
+    with pytest.raises(
+        SemanticRouteEvidenceRejected,
+        match="mixes runtime and content-derived route ids",
+    ):
+        CanonicalSemanticEvidence.__post_init__(mixed)
+
+    # A runtime bundle whose scope is gone keeps its representation check only.
+    stripped = _unsafe_evidence(evidence, evidence.route_proofs)
+    CanonicalSemanticEvidence.__post_init__(stripped)
+    assert stripped.runtime_identity is None
+
+    # A scope that did not mint these proof ids.
+    stranger = runtime_semantic_route_scope(NATIVE_KEY, 3)
+    stranger.mint(RuntimeAuthorityKind.ROUTE_GROUP)
+    with pytest.raises(
+        SemanticRouteEvidenceRejected,
+        match="atomic group id is not scope-derived",
+    ):
+        CanonicalSemanticEvidence(
+            native_key=evidence.native_key,
+            generation=evidence.generation,
+            atomic_group_id=evidence.atomic_group_id,
+            route_proofs=evidence.route_proofs,
+            _runtime_identity=RuntimeRouteIdentity(
+                scope=stranger,
+                group_ref=stranger.mint(RuntimeAuthorityKind.ROUTE_GROUP),
+                proof_refs=(stranger.mint(RuntimeAuthorityKind.ROUTE_PROOF),),
+            ),
+        )
+
+    # A scope whose group id matches but whose proof references do not.
+    aligned = runtime_semantic_route_scope(NATIVE_KEY, 3)
+    group_ref = aligned.mint(RuntimeAuthorityKind.ROUTE_GROUP)
+    aligned.mint(RuntimeAuthorityKind.ROUTE_PROOF)
+    with pytest.raises(
+        SemanticRouteEvidenceRejected,
+        match="proof ids are not scope-derived",
+    ):
+        CanonicalSemanticEvidence(
+            native_key=evidence.native_key,
+            generation=evidence.generation,
+            atomic_group_id=evidence.atomic_group_id,
+            route_proofs=evidence.route_proofs,
+            _runtime_identity=RuntimeRouteIdentity(
+                scope=aligned,
+                group_ref=group_ref,
+                proof_refs=(aligned.mint(RuntimeAuthorityKind.ROUTE_PROOF),),
+            ),
+        )
+
+    # A scope carried alongside content-derived identities.
+    with pytest.raises(
+        SemanticRouteEvidenceRejected,
+        match="requires a scope-derived atomic group id",
+    ):
+        CanonicalSemanticEvidence(
+            native_key=canonical.native_key,
+            generation=canonical.generation,
+            atomic_group_id=canonical.atomic_group_id,
+            route_proofs=canonical.route_proofs,
+            _runtime_identity=evidence.runtime_identity,
+        )
+
+
+def test_runtime_identity_property_tolerates_a_rebuilt_record() -> None:
+    """The accessor and the revalidation path must agree about a bare record."""
+
+    evidence = canonical_semantic_evidence_from_proofs(NATIVE_KEY, 3, (_proof(),))
+    rebuilt = _unsafe_evidence(evidence, evidence.route_proofs)
+
+    assert rebuilt.runtime_identity is None
+    CanonicalSemanticEvidence.__post_init__(rebuilt)
+    grown = semantic_evidence_with_additional_proofs(
+        rebuilt, (_storage_choice_proof(),),
+    )
+    assert grown.runtime_identity is None
+    assert len(grown.route_proofs) == 2
+
+
 def test_semantic_evidence_remint_keeps_the_identity_discipline() -> None:
     scope = runtime_semantic_route_scope(NATIVE_KEY, 3)
     runtime = runtime_semantic_evidence_from_proofs(

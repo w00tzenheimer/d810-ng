@@ -3472,9 +3472,15 @@ class CanonicalSemanticEvidence:
 
     @property
     def runtime_identity(self) -> "RuntimeRouteIdentity | None":
-        """Return the minting scope when this bundle was produced internally."""
+        """Return the minting scope when this bundle was produced internally.
 
-        return self._runtime_identity
+        The slot is read with a default because this class is also revalidated
+        through ``__post_init__`` on a record rebuilt field by field, which
+        never sets a private slot.  Reading it any other way would make the
+        accessor raise on exactly the record shape revalidation tolerates.
+        """
+
+        return getattr(self, "_runtime_identity", None)
 
     def __post_init__(self) -> None:
         if not isinstance(self.native_key, NativePreanalysisKey):
@@ -3513,9 +3519,7 @@ class CanonicalSemanticEvidence:
             generation=generation,
             atomic_group_id=atomic_group_id,
             route_proofs=route_proofs,
-            # ``__post_init__`` is also the revalidation entry point for a
-            # record rebuilt field by field, which never carries a live scope.
-            runtime_identity=getattr(self, "_runtime_identity", None),
+            runtime_identity=self.runtime_identity,
         )
         object.__setattr__(self, "generation", generation)
         object.__setattr__(self, "atomic_group_id", atomic_group_id)
@@ -6339,13 +6343,37 @@ def _runtime_route_proof_order(proof: SemanticRouteProof) -> tuple[object, ...]:
 def _runtime_authoritative_proofs(
     proofs: tuple[SemanticRouteProof, ...],
 ) -> tuple[SemanticRouteProof, ...]:
-    """Merge repeated authoritative payloads by direct field comparison."""
+    """Merge repeated authoritative payloads by direct field comparison.
+
+    This keeps the corruption check ``_canonical_authoritative_proofs`` makes:
+    an input id that claims something about content must not name two
+    different payloads.  A ``runtime:`` input id is excluded from that check,
+    and only from that check, because it is a join key inside one scope rather
+    than a claim about content -- two scopes sharing a namespace render the
+    same strings for unrelated bundles, so comparing them would reject correct
+    input.  Within one scope no two references are equal, so a runtime id
+    cannot name two payloads in the first place.
+    """
 
     buckets: dict[
         tuple[object, ...], list[tuple[tuple[object, ...], SemanticRouteProof]]
     ] = {}
+    stable_by_input_id: dict[str, tuple[object, ...]] = {}
     for proof in proofs:
         stable = _stable_route_proof_key(proof)
+        if not is_runtime_authority_identity(proof.proof_id):
+            prior_stable = stable_by_input_id.setdefault(proof.proof_id, stable)
+            if prior_stable != stable:
+                divergent_fields = tuple(
+                    name
+                    for index, name in enumerate(_STABLE_ROUTE_PROOF_FIELDS)
+                    if prior_stable[index] != stable[index]
+                )
+                raise SemanticRouteEvidenceRejected(
+                    "runtime semantic input proof id has divergent authoritative "
+                    f"payload: proof_id={proof.proof_id!r} "
+                    f"fields={divergent_fields!r}"
+                )
         bucket = buckets.setdefault(_runtime_route_proof_order(proof), [])
         for index, (prior_key, prior) in enumerate(bucket):
             if prior_key == stable:
@@ -6393,11 +6421,13 @@ def runtime_semantic_evidence_from_proofs(
     """Construct evidence whose join identities are minted by one live scope.
 
     This is the internal-producer counterpart of
-    ``canonical_semantic_evidence_from_proofs``.  It performs the same
-    duplicate merge over the same authoritative fields, but it never
-    fingerprints, JSON encodes, or hashes them: the group and per-proof
-    identities are scope-owned references, and the bundle carries the scope so
-    the consuming transaction stays inside it.
+    ``canonical_semantic_evidence_from_proofs``.  It merges duplicates over the
+    same authoritative fields and rejects the same divergent-input-id
+    corruption, but it never fingerprints, JSON encodes, or hashes them: the
+    group and per-proof identities are scope-owned references, and the bundle
+    carries the scope so the consuming transaction stays inside it.  The one
+    deliberate difference is that a ``runtime:`` input id is not subject to the
+    divergence check; see ``_runtime_authoritative_proofs``.
     """
 
     if type(scope) is not RuntimeAuthorityScope:
