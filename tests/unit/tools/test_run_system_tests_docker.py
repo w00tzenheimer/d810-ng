@@ -366,8 +366,8 @@ def test_core_mode_installs_the_pinned_cobra_plugin_source(
     command = _container_run(calls)
     assert "https://github.com/w00tzenheimer/d810-CoBRA.git" in command
     assert "3b3c406270f1efd8e222f0b05040ae4e074b27d5" in command
-    assert "env -u GIT_DIR git clone" in command
-    assert 'env -u GIT_DIR git -C "$COBRA_BUILD_DIR" submodule update --init --recursive --depth=1' in command
+    assert "env -u GIT_DIR -u GIT_COMMON_DIR git clone" in command
+    assert 'env -u GIT_DIR -u GIT_COMMON_DIR git -C "$COBRA_BUILD_DIR" submodule update --init --recursive --depth=1' in command
     assert '"api_version"] == 1' in command
     assert '"implements"] == {"mba-solve": "cobra-solve"}' in command
 
@@ -2515,6 +2515,20 @@ exit 1
 """
 
 
+def test_cobra_acquisition_escapes_both_git_environment_pins(
+    tmp_path: Path,
+) -> None:
+    """GIT_COMMON_DIR left set makes git clone write to the read-only mount."""
+    result, calls = _run(tmp_path, "exec", "--", "true")
+
+    assert result.returncode == 0, result.stderr
+    command = _container_run(calls)
+    assert "env -u GIT_DIR -u GIT_COMMON_DIR git clone" in command
+    assert "env -u GIT_DIR git" not in command.replace(
+        "env -u GIT_DIR -u GIT_COMMON_DIR git", ""
+    )
+
+
 def test_remote_worktree_git_identity_points_at_the_tested_worktree(
     tmp_path: Path,
 ) -> None:
@@ -2574,7 +2588,9 @@ def test_remote_repo_root_keeps_the_plain_common_dir_form(tmp_path: Path) -> Non
     assert not [call for call in calls if "d810-git-worktree" in call]
     command = _remote_container_run(calls)
     assert "GIT_DIR=/d810-git " in command
-    assert "GIT_COMMON_DIR" not in command
+    # only the CoBRA acquisition mentions it, and only to unset it
+    assert "export IDA_PREFIX" in command
+    assert "GIT_COMMON_DIR=/d810-git" not in command
 
 
 def test_local_mode_git_identity_is_unchanged(tmp_path: Path) -> None:
