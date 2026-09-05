@@ -1,3 +1,4 @@
+import hashlib
 import os
 import shutil
 import subprocess
@@ -9,6 +10,30 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[3]
 DOCKER_RUNNER = REPO_ROOT / "tools" / "scripts" / "run_system_tests_docker.sh"
 RUNTIME_LABEL = "dev-emulation-z3-v1"
+COBRA_WHEEL_VERSION = "0.1.5"
+COBRA_WHEEL_AARCH64_NAME = (
+    "d810_cobra-0.1.5-cp313-cp313-manylinux_2_26_aarch64.manylinux_2_28_aarch64.whl"
+)
+COBRA_WHEEL_AARCH64_SHA256 = (
+    "b71d40e45146004a968a96a1b17493b16ac04f2a98e41c12a1f87a38ddf3ab25"
+)
+COBRA_WHEEL_CONTAINER_DIR = "/opt/d810-cobra-wheel"
+
+
+def _recorded_wheel(name: str) -> Path | None:
+    """Return a recorded CoBRA wheel path, or None when it is not available.
+
+    The wheels are preserved outside git under ``_gitless/``, which exists in
+    the main checkout but not in every worktree, so look upward from this
+    checkout instead of hard-coding a host path.
+    """
+    for base in (REPO_ROOT, *REPO_ROOT.parents):
+        candidate = (
+            base / "_gitless" / "resource" / "cobra-wheels" / COBRA_WHEEL_VERSION / name
+        )
+        if candidate.is_file():
+            return candidate
+    return None
 
 
 def _make_harness(tmp_path: Path) -> tuple[Path, Path]:
@@ -26,6 +51,9 @@ set -eu
 printf '%s\\n' "$*" >> "$DOCKER_LOG"
 if [ "${1:-}" = image ] && [ "${2:-}" = inspect ]; then
   printf '%s\\n' "${MOCK_DOCKER_LABEL:-}"
+fi
+if [ "${1:-}" = version ]; then
+  printf '%s\\n' "${MOCK_DOCKER_SERVER_ARCH:-arm64}"
 fi
 if [ "${1:-}" = run ]; then
   if [ -n "${MOCK_DOCKER_EXPECT_SOURCE_FILE:-}" ]; then
@@ -72,6 +100,8 @@ def _run(
     env.pop("D810_API_TOKEN", None)
     env.pop("D810_EGGLOG_ROOT", None)
     env.pop("D810_COBRA_ROOT", None)
+    env.pop("D810_COBRA_WHEEL", None)
+    env.pop("D810_COBRA_WHEEL_SHA256", None)
     env.update(
         {
             "PATH": f"{tmp_path / 'bin'}:{env['PATH']}",
@@ -396,6 +426,265 @@ fi
     assert f"cat-file blob {table_blob}" in git_calls
     assert "checkout-index" not in git_calls
     assert any("/opt/d810-cobra-source:ro" in call for call in calls)
+
+
+def test_recorded_cobra_wheel_replaces_the_in_container_source_build(
+    tmp_path: Path,
+) -> None:
+    """A verified recorded wheel installs directly; nothing is compiled."""
+    wheel = _recorded_wheel(COBRA_WHEEL_AARCH64_NAME)
+    if wheel is None:
+        pytest.skip(f"recorded wheel {COBRA_WHEEL_AARCH64_NAME} is unavailable")
+    container_path = f"{COBRA_WHEEL_CONTAINER_DIR}/{COBRA_WHEEL_AARCH64_NAME}"
+
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--",
+        "true",
+        extra_env={
+            "D810_COBRA_WHEEL": str(wheel),
+            "D810_COBRA_WHEEL_SHA256": COBRA_WHEEL_AARCH64_SHA256,
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    command = _container_run(calls)
+    assert (
+        "/app/ida/.venv/bin/pip install --no-deps --force-reinstall "
+        f"--no-cache-dir -q {container_path}"
+    ) in command
+    assert "sha256sum -c -" in command
+    assert COBRA_WHEEL_AARCH64_SHA256 in command
+    assert '"implements"] == {"mba-solve": "cobra-solve"}' in command
+    assert (
+        f'importlib.metadata.version("d810-cobra") == "{COBRA_WHEEL_VERSION}"'
+        in command
+    )
+    for compiled in ("git clone", "submodule update", "build_cobra.py", "cmake"):
+        assert compiled not in command
+    assert any(call == f"run-arg {wheel}:{container_path}:ro" for call in calls)
+    assert "/opt/d810-cobra-source" not in command
+    assert "/opt/d810-cobra-cache" not in command
+    assert "D810_COBRA_WHEEL=" not in command
+    assert not list((tmp_path / ".tmp").glob("cobra-source.*"))
+    assert not (tmp_path / ".tmp" / "cobra-linux").exists()
+
+
+def test_recorded_cobra_wheel_reports_its_verified_provenance(
+    tmp_path: Path,
+) -> None:
+    wheel = _recorded_wheel(COBRA_WHEEL_AARCH64_NAME)
+    if wheel is None:
+        pytest.skip(f"recorded wheel {COBRA_WHEEL_AARCH64_NAME} is unavailable")
+
+    result, _ = _run(
+        tmp_path,
+        "exec",
+        "--",
+        "true",
+        extra_env={
+            "D810_COBRA_WHEEL": str(wheel),
+            "D810_COBRA_WHEEL_SHA256": COBRA_WHEEL_AARCH64_SHA256,
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert f"extension: d810-cobra (wheel {COBRA_WHEEL_AARCH64_NAME})" in result.stdout
+    assert (
+        f"cobra wheel: {wheel} -> {COBRA_WHEEL_CONTAINER_DIR}/"
+        f"{COBRA_WHEEL_AARCH64_NAME} (read-only) sha256 "
+        f"{COBRA_WHEEL_AARCH64_SHA256}; recorded {COBRA_WHEEL_VERSION} parent "
+        "3b3c406270f1efd8e222f0b05040ae4e074b27d5 core "
+        "72f616f822f538a0cfbea3c880f9d1e68bb9a8f1"
+    ) in result.stdout
+    assert "cobra cache:" not in result.stdout
+
+
+def test_cobra_wheel_without_its_hash_fails_before_docker(tmp_path: Path) -> None:
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--",
+        "true",
+        extra_env={"D810_COBRA_WHEEL": str(tmp_path / COBRA_WHEEL_AARCH64_NAME)},
+    )
+
+    assert result.returncode != 0
+    assert calls == []
+    assert "D810_COBRA_WHEEL_SHA256" in result.stderr
+
+
+def test_cobra_wheel_hash_without_its_path_fails_before_docker(
+    tmp_path: Path,
+) -> None:
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--",
+        "true",
+        extra_env={"D810_COBRA_WHEEL_SHA256": COBRA_WHEEL_AARCH64_SHA256},
+    )
+
+    assert result.returncode != 0
+    assert calls == []
+    assert "D810_COBRA_WHEEL" in result.stderr
+
+
+@pytest.mark.parametrize(
+    "wheel",
+    ["relative/d810_cobra.whl", "/nonexistent/d810_cobra.whl"],
+)
+def test_unusable_cobra_wheel_path_fails_before_docker(
+    tmp_path: Path,
+    wheel: str,
+) -> None:
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--",
+        "true",
+        extra_env={
+            "D810_COBRA_WHEEL": wheel,
+            "D810_COBRA_WHEEL_SHA256": COBRA_WHEEL_AARCH64_SHA256,
+        },
+    )
+
+    assert result.returncode != 0
+    assert calls == []
+    assert "D810_COBRA_WHEEL must be an absolute path" in result.stderr
+
+
+def test_malformed_cobra_wheel_hash_fails_before_docker(tmp_path: Path) -> None:
+    wheel = tmp_path / COBRA_WHEEL_AARCH64_NAME
+    wheel.write_bytes(b"not the recorded wheel")
+
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--",
+        "true",
+        extra_env={
+            "D810_COBRA_WHEEL": str(wheel),
+            "D810_COBRA_WHEEL_SHA256": "NOTAHASH",
+        },
+    )
+
+    assert result.returncode != 0
+    assert calls == []
+    assert "D810_COBRA_WHEEL_SHA256 must be 64 lowercase hex" in result.stderr
+
+
+def test_cobra_wheel_content_mismatch_fails_before_docker(tmp_path: Path) -> None:
+    """The recorded name must not admit content the recorded hash rejects."""
+    wheel = tmp_path / COBRA_WHEEL_AARCH64_NAME
+    wheel.write_bytes(b"not the recorded wheel")
+
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--",
+        "true",
+        extra_env={
+            "D810_COBRA_WHEEL": str(wheel),
+            "D810_COBRA_WHEEL_SHA256": COBRA_WHEEL_AARCH64_SHA256,
+        },
+    )
+
+    assert result.returncode != 0
+    assert calls == []
+    assert "sha256 mismatch" in result.stderr
+
+
+def test_unrecorded_cobra_wheel_fails_before_docker(tmp_path: Path) -> None:
+    """A self-consistent hash is not enough: the artifact must be recorded."""
+    wheel = tmp_path / "d810_cobra-9.9.9-cp313-cp313-manylinux_2_28_aarch64.whl"
+    wheel.write_bytes(b"a locally built wheel nobody recorded")
+    digest = hashlib.sha256(wheel.read_bytes()).hexdigest()
+
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--",
+        "true",
+        extra_env={
+            "D810_COBRA_WHEEL": str(wheel),
+            "D810_COBRA_WHEEL_SHA256": digest,
+        },
+    )
+
+    assert result.returncode != 0
+    assert calls == []
+    assert "not a recorded d810-cobra wheel" in result.stderr
+
+
+def test_cobra_wheel_and_cobra_root_are_mutually_exclusive(tmp_path: Path) -> None:
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--",
+        "true",
+        extra_env={
+            "D810_COBRA_WHEEL": str(tmp_path / COBRA_WHEEL_AARCH64_NAME),
+            "D810_COBRA_WHEEL_SHA256": COBRA_WHEEL_AARCH64_SHA256,
+            "D810_COBRA_ROOT": str(tmp_path),
+        },
+    )
+
+    assert result.returncode != 0
+    assert calls == []
+    assert (
+        "D810_COBRA_WHEEL and D810_COBRA_ROOT are mutually exclusive" in result.stderr
+    )
+
+
+def test_cobra_wheel_architecture_must_match_the_docker_engine(
+    tmp_path: Path,
+) -> None:
+    """A native wheel for the wrong engine must never reach a container."""
+    wheel = _recorded_wheel(COBRA_WHEEL_AARCH64_NAME)
+    if wheel is None:
+        pytest.skip(f"recorded wheel {COBRA_WHEEL_AARCH64_NAME} is unavailable")
+
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--",
+        "true",
+        extra_env={
+            "D810_COBRA_WHEEL": str(wheel),
+            "D810_COBRA_WHEEL_SHA256": COBRA_WHEEL_AARCH64_SHA256,
+            "MOCK_DOCKER_SERVER_ARCH": "amd64",
+        },
+    )
+
+    assert result.returncode != 0
+    assert calls == ["version --format {{.Server.Arch}}"]
+    assert "aarch64 wheel but the Docker engine is x86_64" in result.stderr
+
+
+def test_unknown_docker_engine_architecture_rejects_the_cobra_wheel(
+    tmp_path: Path,
+) -> None:
+    wheel = _recorded_wheel(COBRA_WHEEL_AARCH64_NAME)
+    if wheel is None:
+        pytest.skip(f"recorded wheel {COBRA_WHEEL_AARCH64_NAME} is unavailable")
+
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--",
+        "true",
+        extra_env={
+            "D810_COBRA_WHEEL": str(wheel),
+            "D810_COBRA_WHEEL_SHA256": COBRA_WHEEL_AARCH64_SHA256,
+            "MOCK_DOCKER_SERVER_ARCH": "riscv64",
+        },
+    )
+
+    assert result.returncode != 0
+    assert calls == ["version --format {{.Server.Arch}}"]
+    assert "known Docker engine architecture" in result.stderr
 
 
 @pytest.mark.parametrize("root", ["relative/extension", "missing-extension"])
