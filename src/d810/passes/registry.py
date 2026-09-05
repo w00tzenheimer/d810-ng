@@ -178,7 +178,9 @@ class PassRegistry:
                 pass_id,
                 path=transform_path,
                 value=raw_selection,
-                known_ids=frozenset(item.transform_id for item in editor_spec.transforms),
+                known_ids=frozenset(
+                    item.transform_id for item in editor_spec.transforms
+                ),
                 item_kind="transform",
             )
         raw_options = self._value_at_path(options, ("transform_options",))
@@ -537,8 +539,7 @@ class PassRegistry:
     def is_configured(self, pass_id: str) -> bool:
         self.config_template_for(pass_id)
         return (
-            pass_id in self._configured_factories
-            or pass_id in self._hosted_factories
+            pass_id in self._configured_factories or pass_id in self._hosted_factories
         )
 
     def is_hosted(self, pass_id: str) -> bool:
@@ -592,7 +593,8 @@ class PassRegistry:
         if configured_factory is None and hosted_factory is not None:
             # Validate options and rule identity, but do not construct a
             # portable PipelinePass for a callback-owned stage.  The hosted
-            # stage is consumed by ``pipeline_v2_hook_bridge`` instead.
+            # stage is consumed by ``compile_config_v2_hook_schedule``
+            # instead, which calls ``hosted_rule_for`` itself.
             self.hosted_rule_for(config)
             return PassSpec(
                 config.pass_id,
