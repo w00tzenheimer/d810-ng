@@ -2148,7 +2148,14 @@ class TestPassImplementationRegression(unittest.TestCase):
             {"mba-egraph": object()},
             {"mba-egraph": ""},
         ):
-            with self.subTest(implements=implements):
+            # subTest's kwargs are only ever used to label the failure, but
+            # pytest-xdist relays each subtest report to the master over an
+            # execnet channel whose serializer rejects arbitrary objects
+            # (execnet.gateway_base.DumpError). ``{"mba-egraph": object()}``
+            # is exactly such a case: pass a repr so this stays a
+            # process-boundary-safe string under -n while still labeling
+            # the failing case.
+            with self.subTest(implements=repr(implements)):
                 manifest = self.manifest(implements)
                 reg = registry(
                     [
@@ -2309,7 +2316,10 @@ class TestPassImplementationRegression(unittest.TestCase):
             (RuntimeError("manifest exploded"), BackendStatus.BROKEN),
         )
         for error, expected in cases:
-            with self.subTest(expected=expected):
+            # See test_malformed_implementation_ids_are_rejected above: an
+            # Enum member fails the same execnet serializer under -n, so
+            # label with its plain string value instead.
+            with self.subTest(expected=expected.value):
                 reg = registry(
                     [
                         BackendSpec(
