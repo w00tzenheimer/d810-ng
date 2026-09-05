@@ -216,8 +216,9 @@ class TestVouchingByNameIsGoneFromTheBoundary:
             transition_trust=_spoofed_trust_dict("out_of_tree_oracle")
         )
 
+        classify = classify_transition_trust_for_explicit_conditional_bridge
         with pytest.raises(TypeError):
-            classify_transition_trust_for_explicit_conditional_bridge(  # type: ignore[call-arg]
+            classify(  # type: ignore[call-arg]
                 transition,
                 adapted_producers=("out_of_tree_oracle",),
             )
@@ -469,3 +470,65 @@ class TestAbsenceIsNeverVouchedFor:
         assert result.producer_name == UNSPECIFIED_TRANSITION_TRUST_PRODUCER
         assert result.authority is TransitionTrustAuthority.UNRESOLVED_PROVENANCE
         assert result.authorizes_explicit_conditional_bridge is False
+
+
+class TestACarriedTokenIsStrippedAtTheCoercionBoundary:
+    """A row may not smuggle a registration in through the untyped boundary.
+
+    The tokens above are unforgeable, but a *genuine* one could still leak into
+    a serialized row.  Coercion therefore never reads a ``registration`` field
+    off its input: the row it builds starts unregistered, whatever the input
+    carried, so only code holding the binder can register anything.
+    """
+
+    def test_a_carried_branch_ownership_token_does_not_survive_coercion(self) -> None:
+        registrar = branch_ownership_registration_authority()
+        leaked = registrar.mint(
+            registrar.producer(BranchOwnershipOracleKind.MOPTRACKER)
+        )
+
+        proof = branch_ownership_proof_from_any(
+            _spoofed_proof_dict(
+                BranchOwnershipOracleKind.MOPTRACKER.value,
+                registration=leaked,
+            )
+        )
+
+        assert proof is not None
+        assert proof.registration is None
+        assert proof.authority is BranchOwnershipAuthority.UNRESOLVED_PROVENANCE
+
+    def test_a_carried_trust_token_does_not_survive_coercion(self) -> None:
+        registrar = transition_trust_registration_authority()
+        leaked = registrar.mint(
+            registrar.producer(TransitionTrustProducerKind.BRANCH_OWNERSHIP_ADAPTER)
+        )
+
+        result = transition_trust_result_from_any(
+            _spoofed_trust_dict(
+                TransitionTrustProducerKind.BRANCH_OWNERSHIP_ADAPTER.value,
+                registration=leaked,
+            )
+        )
+
+        assert result is not None
+        assert result.registration is None
+        assert result.authority is TransitionTrustAuthority.UNRESOLVED_PROVENANCE
+
+    def test_a_duck_typed_row_carrying_a_token_is_stripped_too(self) -> None:
+        registrar = branch_ownership_registration_authority()
+        leaked = registrar.mint(
+            registrar.producer(BranchOwnershipOracleKind.MOPTRACKER)
+        )
+        row = SimpleNamespace(
+            **_spoofed_proof_dict(
+                BranchOwnershipOracleKind.MOPTRACKER.value,
+                registration=leaked,
+            )
+        )
+
+        proof = branch_ownership_proof_from_any(row)
+
+        assert proof is not None
+        assert proof.registration is None
+        assert proof.authority is BranchOwnershipAuthority.UNRESOLVED_PROVENANCE

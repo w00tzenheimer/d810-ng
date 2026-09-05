@@ -43,8 +43,9 @@ class BranchOwnershipOracleKind(str, Enum):
     default, so an unrecognised (or absent) producer silently presented itself
     as ``preanalysis_branch_ownership``.  An absent name now resolves to
     :data:`UNSPECIFIED_BRANCH_OWNERSHIP_ORACLE`, which is not a member here.
-    Enumerating the producers makes the provenance checkable: :func:`branch_ownership_proof_from_any` normalises a
-    recognised name to a member here, and :attr:`BranchOwnershipProof.is_known_oracle`
+    Enumerating the producers makes the provenance checkable:
+    :func:`branch_ownership_proof_from_any` normalises a recognised name to
+    a member here, and :attr:`BranchOwnershipProof.is_known_oracle`
     reports whether the proof came from a producer this codebase knows about.
 
     Members subclass ``str``, so every existing ``==`` comparison, ``in``-set
