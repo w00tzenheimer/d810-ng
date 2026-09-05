@@ -2101,9 +2101,12 @@ def test_remote_mode_mirrors_source_into_the_work_volume(tmp_path: Path) -> None
 
     assert result.returncode == 0, result.stderr
     command = _remote_container_run(calls)
-    # contents come from one explicit manifest, never a directory walk
-    assert "tar -C /work-src --null -T '/work/.tmp/remote-manifest." in command
-    assert "tar -C /work -xf -" in command
+    # an immutable archive built on the Mac from one explicit manifest
+    assert re.search(
+        r"tar -C /work -xf '/work/\.tmp/remote-src\.[A-Za-z0-9]{6}/source\.tar'",
+        command,
+    ), command
+    assert "tar -C /work-src" not in command
     # the destination is emptied first, so the mirror is exact
     assert "find /work -mindepth 1 -maxdepth 1 ! -name .tmp -exec rm -rf {} +" in command
     assert "set -o pipefail" in command
@@ -2114,6 +2117,13 @@ def test_manifest_excludes_ignored_files_and_build_output(tmp_path: Path) -> Non
     share, repo = _share_layout(tmp_path)
     (repo / ".env").write_text("D810_API_TOKEN=secret\n", encoding="utf-8")
     manifest_log = tmp_path / "manifest.log"
+    # Only the files that MUST be archived exist; the excluded ones do not, so
+    # any leak through the filter makes tar fail closed instead of passing.
+    for relative in ("src/d810/x.py", "tests/t.py", "samples/bins/libobfuscated.dll",
+                     "untracked.py"):
+        target = repo / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("content\n", encoding="utf-8")
 
     git_stub = f"""#!/usr/bin/env bash
 set -eu
@@ -2153,9 +2163,8 @@ esac
     assert "ls-files -z" in logged
     assert "ls-files --others --exclude-standard -z" in logged
     command = _remote_container_run(calls)
-    assert "--null -T" in command
     # nothing walks the source tree, so ignored files cannot be swept in
-    assert "tar -C /work-src -cf - ." not in command
+    assert "tar -C /work-src" not in command
     assert ".env" not in command
 
 
@@ -2245,7 +2254,7 @@ def test_plan_reports_the_allowlist(tmp_path: Path) -> None:
 
     assert result.returncode == 0, result.stderr
     assert "allowlist:  none" in result.stdout
-    assert "archive contents: tracked + untracked-not-ignored files" in result.stdout
+    assert "tracked + untracked-not-ignored, ignored content excluded" in result.stdout
 
 
 def test_remote_sync_sentinel_gates_reuse_on_the_source_digest(
@@ -2273,10 +2282,110 @@ def test_remote_sync_sentinel_gates_reuse_on_the_source_digest(
     # and written only after the mirror completed
     assert f"[ -f '/work/.d810-sync-ok' ] && [ \"$(cat '/work/.d810-sync-ok')\" = \"$__digest\" ]" in command
     assert "rm -f '/work/.d810-sync-ok'" in command
-    assert command.index("tar -C /work -xf -") < command.index(
+    assert command.index("tar -C /work -xf ") < command.index(
         "> '/work/.d810-sync-ok'"
     )
     assert digest in result.stdout
+
+
+def test_archive_digest_is_immune_to_edits_after_materialization(
+    tmp_path: Path,
+) -> None:
+    """The digest names the archived bytes, not whatever the tree holds later."""
+    share, repo = _share_layout(tmp_path)
+    payload = repo / "src" / "payload.py"
+    payload.write_text("original\n", encoding="utf-8")
+    kept = tmp_path / "kept"
+    kept.mkdir()
+
+    git_stub = """#!/usr/bin/env bash
+set -eu
+for arg in "$@"; do
+  if [ "$arg" = "--git-common-dir" ]; then exit 1; fi
+done
+case "$*" in
+  *"ls-files --others --exclude-standard -z"*) : ;;
+  *"ls-files -z"*) printf 'src/payload.py\\0' ;;
+esac
+"""
+    # The mock docker copies the archive aside, then the source is mutated.
+    docker_extra = f"""
+if [ "${{1:-}}" = run ]; then
+  for arg in "$@"; do
+    case "$arg" in
+      *remote-src.*) : ;;
+    esac
+  done
+fi
+"""
+
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--remote",
+        REMOTE_HOST,
+        "--",
+        "true",
+        repo_root=repo,
+        extra_env=_remote_env(share),
+        mock_git=git_stub,
+    )
+    assert result.returncode == 0, result.stderr
+    first_digest = re.search(r"source digest: ([0-9a-f]{16})", result.stdout)
+    assert first_digest, result.stdout
+
+    payload.write_text("mutated after the archive was built\n", encoding="utf-8")
+    result_two, _calls = _run(
+        tmp_path,
+        "exec",
+        "--remote",
+        REMOTE_HOST,
+        "--",
+        "true",
+        repo_root=repo,
+        extra_env=_remote_env(share),
+        mock_git=git_stub,
+    )
+    second_digest = re.search(r"source digest: ([0-9a-f]{16})", result_two.stdout)
+    assert second_digest
+
+    # content changed -> digest changed; the first run's archive still named
+    # the bytes it captured, and the container extracts that archive only
+    assert first_digest.group(1) != second_digest.group(1)
+    command = _remote_container_run(_runs(calls) and calls)
+    assert "source.tar" in command
+
+
+def test_archive_digest_ignores_mtime_only_changes(tmp_path: Path) -> None:
+    share, repo = _share_layout(tmp_path)
+    (repo / "src" / "payload.py").write_text("stable\n", encoding="utf-8")
+    git_stub = """#!/usr/bin/env bash
+set -eu
+for arg in "$@"; do
+  if [ "$arg" = "--git-common-dir" ]; then exit 1; fi
+done
+case "$*" in
+  *"ls-files --others --exclude-standard -z"*) : ;;
+  *"ls-files -z"*) printf 'src/payload.py\\0' ;;
+esac
+"""
+
+    first, _ = _run(
+        tmp_path, "exec", "--remote", REMOTE_HOST, "--", "true",
+        repo_root=repo, extra_env=_remote_env(share), mock_git=git_stub,
+    )
+    os.utime(repo / "src" / "payload.py", (0, 0))
+    second, _ = _run(
+        tmp_path, "exec", "--remote", REMOTE_HOST, "--", "true",
+        repo_root=repo, extra_env=_remote_env(share), mock_git=git_stub,
+    )
+
+    assert first.returncode == 0 and second.returncode == 0
+    digests = [
+        re.search(r"source digest: ([0-9a-f]{16})", output.stdout).group(1)
+        for output in (first, second)
+    ]
+    assert digests[0] == digests[1]
 
 
 def test_remote_plan_reports_the_source_digest_and_work_volume(

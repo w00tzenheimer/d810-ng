@@ -328,6 +328,8 @@ REMOTE_ENGINE_ARCH=""
 REMOTE_LOCK_DIR=""
 WORK_SUBPATH=""
 WORK_VOLUME=""
+REMOTE_ARCHIVE=""
+REMOTE_ARCHIVE_CONTAINER_PATH=""
 SOURCE_DIGEST=""
 SYNC_SENTINEL="/work/.d810-sync-ok"
 # macOS normalizes requested rights, so the presence check compares against the
@@ -736,12 +738,19 @@ _release_remote_lock() {
 }
 
 REMOTE_MANIFEST=""
+REMOTE_ARCHIVE_DIR=""
 _cleanup_remote_manifest() {
   [ -n "$REMOTE_MANIFEST" ] || return 0
   case "$REMOTE_MANIFEST" in */.tmp/remote-manifest.*) rm -f "$REMOTE_MANIFEST" ;; esac
 }
 
+_cleanup_remote_archive() {
+  [ -n "$REMOTE_ARCHIVE_DIR" ] || return 0
+  case "$REMOTE_ARCHIVE_DIR" in */.tmp/remote-src.*) rm -rf "$REMOTE_ARCHIVE_DIR" ;; esac
+}
+
 _d810_exit_cleanup() {
+  _cleanup_remote_archive
   _cleanup_remote_manifest
   _release_remote_lock
   _cleanup_cobra_source_artifact
@@ -856,6 +865,27 @@ _build_remote_manifest() {
   local manifest="$1"
   _manifest_from_git > "$manifest"
   _append_manifest_allowlist "$manifest"
+}
+
+# Hashing the tree and then streaming it leaves a window in which an edit lands
+# between the two, so the sentinel would name bytes other than the ones that
+# ran. Materialize an immutable archive first and derive the digest from the
+# archive itself: the member list followed by the concatenated member contents,
+# in archive order, which is content-based and independent of mtimes.
+_materialize_remote_archive() {
+  local manifest="$1" archive="$2"
+  if ! tar -C "$WORK_DIR" --null -T "$manifest" -cf "$archive"; then
+    echo "ERROR: could not build the remote source archive: $archive" >&2
+    exit 1
+  fi
+}
+
+_archive_digest() {
+  local archive="$1"
+  {
+    tar -tf "$archive"
+    tar -xOf "$archive"
+  } | shasum -a 256 | cut -c1-16
 }
 
 # One volume per worktree PATH: two worktrees can share a basename under
@@ -1030,12 +1060,18 @@ if [ -n "$REMOTE_HOST" ]; then
   # The lock still guards the shared read-write .tmp: -o captures, logs, diag
   # SQLite databases and the cobra cache all collide between concurrent runs.
   _acquire_remote_lock
-  SOURCE_DIGEST="$(_source_digest "$WORK_DIR")"
   WORK_VOLUME="$(_work_volume_name "$WORK_DIR")"
   mkdir -p "$WORK_DIR/.tmp"
   _apply_tmp_acls
   REMOTE_MANIFEST="$WORK_DIR/.tmp/remote-manifest.$$"
   _build_remote_manifest "$REMOTE_MANIFEST"
+  REMOTE_ARCHIVE_DIR="$(mktemp -d "$WORK_DIR/.tmp/remote-src.XXXXXX")"
+  REMOTE_ARCHIVE="$REMOTE_ARCHIVE_DIR/source.tar"
+  _materialize_remote_archive "$REMOTE_MANIFEST" "$REMOTE_ARCHIVE"
+  SOURCE_DIGEST="$(_archive_digest "$REMOTE_ARCHIVE")"
+  REMOTE_ARCHIVE_CONTAINER_PATH="/work/.tmp/$(basename "$REMOTE_ARCHIVE_DIR")/source.tar"
+  _ensure_acl "$REMOTE_ARCHIVE_DIR" dir
+  _ensure_acl "$REMOTE_ARCHIVE" file
 fi
 
 # Profile receipts need to identify the actual image that ran them. Keep this
@@ -1163,7 +1199,7 @@ if [ "$REMOTE_MODE" = "1" ]; then
   echo "  share root: $REMOTE_SHARE_ROOT"
   echo "  subpath:  $WORK_SUBPATH (read-only at /work-src; .tmp read-write at /work/.tmp)"
   echo "  source digest: $SOURCE_DIGEST"
-  echo "  archive contents: tracked + untracked-not-ignored files (ignored content excluded)"
+  echo "  archive:  $REMOTE_ARCHIVE_CONTAINER_PATH (tracked + untracked-not-ignored, ignored content excluded)"
   echo "  allowlist: ${REMOTE_MANIFEST_EXTRA_ENTRIES:- none} (from $(basename "$REMOTE_MANIFEST_EXTRA"))"
   echo "  work volume: $WORK_VOLUME ($WORK_VOLUME_STATE, retained source copy)"
   echo "  share user: $REMOTE_SMB_USER (ACL scoped to $WORK_DIR/.tmp)"
@@ -1360,7 +1396,7 @@ else \
   rm -f '$SYNC_SENTINEL'; \
   __t0=\$(date +%s); \
   find /work -mindepth 1 -maxdepth 1 ! -name .tmp -exec rm -rf {} + ; \
-  tar -C /work-src --null -T '/work/.tmp/$(basename "$REMOTE_MANIFEST")' -cf - | tar -C /work -xf - ; \
+  tar -C /work -xf '$REMOTE_ARCHIVE_CONTAINER_PATH' ; \
   printf '%s\\n' \"\$__digest\" > '$SYNC_SENTINEL'; \
   echo \"[sync] mirrored /work-src -> /work in \$((\$(date +%s)-\$__t0))s (digest \$__digest)\"; \
 fi"
