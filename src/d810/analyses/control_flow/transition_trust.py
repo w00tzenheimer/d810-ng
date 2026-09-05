@@ -21,32 +21,56 @@ It therefore carries the same two fail-closed gates ``branch_ownership`` does:
 the producer must be vouched for
     An absent ``trust_kind`` used to default to
     :attr:`TransitionTrustKind.EXPLICIT_PRODUCER_TRUST`, a bridge-authorising
-    kind, and nothing ever asked *which* producer minted the row.  A grant now
-    requires a producer that is either enumerated in
-    :class:`TransitionTrustProducerKind` (the in-tree adapters) or named by the
-    caller in ``adapted_producers=`` at the boundary.  Vouching is per call, not
-    process-global state a stray import could extend.
+    kind, and nothing ever asked *which* producer minted the row.  A grant
+    requires a *registered* producer -- and, since review round 3, registration
+    is **minted** by :class:`TransitionTrustRegistrationAuthority` from a
+    producer identity that binder owns.  The producer name a row carries is a
+    claim: a directly constructed row naming an in-tree adapter, or a dict
+    claiming one, registers nothing.
+
+a present-but-unparsable candidate is terminal
+    Both adapters used to answer ``None`` both when no candidate was supplied
+    and when a supplied candidate could not be parsed, so an incomplete typed
+    trust row fell through to the weaker ``global_or_state_write`` provenance
+    tag and was granted ``DYNAMIC_STATE_WRITE``.  They now return an
+    :class:`~d810.analyses.control_flow.evidence_candidate.EvidenceCandidate`
+    tri-state, and only ``ABSENT`` may continue to the next source.
 """
 
 from __future__ import annotations
 
 from collections.abc import Collection
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from enum import Enum
 
 from d810.analyses.control_flow.branch_ownership import (
     BranchOwnershipAuthority,
-    branch_ownership_proof_from_any,
+    BranchOwnershipProof,
+    branch_ownership_proof_candidate_from_any,
 )
 from d810.analyses.control_flow.dispatch_key import (
     DispatchKeyTransformKind,
     dispatch_key_transform_kind_from_any,
 )
+from d810.analyses.control_flow.evidence_candidate import EvidenceCandidate
+from d810.analyses.control_flow.producer_registration import (
+    UNSPECIFIED_PRODUCER,
+    ProducerIdentity,
+    ProducerRegistration,
+    ProducerRegistrationAuthority,
+    ProducerRegistrationToken,
+    checked_registration_token,
+    identities_for_names,
+    producer_registration_of,
+)
 
 #: Producer name carried by a row that never named one.  Deliberately not a
 #: member of :class:`TransitionTrustProducerKind`: an absent producer is
-#: unregistered, never a registered default.
-UNSPECIFIED_TRANSITION_TRUST_PRODUCER = "unspecified_producer"
+#: unregistered, never a registered default, and -- since review round 3 -- it
+#: cannot be vouched for after the fact either, because no
+#: :class:`~d810.analyses.control_flow.producer_registration.ProducerIdentity`
+#: can be built from the sentinel.
+UNSPECIFIED_TRANSITION_TRUST_PRODUCER = UNSPECIFIED_PRODUCER
 
 
 class TransitionTrustKind(str, Enum):
@@ -62,33 +86,21 @@ class TransitionTrustProducerKind(str, Enum):
     """Which producer minted a :class:`TransitionTrustResult`.
 
     Only the two in-tree adapters are enumerated, because they are the only
-    producers this module ships.  An out-of-tree oracle is vouched for per
-    call via ``adapted_producers=`` rather than by being invented here.
+    producers this module ships.  An out-of-tree oracle is vouched for where a
+    binder is *built* -- ``transition_trust_registration_authority(
+    adapted_producers=...)`` -- rather than by being invented here, and
+    naming a member of this enum on a row vouches for nothing.
     """
 
     BRANCH_OWNERSHIP_ADAPTER = "branch_ownership_adapter"
     PROVENANCE_TAG_ADAPTER = "provenance_tag_adapter"
 
 
-class TransitionTrustProducerRegistration(str, Enum):
-    """Whether the producer that minted a row is vouched for at all.
-
-    ``REGISTERED``
-        ``producer`` names an in-tree adapter enumerated in
-        :class:`TransitionTrustProducerKind`.
-
-    ``EXPLICITLY_ADAPTED``
-        An out-of-tree producer name the *caller* vouched for by passing it in
-        ``adapted_producers`` at this boundary.
-
-    ``UNKNOWN``
-        Nobody vouched for the producer.  The row is still carried as evidence,
-        but it may not authorize an explicit conditional bridge.
-    """
-
-    REGISTERED = "registered"
-    EXPLICITLY_ADAPTED = "explicitly_adapted"
-    UNKNOWN = "unknown"
+#: Who, if anyone, vouches for the producer that minted a row.
+#:
+#: Aliased to the shared :class:`ProducerRegistration`, and read from a minted
+#: token rather than from the producer name the row claims.
+TransitionTrustProducerRegistration = ProducerRegistration
 
 
 class TransitionTrustProvenance(str, Enum):
@@ -155,7 +167,10 @@ class TransitionTrustResult:
     dispatch_key_transform_kind: DispatchKeyTransformKind | None = None
     evidence: dict[str, object] = field(default_factory=dict)
     producer: TransitionTrustProducerKind | str = UNSPECIFIED_TRANSITION_TRUST_PRODUCER
-    adapted_producer: bool = False
+    #: Minted by :meth:`TransitionTrustRegistrationAuthority.bind`, never set by
+    #: a producer.  ``None`` -- the only value a row or a direct construction
+    #: can obtain -- means nobody vouched for the producer.
+    registration: ProducerRegistrationToken | None = None
     trust_provenance: TransitionTrustProvenance = TransitionTrustProvenance.WELL_FORMED
 
     def __post_init__(self) -> None:
@@ -173,11 +188,7 @@ class TransitionTrustResult:
                 f"{type(self.trusted).__name__!r} ({self.trusted!r}); "
                 "use transition_trust_result_from_any() for untyped input"
             )
-        if not isinstance(self.adapted_producer, bool):
-            raise TypeError(
-                "TransitionTrustResult.adapted_producer must be a bool, got "
-                f"{type(self.adapted_producer).__name__!r}"
-            )
+        checked_registration_token(self.registration)
 
     @property
     def trust_kind_name(self) -> str:
@@ -193,7 +204,11 @@ class TransitionTrustResult:
 
     @property
     def is_known_producer(self) -> bool:
-        """Whether this row names an adapter enumerated in this module."""
+        """Whether this row *claims* an adapter enumerated in this module.
+
+        A claim, not authorization: :attr:`producer_registration` deliberately
+        ignores it, because a foreign row can name an in-tree adapter.
+        """
         try:
             TransitionTrustProducerKind(self.producer_name)
         except ValueError:
@@ -201,13 +216,18 @@ class TransitionTrustResult:
         return True
 
     @property
-    def producer_registration(self) -> TransitionTrustProducerRegistration:
-        """Who, if anyone, vouches for the producer that minted this row."""
-        if self.is_known_producer:
-            return TransitionTrustProducerRegistration.REGISTERED
-        if self.adapted_producer:
-            return TransitionTrustProducerRegistration.EXPLICITLY_ADAPTED
-        return TransitionTrustProducerRegistration.UNKNOWN
+    def producer_registration(self) -> ProducerRegistration:
+        """Who, if anyone, vouches for the producer that minted this row.
+
+        Read from the minted token only, so a row that claims
+        ``branch_ownership_adapter`` and a row constructed by hand both report
+        ``UNKNOWN``.
+        """
+        return producer_registration_of(
+            self.registration,
+            self.producer_name,
+            domain=TransitionTrustRegistrationAuthority.RECORD_DOMAIN,
+        )
 
     @property
     def authority(self) -> TransitionTrustAuthority:
@@ -241,6 +261,45 @@ class TransitionTrustResult:
         return self.authority is TransitionTrustAuthority.EXPLICIT_CONDITIONAL_BRIDGE
 
 
+class TransitionTrustRegistrationAuthority(ProducerRegistrationAuthority):
+    """The binder that mints transition-trust producer registrations.
+
+    This module *is* the authority that owns the trust decision, so its own
+    adapters mint their registration here rather than declaring it on the rows
+    they build.  Evidence arriving from outside -- dicts, duck-typed objects,
+    hand-constructed results -- never passes through ``bind``, which is the
+    point: it cannot register itself.
+    """
+
+    RECORD_DOMAIN = "transition_trust"
+    RECORD_PRODUCER_FIELD = "producer"
+    RECORD_REGISTRATION_FIELD = "registration"
+
+
+def transition_trust_registration_authority(
+    *,
+    adapted_producers: Collection[object] = (),
+) -> TransitionTrustRegistrationAuthority:
+    """Create a fresh binder over the in-tree adapters.
+
+    ``adapted_producers`` names out-of-tree producers the *owner of the binder*
+    vouches for.  Vouching happens here, in code that builds the binder, and
+    never from a name written on a row.  A fresh authority with fresh identity
+    objects on every call: no process-global registry, and identities are
+    matched by object identity rather than by name.
+    """
+    identities: list[ProducerIdentity] = list(
+        identities_for_names(TransitionTrustProducerKind)
+    )
+    identities.extend(
+        identities_for_names(
+            adapted_producers,
+            registration=ProducerRegistration.EXPLICITLY_ADAPTED,
+        )
+    )
+    return TransitionTrustRegistrationAuthority(identities)
+
+
 _PROVENANCE_TAG_TRUST_KIND_BY_NAME = {
     "global_or_state_write": TransitionTrustKind.DYNAMIC_STATE_WRITE,
 }
@@ -256,18 +315,22 @@ _DISPATCH_KEY_TRANSFORM_BY_PROVENANCE_KIND = {
 
 def classify_transition_trust_for_explicit_conditional_bridge(
     transition: object,
-    *,
-    adapted_producers: Collection[str] = (),
 ) -> TransitionTrustResult:
     """Classify whether a conditional transition may form an explicit bridge.
 
     The result is intentionally conservative: diagnostic provenance is not
     enough.  A producer must either attach typed trust evidence, attach a
-    trusted branch-ownership proof for real data-dependent control, or expose
-    a recognized provenance tag adapted at this boundary.
+    branch-ownership proof registered for real data-dependent control, or
+    expose a recognized provenance tag adapted at this boundary.
 
-    ``adapted_producers`` names out-of-tree producers the caller vouches for.
-    A typed row minted by any other unregistered producer cannot grant.
+    An out-of-tree producer is vouched for by *binding its row* through
+    :func:`transition_trust_registration_authority` before attaching it -- not
+    by naming itself on the row, and not by an argument here that would make
+    this function trust a name it was handed alongside the evidence.
+
+    Evidence sources are consulted in order, and a *present but unparsable*
+    candidate stops the walk: only a genuinely absent source falls through to
+    the next one.
     """
 
     if not bool(getattr(transition, "is_conditional", False)):
@@ -275,14 +338,16 @@ def classify_transition_trust_for_explicit_conditional_bridge(
     if not bool(getattr(transition, "provenance_chain", ())):
         return TransitionTrustResult(False, "missing_provenance_chain")
 
-    typed_result = _typed_transition_trust_result(
-        transition,
-        adapted_producers=adapted_producers,
-    )
+    registrar = transition_trust_registration_authority()
+
+    typed_result = _typed_transition_trust_result(transition)
     if typed_result is not None:
         return typed_result
 
-    branch_result = _branch_ownership_transition_trust_result(transition)
+    branch_result = _branch_ownership_transition_trust_result(
+        transition,
+        registrar=registrar,
+    )
     if branch_result is not None:
         return branch_result
 
@@ -293,14 +358,16 @@ def classify_transition_trust_for_explicit_conditional_bridge(
     )
     provenance_trust_kind = _PROVENANCE_TAG_TRUST_KIND_BY_NAME.get(provenance_kind)
     if provenance_trust_kind is not None:
-        return TransitionTrustResult(
-            True,
-            _PROVENANCE_TAG_REASON_BY_KIND[provenance_trust_kind],
-            trust_kind=provenance_trust_kind,
-            provenance_kind=provenance_kind,
-            dispatch_key_transform_kind=dispatch_key_transform_kind,
-            evidence={"source": "provenance_tag_adapter"},
-            producer=TransitionTrustProducerKind.PROVENANCE_TAG_ADAPTER,
+        return registrar.bind(
+            TransitionTrustResult(
+                True,
+                _PROVENANCE_TAG_REASON_BY_KIND[provenance_trust_kind],
+                trust_kind=provenance_trust_kind,
+                provenance_kind=provenance_kind,
+                dispatch_key_transform_kind=dispatch_key_transform_kind,
+                evidence={"source": "provenance_tag_adapter"},
+            ),
+            registrar.producer(TransitionTrustProducerKind.PROVENANCE_TAG_ADAPTER),
         )
 
     if dispatch_key_transform_kind is not None:
@@ -321,37 +388,48 @@ def classify_transition_trust_for_explicit_conditional_bridge(
 
 def transition_is_trusted_for_explicit_conditional_bridge(
     transition: object,
-    *,
-    adapted_producers: Collection[str] = (),
 ) -> bool:
     """Return whether transition evidence can authorize explicit bridging."""
 
     return classify_transition_trust_for_explicit_conditional_bridge(
-        transition,
-        adapted_producers=adapted_producers,
+        transition
     ).authorizes_explicit_conditional_bridge
 
 
 def _typed_transition_trust_result(
     transition: object,
-    *,
-    adapted_producers: Collection[str] = (),
 ) -> TransitionTrustResult | None:
     """Adapt a typed trust attribute into a transition trust decision.
 
-    A row whose provenance did not resolve -- a non-boolean trust value, or an
-    unvouched producer claiming bridge authority -- is refused here with an
-    explicit reason.  It is deliberately not skipped: falling through would let
-    a weaker evidence source (branch ownership, or a provenance tag) answer for
-    a row that arrived malformed.
+    Returns ``None`` only when the transition carries *no* typed trust
+    candidate at all.  Every other outcome is answered here:
+
+    * a candidate that could not be parsed (a required field missing, an
+      unusable value) is refused as malformed and is terminal;
+    * a candidate whose provenance did not resolve -- a non-boolean trust
+      value, or an unregistered producer claiming bridge authority -- is
+      refused with an explicit reason.
+
+    Neither is skipped: falling through would let a weaker evidence source
+    (branch ownership, or a provenance tag) answer for a row that arrived
+    malformed, which is exactly how an incomplete row bought a
+    ``DYNAMIC_STATE_WRITE`` grant.
     """
     for value in _typed_trust_candidates(transition):
-        result = transition_trust_result_from_any(
-            value,
-            adapted_producers=adapted_producers,
-        )
-        if result is None:
+        candidate = transition_trust_result_candidate_from_any(value)
+        if candidate.is_absent:
             continue
+        if candidate.is_malformed:
+            return TransitionTrustResult(
+                False,
+                f"transition_trust_malformed_candidate:{candidate.detail}",
+                evidence={
+                    "candidate": "transition_trust",
+                    "detail": candidate.detail,
+                },
+            )
+        result = candidate.value
+        assert result is not None
         if result.authority is TransitionTrustAuthority.UNRESOLVED_PROVENANCE:
             return TransitionTrustResult(
                 False,
@@ -401,45 +479,34 @@ def _normalized_producer(value: object) -> TransitionTrustProducerKind | str:
         return name
 
 
-def transition_trust_result_from_any(
+def transition_trust_result_candidate_from_any(
     value: object | None,
-    *,
-    adapted_producers: Collection[str] = (),
-) -> TransitionTrustResult | None:
-    """Coerce a typed trust object/dict into ``TransitionTrustResult``.
+) -> EvidenceCandidate[TransitionTrustResult]:
+    """Parse an untyped trust candidate into an explicit tri-state.
 
     The input is untyped by design, so this is the boundary where provenance is
     checked rather than assumed:
 
-    ``trusted``
-        Must be a real ``bool``.  ``"true"``, ``"false"``, ``1``, ``0`` are
-        *not* coerced; the row is returned with ``trusted=False`` and
-        :attr:`TransitionTrustProvenance.MALFORMED`, so it authorizes nothing
-        and a consumer can say why.
+    ``ABSENT``
+        No candidate was supplied; a consumer may look at its next source.
 
-    ``trust_kind``
-        An absent kind is :attr:`TransitionTrustKind.UNSUPPORTED`, never a
-        bridge-authorising default.
+    ``MALFORMED``
+        A candidate was supplied and ``trusted`` or ``reason`` was missing.
+        Terminal: the consumer must refuse rather than fall through.
 
-    ``adapted_producers``
-        Producer names the caller explicitly vouches for.  A row whose
-        ``producer`` is neither an enumerated
-        :class:`TransitionTrustProducerKind` nor named here cannot authorize an
-        explicit conditional bridge.
+    ``PARSED``
+        A trust row.  ``trusted`` must be a real ``bool`` (``"true"``, ``1``,
+        ``0`` are recorded as :attr:`TransitionTrustProvenance.MALFORMED`, not
+        coerced); an absent ``trust_kind`` is
+        :attr:`TransitionTrustKind.UNSUPPORTED`, never a bridge-authorising
+        default; and the producer name stays a claim -- parsing never mints a
+        registration, so a foreign row cannot authenticate its own producer.
     """
 
     if value is None:
-        return None
-    adapted = frozenset(str(name) for name in adapted_producers)
+        return EvidenceCandidate.absent()
     if isinstance(value, TransitionTrustResult):
-        if (
-            adapted
-            and not value.adapted_producer
-            and not value.is_known_producer
-            and value.producer_name in adapted
-        ):
-            return replace(value, adapted_producer=True)
-        return value
+        return EvidenceCandidate.parsed(value)
     if isinstance(value, dict):
         trusted = value.get("trusted")
         reason = value.get("reason")
@@ -460,8 +527,15 @@ def transition_trust_result_from_any(
         )
         evidence = getattr(value, "evidence", None) or {}
         producer = getattr(value, "producer", None)
-    if trusted is None or reason is None:
-        return None
+    missing = tuple(
+        name
+        for name, field_value in (("trusted", trusted), ("reason", reason))
+        if field_value is None
+    )
+    if missing:
+        return EvidenceCandidate.malformed(
+            "missing_required_field:" + ",".join(missing)
+        )
     if isinstance(trusted, bool):
         trust_provenance = TransitionTrustProvenance.WELL_FORMED
         trusted_value = trusted
@@ -478,51 +552,84 @@ def transition_trust_result_from_any(
         )
     except ValueError:
         normalized_kind = str(trust_kind)
-    normalized_producer = _normalized_producer(producer)
-    return TransitionTrustResult(
-        trusted_value,
-        str(reason),
-        trust_kind=normalized_kind,
-        provenance_kind=(None if provenance_kind is None else str(provenance_kind)),
-        dispatch_key_transform_kind=dispatch_key_transform_kind_from_any(
-            dispatch_key_transform_kind
-        ),
-        evidence=dict(evidence),
-        producer=normalized_producer,
-        adapted_producer=(
-            not isinstance(normalized_producer, TransitionTrustProducerKind)
-            and _enum_value(normalized_producer) in adapted
-        ),
-        trust_provenance=trust_provenance,
-    )
+    try:
+        result = TransitionTrustResult(
+            trusted_value,
+            str(reason),
+            trust_kind=normalized_kind,
+            provenance_kind=(None if provenance_kind is None else str(provenance_kind)),
+            dispatch_key_transform_kind=dispatch_key_transform_kind_from_any(
+                dispatch_key_transform_kind
+            ),
+            evidence=dict(evidence),
+            producer=_normalized_producer(producer),
+            trust_provenance=trust_provenance,
+        )
+    except (TypeError, ValueError) as exc:
+        return EvidenceCandidate.malformed(f"unusable_field:{exc}")
+    return EvidenceCandidate.parsed(result)
+
+
+def transition_trust_result_from_any(
+    value: object | None,
+) -> TransitionTrustResult | None:
+    """Coerce a typed trust object/dict into ``TransitionTrustResult``.
+
+    Convenience wrapper over
+    :func:`transition_trust_result_candidate_from_any` for callers that do not
+    distinguish "absent" from "malformed".  A consumer that may fall through to
+    weaker evidence must use the tri-state instead.
+    """
+    return transition_trust_result_candidate_from_any(value).value
 
 
 def _branch_ownership_transition_trust_result(
     transition: object,
+    *,
+    registrar: TransitionTrustRegistrationAuthority,
 ) -> TransitionTrustResult | None:
     """Adapt a branch-ownership proof into a transition trust decision.
 
-    A row whose provenance did not resolve -- a non-boolean trust value, or an
-    unregistered producer claiming grant authority -- is refused here with an
-    explicit reason.  It is deliberately not skipped: falling through would let
-    a weaker evidence source answer for a row that arrived malformed.
+    Returns ``None`` only when the transition carries *no* ownership candidate.
+    A candidate that could not be parsed is refused as malformed, and a row
+    whose provenance did not resolve -- a non-boolean trust value, or a
+    producer nobody minted a registration for -- is refused with an explicit
+    reason.  Neither is skipped: falling through would let a weaker evidence
+    source answer for a row that arrived malformed.
     """
     for value in _branch_ownership_candidates(transition):
-        proof = branch_ownership_proof_from_any(value)
-        if proof is None:
+        candidate = branch_ownership_proof_candidate_from_any(value)
+        if candidate.is_absent:
             continue
+        if candidate.is_malformed:
+            return TransitionTrustResult(
+                False,
+                f"branch_ownership_malformed_candidate:{candidate.detail}",
+                evidence={
+                    "candidate": "branch_ownership",
+                    "detail": candidate.detail,
+                },
+            )
+        proof = candidate.value
+        assert isinstance(proof, BranchOwnershipProof)
         proof_kind = proof.proof_kind_name
         authority = proof.authority
         if authority is BranchOwnershipAuthority.SEMANTIC_BRIDGE:
-            return TransitionTrustResult(
-                True,
-                "branch_ownership_real_data_dependent",
-                trust_kind=(TransitionTrustKind.BRANCH_OWNERSHIP_REAL_DATA_DEPENDENT),
-                evidence={
-                    "proof_id": proof.proof_id,
-                    "oracle_kind": proof.oracle_kind_name,
-                },
-                producer=TransitionTrustProducerKind.BRANCH_OWNERSHIP_ADAPTER,
+            return registrar.bind(
+                TransitionTrustResult(
+                    True,
+                    "branch_ownership_real_data_dependent",
+                    trust_kind=(
+                        TransitionTrustKind.BRANCH_OWNERSHIP_REAL_DATA_DEPENDENT
+                    ),
+                    evidence={
+                        "proof_id": proof.proof_id,
+                        "oracle_kind": proof.oracle_kind_name,
+                    },
+                ),
+                registrar.producer(
+                    TransitionTrustProducerKind.BRANCH_OWNERSHIP_ADAPTER
+                ),
             )
         if authority is BranchOwnershipAuthority.UNRESOLVED_PROVENANCE:
             return TransitionTrustResult(
@@ -605,8 +712,11 @@ __all__ = [
     "TransitionTrustProducerKind",
     "TransitionTrustProducerRegistration",
     "TransitionTrustProvenance",
+    "TransitionTrustRegistrationAuthority",
     "TransitionTrustResult",
     "classify_transition_trust_for_explicit_conditional_bridge",
     "transition_is_trusted_for_explicit_conditional_bridge",
+    "transition_trust_registration_authority",
+    "transition_trust_result_candidate_from_any",
     "transition_trust_result_from_any",
 ]

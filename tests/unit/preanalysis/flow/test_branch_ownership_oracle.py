@@ -14,6 +14,7 @@ from d810.analyses.control_flow.branch_ownership import (
     BranchOwnershipOracleKind,
     BranchOwnershipProof,
     BranchOwnershipProofKind,
+    branch_ownership_registration_authority,
     collect_branch_ownership_proofs,
 )
 from d810.analyses.control_flow.branch_ownership_oracle import (
@@ -65,9 +66,11 @@ def _cond_tail(
         opcode=0,
         ea=ea,
         operands=(),
-        kind=InsnKind.EQUALITY_JUMP
-        if predicate in {PredicateKind.EQ, PredicateKind.NE}
-        else InsnKind.COND_JUMP,
+        kind=(
+            InsnKind.EQUALITY_JUMP
+            if predicate in {PredicateKind.EQ, PredicateKind.NE}
+            else InsnKind.COND_JUMP
+        ),
         predicate_kind=predicate,
         l=left,
         r=right,
@@ -151,6 +154,22 @@ class _FakeMba:
 
     def get_mblock(self, serial: int) -> _FakeBlock | None:
         return self._blocks.get(int(serial))
+
+
+def _refined(proof: BranchOwnershipProof) -> BranchOwnershipProof:
+    """Register a refined proof to the oracle the refiner stands in for.
+
+    d81-9q6e review round 3: ``dataclasses.replace`` rewrites ``oracle_kind``,
+    which deliberately leaves the previous producer's token behind, so a
+    refiner -- like the real oracles it stands in for -- has to mint its own
+    registration through a binder before its row can grant.
+    """
+    registrar = branch_ownership_registration_authority()
+    try:
+        producer = registrar.producer(proof.oracle_kind_name)
+    except LookupError:
+        return proof
+    return registrar.bind(proof, producer)
 
 
 def _edge(
@@ -735,36 +754,42 @@ def test_terminal_selector_backedge_rejects_semantic_external_edge_identity():
         _edge_obj: object,
     ) -> BranchOwnershipProof:
         if proof.source_state == selector_state and proof.target_state == payload_state:
-            return replace(
-                proof,
-                proof_kind=BranchOwnershipProofKind.OPAQUE_ALWAYS_TRUE,
-                trusted=True,
-                reason="synthetic_selector_path_constant",
-                oracle_kind=BranchOwnershipOracleKind.MOPTRACKER,
+            return _refined(
+                replace(
+                    proof,
+                    proof_kind=BranchOwnershipProofKind.OPAQUE_ALWAYS_TRUE,
+                    trusted=True,
+                    reason="synthetic_selector_path_constant",
+                    oracle_kind=BranchOwnershipOracleKind.MOPTRACKER,
+                )
             )
         if (
             proof.source_state == external_state
             and proof.target_state == payload_state
             and proof.branch_arm == 0
         ):
-            return replace(
-                proof,
-                proof_kind=BranchOwnershipProofKind.OBFUSCATION_RESIDUE_ARM,
-                trusted=True,
-                reason="synthetic_external_residue",
-                oracle_kind=BranchOwnershipOracleKind.MOPTRACKER,
+            return _refined(
+                replace(
+                    proof,
+                    proof_kind=BranchOwnershipProofKind.OBFUSCATION_RESIDUE_ARM,
+                    trusted=True,
+                    reason="synthetic_external_residue",
+                    oracle_kind=BranchOwnershipOracleKind.MOPTRACKER,
+                )
             )
         if (
             proof.source_state == external_state
             and proof.target_state == payload_state
             and proof.branch_arm == 1
         ):
-            return replace(
-                proof,
-                proof_kind=BranchOwnershipProofKind.REAL_DATA_DEPENDENT,
-                trusted=True,
-                reason="synthetic_external_semantic",
-                oracle_kind=BranchOwnershipOracleKind.MOPTRACKER,
+            return _refined(
+                replace(
+                    proof,
+                    proof_kind=BranchOwnershipProofKind.REAL_DATA_DEPENDENT,
+                    trusted=True,
+                    reason="synthetic_external_semantic",
+                    oracle_kind=BranchOwnershipOracleKind.MOPTRACKER,
+                )
             )
         return proof
 
@@ -852,20 +877,24 @@ def test_terminal_selector_backedge_rejects_unanchored_external_residue_identity
         _edge_obj: object,
     ) -> BranchOwnershipProof:
         if proof.source_state == selector_state and proof.target_state == payload_state:
-            return replace(
-                proof,
-                proof_kind=BranchOwnershipProofKind.OPAQUE_ALWAYS_TRUE,
-                trusted=True,
-                reason="synthetic_selector_path_constant",
-                oracle_kind=BranchOwnershipOracleKind.MOPTRACKER,
+            return _refined(
+                replace(
+                    proof,
+                    proof_kind=BranchOwnershipProofKind.OPAQUE_ALWAYS_TRUE,
+                    trusted=True,
+                    reason="synthetic_selector_path_constant",
+                    oracle_kind=BranchOwnershipOracleKind.MOPTRACKER,
+                )
             )
         if proof.source_state == external_state and proof.target_state == payload_state:
-            return replace(
-                proof,
-                proof_kind=BranchOwnershipProofKind.OBFUSCATION_RESIDUE_ARM,
-                trusted=True,
-                reason="synthetic_unanchored_external_residue",
-                oracle_kind=BranchOwnershipOracleKind.MOPTRACKER,
+            return _refined(
+                replace(
+                    proof,
+                    proof_kind=BranchOwnershipProofKind.OBFUSCATION_RESIDUE_ARM,
+                    trusted=True,
+                    reason="synthetic_unanchored_external_residue",
+                    oracle_kind=BranchOwnershipOracleKind.MOPTRACKER,
+                )
             )
         return proof
 
@@ -943,24 +972,28 @@ def test_terminal_selector_backedge_reports_side_effect_materialization_gap():
         _edge_obj: object,
     ) -> BranchOwnershipProof:
         if proof.source_state == selector_state and proof.target_state == payload_state:
-            return replace(
-                proof,
-                proof_kind=BranchOwnershipProofKind.OPAQUE_ALWAYS_TRUE,
-                trusted=True,
-                reason="synthetic_selector_path_constant",
-                oracle_kind=BranchOwnershipOracleKind.MOPTRACKER,
+            return _refined(
+                replace(
+                    proof,
+                    proof_kind=BranchOwnershipProofKind.OPAQUE_ALWAYS_TRUE,
+                    trusted=True,
+                    reason="synthetic_selector_path_constant",
+                    oracle_kind=BranchOwnershipOracleKind.MOPTRACKER,
+                )
             )
         if proof.source_state == external_state and proof.target_state == payload_state:
-            return replace(
-                proof,
-                proof_kind=BranchOwnershipProofKind.UNRESOLVED,
-                trusted=False,
-                reason="z3_jumpfixer_discarded_arm_side_effect_guard",
-                oracle_kind=BranchOwnershipOracleKind.MOPTRACKER,
-                evidence={
-                    **proof.evidence,
-                    "side_effect_guard_reason": "discarded_arm_contains_payload_store",
-                },
+            return _refined(
+                replace(
+                    proof,
+                    proof_kind=BranchOwnershipProofKind.UNRESOLVED,
+                    trusted=False,
+                    reason="z3_jumpfixer_discarded_arm_side_effect_guard",
+                    oracle_kind=BranchOwnershipOracleKind.MOPTRACKER,
+                    evidence={
+                        **proof.evidence,
+                        "side_effect_guard_reason": "discarded_arm_contains_payload_store",
+                    },
+                )
             )
         return proof
 

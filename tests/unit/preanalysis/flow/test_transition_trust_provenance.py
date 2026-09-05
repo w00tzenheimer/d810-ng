@@ -24,6 +24,7 @@ from d810.analyses.control_flow.branch_ownership import (
     BranchOwnershipOracleKind,
     BranchOwnershipProof,
     BranchOwnershipProofKind,
+    branch_ownership_registration_authority,
 )
 from d810.analyses.control_flow.transition_trust import (
     UNSPECIFIED_TRANSITION_TRUST_PRODUCER,
@@ -35,8 +36,20 @@ from d810.analyses.control_flow.transition_trust import (
     TransitionTrustResult,
     classify_transition_trust_for_explicit_conditional_bridge,
     transition_is_trusted_for_explicit_conditional_bridge,
+    transition_trust_registration_authority,
     transition_trust_result_from_any,
 )
+
+
+def _registered_ownership_proof(**fields: object) -> BranchOwnershipProof:
+    """An ownership proof its oracle registered, as an in-tree producer does."""
+    registrar = branch_ownership_registration_authority()
+    proof = BranchOwnershipProof(
+        oracle_kind=BranchOwnershipOracleKind.MOPTRACKER, **fields
+    )
+    return registrar.bind(
+        proof, registrar.producer(BranchOwnershipOracleKind.MOPTRACKER)
+    )
 
 
 def _conditional_transition(**kwargs: object) -> SimpleNamespace:
@@ -174,19 +187,28 @@ class TestProducerRegistrationGatesGrants:
         assert not result.authorizes_explicit_conditional_bridge
 
     def test_explicitly_adapted_producer_may_grant(self) -> None:
+        """Vouching binds a row through a binder; it is not a name argument.
+
+        Review round 3: the classifier is no longer handed a list of names to
+        trust alongside the evidence.  The owner of the binder vouches for an
+        out-of-tree producer when it *builds* the binder, and binds the row
+        before attaching it.
+        """
+        registrar = transition_trust_registration_authority(
+            adapted_producers=("mop_tracker_oracle",)
+        )
         transition = _conditional_transition(
-            trust_result={
-                "trusted": True,
-                "reason": "mop_tracker_path_constant_state_write",
-                "trust_kind": TransitionTrustKind.EXPLICIT_PRODUCER_TRUST.value,
-                "producer": "mop_tracker_oracle",
-            }
+            trust_result=registrar.bind(
+                TransitionTrustResult(
+                    True,
+                    "mop_tracker_path_constant_state_write",
+                    trust_kind=TransitionTrustKind.EXPLICIT_PRODUCER_TRUST,
+                ),
+                registrar.producer("mop_tracker_oracle"),
+            )
         )
 
-        result = classify_transition_trust_for_explicit_conditional_bridge(
-            transition,
-            adapted_producers=("mop_tracker_oracle",),
-        )
+        result = classify_transition_trust_for_explicit_conditional_bridge(transition)
 
         assert result.producer_registration is (
             TransitionTrustProducerRegistration.EXPLICITLY_ADAPTED
@@ -196,7 +218,19 @@ class TestProducerRegistrationGatesGrants:
         )
         assert result.authorizes_explicit_conditional_bridge
 
-    def test_vouching_is_per_call_not_ambient(self) -> None:
+    def test_vouching_binds_one_row_not_a_producer_name(self) -> None:
+        """Having vouched for a producer does not bless rows that claim it."""
+        registrar = transition_trust_registration_authority(
+            adapted_producers=("mop_tracker_oracle",)
+        )
+        registrar.bind(
+            TransitionTrustResult(
+                True,
+                "r",
+                trust_kind=TransitionTrustKind.EXPLICIT_PRODUCER_TRUST,
+            ),
+            registrar.producer("mop_tracker_oracle"),
+        )
         transition = _conditional_transition(
             trust_result={
                 "trusted": True,
@@ -204,11 +238,6 @@ class TestProducerRegistrationGatesGrants:
                 "trust_kind": TransitionTrustKind.EXPLICIT_PRODUCER_TRUST.value,
                 "producer": "mop_tracker_oracle",
             }
-        )
-
-        classify_transition_trust_for_explicit_conditional_bridge(
-            transition,
-            adapted_producers=("mop_tracker_oracle",),
         )
 
         assert not transition_is_trusted_for_explicit_conditional_bridge(transition)
@@ -240,12 +269,11 @@ class TestInTreeAdaptersNameTheirProducer:
     def test_branch_ownership_adapter_is_registered(self) -> None:
         result = classify_transition_trust_for_explicit_conditional_bridge(
             _conditional_transition(
-                branch_ownership_proof=BranchOwnershipProof(
+                branch_ownership_proof=_registered_ownership_proof(
                     proof_id="proof:real",
                     proof_kind=BranchOwnershipProofKind.REAL_DATA_DEPENDENT,
                     trusted=True,
                     reason="mop_tracker_real_password_branch",
-                    oracle_kind=BranchOwnershipOracleKind.MOPTRACKER,
                 )
             )
         )
@@ -264,12 +292,11 @@ class TestMalformedTypedRowDoesNotFallThrough:
     def test_malformed_typed_row_blocks_a_valid_branch_ownership_proof(self) -> None:
         transition = _conditional_transition(
             trust_result={"trusted": "false", "reason": "r"},
-            branch_ownership_proof=BranchOwnershipProof(
+            branch_ownership_proof=_registered_ownership_proof(
                 proof_id="proof:real",
                 proof_kind=BranchOwnershipProofKind.REAL_DATA_DEPENDENT,
                 trusted=True,
                 reason="mop_tracker_real_password_branch",
-                oracle_kind=BranchOwnershipOracleKind.MOPTRACKER,
             ),
         )
 

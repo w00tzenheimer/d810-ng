@@ -9,6 +9,9 @@ from d810.analyses.control_flow.branch_ownership import (
     BranchOwnershipOracleKind,
     BranchOwnershipProof,
     BranchOwnershipProofKind,
+    BranchOwnershipRegistrationAuthority,
+    branch_ownership_registration_authority,
+    registered_branch_ownership_proof,
 )
 from d810.analyses.control_flow.dispatcher_resolution import StateDispatcherMap
 
@@ -119,6 +122,7 @@ def collect_switch_case_transition_facts(
     classified as REAL_DATA_DEPENDENT when both arms resolve to valid switch
     states and the case body marks the predicate as source-derived.
     """
+    registrar = branch_ownership_registration_authority()
     visible_states = {int(row.state_const) for row in dispatch_map.rows}
     body_by_state = {int(body.state): body for body in case_bodies}
     facts: list[SwitchCaseTransitionFact] = []
@@ -129,6 +133,7 @@ def collect_switch_case_transition_facts(
             facts.append(
                 _diagnostic_fact(
                     dispatch_map=dispatch_map,
+                    registrar=registrar,
                     state=state,
                     row_kind=row.row_kind,
                     target_block=int(row.target_block),
@@ -142,6 +147,7 @@ def collect_switch_case_transition_facts(
             facts.append(
                 _unresolved_fact(
                     dispatch_map=dispatch_map,
+                    registrar=registrar,
                     state=state,
                     case_entry_block=int(row.target_block),
                     reason="case_body_missing",
@@ -152,6 +158,7 @@ def collect_switch_case_transition_facts(
         facts.extend(
             _facts_for_body(
                 dispatch_map=dispatch_map,
+                registrar=registrar,
                 body=body,
                 visible_states=visible_states,
                 profile_name=profile_name,
@@ -179,6 +186,7 @@ def collect_switch_case_transition_facts(
 def _facts_for_body(
     *,
     dispatch_map: StateDispatcherMap,
+    registrar: BranchOwnershipRegistrationAuthority,
     body: SwitchCaseBody,
     visible_states: set[int],
     profile_name: str,
@@ -196,7 +204,8 @@ def _facts_for_body(
                 return_value=value,
                 state_var_stkoff=dispatch_map.state_var_stkoff,
                 state_var_lvar_idx=dispatch_map.state_var_lvar_idx,
-                proof=BranchOwnershipProof(
+                proof=registered_branch_ownership_proof(
+                    registrar,
                     proof_id=f"{profile_name}:case={state}:return:{index}",
                     proof_kind=BranchOwnershipProofKind.TERMINAL_RETURN_FRONTIER,
                     trusted=True,
@@ -266,7 +275,8 @@ def _facts_for_body(
                 next_states=writes,
                 state_var_stkoff=dispatch_map.state_var_stkoff,
                 state_var_lvar_idx=dispatch_map.state_var_lvar_idx,
-                proof=BranchOwnershipProof(
+                proof=registered_branch_ownership_proof(
+                    registrar,
                     proof_id=f"{profile_name}:case={state}:conditional",
                     proof_kind=proof_kind,
                     trusted=trusted,
@@ -313,6 +323,7 @@ def _facts_for_body(
 def _diagnostic_fact(
     *,
     dispatch_map: StateDispatcherMap,
+    registrar: BranchOwnershipRegistrationAuthority,
     state: int,
     row_kind: str,
     target_block: int,
@@ -326,7 +337,8 @@ def _diagnostic_fact(
         case_entry_block=target_block,
         state_var_stkoff=dispatch_map.state_var_stkoff,
         state_var_lvar_idx=dispatch_map.state_var_lvar_idx,
-        proof=BranchOwnershipProof(
+        proof=registered_branch_ownership_proof(
+            registrar,
             proof_id=f"{profile_name}:case={state}:diagnostic:{row_kind}",
             proof_kind=BranchOwnershipProofKind.UNRESOLVED,
             trusted=False,
@@ -369,6 +381,7 @@ def _return_exit_block(body: SwitchCaseBody, index: int) -> int | None:
 def _unresolved_fact(
     *,
     dispatch_map: StateDispatcherMap,
+    registrar: BranchOwnershipRegistrationAuthority,
     state: int,
     case_entry_block: int | None,
     reason: str,
@@ -382,7 +395,8 @@ def _unresolved_fact(
         case_entry_block=case_entry_block,
         state_var_stkoff=dispatch_map.state_var_stkoff,
         state_var_lvar_idx=dispatch_map.state_var_lvar_idx,
-        proof=BranchOwnershipProof(
+        proof=registered_branch_ownership_proof(
+            registrar,
             proof_id=f"{profile_name}:case={state}:unresolved:{reason}",
             proof_kind=BranchOwnershipProofKind.UNRESOLVED,
             trusted=False,
@@ -390,9 +404,7 @@ def _unresolved_fact(
             source_state=state,
             source_block=case_entry_block,
             dispatcher_entry_block=dispatch_map.dispatcher_entry_block,
-            oracle_kind=(
-                BranchOwnershipOracleKind.SWITCH_CASE_TRANSITION_UNRESOLVED
-            ),
+            oracle_kind=(BranchOwnershipOracleKind.SWITCH_CASE_TRANSITION_UNRESOLVED),
         ),
         reason=reason,
         payload={"profile_name": profile_name, **(payload or {})},

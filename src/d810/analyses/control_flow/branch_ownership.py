@@ -4,10 +4,21 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable, Collection
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from enum import Enum
 
 from d810.analyses.control_flow.dispatcher_resolution import StateDispatcherMap
+from d810.analyses.control_flow.evidence_candidate import EvidenceCandidate
+from d810.analyses.control_flow.producer_registration import (
+    UNSPECIFIED_PRODUCER,
+    ProducerIdentity,
+    ProducerRegistration,
+    ProducerRegistrationAuthority,
+    ProducerRegistrationToken,
+    checked_registration_token,
+    identities_for_names,
+    producer_registration_of,
+)
 
 _MASK64 = 0xFFFFFFFFFFFFFFFF
 
@@ -17,8 +28,12 @@ _MASK64 = 0xFFFFFFFFFFFFFFFF
 #: this, an omitted ``oracle_kind`` resolved to ``PREANALYSIS_BRANCH_OWNERSHIP``
 #: -- an enumerated member -- so ``producer_registration`` reported
 #: ``REGISTERED`` and a dict that simply left the field out minted
-#: ``SEMANTIC_BRIDGE``, bypassing the registration gate by omission.
-UNSPECIFIED_BRANCH_OWNERSHIP_ORACLE = "unspecified_producer"
+#: ``SEMANTIC_BRIDGE``, bypassing the registration gate by omission.  Review
+#: round 3 made the sentinel unvouchable as well: it names the *absence* of a
+#: producer, and absence can never be vouched for after the fact, so no
+#: :class:`~d810.analyses.control_flow.producer_registration.ProducerIdentity`
+#: can be built from it.
+UNSPECIFIED_BRANCH_OWNERSHIP_ORACLE = UNSPECIFIED_PRODUCER
 
 
 class BranchOwnershipOracleKind(str, Enum):
@@ -75,29 +90,16 @@ class BranchOwnershipEvidenceKey(str, Enum):
     SIDE_EFFECT_GUARD_REASON = "side_effect_guard_reason"
 
 
-class BranchOwnershipProducerRegistration(str, Enum):
-    """Whether the producer that minted a row is vouched for at all.
-
-    ``REGISTERED``
-        ``oracle_kind`` names a producer enumerated in
-        :class:`BranchOwnershipOracleKind`, i.e. one this codebase ships and
-        reviews.
-
-    ``EXPLICITLY_ADAPTED``
-        An out-of-tree producer name that the *caller* vouched for at the
-        boundary, by naming it in ``adapted_producers`` when coercing the row
-        through :func:`branch_ownership_proof_from_any`.  Vouching is per call
-        and explicit; there is no mutable process-global registry a stray
-        import could extend.
-
-    ``UNKNOWN``
-        Nobody vouched for the producer.  The row is still carried as evidence,
-        but it may not mint semantic-bridge or nonsemantic-rewrite authority.
-    """
-
-    REGISTERED = "registered"
-    EXPLICITLY_ADAPTED = "explicitly_adapted"
-    UNKNOWN = "unknown"
+#: Who, if anyone, vouches for the producer that minted a row.
+#:
+#: Aliased to the shared :class:`ProducerRegistration` so branch ownership and
+#: transition trust cannot drift apart on what "registered" means.  The verdict
+#: is read from a minted
+#: :class:`~d810.analyses.control_flow.producer_registration.ProducerRegistrationToken`,
+#: never from the producer name the row claims: review round 3 showed a foreign
+#: row could simply name ``moptracker_branch_ownership`` and report
+#: ``REGISTERED``.
+BranchOwnershipProducerRegistration = ProducerRegistration
 
 
 class BranchOwnershipTrustProvenance(str, Enum):
@@ -200,12 +202,13 @@ class BranchOwnershipProof:
     target_entry: int | None = None
     predicate_block: int | None = None
     dispatcher_entry_block: int | None = None
-    oracle_kind: BranchOwnershipOracleKind | str = (
-        UNSPECIFIED_BRANCH_OWNERSHIP_ORACLE
-    )
+    oracle_kind: BranchOwnershipOracleKind | str = UNSPECIFIED_BRANCH_OWNERSHIP_ORACLE
     evidence: dict[str, object] = field(default_factory=dict)
     payload: dict[str, object] = field(default_factory=dict)
-    adapted_producer: bool = False
+    #: Minted by :meth:`BranchOwnershipRegistrationAuthority.bind`, never set by
+    #: a producer.  ``None`` -- the only value a row or a direct construction
+    #: can obtain -- means nobody vouched for the producer.
+    registration: ProducerRegistrationToken | None = None
     trust_provenance: BranchOwnershipTrustProvenance = (
         BranchOwnershipTrustProvenance.WELL_FORMED
     )
@@ -226,11 +229,7 @@ class BranchOwnershipProof:
                 f"{type(self.trusted).__name__!r} ({self.trusted!r}); "
                 "use branch_ownership_proof_from_any() for untyped input"
             )
-        if not isinstance(self.adapted_producer, bool):
-            raise TypeError(
-                "BranchOwnershipProof.adapted_producer must be a bool, got "
-                f"{type(self.adapted_producer).__name__!r}"
-            )
+        checked_registration_token(self.registration)
 
     @property
     def proof_kind_name(self) -> str:
@@ -246,12 +245,13 @@ class BranchOwnershipProof:
 
     @property
     def is_known_oracle(self) -> bool:
-        """Whether this row names a producer enumerated in this codebase.
+        """Whether this row *claims* a producer enumerated in this codebase.
 
-        A row minted by an unknown producer is still usable -- the field
-        accepts a raw string so third-party oracles round-trip -- but a
-        consumer that cares about provenance can now tell the difference,
-        which a free-form string with a trusted-looking default hid.
+        This is a claim and nothing more.  It is deliberately **not** consulted
+        by :attr:`producer_registration` or :attr:`authority`: a foreign row can
+        write any name it likes, and review round 3 reproduced exactly that --
+        a dict naming ``moptracker_branch_ownership`` minting
+        ``SEMANTIC_BRIDGE``.  Use it for diagnostics, never as authorization.
         """
         try:
             BranchOwnershipOracleKind(self.oracle_kind_name)
@@ -260,13 +260,19 @@ class BranchOwnershipProof:
         return True
 
     @property
-    def producer_registration(self) -> BranchOwnershipProducerRegistration:
-        """Who, if anyone, vouches for the producer that minted this row."""
-        if self.is_known_oracle:
-            return BranchOwnershipProducerRegistration.REGISTERED
-        if self.adapted_producer:
-            return BranchOwnershipProducerRegistration.EXPLICITLY_ADAPTED
-        return BranchOwnershipProducerRegistration.UNKNOWN
+    def producer_registration(self) -> ProducerRegistration:
+        """Who, if anyone, vouches for the producer that minted this row.
+
+        Read from the minted token only.  A row that merely claims a
+        recognized ``oracle_kind``, and a row constructed by hand, both report
+        ``UNKNOWN``: registration is minted by
+        :class:`BranchOwnershipRegistrationAuthority`, never claimed.
+        """
+        return producer_registration_of(
+            self.registration,
+            self.oracle_kind_name,
+            domain=BranchOwnershipRegistrationAuthority.RECORD_DOMAIN,
+        )
 
     @property
     def authority(self) -> BranchOwnershipAuthority:
@@ -380,6 +386,69 @@ class BranchOwnershipProof:
         }
 
 
+class BranchOwnershipRegistrationAuthority(ProducerRegistrationAuthority):
+    """The binder that mints branch-ownership producer registrations.
+
+    Owned by whoever owns the trust decision -- the preanalysis pass that
+    collects proofs, or the session that adapts an out-of-tree oracle.  It is
+    the *only* way a :class:`BranchOwnershipProof` becomes registered.
+    """
+
+    RECORD_DOMAIN = "branch_ownership"
+    RECORD_PRODUCER_FIELD = "oracle_kind"
+    RECORD_REGISTRATION_FIELD = "registration"
+
+
+def branch_ownership_registration_authority(
+    *,
+    adapted_producers: Collection[object] = (),
+) -> BranchOwnershipRegistrationAuthority:
+    """Create a fresh binder over the in-tree oracles.
+
+    ``adapted_producers`` names out-of-tree oracles the *owner of the binder*
+    vouches for; they are recognized as
+    :attr:`ProducerRegistration.EXPLICITLY_ADAPTED`.  Vouching happens here,
+    when the binder is built by code, and never from a name written on a row.
+
+    A fresh authority (and fresh identity objects) on every call: there is no
+    process-global registry for a stray import to extend, and identities are
+    matched by object identity, so a look-alike built elsewhere is refused.
+    """
+    identities: list[ProducerIdentity] = list(
+        identities_for_names(BranchOwnershipOracleKind)
+    )
+    identities.extend(
+        identities_for_names(
+            adapted_producers,
+            registration=ProducerRegistration.EXPLICITLY_ADAPTED,
+        )
+    )
+    return BranchOwnershipRegistrationAuthority(identities)
+
+
+def registered_branch_ownership_proof(
+    registrar: BranchOwnershipRegistrationAuthority,
+    **fields: object,
+) -> BranchOwnershipProof:
+    """Mint an in-tree proof already bound to the oracle that produced it.
+
+    ``fields["oracle_kind"]`` is a literal written by the *producing code* at
+    the call site, never a value read off an evidence row -- rows do not reach
+    this helper, and the binder still resolves the literal to one of its own
+    identity objects before minting.  This is the only spelling in-tree
+    producers use, so "who minted this row" has one answer per call site and
+    stays greppable.
+    """
+    oracle_kind = fields.get("oracle_kind")
+    if oracle_kind is None:
+        raise ValueError(
+            "an in-tree producer must name the oracle it is binding to; "
+            "absence is never registered"
+        )
+    proof = BranchOwnershipProof(**fields)  # type: ignore[arg-type]
+    return registrar.bind(proof, registrar.producer(oracle_kind))
+
+
 def _normalized_oracle_kind(value: object) -> BranchOwnershipOracleKind | str:
     """Coerce a producer name to a member when recognised, else keep it.
 
@@ -401,42 +470,39 @@ def _normalized_oracle_kind(value: object) -> BranchOwnershipOracleKind | str:
         return name
 
 
-def branch_ownership_proof_from_any(
+def branch_ownership_proof_candidate_from_any(
     value: object | None,
-    *,
-    adapted_producers: Collection[str] = (),
-) -> BranchOwnershipProof | None:
-    """Coerce a proof object/dict into :class:`BranchOwnershipProof`.
+) -> EvidenceCandidate[BranchOwnershipProof]:
+    """Parse an untyped ownership candidate into an explicit tri-state.
 
     The input is untyped by design -- producers outside this package attach
     dicts and duck-typed objects -- so this is the boundary where provenance is
     checked rather than assumed:
 
-    ``trusted``
-        Must be a real ``bool``.  ``"true"``, ``"false"``, ``1``, ``0`` and
-        ``None`` are *not* coerced; the row is returned with ``trusted=False``
-        and :attr:`BranchOwnershipTrustProvenance.MALFORMED`, so it authorizes
-        nothing and a consumer can say why.
+    ``ABSENT``
+        No candidate was supplied.  A consumer may look at its next evidence
+        source.
 
-    ``adapted_producers``
-        Producer names the caller explicitly vouches for.  A row whose
-        ``oracle_kind`` is neither an enumerated
-        :class:`BranchOwnershipOracleKind` nor named here cannot mint
-        semantic-bridge or nonsemantic-rewrite authority.  Vouching is a
-        per-call argument, not process-global state.
+    ``MALFORMED``
+        A candidate was supplied and could not be parsed: a required field was
+        missing, or ``proof_kind`` held an unusable value.  This is terminal --
+        a consumer must refuse, not fall through to weaker evidence, because
+        falling through let an incomplete row buy a grant it could not earn
+        (review round 3).
+
+    ``PARSED``
+        A proof row.  Note what parsing does *not* do: it never registers the
+        producer.  ``trusted`` must be a real ``bool`` (``"true"``, ``1``,
+        ``None`` are recorded as
+        :attr:`BranchOwnershipTrustProvenance.MALFORMED` rather than coerced),
+        and the producer name it carries stays a claim.  Registration is minted
+        by :class:`BranchOwnershipRegistrationAuthority`, so a foreign row
+        cannot authenticate its own producer whatever name it writes.
     """
     if value is None:
-        return None
-    adapted = frozenset(str(name) for name in adapted_producers)
+        return EvidenceCandidate.absent()
     if isinstance(value, BranchOwnershipProof):
-        if (
-            adapted
-            and not value.adapted_producer
-            and not value.is_known_oracle
-            and value.oracle_kind_name in adapted
-        ):
-            return replace(value, adapted_producer=True)
-        return value
+        return EvidenceCandidate.parsed(value)
     if isinstance(value, dict):
         proof_id = value.get("proof_id")
         proof_kind = value.get("proof_kind")
@@ -447,8 +513,19 @@ def branch_ownership_proof_from_any(
         proof_kind = getattr(value, "proof_kind", None)
         trusted = getattr(value, "trusted", None)
         reason = getattr(value, "reason", None)
-    if proof_id is None or proof_kind is None or reason is None:
-        return None
+    missing = tuple(
+        name
+        for name, field_value in (
+            ("proof_id", proof_id),
+            ("proof_kind", proof_kind),
+            ("reason", reason),
+        )
+        if field_value is None
+    )
+    if missing:
+        return EvidenceCandidate.malformed(
+            "missing_required_field:" + ",".join(missing)
+        )
     if isinstance(trusted, bool):
         trust_provenance = BranchOwnershipTrustProvenance.WELL_FORMED
         trusted_value = trusted
@@ -467,8 +544,10 @@ def branch_ownership_proof_from_any(
             if isinstance(proof_kind, BranchOwnershipProofKind)
             else BranchOwnershipProofKind(str(proof_kind))
         )
-        oracle_kind = _normalized_oracle_kind(_field("oracle_kind"))
-        return BranchOwnershipProof(
+    except (TypeError, ValueError):
+        return EvidenceCandidate.malformed(f"unusable_proof_kind:{proof_kind!r}")
+    try:
+        proof = BranchOwnershipProof(
             proof_id=str(proof_id),
             proof_kind=kind,
             trusted=trusted_value,
@@ -480,17 +559,32 @@ def branch_ownership_proof_from_any(
             target_entry=_maybe_int(_field("target_entry")),
             predicate_block=_maybe_int(_field("predicate_block")),
             dispatcher_entry_block=_maybe_int(_field("dispatcher_entry_block")),
-            oracle_kind=oracle_kind,
+            oracle_kind=_normalized_oracle_kind(_field("oracle_kind")),
             evidence=dict(_field("evidence") or {}),
             payload=dict(_field("payload") or {}),
-            adapted_producer=(
-                not isinstance(oracle_kind, BranchOwnershipOracleKind)
-                and _enum_value(oracle_kind) in adapted
-            ),
             trust_provenance=trust_provenance,
         )
-    except (TypeError, ValueError):
-        return None
+    except (TypeError, ValueError) as exc:
+        return EvidenceCandidate.malformed(f"unusable_field:{exc}")
+    return EvidenceCandidate.parsed(proof)
+
+
+def branch_ownership_proof_from_any(
+    value: object | None,
+) -> BranchOwnershipProof | None:
+    """Coerce an untyped ownership candidate into a proof, or ``None``.
+
+    Convenience wrapper over :func:`branch_ownership_proof_candidate_from_any`
+    for callers that do not distinguish "absent" from "malformed".  A consumer
+    that may fall through to weaker evidence must use the tri-state instead.
+
+    Coercion never registers a producer: whatever ``oracle_kind`` the input
+    claims, the returned proof carries no registration token, so it cannot mint
+    semantic-bridge or nonsemantic-rewrite authority.  A caller that genuinely
+    vouches for the producer binds the row through
+    :func:`branch_ownership_registration_authority`.
+    """
+    return branch_ownership_proof_candidate_from_any(value).value
 
 
 def collect_branch_ownership_proofs(
@@ -499,11 +593,13 @@ def collect_branch_ownership_proofs(
     dispatch_map: StateDispatcherMap | None = None,
     dispatcher_entry_block: int | None = None,
     trusted_opaque_provenance_kinds: frozenset[str] = (TRUSTED_OPAQUE_PROVENANCE_KINDS),
-    proof_refiner: Callable[
-        [BranchOwnershipProof, object],
-        BranchOwnershipProof | None,
-    ]
-    | None = None,
+    proof_refiner: (
+        Callable[
+            [BranchOwnershipProof, object],
+            BranchOwnershipProof | None,
+        ]
+        | None
+    ) = None,
 ) -> tuple[BranchOwnershipProof, ...]:
     """Collect diagnostics-only ownership proofs for conditional DAG edges.
 
@@ -512,6 +608,7 @@ def collect_branch_ownership_proofs(
     conditional arms, and unresolved arms.  Future MopTracker/Z3/native oracles
     should add stronger producers here without changing cfg/hexrays layers.
     """
+    registrar = branch_ownership_registration_authority()
     edges = tuple(getattr(dag, "edges", ()) or ())
     conditional_edges: list[tuple[int, object]] = []
     outgoing_by_source: dict[int, list[object]] = {}
@@ -600,6 +697,7 @@ def collect_branch_ownership_proofs(
                 "outgoing_count": len(outgoing_by_source.get(source_state, ())),
             },
         )
+        proof = registrar.bind(proof, registrar.producer(oracle_kind))
         if proof_refiner is not None:
             proof = proof_refiner(proof, edge) or proof
         proofs.append(proof)
@@ -640,6 +738,10 @@ def _append_terminal_selector_backedge_residue_proofs(
         if target_state is not None:
             incoming_by_target.setdefault(target_state, []).append(edge)
 
+    registrar = branch_ownership_registration_authority()
+    backedge_producer = registrar.producer(
+        BranchOwnershipOracleKind.TERMINAL_SELECTOR_BACKEDGE
+    )
     added: list[BranchOwnershipProof] = []
     for proof in proofs:
         if not _is_opaque_selected_arm_proof(proof):
@@ -782,24 +884,23 @@ def _append_terminal_selector_backedge_residue_proofs(
                 reason = (
                     "terminal_selector_backedge_requires_side_effect_materialization"
                 )
-            added.append(
-                BranchOwnershipProof(
-                    proof_id=f"{proof.proof_id}:terminal_selector_backedge_blocked",
-                    proof_kind=BranchOwnershipProofKind.UNRESOLVED,
-                    trusted=False,
-                    reason=reason,
-                    source_block=proof.source_block,
-                    branch_arm=proof.branch_arm,
-                    source_state=proof.source_state,
-                    target_state=proof.target_state,
-                    target_entry=proof.target_entry,
-                    predicate_block=proof.predicate_block,
-                    dispatcher_entry_block=proof.dispatcher_entry_block,
-                    oracle_kind=(BranchOwnershipOracleKind.TERMINAL_SELECTOR_BACKEDGE),
-                    evidence=evidence,
-                    payload=dict(proof.payload),
-                )
+            blocked = BranchOwnershipProof(
+                proof_id=f"{proof.proof_id}:terminal_selector_backedge_blocked",
+                proof_kind=BranchOwnershipProofKind.UNRESOLVED,
+                trusted=False,
+                reason=reason,
+                source_block=proof.source_block,
+                branch_arm=proof.branch_arm,
+                source_state=proof.source_state,
+                target_state=proof.target_state,
+                target_entry=proof.target_entry,
+                predicate_block=proof.predicate_block,
+                dispatcher_entry_block=proof.dispatcher_entry_block,
+                oracle_kind=BranchOwnershipOracleKind.TERMINAL_SELECTOR_BACKEDGE,
+                evidence=evidence,
+                payload=dict(proof.payload),
             )
+            added.append(registrar.bind(blocked, backedge_producer))
             continue
 
         if external_residue_proofs:
@@ -822,24 +923,23 @@ def _append_terminal_selector_backedge_residue_proofs(
             evidence["payload_private_to_selector"] = True
             evidence["requires_cfg_split"] = False
 
-        added.append(
-            BranchOwnershipProof(
-                proof_id=f"{proof.proof_id}:terminal_selector_backedge_residue",
-                proof_kind=BranchOwnershipProofKind.OBFUSCATION_RESIDUE_ARM,
-                trusted=True,
-                reason="opaque_selected_terminal_selector_backedge_residue",
-                source_block=proof.source_block,
-                branch_arm=proof.branch_arm,
-                source_state=proof.source_state,
-                target_state=proof.target_state,
-                target_entry=proof.target_entry,
-                predicate_block=proof.predicate_block,
-                dispatcher_entry_block=proof.dispatcher_entry_block,
-                oracle_kind=(BranchOwnershipOracleKind.TERMINAL_SELECTOR_BACKEDGE),
-                evidence=evidence,
-                payload=dict(proof.payload),
-            )
+        residue = BranchOwnershipProof(
+            proof_id=f"{proof.proof_id}:terminal_selector_backedge_residue",
+            proof_kind=BranchOwnershipProofKind.OBFUSCATION_RESIDUE_ARM,
+            trusted=True,
+            reason="opaque_selected_terminal_selector_backedge_residue",
+            source_block=proof.source_block,
+            branch_arm=proof.branch_arm,
+            source_state=proof.source_state,
+            target_state=proof.target_state,
+            target_entry=proof.target_entry,
+            predicate_block=proof.predicate_block,
+            dispatcher_entry_block=proof.dispatcher_entry_block,
+            oracle_kind=BranchOwnershipOracleKind.TERMINAL_SELECTOR_BACKEDGE,
+            evidence=evidence,
+            payload=dict(proof.payload),
         )
+        added.append(registrar.bind(residue, backedge_producer))
 
     if not added:
         return proofs
@@ -1029,9 +1129,13 @@ __all__ = [
     "BranchOwnershipProducerRegistration",
     "BranchOwnershipProof",
     "BranchOwnershipProofKind",
+    "BranchOwnershipRegistrationAuthority",
     "BranchOwnershipTrustProvenance",
     "TRUSTED_OPAQUE_PROVENANCE_KINDS",
+    "branch_ownership_proof_candidate_from_any",
     "branch_ownership_proof_from_any",
+    "branch_ownership_registration_authority",
     "collect_branch_ownership_proofs",
+    "registered_branch_ownership_proof",
     "proof_json",
 ]

@@ -27,7 +27,25 @@ from d810.analyses.control_flow.branch_ownership import (
     BranchOwnershipProof,
     BranchOwnershipProofKind,
     branch_ownership_proof_from_any,
+    branch_ownership_registration_authority,
 )
+
+
+def _bound(proof: BranchOwnershipProof) -> BranchOwnershipProof:
+    """Register a fixture proof the way an in-tree producer does.
+
+    d81-9q6e review round 3: a grant needs a *minted* registration, not a
+    producer name written on the row, so the fixture binds through a binder it
+    owns.  A fixture naming an out-of-tree oracle stays unregistered -- the
+    binder owns identities only for producers this codebase ships -- which is
+    what the ``is_known_oracle``-is-only-a-claim tests below rely on.
+    """
+    registrar = branch_ownership_registration_authority()
+    try:
+        producer = registrar.producer(proof.oracle_kind_name)
+    except LookupError:
+        return proof
+    return registrar.bind(proof, producer)
 
 
 def _proof(**overrides) -> BranchOwnershipProof:
@@ -42,7 +60,7 @@ def _proof(**overrides) -> BranchOwnershipProof:
         "oracle_kind": BranchOwnershipOracleKind.PREANALYSIS_BRANCH_OWNERSHIP,
     }
     base.update(overrides)
-    return BranchOwnershipProof(**base)
+    return _bound(BranchOwnershipProof(**base))
 
 
 class TestOracleKindIsTyped:

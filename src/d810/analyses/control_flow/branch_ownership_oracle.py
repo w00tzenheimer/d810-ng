@@ -69,6 +69,8 @@ from d810.analyses.control_flow.branch_ownership import (
     BranchOwnershipOracleKind,
     BranchOwnershipProof,
     BranchOwnershipProofKind,
+    branch_ownership_registration_authority,
+    registered_branch_ownership_proof,
 )
 from d810.ir.locations import WeakStackSlot
 from d810.ir.varnode import Space, Varnode, varnode_from_mop_snapshot
@@ -220,6 +222,9 @@ class MopTrackerBranchOwnershipOracle:
         self._flow_graph = flow_graph
         self._predicate_resolver = predicate_resolver
         self._opcode_label_resolver = opcode_label_resolver
+        # This oracle owns its binder for its own lifetime: registration is
+        # minted here, never declared on the rows it refines.
+        self._registrar = branch_ownership_registration_authority()
 
     def refine(
         self,
@@ -324,7 +329,8 @@ class MopTrackerBranchOwnershipOracle:
         evidence.update(extra_evidence)
         evidence["predicate_ownership_kind"] = result.kind.value
         evidence["predicate_ownership_reason"] = result.reason
-        return BranchOwnershipProof(
+        return registered_branch_ownership_proof(
+            self._registrar,
             proof_id=proof.proof_id,
             proof_kind=proof_kind,
             trusted=trusted,
@@ -372,6 +378,7 @@ class Z3BranchOwnershipOracle:
         opcode_label_resolver: OpcodeLabelResolver | None = None,
     ) -> None:
         self._flow_graph = flow_graph
+        self._registrar = branch_ownership_registration_authority()
         self._jump_taken_prover = jump_taken_prover
         self._side_effect_guard = side_effect_guard
         self._discarded_side_effect_depth = max(0, int(discarded_side_effect_depth))
@@ -591,7 +598,8 @@ class Z3BranchOwnershipOracle:
         reason: str,
         evidence: dict[str, object],
     ) -> BranchOwnershipProof:
-        return BranchOwnershipProof(
+        return registered_branch_ownership_proof(
+            self._registrar,
             proof_id=proof.proof_id,
             proof_kind=proof_kind,
             trusted=trusted,

@@ -78,6 +78,8 @@ from d810.analyses.control_flow.branch_ownership import (
     BranchOwnershipOracleKind,
     BranchOwnershipProof,
     BranchOwnershipProofKind,
+    branch_ownership_registration_authority,
+    registered_branch_ownership_proof,
 )
 from d810.analyses.control_flow.branch_ownership_oracle import (
     MopTrackerBranchOwnershipOracle,
@@ -974,6 +976,9 @@ class OllvmCarrierBranchOwnershipOracle:
         carrier_facts: tuple[object, ...] = (),
     ) -> None:
         self._mba = mba
+        # This oracle owns its binder for its own lifetime: registration is
+        # minted here, never declared on the rows it refines.
+        self._registrar = branch_ownership_registration_authority()
         self._carrier_facts = _normalized_carrier_facts(tuple(carrier_facts or ()))
         instruction_texts = tuple(_iter_mba_instruction_texts(mba))
         self._password_predicate_tokens = _derive_data_predicate_tokens(
@@ -1072,7 +1077,8 @@ class OllvmCarrierBranchOwnershipOracle:
                 "via_pred": _path_predecessor(edge, proof.source_block),
             }
         )
-        return BranchOwnershipProof(
+        return registered_branch_ownership_proof(
+            self._registrar,
             proof_id=proof.proof_id,
             proof_kind=BranchOwnershipProofKind.REAL_DATA_DEPENDENT,
             trusted=True,
