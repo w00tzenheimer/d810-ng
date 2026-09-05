@@ -13,19 +13,12 @@ REPO = Path(__file__).resolve().parents[3]
 #: this list admits the transitional state without letting a missing artifact
 #: through.  Drop an entry here once the next canonical Windows build
 #: (``samples/scripts/build_windows.ps1``) picks the export up.
-PENDING_CANONICAL_BUILD = frozenset(
-    {
-        # d81-jlfw: shipped as samples/bins/jlfw_folded_tail.dll, the local
-        # compatibility build emitted by `d810cli fixture`.
-        "sub_7FFB0E398850",
-        # d81-czrc: shipped as samples/bins/computed_state_writers.dll, built
-        # with samples/scripts/build_masm.sh (llvm-ml64 + lld-link, 0
-        # unresolved externs).  Drop this entry once the canonical Windows
-        # build folds the two computed-state-writer fixtures into
-        # libobfuscated.dll -- until then their DSL cases SKIP.
-        "computed_state_writers",
-    }
-)
+#:
+#: EMPTY is the goal state, and the third assertion keeps it that way: a
+#: side-car fixture DLL makes its DSL cases SKIP, so a green suite proves
+#: nothing about the fixture.  Fold the export into the canonical build
+#: instead of adding an entry here.
+PENDING_CANONICAL_BUILD: frozenset[str] = frozenset()
 
 
 def _committed_dlls() -> tuple[Path, ...]:

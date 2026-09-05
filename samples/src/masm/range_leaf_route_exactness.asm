@@ -118,5 +118,23 @@ rlsc_leaf_c:
     add     rsp, 40
     ret
 
+; The corpus build exports one symbol named after the source file
+; (`link.exe /EXPORT:<stem>` in samples/Makefile), so the stem must be a real
+; function rather than an unresolved forwarder.  It keeps both fixtures
+; reachable from a single entry point and is itself unflattened (no
+; dispatcher), so it adds no assertion surface of its own.
+; D810_EXPORT range_leaf_route_exactness
+PUBLIC range_leaf_route_exactness
+range_leaf_route_exactness:
+    sub     rsp, 40
+    mov     dword ptr [rsp+32], ecx
+    call    range_leaf_isolated_state
+    mov     dword ptr [rsp+36], eax
+    mov     ecx, dword ptr [rsp+32]
+    call    range_leaf_shared_corridor
+    add     eax, dword ptr [rsp+36]
+    add     rsp, 40
+    ret
+
 _TEXT ENDS
 END
