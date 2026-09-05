@@ -36,6 +36,7 @@ from d810.hexrays.hooks.callback_mutation_diagnostics import (
     capture_block_nop_sites,
 )
 from d810.hexrays.ir.minsn_utils import build_z3_equivalence_proof
+from d810.hexrays.ir.native_identity import native_object_identity
 from d810.hexrays.lifecycle import _emit_flowgraph_ready_event
 from d810.hexrays.ir_maturity import ida_maturity_to_ir
 from d810.hexrays.mutation.cfg_verify import safe_verify as _safe_verify
@@ -216,13 +217,14 @@ def _rewrite_history_key(
     while simplifying it. Those representations form one convergence stream,
     so production history is intentionally keyed by function, maturity, and
     native EA. Objects without a live block coordinate are independent test or
-    adapter values and use their Python identity instead.
+    adapter values and are named by their own native identity instead -- not
+    by ``id``, whose address CPython reuses once the object dies.
     """
     try:
         int(getattr(blk, "serial"))
         getattr(blk, "mba")
     except (AttributeError, TypeError, ValueError):
-        return (func_ea, maturity, "object", id(ins))
+        return (func_ea, maturity, "object", native_object_identity(ins))
     return (func_ea, maturity, int(getattr(ins, "ea", 0) or 0))
 
 

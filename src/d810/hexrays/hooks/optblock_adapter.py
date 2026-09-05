@@ -43,6 +43,7 @@ from d810.hexrays.hooks.callback_mutation_diagnostics import (
 )
 from d810.hexrays.lifecycle import _emit_flowgraph_ready_event
 from d810.hexrays.observability import observe_optblock_callback_exception
+from d810.hexrays.ir.native_identity import NativeIdentity, native_object_identity
 from d810.hexrays.ir_maturity import ida_maturity_to_ir
 from d810.hexrays.mutation.return_carrier_corruption import (
     snapshot_return_reg_consumer_def_eas,
@@ -74,14 +75,6 @@ _PROJECT_CONFIG_KEYS = frozenset(
         "router_resolution",
     }
 )
-
-
-def _current_mba_runtime_identity(mba: object) -> int:
-    """Name one live ``mba_t`` for adapter-local cache invalidation only."""
-    try:
-        return int(mba.this)
-    except (AttributeError, TypeError, ValueError):
-        return id(mba)
 
 
 def _safe_callback_int(value: object) -> int | None:
@@ -400,7 +393,9 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
         self._max_passes_current = self._BASE_PASSES_PER_MATURITY
         self._generation: int = 0
         self._flow_context: FlowMaturityContext | None = None
-        self._flow_context_key: tuple[int, int, int, int, int] | None = None
+        self._flow_context_key: (
+            tuple[int, int, int, int, NativeIdentity] | None
+        ) = None
         # Narrow manager-owned evidence and outcome ports.
         self._validated_fact_view_provider = None
         self._fact_consumer_callback = None
@@ -1247,7 +1242,11 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
             int(self.current_maturity),
             current_mba_generation,
             current_evidence_generation,
-            _current_mba_runtime_identity(mba),
+            # ``id(mba)`` named the SWIG wrapper, so a fresh proxy over the
+            # same live MBA rebuilt the context needlessly and -- far worse --
+            # a recycled address could make a context built over a dead MBA
+            # compare equal and be reused.
+            native_object_identity(mba),
         )
         if self._flow_context is None or self._flow_context_key != key:
             self._flow_context = self._flow_context_type(
