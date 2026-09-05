@@ -28,6 +28,7 @@ from d810.transforms.unflatten_authority.transaction_api import select_plan_rout
 from d810.transforms.unflatten_authority.proposal import attach_typed_proposal
 from d810.transforms.unflatten_authority.ids import authority_id
 from d810.transforms.unflatten_authority import model, transaction_api
+from d810.core import LevelFlag
 
 from .helpers import (
     authority_id as helper_authority_id,
@@ -99,6 +100,15 @@ def test_observed_native_origin_diagnostic_matches_canonical_subset_admission(
         logging.DEBUG,
         logger="d810.transforms.unflatten_authority.transaction_api",
     )
+    # ``caplog.set_level`` sets the stdlib ``Logger.level`` directly and does
+    # not know about ``LevelFlag``'s process-global version counter, so a
+    # ``logger.debug_on`` result cached earlier in this worker (by any test
+    # that hit ``_observed_native_origin_mismatch_diagnostics`` while the
+    # logger was still at its default INFO level) stays stale and the
+    # DEBUG-gated log line below is silently skipped. Only
+    # ``LoggerConfigurator.set_level`` (the production entry point) bumps the
+    # version; mirror that here so this test does not depend on run order.
+    LevelFlag.bump_config_version()
     transaction_api._observed_native_origin_mismatch_diagnostics(
         block_rows=with_origins(admitted),
         blocks_by_serial=source.blocks,
