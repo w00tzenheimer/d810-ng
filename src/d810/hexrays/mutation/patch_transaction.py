@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, fields, is_dataclass
 
+from d810.core.formatting import describe_exception
+
 from d810.analyses.control_flow.graph_checks import (
     check_entry_reachability_not_collapsed,
     check_effectful_reachability_preserved,
@@ -931,10 +933,7 @@ def _first_failure(error: Exception, phase: str) -> tuple[str, str]:
     >>> _first_failure(AssertionError(), "preflight")
     ('AssertionError', 'runtime:preflight')
     """
-    type_name = type(error).__name__
-    detail = str(error)
-    reason = f"{type_name}: {detail}" if detail else type_name
-    return reason, f"runtime:{phase}"
+    return describe_exception(error), f"runtime:{phase}"
 
 
 def _request_poison_restart(gateway: object, failure: object) -> None:

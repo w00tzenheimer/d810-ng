@@ -16,6 +16,7 @@ from d810.hexrays.hooks.optimization_suppression import (
 
 from d810.core import getLogger, typing
 from d810.core.decompilation_session import DecompilationEvent
+from d810.core.formatting import describe_exception
 from d810.analyses.control_flow.native_preanalysis_session import (
     NativeMutationBoundary,
 )
@@ -797,11 +798,17 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
             # A rule can be interrupted by an external request watchdog which
             # is not a D810Exception (e.g. ida_mcp.sync.IDASyncError). Keep it
             # inside the Python callback and suppress this maturity.
+            #
+            # An exception raised with no arguments (a bare ``assert`` or
+            # ``raise SomeError()``) has an empty ``str()``; formatting it as
+            # ``"%s: %s" % (type_name, e)`` then rendered a bare trailing
+            # colon with no type, no message and no traceback -- the sole
+            # trace of a Target A preflight rejection was lost this way
+            # (ticket d81-aw7v). ``describe_exception`` always names the type.
             optimizer_logger.warning(
-                "Exception in block optimizer on blk %d: %s: %s",
+                "Exception in block optimizer on blk %d: %s",
                 blk.serial,
-                type(e).__name__,
-                e,
+                describe_exception(e),
                 exc_info=True,
             )
             self._pass_count = self._max_passes_current + 1

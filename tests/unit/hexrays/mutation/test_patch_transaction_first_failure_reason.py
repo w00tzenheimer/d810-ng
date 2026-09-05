@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import pytest
 
+from d810.core.formatting import describe_exception
 from d810.hexrays.mutation.patch_transaction import _first_failure
 
 
@@ -50,3 +51,19 @@ def test_first_failure_obligation_names_the_phase(phase: str) -> None:
     _, obligation = _first_failure(AssertionError(), phase)
 
     assert obligation == f"runtime:{phase}"
+
+
+@pytest.mark.parametrize(
+    "error", [ValueError("bad projection"), _EmptyMessageError(), AssertionError()]
+)
+def test_first_failure_reason_delegates_to_shared_describe_exception(
+    error: Exception,
+) -> None:
+    # `_first_failure` and the optblock adapter's generic exception handler
+    # (ticket d81-aw7v) must render an empty-message exception identically:
+    # never a bare trailing colon. They share one implementation so the two
+    # call sites cannot drift back apart.
+    reason, _ = _first_failure(error, "preflight")
+
+    assert reason == describe_exception(error)
+    assert not reason.rstrip().endswith(":")

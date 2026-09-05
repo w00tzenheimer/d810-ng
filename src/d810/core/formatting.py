@@ -27,6 +27,26 @@ def _normalize_ea(value: int | str | None) -> str | None:
     return f"0x{int(value):X}"
 
 
+def describe_exception(error: BaseException) -> str:
+    """Render an exception as ``"Type: detail"``, never a bare trailing colon.
+
+    An exception raised with no arguments (a bare ``assert`` or
+    ``raise SomeError()``) has an empty ``str()``. Appending that empty
+    detail after a colon produces a line with no type, no message and no
+    traceback -- the sole trace of a defect can be erased this way. The
+    type name is never empty, so when the detail is empty this returns the
+    type name alone.
+
+    >>> describe_exception(ValueError("bad projection"))
+    'ValueError: bad projection'
+    >>> describe_exception(AssertionError())
+    'AssertionError'
+    """
+    type_name = type(error).__name__
+    detail = str(error)
+    return f"{type_name}: {detail}" if detail else type_name
+
+
 def format_block_id(
     serial: int | str | None,
     start_ea: int | str | None = None,
@@ -53,4 +73,4 @@ def format_block_id(
     return f"{base}@unknown"
 
 
-__all__ = ["format_block_id"]
+__all__ = ["describe_exception", "format_block_id"]
