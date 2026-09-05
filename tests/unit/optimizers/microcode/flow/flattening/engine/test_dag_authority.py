@@ -372,27 +372,29 @@ class TestPermitsConvertToGoto:
 
 
 class TestStrictGapRefusals:
-    """ZSW was previously gap-refused; Phase 4 (uee-rjo8) consolidated
-    the three legacy collectors into a single emitter that enforces
-    the canonical-owner invariant by construction, so ZSW is now
-    permitted (see test_zero_state_write_allows_post_phase4_consolidation).
+    """ZSW is gap-refused: its legality is not a DAG-derivable fact.
+
+    Phase 4 (uee-rjo8) briefly replaced the gap with an unconditional
+    ALLOW justified by the single-emitter invariant enforced in
+    ``zero_state_write_emission``. The aa-v8et audit reverted that: the
+    invariant is real but belongs to another module, so the arbiter was
+    granting with no DAG evidence of its own.
     """
 
-    def test_zero_state_write_allows_post_phase4_consolidation(self):
-        """ZSW collector consolidation (uee-rjo8, Phase 4) replaced the
-        ``DAG_GAP:zero_state_write_legality`` strict refusal with an
-        ALLOW. The single-emitter invariant
-        (``cfg/zero_state_write_emission.py``) means a ZSW reaching
-        the arbiter is by construction the canonical owner's emission,
-        so the prior gap is closed.
+    def test_zero_state_write_gaps_because_it_is_not_dag_derivable(self):
+        """ZSW legality needs a state-write def-site index the DAG lacks.
+
+        The arbiter may not borrow ``zero_state_write_emission``'s
+        single-emitter invariant as its own proof (aa-v8et, audit
+        section 3.3), so the verdict is a named ``DAG_GAP``.
         """
         dag = _dag()
         auth = DagAuthority(dag)
         decision = auth.permits_zero_state_write(
             ZeroStateWrite(block_serial=10, insn_ea=0x1000)
         )
-        assert decision.allowed
-        assert decision.reason == "ALLOW"
+        assert decision.is_gap
+        assert decision.reason == "DAG_GAP:zero_state_write_not_dag_derivable"
 
 
 # --------------------------------------------------------------------------
@@ -427,13 +429,19 @@ class TestPermitsDispatcher:
         decision = auth.permits(ConvertToGoto(block_serial=10, goto_target=20))
         assert decision.allowed
 
-    def test_dispatches_zsw_to_allow(self):
-        """Post-Phase-4 (uee-rjo8): ZSW dispatch ALLOWS via the
-        canonical-owner invariant from the consolidated emitter."""
+    def test_dispatches_zsw_to_gap(self):
+        """``permits()`` dispatches ZSW to the gap-returning validator.
+
+        The dispatch itself is unchanged (aa-v8et corrected the audit's
+        reachability wording: ZSW *is* dispatched here; it is unreachable
+        in production only because ``redirect_source(ZeroStateWrite)`` is
+        ``None``, so the fragment filter never calls ``permits()``).
+        """
         dag = _dag()
         auth = DagAuthority(dag)
         decision = auth.permits(ZeroStateWrite(block_serial=10, insn_ea=0x1000))
-        assert decision.allowed
+        assert decision.is_gap
+        assert decision.reason == "DAG_GAP:zero_state_write_not_dag_derivable"
 
     def test_unknown_mod_kind_refuses_with_gap(self):
         dag = _dag()

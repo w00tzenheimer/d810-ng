@@ -227,33 +227,7 @@ class TestArbiterIsSubtractive:
 class TestNoIndependentGrant:
     """An authority over an empty DAG must not permit anything."""
 
-    @pytest.mark.parametrize(
-        "label,make_mod",
-        [
-            pytest.param(
-                label,
-                make_mod,
-                marks=(
-                    pytest.mark.xfail(
-                        strict=True,
-                        reason=(
-                            "d81-9q6e audit section 3.3, Phase B ticket aa-v8et: "
-                            "DagAuthority.permits_zero_state_write returns an "
-                            "unconditional ALLOW that reads no DAG state. It is "
-                            "unreachable in production (redirect_source() is None "
-                            "for ZeroStateWrite, so fragment_arbitration keeps the "
-                            "mod before permits() is called), so this is a latent "
-                            "grant. Changing a documented arbiter verdict is an "
-                            "architectural decision -> Phase B."
-                        ),
-                    )
-                    if label == "ZeroStateWrite"
-                    else ()
-                ),
-            )
-            for label, make_mod in ALL_DISPATCHED_MODS
-        ],
-    )
+    @pytest.mark.parametrize("label,make_mod", ALL_DISPATCHED_MODS)
     def test_empty_authority_refuses_every_mod_kind(self, label, make_mod) -> None:
         decision = _empty_authority().permits(make_mod())
         assert not decision.allowed, (
@@ -301,6 +275,66 @@ class TestNoIndependentGrant:
     def test_refusal_requires_a_reason(self) -> None:
         with pytest.raises(ValueError):
             DagDecision.refuse("")
+
+
+# --------------------------------------------------------------------------
+# Per-latent-surface regressions (aa-v8et)
+#
+# The audit (section 3) found three ALLOW paths that read no DAG state. Each
+# was unreachable from production for its *own* reason, and only one of the
+# three was caught by the original strict-xfail:
+#
+#   permits_zero_state_write
+#       Dispatched by ``permits()``. Unreachable because
+#       ``redirect_source(ZeroStateWrite)`` is ``None``, so
+#       ``filter_dag_disagreements`` keeps the mod at
+#       ``fragment_arbitration.py:104-105`` before ``permits()`` is called.
+#       This is the one the strict xfail detected.
+#
+#   permits_edge_redirect_via_pred_split
+#       Also dispatched by ``permits()`` (``dag_authority.py:475-480``) — the
+#       dispatch is NOT the missing link. Unreachable for the same reason as
+#       ZSW: ``redirect_source(EdgeRedirectViaPredSplit)`` is ``None``, so the
+#       production filter bypasses ``permits()``.
+#
+#   permits_dead_block_terminator_redirect
+#       NOT protected by the ``redirect_source`` guard at all: its mod is a
+#       ``RedirectGoto``, for which ``redirect_source`` *does* return a
+#       source. It is unreachable only because ``permits()`` never dispatches
+#       to it (keyword-only projected-graph arguments) and it has no
+#       production caller.
+#
+# One regression per path, named for the path.
+# --------------------------------------------------------------------------
+
+
+class TestLatentGrantSurfaces:
+    """Each of the three audited ALLOW paths must now require DAG evidence."""
+
+    def test_permits_zero_state_write_is_a_gap_not_a_grant(self) -> None:
+        """ZSW legality is a single-emitter invariant, not a DAG fact.
+
+        ``zero_state_write_emission.collect_zero_state_writes`` enforces one
+        author per ``(block_serial, insn_ea)``. That is a real invariant but it
+        belongs to a different module; ``DagAuthority`` cannot check it and
+        must not vouch for it.
+        """
+        decision = _empty_authority().permits_zero_state_write(
+            ZeroStateWrite(block_serial=10, insn_ea=0x1000)
+        )
+        assert not decision.allowed
+        assert decision.is_gap
+        assert decision.reason == "DAG_GAP:zero_state_write_not_dag_derivable"
+        assert decision.target_entry_anchor is None
+        assert decision.proof_edge_key is None
+
+    def test_zero_state_write_gap_holds_for_a_populated_dag(self) -> None:
+        """Not even a DAG that knows the block turns ZSW into a grant."""
+        authority = DagAuthority(
+            _dag(edges=(_edge(source_block=10, target_entry_anchor=20),))
+        )
+        decision = authority.permits(ZeroStateWrite(block_serial=10, insn_ea=0x1000))
+        assert decision.is_gap
 
 
 # --------------------------------------------------------------------------
