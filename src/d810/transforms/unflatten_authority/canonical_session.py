@@ -50,6 +50,15 @@ equals the sum of the attributed paths:
     were satisfied by a seal.
 ``occurrence_stamps``
     Top-level recursive structural walks performed by ``_occurrence_stamp``.
+``registry_seal_hits`` / ``registry_seal_misses``
+    Lookups in the phase-owned canonical registry-seal memo
+    (:meth:`CanonicalValidationSession.registry_seal_for`).  A miss is one
+    complete ``_canonical_registry_seal`` computation, so the two partition
+    every memoizable seal and ``registry_seal_misses`` is the seal-computation
+    count inside a session.  These lookups take one ``_occurrence_stamp`` walk
+    each, so ``occurrence_stamps`` may rise by at most
+    ``registry_seal_hits + registry_seal_misses``; that rise is stated in
+    advance and is not a regression.
 
 Set ``D810_AUTHORITY_WORK_COUNTERS`` to a value other than ``""``/``"0"`` to
 have the process totals written to standard error at interpreter exit.  That
@@ -128,6 +137,8 @@ _COUNTER_NAMES: tuple[str, ...] = (
     "occurrence_stamps",
     "content_id_mints",
     "materializations",
+    "registry_seal_hits",
+    "registry_seal_misses",
 )
 
 _REPORT_ENV = "D810_AUTHORITY_WORK_COUNTERS"
@@ -163,6 +174,8 @@ class CanonicalWorkMetrics:
     occurrence_stamps: int = 0
     content_id_mints: int = 0
     materializations: int = 0
+    registry_seal_hits: int = 0
+    registry_seal_misses: int = 0
 
     def __post_init__(self) -> None:
         for name in _COUNTER_NAMES:
@@ -260,7 +273,7 @@ class CanonicalValidationSession:
     __slots__ = (
         "_phase", "_ledger", "_closed", "_bytes_cache", "_content_id_cache",
         "_inventory_seals", "_trust_sealed", "_route_arena", "_runtime_bindings",
-        "_interned_refs",
+        "_interned_refs", "_registry_seals",
     )
 
     def __init__(
@@ -279,6 +292,9 @@ class CanonicalValidationSession:
             tuple[int, str, str], tuple[object, object, str]
         ] = {}
         self._inventory_seals: dict[int, tuple[object, object]] = {}
+        self._registry_seals: dict[
+            tuple[int, int], tuple[object, object, str]
+        ] = {}
         self._route_arena = RuntimeAuthorityArena(
             RuntimeAuthorityScope(f"unflatten-authority-transaction:{phase.value}")
         )
@@ -387,6 +403,13 @@ class CanonicalValidationSession:
         self._require_open()
         self._ledger.materializations += 1
 
+    def record_registry_seal(self, hit: bool) -> None:
+        self._require_open()
+        if hit:
+            self._ledger.registry_seal_hits += 1
+        else:
+            self._ledger.registry_seal_misses += 1
+
     def cached_canonical_bytes(self, value: object, stamp: object) -> bytes | None:
         """Return canonical bytes already validated for this exact occurrence.
 
@@ -464,6 +487,52 @@ class CanonicalValidationSession:
         self._require_open()
         self._inventory_seals[id(value)] = (value, stamp)
 
+    def registry_seal_for(
+        self, registry_key: int, value: object, digest: object,
+    ) -> str | None:
+        """Return the canonical registry seal proven for this exact occurrence.
+
+        Column classification for the memo key, stated so it cannot drift:
+
+        ``registry_key`` (MEMO_KEYED)
+            ``id()`` of the publication registry.  The same live record answers
+            a different question in a different registry, so the two must never
+            share an entry.
+        ``id(value)`` (MEMO_KEYED, with ``entry[0] is value`` as the real
+        guard)
+            The dict key alone is not trusted: ``id()`` is recycled, so the
+            entry holds a strong reference and a hit requires identity.
+        ``digest`` (MEMO_KEYED)
+            The full 32-byte ``OccurrenceDigest`` over the record's canonical
+            schema.  Never a bucket and never a partial key -- a collapsing
+            hash is the failure mode recorded in
+            ``gotcha_mop_equality_memo_on_bucket_hash``.
+        the seal string (DERIVED)
+            A pure function of the three columns above; it is what the memo
+            answers, never part of the key.
+        runtime authority sidecars, ``attempt_id``-style per-attempt UUIDs
+        (VOLATILE)
+            Absent from ``ids._RECORD_FIELDS``, therefore absent from the
+            digest by construction.  A memo key that carried them would miss on
+            every lookup and the memo would be dead code.
+        """
+
+        self._require_open()
+        entry = self._registry_seals.get((registry_key, id(value)))
+        if entry is None or entry[0] is not value or entry[1] != digest:
+            return None
+        return entry[2]
+
+    def store_registry_seal(
+        self, registry_key: int, value: object, digest: object, seal: str,
+    ) -> None:
+        """Record one registry seal that just validated completely."""
+
+        self._require_open()
+        if type(seal) is not str:
+            raise TypeError("a registry seal must be an exact str")
+        self._registry_seals[(registry_key, id(value))] = (value, digest, seal)
+
     def runtime_binding_for(self, value: object) -> object | None:
         """Return the runtime authority this session minted for ``value``.
 
@@ -526,6 +595,7 @@ class CanonicalValidationSession:
         # authority to be joined on outside the phase that minted it.
         self._runtime_bindings.clear()
         self._interned_refs.clear()
+        self._registry_seals.clear()
         self._route_arena.close()
 
 
@@ -716,6 +786,18 @@ def record_materialization() -> None:
         session.record_materialization()
 
 
+def record_registry_seal(hit: bool) -> None:
+    """Attribute one canonical registry-seal memo lookup to hit or miss."""
+
+    if hit:
+        _PROCESS_LEDGER.registry_seal_hits += 1
+    else:
+        _PROCESS_LEDGER.registry_seal_misses += 1
+    session = _ACTIVE_SESSION.get()
+    if session is not None:
+        session.record_registry_seal(hit)
+
+
 def process_work_metrics() -> CanonicalWorkMetrics:
     """Return the cumulative counts for this interpreter."""
 
@@ -821,6 +903,7 @@ __all__ = [
     "record_inventory_validation",
     "record_materialization",
     "record_occurrence_stamp",
+    "record_registry_seal",
     "record_roundtrip_decode",
     "record_wire_encode",
     "reset_process_work_metrics",

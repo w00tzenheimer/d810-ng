@@ -28,6 +28,7 @@ from d810.transforms.cfg_transaction import (
 )
 from . import ids as authority_ids
 from . import model, producer_api
+from .canonical_session import active_canonical_session, record_registry_seal
 from .gates import GenericEffectfulGateFacts
 from .proposal import (
     CanonicalPatchStepDescriptor,
@@ -63,6 +64,12 @@ from .ids import (
     authority_id as canonical_authority_id,
     patch_step_fact_id,
     patch_step_fact_id as _canonical_patch_step_fact_id,
+)
+from .ids import (
+    _EXTERNAL_FIELDS as _CANONICAL_EXTERNAL_FIELDS,
+    _RECORD_FIELDS as _CANONICAL_RECORD_FIELDS,
+    _ensure_registries as _ensure_canonical_registries,
+    _occurrence_stamp,
 )
 
 
@@ -3323,7 +3330,59 @@ def _route_result_identity(value: object) -> str:
     ))
 
 
+def _memoizable_digest(session: object, value: object) -> object | None:
+    """Return the guard digest for one seal subject, or ``None`` to never memoize.
+
+    ``_feed_occurrence`` falls through to an **identity-only** stamp for any
+    type absent from ``ids._RECORD_FIELDS`` / ``ids._EXTERNAL_FIELDS``: a type
+    token plus ``repr(id(value))``.  Such a digest never changes under
+    mutation, so memoizing on it would serve a stale seal for a tampered
+    record.  The helper therefore fails closed -- no session, or an
+    unregistered type, means today's behaviour with no memo at all.
+    """
+
+    if session is None:
+        return None
+    _ensure_canonical_registries()
+    value_type = type(value)
+    if (
+        value_type not in _CANONICAL_RECORD_FIELDS
+        and value_type not in _CANONICAL_EXTERNAL_FIELDS
+    ):
+        return None
+    return _occurrence_stamp(value)
+
+
 def _canonical_registry_seal(
+    value: object,
+    registry: dict[int, tuple[weakref.ReferenceType[object], str]],
+    _site_registry=_SITE_REGISTRY,
+    _binding_registry=_SITE_BINDING_REGISTRY,
+    _route_registry=_ROUTE_REGISTRY,
+    _logical_registry=_OBSERVED_LOGICAL_ENDPOINT_REGISTRY,
+    _route_seal=_route_content_seal,
+) -> str:
+    """Recompute one closed record's canonical live publication seal.
+
+    The computation itself is untouched and lives in
+    :func:`_canonical_registry_seal_uncached`.  This wrapper only records the
+    phase-owned memo lookup; nothing is served from it yet.
+    """
+
+    session = active_canonical_session()
+    digest = _memoizable_digest(session, value)
+    if digest is not None:
+        record_registry_seal(False)
+    seal = _canonical_registry_seal_uncached(
+        value, registry, _site_registry, _binding_registry, _route_registry,
+        _logical_registry, _route_seal,
+    )
+    if digest is not None:
+        session.store_registry_seal(id(registry), value, digest, seal)
+    return seal
+
+
+def _canonical_registry_seal_uncached(
     value: object,
     registry: dict[int, tuple[weakref.ReferenceType[object], str]],
     _site_registry=_SITE_REGISTRY,
