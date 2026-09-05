@@ -50,6 +50,7 @@ EXIT_INDETERMINATE = 3
 PASSWORD_OPTION_PATTERN = re.compile(r"(?<=password=)[^,]*")
 CONTAINER_FORMAT = "{{.ID}} {{.Status}} {{.Names}}"
 WORK_VOLUME_ROLE_LABEL = "d810.role=work"
+DEFAULT_SHARE_ROOT = "/srv/share-root"
 WORK_VOLUME_FORMAT = "{{.Name}}"
 PROBE_IMAGE = "alpine"
 # Reading the engine's kernel ring buffer needs --privileged, so the image is
@@ -204,14 +205,33 @@ def build_container_filter_argv(*, remote: str, volume: str) -> list[str]:
     ]
 
 
-def build_work_volume_list_argv(*, remote: str) -> list[str]:
-    """List the per-worktree source-copy volumes the runner creates.
+def share_root_digest(share_root: str) -> str:
+    """Short digest of the exported share root, as the runner labels it.
 
-    These outlive ``--remove`` of the credential volume: they are retained
-    copies of source, not caches, so they are enumerated explicitly.
+    >>> share_root_digest("/srv/share-root")[:2].isalnum()
+    True
+    >>> len(share_root_digest("/x"))
+    8
+    """
+    import hashlib
 
-    >>> build_work_volume_list_argv(remote="h")[3:]
-    ['volume', 'ls', '--filter', 'label=d810.role=work', '--format', '{{.Name}}']
+    return hashlib.sha256(share_root.encode()).hexdigest()[:8]
+
+
+def build_work_volume_list_argv(
+    *, remote: str, volume: str, share_root: str
+) -> list[str]:
+    """List the source-copy volumes belonging to THIS credential volume.
+
+    Selecting every ``d810.role=work`` volume on the engine would sweep in the
+    copies of an unrelated share or credential, so the role label alone is not
+    a safe selector.
+
+    >>> build_work_volume_list_argv(remote="h", volume="v", share_root="/x")[3:6]
+    ['volume', 'ls', '--filter']
+    >>> "label=d810.credential_volume=v" in build_work_volume_list_argv(
+    ...     remote="h", volume="v", share_root="/x")
+    True
     """
     return [
         "docker",
@@ -221,6 +241,10 @@ def build_work_volume_list_argv(*, remote: str) -> list[str]:
         "ls",
         "--filter",
         f"label={WORK_VOLUME_ROLE_LABEL}",
+        "--filter",
+        f"label=d810.credential_volume={volume}",
+        "--filter",
+        f"label=d810.share_root_digest={share_root_digest(share_root)}",
         "--format",
         WORK_VOLUME_FORMAT,
     ]
@@ -466,6 +490,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--volume", default=DEFAULT_VOLUME, help="volume name to create")
     parser.add_argument("--share", default=DEFAULT_SHARE, help="SMB share, e.g. //smb-server.example/idapro")
     parser.add_argument(
+        "--share-root",
+        default=DEFAULT_SHARE_ROOT,
+        help=(
+            "host directory the share exports; selects which work volumes belong "
+            f"to this share (default: {DEFAULT_SHARE_ROOT})"
+        ),
+    )
+    parser.add_argument(
         "--user",
         default=DEFAULT_USER,
         help=f"SMB user (default: {DEFAULT_USER}; override e.g. --user smbuser)",
@@ -559,7 +591,13 @@ def format_work_volumes(volumes: Sequence[str]) -> str:
 
 def _list_work_volumes(arguments: argparse.Namespace) -> tuple[bool, list[str], str]:
     """List retained work volumes; never assume none on error."""
-    status, output = run_capture(build_work_volume_list_argv(remote=arguments.remote))
+    status, output = run_capture(
+        build_work_volume_list_argv(
+            remote=arguments.remote,
+            volume=arguments.volume,
+            share_root=arguments.share_root,
+        )
+    )
     if status != 0:
         return False, [], output
     return True, parse_container_lines(output), output
@@ -623,6 +661,15 @@ def _status(arguments: argparse.Namespace) -> int:
     if arguments.dry_run:
         print(" ".join(inspect_argv))
         print(" ".join(containers_argv))
+        print(
+            " ".join(
+                build_work_volume_list_argv(
+                    remote=arguments.remote,
+                    volume=arguments.volume,
+                    share_root=arguments.share_root,
+                )
+            )
+        )
         if not arguments.no_verify:
             print(
                 " ".join(
@@ -659,6 +706,34 @@ def _status(arguments: argparse.Namespace) -> int:
     return _verify_mount(arguments)
 
 
+def _purge_work_volumes(arguments: argparse.Namespace) -> int:
+    """Report the retained source copies, and delete them only when asked."""
+    listed, work_volumes, work_output = _list_work_volumes(arguments)
+    if not listed:
+        return _report_indeterminate("which work volumes exist", work_output)
+    if not work_volumes:
+        print("retained work volumes (source copies): none")
+        return 0
+    print(format_work_volumes(work_volumes))
+    if not arguments.purge_work_volumes:
+        print(
+            "These retain copies of source and are NOT deleted with the credential "
+            "volume; pass --purge-work-volumes to delete them too."
+        )
+        return 0
+    for name in work_volumes:
+        status, output = run_capture(
+            build_remove_volume_argv(remote=arguments.remote, volume=name)
+        )
+        if status != 0:
+            print(f"ERROR: could not remove work volume {name}", file=sys.stderr)
+            for line in output.strip().splitlines():
+                print(f"       {line}", file=sys.stderr)
+            return status or 1
+        print(f"purged work volume {name}")
+    return 0
+
+
 def _remove(arguments: argparse.Namespace) -> int:
     inspect_argv = build_inspect_argv(remote=arguments.remote, volume=arguments.volume)
     containers_argv = build_container_filter_argv(
@@ -672,6 +747,15 @@ def _remove(arguments: argparse.Namespace) -> int:
         if arguments.force:
             print(f"docker -H ssh://{arguments.remote} rm -f <containers listed above>")
         print(" ".join(remove_argv))
+        print(
+            " ".join(
+                build_work_volume_list_argv(
+                    remote=arguments.remote,
+                    volume=arguments.volume,
+                    share_root=arguments.share_root,
+                )
+            )
+        )
         return 0
 
     presence, inspect_output = _inspect_volume(arguments)
@@ -681,8 +765,10 @@ def _remove(arguments: argparse.Namespace) -> int:
             inspect_output,
         )
     if presence == "absent":
+        # The credential volume may already be gone while its source copies are
+        # not: that is exactly when they would otherwise be unreachable.
         print(f"volume {arguments.volume} is already absent on ssh://{arguments.remote}")
-        return 0
+        return _purge_work_volumes(arguments)
 
     listed, containers, container_output = _list_containers(arguments)
     if not listed:
@@ -731,30 +817,7 @@ def _remove(arguments: argparse.Namespace) -> int:
         "the stored SMB credential is deleted with it"
     )
     print(LOCK_REMINDER)
-
-    listed, work_volumes, work_output = _list_work_volumes(arguments)
-    if not listed:
-        return _report_indeterminate("which work volumes exist", work_output)
-    if not work_volumes:
-        return 0
-    print(format_work_volumes(work_volumes))
-    if not arguments.purge_work_volumes:
-        print(
-            "These retain copies of source and are NOT deleted with the credential "
-            "volume; pass --purge-work-volumes to delete them too."
-        )
-        return 0
-    for name in work_volumes:
-        status, output = run_capture(
-            build_remove_volume_argv(remote=arguments.remote, volume=name)
-        )
-        if status != 0:
-            print(f"ERROR: could not remove work volume {name}", file=sys.stderr)
-            for line in output.strip().splitlines():
-                print(f"       {line}", file=sys.stderr)
-            return status or 1
-        print(f"purged work volume {name}")
-    return 0
+    return _purge_work_volumes(arguments)
 
 
 def _create(arguments: argparse.Namespace) -> int:

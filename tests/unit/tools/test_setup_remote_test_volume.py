@@ -822,11 +822,86 @@ def test_absent_volume_error_classification() -> None:
     assert not setup_remote_test_volume.is_absent_volume_error(SSH_ERROR)
 
 
-def test_work_volume_listing_argv_filters_by_role_label() -> None:
-    assert setup_remote_test_volume.build_work_volume_list_argv(remote="h") == [
-        "docker", "-H", "ssh://h", "volume", "ls", "--filter",
-        "label=d810.role=work", "--format", "{{.Name}}",
+def test_work_volume_listing_is_scoped_to_this_credential_and_share() -> None:
+    """The role label alone would sweep in another share's source copies."""
+    digest = setup_remote_test_volume.share_root_digest("/srv/share-root")
+
+    assert setup_remote_test_volume.build_work_volume_list_argv(
+        remote="h", volume="idapro", share_root="/srv/share-root"
+    ) == [
+        "docker", "-H", "ssh://h", "volume", "ls",
+        "--filter", "label=d810.role=work",
+        "--filter", "label=d810.credential_volume=idapro",
+        "--filter", f"label=d810.share_root_digest={digest}",
+        "--format", "{{.Name}}",
     ]
+    assert setup_remote_test_volume.share_root_digest("/other") != digest
+
+
+def test_orphaned_work_volumes_are_reachable_without_the_credential_volume(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recorded = _fake_capture(
+        monkeypatch,
+        {
+            "volume inspect": (1, ABSENT_ERROR),
+            "label=d810.role=work": (0, "d810-work-orphan-0011aabb\n"),
+        },
+    )
+
+    status = setup_remote_test_volume.main(["--remove", "--purge-work-volumes"])
+    printed = capsys.readouterr().out
+
+    assert status == 0
+    assert "already absent" in printed
+    assert "purged work volume d810-work-orphan-0011aabb" in printed
+    assert any(
+        "volume rm d810-work-orphan-0011aabb" in " ".join(argv) for argv in recorded
+    )
+
+
+def test_purge_never_touches_another_credential_volumes_copies(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Selection happens in docker's filter, so foreign copies are never listed."""
+    recorded = _fake_capture(
+        monkeypatch,
+        {
+            "volume inspect": (1, ABSENT_ERROR),
+            "label=d810.credential_volume=other": (0, ""),
+        },
+    )
+
+    status = setup_remote_test_volume.main(
+        ["--remove", "--purge-work-volumes", "--volume", "other"]
+    )
+
+    assert status == 0
+    listing = [
+        " ".join(argv) for argv in recorded if "label=d810.role=work" in " ".join(argv)
+    ]
+    assert listing and all(
+        "label=d810.credential_volume=other" in call for call in listing
+    )
+    assert not any("volume rm d810-work" in " ".join(argv) for argv in recorded)
+
+
+def test_dry_run_shows_the_exact_work_volume_filter(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _fail(argv):
+        raise AssertionError("--dry-run must not run docker")
+
+    for seam in ("run_capture", "run_probe"):
+        monkeypatch.setattr(setup_remote_test_volume, seam, _fail)
+
+    assert setup_remote_test_volume.main(["--remove", "--dry-run"]) == 0
+    printed = capsys.readouterr().out
+    assert "--filter label=d810.role=work" in printed
+    assert "--filter label=d810.credential_volume=idapro" in printed
+    assert "--filter label=d810.share_root_digest=" in printed
 
 
 def test_status_enumerates_retained_work_volumes(

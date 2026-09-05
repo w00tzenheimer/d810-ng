@@ -146,9 +146,11 @@
 #     0xc00000cc STATUS_BAD_NETWORK_NAME    the share name in device=//HOST/SHARE is wrong
 #
 #   `--status` runs the same probe read-only against an existing volume; `--no-verify` opts out.
-#   `--status` also lists the retained per-worktree work volumes (label d810.role=work): those hold
-#   COPIES OF SOURCE and outlive `--remove`, which reports them and deletes them only with
-#   `--purge-work-volumes`.
+#   `--status` also lists the retained per-worktree work volumes: those hold COPIES OF SOURCE and
+#   outlive `--remove`, which reports them and deletes them only with `--purge-work-volumes`. They
+#   are selected by all three of d810.role=work, d810.credential_volume=<volume> and
+#   d810.share_root_digest, so another share's copies are never in scope; orphans are still
+#   reachable when the credential volume is already gone.
 #   An SMB password containing a comma is refused up front: the cifs `o=` value is comma-separated.
 #
 #   The option set deliberately omits nobrl: if SQLite under /work/.tmp (diag DBs, debug logs) ever
@@ -907,6 +909,7 @@ _ensure_work_volume() {
       --label d810.role=work \
       --label "d810.worktree=$(basename "$WORK_DIR")" \
       --label "d810.share_root_digest=$(printf '%s' "$REMOTE_SHARE_ROOT" | shasum -a 256 | cut -c1-8)" \
+      --label "d810.credential_volume=$REMOTE_VOLUME" \
       "$WORK_VOLUME" >/dev/null; then
     echo "ERROR: could not create work volume $WORK_VOLUME on ssh://$REMOTE_HOST" >&2
     exit 1
