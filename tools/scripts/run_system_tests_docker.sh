@@ -1630,7 +1630,10 @@ if [ "$NATIVE_PROFILE" = "1" ]; then
   # PERFMON admits perf_event_open without granting the container full
   # privilege. SYS_PTRACE + the narrow seccomp relaxation admit py-spy attach.
   PROFILE_DOCKER_FLAGS="--cap-add=PERFMON --cap-add=SYS_PTRACE --security-opt=seccomp=unconfined"
-  PROFILE_SETUP="if ! command -v perf >/dev/null 2>&1; then apt-get update -qq && apt-get install -y --no-install-recommends linux-perf; fi; if [ ! -x $IDA_VENV_PYSPY ]; then $IDA_VENV_PIP install -q py-spy; fi; perf --version; $IDA_VENV_PYSPY --version"
+  # perf's absence used to be invisible: the steps were ';'-joined, so the
+  # whole thing returned py-spy's status and a profiling leg with no profiler
+  # looked like a successful one.
+  PROFILE_SETUP="{ if ! command -v perf >/dev/null 2>&1; then apt-get update -qq && apt-get install -y --no-install-recommends linux-perf; fi; } && { if [ ! -x $IDA_VENV_PYSPY ]; then $IDA_VENV_PIP install -q py-spy; fi; } && { perf --version || { echo 'ERROR: D810_NATIVE_PROFILE=1 but perf is not available; a profiling leg without a profiler is not a valid leg' >&2; exit 1; }; } && $IDA_VENV_PYSPY --version"
 fi
 
 # Per-container setup exports the runtime environment and installs dependencies

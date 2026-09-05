@@ -4237,3 +4237,54 @@ def test_an_unreadable_engine_clock_fails_closed(tmp_path: Path) -> None:
     assert "cannot read the remote engine clock" in result.stderr
     assert _workload_runs(calls) == []
 
+def test_a_profiling_leg_without_perf_is_not_a_valid_leg(tmp_path: Path) -> None:
+    """perf's absence used to return py-spy's status and pass."""
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--",
+        "true",
+        no_cython="0",
+        extra_env={"D810_NATIVE_PROFILE": "1"},
+    )
+
+    assert result.returncode == 0, result.stderr
+    command = _container_run(calls)
+    assert (
+        "ERROR: D810_NATIVE_PROFILE=1 but perf is not available; a profiling "
+        "leg without a profiler is not a valid leg" in command
+    )
+    terms, separators = _split_top_level(_inner_command(command))
+    assert ";" not in separators
+    # the perf check must be a precondition, never a trailing observation
+    assert "perf --version" not in terms[-1]
+
+
+def test_the_perf_guard_aborts_for_real_when_perf_is_absent(tmp_path: Path) -> None:
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--",
+        "true",
+        no_cython="0",
+        extra_env={"D810_NATIVE_PROFILE": "1"},
+    )
+    assert result.returncode == 0, result.stderr
+    command = _container_run(calls)
+
+    start = command.index("{ perf --version ||")
+    end = command.index("; }; }", start) + len("; }; }")
+    guard = command[start:end]
+    marker = tmp_path / "profiled"
+
+    completed = subprocess.run(
+        [shutil.which("bash") or "/bin/bash", "-c", f"{guard} && touch {marker}"],
+        check=False,
+        capture_output=True,
+        text=True,
+        env={"PATH": str(tmp_path / "empty-bin")},
+    )
+
+    assert completed.returncode == 1, completed
+    assert "a profiling leg without a profiler is not a valid leg" in completed.stderr
+    assert not marker.exists()
