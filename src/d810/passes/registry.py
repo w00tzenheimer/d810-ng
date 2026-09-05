@@ -491,6 +491,7 @@ class PassRegistry:
             stages=stages,
             transform_ids=transform_ids,
             editor_spec=editor_spec,
+            implementation_requirement=None,
             public=public,
             config_aware=True,
         )

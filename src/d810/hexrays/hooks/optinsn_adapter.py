@@ -1639,7 +1639,14 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
         )
 
     def _record_cycle_quarantine(self, *args: object) -> None:
-        """Port committer cycle notifications into the existing site quarantine."""
+        """Port committer cycle notifications into quarantine and session receipts.
+
+        The committer invokes this after it has rolled the candidate back, so
+        the instruction in ``_last_instruction_context`` is again the exact
+        input that closed the cycle.  Preserve that fingerprint across
+        maturities for this optimizer catalogue generation, while keeping the
+        mutable site quarantine maturity-local.
+        """
         if len(args) != 2:
             return
         key, producer = args
@@ -1662,6 +1669,29 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
             quarantined = defaultdict(set)
             self._cycle_quarantined_rule_names = quarantined
         quarantined.setdefault(site_key, set()).add(str(producer))
+
+        context = getattr(self, "_last_instruction_context", None)
+        optimizer = getattr(self, "_last_optimizer_tried", None)
+        if context is None or optimizer is None:
+            return
+        try:
+            func_ea = int(context.epoch.function_ea)
+            input_fingerprint = int(hash_minsn(context.instruction, func_ea))
+            receipt_scope_key = self._cycle_receipt_scope_key(
+                func_ea=func_ea,
+                ins_ea=site_key[2],
+                optimizer=optimizer,
+            )
+        except (AttributeError, TypeError, ValueError):
+            return
+        cycle_receipts = getattr(self, "_cycle_receipts", None)
+        if cycle_receipts is None:
+            cycle_receipts = {}
+            self._cycle_receipts = cycle_receipts
+        cycle_receipts.setdefault(receipt_scope_key, {}).setdefault(
+            input_fingerprint,
+            set(),
+        ).add(str(producer))
 
     def _poison_instruction_generation(self, error: BaseException) -> None:
         """Send native mutation failure to lifecycle poison authority, never cycle quarantine."""
