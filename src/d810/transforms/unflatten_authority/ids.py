@@ -1040,75 +1040,139 @@ def _json_bytes(value: object) -> bytes:
     return json.dumps(value, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("ascii")
 
 
-def _occurrence_stamp(value: object, seen: set[int] | None = None) -> object:
-    """Return a non-authoritative structural snapshot for one cache entry.
+_OCCURRENCE_TYPE_TOKENS: dict[type, bytes] = {}
+
+
+def _occurrence_type_token(cls: type) -> bytes:
+    """Return one process-stable token standing for an exact type object.
+
+    The tuple mirror this replaced compared types by identity (tuple equality
+    falls back to ``is`` for type objects). The token embeds ``id(cls)`` and
+    the dict holds a strong reference, so no live type can be confused with a
+    later type that reuses its address.
+    """
+
+    token = _OCCURRENCE_TYPE_TOKENS.get(cls)
+    if token is None:
+        token = f"{id(cls)}:{cls.__module__}.{cls.__qualname__}".encode(
+            "utf-8", "surrogatepass"
+        )
+        _OCCURRENCE_TYPE_TOKENS[cls] = token
+    return token
+
+
+def _feed_occurrence_token(hasher: object, tag: bytes, payload: bytes) -> None:
+    """Append one length-delimited token so no two shapes can alias."""
+
+    hasher.update(tag)
+    hasher.update(len(payload).to_bytes(8, "little"))
+    hasher.update(payload)
+
+
+def _feed_occurrence(value: object, hasher: object, seen: set[int]) -> None:
+    """Stream one value's structural shape into ``hasher``."""
+
+    if value is None or type(value) in (bool, int, str, bytes):
+        _feed_occurrence_token(hasher, b"a", _occurrence_type_token(type(value)))
+        if value is None:
+            payload = b""
+        elif type(value) is bytes:
+            payload = value
+        elif type(value) is str:
+            payload = value.encode("utf-8", "surrogatepass")
+        else:
+            payload = repr(value).encode("ascii")
+        _feed_occurrence_token(hasher, b"v", payload)
+        return
+    if type(value) is float:
+        _feed_occurrence_token(hasher, b"f", value.hex().encode("ascii"))
+        return
+    if isinstance(value, Enum):
+        _feed_occurrence_token(hasher, b"e", _occurrence_type_token(type(value)))
+        _feed_occurrence_token(
+            hasher, b"v", value.name.encode("utf-8", "surrogatepass")
+        )
+        return
+    marker = id(value)
+    if type(value) is dict or type(value) is MappingProxyType:
+        if marker in seen:
+            _feed_occurrence_token(hasher, b"c", repr(marker).encode("ascii"))
+            return
+        seen.add(marker)
+        try:
+            mapping = _exact_canonical_mapping(value)
+            _feed_occurrence_token(hasher, b"m", _occurrence_type_token(type(value)))
+            hasher.update(len(mapping).to_bytes(8, "little"))
+            for key, item in dict.items(mapping):
+                _feed_occurrence(key, hasher, seen)
+                _feed_occurrence(item, hasher, seen)
+        finally:
+            seen.remove(marker)
+        return
+    if type(value) in (list, tuple, frozenset):
+        if marker in seen:
+            _feed_occurrence_token(hasher, b"c", repr(marker).encode("ascii"))
+            return
+        seen.add(marker)
+        try:
+            _feed_occurrence_token(hasher, b"s", _occurrence_type_token(type(value)))
+            hasher.update(len(value).to_bytes(8, "little"))
+            for item in value:
+                _feed_occurrence(item, hasher, seen)
+        finally:
+            seen.remove(marker)
+        return
+    _ensure_registries()
+    names = _RECORD_FIELDS.get(type(value), _EXTERNAL_FIELDS.get(type(value)))
+    if names is not None:
+        if marker in seen:
+            _feed_occurrence_token(hasher, b"c", repr(marker).encode("ascii"))
+            return
+        seen.add(marker)
+        try:
+            _feed_occurrence_token(hasher, b"r", _occurrence_type_token(type(value)))
+            hasher.update(len(names).to_bytes(8, "little"))
+            native_key = type(value).__name__ == "NativePreanalysisKey"
+            for name in names:
+                _feed_occurrence_token(
+                    hasher, b"n", name.encode("utf-8", "surrogatepass")
+                )
+                _feed_occurrence(
+                    type(value).SCHEMA_VERSION
+                    if native_key and name == "schema_version"
+                    else getattr(value, name),
+                    hasher,
+                    seen,
+                )
+        finally:
+            seen.remove(marker)
+        return
+    _feed_occurrence_token(hasher, b"u", _occurrence_type_token(type(value)))
+    _feed_occurrence_token(hasher, b"i", repr(marker).encode("ascii"))
+
+
+def _occurrence_stamp(value: object) -> bytes:
+    """Return a fixed-size structural digest guarding one cache entry.
 
     This is an entry guard, never a cache key or an authority digest.  It
     avoids dataclass equality and recursive hashing while detecting an
     ``object.__setattr__`` mutation before a phase-local cached byte string or
     record ID can be returned for the wrong live content.
+
+    The stamp is a digest rather than the recursive tuple mirror it started
+    as.  The mirror measured ~2.3x the deep size of the value it guarded and
+    stayed alive in ``canonical_bytes`` across ``_wire`` and ``json.dumps``,
+    while the session retained one mirror per cached record -- O(nodes x
+    depth) for nested records, 21.7x the value's own size at depth 9.  On
+    Target A that exhausted the heap and ``json.dumps`` raised ``MemoryError``
+    inside the preflight (ticket d81-aw7v).  A digest answers the only
+    question a guard asks -- "is this exact object still byte-identical?" --
+    in constant space.
     """
 
-    seen = set() if seen is None else seen
-    if value is None or type(value) in (bool, int, str, bytes):
-        return ("atom", type(value), value)
-    if type(value) is float:
-        return ("float", value.hex())
-    if isinstance(value, Enum):
-        return ("enum", type(value), value.name)
-    if type(value) is dict or type(value) is MappingProxyType:
-        marker = id(value)
-        if marker in seen:
-            return ("cycle", marker)
-        seen.add(marker)
-        try:
-            mapping = _exact_canonical_mapping(value)
-            return (
-                "map", type(value), tuple(
-                    (key, _occurrence_stamp(item, seen))
-                    for key, item in dict.items(mapping)
-                ),
-            )
-        finally:
-            seen.remove(marker)
-    if type(value) in (list, tuple, frozenset):
-        marker = id(value)
-        if marker in seen:
-            return ("cycle", marker)
-        seen.add(marker)
-        try:
-            return (
-                "sequence", type(value),
-                tuple(_occurrence_stamp(item, seen) for item in value),
-            )
-        finally:
-            seen.remove(marker)
-    _ensure_registries()
-    names = _RECORD_FIELDS.get(type(value), _EXTERNAL_FIELDS.get(type(value)))
-    if names is not None:
-        marker = id(value)
-        if marker in seen:
-            return ("cycle", marker)
-        seen.add(marker)
-        try:
-            return (
-                "record", type(value), tuple(
-                    (
-                        name,
-                        _occurrence_stamp(
-                            type(value).SCHEMA_VERSION
-                            if type(value).__name__ == "NativePreanalysisKey"
-                            and name == "schema_version"
-                            else getattr(value, name),
-                            seen,
-                        ),
-                    )
-                    for name in names
-                ),
-            )
-        finally:
-            seen.remove(marker)
-    return ("unknown", type(value), id(value))
+    hasher = hashlib.blake2b(digest_size=32)
+    _feed_occurrence(value, hasher, set())
+    return hasher.digest()
 
 
 def canonical_bytes(value: object) -> bytes:
