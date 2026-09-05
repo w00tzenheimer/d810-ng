@@ -21,6 +21,10 @@ from d810.capabilities.providers import (
 
 from d810.analyses.control_flow.semantic_route_evidence import (
     DecisionDagComparisonWitness,
+    RuntimeRouteIdentity,
+    runtime_semantic_evidence_from_proofs,
+    runtime_semantic_route_scope,
+    semantic_evidence_with_additional_proofs,
     CanonicalRouteAssessment,
     CanonicalRouteMaterialization,
     CanonicalRouteAssessmentPhase,
@@ -88,6 +92,11 @@ from d810.transforms.unflatten_authority.ids import (
     canonical_decode,
     semantic_graph_fingerprint,
     validate_canonical_roundtrip,
+)
+from d810.core.runtime_identity import (
+    RuntimeAuthorityKind,
+    RuntimeAuthorityScope,
+    is_runtime_authority_identity,
 )
 from d810.capabilities.semantic_routes import CanonicalSemanticEvidenceCapability
 from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
@@ -3130,6 +3139,155 @@ def test_canonical_factory_merges_diagnostic_provenance_outside_authority_seal()
     assert merged.route_proofs[0].diagnostic_provenance == (
         ("fact_id", "first"),
         ("fact_id", "second"),
+    )
+
+
+def test_runtime_factory_mints_scope_owned_identities() -> None:
+    scope = runtime_semantic_route_scope(NATIVE_KEY, 3)
+    evidence = runtime_semantic_evidence_from_proofs(
+        NATIVE_KEY, 3, (_proof(), _storage_choice_proof()), scope=scope,
+    )
+
+    identity = evidence.runtime_identity
+    assert type(identity) is RuntimeRouteIdentity
+    assert identity.scope is scope
+    assert scope.owns(identity.group_ref)
+    assert evidence.atomic_group_id == scope.identity(identity.group_ref)
+    assert all(
+        is_runtime_authority_identity(proof.proof_id)
+        for proof in evidence.route_proofs
+    )
+    assert tuple(proof.proof_id for proof in evidence.route_proofs) == tuple(
+        scope.identity(ref) for ref in identity.proof_refs
+    )
+    assert all(
+        proof.atomic_group_id == evidence.atomic_group_id
+        for proof in evidence.route_proofs
+    )
+
+
+def test_runtime_factory_namespace_ignores_the_human_group_label() -> None:
+    first = runtime_semantic_route_scope(NATIVE_KEY, 3)
+    second = runtime_semantic_route_scope(NATIVE_KEY, 3)
+
+    assert first.namespace == second.namespace
+    assert first is not second
+    assert runtime_semantic_evidence_from_proofs(
+        NATIVE_KEY, 3, (_proof(),), scope=first,
+    ).atomic_group_id == runtime_semantic_evidence_from_proofs(
+        NATIVE_KEY, 3, (_proof(),), scope=second,
+    ).atomic_group_id
+
+
+def test_runtime_factory_deduplicates_by_direct_fields() -> None:
+    proof = _proof()
+    choice = _storage_choice_proof()
+    first = replace(proof, diagnostic_provenance=(("fact_id", "first"),))
+    second = replace(proof, diagnostic_provenance=(("fact_id", "second"),))
+
+    single = runtime_semantic_evidence_from_proofs(
+        NATIVE_KEY, 3, (proof,), scope=runtime_semantic_route_scope(NATIVE_KEY, 3),
+    )
+    merged = runtime_semantic_evidence_from_proofs(
+        NATIVE_KEY, 3, (second, first), scope=runtime_semantic_route_scope(NATIVE_KEY, 3),
+    )
+    ordered = runtime_semantic_evidence_from_proofs(
+        NATIVE_KEY, 3, (proof, choice), scope=runtime_semantic_route_scope(NATIVE_KEY, 3),
+    )
+    reordered = runtime_semantic_evidence_from_proofs(
+        NATIVE_KEY,
+        3,
+        (choice, proof, choice, proof),
+        scope=runtime_semantic_route_scope(NATIVE_KEY, 3),
+    )
+
+    assert len(merged.route_proofs) == 1
+    assert merged.atomic_group_id == single.atomic_group_id
+    assert merged.route_proofs[0].diagnostic_provenance == (
+        ("fact_id", "first"),
+        ("fact_id", "second"),
+    )
+    assert len(reordered.route_proofs) == 2
+    # Ordering is a function of the native coordinates, not of input order.
+    assert tuple(
+        (item.proof_id, item.source_anchor_ea, item.proof_kind)
+        for item in reordered.route_proofs
+    ) == tuple(
+        (item.proof_id, item.source_anchor_ea, item.proof_kind)
+        for item in ordered.route_proofs
+    )
+
+
+def test_runtime_evidence_rejects_a_foreign_scope() -> None:
+    evidence = runtime_semantic_evidence_from_proofs(
+        NATIVE_KEY, 3, (_proof(),), scope=runtime_semantic_route_scope(NATIVE_KEY, 3),
+    )
+    stranger = runtime_semantic_route_scope(NATIVE_KEY, 3)
+
+    with pytest.raises(SemanticRouteEvidenceRejected, match="another scope"):
+        RuntimeRouteIdentity(
+            scope=stranger,
+            group_ref=evidence.runtime_identity.group_ref,
+            proof_refs=evidence.runtime_identity.proof_refs,
+        )
+    # An identity string is a readable projection, not the ownership proof:
+    # it is deterministic in the native function, the generation, and mint
+    # order, so a second scope over the same bundle renders the same strings.
+    # Ownership lives in the reference, which the record above enforces.
+    stranger.mint(RuntimeAuthorityKind.ROUTE_GROUP)
+    rebound = RuntimeRouteIdentity(
+        scope=stranger,
+        group_ref=stranger.mint(RuntimeAuthorityKind.ROUTE_GROUP),
+        proof_refs=(stranger.mint(RuntimeAuthorityKind.ROUTE_PROOF),),
+    )
+    with pytest.raises(SemanticRouteEvidenceRejected, match="not scope-derived"):
+        CanonicalSemanticEvidence(
+            native_key=evidence.native_key,
+            generation=evidence.generation,
+            atomic_group_id=evidence.atomic_group_id,
+            route_proofs=evidence.route_proofs,
+            _runtime_identity=rebound,
+        )
+
+
+def test_evidence_rejects_mixed_runtime_and_content_identities() -> None:
+    canonical = canonical_semantic_evidence_from_proofs(NATIVE_KEY, 3, (_proof(),))
+    scope = RuntimeAuthorityScope("mixed")
+    runtime_id = scope.identity(scope.mint(RuntimeAuthorityKind.ROUTE_PROOF))
+
+    forged = _unsafe_evidence(
+        canonical,
+        (replace(canonical.route_proofs[0], proof_id=runtime_id),),
+    )
+    with pytest.raises(SemanticRouteEvidenceRejected, match="content-derived"):
+        CanonicalSemanticEvidence.__post_init__(forged)
+
+
+def test_semantic_evidence_remint_keeps_the_identity_discipline() -> None:
+    scope = runtime_semantic_route_scope(NATIVE_KEY, 3)
+    runtime = runtime_semantic_evidence_from_proofs(
+        NATIVE_KEY, 3, (_proof(),), scope=scope,
+    )
+    canonical = canonical_semantic_evidence_from_proofs(NATIVE_KEY, 3, (_proof(),))
+    choice = _storage_choice_proof()
+
+    grown = semantic_evidence_with_additional_proofs(runtime, (choice,))
+    recanonicalized = semantic_evidence_with_additional_proofs(canonical, (choice,))
+
+    assert grown.runtime_identity is not None
+    assert grown.runtime_identity.scope is scope
+    assert len(grown.route_proofs) == 2
+    # A remint in the same scope hands out identities the superseded bundle
+    # never used, so the two bundles cannot be confused for one another.
+    assert not (
+        {proof.proof_id for proof in grown.route_proofs}
+        & {proof.proof_id for proof in runtime.route_proofs}
+    )
+    assert grown.atomic_group_id != runtime.atomic_group_id
+    assert recanonicalized.runtime_identity is None
+    assert all(
+        proof.proof_id.startswith("sha256:")
+        for proof in recanonicalized.route_proofs
     )
 
 

@@ -11,6 +11,12 @@ from collections.abc import Mapping
 
 from d810.core.logging import getLogger
 from d810.core.native_preanalysis_key import NativePreanalysisKey
+from d810.core.runtime_identity import (
+    RuntimeAuthorityKind,
+    RuntimeAuthorityRef,
+    RuntimeAuthorityScope,
+    is_runtime_authority_identity,
+)
 from d810.ir.block_identity import (
     NativeEaInterval,
     StableBlockIdentity,
@@ -3404,6 +3410,52 @@ def semantic_route_proof_reaches_consumer(
 
 
 @dataclass(frozen=True, slots=True)
+class RuntimeRouteIdentity:
+    """Scope-owned join identity for one internally produced route bundle.
+
+    The record is complete when it is constructed: the caller passes the exact
+    scope, the exact group reference, and the exact per-proof references, and
+    nothing mutates them afterwards.  It carries the minting scope so the
+    consuming transaction can keep working in the same reference space instead
+    of reminting content-derived identities.
+    """
+
+    scope: RuntimeAuthorityScope
+    group_ref: RuntimeAuthorityRef
+    proof_refs: tuple[RuntimeAuthorityRef, ...]
+
+    def __post_init__(self) -> None:
+        if type(self.scope) is not RuntimeAuthorityScope:
+            raise TypeError("runtime route identity requires a runtime scope")
+        if type(self.group_ref) is not RuntimeAuthorityRef:
+            raise TypeError("runtime route identity requires a group reference")
+        if type(self.proof_refs) is not tuple or not self.proof_refs:
+            raise TypeError("runtime route identity requires exact proof references")
+        if self.group_ref.kind is not RuntimeAuthorityKind.ROUTE_GROUP:
+            raise SemanticRouteEvidenceRejected(
+                "runtime route identity group reference has the wrong kind"
+            )
+        if any(
+            type(ref) is not RuntimeAuthorityRef
+            or ref.kind is not RuntimeAuthorityKind.ROUTE_PROOF
+            for ref in self.proof_refs
+        ):
+            raise SemanticRouteEvidenceRejected(
+                "runtime route identity proof references have the wrong kind"
+            )
+        if len(set(self.proof_refs)) != len(self.proof_refs):
+            raise SemanticRouteEvidenceRejected(
+                "runtime route identity has duplicate proof references"
+            )
+        if not self.scope.owns(self.group_ref) or not all(
+            self.scope.owns(ref) for ref in self.proof_refs
+        ):
+            raise SemanticRouteEvidenceRejected(
+                "runtime route identity references another scope"
+            )
+
+
+@dataclass(frozen=True, slots=True)
 class CanonicalSemanticEvidence:
     """One atomic generation of provider-neutral semantic route proofs."""
 
@@ -3411,6 +3463,18 @@ class CanonicalSemanticEvidence:
     generation: int
     atomic_group_id: str
     route_proofs: tuple[SemanticRouteProof, ...]
+    # Private, and therefore outside the canonical wire schema: a live scope is
+    # never serialized, and the identities it minted are already carried by the
+    # public ``atomic_group_id``/``proof_id`` fields.
+    _runtime_identity: RuntimeRouteIdentity | None = field(
+        default=None, compare=False, repr=False,
+    )
+
+    @property
+    def runtime_identity(self) -> "RuntimeRouteIdentity | None":
+        """Return the minting scope when this bundle was produced internally."""
+
+        return self._runtime_identity
 
     def __post_init__(self) -> None:
         if not isinstance(self.native_key, NativePreanalysisKey):
@@ -3444,11 +3508,14 @@ class CanonicalSemanticEvidence:
             raise SemanticRouteEvidenceRejected(
                 "canonical semantic evidence contains duplicate proof ids"
             )
-        _validate_content_derived_ids(
+        _validate_route_identities(
             native_key=self.native_key,
             generation=generation,
             atomic_group_id=atomic_group_id,
             route_proofs=route_proofs,
+            # ``__post_init__`` is also the revalidation entry point for a
+            # record rebuilt field by field, which never carries a live scope.
+            runtime_identity=getattr(self, "_runtime_identity", None),
         )
         object.__setattr__(self, "generation", generation)
         object.__setattr__(self, "atomic_group_id", atomic_group_id)
@@ -6221,6 +6288,253 @@ def _validate_content_derived_ids(
             raise SemanticRouteEvidenceRejected(
                 "canonical semantic proof id is not content-derived"
             )
+
+
+_STABLE_ROUTE_PROOF_FIELDS: tuple[str, ...] = tuple(
+    item.name
+    for item in fields(SemanticRouteProof)
+    if item.name not in {"proof_id", "atomic_group_id", "diagnostic_provenance"}
+)
+
+
+def _stable_route_proof_key(proof: SemanticRouteProof) -> tuple[object, ...]:
+    """Return the exact authoritative field values that binding compares.
+
+    This is the direct-field counterpart of ``_stable_route_proof_payload``:
+    the same fields, compared as the immutable values they already are instead
+    of being fingerprinted and JSON encoded first.  Top-level identities and
+    diagnostic provenance are excluded for the same reason as there.
+
+    The values are compared, never hashed: a portable instruction record
+    carries a ``mappingproxy`` of opcode attributes, so the field tuple is not
+    hashable even though every component compares exactly.
+    """
+
+    return tuple(getattr(proof, name) for name in _STABLE_ROUTE_PROOF_FIELDS)
+
+
+def _runtime_route_proof_order(proof: SemanticRouteProof) -> tuple[object, ...]:
+    """Bucket and order proofs by their native coordinates.
+
+    Two proofs with the same coordinates are the only pair that can be
+    duplicates of each other, so this doubles as a cheap hashable bucket key
+    for the direct-field duplicate check.
+    """
+
+    return (
+        int(proof.source_anchor_ea),
+        proof.proof_kind.value,
+        proof.shape.value,
+        tuple(
+            (
+                destination.role.value,
+                int(destination.state_constant),
+                int(destination.target_anchor_ea),
+            )
+            for destination in proof.destinations
+        ),
+    )
+
+
+def _runtime_authoritative_proofs(
+    proofs: tuple[SemanticRouteProof, ...],
+) -> tuple[SemanticRouteProof, ...]:
+    """Merge repeated authoritative payloads by direct field comparison."""
+
+    buckets: dict[
+        tuple[object, ...], list[tuple[tuple[object, ...], SemanticRouteProof]]
+    ] = {}
+    for proof in proofs:
+        stable = _stable_route_proof_key(proof)
+        bucket = buckets.setdefault(_runtime_route_proof_order(proof), [])
+        for index, (prior_key, prior) in enumerate(bucket):
+            if prior_key == stable:
+                provenance = tuple(sorted(set(
+                    (*prior.diagnostic_provenance, *proof.diagnostic_provenance)
+                )))
+                bucket[index] = (
+                    prior_key, replace(prior, diagnostic_provenance=provenance),
+                )
+                break
+        else:
+            bucket.append((stable, proof))
+    return tuple(
+        proof
+        for bucket_key in sorted(buckets)
+        for _stable, proof in buckets[bucket_key]
+    )
+
+
+def runtime_semantic_route_scope(
+    native_key: NativePreanalysisKey,
+    generation: int,
+) -> RuntimeAuthorityScope:
+    """Open one reference scope for a single internal route-evidence build.
+
+    The namespace carries only the native function and generation the bundle
+    belongs to.  A caller-supplied human group label is deliberately excluded,
+    exactly as it is excluded from a content-derived identity.
+    """
+
+    if not isinstance(native_key, NativePreanalysisKey):
+        raise TypeError("runtime semantic route scope requires a native key")
+    return RuntimeAuthorityScope(
+        f"{int(native_key.function_rva):#x}:g{int(generation)}"
+    )
+
+
+def runtime_semantic_evidence_from_proofs(
+    native_key: NativePreanalysisKey,
+    generation: int,
+    proofs: tuple[SemanticRouteProof, ...],
+    *,
+    scope: RuntimeAuthorityScope,
+) -> CanonicalSemanticEvidence:
+    """Construct evidence whose join identities are minted by one live scope.
+
+    This is the internal-producer counterpart of
+    ``canonical_semantic_evidence_from_proofs``.  It performs the same
+    duplicate merge over the same authoritative fields, but it never
+    fingerprints, JSON encodes, or hashes them: the group and per-proof
+    identities are scope-owned references, and the bundle carries the scope so
+    the consuming transaction stays inside it.
+    """
+
+    if type(scope) is not RuntimeAuthorityScope:
+        raise TypeError("runtime semantic evidence requires a runtime scope")
+    route_proofs = _runtime_authoritative_proofs(tuple(proofs))
+    if not route_proofs:
+        raise SemanticRouteEvidenceRejected(
+            "canonical semantic evidence requires route proofs"
+        )
+    group_ref = scope.mint(RuntimeAuthorityKind.ROUTE_GROUP)
+    group_id = scope.identity(group_ref)
+    proof_refs = tuple(
+        scope.mint(RuntimeAuthorityKind.ROUTE_PROOF) for _ in route_proofs
+    )
+    runtime_proofs = tuple(
+        replace(proof, atomic_group_id=group_id, proof_id=scope.identity(ref))
+        for proof, ref in zip(route_proofs, proof_refs)
+    )
+    return CanonicalSemanticEvidence(
+        native_key=native_key,
+        generation=generation,
+        atomic_group_id=group_id,
+        route_proofs=runtime_proofs,
+        _runtime_identity=RuntimeRouteIdentity(
+            scope=scope,
+            group_ref=group_ref,
+            proof_refs=proof_refs,
+        ),
+    )
+
+
+def semantic_evidence_with_additional_proofs(
+    evidence: CanonicalSemanticEvidence,
+    additional_proofs: tuple[SemanticRouteProof, ...],
+) -> CanonicalSemanticEvidence:
+    """Remint one bundle plus extra proofs under the identity it already uses.
+
+    A bundle supplied across a persistence boundary keeps content-derived
+    identities; an internally produced bundle stays inside its own reference
+    scope, which also keeps the reminted identities distinct from the ones the
+    superseded bundle handed out.
+    """
+
+    if type(evidence) is not CanonicalSemanticEvidence:
+        raise TypeError("semantic evidence remint requires canonical evidence")
+    proofs = (*evidence.route_proofs, *additional_proofs)
+    identity = evidence.runtime_identity
+    if identity is None:
+        return canonical_semantic_evidence_from_proofs(
+            native_key=evidence.native_key,
+            generation=evidence.generation,
+            proofs=proofs,
+        )
+    return runtime_semantic_evidence_from_proofs(
+        native_key=evidence.native_key,
+        generation=evidence.generation,
+        proofs=proofs,
+        scope=identity.scope,
+    )
+
+
+def _validate_runtime_derived_ids(
+    *,
+    atomic_group_id: str,
+    route_proofs: tuple[SemanticRouteProof, ...],
+    runtime_identity: "RuntimeRouteIdentity | None",
+) -> None:
+    """Require every runtime identity to be minted by the bundle's own scope.
+
+    A record that arrives without its scope cannot be checked against one.
+    Rejecting that case fail-closed belongs with the transaction-internal
+    joins that will consume these references; here the representation and,
+    when the scope is present, the scope itself are what is checked.
+    """
+
+    if any(
+        not is_runtime_authority_identity(proof.proof_id)
+        for proof in route_proofs
+    ):
+        raise SemanticRouteEvidenceRejected(
+            "semantic evidence mixes runtime and content-derived route ids"
+        )
+    if runtime_identity is None:
+        return
+    scope = runtime_identity.scope
+    if scope.identity(runtime_identity.group_ref) != atomic_group_id:
+        raise SemanticRouteEvidenceRejected(
+            "runtime semantic atomic group id is not scope-derived"
+        )
+    if {scope.identity(ref) for ref in runtime_identity.proof_refs} != {
+        proof.proof_id for proof in route_proofs
+    }:
+        raise SemanticRouteEvidenceRejected(
+            "runtime semantic proof ids are not scope-derived"
+        )
+
+
+def _validate_route_identities(
+    *,
+    native_key: NativePreanalysisKey,
+    generation: int,
+    atomic_group_id: str,
+    route_proofs: tuple[SemanticRouteProof, ...],
+    runtime_identity: "RuntimeRouteIdentity | None",
+) -> None:
+    """Validate evidence identities against the discipline they declare.
+
+    Content-derived identities keep the full reproducibility check.  A
+    scope-derived identity announces itself with an explicit prefix, so nothing
+    that is neither shape can slip past unvalidated.
+    """
+
+    runtime_group = is_runtime_authority_identity(atomic_group_id)
+    if runtime_identity is not None and not runtime_group:
+        raise SemanticRouteEvidenceRejected(
+            "runtime route identity requires a scope-derived atomic group id"
+        )
+    if not runtime_group:
+        if any(
+            is_runtime_authority_identity(proof.proof_id)
+            for proof in route_proofs
+        ):
+            raise SemanticRouteEvidenceRejected(
+                "semantic evidence mixes runtime and content-derived route ids"
+            )
+        _validate_content_derived_ids(
+            native_key=native_key,
+            generation=generation,
+            atomic_group_id=atomic_group_id,
+            route_proofs=route_proofs,
+        )
+        return
+    _validate_runtime_derived_ids(
+        atomic_group_id=atomic_group_id,
+        route_proofs=route_proofs,
+        runtime_identity=runtime_identity,
+    )
 
 
 def _materialized_graph_fingerprint(
@@ -9031,6 +9345,10 @@ __all__ = [
     "CanonicalSemanticEvidenceProductionResult",
     "CanonicalSemanticEvidenceProductionStage",
     "canonical_semantic_evidence_from_proofs",
+    "RuntimeRouteIdentity",
+    "runtime_semantic_evidence_from_proofs",
+    "runtime_semantic_route_scope",
+    "semantic_evidence_with_additional_proofs",
     "build_canonical_semantic_evidence",
     "CanonicalRouteMaterialization",
     "capture_source_route_materialization",
