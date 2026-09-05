@@ -124,6 +124,9 @@
 # Remote examples:
 #   ./run_system_tests_docker.sh exec --remote remote-engine.example -w my-worktree -- true
 #   ./run_system_tests_docker.sh test --remote remote-engine.example -w my-worktree -o remote.txt -- -q
+#   # One container per worktree in parallel, with a measured sequential baseline:
+#   python3 tools/scripts/remote_shard_bench.py --remote remote-engine.example \
+#     --shard 'worktree-a=tests/system/e2e/x.py::case_a' --shard 'worktree-b=tests/system/e2e/x.py::case_b'
 #
 # Examples:
 #   ./run_system_tests_docker.sh system
