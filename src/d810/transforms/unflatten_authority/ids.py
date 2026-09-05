@@ -38,6 +38,7 @@ from d810.ir.graph_fingerprint import (
 )
 from .runtime_authority import transaction_subject_ref
 from .canonical_session import (
+    OccurrenceDigest,
     active_canonical_session,
     record_bytes_lookup,
     record_canonical_bytes_reuse,
@@ -1050,28 +1051,6 @@ def _external_wire(value: object) -> object:
 
 def _json_bytes(value: object) -> bytes:
     return json.dumps(value, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("ascii")
-
-
-class OccurrenceDigest(bytes):
-    """A phase-local cache *guard*, never an authority or content digest.
-
-    It is deliberately not interchangeable with the ``sha256:`` content IDs
-    this module mints.  An ``OccurrenceDigest`` covers ``id()`` values for
-    cycles and for values of unregistered types, so it is reproducible only
-    within one process and only while those objects are alive.  It answers
-    exactly one question -- "is this same object still byte-identical to when
-    it was cached" -- and must never be persisted, compared across processes,
-    or used as a cache key.
-
-    Subclassing ``bytes`` keeps equality, hashing and the session caches
-    working unchanged while giving the value a name that cannot be mistaken
-    for an authority digest at a call site.
-    """
-
-    __slots__ = ()
-
-    def __repr__(self) -> str:
-        return f"OccurrenceDigest({bytes(self).hex()})"
 
 
 class _OccurrenceHasher(Protocol):

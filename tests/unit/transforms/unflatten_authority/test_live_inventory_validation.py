@@ -430,10 +430,9 @@ def test_debug_logging_and_diagnostics_add_no_canonical_work(monkeypatch) -> Non
     assert noisy.registry_seal_misses == quiet.registry_seal_misses
 
 
-def _arm_proposal_canonicalisation(monkeypatch, frame_name: str) -> list[str]:
+def _arm_proposal_canonicalisation(monkeypatch, frame_name: str) -> None:
     """Make any canonical encode of a whole proposal raise inside ``frame_name``."""
 
-    reached: list[str] = []
     for name in ("canonical_bytes", "content_id", "_record_content_id", "_wire"):
         real = getattr(authority_ids, name)
 
@@ -457,7 +456,6 @@ def _arm_proposal_canonicalisation(monkeypatch, frame_name: str) -> list[str]:
         for module in (authority_ids, model, bind, transaction_api):
             if getattr(module, name, None) is real:
                 monkeypatch.setattr(module, name, _tripwire)
-    return reached
 
 
 def test_rejected_route_diagnostics_never_canonicalise_the_proposal(

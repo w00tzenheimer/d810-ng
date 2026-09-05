@@ -141,6 +141,28 @@ _COUNTER_NAMES: tuple[str, ...] = (
     "registry_seal_misses",
 )
 
+class OccurrenceDigest(bytes):
+    """A phase-local cache *guard*, never an authority or content digest.
+
+    It is deliberately not interchangeable with the ``sha256:`` content IDs
+    this module mints.  An ``OccurrenceDigest`` covers ``id()`` values for
+    cycles and for values of unregistered types, so it is reproducible only
+    within one process and only while those objects are alive.  It answers
+    exactly one question -- "is this same object still byte-identical to when
+    it was cached" -- and must never be persisted, compared across processes,
+    or used as a cache key.
+
+    Subclassing ``bytes`` keeps equality, hashing and the session caches
+    working unchanged while giving the value a name that cannot be mistaken
+    for an authority digest at a call site.
+    """
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:
+        return f"OccurrenceDigest({bytes(self).hex()})"
+
+
 _REPORT_ENV = "D810_AUTHORITY_WORK_COUNTERS"
 _REPORT_PREFIX = "d810-authority-work-counters"
 _SESSION_REPORT_PREFIX = "d810-authority-work-counters-session"
@@ -515,6 +537,18 @@ class CanonicalValidationSession:
             Absent from ``ids._RECORD_FIELDS``, therefore absent from the
             digest by construction.  A memo key that carried them would miss on
             every lookup and the memo would be dead code.
+
+        **Weak registry semantics are suspended for a memoized occurrence.**
+        The publication registries hold ``weakref.ref(value, cleanup)`` and pop
+        their row when the value dies; an entry here holds ``value`` *strongly*,
+        so for the lifetime of the phase a sealed occurrence cannot be swept and
+        the registry row it owns cannot be reclaimed.  That reference is not
+        optional -- ``id()`` is recycled, so identity is the only sound guard --
+        and it is bounded by the session, which dies with the phase.  The cost
+        is peak heap: the closure of every sealed record stays reachable until
+        ``_close``.  This substrate has already lost one wave to a heap
+        regression (ticket d81-aw7v), so the OLLVM legs record phase-peak RSS
+        next to the wall rather than assuming the trade is free.
         """
 
         self._require_open()
@@ -526,11 +560,21 @@ class CanonicalValidationSession:
     def store_registry_seal(
         self, registry_key: int, value: object, digest: object, seal: str,
     ) -> None:
-        """Record one registry seal that just validated completely."""
+        """Record one registry seal that just validated completely.
+
+        The digest type is checked *here*, not only where it is produced: the
+        design's load-bearing rule is that the key is the full 32-byte
+        ``OccurrenceDigest`` and never a bucket, and an API that accepts a
+        truncated ``bytes`` or ``None`` leaves that rule enforced by one call
+        site.  ``gotcha_mop_equality_memo_on_bucket_hash`` is what a collapsing
+        key costs.
+        """
 
         self._require_open()
         if type(seal) is not str:
             raise TypeError("a registry seal must be an exact str")
+        if type(digest) is not OccurrenceDigest or len(digest) != 32:
+            raise TypeError("a registry seal guard must be a full OccurrenceDigest")
         self._registry_seals[(registry_key, id(value))] = (value, digest, seal)
 
     def runtime_binding_for(self, value: object) -> object | None:
@@ -886,6 +930,7 @@ __all__ = [
     "CanonicalSessionPhase",
     "CanonicalValidationSession",
     "CanonicalWorkMetrics",
+    "OccurrenceDigest",
     "active_canonical_session",
     "emit_process_work_report",
     "emit_session_work_report",

@@ -15,6 +15,9 @@ names is removed.
 
 from __future__ import annotations
 
+import ast
+import inspect
+import textwrap
 from dataclasses import fields as dataclass_fields
 from unittest.mock import patch
 
@@ -25,13 +28,16 @@ from d810.transforms.unflatten_authority import bind
 from d810.transforms.unflatten_authority import canonical_session
 from d810.transforms.unflatten_authority import ids as authority_ids
 from d810.transforms.unflatten_authority import model
+from d810.transforms.unflatten_authority import transaction_api
 from d810.transforms.unflatten_authority.canonical_session import (
     CanonicalSessionPhase,
+    OccurrenceDigest,
     _WorkLedger,
     _canonical_validation_session,
 )
 
 from . import test_bind
+from . import test_live_inventory_validation as live
 
 
 @pytest.fixture(autouse=True)
@@ -123,15 +129,24 @@ def test_an_unregistered_type_never_memoizes() -> None:
         assert bind._memoizable_digest(session, stranger) is None
         # The identity-only stamp really is blind to the mutation, which is
         # exactly why the gate exists.
-        before = authority_ids._occurrence_stamp(stranger)
+        stamp = authority_ids._occurrence_stamp(stranger)
         stranger.value = 2
-        assert authority_ids._occurrence_stamp(stranger) == before
-        # A registered record type is admitted.
+        assert authority_ids._occurrence_stamp(stranger) == stamp
+        # A registered record type is admitted, and its guard is a full digest.
         admitted = bind._memoizable_digest(session, _source_authority())
-        assert admitted is not None
+        assert type(admitted) is OccurrenceDigest
+        assert len(admitted) == 32
         before = session.metrics
-        # An unregistered value never reaches the memo, hit or miss.
-        session.store_registry_seal(0, stranger, None, "sha256:never")
+        # The store refuses that identity-only stamp outright: it is a bytes
+        # subclass, but it is not the guard this memo is allowed to trust.
+        with pytest.raises(TypeError):
+            session.store_registry_seal(0, stranger, bytes(stamp), "sha256:never")
+        with pytest.raises(TypeError):
+            session.store_registry_seal(0, stranger, None, "sha256:never")
+        with pytest.raises(TypeError):
+            session.store_registry_seal(
+                0, stranger, OccurrenceDigest(bytes(stamp)[:16]), "sha256:never",
+            )
         assert bind._memoizable_digest(session, stranger) is None
         after = session.metrics
 
@@ -193,7 +208,16 @@ def test_the_memo_is_owned_by_one_session_and_never_crosses_phases() -> None:
 
 
 def test_a_closed_session_never_leaks_require_open_out_of_a_seal() -> None:
-    """R2-F8: after ``_close`` the seal path takes the full, strict route."""
+    """R2-F8: after ``_close`` the seal path takes the full, strict route.
+
+    Scope, stated rather than implied: the production path can never present a
+    *closed* session, because ``_canonical_validation_session`` resets the
+    ContextVar before it calls ``_close``.  This pins the API contract -- a
+    closed session answers nothing -- and then pins that the sessionless path
+    still returns the same seal.  The ``RuntimeError`` branch is unreachable
+    from production by construction, which is why it is asserted here directly
+    instead of being driven through a seal.
+    """
 
     subject = _published_route_result()
     registry = _route_registry()
@@ -204,7 +228,7 @@ def test_a_closed_session_never_leaks_require_open_out_of_a_seal() -> None:
 
     assert session.closed is True
     with pytest.raises(RuntimeError):
-        session.registry_seal_for(id(registry), subject, b"digest")
+        session.registry_seal_for(id(registry), subject, OccurrenceDigest(bytes(32)))
     # The production path no longer sees that session at all.
     assert canonical_session.active_canonical_session() is None
     assert bind._canonical_registry_seal(subject, registry) == expected
@@ -215,11 +239,12 @@ def test_the_memo_refuses_a_seal_that_is_not_an_exact_string() -> None:
 
     subject = _published_route_result()
     registry = _route_registry()
+    digest = OccurrenceDigest(bytes(32))
     with _canonical_validation_session(
         CanonicalSessionPhase.PROJECTED_PREPARATION,
     ) as session:
         with pytest.raises(TypeError):
-            session.store_registry_seal(id(registry), subject, b"digest", b"seal")
+            session.store_registry_seal(id(registry), subject, digest, b"seal")
 
 
 def test_the_memo_key_separates_registries_and_occurrences() -> None:
@@ -228,37 +253,49 @@ def test_the_memo_key_separates_registries_and_occurrences() -> None:
     subject = _published_route_result()
     other = _source_authority()
     registry = _route_registry()
+    one = OccurrenceDigest(bytes(31) + b"\x01")
+    two = OccurrenceDigest(bytes(31) + b"\x02")
     with _canonical_validation_session(
         CanonicalSessionPhase.PROJECTED_PREPARATION,
     ) as session:
-        session.store_registry_seal(id(registry), subject, b"d", "sha256:seal")
-        assert session.registry_seal_for(id(registry), subject, b"d") == "sha256:seal"
-        assert session.registry_seal_for(id(registry) + 1, subject, b"d") is None
-        assert session.registry_seal_for(id(registry), other, b"d") is None
-        assert session.registry_seal_for(id(registry), subject, b"e") is None
+        session.store_registry_seal(id(registry), subject, one, "sha256:seal")
+        assert session.registry_seal_for(id(registry), subject, one) == "sha256:seal"
+        assert session.registry_seal_for(id(registry) + 1, subject, one) is None
+        assert session.registry_seal_for(id(registry), other, one) is None
+        assert session.registry_seal_for(id(registry), subject, two) is None
 
 
 # --- the soundness invariant the memo key depends on --------------------
 
 
-_SEAL_SUBJECT_TYPE_NAMES = (
-    "ClonedSemanticInstructionOrigin", "ClonedSemanticPrefix",
-    "DirectRouteRealization", "SharedCarrierSourceBypassRouteRealization",
-    "RetainedPrefixRouteRealization", "LoweredConditionalRouteRealization",
-    "ClonedConditionalRouteRealization", "FoldedConditionalRouteRealization",
-    "TwoArmDirectBranchRouteRealization",
-    "BranchFallthroughHelperRouteRealization", "ClonedRouteCorridorRealization",
-    "ClonedCarrierRouteCorridorRealization", "SourceBoundRouteAuthority",
-    "ProjectedRouteRealizationRow", "ProjectedRouteRealization",
-    "SourceBoundRouteAuthorityAccepted", "SourceBoundRouteAuthorityRejected",
-    "ProjectedRouteRealizationAccepted", "ProjectedRouteRealizationRejected",
-    "RouteRealizationFailure", "RawEffectGatePhaseFact",
-    "EffectSiteCoordinate", "TerminalSiteCoordinate",
-    "ScalarizedInstructionCoordinate", "ExactEffectBindingResult",
-    "LocalAliasScalarizationBindingResult", "ProjectedEffectSiteResult",
-    "ProjectedTerminalSiteResult", "ProjectedSemanticSitePhaseResult",
-    "ProjectedRouteSitePreservation",
-)
+def _seal_subject_types() -> frozenset[type]:
+    """Every model type ``_canonical_registry_seal_uncached`` dispatches on.
+
+    Read out of the function's own source rather than restated here: a
+    hand-written literal is exactly what let three of the thirty-three
+    subjects -- the observed logical-endpoint and the two observed topology
+    occurrences -- go unchecked in the first version of this test.
+    """
+
+    source = textwrap.dedent(inspect.getsource(
+        bind._canonical_registry_seal_uncached,
+    ))
+    tree = ast.parse(source)
+    names = {
+        node.attr
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Attribute)
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "model"
+    }
+    types = {
+        getattr(model, name) for name in names
+        if isinstance(getattr(model, name, None), type)
+    }
+    return frozenset(
+        item for item in types
+        if item in bind._REGISTRY_CANONICAL_RECORD_TYPES
+    )
 
 
 def _stamp_incomplete_types() -> set[type]:
@@ -279,15 +316,8 @@ def _stamp_incomplete_types() -> set[type]:
     return incomplete
 
 
-def _seal_subject_closure() -> set[type]:
+def _seal_subject_closure(roots: frozenset[type]) -> set[type]:
     """Every registered record type reachable from a registry seal subject."""
-
-    by_name = {
-        record_type.__qualname__: record_type
-        for record_type in bind._REGISTRY_CANONICAL_RECORD_TYPES
-    }
-    missing = [name for name in _SEAL_SUBJECT_TYPE_NAMES if name not in by_name]
-    assert missing == [], missing
 
     def flatten(annotation):
         yield annotation
@@ -295,7 +325,7 @@ def _seal_subject_closure() -> set[type]:
             yield from flatten(argument)
 
     seen: set[type] = set()
-    stack = [by_name[name] for name in _SEAL_SUBJECT_TYPE_NAMES]
+    stack = list(roots)
     while stack:
         record_type = stack.pop()
         if record_type in seen:
@@ -327,8 +357,16 @@ def test_the_occurrence_digest_covers_every_field_the_seal_reads() -> None:
     assert {item.__qualname__ for item in incomplete} == {
         "ObligationEvidenceIndex", "PreparationAuthorityReceipt",
     }
-    reachable = _seal_subject_closure()
-    assert len(reachable) >= len(_SEAL_SUBJECT_TYPE_NAMES)
+    roots = _seal_subject_types()
+    # The three the hand-written literal missed are in, and the count is the
+    # dispatch's own, so a new subject cannot be added without being covered.
+    assert {
+        "ObservedLogicalEndpointOccurrence", "ObservedRouteTopologyOccurrence",
+        "ObservedLoweredConditionalTopologyOccurrence",
+    } <= {item.__qualname__ for item in roots}
+    assert len(roots) == 33, sorted(item.__qualname__ for item in roots)
+    reachable = _seal_subject_closure(roots)
+    assert len(reachable) > len(roots)
     assert sorted(
         item.__qualname__ for item in (reachable & incomplete)
     ) == []
@@ -379,7 +417,10 @@ def test_a_direct_mutation_is_still_refused_after_a_warm_memo() -> None:
         original = authority.source_authority_id
         object.__setattr__(authority, "source_authority_id", forged)
         try:
-            with pytest.raises((TypeError, ValueError)):
+            with pytest.raises(
+                ValueError,
+                match="source_authority_id does not match canonical content",
+            ):
                 bind.validate_source_route_authority(authority)
         finally:
             object.__setattr__(authority, "source_authority_id", original)
@@ -410,7 +451,9 @@ def test_a_deep_mutation_is_still_refused_after_a_warm_memo() -> None:
         object.__setattr__(deep, "source_anchor_ea", original + 1)
         try:
             assert authority.bound_evidence.routes[0].evidence is deep
-            with pytest.raises((TypeError, ValueError)):
+            with pytest.raises(
+                ValueError, match="proposal_id is not content-derived",
+            ):
                 bind.validate_source_route_authority(authority)
         finally:
             object.__setattr__(deep, "source_anchor_ea", original)
@@ -464,7 +507,9 @@ def test_a_failed_seal_never_populates_a_reusable_entry() -> None:
     ) as session:
         object.__setattr__(authority, "plan_id", authority_ids.authority_id("forged"))
         try:
-            with pytest.raises((TypeError, ValueError)):
+            with pytest.raises(
+                ValueError, match="source authority plan differs from proposal",
+            ):
                 bind._canonical_registry_seal(authority, _route_registry())
             assert session._registry_seals == {}
         finally:
@@ -513,28 +558,64 @@ def test_the_result_validation_still_calls_the_seal_exactly_once() -> None:
 # --- R2-F9: the counters ------------------------------------------------
 
 
-def test_the_memo_moves_only_the_counters_it_is_allowed_to_move() -> None:
-    """R2-F9: hits are non-zero and the untouched paths do not move."""
-
-    from d810.transforms.unflatten_authority import transaction_api
-
-    from . import test_live_inventory_validation as live
+def _prepare_and_measure(*, memo: bool):
+    """Run one real preparation and return its own process counter delta."""
 
     canonical_session.reset_process_work_metrics()
-    accepted = transaction_api.prepare_unflatten_authority(
-        **live._fixture_arguments()
-    )
+    if memo:
+        accepted = transaction_api.prepare_unflatten_authority(
+            **live._fixture_arguments()
+        )
+    else:
+        with patch.object(bind, "_registry_seal_memo", lambda value: None):
+            accepted = transaction_api.prepare_unflatten_authority(
+                **live._fixture_arguments()
+            )
     assert type(accepted) is model.UnflattenAuthorityPreparationAccepted
-    metrics = canonical_session.process_work_metrics()
+    return canonical_session.process_work_metrics()
 
-    assert metrics.registry_seal_hits > 0
-    assert metrics.registry_seal_misses > 0
-    assert metrics.materializations == 0
-    assert metrics.inventory_validations > 0
-    # A stamp is taken per memoizable seal check, so the rise is bounded.
-    assert metrics.occurrence_stamps >= (
-        metrics.registry_seal_hits + metrics.registry_seal_misses
-    )
+
+def test_the_memo_moves_only_the_counters_it_is_allowed_to_move() -> None:
+    """R2-F9: a real before/after over the same real preparation.
+
+    The first leg forces ``_registry_seal_memo`` to refuse every value, which
+    is exactly today's pre-memo behaviour, so the two legs differ only by the
+    memo.  Stop-rule item 3 bounds the ``occurrence_stamps`` rise **from
+    above**; item 2 names the counters that must not move at all.
+    """
+
+    before = _prepare_and_measure(memo=False)
+    after = _prepare_and_measure(memo=True)
+
+    assert before.registry_seal_hits == 0
+    assert before.registry_seal_misses == 0
+    assert after.registry_seal_hits > 0
+    assert after.registry_seal_misses > 0
+
+    # Stop rule 3: the rise is bounded above by the number of memo lookups.
+    bound = after.registry_seal_hits + after.registry_seal_misses
+    assert after.occurrence_stamps - before.occurrence_stamps <= bound
+
+    # Stop rule 2: the untouched paths do not move at all.
+    for name in (
+        "roundtrip_decodes", "inventory_validations", "inventory_seal_checks",
+        "inventory_seal_hits", "inventory_seal_mints", "materializations",
+        "canonical_bytes_reuses", "bytes_lookup_hits",
+    ):
+        assert getattr(after, name) == getattr(before, name), name
+    assert after.materializations == 0
+
+    # content_id_reuses may move only with the lookups that produce it: both
+    # counters are written by the same branch of ids._record_content_id, so a
+    # divergence would mean the change escaped the seal.
+    assert (
+        after.content_id_reuses - before.content_id_reuses
+    ) == (after.content_id_lookup_hits - before.content_id_lookup_hits)
+
+    # And the work the memo is meant to remove really fell.
+    assert after.wire_encodes < before.wire_encodes
+    assert after.content_id_mints < before.content_id_mints
+    assert after.deep_validations < before.deep_validations
 
 
 def test_every_seal_taken_by_a_real_preparation_is_byte_identical() -> None:
@@ -544,10 +625,6 @@ def test_every_seal_taken_by_a_real_preparation_is_byte_identical() -> None:
     processes is not a valid oracle.  This compares the two paths inside one
     process, on every seal a real preparation actually takes.
     """
-
-    from d810.transforms.unflatten_authority import transaction_api
-
-    from . import test_live_inventory_validation as live
 
     seal = bind._canonical_registry_seal
     uncached = bind._canonical_registry_seal_uncached
