@@ -2563,17 +2563,19 @@ def test_remote_worktree_git_identity_points_at_the_tested_worktree(
     )
 
     assert result.returncode == 0, result.stderr
+    # the per-worktree git dir lives inside the common mount, so no second
+    # mount is needed and the relative commondir ("../..") still resolves
+    assert not [call for call in calls if "d810-git-worktree" in call]
     assert (
         calls.count(
-            "run-arg type=volume,src=idapro,dst=/d810-git-worktree,"
-            "volume-subpath=d810/.git/worktrees/wt,readonly"
+            "run-arg type=volume,src=idapro,dst=/d810-git,"
+            "volume-subpath=d810/.git,readonly"
         )
         == 1
     )
     command = _remote_container_run(calls)
-    assert "GIT_DIR=/d810-git-worktree GIT_COMMON_DIR=/d810-git" in command
-    assert "export IDA_PREFIX=/app/ida" in command
-    assert "GIT_DIR=/d810-git " not in command.split("GIT_DIR=/d810-git-worktree")[0]
+    assert "GIT_DIR=/d810-git/worktrees/wt " in command
+    assert "GIT_COMMON_DIR=" not in command.replace("-u GIT_COMMON_DIR", "")
 
 
 def test_remote_repo_root_keeps_the_plain_common_dir_form(tmp_path: Path) -> None:
@@ -2594,12 +2596,9 @@ def test_remote_repo_root_keeps_the_plain_common_dir_form(tmp_path: Path) -> Non
     )
 
     assert result.returncode == 0, result.stderr
-    assert not [call for call in calls if "d810-git-worktree" in call]
     command = _remote_container_run(calls)
     assert "GIT_DIR=/d810-git " in command
-    # only the CoBRA acquisition mentions it, and only to unset it
-    assert "export IDA_PREFIX" in command
-    assert "GIT_COMMON_DIR=/d810-git" not in command
+    assert "/d810-git/worktrees" not in command
 
 
 def test_local_mode_git_identity_is_unchanged(tmp_path: Path) -> None:
@@ -2624,4 +2623,4 @@ def test_local_mode_git_identity_is_unchanged(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
     command = _container_run(calls)
     assert "GIT_DIR=/d810-git " in command
-    assert "d810-git-worktree" not in command
+    assert "/d810-git/worktrees" not in command

@@ -1107,18 +1107,23 @@ GIT_WORKTREE_DIR="$(git -C "$WORK_DIR" rev-parse --path-format=absolute --git-di
 if [ -n "$GIT_COMMON_DIR" ] && [ -d "$GIT_COMMON_DIR" ]; then
   _add_mount "$GIT_COMMON_DIR" /d810-git ro
   ENV_GIT="GIT_DIR=/d810-git"
-  # A linked worktree's .git is a FILE pointing at <common>/worktrees/<name>,
-  # and that pointer is a macOS path the container cannot follow. Mounting the
-  # per-worktree git dir and naming it explicitly is what makes in-container
-  # `git rev-parse HEAD` report the TESTED worktree instead of the main
-  # checkout; GIT_COMMON_DIR has to be explicit because the worktree's
-  # commondir file is the relative "../..".
+  # A linked worktree's .git is a FILE naming <common>/worktrees/<name> as a
+  # macOS path, so GIT_DIR=/d810-git alone resolves the MAIN checkout's HEAD.
+  # The per-worktree git dir already lives INSIDE the mounted common dir, and
+  # its commondir file is the relative "../.." - which only resolves correctly
+  # when GIT_DIR keeps that same relative position. Naming it inside the common
+  # mount therefore needs no second mount and no explicit GIT_COMMON_DIR (the
+  # commondir file wins over the environment variable anyway).
   if [ "$REMOTE_MODE" = "1" ] \
     && [ -n "$GIT_WORKTREE_DIR" ] \
     && [ "$GIT_WORKTREE_DIR" != "$GIT_COMMON_DIR" ] \
     && [ -d "$GIT_WORKTREE_DIR" ]; then
-    _add_mount "$GIT_WORKTREE_DIR" /d810-git-worktree ro
-    ENV_GIT="GIT_DIR=/d810-git-worktree GIT_COMMON_DIR=/d810-git"
+    GIT_WORKTREE_REL="${GIT_WORKTREE_DIR#"$GIT_COMMON_DIR"/}"
+    if [ "$GIT_WORKTREE_REL" = "$GIT_WORKTREE_DIR" ]; then
+      echo "ERROR: worktree git dir is outside the common dir: $GIT_WORKTREE_DIR" >&2
+      exit 1
+    fi
+    ENV_GIT="GIT_DIR=/d810-git/$GIT_WORKTREE_REL"
   fi
 fi
 if [ -n "$MOUNT_LOGS" ]; then
