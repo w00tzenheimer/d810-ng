@@ -995,3 +995,81 @@ def test_doctests_pass() -> None:
 
     results = doctest.testmod(setup_remote_test_volume, verbose=False)
     assert results.failed == 0, results
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ("", []),
+        ("nobrl", ["nobrl"]),
+        (" nobrl , noperm ", ["nobrl", "noperm"]),
+        ("cache=none,actimeo=0", ["cache=none", "actimeo=0"]),
+    ],
+)
+def test_valid_mount_option_tokens(raw: str, expected: list[str]) -> None:
+    assert setup_remote_test_volume.validate_mount_options(raw) == expected
+
+
+@pytest.mark.parametrize(
+    "raw,fragment",
+    [
+        ("password=x", "must not set password"),
+        ("pass=x", "must not set password"),
+        ("username=root", "must not set username"),
+        ("user=root", "must not set username"),
+        ("SEC=ntlmv2", "invalid cifs option token"),
+        ("no brl", "invalid cifs option token"),
+        ("vers=3.0;rm -rf /", "invalid cifs option token"),
+    ],
+)
+def test_rejected_mount_option_tokens(raw: str, fragment: str) -> None:
+    with pytest.raises(ValueError, match=fragment):
+        setup_remote_test_volume.validate_mount_options(raw)
+
+
+def test_mount_opts_are_appended_to_the_option_string() -> None:
+    options = setup_remote_test_volume.build_mount_options("pw", extra_options="nobrl")
+
+    assert options.endswith(",dir_mode=0700,nobrl")
+    assert setup_remote_test_volume.build_mount_options("pw").endswith("dir_mode=0700")
+
+
+def test_mount_opts_are_reported_and_kept_out_of_the_credential(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        setup_remote_test_volume.getpass, "getpass", lambda prompt: "hunter2"
+    )
+    for seam in ("run_capture", "run_probe"):
+        monkeypatch.setattr(setup_remote_test_volume, seam, lambda argv: (0, ""))
+
+    status = setup_remote_test_volume.main(["--dry-run", "--mount-opts", "nobrl,noperm"])
+    printed = capsys.readouterr().out
+
+    assert status == 0
+    assert "extra cifs options: nobrl,noperm" in printed
+    assert "dir_mode=0700,nobrl,noperm" in printed
+    assert "hunter2" not in printed
+
+
+def test_invalid_mount_opts_fail_before_creating_anything(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recorded = _fake_capture(monkeypatch, {"volume inspect": (1, ABSENT_ERROR)})
+    monkeypatch.setattr(
+        setup_remote_test_volume.getpass, "getpass", lambda prompt: "hunter2"
+    )
+
+    def _fail(*args: object, **kwargs: object) -> None:
+        raise AssertionError("invalid options must not reach docker volume create")
+
+    monkeypatch.setattr(setup_remote_test_volume.subprocess, "run", _fail)
+
+    status = setup_remote_test_volume.main(["--mount-opts", "password=leak"])
+    captured = capsys.readouterr()
+
+    assert status == 1
+    assert "must not set password" in captured.err
+    assert not any("volume create" in " ".join(argv) for argv in recorded)

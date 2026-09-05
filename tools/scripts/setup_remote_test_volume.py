@@ -96,9 +96,45 @@ def share_host(share: str) -> str:
     return host
 
 
+def validate_mount_options(raw: str) -> list[str]:
+    """Validate extra cifs options before they reach the option string.
+
+    The value is spliced into a comma-separated list that also carries the
+    credential, so each token is checked and the identity options are refused.
+
+    >>> validate_mount_options("nobrl")
+    ['nobrl']
+    >>> validate_mount_options(" nobrl , noperm ")
+    ['nobrl', 'noperm']
+    >>> validate_mount_options("")
+    []
+    >>> validate_mount_options("password=x")
+    Traceback (most recent call last):
+    ValueError: --mount-opts must not set password
+    >>> validate_mount_options("SEC=ntlmv2")
+    Traceback (most recent call last):
+    ValueError: invalid cifs option token: 'SEC=ntlmv2'
+    """
+    tokens: list[str] = []
+    for token in raw.split(","):
+        token = token.strip()
+        if not token:
+            continue
+        name = token.split("=", 1)[0]
+        if name in ("password", "pass"):
+            raise ValueError("--mount-opts must not set password")
+        if name in ("username", "user"):
+            raise ValueError("--mount-opts must not set username")
+        if not re.fullmatch(r"[a-z0-9_=.]+", token):
+            raise ValueError(f"invalid cifs option token: {token!r}")
+        tokens.append(token)
+    return tokens
+
+
 def build_mount_options(
     password: str,
     *,
+    extra_options: str = "",
     share: str = DEFAULT_SHARE,
     user: str = DEFAULT_USER,
     version: str = DEFAULT_VERSION,
@@ -126,6 +162,7 @@ def build_mount_options(
             f"gid={gid}",
             f"file_mode={file_mode}",
             f"dir_mode={dir_mode}",
+            *validate_mount_options(extra_options),
         ]
     )
 
@@ -493,6 +530,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--volume", default=DEFAULT_VOLUME, help="volume name to create")
     parser.add_argument("--share", default=DEFAULT_SHARE, help="SMB share, e.g. //smb-server.example/idapro")
     parser.add_argument(
+        "--mount-opts",
+        default="",
+        help=(
+            "extra cifs mount options appended verbatim to o= (comma-separated, "
+            "e.g. nobrl). Credentials cannot be set this way."
+        ),
+    )
+    parser.add_argument(
         "--share-root",
         default=DEFAULT_SHARE_ROOT,
         help=(
@@ -858,8 +903,16 @@ def _create(arguments: argparse.Namespace) -> int:
         if rejection is not None:
             print(f"ERROR: {rejection}", file=sys.stderr)
             return 1
+        try:
+            extra_tokens = validate_mount_options(arguments.mount_opts)
+        except ValueError as error:
+            print(f"ERROR: {error}", file=sys.stderr)
+            return 1
+        if extra_tokens:
+            print(f"extra cifs options: {','.join(extra_tokens)}")
         options = build_mount_options(
             password,
+            extra_options=arguments.mount_opts,
             share=arguments.share,
             user=arguments.user,
         )

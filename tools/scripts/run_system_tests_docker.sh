@@ -154,7 +154,9 @@
 #   An SMB password containing a comma is refused up front: the cifs `o=` value is comma-separated.
 #
 #   The option set deliberately omits nobrl: if SQLite under /work/.tmp (diag DBs, debug logs) ever
-#   fails with a locking error over this mount, recreate the volume with nobrl appended. Byte-range
+#   fails with a locking error over this mount, recreate the volume with nobrl appended:
+#     python3 tools/scripts/setup_remote_test_volume.py --recreate --mount-opts nobrl
+#   (--mount-opts takes comma-separated in-kernel cifs options and refuses credential options.) Byte-range
 #   locking is the thing to check first after any volume change:
 #
 #     ./run_system_tests_docker.sh exec --remote HOST -w WT -- /app/ida/.venv/bin/python -c \
