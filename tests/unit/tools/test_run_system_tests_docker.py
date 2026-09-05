@@ -1440,13 +1440,14 @@ def test_remote_mode_replaces_every_bind_mount_with_a_volume_subpath(
         "type=volume,src=idapro,dst=/work-src,volume-subpath=d810,readonly",
         "type=volume,src=idapro,dst=/work/.tmp,volume-subpath=d810/.tmp",
         "type=volume,src=idapro,dst=/d810-git,volume-subpath=d810/.git,readonly",
-        "type=volume,src=idapro,dst=/root/.idapro/logs,"
-        "volume-subpath=d810/.tmp/logs",
         "type=volume,src=idapro,dst=/opt/d810-egglog,"
         "volume-subpath=d810-egglog,readonly",
     ]
     for spec in expected:
         assert calls.count(f"run-arg {spec}") == 1, (spec, calls)
+    # -l must NOT put live SQLite writers on cifs: the logs directory lives on
+    # the work volume and is staged to .tmp/logs when the inner shell exits
+    assert not [call for call in calls if "dst=/root/.idapro/logs" in call]
     # the CoBRA cache is an engine volume in remote mode, never the SMB share
     assert not [call for call in calls if "dst=/opt/d810-cobra-cache,volume-subpath" in call]
     assert [
@@ -2677,4 +2678,149 @@ def test_acl_failure_on_the_tmp_root_still_fails_closed(tmp_path: Path) -> None:
 
     assert result.returncode != 0
     assert "could not grant" in result.stderr
+    assert _runs(calls) == []
+
+
+def test_remote_mode_exports_a_run_id_for_database_keying(tmp_path: Path) -> None:
+    """PIDs restart at 1 per container, so pid-keyed names can collide."""
+    share, repo = _share_layout(tmp_path)
+
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--remote",
+        REMOTE_HOST,
+        "--",
+        "true",
+        repo_root=repo,
+        extra_env=_remote_env(share),
+    )
+
+    assert result.returncode == 0, result.stderr
+    command = _remote_container_run(calls)
+    match = re.search(r"-e D810_RUN_ID=(\S+)", command)
+    assert match, command
+    assert re.fullmatch(r"\d{8}T\d{6}Z-\d+-[0-9a-f]{6}", match.group(1))
+    assert "run id:   " in result.stdout
+
+
+def test_local_mode_does_not_set_a_run_id(tmp_path: Path) -> None:
+    result, calls = _run(tmp_path, "exec", "--", "true")
+
+    assert result.returncode == 0, result.stderr
+    assert "D810_RUN_ID" not in _container_run(calls)
+
+
+def test_remote_logs_are_staged_from_the_work_volume_at_exit(tmp_path: Path) -> None:
+    """Live SQLite writers must never sit on the cifs mount."""
+    share, repo = _share_layout(tmp_path)
+
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--remote",
+        REMOTE_HOST,
+        "-l",
+        "--",
+        "true",
+        repo_root=repo,
+        extra_env=_remote_env(share),
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert not [call for call in calls if "dst=/root/.idapro/logs" in call]
+    command = _remote_container_run(calls)
+    assert "RUN_LOGS=/work/runs/$D810_RUN_ID/logs" in command
+    assert "STAGE_DEST=/work/.tmp/logs/$D810_RUN_ID" in command
+    assert 'ln -sfn "$RUN_LOGS" /root/.idapro/logs' in command
+    # the trap fires on failure too, and reports how long the copy took
+    assert "trap 'set +e;" in command
+    assert "' EXIT" in command
+    assert 'cp -a "$RUN_LOGS"/. "$STAGE_DEST"/' in command
+    assert "[artifacts] staged" in command
+    # exec would replace the shell and lose the trap
+    assert 'exec "$@"' not in command
+    assert '"$@"' in command
+    assert "artifacts: /work/runs/" in result.stdout
+
+
+def test_local_mode_still_mounts_logs_directly(tmp_path: Path) -> None:
+    result, calls = _run(tmp_path, "exec", "-l", "--", "true")
+
+    assert result.returncode == 0, result.stderr
+    assert [call for call in calls if call.endswith(":/root/.idapro/logs")]
+    command = _container_run(calls)
+    assert "RUN_LOGS=" not in command
+    assert 'exec "$@"' in command
+
+
+def test_artifacts_lists_retained_runs(tmp_path: Path) -> None:
+    share, repo = _share_layout(tmp_path)
+
+    result, calls = _run(
+        tmp_path,
+        "artifacts",
+        "--remote",
+        REMOTE_HOST,
+        repo_root=repo,
+        extra_env=_remote_env(share),
+    )
+
+    assert result.returncode == 0, result.stderr
+    command = _remote_container_run(calls)
+    assert "ls -1 /work/runs" in command
+    # listing must not pay for the dependency setup
+    assert "pip install" not in command
+    assert "COBRA_BUILD_DIR" not in command
+    assert f"type=volume,src={_work_volume_name(repo)},dst=/work" in command
+
+
+def test_artifacts_copies_one_run_back_to_the_share(tmp_path: Path) -> None:
+    share, repo = _share_layout(tmp_path)
+
+    result, calls = _run(
+        tmp_path,
+        "artifacts",
+        "--remote",
+        REMOTE_HOST,
+        "--run",
+        "20260905T120000Z-1234-abcdef",
+        repo_root=repo,
+        extra_env=_remote_env(share),
+    )
+
+    assert result.returncode == 0, result.stderr
+    command = _remote_container_run(calls)
+    assert "test -d '/work/runs/20260905T120000Z-1234-abcdef'" in command
+    assert (
+        "cp -a '/work/runs/20260905T120000Z-1234-abcdef/.' "
+        "'/work/.tmp/remote-runs/20260905T120000Z-1234-abcdef/'" in command
+    )
+    assert "type=volume,src=idapro,dst=/work/.tmp,volume-subpath=d810/.tmp" in command
+    assert f"{repo}/.tmp/remote-runs/20260905T120000Z-1234-abcdef" in result.stdout
+
+
+def test_artifacts_requires_remote_mode(tmp_path: Path) -> None:
+    result, calls = _run(tmp_path, "artifacts")
+
+    assert result.returncode != 0
+    assert "remote-mode command" in result.stderr
+    assert _runs(calls) == []
+
+
+def test_run_flag_requires_an_identifier(tmp_path: Path) -> None:
+    share, repo = _share_layout(tmp_path)
+
+    result, calls = _run(
+        tmp_path,
+        "artifacts",
+        "--remote",
+        REMOTE_HOST,
+        "--run",
+        repo_root=repo,
+        extra_env=_remote_env(share),
+    )
+
+    assert result.returncode != 0
+    assert "--run requires a RUN_ID" in result.stderr
     assert _runs(calls) == []

@@ -15,6 +15,8 @@
 #   dump      Run SETUP then: pytest -s tests/system/e2e/test_dump_function_pseudocode.py [OPTIONS]
 #   shell     Run SETUP then start an interactive bash (docker run -it)
 #   exec      Run SETUP then exec COMMAND with ARGS (e.g. exec -- python -c 'print(1)' or exec -- bash -c '...')
+#   artifacts (remote only) List the runs retained on a worktree's work volume, or with --run RUN_ID
+#             copy one back to WORK_DIR/.tmp/remote-runs/RUN_ID. Failed runs are retained too.
 #
 # SETUP (same for all commands): export IDA/PYTHONPATH env; install Python
 # dependencies unless the image carries d810's baked-runtime label; optionally
@@ -612,13 +614,13 @@ REPO_ROOT="$(cd "$REPO_ROOT" && pwd)"
 
 CMD="${1:-}"
 shift || true
-if [ "$CMD" != "system" ] && [ "$CMD" != "test" ] && [ "$CMD" != "dump" ] && [ "$CMD" != "shell" ] && [ "$CMD" != "exec" ]; then
+if [ "$CMD" != "system" ] && [ "$CMD" != "test" ] && [ "$CMD" != "dump" ] && [ "$CMD" != "shell" ] && [ "$CMD" != "exec" ] && [ "$CMD" != "artifacts" ]; then
   if [ "$CMD" = "-h" ] || [ "$CMD" = "--help" ]; then
     sed -n '2,/^set -e$/p' "$0" | sed '$d'
     exit 0
   fi
-  echo "Usage: $0 system | test | dump [OPTIONS] [-- PYTEST_ARGS...] | shell | exec [OPTIONS] -- COMMAND [ARGS...]" >&2
-  echo "Commands: system | test | dump | shell | exec" >&2
+  echo "Usage: $0 system | test | dump [OPTIONS] [-- PYTEST_ARGS...] | shell | exec [OPTIONS] -- COMMAND [ARGS...] | artifacts --remote HOST -w WORKTREE [--run RUN_ID]" >&2
+  echo "Commands: system | test | dump | shell | exec | artifacts" >&2
   echo "Run with --help for full help." >&2
   exit 1
 fi
@@ -635,6 +637,7 @@ ENABLE_DEBUG_LOGGING=""
 ENABLE_DIAG_SNAPSHOT=""
 ENABLE_LLVM_OPT=""
 DISABLE_FACT_LIFECYCLE=""
+ARTIFACT_RUN=""
 EXTRA_PYTEST=()
 EXEC_ARGS=()
 
@@ -684,6 +687,14 @@ while [ $# -gt 0 ]; do
     --disable-fact-lifecycle)
       DISABLE_FACT_LIFECYCLE=1
       shift
+      ;;
+    --run)
+      if [ $# -lt 2 ] || [ -z "$2" ]; then
+        echo "ERROR: --run requires a RUN_ID" >&2
+        exit 1
+      fi
+      ARTIFACT_RUN="$2"
+      shift 2
       ;;
     --remote)
       if [ $# -lt 2 ] || [ -z "$2" ]; then
@@ -1092,6 +1103,10 @@ if [ -n "$REMOTE_HOST" ]; then
   COBRA_CACHE_VOLUME="d810-cobra-${WORK_VOLUME#d810-work-}"
   mkdir -p "$WORK_DIR/.tmp"
   _apply_tmp_acls
+  # PIDs restart at 1 in every container, so a pid-keyed database name is not
+  # unique across concurrent runs on one shared mount. This id is, and it is
+  # forwarded to the container like every other D810_* variable.
+  export D810_RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-$$-$(printf '%s' "$WORK_DIR" | shasum -a 256 | cut -c1-6)"
   REMOTE_MANIFEST="$WORK_DIR/.tmp/remote-manifest.$$"
   _build_remote_manifest "$REMOTE_MANIFEST"
   REMOTE_ARCHIVE_DIR="$(mktemp -d "$WORK_DIR/.tmp/remote-src.XXXXXX")"
@@ -1147,7 +1162,13 @@ fi
 if [ -n "$MOUNT_LOGS" ]; then
   LOGS_DIR="${WORK_DIR}/.tmp/logs"
   mkdir -p "$LOGS_DIR"
-  _add_mount "$LOGS_DIR" /root/.idapro/logs
+  # Remote runs must not put live SQLite writers (diag snapshots, structured
+  # logs, the batch driver's database) on the cifs mount. The logs directory
+  # lives on the work volume for the duration of the run and only the
+  # finalized artifacts are copied to .tmp/logs when the inner shell exits.
+  if [ "$REMOTE_MODE" != "1" ]; then
+    _add_mount "$LOGS_DIR" /root/.idapro/logs
+  fi
 fi
 if [ "$EGGLOG_EXTENSION_ENABLED" = "1" ]; then
   _add_mount "$D810_EGGLOG_ROOT" /opt/d810-egglog ro
@@ -1254,6 +1275,8 @@ if [ "$REMOTE_MODE" = "1" ]; then
   echo "  share root: $REMOTE_SHARE_ROOT"
   echo "  subpath:  $WORK_SUBPATH (read-only at /work-src; .tmp read-write at /work/.tmp)"
   echo "  source digest: $SOURCE_DIGEST"
+  echo "  run id:   $D810_RUN_ID (keys diag databases per run, not per pid)"
+  echo "  artifacts: /work/runs/$D810_RUN_ID/logs (work volume) staged to .tmp/logs/$D810_RUN_ID at exit"
   echo "  git:      $ENV_GIT"
   echo "  archive:  $REMOTE_ARCHIVE_CONTAINER_PATH (tracked + untracked-not-ignored, ignored content excluded)"
   echo "  allowlist: ${REMOTE_MANIFEST_EXTRA_ENTRIES:- none} (from $(basename "$REMOTE_MANIFEST_EXTRA"))"
@@ -1459,7 +1482,15 @@ else \
   printf '%s\\n' \"\$__digest\" > '$SYNC_SENTINEL'; \
   echo \"[sync] mirrored /work-src -> /work in \$((\$(date +%s)-\$__t0))s (digest \$__digest)\"; \
 fi"
-  SETUP_CMD="{ $REMOTE_SYNC_CMD; } && $SETUP_CMD"
+  # The staging trap runs on failure too, so a crashed run still leaves its
+  # artifacts both in the run directory and on the share.
+  REMOTE_STAGING_CMD="RUN_LOGS=/work/runs/\$D810_RUN_ID/logs; \
+STAGE_DEST=/work/.tmp/logs/\$D810_RUN_ID; \
+mkdir -p \"\$RUN_LOGS\" \"\$STAGE_DEST\"; \
+rm -rf /root/.idapro/logs; mkdir -p /root/.idapro; ln -sfn \"\$RUN_LOGS\" /root/.idapro/logs; \
+trap 'set +e; __stage_t0=\$(date +%s); cp -a \"\$RUN_LOGS\"/. \"\$STAGE_DEST\"/ 2>/dev/null; \
+echo \"[artifacts] staged \$RUN_LOGS -> \$STAGE_DEST in \$((\$(date +%s)-\$__stage_t0))s\"' EXIT"
+  SETUP_CMD="{ $REMOTE_SYNC_CMD; } && { $REMOTE_STAGING_CMD; } && $SETUP_CMD"
 fi
 
 # Safely reassemble an array of args into a string suitable for embedding in
@@ -1487,6 +1518,16 @@ _run_docker_container() {
     printf '[docker] container failed with exit status %s\n' "$status" >&2
     return "$status"
   fi
+}
+
+# Artifact listing and retrieval must not pay for the dependency setup.
+run_bash_plain() {
+  local inner="$1"
+  _run_docker_container run --rm \
+    --memory "$DOCKER_MEMORY" \
+    "${DOCKER_MOUNTS[@]}" \
+    -w /work \
+    --entrypoint /bin/bash "$DOCKER_IMAGE" -lc "$inner"
 }
 
 run_bash() {
@@ -1522,7 +1563,13 @@ run_bash_it() {
 }
 
 run_bash_exec() {
-  local inner="export $ENV_TEST && $SETUP_CMD && exec \"\$@\""
+  # exec would replace the shell and with it the staging EXIT trap, so remote
+  # runs keep the shell alive and propagate the status themselves.
+  local invoke='exec "$@"'
+  if [ "$REMOTE_MODE" = "1" ]; then
+    invoke='"$@"'
+  fi
+  local inner="export $ENV_TEST && $SETUP_CMD && $invoke"
   local extra_env="$(_d810_extra_env_flags)"
   _run_docker_container run --rm \
     $PROFILE_DOCKER_FLAGS \
@@ -1539,6 +1586,21 @@ run_bash_exec() {
     -e "D810_TEST_BINARY=$TEST_BINARY" \
     --entrypoint /bin/bash "$DOCKER_IMAGE" -lc "$inner" -- "${EXEC_ARGS[@]}"
 }
+
+if [ "$CMD" = "artifacts" ]; then
+  if [ "$REMOTE_MODE" != "1" ]; then
+    echo "ERROR: artifacts is a remote-mode command (pass --remote HOST)" >&2
+    exit 1
+  fi
+  if [ -z "$ARTIFACT_RUN" ]; then
+    # Runs are retained in the work volume, including failed ones.
+    run_bash_plain "ls -1 /work/runs 2>/dev/null | sort || true"
+  else
+    run_bash_plain "test -d '/work/runs/$ARTIFACT_RUN' || { echo \"ERROR: no such run: $ARTIFACT_RUN\" >&2; exit 1; }; mkdir -p '/work/.tmp/remote-runs/$ARTIFACT_RUN' && cp -a '/work/runs/$ARTIFACT_RUN/.' '/work/.tmp/remote-runs/$ARTIFACT_RUN/' && echo \"[artifacts] copied /work/runs/$ARTIFACT_RUN -> .tmp/remote-runs/$ARTIFACT_RUN\""
+    echo "  local path: $WORK_DIR/.tmp/remote-runs/$ARTIFACT_RUN"
+  fi
+  exit 0
+fi
 
 if [ "$CMD" = "system" ]; then
   SYSTEM_ARGS=()

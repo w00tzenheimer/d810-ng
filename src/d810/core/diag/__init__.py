@@ -268,6 +268,31 @@ def find_latest_diag_db_path(
     return None
 
 
+def diag_run_id() -> str:
+    """Identify one decompilation run inside one container.
+
+    A PID is only unique within its own PID namespace, so two containers
+    sharing a log directory over a network mount can mint the same
+    ``<ea>_<seconds>_<pid>`` name for two different runs. ``D810_RUN_ID``,
+    which the remote runner exports per invocation, disambiguates them; the
+    PID is kept so concurrent processes inside one container stay distinct.
+
+    >>> import os
+    >>> os.environ["D810_RUN_ID"] = "abc"
+    >>> diag_run_id().startswith("abc_")
+    True
+    >>> del os.environ["D810_RUN_ID"]
+    >>> diag_run_id().startswith("abc_")
+    False
+    """
+    stamp = f"{int(time.time())}_{os.getpid()}"
+    run_id = os.environ.get("D810_RUN_ID", "").strip()
+    if not run_id:
+        return stamp
+    safe = "".join(char if char.isalnum() or char in "-." else "-" for char in run_id)
+    return f"{safe}_{stamp}"
+
+
 def open_diag_session(func_ea: int, log_dir: str | None = None) -> None:
     """Open a diag DB for this decompilation pass.
 
@@ -290,7 +315,7 @@ def open_diag_session(func_ea: int, log_dir: str | None = None) -> None:
     close_diag_session()  # close any stale session
     resolved_log_dir = _resolve_log_dir(log_dir)
     resolved_log_dir.mkdir(parents=True, exist_ok=True)
-    run_id = f"{int(time.time())}_{os.getpid()}"
+    run_id = diag_run_id()
     db_path = resolved_log_dir / f"{func_ea:016x}_{run_id}.diag.sqlite3"
     db = create_diag_database(str(db_path))
     _current_db = db
@@ -390,7 +415,7 @@ def get_diag_db(func_ea: int = 0, log_dir: str | None = None) -> SqliteDatabase 
     # Fallback: no session open — create a one-off DB (test harness path)
     resolved_log_dir = _resolve_log_dir(log_dir)
     resolved_log_dir.mkdir(parents=True, exist_ok=True)
-    run_id = f"{int(time.time())}_{os.getpid()}"
+    run_id = diag_run_id()
     ea = func_ea if func_ea else 0
     db_path = resolved_log_dir / f"{ea:016x}_{run_id}.diag.sqlite3"
     _active_db = create_diag_database(str(db_path))
