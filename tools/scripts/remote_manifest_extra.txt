@@ -1,0 +1,18 @@
+# Extra paths to include in the remote source archive (one per line).
+#
+# The archive is built from git's own view of the worktree: tracked files plus
+# untracked-but-not-ignored files. Ignored content is excluded because it is
+# neither part of the tested source nor covered by the source digest, and
+# because it is where secrets live (.env is refused outright).
+#
+# Every entry here MUST already exist in the worktree and MUST be ignored by
+# git, otherwise the runner fails closed. Entries are logged in the run plan.
+#
+# Currently empty, and measured to be sufficient: in
+# .worktrees/perf-canonical-stamp-reviewed the ignored set is caches
+# (__pycache__, .pytest_cache, .import_linter_cache, .superpowers), build
+# outputs (build/, *.egg-info, *.so, *.pyd, the Cython-generated *.cpp under
+# src/d810/speedups/), the local .venv, .tmp, and .ida-sdk. The system-test
+# sample binaries are TRACKED (e.g. samples/bins/libobfuscated.dll), so the
+# suite needs nothing from the ignored set; the generated .cpp files are
+# regenerated from the tracked .pyx sources by the in-container build.
