@@ -13,6 +13,7 @@ from d810.core.runtime_identity import (
     RuntimeAuthorityRef,
     RuntimeAuthorityScope,
 )
+from d810.core.typing import NamedTuple
 from d810.transforms.unflatten_authority.ids import canonical_bytes
 
 
@@ -27,6 +28,18 @@ class _Record:
 @dataclasses.dataclass
 class _MutableRecord:
     label: str
+
+
+class _PlainRecord:
+    """A plain object: no frozen dataclass, no ``NamedTuple``, fields rebind."""
+
+    def __init__(self, label: str) -> None:
+        self.label = label
+
+
+class _TupleRecord(NamedTuple):
+    label: str
+    ea: int = 0
 
 
 def _arena(namespace: str = "0x1400:g3") -> RuntimeAuthorityArena:
@@ -159,15 +172,67 @@ def test_arena_requires_a_scope_and_an_immutable_record() -> None:
     arena = _arena()
     with pytest.raises(TypeError, match="runtime authority kind"):
         arena.mint("claim", _Record("claim"))
-    with pytest.raises(TypeError, match="immutable record"):
+    with pytest.raises(TypeError, match="frozen dataclass or NamedTuple"):
         arena.mint(RuntimeAuthorityKind.CLAIM, _MutableRecord("claim"))
-    with pytest.raises(TypeError, match="immutable record"):
+    with pytest.raises(TypeError, match="frozen dataclass or NamedTuple"):
         arena.mint(RuntimeAuthorityKind.CLAIM, ["claim"])
-    with pytest.raises(TypeError, match="immutable record"):
+    with pytest.raises(TypeError, match="frozen dataclass or NamedTuple"):
         arena.mint(RuntimeAuthorityKind.CLAIM, None)
     with pytest.raises(TypeError, match="runtime authority reference"):
         arena.get("route_group000001")
     assert len(arena) == 0
+
+
+def test_arena_rejects_a_plain_mutable_object_at_mint() -> None:
+    """The record allowlist is what makes ``get`` returning the exact object safe.
+
+    A plain instance passes every "obviously mutable" denylist test -- it is
+    not ``None``, not a mutable dataclass and not a builtin container -- while
+    ``record.label = ...`` rebinds silently.  Storing one would let a holder of
+    the record mutate authority the arena has already handed out.
+    """
+
+    arena = _arena()
+    plain = _PlainRecord("claim")
+
+    with pytest.raises(TypeError, match="frozen dataclass or NamedTuple"):
+        arena.mint(RuntimeAuthorityKind.CLAIM, plain)
+
+    assert len(arena) == 0
+    assert tuple(arena.refs(RuntimeAuthorityKind.CLAIM)) == ()
+    plain.label = "rewritten"  # the exact mutation the arena must never adopt
+    assert plain.label == "rewritten"
+
+
+def test_arena_rejects_records_that_are_immutable_but_unnamed() -> None:
+    arena = _arena()
+
+    for value in ("claim", 7, 7.5, True, b"claim", ("claim",), frozenset({"claim"})):
+        with pytest.raises(TypeError, match="frozen dataclass or NamedTuple"):
+            arena.mint(RuntimeAuthorityKind.CLAIM, value)
+    with pytest.raises(TypeError, match="frozen dataclass or NamedTuple"):
+        arena.mint(RuntimeAuthorityKind.CLAIM, _Record)  # the class, not an instance
+    assert len(arena) == 0
+
+
+def test_arena_accepts_a_named_tuple_record() -> None:
+    arena = _arena()
+    record = _TupleRecord("claim", ea=0x1400)
+
+    ref = arena.mint(RuntimeAuthorityKind.CLAIM, record)
+
+    assert arena.get(ref) is record
+    with pytest.raises(AttributeError):
+        arena.get(ref).label = "rewritten"  # type: ignore[misc]
+
+
+def test_stored_record_cannot_be_rebound_through_the_arena() -> None:
+    arena = _arena()
+    ref = arena.mint(RuntimeAuthorityKind.CLAIM, _Record("claim", ea=0x1400))
+
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        arena.get(ref).ea = 0x1500  # type: ignore[misc]
+    assert arena.get(ref).ea == 0x1400
 
 
 def test_arena_exposes_its_scope_without_taking_it_over() -> None:

@@ -192,7 +192,10 @@ class RuntimeAuthorityArena:
     changing the identity of anything already minted.
 
     A record is built complete before it is minted and the arena never mutates
-    it; ``get`` returns the exact object that was stored.
+    it; ``get`` returns the exact object that was stored.  Only a frozen
+    dataclass or a ``NamedTuple`` may be minted, so that "the exact object" is
+    also an object nobody else can rebind a field of (see
+    ``_require_immutable`` for what that does and does not cover).
 
     >>> from dataclasses import dataclass, replace
     >>> @dataclass(frozen=True)
@@ -361,29 +364,43 @@ class RuntimeAuthorityArena:
 
     @staticmethod
     def _require_immutable(record: object) -> None:
-        """Reject a record that is obviously mutable, one level deep.
+        """Accept only a record type whose own attributes cannot be rebound.
 
-        The check is deliberately structural and shallow: a frozen dataclass
-        whose field happens to hold a list is accepted, because walking a
-        record graph on every mint is exactly the cost this whole change
-        removes.  The invariant it enforces is the one that matters for
-        authority -- the object the arena hands back cannot be rebound by an
-        ordinary attribute assignment.
+        This is an **allowlist**: an authority record is an instance of a
+        frozen dataclass or of a ``NamedTuple``, and nothing else is stored.
+        Both of those raise on ``record.field = value``, which is exactly and
+        only what the arena promises -- the object it hands back is the object
+        that was minted, and no holder of that object can rebind a field of it
+        behind the arena's back.
+
+        A denylist cannot make that promise.  A plain instance is not ``None``,
+        not a mutable dataclass and not a builtin container, yet
+        ``record.field = value`` rebinds it silently, so any "reject the
+        obviously mutable" rule admits exactly the case the promise is about.
+
+        Immutable-but-unnamed values (``str``, ``int``, ``tuple``,
+        ``frozenset``, ...) are rejected too.  They cannot be mutated, but an
+        authority record is a named record type; a caller that wants to store a
+        tuple wraps it in a frozen dataclass, which also gives the thing a name
+        in every diagnostic that prints it.
+
+        What is **not** enforced, and is the documented remaining gap: the arena
+        does not walk the record graph, so a frozen record whose field holds a
+        list is accepted and that list stays mutable.  Walking a record graph on
+        every mint is the cost this whole change exists to remove.  The
+        guarantee is one level deep, on the record object itself.
         """
 
-        if record is None:
-            raise TypeError("runtime authority arena requires an immutable record")
-        params = getattr(type(record), "__dataclass_params__", None)
-        if params is not None and not params.frozen:
-            raise TypeError(
-                "runtime authority arena requires an immutable record: "
-                f"{type(record).__name__} is a mutable dataclass"
-            )
-        if isinstance(record, (list, dict, set, bytearray)):
-            raise TypeError(
-                "runtime authority arena requires an immutable record: "
-                f"{type(record).__name__} is a mutable container"
-            )
+        if not isinstance(record, type):
+            params = getattr(type(record), "__dataclass_params__", None)
+            if params is not None and params.frozen is True:
+                return
+            if isinstance(record, tuple) and hasattr(type(record), "_fields"):
+                return
+        raise TypeError(
+            "runtime authority arena requires a frozen dataclass or NamedTuple "
+            f"record, not {type(record).__name__}"
+        )
 
 
 def is_runtime_authority_identity(value: object) -> bool:
