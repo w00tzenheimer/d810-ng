@@ -238,6 +238,49 @@ def probe_two_processes(directory: Path) -> ProbeResult:
     )
 
 
+def _hold(path: str, seconds: float) -> int:
+    """Own the write lock on PATH for SECONDS, then report what survived.
+
+    P5 needs one writer in a *different container*, so the holder cannot be a
+    child process: the two halves are started separately and only share the
+    file. The JSON is the holder's own evidence, not the contender's.
+    """
+    connection = _connect(Path(path))
+    connection.execute("delete from t")
+    connection.commit()
+    connection.execute("BEGIN IMMEDIATE")
+    connection.execute("insert into t values (1)")
+    print(json.dumps({"holding": True, "path": path}), flush=True)
+    time.sleep(seconds)
+    connection.commit()
+    rows = connection.execute("select count(*) from t").fetchone()[0]
+    integrity = connection.execute("PRAGMA integrity_check").fetchone()[0]
+    connection.close()
+    print(json.dumps({"rows": rows, "integrity": integrity}), flush=True)
+    return 0
+
+
+def _contend(path: str) -> int:
+    """Try to write PATH while another container holds its write lock."""
+    connection = sqlite3.connect(path, timeout=BUSY_TIMEOUT_MS / 1000.0)
+    connection.execute("create table if not exists t(x integer)")
+    started = time.monotonic()
+    error = None
+    try:
+        connection.execute("insert into t values (2)")
+        connection.commit()
+    except Exception as failure:  # noqa: BLE001
+        error = f"{type(failure).__name__}: {failure}"
+    seconds = time.monotonic() - started
+    connection.close()
+    outcome = classify_contention(error, seconds, 1, 1)
+    print(
+        json.dumps({"error": error, "seconds": seconds, "outcome": outcome}),
+        flush=True,
+    )
+    return 0
+
+
 def _child_insert(path: str) -> int:
     connection = sqlite3.connect(path, timeout=BUSY_TIMEOUT_MS / 1000.0)
     started = time.monotonic()
@@ -252,13 +295,37 @@ def _child_insert(path: str) -> int:
     return 0
 
 
+def _guarded(name: str, probe, *arguments) -> ProbeResult:
+    """Run one case so its own failure cannot erase the other cases.
+
+    P3 and P4 open connections outside a try block, so a mount that refuses
+    the open aborted the whole suite and took P1's and P2's already-measured
+    evidence with it. A raised probe is itself a result.
+    """
+    try:
+        return probe(*arguments)
+    except Exception as error:  # noqa: BLE001 - the message is the evidence
+        return ProbeResult(
+            name=name,
+            outcome="failed",
+            detail=f"{type(error).__name__}: {error}",
+        )
+
+
 def run_suite(directory: Path) -> list[ProbeResult]:
-    directory.mkdir(parents=True, exist_ok=True)
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+    except Exception as error:  # noqa: BLE001
+        detail = f"{type(error).__name__}: {error}"
+        return [
+            ProbeResult(name=name, outcome="failed", detail=detail)
+            for name in ("P1", "P2", "P3", "P4")
+        ]
     return [
-        probe_single(directory, "delete"),
-        probe_single(directory, "wal"),
-        probe_two_connections(directory),
-        probe_two_processes(directory),
+        _guarded("P1", probe_single, directory, "delete"),
+        _guarded("P2", probe_single, directory, "wal"),
+        _guarded("P3", probe_two_connections, directory),
+        _guarded("P4", probe_two_processes, directory),
     ]
 
 
@@ -267,9 +334,24 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--cifs-dir", default="/work/.tmp/sqlite-probe")
     parser.add_argument("--local-dir", default="/work/probe-local")
     parser.add_argument("--child-insert", default=None)
+    parser.add_argument(
+        "--hold",
+        default=None,
+        help="P5 holder half: own the write lock on this database (other container)",
+    )
+    parser.add_argument("--hold-seconds", type=float, default=6.0)
+    parser.add_argument(
+        "--contend",
+        default=None,
+        help="P5 contender half: write this database while another container holds it",
+    )
     arguments = parser.parse_args(argv)
     if arguments.child_insert:
         return _child_insert(arguments.child_insert)
+    if arguments.hold:
+        return _hold(arguments.hold, arguments.hold_seconds)
+    if arguments.contend:
+        return _contend(arguments.contend)
 
     print(f"sqlite_version={sqlite3.sqlite_version} pid={os.getpid()}")
     cifs = run_suite(Path(arguments.cifs_dir))

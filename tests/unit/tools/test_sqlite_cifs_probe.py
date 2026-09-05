@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import sqlite3
 import sys
 from pathlib import Path
 
@@ -114,3 +115,35 @@ def test_pass_requires_row_count_and_integrity(tmp_path: Path) -> None:
     assert probe.overall_verdict(
         [("P1", "integrity-or-rowcount-failed", "ok", "differs (x vs y)")]
     ) == "VERDICT: cifs locking FAILURE demonstrated"
+
+
+def test_a_raising_case_does_not_erase_the_other_cases(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """P3 opening outside a try block once aborted the whole suite."""
+
+    def _explode(directory: Path) -> None:
+        raise sqlite3.OperationalError("unable to open database file")
+
+    monkeypatch.setattr(probe, "probe_two_connections", _explode)
+
+    results = probe.run_suite(tmp_path)
+
+    assert [result.name for result in results] == ["P1", "P2", "P3", "P4"]
+    assert [result.outcome for result in results][:2] == ["ok", "ok"]
+    failed = results[2]
+    assert failed.outcome == "failed"
+    assert "unable to open database file" in failed.detail
+    assert results[3].outcome != "failed", results[3].detail
+
+
+def test_an_unwritable_directory_reports_every_case(tmp_path: Path) -> None:
+    """A mount that refuses mkdir is evidence, not a traceback."""
+    blocker = tmp_path / "blocked"
+    blocker.write_text("not a directory", encoding="utf-8")
+
+    results = probe.run_suite(blocker / "probe")
+
+    assert [result.name for result in results] == ["P1", "P2", "P3", "P4"]
+    assert {result.outcome for result in results} == {"failed"}
