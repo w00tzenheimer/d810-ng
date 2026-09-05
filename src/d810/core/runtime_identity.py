@@ -15,6 +15,13 @@ registry, no UUID, no content hash, and no persistence codec: a reference is
 meaningful only while its minting scope is reachable, and the canonical encoder
 refuses to serialize one.
 
+A reference names a record; ``RuntimeAuthorityArena`` is what holds the
+mapping.  The arena belongs to the phase or session that opens it, is created
+with its scope and dies with it, and answers only for the references it minted
+itself -- so identity and content stay separate concepts: a content ID remains
+the fingerprint a reader can reproduce from persisted bytes, while a reference
+is the authority for a join that never leaves the process.
+
 This module lives in ``d810.core`` because both producer-side analyses
 (``d810.analyses.control_flow``) and the authority transaction
 (``d810.transforms.unflatten_authority``) mint references, and the layered
@@ -159,6 +166,226 @@ class RuntimeAuthorityScope:
         )
 
 
+class RuntimeAuthorityArenaError(RuntimeError):
+    """Every fail-closed rejection a runtime authority arena can raise.
+
+    One exception type covers the three rejections that mean the same thing --
+    *this arena is not the authority for that reference* -- so a caller that
+    must fail closed catches one class instead of guessing between
+    ``KeyError`` and ``ValueError``.  A wrong *type* is still a ``TypeError``:
+    that is a programming error, not an authority decision.
+    """
+
+
+class RuntimeAuthorityArena:
+    """Bind the references one scope mints to the records they name.
+
+    The arena is owned by the lifecycle object that creates it -- a producer
+    phase or a transaction session -- and it is created with its scope and dies
+    with it.  It is never module level and never process global: two arenas
+    over the same namespace share nothing, because the references they hand out
+    carry different owner tokens.
+
+    It *wraps* a scope rather than constructing one, so a producer that already
+    holds a scope (and has already handed it to a record such as
+    ``RuntimeRouteIdentity``) can open an arena over exactly that scope without
+    changing the identity of anything already minted.
+
+    A record is built complete before it is minted and the arena never mutates
+    it; ``get`` returns the exact object that was stored.
+
+    >>> from dataclasses import dataclass, replace
+    >>> @dataclass(frozen=True)
+    ... class Claim:
+    ...     label: str
+    >>> arena = RuntimeAuthorityArena(RuntimeAuthorityScope("0x1400:g3"))
+    >>> ref = arena.mint(RuntimeAuthorityKind.CLAIM, Claim("exact effect"))
+    >>> arena.get(ref)
+    Claim(label='exact effect')
+    >>> arena.owns(ref)
+    True
+    >>> len(arena)
+    1
+
+    A copy is a different record; the arena keeps the one it was given.
+
+    >>> replace(arena.get(ref), label="rewritten") is arena.get(ref)
+    False
+    >>> arena.get(ref).label
+    'exact effect'
+
+    Closing the arena ends its authority, and releases the records it held.
+
+    >>> arena.close()
+    >>> arena.get(ref)
+    Traceback (most recent call last):
+        ...
+    d810.core.runtime_identity.RuntimeAuthorityArenaError: runtime authority arena is closed
+    """
+
+    __slots__ = ("_by_kind", "_closed", "_records", "_scope")
+
+    def __init__(self, scope: RuntimeAuthorityScope) -> None:
+        if type(scope) is not RuntimeAuthorityScope:
+            raise TypeError(
+                "runtime authority arena requires a runtime authority scope"
+            )
+        self._scope = scope
+        self._records: dict[RuntimeAuthorityRef, object] = {}
+        self._by_kind: dict[RuntimeAuthorityKind, list[RuntimeAuthorityRef]] = {}
+        self._closed = False
+
+    @property
+    def scope(self) -> RuntimeAuthorityScope:
+        """Return the one scope whose references this arena resolves."""
+
+        return self._scope
+
+    @property
+    def namespace(self) -> str:
+        """Return the readable namespace of this arena's scope."""
+
+        return self._scope.namespace
+
+    @property
+    def is_closed(self) -> bool:
+        """Return whether this arena has been closed by its owner."""
+
+        return self._closed
+
+    def mint(
+        self, kind: RuntimeAuthorityKind, record: object
+    ) -> RuntimeAuthorityRef:
+        """Store one complete, immutable ``record`` under a fresh reference.
+
+        Every argument is validated before an ordinal is consumed, so a
+        rejected mint leaves the scope's numbering untouched.
+
+        >>> from dataclasses import dataclass
+        >>> @dataclass(frozen=True)
+        ... class Proof:
+        ...     label: str
+        >>> arena = RuntimeAuthorityArena(RuntimeAuthorityScope("ns"))
+        >>> arena.mint(RuntimeAuthorityKind.ROUTE_PROOF, Proof("p")).render()
+        'route_proof000001'
+        """
+
+        self._require_open()
+        if type(kind) is not RuntimeAuthorityKind:
+            raise TypeError("runtime authority kind is not a RuntimeAuthorityKind")
+        self._require_immutable(record)
+        ref = self._scope.mint(kind)
+        self._records[ref] = record
+        self._by_kind.setdefault(kind, []).append(ref)
+        return ref
+
+    def get(self, ref: RuntimeAuthorityRef) -> object:
+        """Return the exact record ``ref`` names, or fail closed.
+
+        A reference minted by another scope, or by this arena's scope but not
+        through this arena, is rejected: an arena answers only for what it
+        minted itself.
+        """
+
+        self._require_open()
+        if not self._scope.owns(ref):
+            raise RuntimeAuthorityArenaError(
+                "runtime reference belongs to another runtime authority scope"
+            )
+        try:
+            return self._records[ref]
+        except KeyError:
+            raise RuntimeAuthorityArenaError(
+                "this runtime authority arena never minted that reference"
+            ) from None
+
+    def owns(self, ref: RuntimeAuthorityRef) -> bool:
+        """Return whether this arena minted ``ref`` and still holds its record.
+
+        This is strictly stronger than ``arena.scope.owns(ref)``, which answers
+        only that the scope numbered the reference.
+        """
+
+        self._require_open()
+        return self._scope.owns(ref) and ref in self._records
+
+    def refs(self, kind: RuntimeAuthorityKind) -> tuple[RuntimeAuthorityRef, ...]:
+        """Return this arena's references of ``kind`` in mint order."""
+
+        return self._ordered(kind)
+
+    def records(self, kind: RuntimeAuthorityKind) -> tuple[object, ...]:
+        """Return this arena's records of ``kind`` in mint order."""
+
+        return tuple(self._records[ref] for ref in self._ordered(kind))
+
+    def close(self) -> None:
+        """End this arena's authority and release the records it held.
+
+        Closing is idempotent, and it is the lifecycle owner's job: the arena
+        never closes itself.
+        """
+
+        self._closed = True
+        self._records = {}
+        self._by_kind = {}
+
+    def __len__(self) -> int:
+        """Return how many records this arena currently holds.
+
+        This is a size question rather than an authority question, so it stays
+        answerable after ``close``, where it reports zero: a closed arena holds
+        nothing.  Every authority question (``mint``, ``get``, ``owns``,
+        ``refs``, ``records``) raises instead.
+        """
+
+        return len(self._records)
+
+    def __repr__(self) -> str:
+        return (
+            f"RuntimeAuthorityArena(namespace={self._scope.namespace!r}, "
+            f"records={len(self._records)}, closed={self._closed})"
+        )
+
+    def _require_open(self) -> None:
+        if self._closed:
+            raise RuntimeAuthorityArenaError("runtime authority arena is closed")
+
+    def _ordered(
+        self, kind: RuntimeAuthorityKind
+    ) -> tuple[RuntimeAuthorityRef, ...]:
+        self._require_open()
+        if type(kind) is not RuntimeAuthorityKind:
+            raise TypeError("runtime authority kind is not a RuntimeAuthorityKind")
+        return tuple(self._by_kind.get(kind, ()))
+
+    @staticmethod
+    def _require_immutable(record: object) -> None:
+        """Reject a record that is obviously mutable, one level deep.
+
+        The check is deliberately structural and shallow: a frozen dataclass
+        whose field happens to hold a list is accepted, because walking a
+        record graph on every mint is exactly the cost this whole change
+        removes.  The invariant it enforces is the one that matters for
+        authority -- the object the arena hands back cannot be rebound by an
+        ordinary attribute assignment.
+        """
+
+        if record is None:
+            raise TypeError("runtime authority arena requires an immutable record")
+        params = getattr(type(record), "__dataclass_params__", None)
+        if params is not None and not params.frozen:
+            raise TypeError(
+                "runtime authority arena requires an immutable record: "
+                f"{type(record).__name__} is a mutable dataclass"
+            )
+        if isinstance(record, (list, dict, set, bytearray)):
+            raise TypeError(
+                "runtime authority arena requires an immutable record: "
+                f"{type(record).__name__} is a mutable container"
+            )
+
+
 def is_runtime_authority_identity(value: object) -> bool:
     """Return whether ``value`` is a scope-derived rather than content identity.
 
@@ -173,6 +400,8 @@ def is_runtime_authority_identity(value: object) -> bool:
 
 __all__ = [
     "RUNTIME_AUTHORITY_ID_PREFIX",
+    "RuntimeAuthorityArena",
+    "RuntimeAuthorityArenaError",
     "RuntimeAuthorityKind",
     "RuntimeAuthorityRef",
     "RuntimeAuthorityScope",

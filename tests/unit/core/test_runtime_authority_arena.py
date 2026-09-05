@@ -1,0 +1,181 @@
+"""A lifecycle-owned arena is the only authority binding a ref to a record."""
+
+from __future__ import annotations
+
+import dataclasses
+
+import pytest
+
+from d810.core.runtime_identity import (
+    RuntimeAuthorityArena,
+    RuntimeAuthorityArenaError,
+    RuntimeAuthorityKind,
+    RuntimeAuthorityRef,
+    RuntimeAuthorityScope,
+)
+from d810.transforms.unflatten_authority.ids import canonical_bytes
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class _Record:
+    """A minimal immutable authority record, complete at construction."""
+
+    label: str
+    ea: int = 0
+
+
+@dataclasses.dataclass
+class _MutableRecord:
+    label: str
+
+
+def _arena(namespace: str = "0x1400:g3") -> RuntimeAuthorityArena:
+    return RuntimeAuthorityArena(RuntimeAuthorityScope(namespace))
+
+
+def test_mint_reads_back_the_exact_record_it_stored() -> None:
+    arena = _arena()
+    record = _Record("route group")
+
+    ref = arena.mint(RuntimeAuthorityKind.ROUTE_GROUP, record)
+
+    assert type(ref) is RuntimeAuthorityRef
+    assert ref.kind is RuntimeAuthorityKind.ROUTE_GROUP
+    assert arena.get(ref) is record
+    assert arena.owns(ref) is True
+    assert len(arena) == 1
+
+
+def test_arena_mints_monotonic_ordinals_per_kind() -> None:
+    arena = _arena()
+
+    first_group = arena.mint(RuntimeAuthorityKind.ROUTE_GROUP, _Record("g1"))
+    first_proof = arena.mint(RuntimeAuthorityKind.ROUTE_PROOF, _Record("p1"))
+    second_proof = arena.mint(RuntimeAuthorityKind.ROUTE_PROOF, _Record("p2"))
+    second_group = arena.mint(RuntimeAuthorityKind.ROUTE_GROUP, _Record("g2"))
+
+    assert (first_group.ordinal, second_group.ordinal) == (1, 2)
+    assert (first_proof.ordinal, second_proof.ordinal) == (1, 2)
+    assert len(arena) == 4
+
+
+def test_refs_and_records_iterate_in_mint_order_per_kind() -> None:
+    arena = _arena()
+    proofs = tuple(_Record(f"p{index}") for index in range(5))
+    refs = tuple(
+        arena.mint(RuntimeAuthorityKind.ROUTE_PROOF, record) for record in proofs
+    )
+    arena.mint(RuntimeAuthorityKind.CLAIM, _Record("claim"))
+
+    assert tuple(arena.refs(RuntimeAuthorityKind.ROUTE_PROOF)) == refs
+    assert tuple(arena.records(RuntimeAuthorityKind.ROUTE_PROOF)) == proofs
+    assert tuple(arena.refs(RuntimeAuthorityKind.EVIDENCE)) == ()
+    assert tuple(arena.records(RuntimeAuthorityKind.EVIDENCE)) == ()
+
+
+def test_arena_rejects_a_reference_minted_by_another_scope() -> None:
+    arena = _arena()
+    foreign_scope = RuntimeAuthorityScope("0x1400:g3")
+    foreign = foreign_scope.mint(RuntimeAuthorityKind.CLAIM)
+
+    assert arena.owns(foreign) is False
+    with pytest.raises(RuntimeAuthorityArenaError, match="another runtime authority scope"):
+        arena.get(foreign)
+
+
+def test_arena_rejects_a_reference_its_scope_owns_but_never_minted() -> None:
+    scope = RuntimeAuthorityScope("0x1400:g3")
+    arena = RuntimeAuthorityArena(scope)
+    unminted = scope.mint(RuntimeAuthorityKind.SUBJECT)
+
+    assert scope.owns(unminted) is True
+    assert arena.owns(unminted) is False
+    with pytest.raises(RuntimeAuthorityArenaError, match="never minted"):
+        arena.get(unminted)
+
+
+def test_closed_arena_refuses_to_mint_read_or_iterate() -> None:
+    arena = _arena()
+    ref = arena.mint(RuntimeAuthorityKind.EVIDENCE, _Record("evidence"))
+
+    arena.close()
+
+    assert arena.is_closed is True
+    assert len(arena) == 0
+    with pytest.raises(RuntimeAuthorityArenaError, match="closed"):
+        arena.mint(RuntimeAuthorityKind.EVIDENCE, _Record("late"))
+    with pytest.raises(RuntimeAuthorityArenaError, match="closed"):
+        arena.get(ref)
+    with pytest.raises(RuntimeAuthorityArenaError, match="closed"):
+        arena.owns(ref)
+    with pytest.raises(RuntimeAuthorityArenaError, match="closed"):
+        tuple(arena.refs(RuntimeAuthorityKind.EVIDENCE))
+    with pytest.raises(RuntimeAuthorityArenaError, match="closed"):
+        tuple(arena.records(RuntimeAuthorityKind.EVIDENCE))
+    arena.close()
+    assert arena.is_closed is True
+
+
+def test_stored_record_is_the_exact_object_and_a_copy_is_another_record() -> None:
+    arena = _arena()
+    record = _Record("claim", ea=0x1400)
+    ref = arena.mint(RuntimeAuthorityKind.CLAIM, record)
+
+    copy = dataclasses.replace(record, ea=0x1500)
+
+    assert arena.get(ref) is record
+    assert arena.get(ref) is not copy
+    assert arena.get(ref).ea == 0x1400
+
+
+def test_arena_refuses_canonical_serialization() -> None:
+    arena = _arena()
+
+    with pytest.raises(TypeError, match="RuntimeAuthorityArena"):
+        canonical_bytes(arena)
+
+
+def test_two_arenas_over_one_namespace_never_observe_each_other() -> None:
+    left = _arena("0x1400:g3")
+    right = _arena("0x1400:g3")
+
+    left_ref = left.mint(RuntimeAuthorityKind.LEDGER, _Record("left"))
+    right_ref = right.mint(RuntimeAuthorityKind.LEDGER, _Record("right"))
+
+    assert (left_ref.kind, left_ref.ordinal) == (right_ref.kind, right_ref.ordinal)
+    assert left_ref != right_ref
+    assert left.get(left_ref).label == "left"
+    assert right.get(right_ref).label == "right"
+    assert left.owns(right_ref) is False and right.owns(left_ref) is False
+    with pytest.raises(RuntimeAuthorityArenaError):
+        left.get(right_ref)
+    left.close()
+    assert right.get(right_ref).label == "right"
+
+
+def test_arena_requires_a_scope_and_an_immutable_record() -> None:
+    with pytest.raises(TypeError, match="runtime authority scope"):
+        RuntimeAuthorityArena("0x1400:g3")
+    arena = _arena()
+    with pytest.raises(TypeError, match="runtime authority kind"):
+        arena.mint("claim", _Record("claim"))
+    with pytest.raises(TypeError, match="immutable record"):
+        arena.mint(RuntimeAuthorityKind.CLAIM, _MutableRecord("claim"))
+    with pytest.raises(TypeError, match="immutable record"):
+        arena.mint(RuntimeAuthorityKind.CLAIM, ["claim"])
+    with pytest.raises(TypeError, match="immutable record"):
+        arena.mint(RuntimeAuthorityKind.CLAIM, None)
+    with pytest.raises(TypeError, match="runtime authority reference"):
+        arena.get("route_group000001")
+    assert len(arena) == 0
+
+
+def test_arena_exposes_its_scope_without_taking_it_over() -> None:
+    scope = RuntimeAuthorityScope("0x1400:g3")
+    arena = RuntimeAuthorityArena(scope)
+    ref = arena.mint(RuntimeAuthorityKind.ROUTE_GROUP, _Record("group"))
+
+    assert arena.scope is scope
+    assert arena.namespace == "0x1400:g3"
+    assert scope.identity(ref) == "runtime:0x1400:g3#route_group000001"
+    assert "0x1400:g3" in repr(arena)
