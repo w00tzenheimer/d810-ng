@@ -648,3 +648,182 @@ def test_the_sidecar_channel_refuses_a_claim_type_that_declares_no_slot() -> Non
         authority_ids._claim_factory(
             model.ExactInfeasibleEffectClaim, runtime_refs=sidecar,
         )
+
+
+# --------------------------------------------------------------------------
+# The claim family joins on those references instead of on the content ID.
+# --------------------------------------------------------------------------
+
+
+def test_the_producer_mints_every_route_claim_carrying_its_bundle_references() -> None:
+    """The claim leaves the factory bound, and its canonical bytes do not move."""
+
+    from d810.transforms.unflatten_authority import producer_api
+
+    source, proposal, _exclusion, _refs = exact_fixture()
+    evidence = proposal.route_evidence
+    proof = evidence.route_proofs[0]
+    binding = route_join_binding(evidence)
+
+    claim = producer_api.build_equivalent_route_claims(
+        source=source,
+        source_catalog=proposal.source_identity_catalog,
+        route_evidence=evidence,
+        selected_proof_ids=(proof.proof_id,),
+    )[0]
+
+    refs = producer_api.route_claim_join_refs(claim)
+    assert refs.proof_refs == (binding.ref_for(proof),)
+    assert refs.group_ref is binding.group_ref
+    assert refs.atomic_group_id == claim.atomic_group_id
+    # The fingerprint is untouched: the same claim built without a sidecar is
+    # the same value, the same ID and the same bytes.
+    payload = {
+        name: getattr(claim, name)
+        for name in authority_ids._RECORD_FIELDS[type(claim)]
+        if name != "claim_id"
+    }
+    unbound = authority_ids._claim_factory(type(claim), **payload)
+    assert unbound == claim
+    assert unbound.claim_id == claim.claim_id
+    assert authority_ids.canonical_bytes(unbound) == authority_ids.canonical_bytes(
+        claim
+    )
+
+
+def test_the_route_claim_correspondence_refuses_a_content_equal_foreign_claim() -> None:
+    """Two bundles, identical content: only the arena can tell the claims apart.
+
+    ``resolve_equivalent_route_claim`` used to select the rebuilt claim whose
+    ``claim_id`` matched, which asks whether *some* claim with these bytes was
+    rebuilt.  The authority question is whether this claim is about this
+    proposal's route, and a claim minted from another bundle answers it "no"
+    even though every canonical byte agrees.
+    """
+
+    from dataclasses import replace as dataclass_replace
+
+    from d810.transforms.unflatten_authority import model as authority_model
+    from d810.transforms.unflatten_authority import producer_api
+
+    source, proposal, _exclusion, refs = exact_fixture()
+    other_source, other_proposal, _other_exclusion, _other_refs = exact_fixture()
+    proof = proposal.route_evidence.route_proofs[0]
+    other_proof = other_proposal.route_evidence.route_proofs[0]
+
+    def claims_for(graph, contract, selected):
+        return producer_api.build_equivalent_route_claims(
+            source=graph,
+            source_catalog=contract.source_identity_catalog,
+            route_evidence=contract.route_evidence,
+            selected_proof_ids=(selected.proof_id,),
+        )[0]
+
+    own = claims_for(source, proposal, proof)
+    foreign = claims_for(other_source, other_proposal, other_proof)
+
+    # Content cannot distinguish them.
+    assert foreign == own
+    assert foreign.claim_id == own.claim_id
+    assert authority_ids.canonical_bytes(foreign) == authority_ids.canonical_bytes(own)
+    # Authority can.
+    assert producer_api.route_claim_join_refs(
+        foreign
+    ) != producer_api.route_claim_join_refs(own)
+
+    def proposal_with(claim):
+        return dataclass_replace(
+            proposal,
+            claims=(claim,),
+            plan_inputs=dataclass_replace(
+                proposal.plan_inputs,
+                shape=authority_model.UnflattenPlanShape.PARTIAL_REWRITE,
+            ),
+        )
+
+    assert producer_api.resolve_equivalent_route_claim(
+        source=source,
+        proposal=proposal_with(own),
+        claim=own,
+        block_refs_by_serial=refs,
+    ) is own
+
+    with pytest.raises(ValueError, match="route claim is stale or ambiguous"):
+        producer_api.resolve_equivalent_route_claim(
+            source=source,
+            proposal=proposal_with(foreign),
+            claim=foreign,
+            block_refs_by_serial=refs,
+        )
+
+
+def test_an_unbound_claim_is_refused_at_the_claim_join() -> None:
+    """A decoded claim carries a fingerprint and no authority; the join says so."""
+
+    from dataclasses import replace as dataclass_replace
+
+    from d810.transforms.unflatten_authority import model as authority_model
+    from d810.transforms.unflatten_authority import producer_api
+
+    source, proposal, _exclusion, refs = exact_fixture()
+    proof = proposal.route_evidence.route_proofs[0]
+    claim = producer_api.build_equivalent_route_claims(
+        source=source,
+        source_catalog=proposal.source_identity_catalog,
+        route_evidence=proposal.route_evidence,
+        selected_proof_ids=(proof.proof_id,),
+    )[0]
+    decoded = authority_ids.canonical_decode(authority_ids.canonical_bytes(claim))
+
+    assert decoded == claim
+    with pytest.raises(RuntimeJoinRejected, match="not bound to a runtime"):
+        producer_api.route_claim_join_refs(decoded)
+
+    route_proposal = dataclass_replace(
+        proposal,
+        claims=(decoded,),
+        plan_inputs=dataclass_replace(
+            proposal.plan_inputs,
+            shape=authority_model.UnflattenPlanShape.PARTIAL_REWRITE,
+        ),
+    )
+
+    with pytest.raises(ValueError, match="route claim is stale or ambiguous") as error:
+        producer_api.resolve_equivalent_route_claim(
+            source=source,
+            proposal=route_proposal,
+            claim=decoded,
+            block_refs_by_serial=refs,
+        )
+    assert isinstance(error.value.__cause__, RuntimeJoinRejected)
+
+
+def test_a_claim_that_outlives_its_phase_can_no_longer_be_joined() -> None:
+    """Why the transaction-side claim joins are not converted in this task.
+
+    A claim minted inside the emission carries references into a plan that
+    outlives it.  The phase closes the arena on the way out, so the *join* is
+    refused afterwards while the content stays perfectly readable -- which is
+    exactly why the transaction needs its own arena before its claim joins can
+    be reference-keyed.
+    """
+
+    from d810.transforms.unflatten_authority import producer_api
+
+    with route_authority_phase("test-emission"):
+        source, proposal, _exclusion, _refs = exact_fixture()
+        proof = proposal.route_evidence.route_proofs[0]
+        claim = producer_api.build_equivalent_route_claims(
+            source=source,
+            source_catalog=proposal.source_identity_catalog,
+            route_evidence=proposal.route_evidence,
+            selected_proof_ids=(proof.proof_id,),
+        )[0]
+        assert producer_api.route_claim_join_refs(claim).is_live
+
+    assert claim.runtime_refs is not None
+    assert not claim.runtime_refs.is_live
+    with pytest.raises(RuntimeJoinRejected, match="closed"):
+        producer_api.route_claim_join_refs(claim)
+    # The content is untouched by the phase ending.
+    assert authority_ids.claim_id(claim) == claim.claim_id

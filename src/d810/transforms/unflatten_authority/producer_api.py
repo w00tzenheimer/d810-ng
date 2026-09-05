@@ -14,6 +14,8 @@ from dataclasses import dataclass, replace
 
 from d810.analyses.control_flow.semantic_route_evidence import (
     CanonicalSemanticEvidence,
+    RouteAuthorityBinding,
+    RouteClaimAuthorityRefs,
     route_join_binding,
     SemanticRouteDestination,
     SemanticRouteProof,
@@ -184,6 +186,40 @@ def bundle_route_proof_refs(
         return tuple(binding.ref_for(proof) for proof in proofs)
     except RuntimeJoinRejected as exc:
         raise ValueError(rejection) from exc
+
+
+def route_claim_join_refs(
+    claim: EquivalentSemanticRouteClaim,
+) -> RouteClaimAuthorityRefs:
+    """Return the join authority of one route claim, or refuse the join.
+
+    The mirror of ``route_join_binding`` for the records minted *from* a
+    bundle.  A claim that never carried a sidecar -- decoded from
+    persistence, or built field by field -- has no authority for a join and is
+    refused here rather than silently falling back to its content
+    fingerprint, which would answer a different question ("is some claim with
+    these bytes present") than the one a join asks ("is this claim about that
+    route").  A claim whose arena its lifecycle owner has closed is refused
+    for the same reason.
+
+    ``RuntimeJoinRejected`` is a ``ValueError``, so a caller inside the
+    emission's abstention contract declines the plan instead of aborting the
+    decompilation.
+    """
+
+    if type(claim) is not EquivalentSemanticRouteClaim:
+        raise TypeError("route claim join requires an equivalent route claim")
+    refs = claim.runtime_refs
+    if refs is None:
+        raise RuntimeJoinRejected(
+            "equivalent semantic route claim is not bound to a runtime "
+            "authority arena; it carries a content fingerprint only"
+        )
+    if not refs.is_live:
+        raise RuntimeJoinRejected(
+            "the runtime authority arena of this route claim is closed"
+        )
+    return refs
 
 
 @dataclass(frozen=True, slots=True)
@@ -2944,9 +2980,19 @@ def _equivalent_route_claim(
     source_catalog: SourceIdentityCatalog,
     route_evidence: CanonicalSemanticEvidence,
     proof: SemanticRouteProof,
+    binding: RouteAuthorityBinding,
     block_refs_by_serial: Mapping[int, AuthorityBlockRef] | None,
 ) -> EquivalentSemanticRouteClaim:
-    """Adapt one selected canonical proof into a closed route claim."""
+    """Adapt one selected canonical proof into a closed route claim.
+
+    ``binding`` is the bundle's own join authority, resolved once by the
+    caller.  The claim is minted carrying the references it already holds for
+    exactly this proof, so a later join asks the arena which route a claim is
+    about instead of re-deriving it from a content ID.  ``binding.claim_refs``
+    resolves the proof by object identity, so a proof that is not this
+    bundle's record fails closed here rather than minting a claim whose
+    authority names the wrong route.
+    """
 
     if proof.native_key != source_catalog.native_key:
         raise ValueError("canonical route proof has a foreign native key")
@@ -3075,6 +3121,7 @@ def _equivalent_route_claim(
     replacement_subject = retired_subject
     return _claim_factory(
         EquivalentSemanticRouteClaim,
+        runtime_refs=binding.claim_refs(proof),
         kind=UnflattenClaimKind.EQUIVALENT_SEMANTIC_ROUTE,
         retired_route_subject=retired_subject,
         replacement_route_subject=replacement_subject,
@@ -3138,6 +3185,7 @@ def build_equivalent_route_claims(
                 source_catalog=source_catalog,
                 route_evidence=route_evidence,
                 proof=proof,
+                binding=binding,
                 source=source,
                 block_refs_by_serial=block_refs_by_serial,
             )
@@ -3177,7 +3225,20 @@ def resolve_equivalent_route_claim(
         selected_proof_ids=claim.route_proof_ids,
         block_refs_by_serial=block_refs_by_serial,
     )
-    selected = tuple(item for item in rebuilt if item.claim_id == claim.claim_id)
+    # The claim -> claim correspondence is an authority question, so it keys
+    # on the references the bundle minted, not on the content fingerprint.
+    # ``rebuilt`` was minted from ``proposal.route_evidence`` a few lines
+    # above, so a claim that belongs to this proposal names references from
+    # that same arena; one that does not is refused instead of matching a
+    # foreign claim that happens to encode to the same bytes.  ``claim_id``
+    # remains the fingerprint, and full value equality still decides.
+    try:
+        wanted = route_claim_join_refs(claim)
+        selected = tuple(
+            item for item in rebuilt if route_claim_join_refs(item) == wanted
+        )
+    except RuntimeJoinRejected as exc:
+        raise ValueError("route claim is stale or ambiguous") from exc
     if len(selected) != 1 or selected[0] != claim:
         raise ValueError("route claim is stale or ambiguous")
     return claim
@@ -3297,6 +3358,7 @@ __all__ = [
     "build_exact_effect_claim",
     "build_equivalent_route_claims",
     "resolve_equivalent_route_claim",
+    "route_claim_join_refs",
     "concrete_entry_route_key",
     "resolve_concrete_entry_route",
     "bootstrap_entry_route_key",
