@@ -66,6 +66,7 @@ from d810.ir.flowgraph import (
 from d810.ir.insn_projection import operand_storages, project_instruction
 from d810.ir.semantics import CallKind
 from d810.analyses.control_flow.branch_ownership import (
+    BranchOwnershipOracleKind,
     BranchOwnershipProof,
     BranchOwnershipProofKind,
 )
@@ -272,7 +273,7 @@ class MopTrackerBranchOwnershipOracle:
                     ),
                     trusted=True,
                     reason="moptracker_path_constant_taken_arm",
-                    oracle_kind="moptracker_branch_ownership",
+                    oracle_kind=BranchOwnershipOracleKind.MOPTRACKER,
                     result=result,
                     extra_evidence={
                         "taken_arm": taken_arm,
@@ -285,7 +286,7 @@ class MopTrackerBranchOwnershipOracle:
                 proof_kind=BranchOwnershipProofKind.OBFUSCATION_RESIDUE_ARM,
                 trusted=True,
                 reason="moptracker_path_constant_non_taken_arm",
-                oracle_kind="moptracker_branch_ownership",
+                oracle_kind=BranchOwnershipOracleKind.MOPTRACKER,
                 result=result,
                 extra_evidence={
                     "taken_arm": taken_arm,
@@ -300,7 +301,7 @@ class MopTrackerBranchOwnershipOracle:
                 proof_kind=BranchOwnershipProofKind.REAL_DATA_DEPENDENT,
                 trusted=True,
                 reason="moptracker_real_data_dependent_predicate",
-                oracle_kind="moptracker_branch_ownership",
+                oracle_kind=BranchOwnershipOracleKind.MOPTRACKER,
                 result=result,
                 extra_evidence={"via_pred": via_pred},
             )
@@ -602,7 +603,7 @@ class Z3BranchOwnershipOracle:
             target_entry=proof.target_entry,
             predicate_block=proof.predicate_block,
             dispatcher_entry_block=proof.dispatcher_entry_block,
-            oracle_kind="z3_jumpfixer_branch_ownership",
+            oracle_kind=BranchOwnershipOracleKind.Z3_JUMPFIXER,
             evidence=evidence,
             payload=dict(proof.payload),
         )

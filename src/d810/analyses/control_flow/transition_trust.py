@@ -220,7 +220,7 @@ def _branch_ownership_transition_trust_result(
                 trust_kind=(TransitionTrustKind.BRANCH_OWNERSHIP_REAL_DATA_DEPENDENT),
                 evidence={
                     "proof_id": proof.proof_id,
-                    "oracle_kind": proof.oracle_kind,
+                    "oracle_kind": proof.oracle_kind_name,
                 },
             )
         return TransitionTrustResult(
@@ -229,7 +229,7 @@ def _branch_ownership_transition_trust_result(
             evidence={
                 "proof_id": proof.proof_id,
                 "trusted": bool(proof.trusted),
-                "oracle_kind": proof.oracle_kind,
+                "oracle_kind": proof.oracle_kind_name,
             },
         )
     return None

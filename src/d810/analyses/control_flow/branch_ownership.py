@@ -12,6 +12,99 @@ from d810.analyses.control_flow.dispatcher_resolution import StateDispatcherMap
 _MASK64 = 0xFFFFFFFFFFFFFFFF
 
 
+class BranchOwnershipOracleKind(str, Enum):
+    """Which producer minted a :class:`BranchOwnershipProof`.
+
+    ``oracle_kind`` used to be a free-form string with a trusted-looking
+    default, so an unrecognised (or absent) producer silently presented itself
+    as ``preanalysis_branch_ownership``.  Enumerating the producers makes the
+    provenance checkable: :func:`branch_ownership_proof_from_any` normalises a
+    recognised name to a member here, and :attr:`BranchOwnershipProof.is_known_oracle`
+    reports whether the proof came from a producer this codebase knows about.
+
+    Members subclass ``str``, so every existing ``==`` comparison, ``in``-set
+    test, dict lookup and JSON encoding against the bare name keeps working.
+    Use :attr:`BranchOwnershipProof.oracle_kind_name` wherever a plain ``str``
+    is required -- ``str(member)`` renders ``"BranchOwnershipOracleKind.X"``,
+    not the value.
+    """
+
+    # d810.analyses.control_flow.branch_ownership
+    PREANALYSIS_BRANCH_OWNERSHIP = "preanalysis_branch_ownership"
+    UNRESOLVED = "unresolved"
+    EXPLICIT_OPAQUE_PROVENANCE = "explicit_opaque_provenance"
+    DAG_TERMINAL_FRONTIER = "dag_terminal_frontier"
+    DAG_EDGE_EQUIVALENCE = "dag_edge_equivalence"
+    TERMINAL_SELECTOR_BACKEDGE = "branch_ownership_terminal_selector_backedge"
+    # d810.analyses.control_flow.branch_ownership_oracle
+    MOPTRACKER = "moptracker_branch_ownership"
+    Z3_JUMPFIXER = "z3_jumpfixer_branch_ownership"
+    # d810.analyses.control_flow.switch_case_transition_analysis
+    SWITCH_CASE_RETURN_FRONTIER = "switch_case_return_frontier"
+    SWITCH_CASE_BRANCH_OWNERSHIP = "switch_case_branch_ownership"
+    SWITCH_CASE_DISPATCHER_ROW_DIAGNOSTIC = "switch_case_dispatcher_row_diagnostic"
+    SWITCH_CASE_TRANSITION_UNRESOLVED = "switch_case_transition_unresolved"
+    # d810.backends.hexrays.evidence.ollvm_carrier
+    OLLVM_CARRIER = "ollvm_carrier_branch_ownership"
+
+
+class BranchOwnershipEvidenceKey(str, Enum):
+    """Evidence-bag keys that are load-bearing rather than diagnostic.
+
+    Most of ``BranchOwnershipProof.evidence`` is free-form explanation, but a
+    few keys gate real decisions.  Naming them keeps a safety guard from
+    hinging on an undeclared string literal typed in two places.
+
+    ``SIDE_EFFECT_GUARD_REASON``
+        Set by an oracle that proved a branch condition constant but refused to
+        authorize discarding the unselected arm because that arm owns payload
+        side effects.  :attr:`BranchOwnershipProof.vetoes_fallback_refinement`
+        keys off its presence.
+    """
+
+    SIDE_EFFECT_GUARD_REASON = "side_effect_guard_reason"
+
+
+class BranchOwnershipAuthority(str, Enum):
+    """The single typed verdict a proof row carries.
+
+    Consumers previously had to recompose ``trusted and proof_kind == ...`` to
+    learn what a proof permits, which put a bare bool and a bare string on the
+    critical path to a semantic DAG bridge.  This enum is the one value that
+    answers "what may be done with this row?".
+
+    ``SEMANTIC_BRIDGE``
+        Real source-program control flow.  May be preserved as an explicit
+        state-DAG bridge.  May **not** authorize branch removal.
+
+    ``NONSEMANTIC_REWRITE``
+        Proven obfuscation residue.  May authorize removing/retargeting this
+        exact arm after exact edge-identity matching.  May **not** authorize
+        semantic bridging.
+
+    ``DIAGNOSTIC_ONLY``
+        Explains why no mutation is allowed.  Authorizes nothing.  Predicate
+        proofs (``OPAQUE_ALWAYS_*``), terminal frontiers, equivalent arms and
+        every untrusted row land here: they are evidence, not permission.
+    """
+
+    SEMANTIC_BRIDGE = "semantic_bridge"
+    NONSEMANTIC_REWRITE = "nonsemantic_rewrite"
+    DIAGNOSTIC_ONLY = "diagnostic_only"
+
+
+def _enum_value(value: object) -> str:
+    """Render an enum member as its value, anything else via ``str``.
+
+    ``str(SomeStrEnum.MEMBER)`` returns ``"SomeStrEnum.MEMBER"``, not the
+    value, so a plain ``str()`` coercion would corrupt every serialized row
+    the moment a producer switched from a literal to a member.
+    """
+    if isinstance(value, Enum):
+        return str(value.value)
+    return str(value)
+
+
 class BranchOwnershipProofKind(str, Enum):
     "Semantic ownership classification for one conditional branch arm.\n\n    These values describe the *meaning of one observed branch arm*, not the\n    graph edit to perform.  Keep that separation intact:\n\n    - Semantic-edge authority means a consumer may preserve the arm as source\n      program control flow or use it as an explicit state-DAG bridge.\n    - Nonsemantic-rewrite authority means a consumer may remove, retarget, or\n      bypass the arm after matching exact edge identity.\n    - Diagnostic-only authority means the row explains why no mutation is\n      allowed.\n\n    ``REAL_DATA_DEPENDENT``\n        The arm is controlled by real program data, such as password/input\n        bytes, an API result, or another value that belongs to the source\n        program.  This is semantic program structure.  A trusted proof may\n        authorize explicit DAG bridging/preservation.  It must not authorize\n        branch removal.\n\n    ``OPAQUE_ALWAYS_TRUE`` / ``OPAQUE_ALWAYS_FALSE``\n        The predicate outcome is proven constant under the relevant path\n        constraints and this row identifies the arm selected by that constant\n        outcome.  This is predicate authority only: it does not prove that the\n        selected arm is semantic, nor that a CFG rewrite may remove it.  The\n        complementary non-selected arm should be represented separately as\n        ``OBFUSCATION_RESIDUE_ARM`` when preanalysis can identify it.\n\n    ``EQUIVALENT_STATE_ARMS``\n        Both conditional arms resolve to the same semantic state/handler, so\n        the branch is not a meaningful source-level fork even if both CFG arms\n        are reachable.  This is useful for simplification diagnostics and\n        possible coalescing, but it is not enough by itself to delete one arm\n        unless a later consumer also proves the exact rewrite shape.\n\n    ``OBFUSCATION_RESIDUE_ARM``\n        The arm reaches a state-machine state that exists only as obfuscation\n        residue: for example a BCF false arm, selector backedge, dispatcher\n        residue state, or opaque branch target that should not appear as\n        recovered source control flow.  A trusted proof may authorize\n        nonsemantic branch rewrite after exact edge matching.  It must not\n        authorize semantic DAG bridging.\n\n    ``TERMINAL_RETURN_FRONTIER``\n        The arm identifies a return/exit frontier.  This is terminal ownership\n        evidence for return-frontier handling.  It is not opaque-branch proof\n        and does not authorize deleting a sibling arm.\n\n    ``UNRESOLVED``\n        Preanalysis saw a conditional arm but no trusted oracle classified it.  This\n        row is diagnostics only.  No CFG mutation or semantic bridge may be\n        justified from it.\n"
 
@@ -48,7 +141,9 @@ class BranchOwnershipProof:
     target_entry: int | None = None
     predicate_block: int | None = None
     dispatcher_entry_block: int | None = None
-    oracle_kind: str = "preanalysis_branch_ownership"
+    oracle_kind: BranchOwnershipOracleKind | str = (
+        BranchOwnershipOracleKind.PREANALYSIS_BRANCH_OWNERSHIP
+    )
     evidence: dict[str, object] = field(default_factory=dict)
     payload: dict[str, object] = field(default_factory=dict)
 
@@ -58,6 +153,43 @@ class BranchOwnershipProof:
         if isinstance(kind, BranchOwnershipProofKind):
             return kind.value
         return str(kind)
+
+    @property
+    def oracle_kind_name(self) -> str:
+        """The producer name as a plain ``str``, whatever the field holds."""
+        return _enum_value(self.oracle_kind)
+
+    @property
+    def is_known_oracle(self) -> bool:
+        """Whether this row names a producer enumerated in this codebase.
+
+        A row minted by an unknown producer is still usable -- the field
+        accepts a raw string so third-party oracles round-trip -- but a
+        consumer that cares about provenance can now tell the difference,
+        which a free-form string with a trusted-looking default hid.
+        """
+        try:
+            BranchOwnershipOracleKind(self.oracle_kind_name)
+        except ValueError:
+            return False
+        return True
+
+    @property
+    def authority(self) -> BranchOwnershipAuthority:
+        """What this row permits, as one typed verdict.
+
+        Equivalent by construction to the pair of ``authorizes_*`` properties
+        below, which now delegate here so the ``trusted``-bool-plus-kind-string
+        composition exists in exactly one place.
+        """
+        if not bool(self.trusted):
+            return BranchOwnershipAuthority.DIAGNOSTIC_ONLY
+        kind = self.proof_kind_name
+        if kind == BranchOwnershipProofKind.REAL_DATA_DEPENDENT.value:
+            return BranchOwnershipAuthority.SEMANTIC_BRIDGE
+        if kind == BranchOwnershipProofKind.OBFUSCATION_RESIDUE_ARM.value:
+            return BranchOwnershipAuthority.NONSEMANTIC_REWRITE
+        return BranchOwnershipAuthority.DIAGNOSTIC_ONLY
 
     @property
     def authorizes_nonsemantic_branch_rewrite(self) -> bool:
@@ -74,9 +206,7 @@ class BranchOwnershipProof:
         the source block/arm is private to the edge, or lower through a
         clone/split primitive that makes it private first.
         """
-        return bool(self.trusted) and self.proof_kind_name in {
-            BranchOwnershipProofKind.OBFUSCATION_RESIDUE_ARM.value,
-        }
+        return self.authority is BranchOwnershipAuthority.NONSEMANTIC_REWRITE
 
     @property
     def authorizes_semantic_branch_bridge(self) -> bool:
@@ -88,11 +218,7 @@ class BranchOwnershipProof:
         the recovered state DAG.
         """
 
-        return (
-            bool(self.trusted)
-            and self.proof_kind_name
-            == BranchOwnershipProofKind.REAL_DATA_DEPENDENT.value
-        )
+        return self.authority is BranchOwnershipAuthority.SEMANTIC_BRIDGE
 
     @property
     def vetoes_fallback_refinement(self) -> bool:
@@ -109,7 +235,8 @@ class BranchOwnershipProof:
         return (
             self.proof_kind_name == BranchOwnershipProofKind.UNRESOLVED.value
             and not bool(self.trusted)
-            and "side_effect_guard_reason" in self.evidence
+            and BranchOwnershipEvidenceKey.SIDE_EFFECT_GUARD_REASON.value
+            in self.evidence
         )
 
     def to_diag_row(
@@ -135,10 +262,30 @@ class BranchOwnershipProof:
             "target_entry": self.target_entry,
             "predicate_block": self.predicate_block,
             "dispatcher_entry_block": self.dispatcher_entry_block,
-            "oracle_kind": self.oracle_kind,
+            "oracle_kind": self.oracle_kind_name,
             "evidence": self.evidence,
             "payload": payload,
         }
+
+
+def _normalized_oracle_kind(value: object) -> BranchOwnershipOracleKind | str:
+    """Coerce a producer name to a member when recognised, else keep it.
+
+    An absent producer name still falls back to
+    ``PREANALYSIS_BRANCH_OWNERSHIP`` for backwards compatibility, but that
+    fallback is now visible as a member rather than hidden in a string
+    default, and :attr:`BranchOwnershipProof.is_known_oracle` lets a consumer
+    tell a real producer from an unrecognised one.
+    """
+    if isinstance(value, BranchOwnershipOracleKind):
+        return value
+    if value is None or value == "":
+        return BranchOwnershipOracleKind.PREANALYSIS_BRANCH_OWNERSHIP
+    name = _enum_value(value)
+    try:
+        return BranchOwnershipOracleKind(name)
+    except ValueError:
+        return name
 
 
 def branch_ownership_proof_from_any(
@@ -185,7 +332,7 @@ def branch_ownership_proof_from_any(
             target_entry=_maybe_int(_field("target_entry")),
             predicate_block=_maybe_int(_field("predicate_block")),
             dispatcher_entry_block=_maybe_int(_field("dispatcher_entry_block")),
-            oracle_kind=str(_field("oracle_kind") or "preanalysis_branch_ownership"),
+            oracle_kind=_normalized_oracle_kind(_field("oracle_kind")),
             evidence=dict(_field("evidence") or {}),
             payload=dict(_field("payload") or {}),
         )
@@ -242,18 +389,20 @@ def collect_branch_ownership_proofs(
         proof_kind = BranchOwnershipProofKind.UNRESOLVED
         trusted = False
         reason = "branch_ownership_unresolved"
-        oracle_kind = "unresolved"
+        oracle_kind: BranchOwnershipOracleKind | str = (
+            BranchOwnershipOracleKind.UNRESOLVED
+        )
 
         if provenance_kind in trusted_opaque_provenance_kinds:
             proof_kind = BranchOwnershipProofKind.OBFUSCATION_RESIDUE_ARM
             trusted = True
             reason = f"trusted_opaque_branch_provenance:{provenance_kind}"
-            oracle_kind = "explicit_opaque_provenance"
+            oracle_kind = BranchOwnershipOracleKind.EXPLICIT_OPAQUE_PROVENANCE
         elif edge_kind in {"CONDITIONAL_RETURN", "EXIT_ROUTINE"}:
             proof_kind = BranchOwnershipProofKind.TERMINAL_RETURN_FRONTIER
             trusted = True
             reason = "edge_kind_terminal_return_frontier"
-            oracle_kind = "dag_terminal_frontier"
+            oracle_kind = BranchOwnershipOracleKind.DAG_TERMINAL_FRONTIER
         elif _target_state_has_terminal_frontier(
             edge,
             outgoing_by_source.get(target_state, ()),
@@ -261,7 +410,7 @@ def collect_branch_ownership_proofs(
             proof_kind = BranchOwnershipProofKind.TERMINAL_RETURN_FRONTIER
             trusted = True
             reason = "target_state_terminal_return_frontier"
-            oracle_kind = "dag_terminal_frontier"
+            oracle_kind = BranchOwnershipOracleKind.DAG_TERMINAL_FRONTIER
         elif _has_equivalent_conditional_arm(
             edge,
             outgoing_by_source.get(source_state, ()),
@@ -269,7 +418,7 @@ def collect_branch_ownership_proofs(
             proof_kind = BranchOwnershipProofKind.EQUIVALENT_STATE_ARMS
             trusted = True
             reason = "conditional_arms_share_target_state"
-            oracle_kind = "dag_edge_equivalence"
+            oracle_kind = BranchOwnershipOracleKind.DAG_EDGE_EQUIVALENCE
 
         proof = BranchOwnershipProof(
             proof_id=_proof_id(
@@ -493,7 +642,9 @@ def _append_terminal_selector_backedge_residue_proofs(
                     target_entry=proof.target_entry,
                     predicate_block=proof.predicate_block,
                     dispatcher_entry_block=proof.dispatcher_entry_block,
-                    oracle_kind="branch_ownership_terminal_selector_backedge",
+                    oracle_kind=(
+                    BranchOwnershipOracleKind.TERMINAL_SELECTOR_BACKEDGE
+                ),
                     evidence=evidence,
                     payload=dict(proof.payload),
                 )
@@ -533,7 +684,9 @@ def _append_terminal_selector_backedge_residue_proofs(
                 target_entry=proof.target_entry,
                 predicate_block=proof.predicate_block,
                 dispatcher_entry_block=proof.dispatcher_entry_block,
-                oracle_kind="branch_ownership_terminal_selector_backedge",
+                oracle_kind=(
+                    BranchOwnershipOracleKind.TERMINAL_SELECTOR_BACKEDGE
+                ),
                 evidence=evidence,
                 payload=dict(proof.payload),
             )
@@ -720,6 +873,9 @@ def proof_json(value: object) -> str:
 
 
 __all__ = [
+    "BranchOwnershipAuthority",
+    "BranchOwnershipEvidenceKey",
+    "BranchOwnershipOracleKind",
     "BranchOwnershipProof",
     "BranchOwnershipProofKind",
     "TRUSTED_OPAQUE_PROVENANCE_KINDS",

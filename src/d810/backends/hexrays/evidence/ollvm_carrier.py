@@ -75,6 +75,7 @@ from d810.capabilities.providers import (
 )
 from d810.capabilities.source_lifter import select_lifter
 from d810.analyses.control_flow.branch_ownership import (
+    BranchOwnershipOracleKind,
     BranchOwnershipProof,
     BranchOwnershipProofKind,
 )
@@ -1083,7 +1084,7 @@ class OllvmCarrierBranchOwnershipOracle:
             target_entry=proof.target_entry,
             predicate_block=proof.predicate_block,
             dispatcher_entry_block=proof.dispatcher_entry_block,
-            oracle_kind="ollvm_carrier_branch_ownership",
+            oracle_kind=BranchOwnershipOracleKind.OLLVM_CARRIER,
             evidence=evidence,
             payload=dict(proof.payload),
         )

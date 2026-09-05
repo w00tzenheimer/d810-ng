@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 
 from d810.analyses.control_flow.branch_ownership import (
+    BranchOwnershipOracleKind,
     BranchOwnershipProof,
     BranchOwnershipProofKind,
 )
@@ -83,7 +84,7 @@ class SwitchCaseTransitionFact:
         if self.proof is not None:
             payload.setdefault("proof_id", self.proof.proof_id)
             payload.setdefault("proof_reason", self.proof.reason)
-            payload.setdefault("proof_oracle_kind", self.proof.oracle_kind)
+            payload.setdefault("proof_oracle_kind", self.proof.oracle_kind_name)
         return {
             "fact_id": self.fact_id,
             "source_state_hex": self.source_state_hex,
@@ -204,7 +205,7 @@ def _facts_for_body(
                     source_block=entry_block,
                     predicate_block=entry_block,
                     dispatcher_entry_block=dispatch_map.dispatcher_entry_block,
-                    oracle_kind="switch_case_return_frontier",
+                    oracle_kind=BranchOwnershipOracleKind.SWITCH_CASE_RETURN_FRONTIER,
                 ),
                 reason="case_body_returns",
                 exit_block=_return_exit_block(body, index),
@@ -274,7 +275,7 @@ def _facts_for_body(
                     source_block=entry_block,
                     predicate_block=entry_block,
                     dispatcher_entry_block=dispatch_map.dispatcher_entry_block,
-                    oracle_kind="switch_case_branch_ownership",
+                    oracle_kind=BranchOwnershipOracleKind.SWITCH_CASE_BRANCH_OWNERSHIP,
                     evidence={
                         "predicate_kind": body.predicate_kind,
                         "targets_visible": valid_targets,
@@ -334,7 +335,9 @@ def _diagnostic_fact(
             source_block=target_block,
             target_entry=target_block,
             dispatcher_entry_block=dispatch_map.dispatcher_entry_block,
-            oracle_kind="switch_case_dispatcher_row_diagnostic",
+            oracle_kind=(
+                BranchOwnershipOracleKind.SWITCH_CASE_DISPATCHER_ROW_DIAGNOSTIC
+            ),
         ),
         reason=reason,
         row_kind=row_kind,
@@ -387,7 +390,9 @@ def _unresolved_fact(
             source_state=state,
             source_block=case_entry_block,
             dispatcher_entry_block=dispatch_map.dispatcher_entry_block,
-            oracle_kind="switch_case_transition_unresolved",
+            oracle_kind=(
+                BranchOwnershipOracleKind.SWITCH_CASE_TRANSITION_UNRESOLVED
+            ),
         ),
         reason=reason,
         payload={"profile_name": profile_name, **(payload or {})},
