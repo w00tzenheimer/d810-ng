@@ -84,8 +84,8 @@
 #                          Must match both the bytes on disk and a wheel recorded in this
 #                          script; an unrecorded wheel is rejected before any docker run.
 #                          An identical filename does NOT imply identical bytes: the
-#                          preflight builds in ../0.1.5/ carry the same names and the same
-#                          sizes as the published wheels and are deliberately refused.
+#                          preflight builds in ../0.1.5-preflight/ carry the same names
+#                          and sizes as the published wheels and are deliberately refused.
 #   D810_DOCKER_MEMORY      Memory limit for container (default: 4g). OOM-kills if exceeded.
 #
 # Examples:
