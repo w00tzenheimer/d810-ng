@@ -110,7 +110,9 @@
 #       idapro; unset SMB_PW
 #
 #   All of those options are in-kernel cifs options (docker's local driver calls mount(2) directly,
-#   so userspace-only mount.cifs options such as credentials= would NOT work). The password is stored
+#   so userspace-only mount.cifs options such as credentials= would NOT work). Verified against the
+#   engine: this option string reaches the network layer ("connection refused" against a dead server),
+#   while adding one unknown option makes the same mount fail with "invalid argument". The password is stored
 #   in the volume's options and is therefore visible to `docker volume inspect` on the remote host:
 #   that is the accepted trade for typing it once. Remove it with `docker volume rm idapro`.
 #
