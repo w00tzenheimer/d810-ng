@@ -642,9 +642,7 @@ def _append_terminal_selector_backedge_residue_proofs(
                     target_entry=proof.target_entry,
                     predicate_block=proof.predicate_block,
                     dispatcher_entry_block=proof.dispatcher_entry_block,
-                    oracle_kind=(
-                    BranchOwnershipOracleKind.TERMINAL_SELECTOR_BACKEDGE
-                ),
+                    oracle_kind=(BranchOwnershipOracleKind.TERMINAL_SELECTOR_BACKEDGE),
                     evidence=evidence,
                     payload=dict(proof.payload),
                 )
@@ -684,9 +682,7 @@ def _append_terminal_selector_backedge_residue_proofs(
                 target_entry=proof.target_entry,
                 predicate_block=proof.predicate_block,
                 dispatcher_entry_block=proof.dispatcher_entry_block,
-                oracle_kind=(
-                    BranchOwnershipOracleKind.TERMINAL_SELECTOR_BACKEDGE
-                ),
+                oracle_kind=(BranchOwnershipOracleKind.TERMINAL_SELECTOR_BACKEDGE),
                 evidence=evidence,
                 payload=dict(proof.payload),
             )
