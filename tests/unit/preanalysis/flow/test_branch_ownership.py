@@ -3,6 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from d810.analyses.control_flow.branch_ownership import (
+    BranchOwnershipOracleKind,
     BranchOwnershipProof,
     BranchOwnershipProofKind,
     branch_ownership_proof_from_any,
@@ -120,6 +121,8 @@ def test_branch_ownership_proof_coerces_dict_for_consumers() -> None:
             "reason": "fixture",
             "source_state": "0x10",
             "target_state": "0x20",
+            # d81-9q6e review round 2: a grant needs a named producer.
+            "oracle_kind": BranchOwnershipOracleKind.MOPTRACKER.value,
         }
     )
 
@@ -135,6 +138,8 @@ def test_real_data_dependent_is_semantic_not_rewrite_authority() -> None:
         proof_kind=BranchOwnershipProofKind.REAL_DATA_DEPENDENT,
         trusted=True,
         reason="input_dependent_branch",
+        # d81-9q6e review round 2: a grant needs a named producer.
+        oracle_kind=BranchOwnershipOracleKind.MOPTRACKER,
     )
 
     assert proof.authorizes_semantic_branch_bridge is True

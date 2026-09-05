@@ -26,6 +26,7 @@ from types import SimpleNamespace
 import pytest
 
 from d810.analyses.control_flow.branch_ownership import (
+    UNSPECIFIED_BRANCH_OWNERSHIP_ORACLE,
     BranchOwnershipAuthority,
     BranchOwnershipOracleKind,
     BranchOwnershipProducerRegistration,
@@ -262,3 +263,119 @@ class TestTransitionTrustNeverPromotesAbstainedRows:
         result = classify_transition_trust_for_explicit_conditional_bridge(transition)
 
         assert result.authorizes_explicit_conditional_bridge is False
+
+
+class TestAbsentOracleKindIsUnregistered:
+    """An omitted producer name may not restore the trusted default.
+
+    Review round 2 (R2): ``_normalized_oracle_kind`` mapped ``None`` / ``""``
+    to ``PREANALYSIS_BRANCH_OWNERSHIP``, an enumerated member, so
+    ``producer_registration`` reported ``REGISTERED`` and a dict that simply
+    left ``oracle_kind`` out minted ``SEMANTIC_BRIDGE``.  The registration gate
+    added for F1 was therefore bypassed by *omission* rather than by naming an
+    unknown producer.
+    """
+
+    def test_reviewer_reproduction_absent_oracle_kind_does_not_grant(self) -> None:
+        proof = branch_ownership_proof_from_any(
+            {
+                "proof_id": "p0",
+                "proof_kind": "REAL_DATA_DEPENDENT",
+                "trusted": True,
+                "reason": "r",
+            }
+        )
+
+        assert proof is not None
+        assert proof.producer_registration is (
+            BranchOwnershipProducerRegistration.UNKNOWN
+        )
+        assert proof.authority is BranchOwnershipAuthority.UNRESOLVED_PROVENANCE
+        assert proof.authorizes_semantic_branch_bridge is False
+
+    def test_reviewer_reproduction_is_refused_by_transition_trust(self) -> None:
+        transition = _conditional_transition(
+            branch_ownership_proof={
+                "proof_id": "p0",
+                "proof_kind": "REAL_DATA_DEPENDENT",
+                "trusted": True,
+                "reason": "r",
+            }
+        )
+
+        result = classify_transition_trust_for_explicit_conditional_bridge(transition)
+
+        assert result.authorizes_explicit_conditional_bridge is False
+        assert result.reason.startswith("branch_ownership_unresolved_provenance")
+
+    @pytest.mark.parametrize("absent", [None, ""])
+    def test_absent_and_empty_names_are_the_unspecified_producer(
+        self, absent: object
+    ) -> None:
+        proof = branch_ownership_proof_from_any(_proof_dict(oracle_kind=absent))
+
+        assert proof is not None
+        assert proof.oracle_kind_name == UNSPECIFIED_BRANCH_OWNERSHIP_ORACLE
+        assert proof.is_known_oracle is False
+        assert proof.producer_registration is (
+            BranchOwnershipProducerRegistration.UNKNOWN
+        )
+
+    def test_the_unspecified_sentinel_is_not_an_enumerated_producer(self) -> None:
+        assert UNSPECIFIED_BRANCH_OWNERSHIP_ORACLE not in {
+            member.value for member in BranchOwnershipOracleKind
+        }
+
+    def test_directly_constructed_proof_defaults_to_unregistered(self) -> None:
+        """The dataclass default is the same sentinel, not a real producer."""
+        proof = BranchOwnershipProof(
+            proof_id="p0",
+            proof_kind=BranchOwnershipProofKind.REAL_DATA_DEPENDENT,
+            trusted=True,
+            reason="r",
+        )
+
+        assert proof.oracle_kind_name == UNSPECIFIED_BRANCH_OWNERSHIP_ORACLE
+        assert proof.authority is BranchOwnershipAuthority.UNRESOLVED_PROVENANCE
+
+    def test_an_omitted_producer_may_still_be_vouched_for(self) -> None:
+        proof = branch_ownership_proof_from_any(
+            _proof_dict(oracle_kind=None),
+            adapted_producers=(UNSPECIFIED_BRANCH_OWNERSHIP_ORACLE,),
+        )
+
+        assert proof is not None
+        assert proof.producer_registration is (
+            BranchOwnershipProducerRegistration.EXPLICITLY_ADAPTED
+        )
+        assert proof.authority is BranchOwnershipAuthority.SEMANTIC_BRIDGE
+
+
+class TestEveryInTreeProducerNamesItsOracle:
+    """No in-tree construction site may rely on the dataclass default."""
+
+    def test_no_in_tree_producer_omits_oracle_kind(self) -> None:
+        import ast
+        import pathlib
+
+        root = pathlib.Path(__file__).resolve().parents[4] / "src" / "d810"
+        offenders: list[str] = []
+        for path in root.rglob("*.py"):
+            tree = ast.parse(path.read_text())
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call):
+                    continue
+                func = node.func
+                name = (
+                    func.attr
+                    if isinstance(func, ast.Attribute)
+                    else getattr(func, "id", None)
+                )
+                if name != "BranchOwnershipProof":
+                    continue
+                if not any(kw.arg == "oracle_kind" for kw in node.keywords):
+                    offenders.append(f"{path}:{node.lineno}")
+        assert offenders == [], (
+            "these BranchOwnershipProof construction sites omit oracle_kind and "
+            f"would now be UNREGISTERED: {offenders}"
+        )

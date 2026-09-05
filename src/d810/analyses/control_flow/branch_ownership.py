@@ -11,14 +11,24 @@ from d810.analyses.control_flow.dispatcher_resolution import StateDispatcherMap
 
 _MASK64 = 0xFFFFFFFFFFFFFFFF
 
+#: Producer name carried by a row that never named one.  Deliberately *not* a
+#: member of :class:`BranchOwnershipOracleKind`: an absent producer is
+#: unregistered, never a registered default (d81-9q6e review round 2).  Before
+#: this, an omitted ``oracle_kind`` resolved to ``PREANALYSIS_BRANCH_OWNERSHIP``
+#: -- an enumerated member -- so ``producer_registration`` reported
+#: ``REGISTERED`` and a dict that simply left the field out minted
+#: ``SEMANTIC_BRIDGE``, bypassing the registration gate by omission.
+UNSPECIFIED_BRANCH_OWNERSHIP_ORACLE = "unspecified_producer"
+
 
 class BranchOwnershipOracleKind(str, Enum):
     """Which producer minted a :class:`BranchOwnershipProof`.
 
     ``oracle_kind`` used to be a free-form string with a trusted-looking
     default, so an unrecognised (or absent) producer silently presented itself
-    as ``preanalysis_branch_ownership``.  Enumerating the producers makes the
-    provenance checkable: :func:`branch_ownership_proof_from_any` normalises a
+    as ``preanalysis_branch_ownership``.  An absent name now resolves to
+    :data:`UNSPECIFIED_BRANCH_OWNERSHIP_ORACLE`, which is not a member here.
+    Enumerating the producers makes the provenance checkable: :func:`branch_ownership_proof_from_any` normalises a
     recognised name to a member here, and :attr:`BranchOwnershipProof.is_known_oracle`
     reports whether the proof came from a producer this codebase knows about.
 
@@ -191,7 +201,7 @@ class BranchOwnershipProof:
     predicate_block: int | None = None
     dispatcher_entry_block: int | None = None
     oracle_kind: BranchOwnershipOracleKind | str = (
-        BranchOwnershipOracleKind.PREANALYSIS_BRANCH_OWNERSHIP
+        UNSPECIFIED_BRANCH_OWNERSHIP_ORACLE
     )
     evidence: dict[str, object] = field(default_factory=dict)
     payload: dict[str, object] = field(default_factory=dict)
@@ -373,16 +383,17 @@ class BranchOwnershipProof:
 def _normalized_oracle_kind(value: object) -> BranchOwnershipOracleKind | str:
     """Coerce a producer name to a member when recognised, else keep it.
 
-    An absent producer name still falls back to
-    ``PREANALYSIS_BRANCH_OWNERSHIP`` for backwards compatibility, but that
-    fallback is now visible as a member rather than hidden in a string
-    default, and :attr:`BranchOwnershipProof.is_known_oracle` lets a consumer
-    tell a real producer from an unrecognised one.
+    An absent or empty producer name resolves to
+    :data:`UNSPECIFIED_BRANCH_OWNERSHIP_ORACLE`, which is not an enumerated
+    member: nobody vouched for the row, so it is ``UNKNOWN`` to
+    :attr:`BranchOwnershipProof.producer_registration` and cannot mint a grant.
+    The old fallback named a *real* producer, ``PREANALYSIS_BRANCH_OWNERSHIP``,
+    which made omission indistinguishable from that producer's own rows.
     """
     if isinstance(value, BranchOwnershipOracleKind):
         return value
     if value is None or value == "":
-        return BranchOwnershipOracleKind.PREANALYSIS_BRANCH_OWNERSHIP
+        return UNSPECIFIED_BRANCH_OWNERSHIP_ORACLE
     name = _enum_value(value)
     try:
         return BranchOwnershipOracleKind(name)
@@ -1011,6 +1022,7 @@ def proof_json(value: object) -> str:
 
 
 __all__ = [
+    "UNSPECIFIED_BRANCH_OWNERSHIP_ORACLE",
     "BranchOwnershipAuthority",
     "BranchOwnershipEvidenceKey",
     "BranchOwnershipOracleKind",

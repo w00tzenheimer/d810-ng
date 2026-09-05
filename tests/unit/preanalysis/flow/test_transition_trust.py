@@ -3,6 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from d810.analyses.control_flow.branch_ownership import (
+    BranchOwnershipOracleKind,
     BranchOwnershipProof,
     BranchOwnershipProofKind,
 )
@@ -61,6 +62,8 @@ def test_trusted_real_branch_ownership_authorizes_explicit_bridge() -> None:
             proof_kind=BranchOwnershipProofKind.REAL_DATA_DEPENDENT,
             trusted=True,
             reason="mop_tracker_real_password_branch",
+            # d81-9q6e review round 2: a grant needs a named producer.
+            oracle_kind=BranchOwnershipOracleKind.MOPTRACKER,
         )
     )
 
@@ -77,6 +80,8 @@ def test_nonsemantic_branch_ownership_does_not_authorize_bridge() -> None:
             proof_kind=BranchOwnershipProofKind.OBFUSCATION_RESIDUE_ARM,
             trusted=True,
             reason="opaque_selector_junk_arm",
+            # d81-9q6e review round 2: a grant needs a named producer.
+            oracle_kind=BranchOwnershipOracleKind.MOPTRACKER,
         )
     )
 

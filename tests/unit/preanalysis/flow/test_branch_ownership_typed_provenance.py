@@ -20,6 +20,7 @@ import json
 import pytest
 
 from d810.analyses.control_flow.branch_ownership import (
+    UNSPECIFIED_BRANCH_OWNERSHIP_ORACLE,
     BranchOwnershipAuthority,
     BranchOwnershipEvidenceKey,
     BranchOwnershipOracleKind,
@@ -35,16 +36,36 @@ def _proof(**overrides) -> BranchOwnershipProof:
         "proof_kind": BranchOwnershipProofKind.UNRESOLVED,
         "trusted": False,
         "reason": "test",
+        # d81-9q6e review round 2: a grant needs a named producer, so the
+        # helper names one.  The *absent* producer is pinned separately by
+        # TestOracleKindIsTyped below and in the producer-registry file.
+        "oracle_kind": BranchOwnershipOracleKind.PREANALYSIS_BRANCH_OWNERSHIP,
     }
     base.update(overrides)
     return BranchOwnershipProof(**base)
 
 
 class TestOracleKindIsTyped:
-    def test_default_is_a_member_not_a_bare_string(self) -> None:
+    def test_a_named_producer_is_a_member_not_a_bare_string(self) -> None:
         assert _proof().oracle_kind is (
             BranchOwnershipOracleKind.PREANALYSIS_BRANCH_OWNERSHIP
         )
+
+    def test_the_dataclass_default_is_the_unregistered_sentinel(self) -> None:
+        """An omitted producer must not restore a real producer's name.
+
+        The default used to be ``PREANALYSIS_BRANCH_OWNERSHIP`` -- an
+        enumerated member -- so omission was indistinguishable from that
+        producer's own rows and passed the registration gate (review round 2).
+        """
+        proof = BranchOwnershipProof(
+            proof_id="p0",
+            proof_kind=BranchOwnershipProofKind.UNRESOLVED,
+            trusted=False,
+            reason="test",
+        )
+        assert proof.oracle_kind == UNSPECIFIED_BRANCH_OWNERSHIP_ORACLE
+        assert proof.is_known_oracle is False
 
     def test_member_compares_equal_to_the_bare_name(self) -> None:
         """The compatibility guarantee every existing consumer relies on."""
@@ -78,14 +99,14 @@ class TestOracleKindIsTyped:
         assert _proof(oracle_kind=member).is_known_oracle is True
 
     def test_absent_producer_falls_back_visibly(self) -> None:
+        """Absent is its own name, and it is not a registered producer."""
         coerced = branch_ownership_proof_from_any(
             {"proof_id": "p", "proof_kind": "UNRESOLVED", "trusted": False,
              "reason": "r"}
         )
         assert coerced is not None
-        assert coerced.oracle_kind is (
-            BranchOwnershipOracleKind.PREANALYSIS_BRANCH_OWNERSHIP
-        )
+        assert coerced.oracle_kind == UNSPECIFIED_BRANCH_OWNERSHIP_ORACLE
+        assert coerced.is_known_oracle is False
 
     def test_coercion_normalizes_a_recognised_name(self) -> None:
         coerced = branch_ownership_proof_from_any(

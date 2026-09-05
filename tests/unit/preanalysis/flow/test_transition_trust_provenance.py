@@ -21,6 +21,7 @@ from types import SimpleNamespace
 import pytest
 
 from d810.analyses.control_flow.branch_ownership import (
+    BranchOwnershipOracleKind,
     BranchOwnershipProof,
     BranchOwnershipProofKind,
 )
@@ -244,6 +245,7 @@ class TestInTreeAdaptersNameTheirProducer:
                     proof_kind=BranchOwnershipProofKind.REAL_DATA_DEPENDENT,
                     trusted=True,
                     reason="mop_tracker_real_password_branch",
+                    oracle_kind=BranchOwnershipOracleKind.MOPTRACKER,
                 )
             )
         )
@@ -267,6 +269,7 @@ class TestMalformedTypedRowDoesNotFallThrough:
                 proof_kind=BranchOwnershipProofKind.REAL_DATA_DEPENDENT,
                 trusted=True,
                 reason="mop_tracker_real_password_branch",
+                oracle_kind=BranchOwnershipOracleKind.MOPTRACKER,
             ),
         )
 
