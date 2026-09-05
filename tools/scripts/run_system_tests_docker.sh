@@ -337,6 +337,7 @@ REMOTE_ARCHIVE=""
 REMOTE_ARCHIVE_CONTAINER_PATH=""
 COBRA_CACHE_VOLUME=""
 COBRA_CACHE_VOLUME_STATE=""
+REMOTE_TMP_PHYSICAL=""
 SOURCE_DIGEST=""
 SYNC_SENTINEL="/work/.d810-sync-ok"
 # macOS normalizes requested rights, so the presence check compares against the
@@ -957,8 +958,20 @@ _ensure_work_volume() {
 # scoped to .tmp: the source tree, .git and the share root must never become
 # writable for it.
 _acl_target_is_scoped() {
-  case "$1" in
-    "$WORK_DIR"/.tmp|"$WORK_DIR"/.tmp/*) return 0 ;;
+  local target="$1" physical parent
+  case "$target" in
+    "$WORK_DIR"/.tmp|"$WORK_DIR"/.tmp/*) ;;
+    *) return 1 ;;
+  esac
+  [ -n "$REMOTE_TMP_PHYSICAL" ] && [ ! -L "$target" ] || return 1
+  if [ -d "$target" ]; then
+    physical="$(cd "$target" && pwd -P)" || return 1
+  else
+    parent="$(dirname "$target")"
+    physical="$(cd "$parent" && pwd -P)/$(basename "$target")" || return 1
+  fi
+  case "$physical" in
+    "$REMOTE_TMP_PHYSICAL"|"$REMOTE_TMP_PHYSICAL"/*) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -983,7 +996,13 @@ _ensure_acl() {
     echo "ERROR: refusing to grant $REMOTE_SMB_USER access outside the worktree .tmp: $target" >&2
     exit 1
   fi
-  [ -e "$target" ] || return 0
+  if [ ! -e "$target" ]; then
+    if [ "$strict" = "1" ]; then
+      echo "ERROR: required ACL target is missing: $target" >&2
+      exit 1
+    fi
+    return 0
+  fi
   if [ "$kind" = "dir" ]; then
     request="$ACL_DIR_REQUEST"
     normalized="$ACL_DIR_NORMALIZED"
@@ -1039,9 +1058,42 @@ _apply_tmp_acls() {
   fi
 }
 
+_validate_remote_artifact_dirs() {
+  local tmp="$WORK_DIR/.tmp" logs="$WORK_DIR/.tmp/logs" work_physical logs_physical
+  work_physical="$(cd "$WORK_DIR" && pwd -P)" || {
+    echo "ERROR: cannot resolve worktree for remote artifacts: $WORK_DIR" >&2
+    exit 1
+  }
+  if [ -L "$tmp" ] || { [ -e "$tmp" ] && [ ! -d "$tmp" ]; }; then
+    echo "ERROR: remote artifact directory must be a real directory inside the worktree: $tmp" >&2
+    exit 1
+  fi
+  [ -d "$tmp" ] || mkdir "$tmp"
+  REMOTE_TMP_PHYSICAL="$(cd "$tmp" && pwd -P)" || {
+    echo "ERROR: cannot resolve remote artifact directory: $tmp" >&2
+    exit 1
+  }
+  if [ "$REMOTE_TMP_PHYSICAL" != "$work_physical/.tmp" ]; then
+    echo "ERROR: remote artifact directory must stay inside the worktree: $tmp" >&2
+    exit 1
+  fi
+  if [ -L "$logs" ] || { [ -e "$logs" ] && [ ! -d "$logs" ]; }; then
+    echo "ERROR: remote artifact directory must be a real directory inside the worktree: $logs" >&2
+    exit 1
+  fi
+  [ -d "$logs" ] || mkdir "$logs"
+  logs_physical="$(cd "$logs" && pwd -P)" || {
+    echo "ERROR: cannot resolve remote artifact directory: $logs" >&2
+    exit 1
+  }
+  if [ "$logs_physical" != "$REMOTE_TMP_PHYSICAL/logs" ]; then
+    echo "ERROR: remote artifact directory must stay inside the worktree: $logs" >&2
+    exit 1
+  fi
+}
+
 _acquire_remote_lock() {
   local lock_dir="$WORK_DIR/.tmp/remote-run.lock" holder=""
-  mkdir -p "$WORK_DIR/.tmp"
   if ! mkdir "$lock_dir" 2>/dev/null; then
     [ -f "$lock_dir/owner" ] && holder="$(cat "$lock_dir/owner" 2>/dev/null || true)"
     echo "ERROR: another remote run already owns this worktree: $WORK_DIR" >&2
@@ -1112,14 +1164,14 @@ if [ -n "$REMOTE_HOST" ]; then
   # Export before any docker invocation so image inspection, the probe and the
   # workload all address the same engine.
   export DOCKER_HOST="ssh://$REMOTE_HOST"
+  _remote_preflight_engine
+  _validate_remote_artifact_dirs
   # The lock still guards the shared read-write .tmp: -o captures, logs, diag
   # SQLite databases and finalized artifact staging all collide between runs.
   _acquire_remote_lock
   WORK_VOLUME="$(_work_volume_name "$WORK_DIR")"
   COBRA_CACHE_VOLUME="d810-cobra-${WORK_VOLUME#d810-work-}"
-  mkdir -p "$WORK_DIR/.tmp/logs"
   _apply_tmp_acls
-  _remote_preflight_engine
   # PIDs restart at 1 in every container, so a pid-keyed database name is not
   # unique across concurrent runs on one shared mount. This id is, and it is
   # forwarded to the container like every other D810_* variable.
@@ -1517,10 +1569,14 @@ fi
 # `pytest -k "A or B"` filter) gets word-split again when the reconstructed
 # string is parsed downstream. printf '%q' quotes each element so it
 # round-trips as exactly one token.
+_d810_quote_arg() {
+  printf '%q' "$1"
+}
+
 _d810_quote_args() {
   local out="" arg
   for arg in "$@"; do
-    out+="$(printf '%q ' "$arg")"
+    out+="$(_d810_quote_arg "$arg") "
   done
   printf '%s' "$out"
 }
@@ -1627,8 +1683,9 @@ if [ "$CMD" = "system" ]; then
   if [ -n "$DUMP_OUT" ]; then
     mkdir -p "${WORK_DIR}/.tmp"
     SYS_LOG="/work/.tmp/${DUMP_OUT}"
-    SYS_TRUNCATE=": > \"$SYS_LOG\"; "
-    SYS_REDIR="> \"$SYS_LOG\" 2>&1"
+    SYS_LOG_QUOTED="$(_d810_quote_arg "$SYS_LOG")"
+    SYS_TRUNCATE=": > $SYS_LOG_QUOTED; "
+    SYS_REDIR="> $SYS_LOG_QUOTED 2>&1"
   fi
   run_bash "$SETUP_CMD && ${SYS_TRUNCATE}$ENV_TEST $IDA_VENV_PYTHON tools/scripts/run_system_test_batches.py --python $IDA_VENV_PYTHON --batch-size $SYSTEM_BATCH_SIZE --log-dir /root/.idapro/logs/d810_logs tests/system -- $(_d810_quote_args "${SYSTEM_ARGS[@]}") $SYS_REDIR"
   exit 0
@@ -1642,8 +1699,9 @@ if [ "$CMD" = "test" ]; then
   if [ -n "$DUMP_OUT" ]; then
     mkdir -p "${WORK_DIR}/.tmp"
     SYS_LOG="/work/.tmp/${DUMP_OUT}"
-    SYS_TRUNCATE=": > \"$SYS_LOG\"; "
-    SYS_REDIR="> \"$SYS_LOG\" 2>&1"
+    SYS_LOG_QUOTED="$(_d810_quote_arg "$SYS_LOG")"
+    SYS_TRUNCATE=": > $SYS_LOG_QUOTED; "
+    SYS_REDIR="> $SYS_LOG_QUOTED 2>&1"
   fi
   run_bash "$SETUP_CMD && ${SYS_TRUNCATE}$ENV_TEST $IDA_VENV_PYTHON -m pytest -v $PYTEST_EXTENSION_ARGS $(_d810_quote_args "${SYSTEM_ARGS[@]}") $SYS_REDIR"
   exit 0
@@ -1677,8 +1735,9 @@ TRUNCATE_CMD=""
 if [ -n "$DUMP_OUT" ]; then
   mkdir -p "${WORK_DIR}/.tmp"
   LOG_PATH="/work/.tmp/${DUMP_OUT}"
-  TRUNCATE_CMD=": > \"$LOG_PATH\"; "
-  REDIR="> \"$LOG_PATH\" 2>&1"
+  LOG_PATH_QUOTED="$(_d810_quote_arg "$LOG_PATH")"
+  TRUNCATE_CMD=": > $LOG_PATH_QUOTED; "
+  REDIR="> $LOG_PATH_QUOTED 2>&1"
 fi
 
 INNER="$SETUP_CMD && ${TRUNCATE_CMD}$ENV_TEST $PYTEST_DUMP $PYTEST_EXTENSION_ARGS $(_d810_quote_args "${DUMP_ARGS[@]}") -v $REDIR"

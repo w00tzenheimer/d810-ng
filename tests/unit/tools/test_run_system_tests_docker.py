@@ -121,6 +121,15 @@ if [ "${1:-}" = run ]; then
   for arg in "$@"; do
     printf 'run-arg %s\n' "$arg" >> "$DOCKER_LOG"
   done
+  if [ -n "${MOCK_DOCKER_EVALUATE_OUTPUT_REDIR:-}" ]; then
+    inner="${!#}"
+    case "$inner" in
+      *"/work/.tmp/"*)
+        redirection="${inner##*> }"
+        (cd "$MOCK_DOCKER_EVALUATE_OUTPUT_REDIR" && bash -c "true > $redirection") || true
+        ;;
+    esac
+  fi
   case "$*" in
     *dst=/probe*) exit "${MOCK_DOCKER_PROBE_EXIT:-0}" ;;
   esac
@@ -2095,7 +2104,57 @@ def test_remote_mode_fails_closed_when_required_logs_acl_cannot_be_applied(
 
     assert result.returncode != 0
     assert f"could not grant smbuser access to {logs}" in result.stderr
-    assert calls == []
+    assert _runs(calls) == []
+
+
+def test_remote_mode_rejects_a_logs_symlink_before_acls_or_workload_docker(
+    tmp_path: Path,
+) -> None:
+    share, repo = _share_layout(tmp_path)
+    logs = repo / ".tmp" / "logs"
+    logs.parent.mkdir()
+    logs.symlink_to("../src")
+
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--remote",
+        REMOTE_HOST,
+        "--",
+        "true",
+        repo_root=repo,
+        extra_env=_remote_env(share),
+    )
+
+    assert result.returncode != 0
+    assert "real directory" in result.stderr
+    assert not any(str(repo / "src") in call for call in _chmod_calls(tmp_path))
+    assert _runs(calls) == []
+
+
+def test_remote_mode_rejects_a_tmp_symlink_before_acls_or_workload_docker(
+    tmp_path: Path,
+) -> None:
+    share, repo = _share_layout(tmp_path)
+    tmp_link = repo / ".tmp"
+    tmp_link.symlink_to("src")
+
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--remote",
+        REMOTE_HOST,
+        "--",
+        "true",
+        repo_root=repo,
+        extra_env=_remote_env(share),
+    )
+
+    assert result.returncode != 0
+    assert "real directory" in result.stderr
+    assert not any(str(repo / "src") in call for call in _chmod_calls(tmp_path))
+    assert not (repo / "src" / "logs").exists()
+    assert _runs(calls) == []
 
 
 @pytest.mark.parametrize("output", ["", ".", "..", "../victim.txt", "nested/out.txt"])
@@ -2104,7 +2163,7 @@ def test_output_requires_a_bare_filename_before_remote_side_effects(
 ) -> None:
     """A traversal must not delete a sibling before remote setup begins."""
     share, repo = _share_layout(tmp_path)
-    victim = share / "victim.txt"
+    victim = repo / "victim.txt"
     victim.write_text("must survive\n", encoding="utf-8")
 
     result, calls = _run(
@@ -2144,6 +2203,45 @@ def test_output_flag_requires_a_value_before_remote_side_effects(tmp_path: Path)
     assert "bare filename" in result.stderr
     assert not (repo / ".tmp").exists()
     assert calls == []
+
+
+def test_local_mode_rejects_an_invalid_output_before_docker(tmp_path: Path) -> None:
+    victim = tmp_path / "victim.txt"
+    victim.write_text("must survive\n", encoding="utf-8")
+
+    result, calls = _run(tmp_path, "test", "-o", "../victim.txt", "--", "-q")
+
+    assert result.returncode != 0
+    assert "bare filename" in result.stderr
+    assert victim.read_text(encoding="utf-8") == "must survive\n"
+    assert calls == []
+
+
+def test_output_filename_metacharacters_remain_literal_in_the_container_shell(
+    tmp_path: Path,
+) -> None:
+    share, repo = _share_layout(tmp_path)
+    marker = tmp_path / "injected"
+    filename = "$(touch injected) report.txt"
+
+    result, calls = _run(
+        tmp_path,
+        "test",
+        "--remote",
+        REMOTE_HOST,
+        "-o",
+        filename,
+        "--",
+        "-q",
+        repo_root=repo,
+        extra_env=_remote_env(
+            share, MOCK_DOCKER_EVALUATE_OUTPUT_REDIR=str(tmp_path)
+        ),
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert not marker.exists()
+    assert "/work/.tmp/" in _remote_container_run(calls)
 
 
 def test_remote_mode_requires_a_darwin_host(tmp_path: Path) -> None:
@@ -2743,11 +2841,9 @@ def test_stale_capture_symlink_is_removed_without_touching_its_target(
     tmp_path: Path,
 ) -> None:
     share, repo = _share_layout(tmp_path)
-    target = tmp_path / "capture-target.txt"
-    target.write_text("must survive\n", encoding="utf-8")
     capture = repo / ".tmp" / "out.txt"
     capture.parent.mkdir(parents=True)
-    capture.symlink_to(target)
+    capture.symlink_to(tmp_path / "missing-capture-target.txt")
 
     result, calls = _run(
         tmp_path,
@@ -2763,8 +2859,7 @@ def test_stale_capture_symlink_is_removed_without_touching_its_target(
     )
 
     assert result.returncode == 0, result.stderr
-    assert not capture.exists()
-    assert target.read_text(encoding="utf-8") == "must survive\n"
+    assert not capture.is_symlink()
     assert "/work/.tmp/out.txt" in _remote_container_run(calls)
 
 

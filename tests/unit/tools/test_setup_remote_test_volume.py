@@ -1012,6 +1012,68 @@ def test_purge_handles_each_supported_role_and_not_an_unknown_role(
     assert "retained runner volumes (source + CoBRA cache)" in printed
 
 
+@pytest.mark.parametrize("failing_role", ["work", "cobra-cache"])
+def test_purge_aborts_without_removing_any_retained_volume_when_a_role_query_fails(
+    failing_role: str,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    responses = {
+        "volume inspect": (1, ABSENT_ERROR),
+        "label=d810.role=work": (
+            (1, SSH_ERROR)
+            if failing_role == "work"
+            else (0, "d810-work-a-0011aabb\n")
+        ),
+        "label=d810.role=cobra-cache": (
+            (1, SSH_ERROR)
+            if failing_role == "cobra-cache"
+            else (0, "d810-cobra-a-0011aabb\n")
+        ),
+    }
+    recorded = _fake_capture(monkeypatch, responses)
+
+    status = setup_remote_test_volume.main(["--remove", "--purge-work-volumes"])
+
+    assert status == setup_remote_test_volume.EXIT_INDETERMINATE
+    assert not any("volume rm d810-" in " ".join(argv) for argv in recorded)
+    assert "cannot determine which retained runner volumes" in capsys.readouterr().err
+
+
+def test_purge_never_selects_a_future_role_offered_to_a_key_only_selector(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recorded: list[list[str]] = []
+
+    def _capture(argv: list[str]) -> tuple[int, str]:
+        command = list(argv)
+        recorded.append(command)
+        if command[3:6] == ["volume", "inspect", "idapro"]:
+            return 1, ABSENT_ERROR
+        if command[3:6] == ["volume", "ls", "--filter"]:
+            role = command[6]
+            if role == "label=d810.role":
+                return 0, "d810-future-role-a-0011aabb\n"
+            if role == "label=d810.role=work":
+                return 0, "d810-work-a-0011aabb\n"
+            if role == "label=d810.role=cobra-cache":
+                return 0, "d810-cobra-a-0011aabb\n"
+        return 0, ""
+
+    monkeypatch.setattr(setup_remote_test_volume, "run_capture", _capture)
+
+    status = setup_remote_test_volume.main(["--remove", "--purge-work-volumes"])
+    printed = capsys.readouterr().out
+
+    assert status == 0
+    joined = [" ".join(argv) for argv in recorded]
+    assert any("volume rm d810-work-a-0011aabb" in call for call in joined)
+    assert any("volume rm d810-cobra-a-0011aabb" in call for call in joined)
+    assert not any("d810-future-role" in call for call in joined)
+    assert "d810-future-role" not in printed
+
+
 def test_work_volume_listing_failure_is_indeterminate(
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
