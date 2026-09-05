@@ -26,16 +26,28 @@ def _conditional_transition(**kwargs: object) -> SimpleNamespace:
 
 
 def test_typed_transition_trust_authorizes_explicit_conditional_bridge() -> None:
+    """A typed producer still has to say who it is (d81-9q6e).
+
+    ``EXPLICIT_PRODUCER_TRUST`` is a grant, so it is gated on producer
+    registration.  ``mop_tracker`` is not an in-tree adapter, so the caller
+    vouches for it explicitly at this boundary; the check is unchanged, the
+    fixture just names the producer it always stood for.  The unvouched variant
+    is pinned in ``test_transition_trust_provenance.py``.
+    """
     transition = _conditional_transition(
         transition_trust=TransitionTrustResult(
             True,
             "mop_tracker_path_constant_state_write",
             trust_kind=TransitionTrustKind.EXPLICIT_PRODUCER_TRUST,
             evidence={"oracle": "mop_tracker"},
+            producer="mop_tracker_oracle",
         )
     )
 
-    result = classify_transition_trust_for_explicit_conditional_bridge(transition)
+    result = classify_transition_trust_for_explicit_conditional_bridge(
+        transition,
+        adapted_producers=("mop_tracker_oracle",),
+    )
 
     assert result.authorizes_explicit_conditional_bridge
     assert result.reason == "mop_tracker_path_constant_state_write"
