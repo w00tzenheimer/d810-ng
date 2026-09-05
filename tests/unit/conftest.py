@@ -9,6 +9,8 @@ from unittest.mock import MagicMock, Mock
 
 import pytest
 
+from d810.core import LevelFlag
+
 # IDA modules that must NOT be mocked in unit tests
 _IDA_MODULES = frozenset(
     {
@@ -32,6 +34,30 @@ _IDA_MODULES = frozenset(
         "ida_xref",
     }
 )
+
+
+@pytest.fixture(autouse=True)
+def _reset_level_flag_cache():
+    """Force every ``D810Logger.debug_on``-style check to re-evaluate.
+
+    ``d810.core.logging.LevelFlag`` caches ``logger.isEnabledFor(level)``
+    behind a process-global version counter for performance; it is only
+    invalidated by ``LoggerConfigurator.set_level`` (the production entry
+    point). ``caplog.set_level(...)`` instead sets the stdlib
+    ``Logger.level`` directly and never bumps that counter, so a
+    ``debug_on``/``info_on``/etc. check cached by one test at a logger's
+    default level silently stays stale for every later test in the same
+    worker that shares the logger object (348 call sites across src/d810 as
+    of 2026-09; see ticket d81-4tsd). Bumping the version before each test
+    forces a fresh read of whatever level is actually in effect when the
+    test first touches the property, closing the cross-test half of that
+    gap for free. It does not help a test that reads the property before
+    raising its own logger's level -- that ordering still needs a
+    same-test ``LevelFlag.bump_config_version()`` call, as in
+    ``test_transaction_api.py::test_observed_native_origin_diagnostic_matches_canonical_subset_admission``.
+    """
+    LevelFlag.bump_config_version()
+    yield
 
 
 @pytest.fixture(autouse=True)
