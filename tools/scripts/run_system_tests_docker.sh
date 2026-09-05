@@ -38,6 +38,12 @@
 #                           export LLVM_OPT, and set D810_REQUIRE_LLVM_OPT=1.
 #   --disable-fact-lifecycle
 #                           Set D810_FACT_LIFECYCLE=0 inside the container.
+#   --remote HOST           Run the container on a remote Linux Docker engine reached over SSH
+#                           (DOCKER_HOST=ssh://HOST). Sources and artifacts stay on this Mac and are
+#                           reached through the SMB-backed Docker volume named by D810_REMOTE_VOLUME:
+#                           every host bind mount becomes --mount type=volume,volume-subpath=<path
+#                           relative to D810_REMOTE_SHARE_ROOT>. Only ONE remote run per worktree is
+#                           allowed at a time (lock: WORK_DIR/.tmp/remote-run.lock).
 #   --                      Remaining args passed to pytest (system/test) or used as command separator (exec)
 #
 # Options (dump only):
@@ -87,6 +93,30 @@
 #                          preflight builds in ../0.1.5-preflight/ carry the same names
 #                          and sizes as the published wheels and are deliberately refused.
 #   D810_DOCKER_MEMORY      Memory limit for container (default: 4g). OOM-kills if exceeded.
+#   D810_REMOTE_DOCKER_HOST Remote engine host for --remote (the flag wins when both are given)
+#   D810_REMOTE_VOLUME      Docker volume on the remote engine that exports the Mac's SMB share
+#                           (default: idapro)
+#   D810_REMOTE_SHARE_ROOT  Absolute host directory that the SMB share exports
+#                           (default: /srv/share-root). Every mounted host path must live
+#                           under it; the runner fails closed otherwise.
+#
+# Remote mode (one-time setup on the remote engine):
+#   The volume is created once, by hand, on the machine that runs the containers:
+#
+#     read -rs -p 'SMB password for smbuser@smb-server.example: ' SMB_PW && echo && \
+#     docker -H ssh://remote-engine.example volume create --driver local \
+#       --opt type=cifs --opt device=//smb-server.example/idapro \
+#       --opt "o=addr=smb-server.example,username=smbuser,password=${SMB_PW},vers=3.0,uid=0,gid=0,file_mode=0777,dir_mode=0777,nobrl,noperm" \
+#       idapro; unset SMB_PW
+#
+#   All of those options are in-kernel cifs options (docker's local driver calls mount(2) directly,
+#   so userspace-only mount.cifs options such as credentials= would NOT work). The password is stored
+#   in the volume's options and is therefore visible to `docker volume inspect` on the remote host:
+#   that is the accepted trade for typing it once. Remove it with `docker volume rm idapro`.
+#
+# Remote examples:
+#   ./run_system_tests_docker.sh exec --remote remote-engine.example -w my-worktree -- true
+#   ./run_system_tests_docker.sh test --remote remote-engine.example -w my-worktree -o remote.txt -- -q
 #
 # Examples:
 #   ./run_system_tests_docker.sh system
@@ -227,6 +257,8 @@ _trace_default_override D810_NATIVE_PROFILE 0
 _trace_default_override D810_TEST_BINARY libobfuscated.dll
 _trace_default_override D810_SYSTEM_BATCH_SIZE 20
 _trace_default_override D810_WORKTREE_ROOT .worktrees
+_trace_default_override D810_REMOTE_VOLUME idapro
+_trace_default_override D810_REMOTE_SHARE_ROOT /srv/share-root
 
 DOCKER_IMAGE="${D810_DOCKER_IMAGE-idapro-9.4}"
 DOCKER_MEMORY="${D810_DOCKER_MEMORY-4g}"
@@ -235,6 +267,16 @@ CYTHON_PROFILE="${D810_CYTHON_PROFILE-0}"
 NATIVE_PROFILE="${D810_NATIVE_PROFILE-0}"
 TEST_BINARY="${D810_TEST_BINARY-libobfuscated.dll}"
 SYSTEM_BATCH_SIZE="${D810_SYSTEM_BATCH_SIZE-20}"
+# Remote execution is opt-in: the flag wins over the environment, and every
+# value below only ever affects this wrapper (never the container environment).
+REMOTE_HOST="${D810_REMOTE_DOCKER_HOST-}"
+REMOTE_VOLUME="${D810_REMOTE_VOLUME-idapro}"
+REMOTE_SHARE_ROOT="${D810_REMOTE_SHARE_ROOT-/srv/share-root}"
+REMOTE_MODE=0
+REMOTE_ENGINE_OS=""
+REMOTE_ENGINE_ARCH=""
+REMOTE_LOCK_DIR=""
+WORK_SUBPATH=""
 [ -n "$DOCKER_IMAGE" ] || { echo "ERROR: D810_DOCKER_IMAGE is set but empty" >&2; exit 1; }
 [ -n "$DOCKER_MEMORY" ] || { echo "ERROR: D810_DOCKER_MEMORY is set but empty" >&2; exit 1; }
 case "$SYSTEM_BATCH_SIZE" in
@@ -474,11 +516,6 @@ _image_has_baked_runtime() {
   [ "$(docker image inspect --format "{{ index .Config.Labels \"$RUNTIME_LABEL_KEY\" }}" "$DOCKER_IMAGE" 2>/dev/null || true)" = "$RUNTIME_LABEL_VALUE" ]
 }
 
-# Profile receipts need to identify the actual image that ran them. Keep this
-# test-only metadata separate from the image-selection environment variable,
-# which is deliberately wrapper-only and therefore not forwarded by default.
-DOCKER_IMAGE_ID="$(docker image inspect --format '{{.Id}}' "$DOCKER_IMAGE" 2>/dev/null || echo unknown)"
-
 # Convert memory string (e.g., "20g", "4G", "512m") to bytes for RLIMIT_DATA enforcement.
 # Docker --memory is NOT enforced on macOS Docker Desktop; resource.setrlimit IS enforced
 # inside the container.
@@ -581,6 +618,14 @@ while [ $# -gt 0 ]; do
       DISABLE_FACT_LIFECYCLE=1
       shift
       ;;
+    --remote)
+      if [ $# -lt 2 ] || [ -z "$2" ]; then
+        echo "ERROR: --remote requires a HOST argument (e.g. --remote remote-engine.example)" >&2
+        exit 1
+      fi
+      REMOTE_HOST="$2"
+      shift 2
+      ;;
     --)
       shift
       if [ "$CMD" = "exec" ]; then
@@ -612,25 +657,7 @@ else
   PYWORK="/work/src"
 fi
 
-# Docker mount: host path -> container path (use variables so no host-specific paths in printed commands)
-VOL_WORK="-v ${WORK_DIR}:/work"
-VOL_GIT=""
-ENV_GIT=""
-GIT_COMMON_DIR="$(git -C "$WORK_DIR" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
-if [ -n "$GIT_COMMON_DIR" ] && [ -d "$GIT_COMMON_DIR" ]; then
-  VOL_GIT="-v ${GIT_COMMON_DIR}:/d810-git:ro"
-  ENV_GIT="GIT_DIR=/d810-git"
-fi
-VOL_LOGS=""
-if [ -n "$MOUNT_LOGS" ]; then
-  LOGS_DIR="${WORK_DIR}/.tmp/logs"
-  mkdir -p "$LOGS_DIR"
-  VOL_LOGS="-v ${LOGS_DIR}:/root/.idapro/logs"
-fi
-VOL_EGGLOG=()
-if [ "$EGGLOG_EXTENSION_ENABLED" = "1" ]; then
-  VOL_EGGLOG=(-v "${D810_EGGLOG_ROOT}:/opt/d810-egglog:ro")
-fi
+
 COBRA_SOURCE_ARCHIVE_DIR=""
 COBRA_SOURCE_ARCHIVE_SENTINEL=""
 _cleanup_cobra_source_artifact() {
@@ -642,6 +669,156 @@ _cleanup_cobra_source_artifact() {
   [ "$(cat "$sentinel")" = "d810-cobra-source-artifact-v1" ] || return 0
   rm -rf "$source_dir"
 }
+
+_release_remote_lock() {
+  [ -n "$REMOTE_LOCK_DIR" ] || return 0
+  case "$REMOTE_LOCK_DIR" in */.tmp/remote-run.lock) ;; *) return 0 ;; esac
+  rm -rf "$REMOTE_LOCK_DIR"
+}
+
+_d810_exit_cleanup() {
+  _release_remote_lock
+  _cleanup_cobra_source_artifact
+}
+trap _d810_exit_cleanup EXIT
+
+# Remote mode reaches host files through one SMB-backed Docker volume, so every
+# mounted path must be expressible as a subpath of the exported share root.
+_share_relative_path() {
+  local host_path="$1" resolved relative
+  resolved="$(cd "$host_path" 2>/dev/null && pwd -P)" || true
+  if [ -z "$resolved" ]; then
+    echo "ERROR: remote mode cannot resolve the host path: $host_path" >&2
+    return 1
+  fi
+  relative="${resolved#"$REMOTE_SHARE_ROOT"/}"
+  if [ -z "$relative" ] || [ "$relative" = "$resolved" ]; then
+    echo "ERROR: remote mode requires every mounted path to live under the SMB share root" >&2
+    echo "       path:       $resolved" >&2
+    echo "       share root: $REMOTE_SHARE_ROOT (D810_REMOTE_SHARE_ROOT)" >&2
+    return 1
+  fi
+  printf '%s' "$relative"
+}
+
+# Emit the docker arguments for one mount. Local runs keep the historical bind
+# mount byte for byte; remote runs address the same bytes through the volume.
+MOUNT_ARG_BUF=()
+_mount_arg() {
+  local host_path="$1" container_path="$2" mode="${3:-}" relative specification
+  MOUNT_ARG_BUF=()
+  if [ "$REMOTE_MODE" = "1" ]; then
+    relative="$(_share_relative_path "$host_path")" || return 1
+    specification="type=volume,src=${REMOTE_VOLUME},dst=${container_path},volume-subpath=${relative}"
+    if [ "$mode" = "ro" ]; then
+      specification="${specification},readonly"
+    fi
+    MOUNT_ARG_BUF=(--mount "$specification")
+  elif [ -n "$mode" ]; then
+    MOUNT_ARG_BUF=(-v "${host_path}:${container_path}:${mode}")
+  else
+    MOUNT_ARG_BUF=(-v "${host_path}:${container_path}")
+  fi
+}
+
+DOCKER_MOUNTS=()
+_add_mount() {
+  _mount_arg "$@" || exit 1
+  DOCKER_MOUNTS+=("${MOUNT_ARG_BUF[@]}")
+}
+
+_acquire_remote_lock() {
+  local lock_dir="$WORK_DIR/.tmp/remote-run.lock" holder=""
+  mkdir -p "$WORK_DIR/.tmp"
+  if ! mkdir "$lock_dir" 2>/dev/null; then
+    [ -f "$lock_dir/owner" ] && holder="$(cat "$lock_dir/owner" 2>/dev/null || true)"
+    echo "ERROR: another remote run already owns this worktree: $WORK_DIR" >&2
+    echo "       lock:   $lock_dir" >&2
+    echo "       holder: ${holder:-unknown}" >&2
+    echo "       Wait for it to finish, or remove a stale lock with: rm -rf '$lock_dir'" >&2
+    exit 1
+  fi
+  REMOTE_LOCK_DIR="$lock_dir"
+  printf 'pid=%s host=%s remote=%s started=%s\n' \
+    "$$" "$(hostname 2>/dev/null || echo unknown)" "$REMOTE_HOST" \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$lock_dir/owner"
+}
+
+_remote_preflight_engine() {
+  local engine=""
+  if ! engine="$(docker info --format '{{.OSType}} {{.Architecture}}' 2>&1)"; then
+    echo "ERROR: remote Docker engine is unreachable: ssh://$REMOTE_HOST" >&2
+    echo "       $engine" >&2
+    exit 1
+  fi
+  REMOTE_ENGINE_OS="${engine%% *}"
+  REMOTE_ENGINE_ARCH="${engine##* }"
+  if [ "$REMOTE_ENGINE_OS" != "linux" ]; then
+    echo "ERROR: remote Docker engine must run linux containers; ssh://$REMOTE_HOST reports OSType=$REMOTE_ENGINE_OS" >&2
+    exit 1
+  fi
+  if ! docker volume inspect "$REMOTE_VOLUME" >/dev/null 2>&1; then
+    echo "ERROR: remote Docker volume not found on ssh://$REMOTE_HOST: $REMOTE_VOLUME" >&2
+    echo "       Create it once with the SMB volume command in --help (D810_REMOTE_VOLUME selects the name)." >&2
+    exit 1
+  fi
+  if ! docker image inspect "$DOCKER_IMAGE" >/dev/null 2>&1; then
+    echo "ERROR: image not present on the remote engine ssh://$REMOTE_HOST: $DOCKER_IMAGE" >&2
+    exit 1
+  fi
+}
+
+# The volume can exist and still not expose this checkout (wrong share, wrong
+# subpath, unmounted CIFS). Prove reachability read-only before any real work.
+_remote_probe_volume() {
+  printf '[remote] probing %s through volume %s on ssh://%s\n' "$WORK_DIR" "$REMOTE_VOLUME" "$REMOTE_HOST"
+  if ! docker run --rm \
+      --mount "type=volume,src=${REMOTE_VOLUME},dst=/probe,volume-subpath=${WORK_SUBPATH},readonly" \
+      --entrypoint /bin/bash "$DOCKER_IMAGE" \
+      -lc 'test -d /probe/src && test -d /probe/tests'; then
+    echo "ERROR: the worktree is not reachable through volume $REMOTE_VOLUME at subpath $WORK_SUBPATH" >&2
+    echo "       host path: $WORK_DIR" >&2
+    echo "       Check that the share is mounted on ssh://$REMOTE_HOST and exports $REMOTE_SHARE_ROOT." >&2
+    exit 1
+  fi
+}
+
+if [ -n "$REMOTE_HOST" ]; then
+  REMOTE_MODE=1
+  if [[ "$REMOTE_SHARE_ROOT" != /* ]] || [ ! -d "$REMOTE_SHARE_ROOT" ]; then
+    echo "ERROR: D810_REMOTE_SHARE_ROOT must be an absolute existing directory: $REMOTE_SHARE_ROOT" >&2
+    exit 1
+  fi
+  REMOTE_SHARE_ROOT="$(cd "$REMOTE_SHARE_ROOT" && pwd -P)"
+  WORK_SUBPATH="$(_share_relative_path "$WORK_DIR")" || exit 1
+  # Export before any docker invocation so image inspection, the probe and the
+  # workload all address the same engine.
+  export DOCKER_HOST="ssh://$REMOTE_HOST"
+  _remote_preflight_engine
+  _acquire_remote_lock
+fi
+
+# Profile receipts need to identify the actual image that ran them. Keep this
+# test-only metadata separate from the image-selection environment variable,
+# which is deliberately wrapper-only and therefore not forwarded by default.
+DOCKER_IMAGE_ID="$(docker image inspect --format '{{.Id}}' "$DOCKER_IMAGE" 2>/dev/null || echo unknown)"
+
+# Docker mount: host path -> container path (use variables so no host-specific paths in printed commands)
+_add_mount "$WORK_DIR" /work
+ENV_GIT=""
+GIT_COMMON_DIR="$(git -C "$WORK_DIR" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+if [ -n "$GIT_COMMON_DIR" ] && [ -d "$GIT_COMMON_DIR" ]; then
+  _add_mount "$GIT_COMMON_DIR" /d810-git ro
+  ENV_GIT="GIT_DIR=/d810-git"
+fi
+if [ -n "$MOUNT_LOGS" ]; then
+  LOGS_DIR="${WORK_DIR}/.tmp/logs"
+  mkdir -p "$LOGS_DIR"
+  _add_mount "$LOGS_DIR" /root/.idapro/logs
+fi
+if [ "$EGGLOG_EXTENSION_ENABLED" = "1" ]; then
+  _add_mount "$D810_EGGLOG_ROOT" /opt/d810-egglog ro
+fi
 _materialize_canonical_git_tree() {
   local repository="$1"
   local revision="$2"
@@ -689,9 +866,6 @@ _materialize_canonical_git_tree() {
     esac
   done < "$listing"
 }
-VOL_COBRA=()
-VOL_COBRA_CACHE=()
-VOL_COBRA_WHEEL=()
 COBRA_CACHE_DIR=""
 if [ "$COBRA_SOURCE_MODE" = "mounted-pinned" ]; then
   # A worktree's .git file can point at an object database outside its root,
@@ -704,26 +878,25 @@ if [ "$COBRA_SOURCE_MODE" = "mounted-pinned" ]; then
   COBRA_SOURCE_ARCHIVE_DIR="$(mktemp -d "${WORK_DIR}/.tmp/cobra-source.XXXXXX")"
   COBRA_SOURCE_ARCHIVE_SENTINEL="$COBRA_SOURCE_ARCHIVE_DIR/.d810-cobra-source-artifact"
   printf '%s\n' "d810-cobra-source-artifact-v1" > "$COBRA_SOURCE_ARCHIVE_SENTINEL"
-  trap _cleanup_cobra_source_artifact EXIT
   COBRA_SOURCE_TREE="$COBRA_SOURCE_ARCHIVE_DIR/source"
   mkdir -p "$COBRA_SOURCE_TREE/third_party/cobra"
   _materialize_canonical_git_tree "$D810_COBRA_ROOT" "$COBRA_SOURCE_REVISION" "$COBRA_SOURCE_TREE" "$COBRA_SOURCE_ARCHIVE_DIR/parent.entries" "third_party/cobra"
   _materialize_canonical_git_tree "$D810_COBRA_ROOT/third_party/cobra" "$COBRA_CORE_SOURCE_REVISION" "$COBRA_SOURCE_TREE/third_party/cobra" "$COBRA_SOURCE_ARCHIVE_DIR/core.entries" ""
   rm -f "$COBRA_SOURCE_ARCHIVE_DIR/parent.entries" "$COBRA_SOURCE_ARCHIVE_DIR/core.entries"
-  VOL_COBRA=(-v "${COBRA_SOURCE_TREE}:/opt/d810-cobra-source:ro")
+  _add_mount "$COBRA_SOURCE_TREE" /opt/d810-cobra-source ro
 fi
 if [ "$COBRA_SOURCE_MODE" = "wheel" ]; then
   # A recorded wheel needs no build cache and no source tree. Mount only the
   # wheel, read-only and under its real basename: pip rejects a renamed wheel
   # because the filename is the artifact's version/ABI/platform declaration.
-  VOL_COBRA_WHEEL=(-v "${D810_COBRA_WHEEL}:${COBRA_WHEEL_CONTAINER_PATH}:ro")
+  _add_mount "$D810_COBRA_WHEEL" "$COBRA_WHEEL_CONTAINER_PATH" ro
 else
   # Build outputs are Linux-only and belong to this task's ignored artifact
   # area. Keeping them outside both source forms makes repeated focused runs
   # reuse one pinned build without ever linking a Darwin archive.
   COBRA_CACHE_DIR="${WORK_DIR}/.tmp/cobra-linux"
   mkdir -p "$COBRA_CACHE_DIR"
-  VOL_COBRA_CACHE=(-v "${COBRA_CACHE_DIR}:/opt/d810-cobra-cache:rw")
+  _add_mount "$COBRA_CACHE_DIR" /opt/d810-cobra-cache rw
 fi
 COBRA_IMAGE_ID="$(docker image inspect --format '{{.Id}}' "$DOCKER_IMAGE" 2>/dev/null || printf '%s' unknown)"
 
@@ -734,6 +907,12 @@ if [ -n "$WORKTREE_REL" ]; then
   echo "  worktree: $WORK_DIR (WORKTREE_ROOT=$WORKTREE_ROOT, REL=$WORKTREE_REL)"
 else
   echo "  worktree: $WORK_DIR (repo root)"
+fi
+if [ "$REMOTE_MODE" = "1" ]; then
+  echo "  remote:   ssh://$REMOTE_HOST (engine $REMOTE_ENGINE_OS/$REMOTE_ENGINE_ARCH)"
+  echo "  volume:   $REMOTE_VOLUME"
+  echo "  share root: $REMOTE_SHARE_ROOT"
+  echo "  subpath:  $WORK_SUBPATH"
 fi
 if [ -n "$DUMP_OUT" ]; then
   echo "  output:   stdout+stderr -> $WORK_DIR/.tmp/$DUMP_OUT"
@@ -788,6 +967,10 @@ case "$CMD" in
 esac
 echo ""
 
+if [ "$REMOTE_MODE" = "1" ]; then
+  _remote_probe_volume
+fi
+
 ENV_IDA="IDA_PREFIX=/app/ida IDA_INSTALL_DIR=/app/ida D810_LIBCLANG_PATH=/app/ida/libclang.so"
 ENV_PYTHON="PYTHONPATH=${PYWORK}:/app/ida/python:\$PYTHONPATH"
 ENV_TEST="D810_NO_CYTHON=$NO_CYTHON D810_TEST_BINARY=$TEST_BINARY D810_TEST_RUNTIME_IMAGE=$DOCKER_IMAGE D810_TEST_RUNTIME_IMAGE_ID=$DOCKER_IMAGE_ID"
@@ -814,7 +997,7 @@ fi
 # Forward every set D810_* env var to the container via docker -e flags.
 # Wrapper-only vars (those that only affect this script) are excluded.
 _d810_extra_env_flags() {
-  local _skip=" D810_DOCKER_IMAGE D810_DOCKER_MEMORY D810_EGGLOG_ROOT D810_COBRA_ROOT D810_COBRA_WHEEL D810_COBRA_WHEEL_SHA256 D810_REPO_ROOT D810_WORKTREE_ROOT D810_MEMORY_LIMIT_BYTES D810_SYSTEM_BATCH_SIZE "
+  local _skip=" D810_DOCKER_IMAGE D810_DOCKER_MEMORY D810_EGGLOG_ROOT D810_COBRA_ROOT D810_COBRA_WHEEL D810_COBRA_WHEEL_SHA256 D810_REPO_ROOT D810_WORKTREE_ROOT D810_MEMORY_LIMIT_BYTES D810_SYSTEM_BATCH_SIZE D810_REMOTE_DOCKER_HOST D810_REMOTE_VOLUME D810_REMOTE_SHARE_ROOT "
   local _out=""
   local _var _val
   for _var in ${!D810_@}; do
@@ -947,13 +1130,7 @@ run_bash() {
     --memory "$DOCKER_MEMORY" \
     -e "D810_MEMORY_LIMIT_BYTES=$MEMORY_BYTES" \
     $extra_env \
-    $VOL_WORK \
-    $VOL_GIT \
-    $VOL_LOGS \
-    "${VOL_EGGLOG[@]}" \
-    "${VOL_COBRA[@]}" \
-    "${VOL_COBRA_CACHE[@]}" \
-    "${VOL_COBRA_WHEEL[@]}" \
+    "${DOCKER_MOUNTS[@]}" \
     -w /work \
     --entrypoint /bin/bash "$DOCKER_IMAGE" -lc "$inner"
 }
@@ -966,13 +1143,7 @@ run_bash_it() {
     --memory "$DOCKER_MEMORY" \
     -e "D810_MEMORY_LIMIT_BYTES=$MEMORY_BYTES" \
     $extra_env \
-    $VOL_WORK \
-    $VOL_GIT \
-    $VOL_LOGS \
-    "${VOL_EGGLOG[@]}" \
-    "${VOL_COBRA[@]}" \
-    "${VOL_COBRA_CACHE[@]}" \
-    "${VOL_COBRA_WHEEL[@]}" \
+    "${DOCKER_MOUNTS[@]}" \
     -w /work \
     -e "CMD=$CMD" \
     -e "PYTHON=$IDA_VENV_PYTHON" \
@@ -991,13 +1162,7 @@ run_bash_exec() {
     --memory "$DOCKER_MEMORY" \
     -e "D810_MEMORY_LIMIT_BYTES=$MEMORY_BYTES" \
     $extra_env \
-    $VOL_WORK \
-    $VOL_GIT \
-    $VOL_LOGS \
-    "${VOL_EGGLOG[@]}" \
-    "${VOL_COBRA[@]}" \
-    "${VOL_COBRA_CACHE[@]}" \
-    "${VOL_COBRA_WHEEL[@]}" \
+    "${DOCKER_MOUNTS[@]}" \
     -w /work \
     -e "CMD=exec" \
     -e "PYTHON=$IDA_VENV_PYTHON" \

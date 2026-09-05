@@ -46,8 +46,12 @@ def _recorded_wheel(name: str) -> Path | None:
     return _cobra_wheel(COBRA_WHEEL_PUBLISHED_DIR, name)
 
 
-def _make_harness(tmp_path: Path) -> tuple[Path, Path]:
-    script = tmp_path / "tools" / "scripts" / DOCKER_RUNNER.name
+def _make_harness(
+    tmp_path: Path,
+    repo_root: Path | None = None,
+) -> tuple[Path, Path]:
+    root = repo_root if repo_root is not None else tmp_path
+    script = root / "tools" / "scripts" / DOCKER_RUNNER.name
     script.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(DOCKER_RUNNER, script)
 
@@ -58,8 +62,25 @@ def _make_harness(tmp_path: Path) -> tuple[Path, Path]:
     docker.write_text(
         """#!/usr/bin/env bash
 set -eu
+printf 'docker-host %s\\n' "${DOCKER_HOST:-}" >> "$DOCKER_LOG"
 printf '%s\\n' "$*" >> "$DOCKER_LOG"
+if [ "${1:-}" = info ]; then
+  printf '%s %s\\n' "${MOCK_DOCKER_OSTYPE:-linux}" "${MOCK_DOCKER_ARCH:-x86_64}"
+  exit 0
+fi
+if [ "${1:-}" = volume ] && [ "${2:-}" = inspect ]; then
+  if [ -n "${MOCK_DOCKER_VOLUME_MISSING:-}" ]; then
+    printf 'Error response from daemon: get %s: no such volume\\n' "${3:-}" >&2
+    exit 1
+  fi
+  printf '[]\\n'
+  exit 0
+fi
 if [ "${1:-}" = image ] && [ "${2:-}" = inspect ]; then
+  if [ -n "${MOCK_DOCKER_IMAGE_MISSING:-}" ]; then
+    printf 'Error response from daemon: No such image\\n' >&2
+    exit 1
+  fi
   printf '%s\\n' "${MOCK_DOCKER_LABEL:-}"
 fi
 if [ "${1:-}" = version ]; then
@@ -79,6 +100,9 @@ if [ "${1:-}" = run ]; then
   for arg in "$@"; do
     printf 'run-arg %s\n' "$arg" >> "$DOCKER_LOG"
   done
+  case "$*" in
+    *dst=/probe*) exit "${MOCK_DOCKER_PROBE_EXIT:-0}" ;;
+  esac
   exit "${MOCK_DOCKER_RUN_EXIT:-0}"
 fi
 """,
@@ -97,14 +121,16 @@ def _run(
     dotenv: str | None = None,
     extra_env: dict[str, str] | None = None,
     mock_git: str | None = None,
+    repo_root: Path | None = None,
 ) -> tuple[subprocess.CompletedProcess[str], list[str]]:
-    script, docker_log = _make_harness(tmp_path)
+    root = repo_root if repo_root is not None else tmp_path
+    script, docker_log = _make_harness(tmp_path, repo_root)
     if mock_git is not None:
         git = tmp_path / "bin" / "git"
         git.write_text(mock_git, encoding="utf-8")
         git.chmod(0o755)
     if dotenv is not None:
-        (tmp_path / ".env").write_text(dotenv, encoding="utf-8")
+        (root / ".env").write_text(dotenv, encoding="utf-8")
     env = os.environ.copy()
     env.pop("D810_DOCKER_IMAGE", None)
     env.pop("D810_API_TOKEN", None)
@@ -112,12 +138,16 @@ def _run(
     env.pop("D810_COBRA_ROOT", None)
     env.pop("D810_COBRA_WHEEL", None)
     env.pop("D810_COBRA_WHEEL_SHA256", None)
+    env.pop("D810_REMOTE_DOCKER_HOST", None)
+    env.pop("D810_REMOTE_VOLUME", None)
+    env.pop("D810_REMOTE_SHARE_ROOT", None)
+    env.pop("DOCKER_HOST", None)
     env.update(
         {
             "PATH": f"{tmp_path / 'bin'}:{env['PATH']}",
             "DOCKER_LOG": str(docker_log),
             "MOCK_DOCKER_LABEL": label,
-            "D810_REPO_ROOT": str(tmp_path),
+            "D810_REPO_ROOT": str(root),
             "D810_NO_CYTHON": no_cython,
         }
     )
@@ -144,6 +174,50 @@ def _container_run(calls: list[str]) -> str:
     runs = [call for call in calls if call.startswith("run ")]
     assert len(runs) == 1, calls
     return runs[0]
+
+
+def _runs(calls: list[str]) -> list[str]:
+    return [call for call in calls if call.startswith("run ")]
+
+
+def _probe_run(calls: list[str]) -> str:
+    runs = [call for call in _runs(calls) if "dst=/probe" in call]
+    assert len(runs) == 1, calls
+    return runs[0]
+
+
+def _remote_container_run(calls: list[str]) -> str:
+    """The one workload container, ignoring the read-only volume probe."""
+    runs = [call for call in _runs(calls) if "dst=/probe" not in call]
+    assert len(runs) == 1, calls
+    return runs[0]
+
+
+def _docker_hosts(calls: list[str]) -> list[str]:
+    prefix = "docker-host "
+    return [call[len(prefix) :] for call in calls if call.startswith(prefix)]
+
+
+def _share_layout(tmp_path: Path) -> tuple[Path, Path]:
+    """A fake SMB share root holding the repo, mirroring the Mac layout."""
+    share = tmp_path / "share"
+    repo = share / "d810"
+    (repo / "src").mkdir(parents=True)
+    (repo / "tests").mkdir()
+    return share, repo
+
+
+def _git_stub(common_dir: Path) -> str:
+    return f"""#!/usr/bin/env bash
+set -eu
+for arg in "$@"; do
+  if [ "$arg" = "--git-common-dir" ]; then
+    printf '%s\\n' '{common_dir}'
+    exit 0
+  fi
+done
+exit 1
+"""
 
 
 @pytest.mark.parametrize(
@@ -1259,3 +1333,568 @@ def test_container_cleanup_preserves_foreign_platform_extensions(
     assert "-name '*-linux-gnu.so'" in command
     assert "-name '*-darwin.so'" not in command
     assert "-name '*.pyd'" not in command
+
+
+REMOTE_HOST = "remote-engine.example"
+
+
+def _remote_env(share: Path, **extra: str) -> dict[str, str]:
+    env = {"D810_REMOTE_SHARE_ROOT": str(share)}
+    env.update(extra)
+    return env
+
+
+def test_remote_mode_replaces_every_bind_mount_with_a_volume_subpath(
+    tmp_path: Path,
+) -> None:
+    share, repo = _share_layout(tmp_path)
+    (repo / ".git").mkdir()
+    egglog = share / "d810-egglog"
+    egglog.mkdir()
+
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--remote",
+        REMOTE_HOST,
+        "-l",
+        "--",
+        "true",
+        repo_root=repo,
+        extra_env=_remote_env(share, D810_EGGLOG_ROOT=str(egglog)),
+        mock_git=_git_stub(repo / ".git"),
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "run-arg -v" not in calls
+    expected = [
+        "type=volume,src=idapro,dst=/work,volume-subpath=d810",
+        "type=volume,src=idapro,dst=/d810-git,volume-subpath=d810/.git,readonly",
+        "type=volume,src=idapro,dst=/root/.idapro/logs,"
+        "volume-subpath=d810/.tmp/logs",
+        "type=volume,src=idapro,dst=/opt/d810-egglog,"
+        "volume-subpath=d810-egglog,readonly",
+        "type=volume,src=idapro,dst=/opt/d810-cobra-cache,"
+        "volume-subpath=d810/.tmp/cobra-linux",
+    ]
+    for spec in expected:
+        assert calls.count(f"run-arg {spec}") == 1, (spec, calls)
+    # five workload mounts plus the single read-only preflight probe mount
+    assert calls.count("run-arg --mount") == len(expected) + 1
+
+
+def test_remote_mode_mounts_the_worktree_subpath(tmp_path: Path) -> None:
+    share, repo = _share_layout(tmp_path)
+    (repo / ".worktrees" / "perf-review" / "src").mkdir(parents=True)
+
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--remote",
+        REMOTE_HOST,
+        "-w",
+        "perf-review",
+        "--",
+        "true",
+        repo_root=repo,
+        extra_env=_remote_env(share),
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert (
+        calls.count(
+            "run-arg type=volume,src=idapro,dst=/work,"
+            "volume-subpath=d810/.worktrees/perf-review"
+        )
+        == 1
+    )
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ("system",),
+        ("test",),
+        ("dump",),
+        ("shell",),
+        ("exec", "--", "true"),
+    ],
+)
+def test_remote_mode_uses_volume_mounts_in_every_docker_mode(
+    tmp_path: Path,
+    args: tuple[str, ...],
+) -> None:
+    share, repo = _share_layout(tmp_path)
+
+    result, calls = _run(
+        tmp_path,
+        args[0],
+        "--remote",
+        REMOTE_HOST,
+        *args[1:],
+        repo_root=repo,
+        extra_env=_remote_env(share),
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "run-arg -v" not in calls
+    assert (
+        calls.count("run-arg type=volume,src=idapro,dst=/work,volume-subpath=d810")
+        == 1
+    )
+    _remote_container_run(calls)
+
+
+def test_remote_mode_probes_the_worktree_before_the_workload_container(
+    tmp_path: Path,
+) -> None:
+    share, repo = _share_layout(tmp_path)
+
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--remote",
+        REMOTE_HOST,
+        "--",
+        "true",
+        repo_root=repo,
+        extra_env=_remote_env(share),
+    )
+
+    assert result.returncode == 0, result.stderr
+    probe = _probe_run(calls)
+    assert (
+        "type=volume,src=idapro,dst=/probe,volume-subpath=d810,readonly" in probe
+    )
+    assert "test -d /probe/src && test -d /probe/tests" in probe
+    runs = _runs(calls)
+    assert runs.index(probe) < runs.index(_remote_container_run(calls))
+
+
+def test_remote_mode_sends_every_docker_call_to_the_ssh_host(
+    tmp_path: Path,
+) -> None:
+    share, repo = _share_layout(tmp_path)
+
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--remote",
+        REMOTE_HOST,
+        "--",
+        "true",
+        repo_root=repo,
+        extra_env=_remote_env(share),
+    )
+
+    assert result.returncode == 0, result.stderr
+    hosts = _docker_hosts(calls)
+    assert hosts
+    assert set(hosts) == {f"ssh://{REMOTE_HOST}"}
+
+
+def test_remote_host_env_var_is_honored_and_the_flag_wins(tmp_path: Path) -> None:
+    share, repo = _share_layout(tmp_path)
+
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--",
+        "true",
+        repo_root=repo,
+        extra_env=_remote_env(share, D810_REMOTE_DOCKER_HOST="env.example"),
+    )
+    assert result.returncode == 0, result.stderr
+    assert set(_docker_hosts(calls)) == {"ssh://env.example"}
+    assert "-e D810_REMOTE_DOCKER_HOST=env.example" not in _remote_container_run(
+        calls
+    )
+
+    (tmp_path / "docker.log").unlink()
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--remote",
+        "flag.example",
+        "--",
+        "true",
+        repo_root=repo,
+        extra_env=_remote_env(share, D810_REMOTE_DOCKER_HOST="env.example"),
+    )
+    assert result.returncode == 0, result.stderr
+    assert set(_docker_hosts(calls)) == {"ssh://flag.example"}
+
+
+def test_remote_volume_name_is_configurable(tmp_path: Path) -> None:
+    share, repo = _share_layout(tmp_path)
+
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--remote",
+        REMOTE_HOST,
+        "--",
+        "true",
+        repo_root=repo,
+        extra_env=_remote_env(share, D810_REMOTE_VOLUME="other-share"),
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert (
+        calls.count(
+            "run-arg type=volume,src=other-share,dst=/work,volume-subpath=d810"
+        )
+        == 1
+    )
+    assert "-e D810_REMOTE_VOLUME=other-share" not in _remote_container_run(calls)
+
+
+def test_remote_mode_fails_closed_when_the_volume_is_missing(
+    tmp_path: Path,
+) -> None:
+    share, repo = _share_layout(tmp_path)
+
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--remote",
+        REMOTE_HOST,
+        "--",
+        "true",
+        repo_root=repo,
+        extra_env=_remote_env(share, MOCK_DOCKER_VOLUME_MISSING="1"),
+    )
+
+    assert result.returncode != 0
+    assert "volume" in result.stderr
+    assert "idapro" in result.stderr
+    assert _runs(calls) == []
+
+
+def test_remote_mode_fails_closed_on_a_non_linux_engine(tmp_path: Path) -> None:
+    share, repo = _share_layout(tmp_path)
+
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--remote",
+        REMOTE_HOST,
+        "--",
+        "true",
+        repo_root=repo,
+        extra_env=_remote_env(share, MOCK_DOCKER_OSTYPE="windows"),
+    )
+
+    assert result.returncode != 0
+    assert "linux" in result.stderr
+    assert "windows" in result.stderr
+    assert _runs(calls) == []
+
+
+def test_remote_mode_fails_closed_when_the_image_is_absent(tmp_path: Path) -> None:
+    share, repo = _share_layout(tmp_path)
+
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--remote",
+        REMOTE_HOST,
+        "--",
+        "true",
+        repo_root=repo,
+        extra_env=_remote_env(share, MOCK_DOCKER_IMAGE_MISSING="1"),
+    )
+
+    assert result.returncode != 0
+    assert "test-runtime-image" in result.stderr
+    assert _runs(calls) == []
+
+
+def test_remote_mode_rejects_a_worktree_outside_the_share_root(
+    tmp_path: Path,
+) -> None:
+    share, repo = _share_layout(tmp_path)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--remote",
+        REMOTE_HOST,
+        "--",
+        "true",
+        repo_root=repo,
+        extra_env=_remote_env(outside),
+    )
+
+    assert result.returncode != 0
+    assert str(repo) in result.stderr
+    assert str(outside) in result.stderr
+    assert _runs(calls) == []
+
+
+def test_remote_mode_rejects_an_extension_root_outside_the_share_root(
+    tmp_path: Path,
+) -> None:
+    share, repo = _share_layout(tmp_path)
+    egglog = tmp_path / "outside-egglog"
+    egglog.mkdir()
+
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--remote",
+        REMOTE_HOST,
+        "--",
+        "true",
+        repo_root=repo,
+        extra_env=_remote_env(share, D810_EGGLOG_ROOT=str(egglog)),
+    )
+
+    assert result.returncode != 0
+    assert str(egglog) in result.stderr
+    assert _runs(calls) == []
+
+
+def test_remote_mode_rejects_a_git_dir_outside_the_share_root(
+    tmp_path: Path,
+) -> None:
+    share, repo = _share_layout(tmp_path)
+    git_dir = tmp_path / "outside-git"
+    git_dir.mkdir()
+
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--remote",
+        REMOTE_HOST,
+        "--",
+        "true",
+        repo_root=repo,
+        extra_env=_remote_env(share),
+        mock_git=_git_stub(git_dir),
+    )
+
+    assert result.returncode != 0
+    assert str(git_dir) in result.stderr
+    assert _runs(calls) == []
+
+
+@pytest.mark.parametrize("share_root", ["relative/share", "missing-share"])
+def test_remote_mode_rejects_an_unusable_share_root(
+    tmp_path: Path,
+    share_root: str,
+) -> None:
+    _share, repo = _share_layout(tmp_path)
+
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--remote",
+        REMOTE_HOST,
+        "--",
+        "true",
+        repo_root=repo,
+        extra_env={"D810_REMOTE_SHARE_ROOT": share_root},
+    )
+
+    assert result.returncode != 0
+    assert "D810_REMOTE_SHARE_ROOT" in result.stderr
+    assert _runs(calls) == []
+
+
+def test_remote_flag_requires_a_host_argument(tmp_path: Path) -> None:
+    _share, repo = _share_layout(tmp_path)
+
+    result, calls = _run(tmp_path, "exec", "--remote", repo_root=repo)
+
+    assert result.returncode != 0
+    assert "--remote" in result.stderr
+    assert _runs(calls) == []
+
+
+def test_remote_mode_allows_one_run_per_worktree(tmp_path: Path) -> None:
+    share, repo = _share_layout(tmp_path)
+    lock = repo / ".tmp" / "remote-run.lock"
+    lock.mkdir(parents=True)
+    (lock / "owner").write_text("pid=4242 host=smb-server.example\n", encoding="utf-8")
+
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--remote",
+        REMOTE_HOST,
+        "--",
+        "true",
+        repo_root=repo,
+        extra_env=_remote_env(share),
+    )
+
+    assert result.returncode != 0
+    assert "pid=4242" in result.stderr
+    assert str(lock) in result.stderr
+    assert _runs(calls) == []
+    assert lock.is_dir()
+
+
+def test_remote_lock_is_released_after_a_run(tmp_path: Path) -> None:
+    share, repo = _share_layout(tmp_path)
+
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--remote",
+        REMOTE_HOST,
+        "--",
+        "true",
+        repo_root=repo,
+        extra_env=_remote_env(share),
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert _remote_container_run(calls)
+    assert not (repo / ".tmp" / "remote-run.lock").exists()
+
+
+def test_remote_lock_is_released_when_the_container_fails(tmp_path: Path) -> None:
+    share, repo = _share_layout(tmp_path)
+
+    result, _calls = _run(
+        tmp_path,
+        "exec",
+        "--remote",
+        REMOTE_HOST,
+        "--",
+        "true",
+        repo_root=repo,
+        extra_env=_remote_env(share, MOCK_DOCKER_RUN_EXIT="23"),
+    )
+
+    assert result.returncode == 23
+    assert not (repo / ".tmp" / "remote-run.lock").exists()
+
+
+def test_remote_mode_fails_closed_when_the_probe_cannot_see_the_worktree(
+    tmp_path: Path,
+) -> None:
+    share, repo = _share_layout(tmp_path)
+
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--remote",
+        REMOTE_HOST,
+        "--",
+        "true",
+        repo_root=repo,
+        extra_env=_remote_env(share, MOCK_DOCKER_PROBE_EXIT="1"),
+    )
+
+    assert result.returncode != 0
+    assert "not reachable through volume idapro" in result.stderr
+    assert _runs(calls) == [_probe_run(calls)]
+    assert not (repo / ".tmp" / "remote-run.lock").exists()
+
+
+def test_local_mode_never_uses_a_volume_mount_or_docker_host(
+    tmp_path: Path,
+) -> None:
+    result, calls = _run(tmp_path, "exec", "--", "true")
+
+    assert result.returncode == 0, result.stderr
+    command = _container_run(calls)
+    assert "--mount" not in command
+    assert "type=volume" not in command
+    assert "run-arg -v" in calls
+    assert f"run-arg {tmp_path}:/work" in calls
+    assert set(_docker_hosts(calls)) == {""}
+    assert not (tmp_path / ".tmp" / "remote-run.lock").exists()
+
+
+def test_remote_mode_keeps_the_out_file_under_work_tmp(tmp_path: Path) -> None:
+    share, repo = _share_layout(tmp_path)
+
+    result, calls = _run(
+        tmp_path,
+        "test",
+        "--remote",
+        REMOTE_HOST,
+        "-o",
+        "remote-ollvm.txt",
+        "--",
+        "-q",
+        repo_root=repo,
+        extra_env=_remote_env(share),
+    )
+
+    assert result.returncode == 0, result.stderr
+    command = _remote_container_run(calls)
+    assert "/work/.tmp/remote-ollvm.txt" in command
+    assert "/work/.tmp//remote-ollvm.txt" not in command
+    assert (repo / ".tmp").is_dir()
+
+
+def test_remote_mode_reports_the_engine_and_volume_in_the_plan(
+    tmp_path: Path,
+) -> None:
+    share, repo = _share_layout(tmp_path)
+
+    result, _calls = _run(
+        tmp_path,
+        "exec",
+        "--remote",
+        REMOTE_HOST,
+        "--",
+        "true",
+        repo_root=repo,
+        extra_env=_remote_env(share, MOCK_DOCKER_ARCH="amd64"),
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert f"remote:   ssh://{REMOTE_HOST}" in result.stdout
+    assert "linux/amd64" in result.stdout
+    assert "volume:   idapro" in result.stdout
+    assert f"share root: {share}" in result.stdout
+    assert "subpath:  d810" in result.stdout
+
+
+def test_remote_mode_mounts_the_pinned_cobra_source_read_only(
+    tmp_path: Path,
+) -> None:
+    import re
+
+    share, repo = _share_layout(tmp_path)
+    cobra_root = share / "d810-cobra"
+    (cobra_root / "third_party" / "cobra").mkdir(parents=True)
+    expected_parent = "3b3c406270f1efd8e222f0b05040ae4e074b27d5"
+    expected_core = "72f616f822f538a0cfbea3c880f9d1e68bb9a8f1"
+    mock_git = f"""#!/usr/bin/env bash
+set -eu
+if [[ "$*" == *"rev-parse HEAD"* ]]; then
+  case "$*" in
+    *third_party/cobra*) printf '%s\\n' '{expected_core}' ;;
+    *) printf '%s\\n' '{expected_parent}' ;;
+  esac
+fi
+"""
+
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--remote",
+        REMOTE_HOST,
+        "--",
+        "true",
+        repo_root=repo,
+        extra_env=_remote_env(share, D810_COBRA_ROOT=str(cobra_root)),
+        mock_git=mock_git,
+    )
+
+    assert result.returncode == 0, result.stderr
+    pattern = re.compile(
+        r"^run-arg type=volume,src=idapro,dst=/opt/d810-cobra-source,"
+        r"volume-subpath=d810/\.tmp/cobra-source\.[A-Za-z0-9]{6}/source,readonly$"
+    )
+    assert [call for call in calls if pattern.match(call)], calls
+    assert "run-arg -v" not in calls
