@@ -478,6 +478,10 @@ from d810.analyses.data_flow.abstract_value import (  # noqa: E402
     fold_correlated_binop,
     value_set_from_reaching_def_consts,
 )
+from d810.analyses.control_flow.computed_state_writer import (  # noqa: E402
+    StorageKey,
+    resolve_computed_write,
+)
 
 _FOLD_WIDTH = 64  # evaluate in 64-bit, mask the state to 32-bit at the end
 
@@ -526,6 +530,35 @@ def _dest_key(mop):
     if t == ida_hexrays.mop_r:
         return ("r", getattr(mop, "r", None))
     return None
+
+
+def _mop_storage_key(mop) -> StorageKey | None:
+    """``StorageKey`` for a bare stack / register / lvar *mop*, else ``None``.
+
+    Deliberately the same three tags :func:`_dest_key` produces, so the portable
+    core (:mod:`d810.analyses.control_flow.computed_state_writer`) and the
+    evaluator environment agree on identity without a translation table.
+    """
+    key = _dest_key(mop)
+    if key is None:
+        return None
+    kind, value = key
+    if value is None:
+        return None
+    try:
+        return StorageKey(str(kind), int(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def _storage_key_env_key(storage: StorageKey) -> tuple:
+    """The :func:`_dest_key`-shaped env key for *storage* (the inverse map)."""
+    return (storage.kind, storage.key)
+
+
+def _mop_matches_storage(mop, storage: StorageKey) -> bool:
+    """Whether *mop* is the bare location named by *storage*."""
+    return _mop_storage_key(mop) == storage
 
 
 def _eval_mop(mop, env: dict, vd: KnownBitsValueDomain, xresolve=None, use_block=None):
@@ -963,6 +996,47 @@ def _read_const_writer(
     return value
 
 
+def _block_call_opcodes() -> frozenset:
+    """Opcodes that may clobber a register binding (the ABI's scratch set)."""
+    return frozenset({ida_hexrays.m_call, ida_hexrays.m_icall})
+
+
+def _read_storage_const_writer(*, mba, block_serial: int, storage: StorageKey) -> int | None:
+    """Const of the last ``mov #const, <storage>`` in *block_serial*, or ``None``.
+
+    Generalises :func:`_read_const_writer` from ``mop_S`` / ``mop_l`` to any
+    :class:`StorageKey`, including ``mop_r`` registers.
+
+    Register-specific soundness: a call between the constant ``mov`` and the end
+    of the block may clobber the register under the ABI, so any call opcode
+    *invalidates* a pending register binding (the value reverts to unproven).
+    Stack and lvar bindings are unaffected — a callee cannot name this frame's
+    slots without an escaping address, which the state slot is already assumed
+    not to have (documented residual in the d81-pk0f receipt design).
+    """
+    try:
+        blk = mba.get_mblock(int(block_serial))
+    except Exception:
+        blk = None
+    if blk is None:
+        return None
+    calls = _block_call_opcodes()
+    is_register = storage.kind == "r"
+    value: int | None = None
+    insn = getattr(blk, "head", None)
+    while insn is not None:
+        opcode = getattr(insn, "opcode", None)
+        if is_register and opcode in calls:
+            value = None  # the ABI may clobber the register across the call
+        elif opcode == ida_hexrays.m_mov and _mop_matches_storage(
+            getattr(insn, "d", None), storage
+        ):
+            # last writer wins; ``None`` when this def is not a constant
+            value = _mop_const_value(getattr(insn, "l", None))
+        insn = getattr(insn, "next", None)
+    return value
+
+
 def _default_reaching_def_blocks(mba, *, block_serial: int, stkoff: int, size: int):
     """Default reaching-def provider: block serials defining ``stkoff`` (DU chains)."""
     from d810.evaluator.hexrays_microcode.chains import find_reaching_defs_for_stkvar
@@ -1200,6 +1274,9 @@ def _collect_stkvar_leaves(insn) -> set[tuple[int, int]]:
     ``(var_B0 ^ var_A8)`` contributes both ``var_B0`` and ``var_A8``.  Only the
     value operands (``l`` / ``r``) are walked -- never the destination -- so the
     state var being written is not itself collected.
+
+    Kept as the stack-only view (callers that key a DU provider need it);
+    :func:`_collect_operand_storage_leaves` is the storage-general form.
     """
     leaves: set[tuple[int, int]] = set()
 
@@ -1223,17 +1300,63 @@ def _collect_stkvar_leaves(insn) -> set[tuple[int, int]]:
     return leaves
 
 
+def _collect_operand_storage_leaves(insn) -> tuple[StorageKey, ...]:
+    """Every bare stack / register / lvar leaf in *insn*'s operand tree, in order.
+
+    The storage-general counterpart of :func:`_collect_stkvar_leaves`.  OLLVM
+    splits an opaque constant across *registers* just as readily as across stack
+    slots -- on ``sub_7FFB0E398850`` all six computed state writes read ``mop_r``
+    operands (``xor ecx, eax -> %var_438``), which the stack-only collector
+    reported as zero leaves, silently disabling the T2c fold.
+
+    Recurses through nested ``mop_d`` sub-instructions and walks only the value
+    operands (``l`` / ``r``), never the destination.  Order is left-to-right,
+    depth-first, deduplicated -- deterministic so the evidence record is stable.
+    """
+    leaves: list[StorageKey] = []
+
+    def visit(mop) -> None:
+        if mop is None:
+            return
+        if getattr(mop, "t", None) == ida_hexrays.mop_d:
+            sub = getattr(mop, "d", None)
+            if sub is not None:
+                visit(getattr(sub, "l", None))
+                visit(getattr(sub, "r", None))
+            return
+        storage = _mop_storage_key(mop)
+        if storage is not None and storage not in leaves:
+            leaves.append(storage)
+
+    visit(getattr(insn, "l", None))
+    visit(getattr(insn, "r", None))
+    return tuple(leaves)
+
+
 def _const_on_path_back(
     mba, *, start: int, stkoff: int, max_back: int = 6
 ) -> int | None:
     """Constant written to ``stkoff`` reaching *start* along its unique-pred chain.
 
-    Reads :func:`_read_const_writer` at *start*; when *start* does not write the
-    variable, walks UP the single-predecessor chain (a partition is one CFG edge,
-    so only a 1-predecessor walk preserves flow-sensitivity) up to *max_back*
-    hops looking for the ``mov #const``.  Returns ``None`` on the first fork /
-    visited-cycle / missing const, so the partition degrades to ⊤ rather than
-    guessing a value across a join.
+    Thin stack-flavoured wrapper over :func:`_storage_const_on_path_back`, kept
+    for callers that speak stack offsets.
+    """
+    return _storage_const_on_path_back(
+        mba, start=int(start), storage=StorageKey("S", int(stkoff)), max_back=max_back
+    )
+
+
+def _storage_const_on_path_back(
+    mba, *, start: int, storage: StorageKey, max_back: int = 6
+) -> int | None:
+    """Constant in *storage* reaching *start* along its unique-predecessor chain.
+
+    Reads :func:`_read_storage_const_writer` at *start*; when *start* does not
+    write the location, walks UP the single-predecessor chain (a partition is one
+    CFG edge, so only a 1-predecessor walk preserves flow-sensitivity) up to
+    *max_back* hops looking for the ``mov #const``.  Returns ``None`` on the
+    first fork / visited-cycle / missing const, so the partition degrades to ⊤
+    rather than guessing a value across a join.
     """
     serial = int(start)
     visited: set[int] = set()
@@ -1241,9 +1364,7 @@ def _const_on_path_back(
         if serial in visited:
             return None
         visited.add(serial)
-        cv = _read_const_writer(
-            mba=mba, block_serial=serial, stkoff=int(stkoff), lvar_idx=None
-        )
+        cv = _read_storage_const_writer(mba=mba, block_serial=serial, storage=storage)
         if cv is not None:
             return int(cv)
         preds = _block_predset(mba, serial)
@@ -1261,6 +1382,7 @@ def _resolve_predecessor_partitioned_state_write(
     state_var_lvar_idx: int | None,
     size: int = 4,
     max_back: int = 6,
+    max_partitions: int = 64,
 ) -> AbstractValue:
     """Resolve a shared-block MBA state write as a predecessor-partitioned set (T2c).
 
@@ -1286,29 +1408,60 @@ def _resolve_predecessor_partitioned_state_write(
     )
     if state_write is None:
         return TOP
-    leaves = _collect_stkvar_leaves(state_write)
-    if len(leaves) < 2:
-        return TOP  # bare / single-operand source -> T2b / T1 territory
+    leaves = _collect_operand_storage_leaves(state_write)
+    if not _partition_fold_is_the_only_tier(leaves):
+        return TOP  # bare stack source -> the DU-backed T2b / T1 tiers own it
     preds = _block_predset(mba, int(block_serial))
-    if not preds:
-        return TOP
+
     vd = KnownBitsValueDomain()
     mask = (1 << _FOLD_WIDTH) - 1
-    states: list[int] = []
-    for pred in preds:
-        env: dict = {}
-        for off, _size in leaves:
-            cv = _const_on_path_back(
-                mba, start=int(pred), stkoff=int(off), max_back=int(max_back)
-            )
-            if cv is None:
-                return TOP  # this partition's operands are not all constant
-            env[("S", int(off))] = vd.const(int(cv) & mask, _FOLD_WIDTH)
-        folded = vd.to_const(_eval_insn(state_write, env, vd, None, int(pred)))
-        if folded is None:
-            return TOP
-        states.append(int(folded) & 0xFFFFFFFF)
-    return value_set_from_reaching_def_consts(states)
+
+    def const_reader(pred: int, storage: StorageKey) -> int | None:
+        return _storage_const_on_path_back(
+            mba, start=int(pred), storage=storage, max_back=int(max_back)
+        )
+
+    def fold(env) -> int | None:
+        domain_env = {
+            _storage_key_env_key(storage): vd.const(int(value) & mask, _FOLD_WIDTH)
+            for storage, value in env.items()
+        }
+        # ``xresolve`` is ``None`` (a partition binds every operand itself), so
+        # ``_eval_mop`` never consults ``use_block`` -- passing it is inert here.
+        return vd.to_const(_eval_insn(state_write, domain_env, vd, None, None))
+
+    resolution = resolve_computed_write(
+        operands=leaves,
+        predecessors=tuple(int(p) for p in preds),
+        const_reader=const_reader,
+        fold=fold,
+        max_predecessors=int(max_partitions),
+    )
+    if not resolution.resolved and logger.debug_on:
+        logger.debug(
+            "T2c: blk%d state write abstained (%s)",
+            int(block_serial),
+            resolution.reason,
+        )
+    return resolution.to_abstract_value()
+
+
+def _partition_fold_is_the_only_tier(leaves: tuple[StorageKey, ...]) -> bool:
+    """Whether the predecessor-partitioned fold is the right tier for *leaves*.
+
+    Two or more operands are the genuine opaque-constant *split* T2c exists for.
+    A single operand is normally left to T2b / T1, which resolve it through
+    :func:`_default_reaching_def_blocks` -> ``find_reaching_defs_for_stkvar`` --
+    a **stack-only** DU provider.  So a lone *stack* leaf keeps escalating
+    (unchanged behaviour), while a lone *register* or *lvar* leaf has no other
+    tier that can answer it at all (``mov ecx -> %var_438`` at
+    ``sub_7FFB0E398850`` blk4) and the predecessor walk is its only chance.
+    """
+    if not leaves:
+        return False
+    if len(leaves) >= 2:
+        return True
+    return leaves[0].kind != "S"
 
 
 def resolve_state_write_value_set(
