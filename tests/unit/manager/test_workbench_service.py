@@ -31,7 +31,9 @@ from d810.manager.workbench_models import (
     WorkbenchCommandRequest,
 )
 from d810.manager import workbench_service as service_module
-from d810.passes.constant_simplification import constant_simplification_stage_descriptors
+from d810.passes.constant_simplification import (
+    constant_simplification_stage_descriptors,
+)
 from d810.passes.pass_pipeline import (
     FactRequirement,
     PassContract,
@@ -99,6 +101,11 @@ class _Registry:
 
     def public_pass_ids(self) -> tuple[str, ...]:
         return tuple(self._specs)
+
+    def is_hosted(self, pass_id: str) -> bool:
+        # Every spec this double publishes is a portable pass; a hosted stage
+        # would be excluded from the portable driver instead.
+        return False
 
     def stages_for(self, pass_id: str) -> tuple[object, ...]:
         implementation = {"first": "FoldRule", "second": "CfgRule"}[pass_id]
