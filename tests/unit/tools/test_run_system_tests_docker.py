@@ -74,7 +74,7 @@ if [ "${1:-}" = info ]; then
 fi
 if [ "${1:-}" = volume ] && [ "${2:-}" = inspect ]; then
   case "${3:-}" in
-    d810-work-*)
+    d810-work-*|d810-cobra-*)
       if [ -z "${MOCK_WORK_VOLUME_EXISTS:-}" ]; then
         printf 'Error response from daemon: get %s: no such volume\\n' "${3:-}" >&2
         exit 1
@@ -1444,13 +1444,18 @@ def test_remote_mode_replaces_every_bind_mount_with_a_volume_subpath(
         "volume-subpath=d810/.tmp/logs",
         "type=volume,src=idapro,dst=/opt/d810-egglog,"
         "volume-subpath=d810-egglog,readonly",
-        "type=volume,src=idapro,dst=/opt/d810-cobra-cache,"
-        "volume-subpath=d810/.tmp/cobra-linux",
     ]
     for spec in expected:
         assert calls.count(f"run-arg {spec}") == 1, (spec, calls)
-    # the workload mounts plus the single read-only preflight probe mount
-    assert calls.count("run-arg --mount") == len(expected) + 1
+    # the CoBRA cache is an engine volume in remote mode, never the SMB share
+    assert not [call for call in calls if "dst=/opt/d810-cobra-cache,volume-subpath" in call]
+    assert [
+        call for call in calls
+        if call.startswith("run-arg type=volume,src=d810-cobra-")
+        and call.endswith(",dst=/opt/d810-cobra-cache")
+    ]
+    # the workload mounts, the cobra cache, plus the read-only preflight probe
+    assert calls.count("run-arg --mount") == len(expected) + 2
     # source is never writable, and only .tmp is
     assert "run-arg type=volume,src=idapro,dst=/work-src,volume-subpath=d810" not in calls
 
@@ -2432,14 +2437,17 @@ def test_work_volume_is_labelled_and_path_unique(tmp_path: Path) -> None:
 
     assert result.returncode == 0, result.stderr
     create = [call for call in calls if call.startswith("volume create ")]
-    assert len(create) == 1
+    assert len(create) == 2  # the source copy and the CoBRA build cache
     assert "--label d810.role=work" in create[0]
+    assert "--label d810.role=cobra-cache" in create[1]
+    assert "--label d810.credential_volume=idapro" in create[0]
     assert "--label d810.worktree=wt" in create[0]
     assert "--label d810.share_root_digest=" in create[0]
     first = _work_volume_name(repo / ".worktrees" / "wt")
     second = _work_volume_name(other_root / ".worktrees" / "wt")
     assert first != second
     assert create[0].endswith(first)
+    assert create[1].endswith(first.replace("d810-work-", "d810-cobra-", 1))
 
 
 def test_existing_work_volume_is_reused_not_recreated(tmp_path: Path) -> None:
@@ -2459,6 +2467,7 @@ def test_existing_work_volume_is_reused_not_recreated(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
     assert not [call for call in calls if call.startswith("volume create ")]
     assert "(existing, retained source copy)" in result.stdout
+    assert "cobra cache volume: d810-cobra-" in result.stdout
 
 
 def test_work_volume_creation_failure_fails_closed(tmp_path: Path) -> None:

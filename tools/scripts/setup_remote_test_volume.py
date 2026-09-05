@@ -227,6 +227,9 @@ def build_work_volume_list_argv(
     copies of an unrelated share or credential, so the role label alone is not
     a safe selector.
 
+    Both roles the runner retains (the source copy and the CoBRA build cache)
+    are matched, because both hold state on the engine.
+
     >>> build_work_volume_list_argv(remote="h", volume="v", share_root="/x")[3:6]
     ['volume', 'ls', '--filter']
     >>> "label=d810.credential_volume=v" in build_work_volume_list_argv(
@@ -240,7 +243,7 @@ def build_work_volume_list_argv(
         "volume",
         "ls",
         "--filter",
-        f"label={WORK_VOLUME_ROLE_LABEL}",
+        "label=d810.role",
         "--filter",
         f"label=d810.credential_volume={volume}",
         "--filter",

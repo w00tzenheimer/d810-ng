@@ -332,6 +332,8 @@ WORK_SUBPATH=""
 WORK_VOLUME=""
 REMOTE_ARCHIVE=""
 REMOTE_ARCHIVE_CONTAINER_PATH=""
+COBRA_CACHE_VOLUME=""
+COBRA_CACHE_VOLUME_STATE=""
 SOURCE_DIGEST=""
 SYNC_SENTINEL="/work/.d810-sync-ok"
 # macOS normalizes requested rights, so the presence check compares against the
@@ -900,21 +902,26 @@ _work_volume_name() {
 }
 
 WORK_VOLUME_STATE=""
-_ensure_work_volume() {
-  if docker volume inspect "$WORK_VOLUME" >/dev/null 2>&1; then
-    WORK_VOLUME_STATE="existing"
+_ensure_engine_volume() {
+  local name="$1" role="$2" state_variable="$3"
+  if docker volume inspect "$name" >/dev/null 2>&1; then
+    eval "$state_variable=existing"
     return 0
   fi
   if ! docker volume create \
-      --label d810.role=work \
+      --label "d810.role=$role" \
       --label "d810.worktree=$(basename "$WORK_DIR")" \
       --label "d810.share_root_digest=$(printf '%s' "$REMOTE_SHARE_ROOT" | shasum -a 256 | cut -c1-8)" \
       --label "d810.credential_volume=$REMOTE_VOLUME" \
-      "$WORK_VOLUME" >/dev/null; then
-    echo "ERROR: could not create work volume $WORK_VOLUME on ssh://$REMOTE_HOST" >&2
+      "$name" >/dev/null; then
+    echo "ERROR: could not create $role volume $name on ssh://$REMOTE_HOST" >&2
     exit 1
   fi
-  WORK_VOLUME_STATE="created"
+  eval "$state_variable=created"
+}
+
+_ensure_work_volume() {
+  _ensure_engine_volume "$WORK_VOLUME" work WORK_VOLUME_STATE
 }
 
 # The share account is read-only everywhere except the ACL below, which is
@@ -1064,6 +1071,7 @@ if [ -n "$REMOTE_HOST" ]; then
   # SQLite databases and the cobra cache all collide between concurrent runs.
   _acquire_remote_lock
   WORK_VOLUME="$(_work_volume_name "$WORK_DIR")"
+  COBRA_CACHE_VOLUME="d810-cobra-${WORK_VOLUME#d810-work-}"
   mkdir -p "$WORK_DIR/.tmp"
   _apply_tmp_acls
   REMOTE_MANIFEST="$WORK_DIR/.tmp/remote-manifest.$$"
@@ -1192,6 +1200,13 @@ if [ "$COBRA_SOURCE_MODE" = "wheel" ]; then
   # wheel, read-only and under its real basename: pip rejects a renamed wheel
   # because the filename is the artifact's version/ABI/platform declaration.
   _add_mount "$D810_COBRA_WHEEL" "$COBRA_WHEEL_CONTAINER_PATH" ro
+elif [ "$REMOTE_MODE" = "1" ]; then
+  # The Linux CoBRA build must not live on the SMB share: its existing files
+  # would need per-file ACLs, and a C++ build over CIFS is slow. Keep it in a
+  # retained engine volume, accounted for by the same labels as /work.
+  COBRA_CACHE_DIR="$COBRA_CACHE_VOLUME"
+  _ensure_engine_volume "$COBRA_CACHE_VOLUME" cobra-cache COBRA_CACHE_VOLUME_STATE
+  DOCKER_MOUNTS+=(--mount "type=volume,src=${COBRA_CACHE_VOLUME},dst=/opt/d810-cobra-cache")
 else
   # Build outputs are Linux-only and belong to this task's ignored artifact
   # area. Keeping them outside both source forms makes repeated focused runs
@@ -1220,6 +1235,7 @@ if [ "$REMOTE_MODE" = "1" ]; then
   echo "  archive:  $REMOTE_ARCHIVE_CONTAINER_PATH (tracked + untracked-not-ignored, ignored content excluded)"
   echo "  allowlist: ${REMOTE_MANIFEST_EXTRA_ENTRIES:- none} (from $(basename "$REMOTE_MANIFEST_EXTRA"))"
   echo "  work volume: $WORK_VOLUME ($WORK_VOLUME_STATE, retained source copy)"
+  echo "  cobra cache volume: $COBRA_CACHE_VOLUME ($COBRA_CACHE_VOLUME_STATE)"
   echo "  share user: $REMOTE_SMB_USER (ACL scoped to $WORK_DIR/.tmp)"
 fi
 if [ -n "$DUMP_OUT" ]; then

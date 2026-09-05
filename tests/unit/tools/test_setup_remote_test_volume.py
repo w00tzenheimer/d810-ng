@@ -830,7 +830,7 @@ def test_work_volume_listing_is_scoped_to_this_credential_and_share() -> None:
         remote="h", volume="idapro", share_root="/srv/share-root"
     ) == [
         "docker", "-H", "ssh://h", "volume", "ls",
-        "--filter", "label=d810.role=work",
+        "--filter", "label=d810.role",
         "--filter", "label=d810.credential_volume=idapro",
         "--filter", f"label=d810.share_root_digest={digest}",
         "--format", "{{.Name}}",
@@ -846,7 +846,7 @@ def test_orphaned_work_volumes_are_reachable_without_the_credential_volume(
         monkeypatch,
         {
             "volume inspect": (1, ABSENT_ERROR),
-            "label=d810.role=work": (0, "d810-work-orphan-0011aabb\n"),
+            "label=d810.role": (0, "d810-work-orphan-0011aabb\n"),
         },
     )
 
@@ -879,7 +879,7 @@ def test_purge_never_touches_another_credential_volumes_copies(
 
     assert status == 0
     listing = [
-        " ".join(argv) for argv in recorded if "label=d810.role=work" in " ".join(argv)
+        " ".join(argv) for argv in recorded if "label=d810.role" in " ".join(argv)
     ]
     assert listing and all(
         "label=d810.credential_volume=other" in call for call in listing
@@ -899,7 +899,7 @@ def test_dry_run_shows_the_exact_work_volume_filter(
 
     assert setup_remote_test_volume.main(["--remove", "--dry-run"]) == 0
     printed = capsys.readouterr().out
-    assert "--filter label=d810.role=work" in printed
+    assert "--filter label=d810.role" in printed
     assert "--filter label=d810.credential_volume=idapro" in printed
     assert "--filter label=d810.share_root_digest=" in printed
 
@@ -912,7 +912,7 @@ def test_status_enumerates_retained_work_volumes(
         monkeypatch,
         {
             "volume inspect": (0, INSPECT_PAYLOAD),
-            "label=d810.role=work": (0, "d810-work-wt-0011aabb\nd810-work-other-22ccddee\n"),
+            "label=d810.role": (0, "d810-work-wt-0011aabb\nd810-work-other-22ccddee\n"),
             "dst=/probe": (0, "mount-ok"),
         },
     )
@@ -934,7 +934,7 @@ def test_remove_keeps_work_volumes_unless_purge_is_requested(
         monkeypatch,
         {
             "volume inspect": (0, INSPECT_PAYLOAD),
-            "label=d810.role=work": (0, "d810-work-wt-0011aabb\n"),
+            "label=d810.role": (0, "d810-work-wt-0011aabb\n"),
         },
     )
 
@@ -957,7 +957,7 @@ def test_purge_removes_every_work_volume(
         monkeypatch,
         {
             "volume inspect": (0, INSPECT_PAYLOAD),
-            "label=d810.role=work": (0, "d810-work-a-0011aabb\nd810-work-b-22ccddee\n"),
+            "label=d810.role": (0, "d810-work-a-0011aabb\nd810-work-b-22ccddee\n"),
         },
     )
 
@@ -980,7 +980,7 @@ def test_work_volume_listing_failure_is_indeterminate(
         {
             "volume inspect": (0, INSPECT_PAYLOAD),
             "dst=/probe": (0, "mount-ok"),
-            "label=d810.role=work": (1, SSH_ERROR),
+            "label=d810.role": (1, SSH_ERROR),
         },
     )
 
