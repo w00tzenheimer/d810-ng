@@ -69,3 +69,18 @@ def test_positional_path_replaces_tests_unit_default() -> None:
         "PYTHONPATH=src:tests pyenv exec python -m pytest "
         "-p no:cacheprovider tests/unit/core/test_plugins.py"
     )
+
+
+def test_k_expr_value_is_not_mistaken_for_a_positional_target() -> None:
+    """Review 1, I3: a flag's bare VALUE is not a path.
+
+    "-k foo" previously dropped tests/unit because "foo" does not start
+    with "-" either, which let pytest's testpaths = ["tests"] fall back
+    to collecting tests/system too.
+    """
+    result = _dry_run("-k", "foo")
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == (
+        "PYTHONPATH=src:tests pyenv exec python -m pytest "
+        "-p no:cacheprovider tests/unit -k foo"
+    )

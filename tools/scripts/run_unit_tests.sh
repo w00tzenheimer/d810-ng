@@ -76,12 +76,21 @@ done
 # name a path/node id of their own -- otherwise pytest would collect the
 # union of "tests/unit" and the caller's target, i.e. always the whole
 # suite, silently defeating a targeted reproduction run.
+#
+# A flag's own VALUE (e.g. the "foo" in "-k foo", or the "3" in
+# "--maxfail 3") is not a path and does not start with "-" either, so
+# "does not start with -" is not a safe positional test (ticket d81-4tsd
+# review 1, I3): it misclassified every bare-value pass-through flag as a
+# target, which silently dropped tests/unit and let pytest's
+# testpaths = ["tests"] fall back to collecting tests/system too. Test
+# for an existing file/dir instead, stripping a trailing
+# "::Class::test" node-id suffix first so
+# "path/to/test.py::TestX::test_y" still counts as a real target.
 HAS_POSITIONAL=0
 for arg in ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}; do
-  case "$arg" in
-    -*) ;;
-    *) HAS_POSITIONAL=1 ;;
-  esac
+  if [ -e "${arg%%::*}" ]; then
+    HAS_POSITIONAL=1
+  fi
 done
 
 PYTEST_ARGS=(-p no:cacheprovider)
