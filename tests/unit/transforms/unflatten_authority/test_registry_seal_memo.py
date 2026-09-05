@@ -553,8 +553,8 @@ def test_every_seal_taken_by_a_real_preparation_is_byte_identical() -> None:
     uncached = bind._canonical_registry_seal_uncached
     compared: list[tuple[str, str]] = []
 
-    def _oracle(value, registry, *args, **kwargs):
-        answer = seal(value, registry, *args, **kwargs)
+    def _oracle(value, registry, *args, _memo=bind._MEMO_TICKET_UNSET, **kwargs):
+        answer = seal(value, registry, *args, _memo=_memo, **kwargs)
         compared.append((answer, uncached(value, registry, *args, **kwargs)))
         return answer
 
@@ -568,3 +568,54 @@ def test_every_seal_taken_by_a_real_preparation_is_byte_identical() -> None:
     assert [answer for answer, _ in compared] == [
         strict for _, strict in compared
     ]
+
+
+def test_the_memo_guard_walk_happens_outside_the_publication_lock() -> None:
+    """A first registration must not pay the guard walk under the global lock.
+
+    ``_register_registry_occurrence`` holds ``_REGISTRY_PUBLICATION_LOCK`` while
+    it seals, and a fresh occurrence can never hit the memo, so taking the
+    recursive ``OccurrenceDigest`` walk inside the lock would make the FIRST
+    registration leg strictly slower for no gain.  Falsified by moving the
+    ``_registry_seal_memo`` call back below the ``with``.
+    """
+
+    events: list[str] = []
+    real_lock = bind._REGISTRY_PUBLICATION_LOCK
+    real_ticket = bind._registry_seal_memo
+
+    class _SpyLock:
+        def __enter__(self):
+            events.append("lock-acquire")
+            return real_lock.__enter__()
+
+        def __exit__(self, *exc):
+            events.append("lock-release")
+            return real_lock.__exit__(*exc)
+
+    def _ticket(value):
+        events.append("guard-walk")
+        return real_ticket(value)
+
+    with _canonical_validation_session(
+        CanonicalSessionPhase.PROJECTED_PREPARATION,
+    ):
+        with patch.object(bind, "_REGISTRY_PUBLICATION_LOCK", _SpyLock()):
+            with patch.object(bind, "_registry_seal_memo", _ticket):
+                _published_route_result()
+
+    # Not vacuous: both the guard walks and the lock really happened.
+    assert events.count("guard-walk") > 0
+    assert events.count("lock-acquire") > 0
+    # Every guard walk is outside the lock: no "guard-walk" sits between an
+    # acquire and its release.
+    depth = 0
+    inside = 0
+    for event in events:
+        if event == "lock-acquire":
+            depth += 1
+        elif event == "lock-release":
+            depth -= 1
+        elif depth > 0:
+            inside += 1
+    assert inside == 0, events

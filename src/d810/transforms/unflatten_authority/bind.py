@@ -28,7 +28,11 @@ from d810.transforms.cfg_transaction import (
 )
 from . import ids as authority_ids
 from . import model, producer_api
-from .canonical_session import active_canonical_session, record_registry_seal
+from .canonical_session import (
+    CanonicalValidationSession,
+    active_canonical_session,
+    record_registry_seal,
+)
 from .gates import GenericEffectfulGateFacts
 from .proposal import (
     CanonicalPatchStepDescriptor,
@@ -65,12 +69,7 @@ from .ids import (
     patch_step_fact_id,
     patch_step_fact_id as _canonical_patch_step_fact_id,
 )
-from .ids import (
-    _EXTERNAL_FIELDS as _CANONICAL_EXTERNAL_FIELDS,
-    _RECORD_FIELDS as _CANONICAL_RECORD_FIELDS,
-    _ensure_registries as _ensure_canonical_registries,
-    _occurrence_stamp,
-)
+from .ids import OccurrenceDigest, _occurrence_stamp
 
 
 logger = getLogger(__name__)
@@ -667,6 +666,9 @@ _OBSERVED_LOWERED_CONDITIONAL_TOPOLOGY_REGISTRY: dict[
 # depending upward on the transaction facade.
 _ENTRY_ENDPOINT_LIVENESS_RECEIPT_OCCURRENCES: dict[int, tuple[object, str]] = {}
 _REGISTRY_PUBLICATION_LOCK = threading.RLock()
+#: "no ticket was handed in"; distinct from ``None``, which means "this value
+#: is not memoizable" and must not be recomputed by the callee.
+_MEMO_TICKET_UNSET = object()
 
 
 def _registry_reference(
@@ -700,8 +702,11 @@ def _register_registry_occurrence(
 ) -> object:
     key = id(value)
     reference = _registry_reference(value, registry, key)
+    # The memo guard is a full recursive walk and a first registration can
+    # never hit it, so take the ticket before the global publication lock.
+    memo = _registry_seal_memo(value)
     with _REGISTRY_PUBLICATION_LOCK:
-        canonical_seal = _canonical_registry_seal(value, registry)
+        canonical_seal = _canonical_registry_seal(value, registry, _memo=memo)
         if seal != canonical_seal:
             raise ValueError("registry publication seal is not canonical")
         if _registry_occurrence_is_registered(
@@ -738,6 +743,13 @@ class _AtomicPublicationBatch:
 
     def commit(self) -> None:
         """Precheck every exact occurrence before the first registry write."""
+        # Same hoist as _register_registry_occurrence: every guard walk this
+        # batch needs is taken before the global publication lock.
+        tickets: dict[int, object] = {}
+        for _registry, key, reference, _seal in self._entries:
+            live = reference()
+            if live is not None and key not in tickets:
+                tickets[key] = _registry_seal_memo(live)
         with _REGISTRY_PUBLICATION_LOCK:
             if self._committed:
                 raise ValueError("publication batch is already committed")
@@ -750,7 +762,9 @@ class _AtomicPublicationBatch:
                 value = reference()
                 if value is None:
                     raise ValueError("publication batch occurrence is no longer live")
-                canonical_seal = _canonical_registry_seal(value, registry)
+                canonical_seal = _canonical_registry_seal(
+                    value, registry, _memo=tickets.get(key),
+                )
                 if canonical_seal != seal:
                     raise ValueError("publication batch content seal differs")
                 previous = seen.get(occurrence)
@@ -3330,7 +3344,9 @@ def _route_result_identity(value: object) -> str:
     ))
 
 
-def _memoizable_digest(session: object, value: object) -> object | None:
+def _memoizable_digest(
+    session: CanonicalValidationSession | None, value: object,
+) -> OccurrenceDigest | None:
     """Return the guard digest for one seal subject, or ``None`` to never memoize.
 
     ``_feed_occurrence`` falls through to an **identity-only** stamp for any
@@ -3343,14 +3359,47 @@ def _memoizable_digest(session: object, value: object) -> object | None:
 
     if session is None:
         return None
-    _ensure_canonical_registries()
+    authority_ids._ensure_registries()
     value_type = type(value)
     if (
-        value_type not in _CANONICAL_RECORD_FIELDS
-        and value_type not in _CANONICAL_EXTERNAL_FIELDS
+        value_type not in authority_ids._RECORD_FIELDS
+        and value_type not in authority_ids._EXTERNAL_FIELDS
     ):
         return None
     return _occurrence_stamp(value)
+
+
+def _registry_seal_memo(
+    value: object,
+) -> tuple[CanonicalValidationSession, OccurrenceDigest] | None:
+    """Return this phase's memo ticket for one seal subject, or ``None``.
+
+    A ticket is the pair the memo needs: the owning session and the guard
+    digest, both read *before* any registry lock is taken.  The digest is a
+    full recursive walk, so publication paths hoist this call above
+    ``_REGISTRY_PUBLICATION_LOCK`` and hand the ticket to the seal -- a first
+    registration can never hit the memo, so nothing is lost by computing the
+    guard outside the lock and the global lock stops paying for it.
+
+    Fails closed by falling through to the strict path, never by serving: the
+    memo is an optimisation, so a digest that cannot be taken means no memo,
+    while the seal computation itself is always performed.
+    """
+
+    session = active_canonical_session()
+    if session is None:
+        return None
+    try:
+        digest = _memoizable_digest(session, value)
+    except Exception:  # noqa: BLE001 - bypassing the memo is always safe
+        logger.debug(
+            "registry seal memo unavailable for %s", type(value).__name__,
+            exc_info=True,
+        )
+        return None
+    if digest is None:
+        return None
+    return (session, digest)
 
 
 def _canonical_registry_seal(
@@ -3361,12 +3410,18 @@ def _canonical_registry_seal(
     _route_registry=_ROUTE_REGISTRY,
     _logical_registry=_OBSERVED_LOGICAL_ENDPOINT_REGISTRY,
     _route_seal=_route_content_seal,
+    *,
+    _memo: tuple[CanonicalValidationSession, OccurrenceDigest] | None | object
+    = _MEMO_TICKET_UNSET,
 ) -> str:
     """Return one closed record's canonical live publication seal.
 
     The computation itself is untouched and lives in
     :func:`_canonical_registry_seal_uncached`.  This wrapper reuses the answer
     the *same* live occurrence already proved in *this* phase, and only then.
+
+    ``_memo`` lets a caller that already took the ticket outside a registry
+    lock hand it in; unset means take it here.
 
     What is still detected, without exception: the memo is guarded by the exact
     object identity and by the full 32-byte ``OccurrenceDigest`` over its
@@ -3378,9 +3433,9 @@ def _canonical_registry_seal(
     validated on its own.
     """
 
-    session = active_canonical_session()
-    digest = _memoizable_digest(session, value)
-    if digest is not None:
+    memo = _registry_seal_memo(value) if _memo is _MEMO_TICKET_UNSET else _memo
+    if memo is not None:
+        session, digest = memo
         cached = session.registry_seal_for(id(registry), value, digest)
         record_registry_seal(cached is not None)
         if cached is not None:
@@ -3389,8 +3444,8 @@ def _canonical_registry_seal(
         value, registry, _site_registry, _binding_registry, _route_registry,
         _logical_registry, _route_seal,
     )
-    if digest is not None:
-        session.store_registry_seal(id(registry), value, digest, seal)
+    if memo is not None:
+        memo[0].store_registry_seal(id(registry), value, memo[1], seal)
     return seal
 
 
@@ -3630,9 +3685,8 @@ def _derived_proposal_id(proposal: object, proof: object | None) -> str:
     through to today's behaviour unchanged.
     """
 
-    derived = getattr(proof, "proposal_id", None)
-    if type(derived) is str:
-        return derived
+    if type(proof) is model.SourceBoundRouteAuthority:
+        return proof.proposal_id
     return authority_id(proposal)
 
 
