@@ -119,7 +119,13 @@
 #   that is the accepted trade for typing it once. Remove it with `docker volume rm idapro`.
 #
 #   The option set deliberately omits nobrl: if SQLite under /work/.tmp (diag DBs, debug logs) ever
-#   fails with a locking error over this mount, recreate the volume with nobrl appended.
+#   fails with a locking error over this mount, recreate the volume with nobrl appended. Byte-range
+#   locking is the thing to check first after any volume change:
+#
+#     ./run_system_tests_docker.sh exec --remote HOST -w WT -- /app/ida/.venv/bin/python -c \
+#       "import sqlite3; c=sqlite3.connect('/work/.tmp/remote-smoke.sqlite3'); \
+#        c.execute('create table if not exists t(x)'); c.execute('insert into t values(1)'); \
+#        c.commit(); print('sqlite-ok', c.execute('select count(*) from t').fetchone())"
 #
 # Remote examples:
 #   ./run_system_tests_docker.sh exec --remote remote-engine.example -w my-worktree -- true
