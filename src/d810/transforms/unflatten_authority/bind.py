@@ -3545,20 +3545,41 @@ def _route_claims(proposal: model.ProposedUnflattenContract) -> tuple[model.Equi
     return tuple(sorted(claims, key=lambda claim: claim.claim_id))
 
 
+def _derived_proposal_id(proposal: object, proof: object | None) -> str:
+    """Read an already-derived proposal ID instead of canonicalising one.
+
+    A diagnostic coordinate must not encode a whole proposal: point 6 of the
+    canonical-reuse plan forbids any logging or diagnostics argument from
+    reaching ``canonical_bytes``.  Every caller that rejects *after* the source
+    authority exists holds ``SourceBoundRouteAuthority.proposal_id``, whose
+    ``__post_init__`` already pins it to ``authority_id(self.proposal)``
+    (``model.py``: ``"proposal_id is not content-derived"``), so the two are
+    byte-identical by construction.  Without such a proof -- the source binder's
+    own failure path, where the authority does not exist yet -- this falls
+    through to today's behaviour unchanged.
+    """
+
+    derived = getattr(proof, "proposal_id", None)
+    if type(derived) is str:
+        return derived
+    return authority_id(proposal)
+
+
 def _route_failure_coordinates(proposal: object, *, stage: model.RouteRealizationFailureStage,
                                 claim: object | None = None,
                                 proof_override: object | None = None,
                                 fact: object | None = None,
                                 descriptor: object | None = None,
                                 extra_anchored_refs: tuple[object, ...] = (),
-                                scope_override: object | None = None) -> dict[str, object]:
+                                scope_override: object | None = None,
+                                proposal_proof: object | None = None) -> dict[str, object]:
     """Build typed diagnostic coordinates without exposing validation prose."""
     claim_id = proof_id = route_subject_id = None
     proposal_id = evidence_id = None
     scope = model.RouteRealizationFailureScope.PROPOSAL
     try:
         if type(proposal) is model.ProposedUnflattenContract:
-            proposal_id = authority_id(proposal)
+            proposal_id = _derived_proposal_id(proposal, proposal_proof)
             evidence_id = proposal.route_evidence.atomic_group_id
             scope = model.RouteRealizationFailureScope.EVIDENCE
     except (TypeError, ValueError):
@@ -7102,6 +7123,7 @@ def _legacy_structural_projected_routes(*, source_authority: model.SourceBoundRo
         )
         failure = _failure(**_route_failure_coordinates(
             source_authority.proposal if type(source_authority) is model.SourceBoundRouteAuthority else None,
+            proposal_proof=source_authority,
             stage=active_stage,
             claim=active_claim,
             fact=active_fact,
@@ -8719,6 +8741,7 @@ def _make_route_kernels():
         rejected = failure(**_route_failure_coordinates(
             source_authority.proposal
             if type(source_authority) is model.SourceBoundRouteAuthority else None,
+            proposal_proof=source_authority,
             stage=model.RouteRealizationFailureStage.CLAIM_SELECTION,
             claim=claim,
             fact=fact,
@@ -8749,6 +8772,7 @@ def _make_route_kernels():
             rejected = failure(**_route_failure_coordinates(
                 source_authority.proposal
                 if type(source_authority) is model.SourceBoundRouteAuthority else None,
+                proposal_proof=source_authority,
                 stage=stage,
             ))
             return result(model.ProjectedRouteRealizationRejected, {"failures": (rejected,)})
@@ -8810,6 +8834,7 @@ def _make_route_kernels():
             rejected = failure(**_route_failure_coordinates(
                 source_authority.proposal
                 if type(source_authority) is model.SourceBoundRouteAuthority else None,
+                proposal_proof=source_authority,
                 stage=stage,
             ))
             return result(
@@ -8879,6 +8904,7 @@ def _make_route_kernels():
             failure_value = failure(**_route_failure_coordinates(
                 source_authority.proposal
                 if type(source_authority) is model.SourceBoundRouteAuthority else None,
+                proposal_proof=source_authority,
                 **coordinates,
             ))
             return result(
@@ -8893,6 +8919,7 @@ def _make_route_kernels():
             )
             failure_value = failure(**_route_failure_coordinates(
                 source_authority.proposal,
+                proposal_proof=source_authority,
                 stage=model.RouteRealizationFailureStage.EFFECT_TERMINAL_PRESERVATION,
             ))
             return result(
@@ -8907,6 +8934,7 @@ def _make_route_kernels():
             rejected = failure(**_route_failure_coordinates(
                 source_authority.proposal
                 if type(source_authority) is model.SourceBoundRouteAuthority else None,
+                proposal_proof=source_authority,
                 stage=stage,
             ))
             return result(

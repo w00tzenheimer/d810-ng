@@ -423,3 +423,92 @@ def test_debug_logging_and_diagnostics_add_no_canonical_work(monkeypatch) -> Non
         d810_logging.LevelFlag.bump_config_version()
 
     assert noisy.as_payload() == quiet.as_payload()
+
+
+def _arm_proposal_canonicalisation(monkeypatch, frame_name: str) -> list[str]:
+    """Make any canonical encode of a whole proposal raise inside ``frame_name``."""
+
+    reached: list[str] = []
+    for name in ("canonical_bytes", "content_id", "_record_content_id", "_wire"):
+        real = getattr(authority_ids, name)
+
+        def _tripwire(*args, _real=real, _name=name, **kwargs):
+            value = args[1] if _name in ("content_id", "_record_content_id") else (
+                args[0] if args else None
+            )
+            if (
+                type(value) is model.ProposedUnflattenContract
+                and not authority_ids.materializing()
+            ):
+                frame = sys._getframe(1)
+                while frame is not None:
+                    if frame.f_code.co_name == frame_name:
+                        raise _CanonicalReachedFromLiveValidation(
+                            f"{_name} reached from {frame_name}",
+                        )
+                    frame = frame.f_back
+            return _real(*args, **kwargs)
+
+        for module in (authority_ids, model, bind, transaction_api):
+            if getattr(module, name, None) is real:
+                monkeypatch.setattr(module, name, _tripwire)
+    return reached
+
+
+def test_rejected_route_diagnostics_never_canonicalise_the_proposal(
+    monkeypatch, caplog,
+) -> None:
+    """A rejected route builds its coordinates from the authority's own ID.
+
+    Point 6: no diagnostics argument may reach ``canonical_bytes``.  The
+    rejected-binding path holds ``SourceBoundRouteAuthority.proposal_id``,
+    which ``__post_init__`` already pins to ``authority_id(self.proposal)``, so
+    the coordinate is byte-identical without encoding the proposal again.
+    Falsified by restoring ``proposal_id = authority_id(proposal)``.
+    """
+
+    values = test_bind._task_15_vertical_inputs(
+        test_bind._task_15_direct_vertical_case,
+    )
+    entered: list[str] = []
+    real_coordinates = bind._route_failure_coordinates
+
+    def _spy(*args, **kwargs):
+        entered.append("_route_failure_coordinates")
+        return real_coordinates(*args, **kwargs)
+
+    monkeypatch.setattr(bind, "_route_failure_coordinates", _spy)
+    _arm_proposal_canonicalisation(monkeypatch, "_route_failure_coordinates")
+
+    with caplog.at_level(logging.WARNING):
+        rejected = bind.realize_projected_routes(**{**values, "plan": None})
+
+    assert type(rejected) is model.ProjectedRouteRealizationRejected
+    # Not vacuous: the diagnostics path really ran and produced a coordinate.
+    assert entered == ["_route_failure_coordinates"]
+    assert rejected.failures[0].proposal_id == values["source_authority"].proposal_id
+    assert authority_ids.materializing() is False
+
+
+def test_the_proposal_tripwire_would_catch_a_restored_canonicalisation(
+    monkeypatch,
+) -> None:
+    """The discrimination, so the proof above cannot rot into a no-op."""
+
+    values = test_bind._task_15_vertical_inputs(
+        test_bind._task_15_direct_vertical_case,
+    )
+    real_derived = bind._derived_proposal_id
+
+    def _restored(proposal, proof):
+        del proof
+        return authority_ids.authority_id(proposal)
+
+    monkeypatch.setattr(bind, "_derived_proposal_id", _restored)
+    _arm_proposal_canonicalisation(monkeypatch, "_route_failure_coordinates")
+
+    with pytest.raises(_CanonicalReachedFromLiveValidation):
+        bind.realize_projected_routes(**{**values, "plan": None})
+
+    assert bind._derived_proposal_id is _restored
+    assert real_derived is not _restored
