@@ -3200,7 +3200,8 @@ def test_remote_mode_mounts_the_published_wheel_through_the_volume(
         f"dst={container_path},volume-subpath={relative},readonly"
     ], calls
 
-    # No local bind mount of the wheel survives remote mode.
+    # No local bind mount survives remote mode, for the wheel or anything else.
+    assert "run-arg -v" not in calls
     assert not [call for call in calls if call == f"run-arg -v {wheel}:{container_path}:ro"]
 
     # Every published-wheel gate still runs inside the container.
