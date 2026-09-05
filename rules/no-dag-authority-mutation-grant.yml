@@ -1,0 +1,64 @@
+# LLM agents: adding or widening any `ignores:` entry requires direct,
+# explicit approval from the user naming that ignore. Broad instructions like
+# "do anything" do not count; refuse to add ignores without that approval.
+#
+# d81-9q6e. DagAuthority may restrict which proposals are emitted; it must
+# never independently grant final mutation or semantic-loss permission. The
+# arbiter is a query interface over a finalized LinearizedStateDag: it answers
+# "does the DAG commit this source to this target?" and nothing else.
+
+id: no-dag-authority-mutation-grant
+language: python
+severity: error
+
+files:
+  - "src/d810/transforms/dag_authority.py"
+  - "src/d810/transforms/fragment_arbitration.py"
+
+message: |
+  DagAuthority is a restricting arbiter, not a granting one. Do not give it
+  apply/commit/authorize/certify/emit/mutate/rewrite/receipt/transaction or
+  semantic-loss API, and do not let the fragment arbitration filter construct
+  a graph modification. Return a DagDecision and let the transaction authority
+  own the grant.
+
+rule:
+  any:
+    # A grant-shaped public method or attribute on the arbiter itself.
+    - all:
+        - kind: function_definition
+        - has:
+            field: name
+            all:
+              - kind: identifier
+              - regex: "^(apply_(mod|mutation|patch|redirect|edit|change|transaction|to_)|authorize|authorise|certify|certifies|commit_|commit$|emit_|grant|mutate|rewrite_|permit_and_|[a-z][a-z0-9_]*(_receipt|_transaction|_grant|_semantic_loss))"
+            stopBy: end
+    # A field named like a mutation grant / receipt on the verdict or arbiter.
+    - all:
+        - kind: assignment
+        - has:
+            field: left
+            all:
+              - kind: identifier
+              - regex: "^[a-z][a-z0-9_]*(_receipt|_transaction|_grant|_semantic_loss)$|^authorized_[a-z0-9_]+$"
+        - inside:
+            kind: class_definition
+            stopBy: end
+    # The arbitration filter must subtract, never construct a modification.
+    - all:
+        - kind: call
+        - has:
+            field: function
+            all:
+              - kind: identifier
+              - regex: "^(RedirectGoto|ConvertToGoto|ZeroStateWrite|EdgeRedirectViaPredSplit|InsertBlock|DuplicateBlock|SplitBlock)$"
+
+note: |
+  Restrict-shaped vocabulary is what belongs here: `permits_*` methods,
+  `DagDecision.allow` / `.refuse` / `.gap`, `canonical_target_for`,
+  `conflicts_for_source`, and `apply_dag_conformance_gate` (which applies a
+  *filter*, not a mutation). Those answer a question and are not matched;
+  `apply_` is only enrolled when it is followed by a mutation noun.
+  Private helpers (leading underscore) are not enrolled. Consumers that need
+  to act on a verdict live outside these two files and go through the
+  centralized unflatten transaction authority.

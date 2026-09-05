@@ -1,0 +1,55 @@
+id: no-dag-authority-mutation-grant
+
+valid:
+  - |
+      def permits_redirect_goto(self, mod):
+          return DagDecision.allow(target_entry_anchor=20)
+  - |
+      def apply_dag_conformance_gate(fragment, cumulative_view):
+          return fragment
+  - |
+      def canonical_target_for(self, src_block, branch_arm=None):
+          return self._canonical_by_anchor.get((src_block, branch_arm))
+  - |
+      def conflicts_for_source(self, src_block, branch_arm=None):
+          return ()
+  - |
+      def _apply_modification(self, mod):
+          return None
+  - |
+      class DagDecision:
+          allowed: bool
+          reason: str
+          proof_edge_key: tuple | None = None
+
+invalid:
+  - |
+      def apply_modification(self, mod):
+          return None
+  - |
+      def commit_redirect(self, mod):
+          return None
+  - |
+      def authorize_semantic_loss(self, mod):
+          return True
+  - |
+      def grant_mutation(self, mod):
+          return True
+  - |
+      def mutate_block(self, serial):
+          return None
+  - |
+      def emit_redirect(self, mod):
+          return None
+  - |
+      def mutation_receipt(self):
+          return self._receipt
+  - |
+      class DagDecision:
+          mutation_receipt: object = None
+  - |
+      class DagDecision:
+          authorized_targets: tuple = ()
+  - |
+      def _rebuild(self):
+          return RedirectGoto(from_serial=10, old_target=2, new_target=20)

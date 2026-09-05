@@ -1,0 +1,148 @@
+id: no-dag-authority-mutation-grant
+snapshots:
+  ? |
+    class DagDecision:
+        authorized_targets: tuple = ()
+  : labels:
+    - source: 'authorized_targets: tuple = ()'
+      style: primary
+      start: 23
+      end: 53
+    - source: authorized_targets
+      style: secondary
+      start: 23
+      end: 41
+    - source: |-
+        class DagDecision:
+            authorized_targets: tuple = ()
+      style: secondary
+      start: 0
+      end: 53
+  ? |
+    class DagDecision:
+        mutation_receipt: object = None
+  : labels:
+    - source: 'mutation_receipt: object = None'
+      style: primary
+      start: 23
+      end: 54
+    - source: mutation_receipt
+      style: secondary
+      start: 23
+      end: 39
+    - source: |-
+        class DagDecision:
+            mutation_receipt: object = None
+      style: secondary
+      start: 0
+      end: 54
+  ? |
+    def _rebuild(self):
+        return RedirectGoto(from_serial=10, old_target=2, new_target=20)
+  : labels:
+    - source: RedirectGoto(from_serial=10, old_target=2, new_target=20)
+      style: primary
+      start: 31
+      end: 88
+    - source: RedirectGoto
+      style: secondary
+      start: 31
+      end: 43
+  ? |
+    def apply_modification(self, mod):
+        return None
+  : labels:
+    - source: |-
+        def apply_modification(self, mod):
+            return None
+      style: primary
+      start: 0
+      end: 50
+    - source: apply_modification
+      style: secondary
+      start: 4
+      end: 22
+  ? |
+    def authorize_semantic_loss(self, mod):
+        return True
+  : labels:
+    - source: |-
+        def authorize_semantic_loss(self, mod):
+            return True
+      style: primary
+      start: 0
+      end: 55
+    - source: authorize_semantic_loss
+      style: secondary
+      start: 4
+      end: 27
+  ? |
+    def commit_redirect(self, mod):
+        return None
+  : labels:
+    - source: |-
+        def commit_redirect(self, mod):
+            return None
+      style: primary
+      start: 0
+      end: 47
+    - source: commit_redirect
+      style: secondary
+      start: 4
+      end: 19
+  ? |
+    def emit_redirect(self, mod):
+        return None
+  : labels:
+    - source: |-
+        def emit_redirect(self, mod):
+            return None
+      style: primary
+      start: 0
+      end: 45
+    - source: emit_redirect
+      style: secondary
+      start: 4
+      end: 17
+  ? |
+    def grant_mutation(self, mod):
+        return True
+  : labels:
+    - source: |-
+        def grant_mutation(self, mod):
+            return True
+      style: primary
+      start: 0
+      end: 46
+    - source: grant_mutation
+      style: secondary
+      start: 4
+      end: 18
+  ? |
+    def mutate_block(self, serial):
+        return None
+  : labels:
+    - source: |-
+        def mutate_block(self, serial):
+            return None
+      style: primary
+      start: 0
+      end: 47
+    - source: mutate_block
+      style: secondary
+      start: 4
+      end: 16
+  ? |
+    def mutation_receipt(self):
+        return self._receipt
+  : labels:
+    - source: |-
+        def mutation_receipt(self):
+            return self._receipt
+      style: primary
+      start: 0
+      end: 52
+    - source: mutation_receipt
+      style: secondary
+      start: 4
+      end: 20
