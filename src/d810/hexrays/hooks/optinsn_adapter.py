@@ -39,7 +39,7 @@ from d810.hexrays.ir.minsn_utils import build_z3_equivalence_proof
 from d810.hexrays.ir.native_identity import native_object_identity
 from d810.hexrays.lifecycle import _emit_flowgraph_ready_event
 from d810.hexrays.ir_maturity import ida_maturity_to_ir
-from d810.hexrays.mutation.cfg_verify import safe_verify as _safe_verify
+from d810.hexrays.mutation.cfg_verify import safe_verify
 from d810.hexrays.mutation.instruction_commit import (
     HexRaysInstructionCommitter,
     InstructionCommitContext,
@@ -1718,7 +1718,7 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
                 count_minsn_nodes=count_minsn_nodes,
                 check_ins_mop_size_are_ok=check_ins_mop_size_are_ok,
                 build_z3_equivalence_proof=build_z3_equivalence_proof,
-                safe_verify=_safe_verify,
+                safe_verify=safe_verify,
                 rewrite_history=getattr(self, "_rewrite_seen", None),
                 producer_cycle_quarantine=self._record_cycle_quarantine,
                 native_failure_quarantine=self._poison_instruction_generation,

@@ -601,7 +601,7 @@ def test_instruction_callback_commits_first_matching_rule_once(monkeypatch):
         lambda _instruction: True,
     )
     monkeypatch.setattr(
-        "d810.hexrays.hooks.optinsn_adapter._safe_verify",
+        "d810.hexrays.hooks.optinsn_adapter.safe_verify",
         lambda *_args, **_kwargs: None,
     )
     first = _CallbackInstruction(2)
@@ -628,7 +628,7 @@ def test_instruction_callback_does_not_visit_nested_rules_after_rejection(monkey
         lambda _instruction: True,
     )
     monkeypatch.setattr(
-        "d810.hexrays.hooks.optinsn_adapter._safe_verify",
+        "d810.hexrays.hooks.optinsn_adapter.safe_verify",
         lambda *_args, **_kwargs: None,
     )
     optimizer = _CallbackOptimizer((_CallbackInstruction(1),))
