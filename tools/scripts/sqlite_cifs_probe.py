@@ -17,6 +17,7 @@ Run inside the container, e.g.::
 from __future__ import annotations
 
 import argparse
+import itertools
 import json
 import os
 import sqlite3
@@ -110,10 +111,19 @@ def overall_verdict(rows: Sequence[tuple[str, str, str, str]]) -> str:
     return "VERDICT: cifs locking OK"
 
 
+_DATABASE_SEQUENCE = itertools.count()
+
+
 def _fresh_database(directory: Path, case: str) -> Path:
-    """One never-before-used database file per case."""
+    """One never-before-used database file per case.
+
+    The counter matters: two cases can be created inside the same millisecond,
+    and reusing a file would let one case's leftover lock or corruption decide
+    another case's verdict.
+    """
     directory.mkdir(parents=True, exist_ok=True)
-    path = directory / f"{case.lower()}_{int(time.time()*1000)}_{os.getpid()}.sqlite3"
+    unique = f"{int(time.time() * 1000)}_{os.getpid()}_{next(_DATABASE_SEQUENCE)}"
+    path = directory / f"{case.lower()}_{unique}.sqlite3"
     for suffix in ("", "-wal", "-shm", "-journal"):
         candidate = Path(str(path) + suffix)
         if candidate.exists():
