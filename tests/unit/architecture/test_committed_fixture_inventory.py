@@ -18,6 +18,12 @@ PENDING_CANONICAL_BUILD = frozenset(
         # d81-jlfw: shipped as samples/bins/jlfw_folded_tail.dll, the local
         # compatibility build emitted by `d810cli fixture`.
         "sub_7FFB0E398850",
+        # d81-czrc: shipped as samples/bins/computed_state_writers.dll, built
+        # with samples/scripts/build_masm.sh (llvm-ml64 + lld-link, 0
+        # unresolved externs).  Drop this entry once the canonical Windows
+        # build folds the two computed-state-writer fixtures into
+        # libobfuscated.dll -- until then their DSL cases SKIP.
+        "computed_state_writers",
     }
 )
 

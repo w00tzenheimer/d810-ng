@@ -823,6 +823,33 @@ DAC_MASM_CASES = [
         skip_if_function_absent=True,
     ),
     DeobfuscationCase(
+        function="computed_state_writer_isolated",
+        description=(
+            "Minimal specimen for ticket d81-czrc: a signed comparison-tree "
+            "('BST') dispatcher whose transitions are COMPUTED rather than "
+            "written as literals.  Both outgoing transitions are recombined in "
+            "one shared block -- 'xor ecx, r8d -> [rsp+8]' -- whose two "
+            "predecessors set the register halves to their own constants "
+            "(0xA84A23E8^0x97801583 = 0x3FCA366B on one edge, "
+            "0x5FDB1F09^0x296AB231 = 0x76B1AD38 on the other).  This is the "
+            "shape measured on sub_7FFB0E398850, where 6 of 75 state writes "
+            "look like this and a literal scan of the state slot therefore "
+            "reports NOTHING for them.  Every operand on every incoming edge "
+            "is a provable constant, so the predecessor-partitioned resolver "
+            "must recover both states, the written-state set must be "
+            "COMPLETE, and the ladder must linearise.  The state slot's "
+            "address is escaped through d810_state_peek_czrc so Hex-Rays "
+            "cannot promote it and fold the dispatcher on its own; the three "
+            "pivots put each state in its own WIDE leaf, so no row of the "
+            "recovered interval table is a width-1 singleton."
+        ),
+        project="eidolon_v4_const_simplify_solve.json",
+        obfuscated_contains=["while ( 1 )", "0xA84A23E8", "0x5FDB1F09"],
+        deobfuscated_not_contains=["while ("],
+        must_change=True,
+        skip_if_function_absent=True,
+    ),
+    DeobfuscationCase(
         function="range_leaf_shared_corridor",
         description=(
             "Negative control for ticket d81-8xhg.  Same signed "
@@ -839,6 +866,29 @@ DAC_MASM_CASES = [
         obfuscated_contains=["0x1CAFDDE6", "0x3FCA366B"],
         deobfuscated_contains=["0x1CAFDDE6", "while ( 1 )"],
         must_change=True,
+        skip_if_function_absent=True,
+    ),
+    DeobfuscationCase(
+        function="computed_state_writer_unresolved",
+        description=(
+            "Negative control for ticket d81-czrc.  Identical to "
+            "computed_state_writer_isolated except that leaf B loads its "
+            "register half from the caller's ARGUMENT instead of a literal, "
+            "so one partition of the shared computed write binds a "
+            "non-constant operand.  The resolver must then abstain for the "
+            "WHOLE write -- emitting the constant proven on the other edge "
+            "would be a partial value set, i.e. an under-approximation of the "
+            "written-state set, which is the one unsound direction: a range "
+            "leaf would read the missing constant as 'no second state can "
+            "occur here'.  The dispatcher must therefore survive as a loop.  "
+            "If this case ever starts unflattening, the all-or-nothing rule "
+            "has been weakened into a guess."
+        ),
+        project="eidolon_v4_const_simplify_solve.json",
+        obfuscated_contains=["while ( 1 )"],
+        deobfuscated_contains=["while ( 1 )"],
+        must_change=False,
+        allow_unchanged_pseudocode_if_rules_fired=True,
         skip_if_function_absent=True,
     ),
     DeobfuscationCase(
