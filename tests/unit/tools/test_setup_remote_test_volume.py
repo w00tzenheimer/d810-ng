@@ -211,6 +211,10 @@ def _fake_capture(monkeypatch: pytest.MonkeyPatch, responses: dict[str, tuple[in
         recorded.append(argv)
         for key, response in responses.items():
             if key in " ".join(argv):
+                if isinstance(response, list):
+                    # A sequence models a value that changes between calls,
+                    # e.g. dmesg captured before and after the probe.
+                    return response.pop(0) if len(response) > 1 else response[0]
                 return response
         return (0, "")
 
@@ -447,12 +451,106 @@ def test_probe_argv_shapes() -> None:
         "type=volume,src=v,dst=/probe,readonly", "alpine", "sh", "-c",
         "ls /probe >/dev/null && echo mount-ok",
     ]
-    assert setup_remote_test_volume.build_kernel_status_argv(
+    assert setup_remote_test_volume.build_kernel_dmesg_argv(
         remote="h", image="other"
     ) == [
         "docker", "-H", "ssh://h", "run", "--rm", "--privileged", "other", "sh", "-c",
-        'dmesg | grep -E "CIFS: Status code" | tail -1',
+        "dmesg",
     ]
+    default_kernel = setup_remote_test_volume.build_kernel_dmesg_argv(remote="h")
+    assert default_kernel[6].startswith("alpine@sha256:")
+
+
+def test_kernel_delta_attributes_only_new_status_lines() -> None:
+    before = "[1.0] CIFS: Status code returned 0xc000006e OLD"
+    after = before + "\n[2.0] CIFS: Status code returned 0xc000006d NEW\n[3.0] unrelated"
+
+    assert setup_remote_test_volume.dmesg_status_delta(before, after) == [
+        "[2.0] CIFS: Status code returned 0xc000006d NEW"
+    ]
+    assert setup_remote_test_volume.dmesg_status_delta(before, before) == []
+
+
+def test_failed_probe_without_the_flag_stays_unprivileged(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Kernel diagnosis must be opt-in: no privileged container by default."""
+    recorded = _fake_capture(
+        monkeypatch,
+        {"volume inspect": (0, INSPECT_PAYLOAD), "dst=/probe": (1, "permission denied")},
+    )
+
+    status = setup_remote_test_volume.main(["--status"])
+    captured = capsys.readouterr()
+
+    assert status == 1
+    assert "permission denied" in captured.err
+    assert "--kernel-diagnosis" in captured.err
+    assert not any("--privileged" in " ".join(argv) for argv in recorded)
+
+
+def test_kernel_diagnosis_captures_dmesg_before_and_after(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dmesg_captures = iter(
+        [
+            (0, "[1.0] CIFS: Status code returned 0xc000006e OLD"),
+            (
+                0,
+                "[1.0] CIFS: Status code returned 0xc000006e OLD\n"
+                "[2.0] CIFS: Status code returned 0xc000006d LOGON",
+            ),
+        ]
+    )
+    recorded: list[list[str]] = []
+
+    def _capture(argv):
+        argv = list(argv)
+        recorded.append(argv)
+        joined = " ".join(argv)
+        if "--privileged" in joined:
+            return next(dmesg_captures)
+        if "dst=/probe" in joined:
+            return (1, "permission denied")
+        if "volume inspect" in joined:
+            return (0, INSPECT_PAYLOAD)
+        return (0, "")
+
+    monkeypatch.setattr(setup_remote_test_volume, "run_capture", _capture)
+    monkeypatch.setattr(setup_remote_test_volume, "run_probe", _capture)
+
+    status = setup_remote_test_volume.main(["--status", "--kernel-diagnosis"])
+    captured = capsys.readouterr()
+
+    assert status == 1
+    joined = [" ".join(argv) for argv in recorded]
+    privileged = [index for index, call in enumerate(joined) if "--privileged" in call]
+    probe_index = next(index for index, call in enumerate(joined) if "dst=/probe" in call)
+    assert len(privileged) == 2
+    assert privileged[0] < probe_index < privileged[1]
+    assert "0xc000006d" in captured.err
+    assert "0xc000006e" not in captured.err  # pre-existing line is not attributed
+
+
+def test_kernel_diagnosis_reports_an_empty_delta(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _fake_capture(
+        monkeypatch,
+        {
+            "volume inspect": (0, INSPECT_PAYLOAD),
+            "dst=/probe": (1, "permission denied"),
+            "--privileged": (0, "[1.0] CIFS: Status code returned 0xc000006e OLD"),
+        },
+    )
+
+    status = setup_remote_test_volume.main(["--status", "--kernel-diagnosis"])
+
+    assert status == 1
+    assert "no new CIFS status line" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize(
@@ -501,10 +599,14 @@ def test_create_verifies_then_rolls_back_on_a_failed_mount(
         {
             "volume inspect": (1, ""),
             "dst=/probe": (1, "docker: Error response from daemon: permission denied"),
-            "--privileged": (
-                0,
-                "CIFS: VFS: Status code returned 0xc000006d NT_STATUS_LOGON_FAILURE\n",
-            ),
+            "--privileged": [
+                (0, "[1.0] older line"),
+                (
+                    0,
+                    "[1.0] older line\n"
+                    "[2.0] CIFS: VFS: Status code returned 0xc000006d NT_STATUS_LOGON_FAILURE",
+                ),
+            ],
         },
     )
     monkeypatch.setattr(
@@ -514,13 +616,17 @@ def test_create_verifies_then_rolls_back_on_a_failed_mount(
         setup_remote_test_volume.subprocess, "run", lambda command, **kwargs: None
     )
 
-    status = setup_remote_test_volume.main([])
+    status = setup_remote_test_volume.main(["--kernel-diagnosis"])
     captured = capsys.readouterr()
 
     assert status == 1
     joined = [" ".join(argv) for argv in recorded]
     probe_index = next(index for index, call in enumerate(joined) if "dst=/probe" in call)
-    kernel_index = next(index for index, call in enumerate(joined) if "--privileged" in call)
+    kernel_index = next(
+        index
+        for index, call in enumerate(joined)
+        if "--privileged" in call and index > probe_index
+    )
     remove_index = next(index for index, call in enumerate(joined) if "volume rm" in call)
     assert probe_index < kernel_index < remove_index
     assert "permission denied" in captured.err
@@ -580,11 +686,18 @@ def test_status_probes_the_existing_volume_without_removing_it(
         {
             "volume inspect": (0, INSPECT_PAYLOAD),
             "dst=/probe": (1, "permission denied"),
-            "--privileged": (0, "CIFS: Status code returned 0xc000006e ACCOUNT_RESTRICTION\n"),
+            "--privileged": [
+                (0, "[1.0] older line"),
+                (
+                    0,
+                    "[1.0] older line\n"
+                    "[2.0] CIFS: Status code returned 0xc000006e ACCOUNT_RESTRICTION",
+                ),
+            ],
         },
     )
 
-    status = setup_remote_test_volume.main(["--status"])
+    status = setup_remote_test_volume.main(["--status", "--kernel-diagnosis"])
     captured = capsys.readouterr()
 
     assert status == 1

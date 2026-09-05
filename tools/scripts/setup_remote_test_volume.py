@@ -46,8 +46,15 @@ REDACTION = "********"
 PASSWORD_OPTION_PATTERN = re.compile(r"(?<=password=)[^,]*")
 CONTAINER_FORMAT = "{{.ID}} {{.Status}} {{.Names}}"
 PROBE_IMAGE = "alpine"
+# Reading the engine's kernel ring buffer needs --privileged, so the image is
+# pinned by digest: an unpinned tag would be a fresh pull of mutable content
+# into a privileged container.
+KERNEL_PROBE_IMAGE = (
+    "alpine@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b"
+)
 PROBE_COMMAND = "ls /probe >/dev/null && echo mount-ok"
-KERNEL_STATUS_COMMAND = 'dmesg | grep -E "CIFS: Status code" | tail -1'
+KERNEL_DMESG_COMMAND = "dmesg"
+STATUS_LINE_MARKER = "status code"
 STATUS_CODE_MEANINGS = {
     "0xc000006d": (
         "STATUS_LOGON_FAILURE: the password (or its NT hash) does not match. "
@@ -306,15 +313,20 @@ def build_verify_probe_argv(
     ]
 
 
-def build_kernel_status_argv(*, remote: str, image: str = PROBE_IMAGE) -> list[str]:
-    """Build the privileged dmesg read that names the real CIFS failure.
+def build_kernel_dmesg_argv(
+    *, remote: str, image: str = KERNEL_PROBE_IMAGE
+) -> list[str]:
+    """Build the privileged dmesg read used for before/after diagnosis.
 
-    ``permission denied`` from mount(2) is the same string for a wrong password,
-    a disabled guest account and a wrong share name; only the kernel's status
-    code separates them.
+    ``permission denied`` from mount(2) is the same string for rejected
+    credentials, a restricted account and a wrong share name; only the kernel's
+    status code separates them. The ring buffer is global to the engine, so the
+    caller must diff two captures instead of trusting its tail.
 
-    >>> build_kernel_status_argv(remote="h")[3:6]
+    >>> build_kernel_dmesg_argv(remote="h")[3:6]
     ['run', '--rm', '--privileged']
+    >>> build_kernel_dmesg_argv(remote="h")[6].startswith("alpine@sha256:")
+    True
     """
     return [
         "docker",
@@ -326,7 +338,30 @@ def build_kernel_status_argv(*, remote: str, image: str = PROBE_IMAGE) -> list[s
         image,
         "sh",
         "-c",
-        KERNEL_STATUS_COMMAND,
+        KERNEL_DMESG_COMMAND,
+    ]
+
+
+def dmesg_status_delta(before: str, after: str) -> list[str]:
+    r"""Return CIFS status lines that appeared between two dmesg captures.
+
+    Only lines absent from the first capture are attributed to this probe;
+    kernel timestamps make each line unique in practice.
+
+    >>> dmesg_status_delta(
+    ...     "[1.0] CIFS: Status code returned 0xc000006e OLD",
+    ...     "[1.0] CIFS: Status code returned 0xc000006e OLD\n"
+    ...     "[2.0] CIFS: Status code returned 0xc000006d NEW")
+    ['[2.0] CIFS: Status code returned 0xc000006d NEW']
+    >>> dmesg_status_delta("x", "x")
+    []
+    """
+    seen = set(line.strip() for line in before.splitlines())
+    return [
+        line.strip()
+        for line in after.splitlines()
+        if line.strip() and line.strip() not in seen
+        and STATUS_LINE_MARKER in line.lower()
     ]
 
 
@@ -413,6 +448,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="skip the read-only mount probe that verifies a created volume",
     )
     parser.add_argument(
+        "--kernel-diagnosis",
+        action="store_true",
+        help=(
+            "on a failed mount probe, read the engine's kernel log before and after "
+            "to name the CIFS status code (starts a privileged container)"
+        ),
+    )
+    parser.add_argument(
         "--image",
         default=PROBE_IMAGE,
         help=f"image used for the mount/dmesg probes (default: {PROBE_IMAGE})",
@@ -426,7 +469,12 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _verify_mount(arguments: argparse.Namespace) -> int:
-    """Prove the volume mounts; on failure name the CIFS status code."""
+    """Prove the volume mounts; optionally attribute the kernel status code."""
+    kernel_before = ""
+    if arguments.kernel_diagnosis:
+        _, kernel_before = run_probe(
+            build_kernel_dmesg_argv(remote=arguments.remote)
+        )
     probe_argv = build_verify_probe_argv(
         remote=arguments.remote, volume=arguments.volume, image=arguments.image
     )
@@ -437,15 +485,26 @@ def _verify_mount(arguments: argparse.Namespace) -> int:
     print(f"ERROR: volume {arguments.volume} does not mount:", file=sys.stderr)
     for line in output.strip().splitlines():
         print(f"       {line}", file=sys.stderr)
-    _, kernel_output = run_probe(
-        build_kernel_status_argv(remote=arguments.remote, image=arguments.image)
-    )
-    kernel_lines = [line.strip() for line in kernel_output.splitlines() if line.strip()]
-    if kernel_lines:
-        print(f"       kernel: {kernel_lines[-1]}", file=sys.stderr)
-        print(f"       meaning: {explain_status_code(kernel_lines[-1])}", file=sys.stderr)
-    else:
-        print("       kernel: no CIFS status line found in the engine's dmesg", file=sys.stderr)
+    if not arguments.kernel_diagnosis:
+        print(
+            "       mount(2) reports every rejection as the same text; re-run with "
+            "--kernel-diagnosis to read the engine's CIFS status code (starts a "
+            "privileged container).",
+            file=sys.stderr,
+        )
+        return 1
+    _, kernel_after = run_probe(build_kernel_dmesg_argv(remote=arguments.remote))
+    new_lines = dmesg_status_delta(kernel_before, kernel_after)
+    if not new_lines:
+        print(
+            "       kernel: no new CIFS status line appeared during this probe "
+            "(nothing can be attributed to it)",
+            file=sys.stderr,
+        )
+        return 1
+    for line in new_lines:
+        print(f"       kernel: {line}", file=sys.stderr)
+        print(f"       meaning: {explain_status_code(line)}", file=sys.stderr)
     return 1
 
 
