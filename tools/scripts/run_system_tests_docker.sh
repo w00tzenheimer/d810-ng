@@ -935,20 +935,21 @@ _acl_target_is_scoped() {
 }
 
 _acl_entry_rights() {
-  ls -lde "$1" 2>/dev/null | sed -n "s/^ *[0-9]*: *user:$REMOTE_SMB_USER allow //p" | head -1
+  local account="${2:-$REMOTE_SMB_USER}"
+  ls -lde "$1" 2>/dev/null | sed -n "s/^ *[0-9]*: *user:$account allow //p" | head -1
 }
 
 _acl_drop_user_entries() {
-  local target="$1" index
+  local target="$1" account="${2:-$REMOTE_SMB_USER}" index
   while :; do
-    index="$(ls -lde "$target" 2>/dev/null | sed -n "s/^ *\([0-9]*\): *user:$REMOTE_SMB_USER .*/\1/p" | head -1)"
+    index="$(ls -lde "$target" 2>/dev/null | sed -n "s/^ *\([0-9]*\): *user:$account .*/\1/p" | head -1)"
     [ -n "$index" ] || break
     chmod -a# "$index" "$target" || break
   done
 }
 
 _ensure_acl() {
-  local target="$1" kind="$2" request normalized present right missing=0
+  local target="$1" kind="$2" account="${3:-$REMOTE_SMB_USER}" request normalized present right missing=0
   if ! _acl_target_is_scoped "$target"; then
     echo "ERROR: refusing to grant $REMOTE_SMB_USER access outside the worktree .tmp: $target" >&2
     exit 1
@@ -961,7 +962,7 @@ _ensure_acl() {
     request="$ACL_FILE_REQUEST"
     normalized="$ACL_FILE_NORMALIZED"
   fi
-  present="$(_acl_entry_rights "$target")"
+  present="$(_acl_entry_rights "$target" "$account")"
   if [ -n "$present" ]; then
     for right in ${normalized//,/ }; do
       case ",$present," in
@@ -973,24 +974,30 @@ _ensure_acl() {
       return 0
     fi
     # Present but incomplete: repair by replacing this user's entries only.
-    _acl_drop_user_entries "$target"
+    _acl_drop_user_entries "$target" "$account"
   fi
-  if ! chmod +a "$REMOTE_SMB_USER allow $request" "$target"; then
-    echo "ERROR: could not grant $REMOTE_SMB_USER access to $target" >&2
+  if ! chmod +a "$account allow $request" "$target"; then
+    echo "ERROR: could not grant $account access to $target" >&2
     exit 1
   fi
 }
 
 _apply_tmp_acls() {
-  local candidate
-  _ensure_acl "$WORK_DIR/.tmp" dir
-  # Entries that already exist do not inherit the new ACE, so repair them too.
-  for candidate in "$WORK_DIR/.tmp/logs" "$WORK_DIR/.tmp/cobra-linux"; do
-    [ -d "$candidate" ] && _ensure_acl "$candidate" dir
+  local candidate account
+  # Files the container creates are owned by the share account with 0600, so
+  # without an inheritable ACE for the invoking user its own artifacts - the -o
+  # capture above all - come back unreadable on this Mac.
+  local local_account
+  local_account="$(id -un)"
+  for account in "$REMOTE_SMB_USER" "$local_account"; do
+    _ensure_acl "$WORK_DIR/.tmp" dir "$account"
+    for candidate in "$WORK_DIR/.tmp/logs" "$WORK_DIR/.tmp/cobra-linux"; do
+      [ -d "$candidate" ] && _ensure_acl "$candidate" dir "$account"
+    done
+    if [ -n "$DUMP_OUT" ] && [ -f "$WORK_DIR/.tmp/$DUMP_OUT" ]; then
+      _ensure_acl "$WORK_DIR/.tmp/$DUMP_OUT" file "$account"
+    fi
   done
-  if [ -n "$DUMP_OUT" ] && [ -f "$WORK_DIR/.tmp/$DUMP_OUT" ]; then
-    _ensure_acl "$WORK_DIR/.tmp/$DUMP_OUT" file
-  fi
 }
 
 _acquire_remote_lock() {

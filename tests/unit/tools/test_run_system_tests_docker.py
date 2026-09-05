@@ -2019,8 +2019,13 @@ def test_remote_mode_grants_a_tmp_scoped_acl_only(tmp_path: Path) -> None:
     assert any(target == tmp_root for target in targets)
     assert any(target.endswith("/.tmp/logs") for target in targets)
     assert any(target.endswith("/.tmp/cobra-linux") for target in targets)
-    assert all("smbuser allow" in call for call in acl_calls)
+    assert any("smbuser allow" in call for call in acl_calls)
     assert any("file_inherit,directory_inherit" in call for call in acl_calls)
+    # the invoking user needs an inheritable ACE too, or the container's own
+    # -o capture comes back unreadable (it is created 0600 by the share account)
+    import getpass
+
+    assert any(f"{getpass.getuser()} allow" in call for call in acl_calls)
 
 
 def test_remote_acl_user_follows_the_smb_account(tmp_path: Path) -> None:
@@ -2039,7 +2044,7 @@ def test_remote_acl_user_follows_the_smb_account(tmp_path: Path) -> None:
 
     assert result.returncode == 0, result.stderr
     acl_calls = [call for call in _chmod_calls(tmp_path) if call.startswith("+a ")]
-    assert acl_calls and all("otheruser allow" in call for call in acl_calls)
+    assert acl_calls and any("otheruser allow" in call for call in acl_calls)
 
 
 def test_remote_mode_fails_closed_when_the_acl_cannot_be_applied(
