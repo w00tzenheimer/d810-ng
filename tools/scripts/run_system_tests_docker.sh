@@ -326,6 +326,16 @@ COBRA_WHEEL_VERSION=""
 COBRA_WHEEL_ARCH=""
 COBRA_WHEEL_CONTAINER_PATH=""
 if [ -n "${D810_COBRA_WHEEL+x}" ] || [ -n "${D810_COBRA_WHEEL_SHA256+x}" ]; then
+  # Report the variable the caller actually set. Deciding this from emptiness
+  # alone would blame the variable they never touched.
+  if [ -n "${D810_COBRA_WHEEL+x}" ] && [ -z "$D810_COBRA_WHEEL" ]; then
+    echo "ERROR: D810_COBRA_WHEEL is set but empty; give an absolute path to a recorded .whl file or unset it" >&2
+    exit 1
+  fi
+  if [ -n "${D810_COBRA_WHEEL_SHA256+x}" ] && [ -z "$D810_COBRA_WHEEL_SHA256" ]; then
+    echo "ERROR: D810_COBRA_WHEEL_SHA256 is set but empty; give 64 lowercase hex characters or unset it" >&2
+    exit 1
+  fi
   if [ -z "${D810_COBRA_WHEEL:-}" ]; then
     echo "ERROR: D810_COBRA_WHEEL_SHA256 requires D810_COBRA_WHEEL (absolute path to a recorded .whl file)" >&2
     exit 1
@@ -349,6 +359,12 @@ if [ -n "${D810_COBRA_WHEEL+x}" ] || [ -n "${D810_COBRA_WHEEL_SHA256+x}" ]; then
       exit 1
       ;;
   esac
+  # Without pipefail a failing hasher still exits 0 through awk, so the two
+  # causes of an empty digest are separated here rather than diagnosed later.
+  if [ ! -r "$D810_COBRA_WHEEL" ]; then
+    echo "ERROR: D810_COBRA_WHEEL is not readable: $D810_COBRA_WHEEL" >&2
+    exit 1
+  fi
   if [[ ! "$D810_COBRA_WHEEL_SHA256" =~ ^[0-9a-f]{64}$ ]]; then
     echo "ERROR: D810_COBRA_WHEEL_SHA256 must be 64 lowercase hex characters: $D810_COBRA_WHEEL_SHA256" >&2
     exit 1
@@ -855,7 +871,7 @@ if [ "$COBRA_EXTENSION_ENABLED" = "1" ]; then
     # instead of installing an unknown artifact. Runtime dependencies come
     # from the installed distribution's own metadata, minus the mounted
     # D810 package and minus every extra, exactly as the source path does.
-    COBRA_SETUP="printf '%s  %s\\n' '$COBRA_WHEEL_SHA256' '$COBRA_WHEEL_CONTAINER_PATH' | sha256sum -c - && $IDA_VENV_PIP install --no-deps --force-reinstall --no-cache-dir -q $COBRA_WHEEL_CONTAINER_PATH && COBRA_REQUIREMENTS=\$(mktemp) && $IDA_VENV_PYTHON -c 'import importlib.metadata, re; reqs=importlib.metadata.requires(\"d810-cobra\") or []; keep=[req for req in reqs if not re.search(r\"extra\\s*==\", req) and re.match(r\"[A-Za-z0-9_.-]+\", req.strip()).group(0).lower().replace(\"_\", \"-\").replace(\".\", \"-\") != \"d810-ng\"]; print(\"\\n\".join(keep))' > \"\$COBRA_REQUIREMENTS\" && $IDA_VENV_PIP install -r \"\$COBRA_REQUIREMENTS\" -q && $IDA_VENV_PYTHON -c 'import d810_cobra; manifest=d810_cobra.MANIFEST; assert manifest[\"api_version\"] == 1; assert manifest[\"implements\"] == {\"mba-solve\": \"cobra-solve\"}; from d810_cobra.expr import parse_cobra_output; from d810_cobra.prove import ProofResult, prove_equivalent; from d810_cobra.solve import SolveStatus, binding_available, solve_signature; assert binding_available(); tree=parse_cobra_output(\"(x0 | x1) - (x0 & x1)\", [\"a\", \"b\"]); solved=solve_signature(tree, [\"a\", \"b\"], 32); assert solved.status is SolveStatus.SOLVED and solved.tree is not None; assert prove_equivalent(tree, solved.tree, [\"a\", \"b\"], 32) is ProofResult.PROVED; import d810_cobra._cobra; import importlib.metadata, os, sysconfig; assert importlib.metadata.version(\"d810-cobra\") == \"$COBRA_WHEEL_VERSION\"; binary=os.path.realpath(d810_cobra._cobra.__file__); assert \"$COBRA_WHEEL_ARCH\" in os.path.basename(binary), binary; site_dirs=[os.path.realpath(sysconfig.get_paths()[key]) for key in (\"purelib\", \"platlib\")]; assert any(binary.startswith(site + os.sep) for site in site_dirs), binary'"
+    COBRA_SETUP="printf '%s  %s\\n' '$COBRA_WHEEL_SHA256' '$COBRA_WHEEL_CONTAINER_PATH' | sha256sum -c - && $IDA_VENV_PIP install --no-deps --force-reinstall --no-cache-dir -q '$COBRA_WHEEL_CONTAINER_PATH' && COBRA_REQUIREMENTS=\$(mktemp) && $IDA_VENV_PYTHON -c 'import importlib.metadata, re; reqs=importlib.metadata.requires(\"d810-cobra\") or []; keep=[req for req in reqs if not re.search(r\"extra\\s*==\", req) and re.match(r\"[A-Za-z0-9_.-]+\", req.strip()).group(0).lower().replace(\"_\", \"-\").replace(\".\", \"-\") != \"d810-ng\"]; print(\"\\n\".join(keep))' > \"\$COBRA_REQUIREMENTS\" && $IDA_VENV_PIP install -r \"\$COBRA_REQUIREMENTS\" -q && $IDA_VENV_PYTHON -c 'import d810_cobra; manifest=d810_cobra.MANIFEST; assert manifest[\"api_version\"] == 1; assert manifest[\"implements\"] == {\"mba-solve\": \"cobra-solve\"}; from d810_cobra.expr import parse_cobra_output; from d810_cobra.prove import ProofResult, prove_equivalent; from d810_cobra.solve import SolveStatus, binding_available, solve_signature; assert binding_available(); tree=parse_cobra_output(\"(x0 | x1) - (x0 & x1)\", [\"a\", \"b\"]); solved=solve_signature(tree, [\"a\", \"b\"], 32); assert solved.status is SolveStatus.SOLVED and solved.tree is not None; assert prove_equivalent(tree, solved.tree, [\"a\", \"b\"], 32) is ProofResult.PROVED; import d810_cobra._cobra; import importlib.metadata, os, sysconfig; assert importlib.metadata.version(\"d810-cobra\") == \"$COBRA_WHEEL_VERSION\"; binary=os.path.realpath(d810_cobra._cobra.__file__); assert \"$COBRA_WHEEL_ARCH\" in os.path.basename(binary), binary; site_dirs=[os.path.realpath(sysconfig.get_paths()[key]) for key in (\"purelib\", \"platlib\")]; assert any(binary.startswith(site + os.sep) for site in site_dirs), binary'"
   else
     # CoBRA's test extras are not enough to describe its runtime dependencies;
     # derive the project metadata exactly as for Egglog, while omitting the

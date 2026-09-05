@@ -452,7 +452,7 @@ def test_recorded_cobra_wheel_replaces_the_in_container_source_build(
     command = _container_run(calls)
     assert (
         "/app/ida/.venv/bin/pip install --no-deps --force-reinstall "
-        f"--no-cache-dir -q {container_path}"
+        f"--no-cache-dir -q '{container_path}'"
     ) in command
     assert "sha256sum -c -" in command
     assert COBRA_WHEEL_AARCH64_SHA256 in command
@@ -616,6 +616,111 @@ def test_unrecorded_cobra_wheel_fails_before_docker(tmp_path: Path) -> None:
     assert result.returncode != 0
     assert calls == []
     assert "not a recorded d810-cobra wheel" in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("bad_name", "expected"),
+    [
+        (
+            "cobra.whl",
+            "basename must be d810_cobra-<version>-cp313-cp313-<platform>.whl",
+        ),
+        (
+            "d810_cobra-0.1.5-cp312-cp312-manylinux_2_28_aarch64.whl",
+            "basename must be d810_cobra-<version>-cp313-cp313-<platform>.whl",
+        ),
+        (
+            "d810_cobra-9.9.9-cp313-cp313-manylinux_2_28_aarch64.whl",
+            "basename declares version 9.9.9 but the recorded wheel is 0.1.5",
+        ),
+        (
+            "d810_cobra-0.1.5-cp313-cp313-manylinux_2_28_x86_64.whl",
+            "platform tag manylinux_2_28_x86_64 does not carry the recorded "
+            "architecture aarch64",
+        ),
+    ],
+)
+def test_misnamed_recorded_cobra_wheel_fails_before_docker(
+    tmp_path: Path,
+    bad_name: str,
+    expected: str,
+) -> None:
+    """pip reads the basename, so it must not contradict the recorded hash.
+
+    These checks sit after the recorded-hash gate, so only the real recorded
+    bytes can reach them.
+    """
+    wheel = _recorded_wheel(COBRA_WHEEL_AARCH64_NAME)
+    if wheel is None:
+        pytest.skip(f"recorded wheel {COBRA_WHEEL_AARCH64_NAME} is unavailable")
+    renamed = tmp_path / bad_name
+    shutil.copy2(wheel, renamed)
+
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--",
+        "true",
+        extra_env={
+            "D810_COBRA_WHEEL": str(renamed),
+            "D810_COBRA_WHEEL_SHA256": COBRA_WHEEL_AARCH64_SHA256,
+        },
+    )
+
+    assert result.returncode != 0
+    assert calls == []
+    assert expected in result.stderr
+
+
+def test_unreadable_cobra_wheel_is_not_reported_as_a_missing_hasher(
+    tmp_path: Path,
+) -> None:
+    """An unreadable file and an absent hasher are different diagnoses."""
+    if os.geteuid() == 0:
+        pytest.skip("root ignores the read permission bit")
+    wheel = tmp_path / COBRA_WHEEL_AARCH64_NAME
+    wheel.write_bytes(b"bytes that must never be hashed")
+    wheel.chmod(0o000)
+
+    try:
+        result, calls = _run(
+            tmp_path,
+            "exec",
+            "--",
+            "true",
+            extra_env={
+                "D810_COBRA_WHEEL": str(wheel),
+                "D810_COBRA_WHEEL_SHA256": COBRA_WHEEL_AARCH64_SHA256,
+            },
+        )
+    finally:
+        wheel.chmod(0o644)
+
+    assert result.returncode != 0
+    assert calls == []
+    assert f"D810_COBRA_WHEEL is not readable: {wheel}" in result.stderr
+    assert "sha256sum is on PATH" not in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("variable", "other"),
+    [
+        ("D810_COBRA_WHEEL", "D810_COBRA_WHEEL_SHA256"),
+        ("D810_COBRA_WHEEL_SHA256", "D810_COBRA_WHEEL"),
+    ],
+)
+def test_empty_cobra_wheel_variable_blames_itself(
+    tmp_path: Path,
+    variable: str,
+    other: str,
+) -> None:
+    """Emptiness must not be reported as the other variable being missing."""
+    result, calls = _run(tmp_path, "exec", "--", "true", extra_env={variable: ""})
+
+    assert result.returncode != 0
+    assert calls == []
+    assert f"ERROR: {variable} is set but empty" in result.stderr
+    assert f"{other} requires" not in result.stderr
 
 
 def test_cobra_wheel_and_cobra_root_are_mutually_exclusive(tmp_path: Path) -> None:
