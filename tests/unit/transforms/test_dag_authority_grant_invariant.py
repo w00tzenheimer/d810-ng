@@ -32,7 +32,11 @@ enumeration this file encodes.
 
 from __future__ import annotations
 
+import ast
+import dataclasses
 import inspect
+import pathlib
+import textwrap
 
 import pytest
 
@@ -54,7 +58,22 @@ from d810.transforms.graph_modification import (
     RedirectGoto,
     ZeroStateWrite,
 )
-from d810.transforms.planner_context import CumulativePlannerView
+from d810.transforms.planner_context import (
+    CumulativePlannerView,
+    LinearizationDecision,
+)
+from d810.transforms.fragment_arbitration import (
+    DAG_AUDIT_METADATA_KEY,
+    apply_dag_conformance_gate,
+)
+from d810.transforms.plan_fragment import (
+    BenefitMetrics,
+    OwnershipScope,
+    PlanFragment,
+)
+from d810.transforms.reconstruction_fragment_builder import (
+    finalize_reconstruction_fragment,
+)
 
 # --------------------------------------------------------------------------
 # Fixtures
@@ -127,8 +146,8 @@ class _ProjectedFlowGraph:
         return self.blocks.get(int(serial))
 
 
-#: Every modification kind ``DagAuthority.permits`` dispatches on, plus one
-#: unregistered kind. Each entry is (label, factory).
+#: Every modification kind ``DagAuthority.permits`` dispatches on. Each entry
+#: is (label, factory).
 ALL_DISPATCHED_MODS = (
     ("RedirectGoto", lambda: RedirectGoto(from_serial=10, old_target=2, new_target=20)),
     ("ConvertToGoto", lambda: ConvertToGoto(block_serial=10, goto_target=20)),
@@ -144,6 +163,113 @@ ALL_DISPATCHED_MODS = (
         ),
     ),
 )
+
+
+#: Reflection-driven coverage of ``DagAuthority.permits*``.
+#:
+#: The audit's original matrix was a hand-written list, so a newly added
+#: ``permits_whatever()`` returning ``DagDecision.allow(...)`` would have been
+#: invisible to this file *and* to ``rules/no-dag-authority-mutation-grant.yml``
+#: (which exempts the whole ``permits_`` vocabulary). The tests below discover
+#: the methods with :mod:`inspect` and fail on any that is not enrolled here,
+#: so adding an arbiter method forces a decision about its evidence.
+#:
+#: ``dag_edges`` is the DAG state that would back an ALLOW; ``can_allow``
+#: records whether any DAG state at all can earn one.
+@dataclasses.dataclass(frozen=True)
+class _PermitsCase:
+    make_mod: object
+    dag_edges: tuple[tuple[int, int], ...] = ()
+    kwargs: dict[str, object] = dataclasses.field(default_factory=dict)
+    can_allow: bool = True
+
+
+PERMITS_COVERAGE: dict[str, _PermitsCase] = {
+    "permits": _PermitsCase(
+        make_mod=lambda: RedirectGoto(from_serial=10, old_target=2, new_target=20),
+        dag_edges=((10, 20),),
+    ),
+    "permits_redirect_goto": _PermitsCase(
+        make_mod=lambda: RedirectGoto(from_serial=10, old_target=2, new_target=20),
+        dag_edges=((10, 20),),
+    ),
+    "permits_convert_to_goto": _PermitsCase(
+        make_mod=lambda: ConvertToGoto(block_serial=10, goto_target=20),
+        dag_edges=((10, 20),),
+    ),
+    "permits_edge_redirect_via_pred_split": _PermitsCase(
+        make_mod=lambda: EdgeRedirectViaPredSplit(
+            src_block=122,
+            old_target=45,
+            new_target=180,
+            via_pred=37,
+            clone_until=45,
+        ),
+        dag_edges=((122, 180),),
+    ),
+    # ZSW legality is a single-emitter invariant owned by another module; no
+    # DAG state can back it (aa-v8et).
+    "permits_zero_state_write": _PermitsCase(
+        make_mod=lambda: ZeroStateWrite(block_serial=10, insn_ea=0x1000),
+        dag_edges=((10, 20),),
+        can_allow=False,
+    ),
+    # Every input is caller-supplied projected-CFG state; no DAG state can
+    # back it (aa-v8et).
+    "permits_dead_block_terminator_redirect": _PermitsCase(
+        make_mod=lambda: RedirectGoto(from_serial=42, old_target=2, new_target=99),
+        dag_edges=((42, 99),),
+        kwargs={
+            "projected_flow_graph": _ProjectedFlowGraph(
+                {42: _ProjectedBlock(preds=(), succs=(2,))}
+            ),
+            "dispatcher_serial": 2,
+            "original_stop_serial": 99,
+        },
+        can_allow=False,
+    ),
+}
+
+
+def _discovered_permits_methods() -> tuple[str, ...]:
+    """Every arbiter verdict method, found by reflection rather than by list."""
+    return tuple(
+        sorted(
+            name
+            for name, _ in inspect.getmembers(DagAuthority, inspect.isfunction)
+            if name.startswith("permits")
+        )
+    )
+
+
+def _authority_for(case: _PermitsCase) -> DagAuthority:
+    return DagAuthority(
+        _dag(
+            edges=tuple(
+                _edge(source_block=src, target_entry_anchor=tgt)
+                for src, tgt in case.dag_edges
+            )
+        )
+    )
+
+
+def _assert_allow_is_edge_backed(authority: DagAuthority, decision: DagDecision):
+    """An ALLOW's proof must name an edge that is actually in the DAG."""
+    key = decision.proof_edge_key
+    assert key is not None, "ALLOW carries no proof_edge_key"
+    block_serial, branch_arm, target, _mod_kind = key
+    matches = [
+        edge
+        for edge in authority.dag.edges
+        if int(edge.source_anchor.block_serial) == int(block_serial)
+        and edge.source_anchor.branch_arm == branch_arm
+        and edge.target_entry_anchor == target
+    ]
+    assert matches, (
+        f"ALLOW proof {key!r} names no edge present in the DAG; the arbiter "
+        "granted on something other than DAG state"
+    )
+    assert decision.target_entry_anchor == target
 
 
 # --------------------------------------------------------------------------
@@ -585,3 +711,389 @@ class TestNoGrantShapedApiSurface:
         authority = _empty_authority()
         with pytest.raises((AttributeError, TypeError)):
             authority.dag = _dag()  # type: ignore[misc]
+
+
+
+# --------------------------------------------------------------------------
+# ALLOW has exactly one construction site, and it takes the edge as proof
+# --------------------------------------------------------------------------
+
+#: The sole helper permitted to build an ``ALLOW`` verdict. It takes the
+#: authorising :class:`StateDagEdge` as its first parameter, so an ALLOW cannot
+#: be constructed without one in hand.
+ALLOW_HELPER_NAME = "_allow_from_dag_edge"
+
+
+def _dag_authority_source() -> str:
+    path = inspect.getsourcefile(DagAuthority)
+    assert path is not None
+    return pathlib.Path(path).read_text()
+
+
+def _allow_call_site_functions(source: str) -> tuple[str, ...]:
+    """Names of the functions containing every ``DagDecision.allow(...)`` call."""
+    sites: list[str] = []
+    stack: list[str] = []
+
+    class _Visitor(ast.NodeVisitor):
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+            stack.append(node.name)
+            self.generic_visit(node)
+            stack.pop()
+
+        visit_AsyncFunctionDef = visit_FunctionDef  # type: ignore[assignment]
+
+        def visit_Call(self, node: ast.Call) -> None:
+            func = node.func
+            if (
+                isinstance(func, ast.Attribute)
+                and func.attr == "allow"
+                and isinstance(func.value, ast.Name)
+                and func.value.id == "DagDecision"
+            ):
+                sites.append(stack[-1] if stack else "<module>")
+            self.generic_visit(node)
+
+    _Visitor().visit(ast.parse(source))
+    return tuple(sites)
+
+
+class TestAllowHasOneDagBackedConstructionSite:
+    """``DagDecision.allow`` is reachable only through the edge-proof helper.
+
+    Without this, the restrict-never-grant invariant is unpinned: the ast-grep
+    rule exempts the entire ``permits_`` vocabulary, so a new
+    ``permits_whatever()`` returning ``DagDecision.allow(...)`` passed every
+    guard. Funnelling ALLOW through one helper that *takes the edge* makes the
+    evidence a parameter rather than a convention.
+    """
+
+    def test_only_the_helper_constructs_an_allow(self) -> None:
+        sites = _allow_call_site_functions(_dag_authority_source())
+        assert set(sites) == {ALLOW_HELPER_NAME}, (
+            f"DagDecision.allow is constructed in {sorted(set(sites))}; the "
+            f"only permitted construction site is {ALLOW_HELPER_NAME}"
+        )
+        assert len(sites) == 1, (
+            f"expected exactly one DagDecision.allow call site, found {len(sites)}"
+        )
+
+    def test_the_helper_takes_a_dag_edge_as_its_proof(self) -> None:
+        helper = getattr(DagAuthority, ALLOW_HELPER_NAME)
+        params = list(inspect.signature(helper).parameters.values())
+        positional = [
+            p
+            for p in params
+            if p.kind
+            in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)
+            and p.name != "self"
+        ]
+        assert positional, f"{ALLOW_HELPER_NAME} takes no positional proof"
+        assert positional[0].annotation in (StateDagEdge, "StateDagEdge"), (
+            f"{ALLOW_HELPER_NAME}'s proof parameter is "
+            f"{positional[0].annotation!r}, not a StateDagEdge"
+        )
+
+    def test_no_permits_method_constructs_an_allow_directly(self) -> None:
+        for name in _discovered_permits_methods():
+            method = getattr(DagAuthority, name)
+            sites = _allow_call_site_functions(
+                textwrap.dedent(inspect.getsource(method))
+            )
+            assert not sites, (
+                f"DagAuthority.{name} constructs an ALLOW itself instead of "
+                f"routing through {ALLOW_HELPER_NAME}"
+            )
+
+
+class TestEveryPermitsMethodIsEnrolled:
+    """Discovered by reflection, so a new arbiter method cannot slip through."""
+
+    def test_coverage_matrix_matches_the_discovered_methods(self) -> None:
+        discovered = set(_discovered_permits_methods())
+        enrolled = set(PERMITS_COVERAGE)
+        assert discovered == enrolled, (
+            "PERMITS_COVERAGE is out of sync with DagAuthority. "
+            f"unenrolled={sorted(discovered - enrolled)} "
+            f"stale={sorted(enrolled - discovered)}. Every arbiter verdict "
+            "method must declare what DAG evidence, if any, can earn it an "
+            "ALLOW."
+        )
+
+    @pytest.mark.parametrize("name", _discovered_permits_methods())
+    def test_no_permits_method_grants_without_dag_evidence(self, name) -> None:
+        case = PERMITS_COVERAGE[name]
+        decision = getattr(_empty_authority(), name)(case.make_mod(), **case.kwargs)
+        assert not decision.allowed, (
+            f"DagAuthority.{name} granted ALLOW over an empty DAG "
+            f"(reason={decision.reason!r})"
+        )
+
+    @pytest.mark.parametrize("name", _discovered_permits_methods())
+    def test_every_permits_method_either_gaps_denies_or_routes_through_the_helper(
+        self, name
+    ) -> None:
+        """The whole invariant in one assertion, per discovered method."""
+        case = PERMITS_COVERAGE[name]
+        authority = _authority_for(case)
+        decision = getattr(authority, name)(case.make_mod(), **case.kwargs)
+        if not decision.allowed:
+            assert decision.reason, "a refusal must carry a reason"
+            return
+        assert case.can_allow, (
+            f"DagAuthority.{name} is enrolled as never-granting but returned "
+            f"ALLOW ({decision!r})"
+        )
+        _assert_allow_is_edge_backed(authority, decision)
+
+    @pytest.mark.parametrize(
+        "name",
+        [n for n, c in PERMITS_COVERAGE.items() if not c.can_allow],
+    )
+    def test_never_granting_methods_stay_gaps_even_with_a_populated_dag(
+        self, name
+    ) -> None:
+        case = PERMITS_COVERAGE[name]
+        decision = getattr(_authority_for(case), name)(
+            case.make_mod(), **case.kwargs
+        )
+        assert not decision.allowed
+        assert decision.is_gap
+        assert decision.target_entry_anchor is None
+        assert decision.proof_edge_key is None
+
+
+# --------------------------------------------------------------------------
+# A GAP confers nothing, at every consumer
+# --------------------------------------------------------------------------
+
+
+class TestGapCarriesNoGrantPayload:
+    """Structural fail-closed core: a gap verdict has no authorisation fields."""
+
+    @pytest.mark.parametrize("name", _discovered_permits_methods())
+    def test_gap_verdicts_carry_no_target_and_no_proof(self, name) -> None:
+        case = PERMITS_COVERAGE[name]
+        decision = getattr(_empty_authority(), name)(case.make_mod(), **case.kwargs)
+        if not decision.is_gap:
+            pytest.skip(f"{name} did not gap for this input")
+        assert decision.target_entry_anchor is None
+        assert decision.proof_edge_key is None
+        assert decision.reason.startswith("DAG_GAP:")
+
+
+class TestGapIsFailClosedAtEveryConsumer:
+    """One test per consumer of a ``DagDecision`` (audit section 2.1).
+
+    Consumers, re-verified by ``rg '\\.permits\\(|filter_dag_disagreements' src/``:
+
+      1. ``fragment_arbitration.filter_dag_disagreements``       (:107)
+      2. ``fragment_arbitration.apply_dag_conformance_gate``     (:169)
+      3. ``reconstruction_fragment_builder.finalize_reconstruction_fragment``
+         (:186)
+
+    "Fail-closed" here means a GAP confers *nothing*: it never authorises a
+    modification, never synthesises one, never rewrites one, never records a
+    proof, and never shields a modification from the restriction filters that
+    own it. A gap-region mod that survives a consumer survives on the
+    planner's authority and the legacy filter's sufferance, never on the
+    arbiter's -- which is what keeps the arbiter subtractive.
+    """
+
+    @staticmethod
+    def _gap_authority() -> DagAuthority:
+        """Knows one edge, so every *other* source is a genuine gap region."""
+        return DagAuthority(
+            _dag(edges=(_edge(source_block=10, target_entry_anchor=20),))
+        )
+
+    # -- consumer 1: filter_dag_disagreements ------------------------------
+
+    def test_consumer_1_filter_dag_disagreements_grants_nothing_on_gap(
+        self,
+    ) -> None:
+        authority = self._gap_authority()
+        gap_mod = RedirectGoto(from_serial=77, old_target=2, new_target=88)
+        assert authority.permits(gap_mod).is_gap
+
+        kept, records = filter_dag_disagreements(
+            [gap_mod],
+            _view(authority),
+            strategy_name="test",
+            phase="unit",
+        )
+
+        # Nothing synthesised, nothing rewritten, no proof recorded.
+        assert all(k is gap_mod for k in kept)
+        assert len(kept) <= 1
+        assert records == ()
+        assert (gap_mod.from_serial, gap_mod.new_target) == (77, 88)
+
+    def test_consumer_1_gap_never_turns_a_refusal_into_a_pass(self) -> None:
+        """A gap for one mod must not rescue a disagreeing sibling."""
+        authority = self._gap_authority()
+        gap_mod = RedirectGoto(from_serial=77, old_target=2, new_target=88)
+        refused = RedirectGoto(from_serial=10, old_target=2, new_target=99)
+
+        kept, records = filter_dag_disagreements(
+            [gap_mod, refused],
+            _view(authority),
+            strategy_name="test",
+            phase="unit",
+        )
+        assert [id(m) for m in kept] == [id(gap_mod)]
+        assert len(records) == 1
+        assert records[0].source_block == 10
+
+    def test_consumer_1_never_calls_permits_for_the_gapped_mod_kinds(self) -> None:
+        """ZSW / pred-split reach the consumer but bypass ``permits()``.
+
+        This is the corrected reachability statement (aa-v8et): the two mod
+        kinds are dispatched by ``permits()``, but ``redirect_source`` returns
+        ``None`` for both, so the production filter keeps them at
+        ``fragment_arbitration.py:104-105`` before any verdict is asked for.
+        They are therefore kept on the planner's authority, never the DAG's.
+        """
+        authority = self._gap_authority()
+        zsw = ZeroStateWrite(block_serial=77, insn_ea=0x1000)
+        splice = EdgeRedirectViaPredSplit(
+            src_block=122, old_target=45, new_target=180, via_pred=37
+        )
+        kept, records = filter_dag_disagreements(
+            [zsw, splice],
+            _view(authority),
+            strategy_name="test",
+            phase="unit",
+        )
+        assert [id(m) for m in kept] == [id(zsw), id(splice)]
+        assert records == ()
+        # And the verdicts themselves, had they been asked for, are gaps.
+        assert authority.permits(zsw).is_gap
+        assert authority.permits(splice).is_gap
+
+    # -- consumer 2: apply_dag_conformance_gate ----------------------------
+
+    @staticmethod
+    def _fragment(modifications: list) -> PlanFragment:
+        return PlanFragment(
+            strategy_name="test",
+            family="direct",
+            ownership=OwnershipScope(
+                blocks=frozenset(),
+                edges=frozenset(),
+                transitions=frozenset(),
+            ),
+            prerequisites=[],
+            expected_benefit=BenefitMetrics(
+                handlers_resolved=0,
+                transitions_resolved=0,
+                blocks_freed=0,
+                conflict_density=0.0,
+            ),
+            risk_score=0.0,
+            metadata={},
+            modifications=modifications,
+        )
+
+    def test_consumer_2_conformance_gate_records_no_audit_row_for_a_gap(
+        self,
+    ) -> None:
+        authority = self._gap_authority()
+        gap_mod = RedirectGoto(from_serial=77, old_target=2, new_target=88)
+        fragment = self._fragment([gap_mod])
+
+        gated = apply_dag_conformance_gate(fragment, _view(authority))
+
+        # No records => the fragment is returned untouched; crucially the gap
+        # produced no DAG_AUDIT row that a downstream reader could mistake for
+        # an authorisation.
+        assert gated is fragment
+        assert gated.metadata.get(DAG_AUDIT_METADATA_KEY) is None
+        assert [id(m) for m in gated.modifications] == [id(gap_mod)]
+
+    def test_consumer_2_conformance_gate_still_drops_a_disagreement(self) -> None:
+        """The gate is not softened: a real disagreement is still removed."""
+        authority = self._gap_authority()
+        gap_mod = RedirectGoto(from_serial=77, old_target=2, new_target=88)
+        refused = RedirectGoto(from_serial=10, old_target=2, new_target=99)
+        fragment = self._fragment([gap_mod, refused])
+
+        gated = apply_dag_conformance_gate(fragment, _view(authority))
+
+        assert [id(m) for m in gated.modifications] == [id(gap_mod)]
+        records = gated.metadata[DAG_AUDIT_METADATA_KEY]
+        assert len(records) == 1
+
+    # -- consumer 3: finalize_reconstruction_fragment ----------------------
+
+    @staticmethod
+    def _finalize(modifications: list, view: CumulativePlannerView) -> PlanFragment:
+        return finalize_reconstruction_fragment(
+            strategy_name="test",
+            modifications=modifications,
+            owned_blocks=set(),
+            owned_edges=set(),
+            accepted_metadata=[],
+            rejected_metadata=[],
+            allow_post_apply_condition_chain_cleanup=False,
+            post_apply_condition_chain_cleanup_reason=None,
+            residual_dispatcher_preds=(),
+            cumulative_planner_view=view,
+        )
+
+    def test_consumer_3_gap_does_not_shield_a_mod_from_the_legacy_filter(
+        self,
+    ) -> None:
+        """The decisive fail-closed property for the terminal finaliser.
+
+        Block 77 is a DAG gap region, so the arbiter has no opinion. The gap
+        must NOT act as a pass: the legacy first-fragment-wins filter still
+        owns the mod and still drops it for contradicting a prior
+        linearization.
+        """
+        authority = self._gap_authority()
+        gap_mod = RedirectGoto(from_serial=77, old_target=2, new_target=88)
+        assert authority.permits(gap_mod).is_gap
+
+        view = dataclasses.replace(
+            CumulativePlannerView.empty(dag_authority=authority),
+            linearization_decisions=frozenset(
+                {
+                    LinearizationDecision(
+                        src=77,
+                        tgt=1234,
+                        reason="prior",
+                        strategy="other",
+                        round_index=0,
+                    )
+                }
+            ),
+        )
+
+        fragment = self._finalize([gap_mod], view)
+
+        assert fragment.modifications == [], (
+            "a DAG_GAP verdict let a mod past the legacy filter that owns it"
+        )
+        assert fragment.metadata[DAG_AUDIT_METADATA_KEY] == ()
+
+    def test_consumer_3_gap_synthesises_nothing(self) -> None:
+        authority = self._gap_authority()
+        gap_mod = RedirectGoto(from_serial=77, old_target=2, new_target=88)
+        view = CumulativePlannerView.empty(dag_authority=authority)
+
+        fragment = self._finalize([gap_mod], view)
+
+        assert all(any(m is p for p in [gap_mod]) for m in fragment.modifications)
+        assert len(fragment.modifications) <= 1
+        assert fragment.metadata[DAG_AUDIT_METADATA_KEY] == ()
+
+    def test_consumer_3_still_drops_a_dag_disagreement(self) -> None:
+        authority = self._gap_authority()
+        refused = RedirectGoto(from_serial=10, old_target=2, new_target=99)
+        view = CumulativePlannerView.empty(dag_authority=authority)
+
+        fragment = self._finalize([refused], view)
+
+        assert fragment.modifications == []
+        assert len(fragment.metadata[DAG_AUDIT_METADATA_KEY]) == 1

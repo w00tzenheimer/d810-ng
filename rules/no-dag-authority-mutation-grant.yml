@@ -22,6 +22,16 @@ message: |
   a graph modification. Return a DagDecision and let the transaction authority
   own the grant.
 
+  An ALLOW verdict has exactly ONE construction site: the DAG-edge-backed
+  helper `DagAuthority._allow_from_dag_edge(edge, *, mod_kind)`, which takes
+  the authorising StateDagEdge as a parameter. Build your verdict there or
+  return DagDecision.gap(...) / DagDecision.refuse(...). Calling
+  DagDecision.allow(...) anywhere else grants without naming the DAG edge that
+  earned it -- that is exactly how permits_zero_state_write,
+  permits_edge_redirect_via_pred_split and
+  permits_dead_block_terminator_redirect each acquired a latent grant
+  (aa-v8et).
+
 rule:
   any:
     # A grant-shaped public method or attribute on the arbiter itself.
@@ -44,6 +54,26 @@ rule:
         - inside:
             kind: class_definition
             stopBy: end
+    # ALLOW must be earned from a DAG edge. `_allow_from_dag_edge` is the sole
+    # permitted construction site, expressed structurally: the ban is lifted
+    # only *inside* that helper, whose signature takes the edge as proof. This
+    # is deliberately not an `ignores:` entry -- the exemption has to be
+    # attached to the helper, not to a path.
+    - all:
+        - kind: call
+        - has:
+            field: function
+            all:
+              - kind: attribute
+              - regex: "^DagDecision\\.allow$"
+        - not:
+            inside:
+              kind: function_definition
+              stopBy: end
+              has:
+                field: name
+                kind: identifier
+                regex: "^_allow_from_dag_edge$"
     # The arbitration filter must subtract, never construct a modification.
     - all:
         - kind: call
@@ -55,10 +85,19 @@ rule:
 
 note: |
   Restrict-shaped vocabulary is what belongs here: `permits_*` methods,
-  `DagDecision.allow` / `.refuse` / `.gap`, `canonical_target_for`,
+  `DagDecision.refuse` / `.gap`, `canonical_target_for`,
   `conflicts_for_source`, and `apply_dag_conformance_gate` (which applies a
   *filter*, not a mutation). Those answer a question and are not matched;
   `apply_` is only enrolled when it is followed by a mutation noun.
-  Private helpers (leading underscore) are not enrolled. Consumers that need
-  to act on a verdict live outside these two files and go through the
-  centralized unflatten transaction authority.
+  Private helpers (leading underscore) are not enrolled by the *name* clause.
+
+  `DagDecision.allow` is the exception: the `permits_*` prefix is exempt from
+  the name clause, so before aa-v8et a new `permits_whatever()` returning
+  `DagDecision.allow(...)` passed this rule and the unit invariant alike. The
+  allow-call clause closes that: it matches every `DagDecision.allow(...)`
+  call that is not lexically inside `_allow_from_dag_edge`, the one helper
+  that takes a StateDagEdge as its proof. `permits_*` methods stay exempt from
+  the naming clause because they cannot construct an ALLOW at all.
+
+  Consumers that need to act on a verdict live outside these two files and go
+  through the centralized unflatten transaction authority.

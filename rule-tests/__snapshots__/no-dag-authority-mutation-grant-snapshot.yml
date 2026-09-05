@@ -37,6 +37,18 @@ snapshots:
       start: 0
       end: 54
   ? |
+    def _helper(self, mod):
+        return DagDecision.allow(target_entry_anchor=20)
+  : labels:
+    - source: DagDecision.allow(target_entry_anchor=20)
+      style: primary
+      start: 35
+      end: 76
+    - source: DagDecision.allow
+      style: secondary
+      start: 35
+      end: 52
+  ? |
     def _rebuild(self):
         return RedirectGoto(from_serial=10, old_target=2, new_target=20)
   : labels:
@@ -146,3 +158,27 @@ snapshots:
       style: secondary
       start: 4
       end: 20
+  ? |
+    def permits_redirect_goto(self, mod):
+        return DagDecision.allow(target_entry_anchor=20)
+  : labels:
+    - source: DagDecision.allow(target_entry_anchor=20)
+      style: primary
+      start: 49
+      end: 90
+    - source: DagDecision.allow
+      style: secondary
+      start: 49
+      end: 66
+  ? |
+    def permits_whatever(self, mod):
+        return DagDecision.allow(target_entry_anchor=None, proof_edge_key=())
+  : labels:
+    - source: DagDecision.allow(target_entry_anchor=None, proof_edge_key=())
+      style: primary
+      start: 44
+      end: 106
+    - source: DagDecision.allow
+      style: secondary
+      start: 44
+      end: 61

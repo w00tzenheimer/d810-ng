@@ -485,8 +485,8 @@ class DagAuthority:
         the block to a 1-way unconditional goto, so the branch arm is
         no longer meaningful at the post-mod CFG).
         """
-        canonical = self.canonical_target_for(src, branch_arm=None)
-        if canonical is None:
+        record = self._canonical_by_anchor.get((int(src), None))
+        if record is None:
             # Distinguish "no DAG edge for this source" (DAG silent) from
             # "DAG has multiple edges disagreeing on target" (internal
             # conflict). Both yield DAG_GAP refusals but with different
@@ -494,11 +494,50 @@ class DagAuthority:
             if self.conflicts_for_source(src, branch_arm=None):
                 return DagDecision.gap("dag_internal_conflict")
             return DagDecision.gap(unknown_source_gap)
+        canonical = record.target_entry_anchor
         if proposed_target == canonical:
-            return DagDecision.allow(
-                target_entry_anchor=canonical,
-                proof_edge_key=(src, None, canonical, mod_kind),
-            )
+            # Hand the authorising edge itself to the ALLOW constructor. Every
+            # edge in a canonical record agrees on the target by construction
+            # (see __init__), so any one of them is the proof.
+            return self._allow_from_dag_edge(record.edges[0], mod_kind=mod_kind)
         return DagDecision.refuse(
             f"DAG_DISAGREEMENT:{src}->{{planner={proposed_target},dag={canonical}}}"
+        )
+
+    @staticmethod
+    def _allow_from_dag_edge(edge: StateDagEdge, *, mod_kind: str) -> DagDecision:
+        """The single construction site of an ``ALLOW`` verdict (aa-v8et).
+
+        ``DagAuthority`` may restrict which proposals are emitted; it must
+        never independently grant. The way that invariant is *pinned* -- rather
+        than merely documented -- is that an ALLOW cannot be built without a
+        :class:`StateDagEdge` in hand: the evidence is a parameter, not a
+        convention. ``rules/no-dag-authority-mutation-grant.yml`` statically
+        rejects any other ``DagDecision.allow(...)`` call in this module, and
+        ``tests/unit/transforms/test_dag_authority_grant_invariant.py``
+        discovers every ``permits_*`` method by reflection and asserts it
+        either refuses or routes through here.
+
+        The ``proof_edge_key`` is derived from the edge, so it always names an
+        edge that is really in the DAG -- unlike the three retired grants,
+        whose keys were synthesised from the proposal's own fields, a
+        hardcoded corridor literal, and caller-supplied CFG serials
+        respectively.
+
+        Returns a ``DAG_GAP`` when the edge carries no target entry anchor;
+        such an edge is never indexed as canonical, so this is defence in
+        depth rather than a reachable branch.
+        """
+        target = edge.target_entry_anchor
+        if target is None:
+            return DagDecision.gap(f"{mod_kind}_edge_without_target_anchor")
+        anchor = edge.source_anchor
+        return DagDecision.allow(
+            target_entry_anchor=int(target),
+            proof_edge_key=(
+                int(anchor.block_serial),
+                None if anchor.branch_arm is None else int(anchor.branch_arm),
+                int(target),
+                mod_kind,
+            ),
         )

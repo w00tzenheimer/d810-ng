@@ -3,7 +3,19 @@ id: no-dag-authority-mutation-grant
 valid:
   - |
       def permits_redirect_goto(self, mod):
-          return DagDecision.allow(target_entry_anchor=20)
+          return self._allow_from_dag_edge(edge, mod_kind="RedirectGoto")
+  - |
+      def _allow_from_dag_edge(edge, *, mod_kind):
+          return DagDecision.allow(
+              target_entry_anchor=int(edge.target_entry_anchor),
+              proof_edge_key=(edge.source_anchor.block_serial, mod_kind),
+          )
+  - |
+      def permits_zero_state_write(self, mod):
+          return DagDecision.gap("zero_state_write_not_dag_derivable")
+  - |
+      def permits_dead_block_terminator_redirect(self, mod):
+          return DagDecision.refuse("DAG_DISAGREEMENT:dead_block_terminator")
   - |
       def apply_dag_conformance_gate(fragment, cumulative_view):
           return fragment
@@ -53,3 +65,12 @@ invalid:
   - |
       def _rebuild(self):
           return RedirectGoto(from_serial=10, old_target=2, new_target=20)
+  - |
+      def permits_redirect_goto(self, mod):
+          return DagDecision.allow(target_entry_anchor=20)
+  - |
+      def permits_whatever(self, mod):
+          return DagDecision.allow(target_entry_anchor=None, proof_edge_key=())
+  - |
+      def _helper(self, mod):
+          return DagDecision.allow(target_entry_anchor=20)
