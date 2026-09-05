@@ -1,3 +1,4 @@
+import getpass
 import hashlib
 import os
 import re
@@ -283,8 +284,6 @@ def _chmod_calls(tmp_path: Path) -> list[str]:
 
 
 def _work_volume_name(worktree_dir: Path) -> str:
-    import hashlib
-
     digest = hashlib.sha256(str(worktree_dir).encode()).hexdigest()[:8]
     return f"d810-work-{worktree_dir.name}-{digest}"
 
@@ -2132,8 +2131,6 @@ def test_remote_mode_grants_a_tmp_scoped_acl_only(tmp_path: Path) -> None:
     assert any("file_inherit,directory_inherit" in call for call in acl_calls)
     # the invoking user needs an inheritable ACE too, or the container's own
     # -o capture comes back unreadable (it is created 0600 by the share account)
-    import getpass
-
     assert any(f"{getpass.getuser()} allow" in call for call in acl_calls)
 
 

@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import argparse
 import getpass
+import hashlib
 import json
 import os
 import re
@@ -273,8 +274,6 @@ def share_root_digest(share_root: str) -> str:
     >>> len(share_root_digest("/x"))
     8
     """
-    import hashlib
-
     return hashlib.sha256(share_root.encode()).hexdigest()[:8]
 
 
