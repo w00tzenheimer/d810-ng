@@ -598,7 +598,12 @@ def run_capture(argv: Sequence[str]) -> tuple[int, str]:
 
 
 def run_probe(argv: Sequence[str]) -> tuple[int, str]:
-    """Run a probe container, merging stderr (the daemon error lands there)."""
+    """Run a probe container, merging stderr (the daemon error lands there).
+
+    Deliberately a second seam with the same body as ``run_capture``: tests
+    stub the probe and the ordinary docker queries independently, so folding
+    them together would make one unfakeable without the other.
+    """
     completed = subprocess.run(
         list(argv), capture_output=True, text=True, check=False
     )
@@ -718,12 +723,18 @@ def build_parser(configuration: dict[str, str] | None = None) -> argparse.Argume
     parser.add_argument(
         "--purge-work-volumes",
         action="store_true",
-        help="with --remove: also delete retained runner volumes (source + CoBRA cache)",
+        help=(
+            "with --remove (and with --recreate, which removes first): also delete "
+            "retained runner volumes (source + CoBRA cache)"
+        ),
     )
     parser.add_argument(
         "--force",
         action="store_true",
-        help="with --remove: also `docker rm -f` containers that still reference the volume",
+        help=(
+            "with --remove (and with --recreate, which removes first): also "
+            "`docker rm -f` containers that still reference the volume"
+        ),
     )
     parser.add_argument(
         "--no-verify",

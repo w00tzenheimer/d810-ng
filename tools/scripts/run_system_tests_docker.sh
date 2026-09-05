@@ -1218,6 +1218,16 @@ if [ -n "$REMOTE_HOST" ]; then
     echo "ERROR: remote mode requires D810_REMOTE_SMB_USER in the repository's ignored .env" >&2
     exit 1
   fi
+  # The account name is interpolated into the sed expressions that read and
+  # repair the .tmp ACL, where a / or a regex metacharacter would silently
+  # yield "no ACE present" and send the repair path round in circles. Same
+  # allowlist the volume helper applies before the name reaches cifs.
+  case "$REMOTE_SMB_USER" in
+    *[!A-Za-z0-9._@-]*)
+      echo "ERROR: D810_REMOTE_SMB_USER must match [A-Za-z0-9._@-]+ (it is used verbatim in ACL matching)" >&2
+      exit 1
+      ;;
+  esac
   # The share ACL below is macOS-specific and the whole remote mode depends on
   # it, so refuse before touching Docker rather than half-way through.
   if [ "$(uname -s)" != "Darwin" ]; then

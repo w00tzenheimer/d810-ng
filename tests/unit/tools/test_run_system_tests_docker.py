@@ -3714,3 +3714,27 @@ def test_no_emitted_command_ever_carries_an_unknown_image_id(
     assert "linux-cobra-core-v2:" in command
     receipt = command.split("D810_TEST_RUNTIME_IMAGE_ID=")[1].split()[0]
     assert receipt == FAKE_IMAGE_ID, receipt
+
+
+@pytest.mark.parametrize("account", ["ac/count", "ac count", "ac.count]"])
+def test_remote_smb_user_must_be_safe_for_acl_matching(
+    tmp_path: Path,
+    account: str,
+) -> None:
+    """The account is interpolated verbatim into the ACL sed expressions."""
+    share, repo = _share_layout(tmp_path)
+
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--remote",
+        REMOTE_HOST,
+        "--",
+        "true",
+        repo_root=repo,
+        extra_env=_remote_env(share, D810_REMOTE_SMB_USER=account),
+    )
+
+    assert result.returncode != 0
+    assert "D810_REMOTE_SMB_USER must match" in result.stderr
+    assert _runs(calls) == []
