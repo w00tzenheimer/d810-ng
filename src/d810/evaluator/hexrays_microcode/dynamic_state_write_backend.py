@@ -444,6 +444,7 @@ __all__ = [
     "recognize_derived_xor_dispatcher_model",
     "recognize_derived_xor_dispatcher_models",
     "recognize_global_or_state_write_transition",
+    "resolve_computed_state_write",
     "resolve_predecessor_seeded_write_value",
     "resolve_state_write_value_set",
 ]
@@ -479,9 +480,16 @@ from d810.analyses.data_flow.abstract_value import (  # noqa: E402
     value_set_from_reaching_def_consts,
 )
 from d810.analyses.control_flow.computed_state_writer import (  # noqa: E402
+    AbstainReason,
+    ComputedWriteResolution,
     StorageKey,
     resolve_computed_write,
 )
+
+
+def _computed_write_abstention(reason: AbstainReason) -> ComputedWriteResolution:
+    """An empty resolution naming *reason* (never a bare ``None``)."""
+    return ComputedWriteResolution(values=frozenset(), reason=reason, evidence=())
 
 _FOLD_WIDTH = 64  # evaluate in 64-bit, mask the state to 32-bit at the end
 
@@ -1374,31 +1382,37 @@ def _storage_const_on_path_back(
     return None
 
 
-def _resolve_predecessor_partitioned_state_write(
+def resolve_computed_state_write(
     *,
     mba,
     block_serial: int,
     state_var_stkoff: int,
-    state_var_lvar_idx: int | None,
+    state_var_lvar_idx: int | None = None,
     size: int = 4,
     max_back: int = 6,
     max_partitions: int = 64,
-) -> AbstractValue:
+) -> ComputedWriteResolution:
     """Resolve a shared-block MBA state write as a predecessor-partitioned set (T2c).
 
     Enumerates the predecessors of *block_serial* (the CFG join), binds every
-    stack-operand leaf of the state write to the constant it carries on that
-    incoming edge, folds the write's full MBA tree (:func:`_eval_insn`, recursing
-    nested ``mop_d``) per partition, and projects the per-edge states via
-    :func:`value_set_from_reaching_def_consts` (:class:`Const` for a singleton,
-    :class:`OneOf` for several).
+    operand leaf of the state write -- stack slot, **register** or lvar
+    (:func:`_collect_operand_storage_leaves`) -- to the constant it carries on
+    that incoming edge, and folds the write's full MBA tree (:func:`_eval_insn`,
+    recursing nested ``mop_d``) once per partition.
 
-    Soundness: returns :data:`TOP` (escalate to T2b / T1) unless EVERY
-    predecessor binds EVERY operand to a provable constant -- a partition with a
-    non-const operand never invents a state, and the per-edge environments are
-    never ``join``-ed (no spurious cross product).  Only fires for a genuine
-    multi-operand MBA write (``>= 2`` distinct stack leaves); a bare / single-
-    source write is left to the downstream tiers.
+    Soundness: abstains with an explicit
+    :class:`~d810.analyses.control_flow.computed_state_writer.AbstainReason`
+    (escalating to T2b / T1) unless EVERY predecessor binds EVERY operand to a
+    provable constant -- a partition with a non-const operand never invents a
+    state, and the per-edge environments are never ``join``-ed (no spurious
+    cross product).  Fires for a multi-operand MBA write, and for a single
+    operand only when that operand is a register / lvar, for which no DU-backed
+    tier exists (see :func:`_partition_fold_is_the_only_tier`).
+
+    Returns the full
+    :class:`~d810.analyses.control_flow.computed_state_writer.ComputedWriteResolution`
+    -- values *plus* per-partition evidence *plus* the abstain reason -- because
+    a completeness receipt needs the reason, not just ``⊤``.
     """
     state_write = _find_state_write_insn(
         mba=mba,
@@ -1407,10 +1421,11 @@ def _resolve_predecessor_partitioned_state_write(
         state_var_lvar_idx=state_var_lvar_idx,
     )
     if state_write is None:
-        return TOP
+        return _computed_write_abstention(AbstainReason.NO_STATE_WRITE)
     leaves = _collect_operand_storage_leaves(state_write)
     if not _partition_fold_is_the_only_tier(leaves):
-        return TOP  # bare stack source -> the DU-backed T2b / T1 tiers own it
+        # bare stack source -> the DU-backed T2b / T1 tiers own it
+        return _computed_write_abstention(AbstainReason.NO_OPERANDS)
     preds = _block_predset(mba, int(block_serial))
 
     vd = KnownBitsValueDomain()
@@ -1443,7 +1458,34 @@ def _resolve_predecessor_partitioned_state_write(
             int(block_serial),
             resolution.reason,
         )
-    return resolution.to_abstract_value()
+    return resolution
+
+
+def _resolve_predecessor_partitioned_state_write(
+    *,
+    mba,
+    block_serial: int,
+    state_var_stkoff: int,
+    state_var_lvar_idx: int | None,
+    size: int = 4,
+    max_back: int = 6,
+    max_partitions: int = 64,
+) -> AbstractValue:
+    """T2c projected onto the value-side seam (``Const`` / ``OneOf`` / ``⊤``).
+
+    The resolve ladder wants an :class:`AbstractValue`; a *receipt* consumer
+    wants the abstain reason too, so :func:`resolve_computed_state_write` is the
+    primitive and this is the projection.
+    """
+    return resolve_computed_state_write(
+        mba=mba,
+        block_serial=int(block_serial),
+        state_var_stkoff=int(state_var_stkoff),
+        state_var_lvar_idx=state_var_lvar_idx,
+        size=int(size),
+        max_back=int(max_back),
+        max_partitions=int(max_partitions),
+    ).to_abstract_value()
 
 
 def _partition_fold_is_the_only_tier(leaves: tuple[StorageKey, ...]) -> bool:

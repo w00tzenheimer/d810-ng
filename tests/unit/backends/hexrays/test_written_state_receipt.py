@@ -46,6 +46,7 @@ _VOCABULARY = SimpleNamespace(
     m_mov=4,
     m_stx=62,
     m_add=28,
+    m_xor=31,
     m_ldx=61,
     mop_r=1,
     mop_n=2,
@@ -99,12 +100,12 @@ def _insn(opcode: int, left=None, right=None, dest=None):
     return SimpleNamespace(opcode=opcode, l=left, r=right, d=dest, next=None)
 
 
-def _block(*insns):
+def _block(*insns, predset=()):
     head = None
     for insn in reversed(insns):
         insn.next = head
         head = insn
-    return SimpleNamespace(head=head)
+    return SimpleNamespace(head=head, predset=tuple(predset))
 
 
 class _Mba:
@@ -319,3 +320,108 @@ def test_initial_state_is_part_of_the_ground_set():
 
     assert receipt.complete
     assert receipt.constants == frozenset({_OUTSIDE, _STATE})
+
+
+# ---------------------------------------------------------------------------
+# Computed writes (ticket d81-czrc) feeding the receipt.
+#
+# ``xor ecx, eax -> statevar`` is invisible to the in-block folder because the
+# definitions of ``ecx`` / ``eax`` live one hop up, in the predecessors.  Left
+# alone it lands as NONCONSTANT and costs the receipt its completeness, which
+# in turn makes every range-leaf route abstain (d81-8xhg).  Resolving it across
+# the predecessor partitions is what lets the two tickets compose.
+# ---------------------------------------------------------------------------
+
+_ECX = 9
+_EAX = 10
+_PARTITION_A = (0x5FDB1F09, 0x1D431D66)  # xor -> 0x4298026F
+_PARTITION_B = (0x33AA1100, 0x0F0F0F0F)  # xor -> 0x3CA51E0F
+_FOLDED_A = 0x4298026F
+_FOLDED_B = 0x3CA51E0F
+
+
+def _mov_reg(register_id: int, value: int):
+    return _insn(_VOCABULARY.m_mov, left=_num(value), dest=_reg(register_id))
+
+
+def _partition(pair):
+    return _block(_mov_reg(_ECX, pair[0]), _mov_reg(_EAX, pair[1]))
+
+
+def _xor_into_state(*preds):
+    return _block(
+        _insn(
+            _VOCABULARY.m_xor,
+            left=_reg(_ECX),
+            right=_reg(_EAX),
+            dest=_stk(_STATE_STKOFF),
+        ),
+        predset=preds,
+    )
+
+
+def test_computed_write_folds_into_a_complete_receipt():
+    """Both partitions fold, so the receipt keeps its closure."""
+    receipt = _collect(
+        _Mba([_partition(_PARTITION_A), _partition(_PARTITION_B), _xor_into_state(0, 1)])
+    )
+
+    assert receipt.complete
+    assert receipt.reasons == ()
+    assert receipt.constants == frozenset({_FOLDED_A, _FOLDED_B})
+
+
+def test_folded_computed_states_participate_in_route_exactness():
+    """The folded constants are real members, so they can refuse a leaf.
+
+    Without the fold the receipt is incomplete and the range branch abstains;
+    with it, the leaf spanning BOTH folded states is correctly refused while
+    the leaf isolating one is accepted.
+    """
+    receipt = _collect(
+        _Mba([_partition(_PARTITION_A), _partition(_PARTITION_B), _xor_into_state(0, 1)])
+    )
+
+    assert not is_exact_route_interval(
+        lo=_FOLDED_B, hi=_FOLDED_A + 1, state=_FOLDED_A, written_states=receipt
+    )
+    assert is_exact_route_interval(
+        lo=_FOLDED_A, hi=_FOLDED_A + 0x1000, state=_FOLDED_A, written_states=receipt
+    )
+
+
+def test_unresolvable_partition_leaves_the_receipt_incomplete():
+    """All-or-nothing: one partition without a constant abstains entirely."""
+    blind = _block(_mov_reg(_ECX, _PARTITION_B[0]))  # ``eax`` never defined
+    receipt = _collect(_Mba([_partition(_PARTITION_A), blind, _xor_into_state(0, 1)]))
+
+    assert not receipt.complete
+    assert REASON_NONCONSTANT_WRITE in receipt.reasons
+    assert _FOLDED_A not in receipt.constants
+
+
+def test_two_computed_writes_in_one_block_are_not_substituted():
+    """``_find_computed_state_write`` resolves only the LAST non-literal writer.
+
+    Substituting for both would attest to a value that was never proven, so the
+    fold declines and the receipt honestly reports the unfolded writes.
+    """
+    doubled = _block(
+        _insn(
+            _VOCABULARY.m_xor,
+            left=_reg(_ECX),
+            right=_reg(_EAX),
+            dest=_stk(_STATE_STKOFF),
+        ),
+        _insn(
+            _VOCABULARY.m_add,
+            left=_reg(_ECX),
+            right=_reg(_EAX),
+            dest=_stk(_STATE_STKOFF),
+        ),
+        predset=(0, 1),
+    )
+    receipt = _collect(_Mba([_partition(_PARTITION_A), _partition(_PARTITION_B), doubled]))
+
+    assert not receipt.complete
+    assert REASON_NONCONSTANT_WRITE in receipt.reasons
