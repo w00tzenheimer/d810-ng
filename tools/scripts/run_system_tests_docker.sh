@@ -134,6 +134,9 @@
 #     0xc00000cc STATUS_BAD_NETWORK_NAME    the share name in device=//HOST/SHARE is wrong
 #
 #   `--status` runs the same probe read-only against an existing volume; `--no-verify` opts out.
+#   `--status` also lists the retained per-worktree work volumes (label d810.role=work): those hold
+#   COPIES OF SOURCE and outlive `--remove`, which reports them and deletes them only with
+#   `--purge-work-volumes`.
 #   An SMB password containing a comma is refused up front: the cifs `o=` value is comma-separated.
 #
 #   The option set deliberately omits nobrl: if SQLite under /work/.tmp (diag DBs, debug logs) ever

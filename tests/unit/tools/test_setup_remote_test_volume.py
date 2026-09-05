@@ -822,6 +822,99 @@ def test_absent_volume_error_classification() -> None:
     assert not setup_remote_test_volume.is_absent_volume_error(SSH_ERROR)
 
 
+def test_work_volume_listing_argv_filters_by_role_label() -> None:
+    assert setup_remote_test_volume.build_work_volume_list_argv(remote="h") == [
+        "docker", "-H", "ssh://h", "volume", "ls", "--filter",
+        "label=d810.role=work", "--format", "{{.Name}}",
+    ]
+
+
+def test_status_enumerates_retained_work_volumes(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _fake_capture(
+        monkeypatch,
+        {
+            "volume inspect": (0, INSPECT_PAYLOAD),
+            "label=d810.role=work": (0, "d810-work-wt-0011aabb\nd810-work-other-22ccddee\n"),
+            "dst=/probe": (0, "mount-ok"),
+        },
+    )
+
+    status = setup_remote_test_volume.main(["--status"])
+    printed = capsys.readouterr().out
+
+    assert status == 0
+    assert "retained work volumes (source copies):" in printed
+    assert "d810-work-wt-0011aabb" in printed
+    assert "d810-work-other-22ccddee" in printed
+
+
+def test_remove_keeps_work_volumes_unless_purge_is_requested(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recorded = _fake_capture(
+        monkeypatch,
+        {
+            "volume inspect": (0, INSPECT_PAYLOAD),
+            "label=d810.role=work": (0, "d810-work-wt-0011aabb\n"),
+        },
+    )
+
+    status = setup_remote_test_volume.main(["--remove"])
+    printed = capsys.readouterr().out
+
+    assert status == 0
+    assert "d810-work-wt-0011aabb" in printed
+    assert "--purge-work-volumes" in printed
+    assert not any(
+        "volume rm d810-work" in " ".join(argv) for argv in recorded
+    )
+
+
+def test_purge_removes_every_work_volume(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recorded = _fake_capture(
+        monkeypatch,
+        {
+            "volume inspect": (0, INSPECT_PAYLOAD),
+            "label=d810.role=work": (0, "d810-work-a-0011aabb\nd810-work-b-22ccddee\n"),
+        },
+    )
+
+    status = setup_remote_test_volume.main(["--remove", "--purge-work-volumes"])
+    printed = capsys.readouterr().out
+
+    assert status == 0
+    joined = [" ".join(argv) for argv in recorded]
+    assert any("volume rm d810-work-a-0011aabb" in call for call in joined)
+    assert any("volume rm d810-work-b-22ccddee" in call for call in joined)
+    assert printed.count("purged work volume") == 2
+
+
+def test_work_volume_listing_failure_is_indeterminate(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _fake_capture(
+        monkeypatch,
+        {
+            "volume inspect": (0, INSPECT_PAYLOAD),
+            "dst=/probe": (0, "mount-ok"),
+            "label=d810.role=work": (1, SSH_ERROR),
+        },
+    )
+
+    status = setup_remote_test_volume.main(["--status"])
+
+    assert status == setup_remote_test_volume.EXIT_INDETERMINATE
+    assert "cannot determine which work volumes" in capsys.readouterr().err
+
+
 def test_doctests_pass() -> None:
     import doctest
 

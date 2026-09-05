@@ -49,6 +49,8 @@ EXIT_ROLLBACK_FAILED = 2
 EXIT_INDETERMINATE = 3
 PASSWORD_OPTION_PATTERN = re.compile(r"(?<=password=)[^,]*")
 CONTAINER_FORMAT = "{{.ID}} {{.Status}} {{.Names}}"
+WORK_VOLUME_ROLE_LABEL = "d810.role=work"
+WORK_VOLUME_FORMAT = "{{.Name}}"
 PROBE_IMAGE = "alpine"
 # Reading the engine's kernel ring buffer needs --privileged, so the image is
 # pinned by digest: an unpinned tag would be a fresh pull of mutable content
@@ -199,6 +201,28 @@ def build_container_filter_argv(*, remote: str, volume: str) -> list[str]:
         f"volume={volume}",
         "--format",
         CONTAINER_FORMAT,
+    ]
+
+
+def build_work_volume_list_argv(*, remote: str) -> list[str]:
+    """List the per-worktree source-copy volumes the runner creates.
+
+    These outlive ``--remove`` of the credential volume: they are retained
+    copies of source, not caches, so they are enumerated explicitly.
+
+    >>> build_work_volume_list_argv(remote="h")[3:]
+    ['volume', 'ls', '--filter', 'label=d810.role=work', '--format', '{{.Name}}']
+    """
+    return [
+        "docker",
+        "-H",
+        f"ssh://{remote}",
+        "volume",
+        "ls",
+        "--filter",
+        f"label={WORK_VOLUME_ROLE_LABEL}",
+        "--format",
+        WORK_VOLUME_FORMAT,
     ]
 
 
@@ -463,6 +487,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="delete the volume, and with it the stored credential",
     )
     parser.add_argument(
+        "--purge-work-volumes",
+        action="store_true",
+        help="with --remove: also delete the retained per-worktree source copies",
+    )
+    parser.add_argument(
         "--force",
         action="store_true",
         help="with --remove: also `docker rm -f` containers that still reference the volume",
@@ -510,6 +539,30 @@ def _report_indeterminate(what: str, output: str) -> int:
     for line in output.strip().splitlines():
         print(f"       {line}", file=sys.stderr)
     return EXIT_INDETERMINATE
+
+
+def format_work_volumes(volumes: Sequence[str]) -> str:
+    """Render the retained per-worktree source copies.
+
+    >>> print(format_work_volumes([]))
+    retained work volumes (source copies): none
+    >>> print(format_work_volumes(["d810-work-wt-0011aabb"]))
+    retained work volumes (source copies):
+      d810-work-wt-0011aabb
+    """
+    if not volumes:
+        return "retained work volumes (source copies): none"
+    return "retained work volumes (source copies):\n" + "\n".join(
+        f"  {name}" for name in volumes
+    )
+
+
+def _list_work_volumes(arguments: argparse.Namespace) -> tuple[bool, list[str], str]:
+    """List retained work volumes; never assume none on error."""
+    status, output = run_capture(build_work_volume_list_argv(remote=arguments.remote))
+    if status != 0:
+        return False, [], output
+    return True, parse_container_lines(output), output
 
 
 def _list_containers(arguments: argparse.Namespace) -> tuple[bool, list[str], str]:
@@ -596,6 +649,10 @@ def _status(arguments: argparse.Namespace) -> int:
             f"which containers reference volume {arguments.volume}", container_output
         )
     print(format_status(inspect_output, container_output))
+    listed, work_volumes, work_output = _list_work_volumes(arguments)
+    if not listed:
+        return _report_indeterminate("which work volumes exist", work_output)
+    print(format_work_volumes(work_volumes))
     if arguments.no_verify:
         return 0
     # Read-only and non-destructive: --status never removes anything.
@@ -674,6 +731,29 @@ def _remove(arguments: argparse.Namespace) -> int:
         "the stored SMB credential is deleted with it"
     )
     print(LOCK_REMINDER)
+
+    listed, work_volumes, work_output = _list_work_volumes(arguments)
+    if not listed:
+        return _report_indeterminate("which work volumes exist", work_output)
+    if not work_volumes:
+        return 0
+    print(format_work_volumes(work_volumes))
+    if not arguments.purge_work_volumes:
+        print(
+            "These retain copies of source and are NOT deleted with the credential "
+            "volume; pass --purge-work-volumes to delete them too."
+        )
+        return 0
+    for name in work_volumes:
+        status, output = run_capture(
+            build_remove_volume_argv(remote=arguments.remote, volume=name)
+        )
+        if status != 0:
+            print(f"ERROR: could not remove work volume {name}", file=sys.stderr)
+            for line in output.strip().splitlines():
+                print(f"       {line}", file=sys.stderr)
+            return status or 1
+        print(f"purged work volume {name}")
     return 0
 
 
