@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 from d810.core import typing
+from d810.hexrays.ir.native_identity import NativeIdentity, native_object_identity
 
 
 class SafePointDisposition(str, Enum):
@@ -29,15 +30,19 @@ class SafePointDisposition(str, Enum):
 class SafePointKey:
     """Exact identity of one stage invocation against one live MBA epoch.
 
-    ``mba_identity`` is intentionally the process-local ``id(mba)`` rather
-    than an EA or block serial.  Both EAs and block serials can survive a
-    native replacement and therefore cannot distinguish stale callback
-    objects.  The key stores only that integer, never the live object.
+    ``mba_identity`` is the :class:`NativeIdentity` of the live ``mba_t``, not
+    ``id(mba)``.  ``mblock_t.mba`` manufactures a new SWIG proxy per access,
+    so two proxies for one MBA once produced two keys and let one native
+    epoch be claimed twice; a dead proxy's recycled ``id`` could equally let a
+    stale claim suppress a genuinely new epoch.  Both EAs and block serials
+    survive a native replacement and cannot distinguish stale callback
+    objects either.  The key stores only the primitive identity, never the
+    live object.
     """
 
     session_id: object
     function_ea: int
-    mba_identity: int
+    mba_identity: NativeIdentity
     maturity: int
     generation: int
     stage_id: str
@@ -49,12 +54,11 @@ class SafePointKey:
             hash(self.session_id)
         except TypeError as exc:
             raise TypeError("safe-point session_id must be hashable") from exc
+        if not isinstance(self.mba_identity, NativeIdentity):
+            raise TypeError("safe-point mba_identity must be a NativeIdentity")
         object.__setattr__(self, "function_ea", int(self.function_ea))
-        object.__setattr__(self, "mba_identity", int(self.mba_identity))
         object.__setattr__(self, "maturity", int(self.maturity))
         object.__setattr__(self, "generation", int(self.generation))
-        if self.mba_identity <= 0:
-            raise ValueError("safe-point mba_identity must be positive")
         if self.generation < 0:
             raise ValueError("safe-point generation must be non-negative")
         if not isinstance(self.stage_id, str) or not self.stage_id.strip():
@@ -77,14 +81,14 @@ class SafePointKey:
         return cls(
             session_id=session_id,
             function_ea=function_ea,
-            mba_identity=id(mba),
+            mba_identity=native_object_identity(mba),
             maturity=maturity,
             generation=generation,
             stage_id=stage_id,
         )
 
     @property
-    def mba_id(self) -> int:
+    def mba_id(self) -> NativeIdentity:
         """Compatibility spelling for consumers that call the value an ID."""
         return self.mba_identity
 
