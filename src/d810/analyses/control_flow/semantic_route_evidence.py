@@ -3475,6 +3475,79 @@ class RouteGroupRecord:
     atomic_group_id: str
 
 
+@dataclass(frozen=True, slots=True)
+class RouteClaimAuthorityRefs:
+    """The runtime join authority carried by one record derived from a bundle.
+
+    A claim is minted *from* route proofs that a bundle already owns, so it
+    needs no reference of its own: the authority question a claim join asks is
+    "which route of which group is this claim about", and the bundle's arena
+    has already answered it.  This record is the answer, handed to the claim
+    factory by the caller that holds the bundle -- never re-minted, never
+    rendered, never round-tripped through a string.
+
+    Unlike :class:`RouteAuthorityBinding` this record **is** compared by value
+    (it is a join *key*, not the authority itself): two claims are about the
+    same route exactly when they name the same arena, the same group reference
+    and the same proof references.  The arena participates in that equality by
+    object identity, so a key from another arena is a different key.
+
+    It is deliberately small.  It holds no proof and no claim, so it cannot
+    keep a record graph alive; closing the arena that owns it releases
+    everything it names.
+    """
+
+    arena: RuntimeAuthorityArena
+    group_ref: RuntimeAuthorityRef
+    proof_refs: tuple[RuntimeAuthorityRef, ...]
+    atomic_group_id: str
+
+    def __post_init__(self) -> None:
+        if type(self.arena) is not RuntimeAuthorityArena:
+            raise TypeError("route claim refs require a runtime authority arena")
+        if (
+            type(self.group_ref) is not RuntimeAuthorityRef
+            or self.group_ref.kind is not RuntimeAuthorityKind.ROUTE_GROUP
+        ):
+            raise TypeError("route claim refs require a route group reference")
+        if type(self.proof_refs) is not tuple or not self.proof_refs:
+            raise TypeError("route claim refs require exact proof references")
+        if any(
+            type(ref) is not RuntimeAuthorityRef
+            or ref.kind is not RuntimeAuthorityKind.ROUTE_PROOF
+            for ref in self.proof_refs
+        ):
+            raise TypeError("route claim refs require route proof references")
+        if len(set(self.proof_refs)) != len(self.proof_refs):
+            raise SemanticRouteEvidenceRejected(
+                "route claim refs contain duplicate proof references"
+            )
+        object.__setattr__(
+            self,
+            "atomic_group_id",
+            _identifier(self.atomic_group_id, "route claim refs atomic group id"),
+        )
+
+    @property
+    def is_live(self) -> bool:
+        """Return whether the arena that owns these references is still open."""
+
+        return not self.arena.is_closed
+
+    def __deepcopy__(self, memo: dict[int, object]) -> None:
+        """Return ``None``: a deep copy of a bound record carries no authority.
+
+        Same rule, and the same reason, as
+        :meth:`RouteAuthorityBinding.__deepcopy__`: copying a record graph
+        produces new records, and duplicating the arena would fabricate a
+        second authority for one route.  The field this lands in is
+        ``RouteClaimAuthorityRefs | None``, so the copy is well typed and
+        fails closed at its first join.
+        """
+
+        return None
+
+
 @dataclass(frozen=True, slots=True, eq=False)
 class RouteAuthorityBinding:
     """The runtime join authority for one canonical route bundle.
@@ -3529,6 +3602,28 @@ class RouteAuthorityBinding:
         if ref.kind is not RuntimeAuthorityKind.ROUTE_PROOF:
             raise RuntimeJoinRejected("route binding resolves route proofs only")
         return self._resolve(ref)
+
+    def claim_refs(
+        self, *proofs: "SemanticRouteProof"
+    ) -> RouteClaimAuthorityRefs:
+        """Return the join key a record derived from ``proofs`` carries.
+
+        Each proof is resolved through :meth:`ref_for`, so a proof that is not
+        this bundle's own record -- a copy, or a proof of another bundle --
+        fails closed here, at mint time, rather than producing a key that
+        silently names the wrong route.
+        """
+
+        if not proofs:
+            raise RuntimeJoinRejected(
+                "a route claim reference set needs at least one route proof"
+            )
+        return RouteClaimAuthorityRefs(
+            arena=self.arena,
+            group_ref=self.group_ref,
+            proof_refs=tuple(self.ref_for(proof) for proof in proofs),
+            atomic_group_id=self.atomic_group_id,
+        )
 
     def order_key(self, ref: RuntimeAuthorityRef) -> tuple[int, int]:
         """Return the deterministic sort key of one reference of this binding.
@@ -9833,6 +9928,7 @@ __all__ = [
     "canonical_semantic_evidence_from_proofs",
     "RouteAuthorityBinding",
     "RouteAuthorityPhase",
+    "RouteClaimAuthorityRefs",
     "RouteGroupRecord",
     "RuntimeRouteIdentity",
     "active_route_authority_phase",

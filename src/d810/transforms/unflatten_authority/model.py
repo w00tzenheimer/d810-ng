@@ -16,6 +16,7 @@ import re
 from d810.analyses.control_flow.semantic_route_evidence import (
     CanonicalSemanticEvidence,
     BoundCanonicalSemanticEvidence,
+    RouteClaimAuthorityRefs,
 )
 from d810.analyses.control_flow.logical_route_endpoint import (
     is_exact_logical_function_exit_inventory_row_shape,
@@ -3505,6 +3506,12 @@ def _route_destination_locator(subject: SemanticSubjectRef) -> BlockSubjectLocat
 def _claim_subjects(claim: ProducerUnflattenClaim) -> tuple[SemanticSubjectRef, ...]:
     subjects: list[SemanticSubjectRef] = []
     for field in fields(claim):
+        # A private field is never a canonical subject, and a runtime
+        # authority sidecar may legitimately be an unset slot on a detached
+        # canonical copy -- reading it here would raise on exactly the record
+        # shape detaching produces.
+        if field.name.startswith("_"):
+            continue
         value = getattr(claim, field.name)
         if type(value) is SemanticSubjectRef:
             subjects.append(value)
@@ -3713,6 +3720,26 @@ class EquivalentSemanticRouteClaim:
     atomic_group_id: str
     source_generation: int
     dag_endpoint_subjects: tuple[SemanticSubjectRef, ...] = ()
+    # Private, and therefore outside the canonical wire schema: the arena
+    # references this claim was minted from.  ``claim_id`` stays exactly the
+    # content fingerprint it was; this is the *join authority*, it names a
+    # live arena, and it is never encoded, compared or repr'd.  A decoded
+    # claim arrives without it on purpose and must be refused at a join.
+    _runtime_refs: RouteClaimAuthorityRefs | None = dataclass_field(
+        default=None, compare=False, repr=False,
+    )
+
+    @property
+    def runtime_refs(self) -> "RouteClaimAuthorityRefs | None":
+        """Return the arena references this claim was minted from, if any.
+
+        Read with a default for the same reason as
+        ``CanonicalSemanticEvidence.route_binding``: a detached canonical copy
+        is rebuilt field by field and deliberately never sets a private slot.
+        ``None`` means *unbound*, which every runtime join must refuse.
+        """
+
+        return getattr(self, "_runtime_refs", None)
 
     def __post_init__(self) -> None:
         _claim_common(self.claim_id, self.kind, UnflattenClaimKind.EQUIVALENT_SEMANTIC_ROUTE, self.source_generation)
@@ -3775,6 +3802,19 @@ class EquivalentSemanticRouteClaim:
             or proofs[0] != self.replacement_route_subject.locator.proof_id
         ):
             raise ValueError("route claim atomic_group_id must match route locators")
+        # O(1), and deliberately here: the sidecar is part of the record's
+        # completeness, so it is checked while the record seals rather than
+        # trusted afterwards.  A factory that attached it after this ran would
+        # be mutating a sealed record, and this check would never see it.
+        runtime_refs = getattr(self, "_runtime_refs", None)
+        if runtime_refs is not None:
+            if type(runtime_refs) is not RouteClaimAuthorityRefs:
+                raise TypeError("route claim runtime refs must be route claim references")
+            if (
+                runtime_refs.atomic_group_id != self.atomic_group_id
+                or len(runtime_refs.proof_refs) != len(proofs)
+            ):
+                raise ValueError("route claim runtime refs name another route group")
         if self.claim_id != claim_id(self):
             raise ValueError("claim_id does not match canonical claim content")
 
@@ -7389,6 +7429,11 @@ class SemanticSafetyCase:
                 return
             validated_occurrences.add(identity)
             for record_field in fields(value):
+                # Canonical occurrences only: a private runtime authority
+                # sidecar is outside the schema this revalidates, and it is an
+                # unset slot on a detached canonical copy.
+                if record_field.name.startswith("_"):
+                    continue
                 validate_occurrence(getattr(value, record_field.name))
             post_init = getattr(type(value), "__post_init__", None)
             if post_init is not None:

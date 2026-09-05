@@ -8,6 +8,7 @@ import pytest
 
 from d810.core.runtime_identity import (
     RUNTIME_AUTHORITY_SIDECAR_FIELDS,
+    RUNTIME_CLAIM_SIDECAR_FIELD,
     RuntimeAuthorityArena,
     RuntimeAuthorityArenaError,
     RuntimeAuthorityKind,
@@ -275,9 +276,13 @@ def test_the_sidecar_field_set_is_closed_and_names_private_fields_only() -> None
 
     assert type(RUNTIME_AUTHORITY_SIDECAR_FIELDS) is frozenset
     assert RUNTIME_AUTHORITY_SIDECAR_FIELDS == {
-        "_runtime_identity", "_runtime_binding",
+        "_runtime_identity", "_runtime_binding", "_runtime_refs",
     }
     assert all(name.startswith("_") for name in RUNTIME_AUTHORITY_SIDECAR_FIELDS)
+    # The claim factory writes the slot by this name and the walkers skip it by
+    # this name; one constant, so they cannot drift apart.
+    assert RUNTIME_CLAIM_SIDECAR_FIELD == "_runtime_refs"
+    assert RUNTIME_CLAIM_SIDECAR_FIELD in RUNTIME_AUTHORITY_SIDECAR_FIELDS
 
 
 def test_an_arena_is_reusable_only_until_its_owner_closes_it() -> None:

@@ -8,6 +8,7 @@ content-keyed forever really do.
 
 from __future__ import annotations
 
+import copy
 from dataclasses import replace
 
 import pytest
@@ -38,8 +39,11 @@ from d810.core.runtime_identity import (
 from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
 from d810.ir.semantic_edge import SemanticEdgeRole
 from d810.ir.storage_identity import StorageIdentity, StorageIdentityKind
+import d810.transforms.unflatten_authority.model as model
 from d810.transforms.unflatten_authority.producer_api import bundle_route_proof_refs
 from tests.native_preanalysis import make_native_key
+
+from .helpers import exact_fixture
 
 NATIVE_KEY = make_native_key(function_rva=0x1000)
 
@@ -466,4 +470,181 @@ def test_runtime_ingestion_dedup_stays_content_keyed() -> None:
     with pytest.raises(Exception, match="divergent authoritative payload"):
         route_evidence._runtime_authoritative_proofs(
             (first.route_proofs[0], divergent), owned_route_ids=owned,
+        )
+
+
+# --------------------------------------------------------------------------
+# The claim sidecar channel: a claim carries the references its bundle minted.
+# --------------------------------------------------------------------------
+
+
+def _route_claim_payload() -> tuple[object, object, dict[str, object]]:
+    """Return one real producer claim type, its bundle refs, and its payload.
+
+    The payload is the claim's canonical field values, so the two arms of
+    every byte-identity test below are the *same content* built twice: once
+    with the sidecar and once without.
+    """
+
+    from d810.transforms.unflatten_authority import producer_api
+
+    source, proposal, _exclusion, _refs = exact_fixture()
+    evidence = proposal.route_evidence
+    proof = evidence.route_proofs[0]
+    claim = producer_api.build_equivalent_route_claims(
+        source=source,
+        source_catalog=proposal.source_identity_catalog,
+        route_evidence=evidence,
+        selected_proof_ids=(proof.proof_id,),
+    )[0]
+    payload = {
+        name: getattr(claim, name)
+        for name in authority_ids._RECORD_FIELDS[type(claim)]
+        if name != "claim_id"
+    }
+    return claim, route_join_binding(evidence).claim_refs(proof), payload
+
+
+def test_the_claim_sidecar_is_written_before_the_record_seals(monkeypatch) -> None:
+    """The lifecycle invariant: complete at ``__post_init__``, not after it.
+
+    ``_claim_factory`` builds with ``object.__new__`` and per-field
+    ``object.__setattr__``, so "attach the sidecar afterwards" would compile
+    and would silently mutate an already-sealed record.  This observes the
+    slot from inside the seal.
+    """
+
+    claim, sidecar, payload = _route_claim_payload()
+    claim_type = type(claim)
+    observed: list[object] = []
+    original = claim_type.__post_init__
+
+    def spy(self) -> None:
+        observed.append(getattr(self, "_runtime_refs", "<unwritten>"))
+        original(self)
+
+    monkeypatch.setattr(claim_type, "__post_init__", spy)
+
+    bound = authority_ids._claim_factory(
+        claim_type, runtime_refs=sidecar, **payload,
+    )
+    unbound = authority_ids._claim_factory(claim_type, **payload)
+
+    assert observed == [sidecar, None]
+    assert bound.runtime_refs is sidecar
+    assert unbound.runtime_refs is None
+
+
+def test_a_claim_sidecar_naming_another_route_group_is_a_construction_error() -> None:
+    """A mismatched sidecar is refused *while* the record seals.
+
+    This is the behavioural half of the ordering test: the check lives in
+    ``__post_init__``, so it can only fire if the sidecar was already written
+    when the record sealed.  A factory that attached it later would accept
+    this and produce a claim whose join authority names a different route.
+    """
+
+    claim, _sidecar, payload = _route_claim_payload()
+    foreign_bundle = _bundle()
+    foreign = route_join_binding(foreign_bundle).claim_refs(
+        foreign_bundle.route_proofs[0],
+    )
+
+    assert foreign.atomic_group_id != claim.atomic_group_id
+
+    with pytest.raises(ValueError, match="runtime refs name another route group"):
+        authority_ids._claim_factory(
+            type(claim), runtime_refs=foreign, **payload,
+        )
+
+
+def test_the_claim_sidecar_moves_no_canonical_byte_and_no_content_id() -> None:
+    """Content and authority stay separate: same bytes, same IDs, same value."""
+
+    claim, sidecar, payload = _route_claim_payload()
+    claim_type = type(claim)
+
+    bound = authority_ids._claim_factory(
+        claim_type, runtime_refs=sidecar, **payload,
+    )
+    unbound = authority_ids._claim_factory(claim_type, **payload)
+
+    assert bound.runtime_refs is sidecar
+    assert unbound.runtime_refs is None
+    assert bound == unbound
+    assert bound.claim_id == unbound.claim_id == claim.claim_id
+    assert authority_ids.claim_id(bound) == authority_ids.claim_id(unbound)
+    assert authority_ids.canonical_bytes(bound) == authority_ids.canonical_bytes(
+        unbound
+    )
+    # ... and inside a container, which is how a claim actually reaches a seal.
+    assert authority_ids.canonical_bytes(
+        (bound, unbound)
+    ) == authority_ids.canonical_bytes((unbound, unbound))
+    assert authority_ids.canonical_bytes(bound) == authority_ids.canonical_bytes(
+        claim
+    )
+
+
+def test_a_persisted_claim_decodes_unbound() -> None:
+    """Persistence materializes content; a decoded claim has no authority."""
+
+    claim, sidecar, payload = _route_claim_payload()
+    bound = authority_ids._claim_factory(
+        type(claim), runtime_refs=sidecar, **payload,
+    )
+
+    decoded = authority_ids.canonical_decode(authority_ids.canonical_bytes(bound))
+
+    assert decoded == bound
+    assert decoded.runtime_refs is None
+    assert authority_ids.validate_canonical_roundtrip(bound, type(claim)) == bound
+
+
+def test_a_deep_copy_of_a_bound_claim_is_unbound() -> None:
+    """A copy is a value, not an authority -- the bundle's rule, for claims."""
+
+    claim, sidecar, payload = _route_claim_payload()
+    bound = authority_ids._claim_factory(
+        type(claim), runtime_refs=sidecar, **payload,
+    )
+
+    clone = copy.deepcopy(bound)
+
+    assert clone == bound
+    assert clone.runtime_refs is None
+
+
+def test_registry_snapshot_and_detached_copy_ignore_the_claim_sidecar() -> None:
+    """The seal covers the canonical schema; the sidecar is not in it."""
+
+    claim, sidecar, payload = _route_claim_payload()
+    claim_type = type(claim)
+    bound = authority_ids._claim_factory(
+        claim_type, runtime_refs=sidecar, **payload,
+    )
+    unbound = authority_ids._claim_factory(claim_type, **payload)
+
+    assert bind._registry_structural_snapshot(
+        bound
+    ) == bind._registry_structural_snapshot(unbound)
+
+    detached = bind._detached_canonical_copy(bound, {})
+
+    assert type(detached) is claim_type
+    assert detached.runtime_refs is None
+    assert detached == bound
+    # The detached copy leaves the slot *unwritten*, which is the record shape
+    # every reader of the sidecar must tolerate.
+    claim_type.__post_init__(detached)
+
+
+def test_the_sidecar_channel_refuses_a_claim_type_that_declares_no_slot() -> None:
+    """Only a record that declares the sidecar may be handed one."""
+
+    _claim, sidecar, _payload = _route_claim_payload()
+
+    with pytest.raises(TypeError, match="claim record that declares one"):
+        authority_ids._claim_factory(
+            model.ExactInfeasibleEffectClaim, runtime_refs=sidecar,
         )

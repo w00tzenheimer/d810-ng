@@ -43,9 +43,20 @@ content-derived guarantee for anything else.
 """
 
 
+RUNTIME_CLAIM_SIDECAR_FIELD = "_runtime_refs"
+"""Name of the sidecar slot a claim record carries its arena references in.
+
+Named once, here, so the factory that writes the slot and the walkers that
+skip it cannot drift apart: it is a member of
+``RUNTIME_AUTHORITY_SIDECAR_FIELDS`` by construction below, which
+``tests/unit/core/test_runtime_authority_arena.py`` pins.
+"""
+
+
 RUNTIME_AUTHORITY_SIDECAR_FIELDS = frozenset({
     "_runtime_identity",
     "_runtime_binding",
+    RUNTIME_CLAIM_SIDECAR_FIELD,
 })
 """Closed set of private dataclass fields that carry live runtime authority.
 
@@ -63,6 +74,12 @@ to skip them.  It is an explicit closed set rather than a "private and
 ``PreparationAuthorityReceipt._minted``, whose ``__post_init__`` requires them
 to be present.  Adding a sidecar therefore means adding its name here, on
 purpose and visibly.
+
+Three names are in it: ``_runtime_identity`` (the minting scope of an
+internally produced route bundle), ``_runtime_binding`` (the arena that is the
+join authority for that bundle) and ``_runtime_refs`` (the references a record
+minted *from* a bundle -- a claim -- carries so a join need not read its
+content ID).
 """
 
 
@@ -473,6 +490,7 @@ def is_runtime_authority_identity(value: object) -> bool:
 __all__ = [
     "RUNTIME_AUTHORITY_ID_PREFIX",
     "RUNTIME_AUTHORITY_SIDECAR_FIELDS",
+    "RUNTIME_CLAIM_SIDECAR_FIELD",
     "RuntimeAuthorityArena",
     "RuntimeAuthorityArenaError",
     "RuntimeAuthorityKind",

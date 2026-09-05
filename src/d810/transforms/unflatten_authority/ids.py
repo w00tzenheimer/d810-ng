@@ -19,6 +19,7 @@ from d810.ir.flowgraph import (
     InsnKind,
     OperandKind,
 )
+from d810.core.runtime_identity import RUNTIME_CLAIM_SIDECAR_FIELD
 from d810.ir.expressions import ValueOpKind
 from d810.ir.semantics import CallKind, ControlTransferKind, PredicateKind
 from d810.transforms.cfg_transaction import TransactionAttemptId
@@ -2025,12 +2026,43 @@ def _record_content_id(schema: str, value: object, omitted_field: str) -> str:
     return result
 
 
-def _claim_factory(cls: type[object], *args: object, **kwargs: object) -> object:
+def _claim_factory(
+    cls: type[object],
+    *args: object,
+    runtime_refs: object = None,
+    **kwargs: object,
+) -> object:
+    """Mint one claim, optionally carrying the runtime refs it was built from.
+
+    ``runtime_refs`` is the keyword-only *sidecar channel*: the caller that
+    holds the route bundle passes the references its binding already minted,
+    so the claim carries a join authority without re-minting, rendering or
+    round-tripping anything.  The sidecar is outside ``_RECORD_FIELDS``, so no
+    canonical byte and no content ID moves -- ``claim_id`` stays exactly the
+    content fingerprint it was.
+
+    The slot is written **before** the ID is minted and before
+    ``__post_init__`` runs, because this factory builds with
+    ``object.__new__`` and per-field ``object.__setattr__``: a record must be
+    complete when it seals, and attaching authority afterwards would be a
+    post-seal mutation that the record's own validation could never see.  For
+    the same reason a claim type that declares the slot always gets it
+    written, ``None`` included -- a generic ``dataclasses.fields`` walker
+    reads it by name and an unwritten slot raises.
+    """
+
     _ensure_registries()
     declared = _RECORD_FIELDS.get(cls)
     if declared is None or "claim_id" not in declared:
         raise TypeError("claim factory requires a registered claim record")
     payload_names = tuple(name for name in declared if name != "claim_id")
+    carries_sidecar = any(
+        field.name == RUNTIME_CLAIM_SIDECAR_FIELD for field in fields(cls)
+    )
+    if runtime_refs is not None and not carries_sidecar:
+        raise TypeError(
+            "claim factory sidecar requires a claim record that declares one"
+        )
     if args and kwargs:
         raise TypeError("claim factory accepts positional or keyword fields, not both")
     optional_defaults = {
@@ -2058,6 +2090,8 @@ def _claim_factory(cls: type[object], *args: object, **kwargs: object) -> object
     raw = object.__new__(cls)
     for name in payload_names:
         object.__setattr__(raw, name, kwargs[name])
+    if carries_sidecar:
+        object.__setattr__(raw, RUNTIME_CLAIM_SIDECAR_FIELD, runtime_refs)
     object.__setattr__(raw, "claim_id", "sha256:" + "0" * 64)
     object.__setattr__(raw, "claim_id", claim_id(raw))
     try:
@@ -2071,6 +2105,8 @@ def _claim_factory(cls: type[object], *args: object, **kwargs: object) -> object
             raise
         kwargs = {name: getattr(raw, name) for name in payload_names}
         kwargs["claim_id"] = normalized_id
+        if carries_sidecar:
+            kwargs[RUNTIME_CLAIM_SIDECAR_FIELD] = runtime_refs
         return cls(**kwargs)
     return raw
 
