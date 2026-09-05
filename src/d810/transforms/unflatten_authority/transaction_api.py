@@ -1448,6 +1448,7 @@ def _observed_live_binding_failure(
     authority_id_value: str | None = None,
     binding_id_value: str | None = None,
     candidate_fingerprint: str | None = None,
+    route_authority_verification: RouteRebindVerification | None = None,
 ) -> model.UnflattenAuthorityVerdict:
     """Log a bounded stage-specific live binding rejection."""
     message = str(error)
@@ -1479,6 +1480,7 @@ def _observed_live_binding_failure(
         None,
         (),
         rejection_detail=detail,
+        _route_authority_verification=route_authority_verification,
     )
 
 
@@ -5983,7 +5985,7 @@ def _revalidate_observed_unflatten_authority_in_session(
         # observed one.  It gets its own provenance label: a refusal here is a
         # route-authority rebind failure, and reporting it as an inventory
         # failure would send a reader to the wrong stage.
-        _record_route_authority_rebind(
+        observed_route_authority_verification = _record_route_authority_rebind(
             validated_prepared.proposal.route_evidence,
             phase=model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY,
         )
@@ -6018,6 +6020,7 @@ def _revalidate_observed_unflatten_authority_in_session(
             candidate_fingerprint=_unavailable_candidate_fingerprint(
                 "observed-inventory"
             ),
+            route_authority_verification=observed_route_authority_verification,
         )
     inventory_ms = _elapsed_ms(inventory_started_ns, perf_counter_ns())
     phase_build_metrics = model.PhaseBuildMetrics(
@@ -6056,6 +6059,7 @@ def _revalidate_observed_unflatten_authority_in_session(
             authority_id_value=validated_prepared.authority_id,
             binding_id_value=authority.binding_id,
             candidate_fingerprint=observed_fingerprint,
+            route_authority_verification=observed_route_authority_verification,
         )
     evaluation_started_ns = perf_counter_ns()
     observed_case = build_semantic_case(
@@ -6063,7 +6067,14 @@ def _revalidate_observed_unflatten_authority_in_session(
         phase=model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY,
         inputs=inputs,
     )
-    verdict = replace(evaluate_case(observed_case), binding_id=authority.binding_id)
+    # The seam outcome rides the verdict from here on: the observed phase
+    # returns nothing else, and every later ``replace`` carries the private
+    # slot along, so a rejection carries it exactly like an acceptance.
+    verdict = replace(
+        evaluate_case(observed_case),
+        binding_id=authority.binding_id,
+        _route_authority_verification=observed_route_authority_verification,
+    )
     observed_ledger = build_semantic_loss_ledger(observed_case, verdict)
     verdict = replace(verdict, loss_ledger=observed_ledger)
     projected_ledger = validated_prepared.projected_loss_ledger

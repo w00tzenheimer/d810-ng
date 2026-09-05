@@ -38,6 +38,7 @@ from d810.core import logging as d810_logging
 from d810.core.runtime_identity import (
     RUNTIME_AUTHORITY_SIDECAR_FIELDS,
     RUNTIME_SUBJECT_SIDECAR_FIELD,
+    RUNTIME_VERDICT_SIDECAR_FIELD,
     RuntimeAuthorityArena,
     RuntimeAuthorityKind,
     RuntimeJoinRejected,
@@ -1081,3 +1082,97 @@ def test_a_refused_projected_seam_reports_its_own_stage_and_fingerprint(
             "projected-route-authority-rebind"
         )
     )
+
+
+def _verdict(**overrides):
+    payload = {
+        "accepted": False,
+        "phase": model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY,
+        "reason": model.UnflattenAuthorityReason.LIVE_BINDING_FAILED,
+        "authority_id": authority_ids.authority_id("verdict-sidecar-authority"),
+        "binding_id": authority_ids.authority_id("verdict-sidecar-binding"),
+        "case_id": None,
+        "candidate_fingerprint": authority_ids.authority_id("verdict-sidecar-candidate"),
+        "safety_case": None,
+        "failed_obligations": (),
+    }
+    payload.update(overrides)
+    return model.UnflattenAuthorityVerdict(**payload)
+
+
+def test_the_verdict_sidecar_moves_no_canonical_byte_and_no_content_id() -> None:
+    """Content and provenance stay separate: same bytes, same IDs, same value."""
+
+    bound = _verdict(
+        _route_authority_verification=RouteRebindVerification.PRODUCER_ARENA_CLOSED,
+    )
+    unbound = _verdict()
+
+    assert bound.route_authority_verification is (
+        RouteRebindVerification.PRODUCER_ARENA_CLOSED
+    )
+    assert unbound.route_authority_verification is None
+    assert bound == unbound
+    assert authority_ids.canonical_bytes(bound) == authority_ids.canonical_bytes(
+        unbound
+    )
+    assert authority_ids.content_id(
+        "unflatten.verdict-sidecar.v1", bound,
+    ) == authority_ids.content_id("unflatten.verdict-sidecar.v1", unbound)
+    assert authority_ids.authority_id(bound) == authority_ids.authority_id(unbound)
+    # ...and inside a container, which is how a verdict actually reaches a seal.
+    assert authority_ids.canonical_bytes(
+        (bound, unbound)
+    ) == authority_ids.canonical_bytes((unbound, unbound))
+    assert "_route_authority_verification" not in repr(bound)
+
+
+def test_a_persisted_verdict_decodes_without_the_sidecar() -> None:
+    """Provenance is process-local: it is never encoded and never comes back."""
+
+    bound = _verdict(
+        _route_authority_verification=RouteRebindVerification.PRODUCER_UNBOUND,
+    )
+
+    decoded = authority_ids.canonical_decode(authority_ids.canonical_bytes(bound))
+
+    assert decoded == bound
+    assert decoded.route_authority_verification is None
+
+
+def test_the_generic_walkers_tolerate_a_detached_verdict() -> None:
+    """A detached copy leaves the slot *unwritten* -- the shape that raised in 5b-2."""
+
+    bound = _verdict(
+        _route_authority_verification=RouteRebindVerification.PRODUCER_RECORDS_VERIFIED,
+    )
+
+    detached = bind._detached_canonical_copy(bound, {})
+
+    with pytest.raises(AttributeError):
+        object.__getattribute__(detached, "_route_authority_verification")
+    assert detached.route_authority_verification is None
+    assert detached == bound
+    assert authority_ids.canonical_bytes(detached) == authority_ids.canonical_bytes(
+        bound
+    )
+    assert bind._registry_structural_snapshot(
+        detached
+    ) == bind._registry_structural_snapshot(bound)
+    # Revalidating the rebuilt record must not raise on the unwritten slot.
+    model.UnflattenAuthorityVerdict.__post_init__(detached)
+
+
+def test_the_verdict_sidecar_is_in_the_closed_set_and_outside_the_schema() -> None:
+    assert RUNTIME_VERDICT_SIDECAR_FIELD in RUNTIME_AUTHORITY_SIDECAR_FIELDS
+    assert RUNTIME_VERDICT_SIDECAR_FIELD == "_route_authority_verification"
+    assert RUNTIME_VERDICT_SIDECAR_FIELD not in authority_ids._RECORD_FIELDS[
+        model.UnflattenAuthorityVerdict
+    ]
+    assert all(
+        field.compare is False and field.repr is False
+        for field in fields(model.UnflattenAuthorityVerdict)
+        if field.name == RUNTIME_VERDICT_SIDECAR_FIELD
+    )
+    with pytest.raises(TypeError, match="must be a RouteRebindVerification"):
+        _verdict(_route_authority_verification="producer-unbound")

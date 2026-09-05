@@ -11,15 +11,21 @@ from __future__ import annotations
 
 import ast
 import logging
-from dataclasses import fields
+from dataclasses import fields, replace
 from pathlib import Path
 
 import pytest
 
 from d810.analyses.control_flow.semantic_route_evidence import (
     RouteRebindVerification,
+    canonical_semantic_evidence_from_proofs,
+    materialize_route_evidence,
+    route_authority_phase,
 )
 from d810.core.runtime_identity import RuntimeJoinRejected
+from d810.transforms.unflatten_authority.canonical_session import (
+    active_canonical_session,
+)
 from d810.hexrays.mutation import patch_transaction
 from d810.hexrays.mutation.patch_transaction import (
     PatchTransactionExecution,
@@ -44,8 +50,25 @@ def fields_by_name(record) -> dict:
 _LIVE_MATURITY = 8  # MMAT_GLBOPT1; the live binder needs a real provider stage
 
 
-def _bound_authority():
+def _bound_authority(bundle_state: str = "live"):
     fixture, source, plan, projected, gates = _c1_direct_preparation_case()
+    if bundle_state != "live":
+        proposal = plan.unflatten_proposal
+        if bundle_state == "dead":
+            # Exactly what the emission does: build the bundle inside a phase
+            # that ends before either transaction phase runs.
+            with route_authority_phase("test-emission"):
+                evidence = canonical_semantic_evidence_from_proofs(
+                    native_key=proposal.route_evidence.native_key,
+                    generation=proposal.route_evidence.generation,
+                    proofs=proposal.route_evidence.route_proofs,
+                )
+        else:
+            evidence = materialize_route_evidence(proposal.route_evidence)
+        plan = replace(
+            plan,
+            unflatten_proposal=replace(proposal, route_evidence=evidence),
+        )
     preparation = transaction_api.prepare_unflatten_authority(
         source=source,
         projection=CfgProjection(plan.plan_id, plan.snapshot_id, projected),
@@ -168,3 +191,51 @@ def test_the_participant_copies_the_verification_off_the_preparation_result() ->
         for keyword in node.keywords
     }
     assert "projected_route_authority_verification" in passed
+
+
+@pytest.mark.parametrize(
+    "bundle_state,expected",
+    (
+        ("live", RouteRebindVerification.PRODUCER_RECORDS_VERIFIED),
+        ("dead", RouteRebindVerification.PRODUCER_ARENA_CLOSED),
+        ("absent", RouteRebindVerification.PRODUCER_UNBOUND),
+    ),
+)
+def test_the_observed_verdict_carries_what_the_seam_verified(
+    bundle_state: str, expected: RouteRebindVerification,
+) -> None:
+    """The observed phase returns only a verdict, so the verdict carries it.
+
+    Read after the whole revalidation has returned: the observed session is
+    closed and both arenas are gone, so this is the only surviving answer to
+    "what could the seam verify".
+    """
+
+    arguments = _bound_authority(bundle_state)
+
+    verdict = transaction_api.revalidate_observed_unflatten_authority(**arguments)
+
+    assert verdict.route_authority_verification is expected
+    assert active_canonical_session() is None
+    # Non-authoritative: the weakest outcome does not reject anything.
+    assert verdict.accepted
+
+
+def test_a_rejected_observed_verdict_carries_it_too(monkeypatch) -> None:
+    """A rejection is exactly when a reader most wants the provenance."""
+
+    arguments = _bound_authority("dead")
+    real = transaction_api._build_semantic_graph_inventory
+
+    def _broken(*args, **kwargs):
+        raise ValueError("observed inventory refused for this test")
+
+    monkeypatch.setattr(transaction_api, "_build_semantic_graph_inventory", _broken)
+    verdict = transaction_api.revalidate_observed_unflatten_authority(**arguments)
+
+    assert not verdict.accepted
+    assert "observed_inventory" in (verdict.rejection_detail or "")
+    assert verdict.route_authority_verification is (
+        RouteRebindVerification.PRODUCER_ARENA_CLOSED
+    )
+    assert real is not _broken

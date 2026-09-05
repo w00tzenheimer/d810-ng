@@ -7611,10 +7611,42 @@ class UnflattenAuthorityVerdict:
     observed_acceptance: "ObservedUnflattenAuthorityAccepted | None" = None
     loss_ledger: SemanticLossLedger | None = None
     rejection_detail: str | None = None
+    # Private, and therefore outside the canonical wire schema: what the
+    # producer/transaction seam was able to verify about this transaction's
+    # route bundle.  It is process-local provenance, not content -- a record of
+    # *what was checked*, never a grant, and nothing reads it to decide
+    # anything.  It rides the verdict because the observed phase returns
+    # nothing else, and because the session and both arenas that decided it are
+    # gone by the time a receipt or a diagnostic is read.  ``None`` is valid on
+    # every verdict, including every one built before the seam runs.
+    _route_authority_verification: RouteRebindVerification | None = dataclass_field(
+        default=None, compare=False, repr=False,
+    )
+
+    @property
+    def route_authority_verification(self) -> "RouteRebindVerification | None":
+        """Return what the seam verified for this transaction, if it recorded it.
+
+        Read with a default for the same reason as every other sidecar
+        accessor on this branch: a detached canonical copy is rebuilt field by
+        field from the canonical schema and deliberately never writes a private
+        slot, so a bare attribute read would raise on exactly the shape
+        detaching produces.
+        """
+
+        return getattr(self, "_route_authority_verification", None)
 
     def __post_init__(self) -> None:
         if type(self.accepted) is not bool:
             raise TypeError("accepted must be bool")
+        # O(1), and deliberately here: the sidecar is part of the record's
+        # completeness, so it is checked while the record seals rather than
+        # trusted afterwards.
+        verification = getattr(self, "_route_authority_verification", None)
+        if verification is not None and type(verification) is not RouteRebindVerification:
+            raise TypeError(
+                "route authority verification must be a RouteRebindVerification"
+            )
         _enum(self.phase, UnflattenAuthorityPhase, "phase")
         _enum(self.reason, UnflattenAuthorityReason, "reason")
         for name in ("authority_id", "binding_id", "case_id"):
