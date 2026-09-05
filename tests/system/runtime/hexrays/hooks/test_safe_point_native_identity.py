@@ -16,6 +16,7 @@ import pytest
 
 from d810.hexrays.hooks.safe_point_coordinator import (
     HexRaysSafePointCoordinator,
+    OwnedStageOutcome,
     SafePointKey,
 )
 from d810.hexrays.ir.native_identity import (
@@ -81,11 +82,11 @@ def test_second_live_proxy_cannot_reclaim_one_native_safe_point(
 
     first = coordinator.run(
         _key(block.mba),
-        lambda: calls.append("first") or 1,
+        lambda: calls.append("first") or OwnedStageOutcome.mutated(1),
     )
     second = coordinator.run(
         _key(block.mba),
-        lambda: calls.append("second") or 1,
+        lambda: calls.append("second") or OwnedStageOutcome.mutated(1),
     )
 
     assert first.claimed is True

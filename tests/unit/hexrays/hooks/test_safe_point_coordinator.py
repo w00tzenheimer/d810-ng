@@ -6,6 +6,7 @@ import pytest
 
 from d810.hexrays.hooks.safe_point_coordinator import (
     HexRaysSafePointCoordinator,
+    OwnedStageOutcome,
     SafePointDisposition,
     SafePointKey,
 )
@@ -80,11 +81,11 @@ def test_two_proxies_for_one_mba_are_claimed_once() -> None:
 
     first = coordinator.run(
         _key(mba=_SwigProxy(0x7F0000001000)),
-        lambda: calls.append("first") or 0,
+        lambda: calls.append("first") or OwnedStageOutcome.abstained(),
     )
     second = coordinator.run(
         _key(mba=_SwigProxy(0x7F0000001000)),
-        lambda: calls.append("second") or 0,
+        lambda: calls.append("second") or OwnedStageOutcome.abstained(),
     )
 
     assert first.claimed is True
@@ -116,8 +117,12 @@ def test_same_key_is_claimed_once() -> None:
     key = _key()
     calls: list[str] = []
 
-    first = coordinator.run(key, lambda: calls.append("first") or 0)
-    second = coordinator.run(key, lambda: calls.append("second") or 1)
+    first = coordinator.run(
+        key, lambda: calls.append("first") or OwnedStageOutcome.abstained()
+    )
+    second = coordinator.run(
+        key, lambda: calls.append("second") or OwnedStageOutcome.mutated(1)
+    )
 
     assert first.disposition is SafePointDisposition.ABSTAINED
     assert first.claimed is True
@@ -131,12 +136,13 @@ def test_new_generation_maturity_mba_or_stage_can_be_claimed() -> None:
     mba_a = SimpleNamespace()
     mba_b = SimpleNamespace()
 
+    abstain = OwnedStageOutcome.abstained
     results = [
-        coordinator.run(_key(mba=mba_a), lambda: 0),
-        coordinator.run(_key(mba=mba_a, generation=2), lambda: 0),
-        coordinator.run(_key(mba=mba_a, maturity=7), lambda: 0),
-        coordinator.run(_key(mba=mba_b), lambda: 0),
-        coordinator.run(_key(mba=mba_a, stage_id="other-stage"), lambda: 0),
+        coordinator.run(_key(mba=mba_a), abstain),
+        coordinator.run(_key(mba=mba_a, generation=2), abstain),
+        coordinator.run(_key(mba=mba_a, maturity=7), abstain),
+        coordinator.run(_key(mba=mba_b), abstain),
+        coordinator.run(_key(mba=mba_a, stage_id="other-stage"), abstain),
     ]
 
     assert all(result.claimed for result in results)
@@ -144,7 +150,7 @@ def test_new_generation_maturity_mba_or_stage_can_be_claimed() -> None:
 
 def test_mutation_disposition_requires_stale_pointer_barrier() -> None:
     coordinator = HexRaysSafePointCoordinator()
-    result = coordinator.run(_key(), lambda: 2)
+    result = coordinator.run(_key(), lambda: OwnedStageOutcome.mutated(2))
 
     assert result.disposition is SafePointDisposition.MUTATED
     assert result.mutation_count == 2
@@ -153,13 +159,7 @@ def test_mutation_disposition_requires_stale_pointer_barrier() -> None:
 
 def test_analysis_only_result_allows_hosted_lane_to_continue() -> None:
     coordinator = HexRaysSafePointCoordinator()
-    result = coordinator.run(
-        _key(),
-        lambda: SimpleNamespace(
-            applied_count=0,
-            facts_published=True,
-        ),
-    )
+    result = coordinator.run(_key(), OwnedStageOutcome.analysis_only)
 
     assert result.disposition is SafePointDisposition.ANALYSIS_ONLY
     assert result.mutation_count == 0
@@ -170,8 +170,76 @@ def test_reset_allows_current_key_to_be_claimed_again() -> None:
     coordinator = HexRaysSafePointCoordinator()
     key = _key()
 
-    coordinator.run(key, lambda: 0)
+    coordinator.run(key, OwnedStageOutcome.abstained)
     coordinator.reset()
-    result = coordinator.run(key, lambda: 0)
+    result = coordinator.run(key, OwnedStageOutcome.abstained)
 
     assert result.claimed is True
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        0,
+        1,
+        True,
+        None,
+        "mutated",
+        SimpleNamespace(applied_count=3),
+        SimpleNamespace(mutations=1),
+        SimpleNamespace(total=2),
+        SimpleNamespace(facts_published=True),
+        {"applied_count": 4},
+        SafePointDisposition.MUTATED,
+    ],
+)
+def test_untyped_stage_outcome_is_rejected(value) -> None:
+    """An unknown outcome must fail closed, never read as no-mutation."""
+
+    coordinator = HexRaysSafePointCoordinator()
+
+    with pytest.raises(TypeError):
+        coordinator.run(_key(), lambda: value)
+
+
+def test_rejected_outcome_still_retains_the_claim() -> None:
+    """A failing callback cannot retry the same native epoch."""
+
+    coordinator = HexRaysSafePointCoordinator()
+    key = _key()
+
+    with pytest.raises(TypeError):
+        coordinator.run(key, lambda: 1)
+
+    assert coordinator.claim(key) is False
+
+
+def test_owned_stage_outcome_from_applied_count() -> None:
+    assert OwnedStageOutcome.from_applied_count(0) == OwnedStageOutcome.abstained()
+    assert OwnedStageOutcome.from_applied_count(3) == OwnedStageOutcome.mutated(3)
+    assert (
+        OwnedStageOutcome.from_applied_count(0, facts_published=True)
+        == OwnedStageOutcome.analysis_only()
+    )
+
+
+def test_owned_stage_outcome_rejects_inconsistent_counts() -> None:
+    with pytest.raises(ValueError):
+        OwnedStageOutcome(
+            disposition=SafePointDisposition.MUTATED,
+            mutation_count=0,
+        )
+    with pytest.raises(ValueError):
+        OwnedStageOutcome(
+            disposition=SafePointDisposition.ANALYSIS_ONLY,
+            mutation_count=1,
+        )
+    with pytest.raises(ValueError):
+        OwnedStageOutcome.from_applied_count(-1)
+    with pytest.raises(TypeError):
+        OwnedStageOutcome(disposition="mutated", mutation_count=1)  # type: ignore[arg-type]
+
+
+def test_owned_stage_outcome_rejects_a_boolean_count() -> None:
+    with pytest.raises(TypeError):
+        OwnedStageOutcome.from_applied_count(True)  # type: ignore[arg-type]

@@ -10,11 +10,10 @@ install its stale-pointer fence.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
 
-from d810.core import typing
 from d810.hexrays.ir.native_identity import NativeIdentity, native_object_identity
 
 
@@ -24,6 +23,70 @@ class SafePointDisposition(str, Enum):
     ABSTAINED = "abstained"
     ANALYSIS_ONLY = "analysis_only"
     MUTATED = "mutated"
+
+
+@dataclass(frozen=True, slots=True)
+class OwnedStageOutcome:
+    """The only outcome a D-810-owned stage may report to the coordinator.
+
+    The coordinator used to accept ``Any`` and guess at ``applied_count`` /
+    ``mutations`` / ``total`` fields.  A producer that renamed a field, or
+    returned an object carrying none of them, silently read as "no mutation"
+    and the adapter skipped its stale-pointer fence.  The disposition is now
+    stated by the committer, not inferred by the consumer.
+    """
+
+    disposition: SafePointDisposition
+    mutation_count: int = 0
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.disposition, SafePointDisposition):
+            raise TypeError("owned stage outcome requires a SafePointDisposition")
+        if isinstance(self.mutation_count, bool) or not isinstance(
+            self.mutation_count, int
+        ):
+            raise TypeError("owned stage mutation_count must be an integer")
+        if self.mutation_count < 0:
+            raise ValueError("owned stage mutation_count must be non-negative")
+        mutated = self.disposition is SafePointDisposition.MUTATED
+        if mutated and self.mutation_count <= 0:
+            raise ValueError("a mutated outcome requires a positive count")
+        if not mutated and self.mutation_count:
+            raise ValueError("a non-mutated outcome cannot carry mutations")
+
+    @classmethod
+    def abstained(cls) -> "OwnedStageOutcome":
+        """The stage did not run, or ran and changed nothing observable."""
+        return cls(disposition=SafePointDisposition.ABSTAINED)
+
+    @classmethod
+    def analysis_only(cls) -> "OwnedStageOutcome":
+        """The stage published facts and left live microcode untouched."""
+        return cls(disposition=SafePointDisposition.ANALYSIS_ONLY)
+
+    @classmethod
+    def mutated(cls, mutation_count: int) -> "OwnedStageOutcome":
+        """The stage committed *mutation_count* live modifications."""
+        return cls(
+            disposition=SafePointDisposition.MUTATED,
+            mutation_count=mutation_count,
+        )
+
+    @classmethod
+    def from_applied_count(
+        cls,
+        applied_count: int,
+        *,
+        facts_published: bool = False,
+    ) -> "OwnedStageOutcome":
+        """Build the outcome a committer reports from its own applied count."""
+        if isinstance(applied_count, bool) or not isinstance(applied_count, int):
+            raise TypeError("owned stage applied_count must be an integer")
+        if applied_count < 0:
+            raise ValueError("owned stage applied_count must be non-negative")
+        if applied_count > 0:
+            return cls.mutated(applied_count)
+        return cls.analysis_only() if facts_published else cls.abstained()
 
 
 @dataclass(frozen=True, slots=True)
@@ -143,15 +206,6 @@ class HexRaysSafePointCoordinator:
     existing maturity-wide ``_pipeline_just_fired`` fence.
     """
 
-    _MUTATION_FIELDS = ("applied_count", "mutation_count", "mutations", "total")
-    _FACT_FIELDS = (
-        "facts_published",
-        "analysis_only",
-        "facts",
-        "analysis_outputs",
-        "evidence_outputs",
-    )
-
     def __init__(self) -> None:
         self._claimed: set[SafePointKey] = set()
 
@@ -171,14 +225,16 @@ class HexRaysSafePointCoordinator:
     def run(
         self,
         key: SafePointKey,
-        operation: Callable[[], typing.Any],
+        operation: Callable[[], OwnedStageOutcome],
     ) -> SafePointResult:
-        """Claim *key* and classify the detached operation result.
+        """Claim *key* and record the operation's own stated outcome.
 
         A duplicate is an abstention and does not call ``operation``.  An
-        operation exception is deliberately propagated to the adapter's
-        existing exception boundary; the claim is retained so a failing
-        callback cannot retry the same native epoch indefinitely.
+        operation exception -- including the :class:`TypeError` raised for an
+        outcome that is not an :class:`OwnedStageOutcome` -- is deliberately
+        propagated to the adapter's existing exception boundary; the claim is
+        retained so a failing callback cannot retry the same native epoch
+        indefinitely.
         """
         if not callable(operation):
             raise TypeError("safe-point operation must be callable")
@@ -190,79 +246,34 @@ class HexRaysSafePointCoordinator:
             )
         return self._result_for(key, operation())
 
-    @classmethod
+    @staticmethod
     def _result_for(
-        cls,
         key: SafePointKey,
-        value: typing.Any,
+        outcome: object,
     ) -> SafePointResult:
-        if isinstance(value, SafePointDisposition):
-            disposition = value
-            mutation_count = 1 if disposition is SafePointDisposition.MUTATED else 0
-            return SafePointResult(
-                key=key,
-                disposition=disposition,
-                claimed=True,
-                mutation_count=mutation_count,
-            )
+        """Record *outcome*, refusing anything that is not the typed contract.
 
-        mutation_count = cls._mutation_count(value)
-        if mutation_count > 0:
-            return SafePointResult(
-                key=key,
-                disposition=SafePointDisposition.MUTATED,
-                claimed=True,
-                mutation_count=mutation_count,
+        Failing closed matters more than tolerance here: the disposition
+        decides whether the adapter installs its stale-pointer fence, so an
+        unrecognised value must never be silently read as "no mutation".
+        """
+        if not isinstance(outcome, OwnedStageOutcome):
+            raise TypeError(
+                "owned stage at safe point "
+                f"{key.stage_id!r} must return an OwnedStageOutcome, not "
+                f"{type(outcome).__name__}"
             )
-        if cls._publishes_facts(value):
-            disposition = SafePointDisposition.ANALYSIS_ONLY
-        else:
-            disposition = SafePointDisposition.ABSTAINED
         return SafePointResult(
             key=key,
-            disposition=disposition,
+            disposition=outcome.disposition,
             claimed=True,
+            mutation_count=outcome.mutation_count,
         )
-
-    @classmethod
-    def _mutation_count(cls, value: typing.Any) -> int:
-        if isinstance(value, bool):
-            return int(value)
-        if isinstance(value, int):
-            return max(0, int(value))
-        for name in cls._MUTATION_FIELDS:
-            candidate = cls._read(value, name)
-            if candidate is None:
-                continue
-            try:
-                return max(0, int(candidate))
-            except (TypeError, ValueError, OverflowError):
-                continue
-        return 0
-
-    @classmethod
-    def _publishes_facts(cls, value: typing.Any) -> bool:
-        for name in cls._FACT_FIELDS:
-            candidate = cls._read(value, name)
-            if candidate is None:
-                continue
-            if name in {"facts_published", "analysis_only"}:
-                if bool(candidate):
-                    return True
-                continue
-            if candidate:
-                return True
-        return False
-
-    @staticmethod
-    def _read(value: typing.Any, name: str) -> typing.Any:
-        if isinstance(value, Mapping):
-            return value.get(name)
-        return getattr(value, name, None)
 
 
 __all__ = [
     "HexRaysSafePointCoordinator",
+    "OwnedStageOutcome",
     "SafePointDisposition",
     "SafePointKey",
     "SafePointResult",

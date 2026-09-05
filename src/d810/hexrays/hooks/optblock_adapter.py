@@ -56,6 +56,7 @@ from d810.hexrays.mutation.deferred_modifier import DeferredGraphModifier
 from d810.hexrays.mutation.instruction_commit import NativeEpoch
 from d810.hexrays.hooks.safe_point_coordinator import (
     HexRaysSafePointCoordinator,
+    OwnedStageOutcome,
     SafePointDisposition,
     SafePointKey,
 )
@@ -628,8 +629,14 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
         mba: ida_hexrays.mbl_array_t,
         *,
         phase_label: str,
-    ) -> object:
-        """Run the already-eligible pipeline and return its detached outcome."""
+    ) -> OwnedStageOutcome:
+        """Run the already-eligible pipeline and state its detached outcome.
+
+        This is the single committer for the D-810-owned pipeline stage: it
+        is the only place that knows whether live microcode changed, so it
+        states the disposition rather than leaving the coordinator to guess
+        it from whatever fields the returned object happens to carry.
+        """
         try:
             func_ea_hex = hex(int(getattr(mba, "entry_ea", 0) or 0))
             optimizer_logger.info(
@@ -651,7 +658,7 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
                     func_ea_hex,
                     phase_label,
                 )
-                return
+                return OwnedStageOutcome.abstained()
             execution_attempt_context = getattr(
                 self._flow_context,
                 "execution_attempt_context",
@@ -679,15 +686,23 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
                         session_id=session_id,
                         parent_attempt_id=parent_attempt_id,
                     )
-            total = self._pass_pipeline.run(
+            applied_count = self._pass_pipeline.run(
                 mba,
                 **pipeline_kwargs,
             )
-            mutation_count = getattr(total, "applied_count", total)
-            if isinstance(mutation_count, int) and mutation_count > 0:
+            # ``PatchPlanRuntime`` pipelines return the count of applied
+            # modifications.  Anything else is a broken contract, not a
+            # zero: accepting it would drop the stale-pointer fence.
+            if isinstance(applied_count, bool) or not isinstance(applied_count, int):
+                raise TypeError(
+                    "pass pipeline must return an applied-modification count, "
+                    f"not {type(applied_count).__name__}"
+                )
+            outcome = OwnedStageOutcome.from_applied_count(applied_count)
+            if outcome.mutation_count:
                 optimizer_logger.info(
                     "PassPipeline: applied %d total modification(s) on function %s at %s",
-                    mutation_count,
+                    outcome.mutation_count,
                     func_ea_hex,
                     phase_label,
                 )
@@ -697,13 +712,16 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
                     func_ea_hex,
                     phase_label,
                 )
-            return total
+            return outcome
         except Exception:
             optimizer_logger.exception(
                 "PassPipeline: error during %s processing",
                 phase_label,
             )
-        return 0
+        # The pipeline raised before any commit could be observed here.  The
+        # committed-mutation path returns above, so this is an abstention,
+        # not a suppressed mutation.
+        return OwnedStageOutcome.abstained()
 
     def _invalidate_flow_context(self, reason: str = "") -> None:
         if self._flow_context is not None and reason:
