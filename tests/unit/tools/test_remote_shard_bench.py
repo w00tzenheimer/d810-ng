@@ -582,3 +582,148 @@ def test_doctests_pass() -> None:
 
     results = doctest.testmod(bench, verbose=False)
     assert results.failed == 0, results
+
+
+def test_a_failing_git_call_means_unknown_provenance_not_a_digest(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A digest computed from partial git output would be a false attestation."""
+    _worktree(tmp_path, "wt0")
+    calls: list[list[str]] = []
+
+    def _run_git(argv, **kwargs):
+        calls.append(list(argv))
+        if "diff" in argv:
+            raise bench.subprocess.CalledProcessError(128, argv)
+
+        class _Completed:
+            stdout = "abc123\n"
+
+        return _Completed()
+
+    monkeypatch.setattr(bench.subprocess, "run", _run_git)
+
+    digest, dirty = bench.read_source_state(tmp_path / ".worktrees" / "wt0")
+
+    assert digest is None
+    assert dirty is True
+
+    monkeypatch.setattr(
+        bench, "run_commands_concurrently", lambda commands, cwd, env: ([(1.0, 0)], 1.5)
+    )
+    status = bench.main(
+        [
+            "--remote", "host", "--shard", "wt0=t::a",
+            "--baseline", "none", "--repo-root", str(tmp_path),
+        ]
+    )
+    printed = capsys.readouterr().out
+
+    assert status == 1
+    assert "provenance is unknown" in printed
+    assert "cannot determine the source state" in printed
+
+
+def test_every_git_call_is_checked(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    seen: list[bool] = []
+
+    def _run_git(argv, **kwargs):
+        seen.append(kwargs.get("check", False))
+
+        class _Completed:
+            stdout = ""
+
+        return _Completed()
+
+    monkeypatch.setattr(bench.subprocess, "run", _run_git)
+    bench.read_source_state(tmp_path)
+
+    assert len(seen) == 4
+    assert all(seen)
+
+
+def test_mixed_sources_report_throughput_instead_of_a_ratio() -> None:
+    summary = bench.aggregate(
+        [_result(0, 100.0, revision="aaaa"), _result(1, 50.0, revision="bbbb")],
+        parallel_wall=104.0,
+        baseline_wall=182.0,
+        baseline_label="remote-sequential",
+        baseline_summary="2 passed in 170.0s",
+        mixed_sources=True,
+    )
+
+    table = bench.render_table(summary)
+
+    assert summary.speedup is None
+    assert "|speedup (baseline / parallel)|n/a (mixed sources)|" in table
+    assert "|arm|cases|wall s|cases per minute|" in table
+    assert "|shard 0|1|100.0|0.60|" in table
+    assert "|shard 1|1|50.0|1.20|" in table
+    assert "|baseline|2|182.0|0.66|" in table
+    assert "x|" not in table.split("speedup")[1][:24]
+
+
+def test_single_source_still_reports_a_ratio() -> None:
+    summary = bench.aggregate(
+        [_result(0, 100.0, revision="aaaa"), _result(1, 50.0, revision="aaaa")],
+        parallel_wall=104.0,
+        baseline_wall=182.0,
+        baseline_label="remote-sequential",
+        baseline_summary="2 passed in 170.0s",
+        mixed_sources=False,
+    )
+
+    table = bench.render_table(summary)
+
+    assert summary.speedup == pytest.approx(182.0 / 104.0)
+    assert "|speedup (baseline / parallel)|1.75x|" in table
+    assert "cases per minute" not in table
+
+
+def test_allow_mixed_revisions_yields_no_ratio_end_to_end(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for name in ("wt0", "wt1"):
+        _worktree(tmp_path, name)
+
+    def _launch(commands, cwd, env):
+        for index, name in enumerate(("wt0", "wt1")):
+            (tmp_path / ".worktrees" / name / ".tmp" / f"shard-{index}.txt").write_text(
+                "1 passed in 1.00s\n", encoding="utf-8"
+            )
+        return [(5.0, 0), (6.0, 0)], 6.5
+
+    class _Completed:
+        returncode = 0
+
+    def _baseline(*args, **kwargs):
+        (tmp_path / ".worktrees" / "wt0" / ".tmp" / "shard-baseline.txt").write_text(
+            "2 passed in 9.00s\n", encoding="utf-8"
+        )
+        return _Completed()
+
+    monkeypatch.setattr(bench, "run_commands_concurrently", _launch)
+    monkeypatch.setattr(
+        bench,
+        "read_source_state",
+        lambda worktree_dir: (
+            ("aaaa111", False) if worktree_dir.name == "wt0" else ("bbbb222", False)
+        ),
+    )
+    monkeypatch.setattr(bench.subprocess, "run", _baseline)
+
+    status = bench.main(
+        [
+            "--remote", "host", "--shard", "wt0=t::a", "--shard", "wt1=t::b",
+            "--allow-mixed-revisions", "--repo-root", str(tmp_path),
+        ]
+    )
+    printed = capsys.readouterr().out
+
+    assert status == 0
+    assert "|speedup (baseline / parallel)|n/a (mixed sources)|" in printed
+    assert "cases per minute" in printed

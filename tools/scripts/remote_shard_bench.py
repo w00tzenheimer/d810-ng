@@ -73,6 +73,7 @@ class BenchSummary:
     baseline_returncode: int | None = None
     baseline_revision: str | None = None
     valid: bool = True
+    mixed_sources: bool = False
 
 
 def default_runner() -> Path:
@@ -314,34 +315,40 @@ def read_revision(worktree_dir: Path) -> str | None:
 
 
 def read_source_state(worktree_dir: Path) -> tuple[str | None, bool]:
-    """Return (source digest, dirty) for a worktree, before anything runs."""
-    revision = read_revision(worktree_dir)
-    porcelain = subprocess.run(
-        build_porcelain_argv(worktree_dir), capture_output=True, text=True, check=False
-    )
-    if porcelain.returncode != 0:
-        return None, True
-    diff = subprocess.run(
-        build_worktree_diff_argv(worktree_dir),
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    listing = subprocess.run(
-        build_untracked_argv(worktree_dir), capture_output=True, text=True, check=False
-    )
-    untracked = [name for name in listing.stdout.split("\0") if name]
+    """Return (source digest, dirty) for a worktree, before anything runs.
+
+    Every git call must succeed: a failed one means the provenance of this arm
+    is unknown, and an unknown provenance must not be reported as a digest.
+    """
+    outputs: dict[str, str] = {}
+    for name, argv in (
+        ("revision", build_revision_argv(worktree_dir)),
+        ("porcelain", build_porcelain_argv(worktree_dir)),
+        ("diff", build_worktree_diff_argv(worktree_dir)),
+        ("untracked", build_untracked_argv(worktree_dir)),
+    ):
+        try:
+            completed = subprocess.run(
+                argv, capture_output=True, text=True, check=True
+            )
+        except (OSError, subprocess.CalledProcessError):
+            return None, True
+        outputs[name] = completed.stdout
+    untracked = [name for name in outputs["untracked"].split("\0") if name]
     contents: list[tuple[str, bytes]] = []
     for name in untracked:
         path = worktree_dir / name
         try:
             contents.append((name, path.read_bytes()))
         except OSError:
-            contents.append((name, b"<unreadable>"))
+            return None, True
     digest = compute_source_digest(
-        revision, porcelain.stdout, diff.stdout, contents
+        outputs["revision"].strip() or None,
+        outputs["porcelain"],
+        outputs["diff"],
+        contents,
     )
-    return digest, is_dirty(porcelain.stdout, untracked)
+    return digest, is_dirty(outputs["porcelain"], untracked)
 
 
 def remove_stale_output(worktree_dir: Path, output_name: str) -> None:
@@ -361,6 +368,7 @@ def aggregate(
     baseline_returncode: int | None = None,
     baseline_revision: str | None = None,
     valid: bool = True,
+    mixed_sources: bool = False,
 ) -> BenchSummary:
     """Combine measured walls into the reported figures.
 
@@ -382,7 +390,7 @@ def aggregate(
         raise ValueError("no shard results to aggregate")
     slowest = max(result.seconds for result in results)
     speedup = None
-    if valid and baseline_wall is not None and parallel_wall > 0:
+    if valid and not mixed_sources and baseline_wall is not None and parallel_wall > 0:
         speedup = baseline_wall / parallel_wall
     return BenchSummary(
         results=tuple(results),
@@ -396,6 +404,7 @@ def aggregate(
         baseline_returncode=baseline_returncode,
         baseline_revision=baseline_revision,
         valid=valid,
+        mixed_sources=mixed_sources,
     )
 
 
@@ -418,6 +427,23 @@ def render_table(summary: BenchSummary) -> str:
             )
         )
     lines.append("")
+    if summary.mixed_sources:
+        # A ratio is meaningless here, so report each arm's own throughput.
+        lines.append("|arm|cases|wall s|cases per minute|")
+        lines.append("|-|-|-|-|")
+        for result in summary.results:
+            cases = len(result.shard.test_ids)
+            rate = cases / (result.seconds / 60.0) if result.seconds > 0 else 0.0
+            lines.append(
+                f"|shard {result.shard.index}|{cases}|{result.seconds:.1f}|{rate:.2f}|"
+            )
+        if summary.baseline_wall:
+            cases = sum(len(result.shard.test_ids) for result in summary.results)
+            rate = cases / (summary.baseline_wall / 60.0)
+            lines.append(
+                f"|baseline|{cases}|{summary.baseline_wall:.1f}|{rate:.2f}|"
+            )
+        lines.append("")
     lines.append("|metric|value|")
     lines.append("|-|-|")
     lines.append(f"|shards|{len(summary.results)}|")
@@ -437,6 +463,8 @@ def render_table(summary: BenchSummary) -> str:
         )
     if not summary.valid:
         lines.append("|speedup (baseline / parallel)|invalid|")
+    elif summary.mixed_sources:
+        lines.append("|speedup (baseline / parallel)|n/a (mixed sources)|")
     elif summary.speedup is None:
         lines.append("|speedup (baseline / parallel)|not measured|")
     else:
@@ -577,6 +605,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     for shard in shards:
         worktree_dir = repo_root / arguments.worktree_root / shard.worktree
         source_state[shard.worktree] = read_source_state(worktree_dir)
+    unknown = [name for name, (digest, _) in source_state.items() if digest is None]
+    if unknown:
+        for name in unknown:
+            print(f"ERROR: cannot determine the source state of worktree {name}")
+        print("ERROR: refusing to bench arms whose provenance is unknown")
+        return 1
     dirty = [name for name, (_digest, is_dirty_) in source_state.items() if is_dirty_]
     if dirty and not arguments.allow_dirty:
         for name in dirty:
@@ -651,6 +685,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     conflict = revision_conflict(revisions, arguments.allow_mixed_revisions)
     if conflict is not None:
         problems.append(f"{conflict}; pass --allow-mixed-revisions to accept it")
+    # With mixed sources the sequential baseline only ever ran the first
+    # worktree's code, so dividing by it would compare different programs.
+    mixed_sources = len(set(revisions)) > 1
 
     # The ratio is only rendered once every arm has been validated: a plausible
     # number printed above an error is the failure mode this ordering removes.
@@ -663,6 +700,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         baseline_returncode=baseline_returncode,
         baseline_revision=baseline_revision,
         valid=not problems,
+        mixed_sources=mixed_sources,
     )
     print(render_table(summary))
     if problems:
