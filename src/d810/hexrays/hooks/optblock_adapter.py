@@ -799,12 +799,14 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
             # is not a D810Exception (e.g. ida_mcp.sync.IDASyncError). Keep it
             # inside the Python callback and suppress this maturity.
             #
-            # An exception raised with no arguments (a bare ``assert`` or
-            # ``raise SomeError()``) has an empty ``str()``; formatting it as
-            # ``"%s: %s" % (type_name, e)`` then rendered a bare trailing
-            # colon with no type, no message and no traceback -- the sole
-            # trace of a Target A preflight rejection was lost this way
-            # (ticket d81-aw7v). ``describe_exception`` always names the type.
+            # A bare exception (e.g. ``raise SomeError()``) has an empty
+            # ``str()``. Pre-3e5ea75c6, logging plain ``%s`` with no
+            # ``exc_info`` left no type, message or traceback -- how the
+            # sole trace of the Target A preflight rejection was lost
+            # (d81-aw7v). 3e5ea75c6 added the type name and ``exc_info=True``
+            # but ``"%s: %s" % (type_name, e)`` still rendered a bare
+            # trailing colon for an empty message (type/traceback were kept).
+            # ``describe_exception`` names the type and drops the colon.
             optimizer_logger.warning(
                 "Exception in block optimizer on blk %d: %s",
                 blk.serial,
