@@ -648,7 +648,14 @@ class TestDeadBlockTerminatorClosure:
     an audit trail rather than re-deriving the predicate.
     """
 
-    def test_allows_unreachable_block_with_dispatcher_succ(self) -> None:
+    def test_gaps_on_unreachable_block_with_dispatcher_succ(self) -> None:
+        """The conforming shape is a gap, not an ALLOW (aa-v8et).
+
+        The predicate still holds, but every input to it is caller-supplied
+        projected-CFG state, so the DAG never vouched for anything. The
+        arbiter reports a named gap and the consumer keeps owning the
+        decision locally.
+        """
         auth = DagAuthority(_dag())
         graph = _StubProjectedFlowGraph(
             {
@@ -662,9 +669,10 @@ class TestDeadBlockTerminatorClosure:
             dispatcher_serial=2,
             original_stop_serial=99,
         )
-        assert decision.allowed
-        assert decision.target_entry_anchor == 99
-        assert decision.proof_edge_key[0] == "dead_block_terminator"
+        assert decision.is_gap
+        assert decision.reason == "DAG_GAP:dead_block_terminator_caller_derived"
+        assert decision.target_entry_anchor is None
+        assert decision.proof_edge_key is None
 
     def test_refuses_block_with_preds(self) -> None:
         # Block has predecessors → not dead → can't be retargeted to STOP.

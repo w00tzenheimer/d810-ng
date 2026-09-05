@@ -419,7 +419,7 @@ class DagAuthority:
         dispatcher_serial: int | None = None,
         original_stop_serial: int | None = None,
     ) -> DagDecision:
-        "Validate a dead-block terminator redirect (uee-7snc).\n\n        The dead-dispatcher-root cleanup pass emits ``RedirectGoto``s\n        that retarget orphaned dispatcher-feeders at the function's\n        STOP block.  These mods can't be derived from the preanalysis\n        ``LinearizedStateDag`` directly because they depend on\n        reachability of the *projected post-mod* CFG \u2014 a graph the\n        DAG (built once per pipeline run, mem_52073043) doesn't model.\n\n        Decision rules (when caller supplies the projected graph + the\n        dispatcher / stop serials):\n\n        * ``mod.from_serial`` block must be in the projected graph,\n          have empty predset, have exactly one successor =\n          ``dispatcher_serial``, and ``mod.new_target`` must equal\n          ``original_stop_serial`` \u2192 ALLOW.\n        * Any constraint violation \u2192 ``DAG_DISAGREEMENT:dead_block_terminator``\n          with a per-reason payload (block missing / has preds /\n          succ-not-dispatcher / target-not-stop).\n        * Caller didn't pass projected_flow_graph / serials \u2192\n          ``DAG_GAP:dead_block_terminator_no_projected_graph``.\n\n        Mirrors the predicate ``_collect_dead_dispatcher_root_cleanup_modifications``\n        already uses inline (``linearized_flow_graph.py:1135``); the\n        method exists so the consumer can consult the arbiter and\n        record an audit trail rather than re-deriving the predicate.\n"
+        "Validate a dead-block terminator redirect (uee-7snc).\n\n        The dead-dispatcher-root cleanup pass emits ``RedirectGoto``s\n        that retarget orphaned dispatcher-feeders at the function's\n        STOP block.  These mods can't be derived from the preanalysis\n        ``LinearizedStateDag`` directly because they depend on\n        reachability of the *projected post-mod* CFG \u2014 a graph the\n        DAG (built once per pipeline run, mem_52073043) doesn't model.\n\n        Decision rules (when caller supplies the projected graph + the\n        dispatcher / stop serials):\n\n        * ``mod.from_serial`` block must be in the projected graph,\n          have empty predset, have exactly one successor =\n          ``dispatcher_serial``, and ``mod.new_target`` must equal\n          ``original_stop_serial`` \u2192 ``DAG_GAP:dead_block_terminator_caller_derived``\n          (the predicate held, but on caller-supplied state, not on a DAG\n          edge \u2014 aa-v8et).\n        * Any constraint violation \u2192 ``DAG_DISAGREEMENT:dead_block_terminator``\n          with a per-reason payload (block missing / has preds /\n          succ-not-dispatcher / target-not-stop).\n        * Caller didn't pass projected_flow_graph / serials \u2192\n          ``DAG_GAP:dead_block_terminator_no_projected_graph``.\n\n        Mirrors the predicate ``_collect_dead_dispatcher_root_cleanup_modifications``\n        already uses inline (``linearized_flow_graph.py:1135``); the\n        method exists so the consumer can consult the arbiter and\n        record an audit trail rather than re-deriving the predicate.\n"
         if (
             projected_flow_graph is None
             or dispatcher_serial is None
@@ -462,15 +462,16 @@ class DagAuthority:
             return DagDecision.refuse(
                 f"REFUSE:dead_block_terminator_validation_error:{exc!r}"
             )
-        return DagDecision.allow(
-            target_entry_anchor=int(original_stop_serial),
-            proof_edge_key=(
-                "dead_block_terminator",
-                int(mod.from_serial),
-                int(dispatcher_serial),
-                int(original_stop_serial),
-            ),
-        )
+        # Every refusal branch above is preserved: a malformed shape is still
+        # a hard DAG_DISAGREEMENT.  What cannot survive is the terminal ALLOW.
+        # Its three inputs -- projected_flow_graph, dispatcher_serial and
+        # original_stop_serial -- are all supplied by the caller, and the
+        # projected post-mod CFG is (per this method's own docstring) a graph
+        # the DAG does not model.  Granting on it would make the arbiter
+        # vouch for the consumer's own belief, i.e. an independent grant
+        # (aa-v8et, audit section 3.4).  The conforming shape is therefore a
+        # named gap: the predicate held, but the DAG did not supply it.
+        return DagDecision.gap("dead_block_terminator_caller_derived")
 
     def permits(self, mod: object) -> DagDecision:
         """Dispatch by mod type. Unknown mod types yield DAG_GAP.

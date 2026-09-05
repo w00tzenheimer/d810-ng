@@ -107,6 +107,26 @@ def _view(authority: DagAuthority | None) -> CumulativePlannerView:
     return CumulativePlannerView.empty(dag_authority=authority)
 
 
+class _ProjectedBlock:
+    """Minimal duck-typed stand-in for a projected-CFG block."""
+
+    def __init__(
+        self, *, preds: tuple[int, ...] = (), succs: tuple[int, ...] = ()
+    ) -> None:
+        self.preds = preds
+        self.succs = succs
+
+
+class _ProjectedFlowGraph:
+    """Minimal duck-typed stand-in for the caller's projected post-mod CFG."""
+
+    def __init__(self, blocks: dict[int, _ProjectedBlock]) -> None:
+        self.blocks = blocks
+
+    def get_block(self, serial: int) -> _ProjectedBlock | None:
+        return self.blocks.get(int(serial))
+
+
 #: Every modification kind ``DagAuthority.permits`` dispatches on, plus one
 #: unregistered kind. Each entry is (label, factory).
 ALL_DISPATCHED_MODS = (
@@ -335,6 +355,83 @@ class TestLatentGrantSurfaces:
         )
         decision = authority.permits(ZeroStateWrite(block_serial=10, insn_ea=0x1000))
         assert decision.is_gap
+
+    def test_permits_dead_block_terminator_redirect_is_a_gap_not_a_grant(
+        self,
+    ) -> None:
+        """A caller-supplied projected CFG is not DAG evidence.
+
+        Every input to the old ALLOW (``projected_flow_graph``,
+        ``dispatcher_serial``, ``original_stop_serial``) came from the caller,
+        and the method's own docstring conceded the projected post-mod CFG is
+        "a graph the DAG doesn't model". The arbiter would have been vouching
+        for the consumer's own belief.
+
+        Note this path was never protected by the ``redirect_source`` guard
+        that makes the other two unreachable: its mod is a ``RedirectGoto``,
+        for which ``redirect_source`` returns a source. It is unreachable only
+        because ``permits()`` never dispatches to it and it has no production
+        caller.
+        """
+        authority = _empty_authority()
+        graph = _ProjectedFlowGraph({42: _ProjectedBlock(preds=(), succs=(2,))})
+        decision = authority.permits_dead_block_terminator_redirect(
+            RedirectGoto(from_serial=42, old_target=2, new_target=99),
+            projected_flow_graph=graph,
+            dispatcher_serial=2,
+            original_stop_serial=99,
+        )
+        assert not decision.allowed
+        assert decision.is_gap
+        assert decision.reason == "DAG_GAP:dead_block_terminator_caller_derived"
+        assert decision.target_entry_anchor is None
+        assert decision.proof_edge_key is None
+
+    def test_dead_block_terminator_keeps_every_refusal_branch(self) -> None:
+        """Downgrading the ALLOW must not soften any existing rejection.
+
+        Each malformed shape stays a ``DAG_DISAGREEMENT`` (a hard drop at the
+        consumer), not a gap; only the previously-conforming shape moves from
+        ALLOW to gap.
+        """
+        authority = _empty_authority()
+        mod = RedirectGoto(from_serial=42, old_target=2, new_target=99)
+        cases = {
+            "block_not_in_projected_graph": _ProjectedFlowGraph({}),
+            "block_has_preds": _ProjectedFlowGraph(
+                {42: _ProjectedBlock(preds=(10,), succs=(2,))}
+            ),
+            "succ_not_dispatcher": _ProjectedFlowGraph(
+                {42: _ProjectedBlock(preds=(), succs=(50,))}
+            ),
+        }
+        for expected_reason, graph in cases.items():
+            decision = authority.permits_dead_block_terminator_redirect(
+                mod,
+                projected_flow_graph=graph,
+                dispatcher_serial=2,
+                original_stop_serial=99,
+            )
+            assert decision.is_disagreement, expected_reason
+            assert expected_reason in decision.reason
+
+        target_mismatch = authority.permits_dead_block_terminator_redirect(
+            RedirectGoto(from_serial=42, old_target=2, new_target=88),
+            projected_flow_graph=_ProjectedFlowGraph(
+                {42: _ProjectedBlock(preds=(), succs=(2,))}
+            ),
+            dispatcher_serial=2,
+            original_stop_serial=99,
+        )
+        assert target_mismatch.is_disagreement
+        assert "expected_stop=99" in target_mismatch.reason
+
+        missing_inputs = authority.permits_dead_block_terminator_redirect(mod)
+        assert missing_inputs.is_gap
+        assert (
+            missing_inputs.reason
+            == "DAG_GAP:dead_block_terminator_no_projected_graph"
+        )
 
 
 # --------------------------------------------------------------------------
