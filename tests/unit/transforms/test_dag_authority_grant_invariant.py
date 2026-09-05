@@ -1097,3 +1097,249 @@ class TestGapIsFailClosedAtEveryConsumer:
 
         assert fragment.modifications == []
         assert len(fragment.metadata[DAG_AUDIT_METADATA_KEY]) == 1
+
+
+# --------------------------------------------------------------------------
+# The ALLOW ban must survive aliasing (review round 2, R3)
+# --------------------------------------------------------------------------
+
+
+def _allow_reference_sites(source: str) -> tuple[tuple[str, str], ...]:
+    """Every reference to ``DagDecision.allow``, however it is spelled.
+
+    ``_allow_call_site_functions`` only recognised a literal
+    ``DagDecision.allow(...)`` call with ``DagDecision`` as a bare ``ast.Name``.
+    Three shapes evaded it (and the ast-grep rule, which matched the same
+    attribute text):
+
+    * ``A = DagDecision.allow`` followed by ``A(...)``;
+    * ``from ... import DagDecision as D`` followed by ``D.allow(...)``;
+    * ``getattr(DagDecision, "allow")(...)``.
+
+    Names are resolved through module-level (and local) assignments and import
+    aliases to a fixpoint, so the returned sites name the enclosing function of
+    every reference regardless of spelling.  Returns ``(function, shape)``
+    pairs.
+    """
+    tree = ast.parse(source)
+
+    class_aliases = {"DagDecision"}
+    module_aliases: set[str] = set()
+    allow_aliases: set[str] = set()
+
+    def _is_class_ref(node: ast.expr) -> bool:
+        if isinstance(node, ast.Name):
+            return node.id in class_aliases
+        if isinstance(node, ast.Attribute):
+            return node.attr == "DagDecision" and (
+                isinstance(node.value, ast.Name) and node.value.id in module_aliases
+            )
+        return False
+
+    def _is_allow_ref(node: ast.expr) -> bool:
+        if isinstance(node, ast.Attribute):
+            return node.attr == "allow" and _is_class_ref(node.value)
+        if isinstance(node, ast.Call):
+            func = node.func
+            if isinstance(func, ast.Name) and func.id == "getattr":
+                return (
+                    len(node.args) >= 2
+                    and _is_class_ref(node.args[0])
+                    and isinstance(node.args[1], ast.Constant)
+                    and node.args[1].value == "allow"
+                )
+        return False
+
+    # Resolve aliases to a fixpoint: an alias may be defined after its use, or
+    # chained through another alias.
+    for _ in range(8):
+        before = (len(class_aliases), len(module_aliases), len(allow_aliases))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom):
+                for alias in node.names:
+                    if alias.name == "DagDecision" and alias.asname:
+                        class_aliases.add(alias.asname)
+            elif isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.asname:
+                        module_aliases.add(alias.asname)
+                    else:
+                        module_aliases.add(alias.name.split(".")[0])
+            elif isinstance(node, ast.Assign):
+                for target in node.targets:
+                    if not isinstance(target, ast.Name):
+                        continue
+                    if _is_class_ref(node.value):
+                        class_aliases.add(target.id)
+                    elif _is_allow_ref(node.value):
+                        allow_aliases.add(target.id)
+        if (len(class_aliases), len(module_aliases), len(allow_aliases)) == before:
+            break
+
+    sites: list[tuple[str, str]] = []
+    stack: list[str] = []
+
+    class _Visitor(ast.NodeVisitor):
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+            stack.append(node.name)
+            self.generic_visit(node)
+            stack.pop()
+
+        visit_AsyncFunctionDef = visit_FunctionDef  # type: ignore[assignment]
+
+        def _record(self, shape: str) -> None:
+            sites.append((stack[-1] if stack else "<module>", shape))
+
+        def visit_Attribute(self, node: ast.Attribute) -> None:
+            if _is_allow_ref(node):
+                self._record("attribute")
+            self.generic_visit(node)
+
+        def visit_Call(self, node: ast.Call) -> None:
+            if _is_allow_ref(node):
+                self._record("getattr")
+            self.generic_visit(node)
+
+        def visit_Name(self, node: ast.Name) -> None:
+            if isinstance(node.ctx, ast.Load) and node.id in allow_aliases:
+                self._record("alias")
+            self.generic_visit(node)
+
+    _Visitor().visit(tree)
+    return tuple(sites)
+
+
+class TestAllowBanSurvivesAliasing:
+    """The one-construction-site invariant must not be spelling-deep.
+
+    Round-2 review: the guard matched the literal text ``DagDecision.allow``
+    with ``DagDecision`` as a bare name, so three trivial rewrites walked past
+    both the ast-grep rule and the AST test.
+    """
+
+    ALIAS_EVASIONS = {
+        "bound method alias": """
+            def sneaky(self, edge):
+                _A = DagDecision.allow
+                return _A(target_entry_anchor=1)
+        """,
+        "class alias": """
+            def sneaky(self, edge):
+                D = DagDecision
+                return D.allow(target_entry_anchor=1)
+        """,
+        "aliased import": """
+            from d810.transforms.dag_authority import DagDecision as D
+
+            def sneaky(self, edge):
+                return D.allow(target_entry_anchor=1)
+        """,
+        "module-qualified": """
+            import d810.transforms.dag_authority as da
+
+            def sneaky(self, edge):
+                return da.DagDecision.allow(target_entry_anchor=1)
+        """,
+        "getattr literal": """
+            def sneaky(self, edge):
+                return getattr(DagDecision, "allow")(target_entry_anchor=1)
+        """,
+        "attribute without call": """
+            def sneaky(self, edge):
+                return DagDecision.allow
+        """,
+    }
+
+    @pytest.mark.parametrize("label", sorted(ALIAS_EVASIONS))
+    def test_every_alias_shape_is_detected(self, label: str) -> None:
+        source = textwrap.dedent(self.ALIAS_EVASIONS[label]).strip()
+        sites = _allow_reference_sites(source)
+        assert sites, f"{label} evaded the ALLOW-reference detector"
+        assert {name for name, _ in sites} == {"sneaky"}
+
+    def test_the_helper_itself_is_still_the_only_real_site(self) -> None:
+        sites = _allow_reference_sites(_dag_authority_source())
+        assert {name for name, _ in sites} == {ALLOW_HELPER_NAME}
+
+    def test_no_other_module_references_allow(self) -> None:
+        """The ban is repo-wide, not scoped to two files."""
+        root = pathlib.Path(inspect.getsourcefile(DagAuthority)).resolve()
+        src_root = root.parents[1]
+        assert src_root.name == "d810", src_root
+        offenders: list[str] = []
+        for path in sorted(src_root.rglob("*.py")):
+            if "_vendor" in path.parts:
+                continue
+            for name, shape in _allow_reference_sites(path.read_text()):
+                if path == root and name == ALLOW_HELPER_NAME:
+                    continue
+                offenders.append(f"{path}:{name}:{shape}")
+        assert offenders == [], (
+            f"DagDecision.allow is referenced outside {ALLOW_HELPER_NAME}: "
+            f"{offenders}"
+        )
+
+
+class TestAllowRequiresAnEdgeTheDagOwns:
+    """Holding *an* edge is not evidence; holding *this DAG's* edge is.
+
+    ``_allow_from_dag_edge`` was a ``staticmethod``: it accepted any
+    ``StateDagEdge``-shaped object and derived a ``proof_edge_key`` from it,
+    so a fabricated edge produced an ALLOW naming an edge that exists in no
+    DAG at all -- exactly the "proposal is its own proof" shape the three
+    retired grants had.
+    """
+
+    @staticmethod
+    def _fabricated_edge() -> StateDagEdge:
+        return _edge(source_block=999, target_entry_anchor=1234)
+
+    def test_the_helper_is_bound_to_the_authority(self) -> None:
+        raw = inspect.getattr_static(DagAuthority, ALLOW_HELPER_NAME)
+        assert not isinstance(raw, staticmethod), (
+            f"{ALLOW_HELPER_NAME} is a staticmethod, so it cannot check that "
+            "the edge belongs to this authority's DAG"
+        )
+
+    def test_a_fabricated_edge_is_refused(self) -> None:
+        authority = _empty_authority()
+        decision = getattr(authority, ALLOW_HELPER_NAME)(
+            self._fabricated_edge(), mod_kind="RedirectGoto"
+        )
+        assert not decision.allowed
+        assert decision.target_entry_anchor is None
+        assert decision.proof_edge_key is None
+        assert "edge_not_in_dag" in decision.reason
+
+    def test_an_edge_from_another_dag_is_refused(self) -> None:
+        foreign_edge = _edge(source_block=10, target_entry_anchor=20)
+        DagAuthority(_dag(edges=(foreign_edge,)))
+        authority = DagAuthority(
+            _dag(edges=(_edge(source_block=10, target_entry_anchor=20),))
+        )
+        decision = getattr(authority, ALLOW_HELPER_NAME)(
+            foreign_edge, mod_kind="RedirectGoto"
+        )
+        assert not decision.allowed, (
+            "an equal-valued edge from a different DAG is not this DAG's "
+            "evidence"
+        )
+
+    def test_an_edge_the_dag_owns_still_allows(self) -> None:
+        edge = _edge(source_block=10, target_entry_anchor=20)
+        authority = DagAuthority(_dag(edges=(edge,)))
+        decision = getattr(authority, ALLOW_HELPER_NAME)(
+            edge, mod_kind="RedirectGoto"
+        )
+        assert decision.allowed
+        _assert_allow_is_edge_backed(authority, decision)
+
+    def test_the_production_path_still_allows(self) -> None:
+        authority = DagAuthority(
+            _dag(edges=(_edge(source_block=10, target_entry_anchor=20),))
+        )
+        decision = authority.permits(
+            RedirectGoto(from_serial=10, old_target=2, new_target=20)
+        )
+        assert decision.allowed
+        _assert_allow_is_edge_backed(authority, decision)

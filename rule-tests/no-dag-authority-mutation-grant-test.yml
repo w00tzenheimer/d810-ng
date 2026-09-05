@@ -5,7 +5,7 @@ valid:
       def permits_redirect_goto(self, mod):
           return self._allow_from_dag_edge(edge, mod_kind="RedirectGoto")
   - |
-      def _allow_from_dag_edge(edge, *, mod_kind):
+      def _allow_from_dag_edge(self, edge, *, mod_kind):
           return DagDecision.allow(
               target_entry_anchor=int(edge.target_entry_anchor),
               proof_edge_key=(edge.source_anchor.block_serial, mod_kind),
@@ -65,12 +65,3 @@ invalid:
   - |
       def _rebuild(self):
           return RedirectGoto(from_serial=10, old_target=2, new_target=20)
-  - |
-      def permits_redirect_goto(self, mod):
-          return DagDecision.allow(target_entry_anchor=20)
-  - |
-      def permits_whatever(self, mod):
-          return DagDecision.allow(target_entry_anchor=None, proof_edge_key=())
-  - |
-      def _helper(self, mod):
-          return DagDecision.allow(target_entry_anchor=20)

@@ -131,6 +131,7 @@ class DagAuthority:
 
     __slots__ = (
         "_dag",
+        "_dag_edge_identities",
         "_canonical_by_anchor",
         "_dag_internal_conflicts",
         "_outgoing_by_source_key",
@@ -150,6 +151,15 @@ class DagAuthority:
     def __init__(self, dag: LinearizedStateDag) -> None:
         self._dag = dag
         self._planner_scope_edge_kinds = self._PLANNER_SCOPE_EDGE_KINDS
+        # Object identities of the edges this authority arbitrates over.  An
+        # ALLOW must name one of *these* edges, not merely an edge-shaped
+        # value (aa-v8et / d81-9q6e review round 2).  ``self._dag`` keeps every
+        # edge alive for the authority's lifetime, so the ids cannot be reused
+        # by a later object.  Equality is deliberately not used: two DAGs can
+        # hold equal-valued edges, and only this DAG's commitment is evidence.
+        self._dag_edge_identities: frozenset[int] = frozenset(
+            id(edge) for edge in dag.edges
+        )
 
         # Build the (src_block, branch_arm) -> target_entry_anchor index.
         # When two edges in scope agree on a target, collapse them into a
@@ -504,8 +514,9 @@ class DagAuthority:
             f"DAG_DISAGREEMENT:{src}->{{planner={proposed_target},dag={canonical}}}"
         )
 
-    @staticmethod
-    def _allow_from_dag_edge(edge: StateDagEdge, *, mod_kind: str) -> DagDecision:
+    def _allow_from_dag_edge(
+        self, edge: StateDagEdge, *, mod_kind: str
+    ) -> DagDecision:
         """The single construction site of an ``ALLOW`` verdict (aa-v8et).
 
         ``DagAuthority`` may restrict which proposals are emitted; it must
@@ -527,7 +538,17 @@ class DagAuthority:
         Returns a ``DAG_GAP`` when the edge carries no target entry anchor;
         such an edge is never indexed as canonical, so this is defence in
         depth rather than a reachable branch.
+
+        The helper is an *instance* method, not a ``staticmethod``, because
+        holding an edge is not the invariant -- holding **this DAG's** edge is.
+        As a staticmethod it accepted any edge-shaped value and derived the
+        ``proof_edge_key`` from it, so a fabricated edge yielded an ALLOW
+        naming an edge present in no DAG: the same "proposal is its own proof"
+        shape as the three retired grants (d81-9q6e review round 2). An edge
+        this authority does not own is refused outright.
         """
+        if id(edge) not in self._dag_edge_identities:
+            return DagDecision.refuse(f"REFUSE:{mod_kind}_allow_edge_not_in_dag")
         target = edge.target_entry_anchor
         if target is None:
             return DagDecision.gap(f"{mod_kind}_edge_without_target_anchor")
