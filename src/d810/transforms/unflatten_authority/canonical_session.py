@@ -104,6 +104,8 @@ import json
 import os
 import sys
 
+from d810.core.runtime_identity import RuntimeAuthorityArena, RuntimeAuthorityScope
+
 _COUNTER_NAMES: tuple[str, ...] = (
     "deep_validations",
     "wire_encodes",
@@ -248,7 +250,7 @@ class CanonicalValidationSession:
 
     __slots__ = (
         "_phase", "_ledger", "_closed", "_bytes_cache", "_content_id_cache",
-        "_inventory_seals", "_trust_sealed",
+        "_inventory_seals", "_trust_sealed", "_route_arena", "_runtime_bindings",
     )
 
     def __init__(
@@ -267,10 +269,32 @@ class CanonicalValidationSession:
             tuple[int, str, str], tuple[object, object, str]
         ] = {}
         self._inventory_seals: dict[int, tuple[object, object]] = {}
+        self._route_arena = RuntimeAuthorityArena(
+            RuntimeAuthorityScope(f"unflatten-authority-transaction:{phase.value}")
+        )
+        self._runtime_bindings: dict[int, tuple[object, object]] = {}
 
     @property
     def phase(self) -> CanonicalSessionPhase:
         return self._phase
+
+    @property
+    def route_arena(self) -> RuntimeAuthorityArena:
+        """Return the runtime authority arena this session owns.
+
+        The transaction's join authority is *session* scoped, exactly like its
+        validation caches: it is created with the session, it dies with the
+        session, and it is never module level.  Two sessions -- the projected
+        preparation and the observed revalidation are always two -- therefore
+        own two arenas and share no reference, which is the property the
+        projected/observed correspondence needs: an ordinal from one phase can
+        never be mistaken for an ordinal from the other, so that
+        correspondence has to keep correlating by evidence rather than by
+        position.
+        """
+
+        self._require_open()
+        return self._route_arena
 
     @property
     def closed(self) -> bool:
@@ -421,8 +445,37 @@ class CanonicalValidationSession:
         self._require_open()
         self._inventory_seals[id(value)] = (value, stamp)
 
+    def runtime_binding_for(self, value: object) -> object | None:
+        """Return the runtime authority this session minted for ``value``.
+
+        Guarded by identity against a strong reference, like every other
+        session cache here: an equal-but-distinct occurrence, or a recycled
+        ``id()``, misses.  ``None`` means "this session never rebound that
+        occurrence", which every runtime join must refuse rather than answer
+        from a scope that does not own it.
+        """
+
+        self._require_open()
+        entry = self._runtime_bindings.get(id(value))
+        if entry is None or entry[0] is not value:
+            return None
+        return entry[1]
+
+    def store_runtime_binding(self, value: object, binding: object) -> None:
+        """Record the runtime authority this session minted for ``value``."""
+
+        self._require_open()
+        if binding is None:
+            raise TypeError("a runtime binding must be an object, not None")
+        self._runtime_bindings[id(value)] = (value, binding)
+
     def _close(self) -> None:
         self._closed = True
+        # The arena is the session's, so it ends with the session: a record
+        # that leaves this transaction carries canonical fingerprints and no
+        # authority to be joined on outside the phase that minted it.
+        self._runtime_bindings.clear()
+        self._route_arena.close()
 
 
 _ACTIVE_SESSION: ContextVar[CanonicalValidationSession | None] = ContextVar(

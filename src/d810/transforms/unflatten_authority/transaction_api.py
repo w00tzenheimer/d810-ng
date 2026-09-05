@@ -77,6 +77,7 @@ from d810.transforms.unflatten_authority.gates import (
 from d810.transforms.unflatten_authority.diagnostics import PhaseTimings, phase_observation
 from d810.transforms.unflatten_authority.views import compatibility_projection
 from d810.transforms.exit_path_liveness_policy import exit_path_blocks_live_violations
+from .runtime_authority import rebind_route_evidence
 from .canonical_session import (
     CanonicalSessionPhase,
     _canonical_validation_session,
@@ -4793,6 +4794,14 @@ def _prepare_unflatten_authority_in_session(*, source, projection, plan, attempt
     source_route_authority = None
     projected_route_realization = None
     try:
+        # The producer/transaction seam.  The emission that built this bundle
+        # has ended and closed its arena, so the references it minted are not
+        # this scope's to use: the transaction verifies what the producer
+        # claimed about the bundle and mints its own references, in the arena
+        # this session owns.  A bundle that cannot be rebound -- decoded,
+        # reconstructed, or naming other proofs -- refuses here as a
+        # ValueError, which the boundary below turns into a rejected verdict.
+        rebind_route_evidence(proposal.route_evidence)
         inventory_started_ns = perf_counter_ns()
         source_materialization = capture_source_route_materialization(
             source, generation=proposal.source_identity_catalog.generation,
@@ -5868,6 +5877,11 @@ def _revalidate_observed_unflatten_authority_in_session(
         )
     inventory_started_ns = perf_counter_ns()
     try:
+        # The same seam, for the observed session.  It is a *different*
+        # session and therefore a different arena, so the observed phase mints
+        # its own references and can never mistake a projected ordinal for an
+        # observed one.
+        rebind_route_evidence(validated_prepared.proposal.route_evidence)
         observed_materialization = capture_observed_route_materialization(
             observed, generation=observed_generation,
         )

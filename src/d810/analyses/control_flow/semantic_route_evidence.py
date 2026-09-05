@@ -7045,6 +7045,80 @@ def bind_route_evidence(
     )
 
 
+def rebind_route_authority(
+    evidence: CanonicalSemanticEvidence,
+    *,
+    arena: RuntimeAuthorityArena,
+) -> RouteAuthorityBinding:
+    """Return a *new* binding for this bundle's own proofs, minted in ``arena``.
+
+    This is the named rebind at the **producer/transaction seam**, and it is
+    deliberately not :func:`bind_route_evidence`.  That function answers "give
+    me a bound *value*", so it constructs a second bundle and revalidates every
+    content-derived identity -- correct at a decode boundary and far too
+    expensive on the hot path of a transaction that already holds a validated
+    bundle.  This one answers the seam's actual question: "the record crossing
+    into my scope is unchanged; give me the authority to join on it *here*".
+    Nothing is copied, nothing is re-encoded, no content identity moves, and
+    the producer's arena is never adopted -- ``own=False`` says so explicitly.
+
+    What is verified before a reference is minted, and -- as important -- what
+    deliberately is **not**, because a guard whose branch cannot be reached is
+    a false-positive generator rather than a safety net:
+
+    * the bundle is exactly ``CanonicalSemanticEvidence`` and the arena is open;
+    * if the producer's arena is still live, every producer reference must
+      resolve to this bundle's own proof *object* at the same index.  This is
+      the check with real reach: a ``dataclasses.replace`` copy of a bundle
+      passes every content invariant -- the proofs are content-equal and every
+      identity re-derives -- yet its proofs are different records, and binding
+      them as though they were the producer's would let one route acquire two
+      authorities.
+    * "same group, same fingerprints" is **not** re-checked here.
+      ``CanonicalSemanticEvidence.__post_init__`` already rejects a binding
+      whose ``atomic_group_id`` or proof count differs from the bundle's, and
+      it re-derives every content identity from the proofs
+      (``_validate_content_derived_ids``) or requires every identity to be
+      scope-derived (``_validate_runtime_derived_ids``).  Between them, a
+      bundle carrying a binding minted for other proofs cannot be constructed:
+      measured, not assumed -- forging one through ``replace`` raises out of
+      the bundle's own validator on both paths, so a fingerprint branch here
+      would be dead code that could only ever fire on a post-seal mutation the
+      ast-grep rule already forbids.
+
+    An unbound bundle -- decoded from persistence, or built field by field --
+    is accepted and bound, because that is exactly what a rebind is for; what
+    is never accepted is *implicit* binding, so a caller that does not call
+    this function gets a refusal at its first join instead of an answer.
+    """
+
+    if type(evidence) is not CanonicalSemanticEvidence:
+        raise TypeError("route rebind requires canonical semantic evidence")
+    if type(arena) is not RuntimeAuthorityArena:
+        raise TypeError("route rebind requires a runtime authority arena")
+    if arena.is_closed:
+        raise RuntimeJoinRejected(
+            "cannot rebind into a closed runtime authority arena"
+        )
+    route_proofs = evidence.route_proofs
+    producer = evidence.route_binding
+    if producer is not None and producer.is_live:
+        for ref, proof in zip(producer.proof_refs, route_proofs, strict=True):
+            if producer.proof_for(ref) is not proof:
+                raise RuntimeJoinRejected(
+                    "the producer binding names another route proof record"
+                )
+    return _mint_route_binding(
+        arena,
+        # The transaction session opened this arena and closes it with itself.
+        own=False,
+        native_key=evidence.native_key,
+        generation=evidence.generation,
+        atomic_group_id=evidence.atomic_group_id,
+        route_proofs=route_proofs,
+    )
+
+
 def materialize_route_evidence(
     evidence: CanonicalSemanticEvidence,
 ) -> CanonicalSemanticEvidence:
@@ -10002,6 +10076,7 @@ __all__ = [
     "active_route_authority_phase",
     "bind_route_evidence",
     "materialize_route_evidence",
+    "rebind_route_authority",
     "route_authority_phase",
     "route_join_binding",
     "runtime_semantic_evidence_from_proofs",
