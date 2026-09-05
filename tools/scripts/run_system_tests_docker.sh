@@ -794,8 +794,18 @@ trap _d810_exit_cleanup EXIT
 # Remote mode reaches host files through one SMB-backed Docker volume, so every
 # mounted path must be expressible as a subpath of the exported share root.
 _share_relative_path() {
-  local host_path="$1" resolved relative
-  resolved="$(cd "$host_path" 2>/dev/null && pwd -P)" || true
+  local host_path="$1" resolved relative parent
+  if [ -d "$host_path" ] && [ ! -L "$host_path" ]; then
+    resolved="$(cd "$host_path" 2>/dev/null && pwd -P)" || true
+  elif [ -f "$host_path" ] && [ ! -L "$host_path" ]; then
+    # A mounted file -- the recorded CoBRA wheel is the only one -- resolves
+    # through its parent: `cd` takes directories, and the basename has to
+    # survive because pip reads the artifact's identity from the filename.
+    # A symlink is refused on either side so the physical bytes the engine
+    # reaches through the share are the bytes named here.
+    parent="$(cd "$(dirname "$host_path")" 2>/dev/null && pwd -P)" || true
+    [ -n "$parent" ] && resolved="$parent/$(basename "$host_path")"
+  fi
   if [ -z "$resolved" ]; then
     echo "ERROR: remote mode cannot resolve the host path: $host_path" >&2
     return 1

@@ -280,6 +280,11 @@ def _docker_hosts(calls: list[str]) -> list[str]:
     return [call[len(prefix) :] for call in calls if call.startswith(prefix)]
 
 
+def _docker_calls(calls: list[str]) -> list[str]:
+    """The docker argument lines, without the DOCKER_HOST bookkeeping entries."""
+    return [call for call in calls if not call.startswith("docker-host ")]
+
+
 def _share_layout(tmp_path: Path) -> tuple[Path, Path]:
     """A fake SMB share root holding the repo, mirroring the Mac layout."""
     share = tmp_path / "share"
@@ -957,7 +962,7 @@ def test_cobra_wheel_architecture_must_match_the_docker_engine(
     )
 
     assert result.returncode != 0
-    assert calls == ["version --format {{.Server.Arch}}"]
+    assert _docker_calls(calls) == ["version --format {{.Server.Arch}}"]
     assert "aarch64 wheel but the Docker engine is x86_64" in result.stderr
 
 
@@ -981,7 +986,7 @@ def test_unknown_docker_engine_architecture_rejects_the_cobra_wheel(
     )
 
     assert result.returncode != 0
-    assert calls == ["version --format {{.Server.Arch}}"]
+    assert _docker_calls(calls) == ["version --format {{.Server.Arch}}"]
     assert "known Docker engine architecture" in result.stderr
 
 
@@ -3070,3 +3075,136 @@ def test_remote_mode_never_routes_a_log_writer_onto_cifs(
     } == {"/work/.tmp"}
     command = _remote_container_run(calls)
     assert 'ln -sfn "$RUN_LOGS" /root/.idapro/logs' in command
+
+
+def test_remote_mode_mounts_the_published_wheel_through_the_volume(
+    tmp_path: Path,
+) -> None:
+    """Wheel mode and remote mode compose: same gates, remote-shaped mount."""
+    published = _recorded_wheel(COBRA_WHEEL_AARCH64_NAME)
+    if published is None:
+        pytest.skip(f"published wheel {COBRA_WHEEL_AARCH64_NAME} is unavailable")
+
+    share, repo = _share_layout(tmp_path)
+    # The wheel has to live under the share root: remote mounts address bytes
+    # through the volume, and nothing outside the share is reachable there.
+    wheel_dir = share / "_gitless" / "resource" / "cobra-wheels" / "0.1.5-published"
+    wheel_dir.mkdir(parents=True)
+    wheel = wheel_dir / COBRA_WHEEL_AARCH64_NAME
+    shutil.copy2(published, wheel)
+
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--remote",
+        REMOTE_HOST,
+        "--",
+        "true",
+        repo_root=repo,
+        extra_env=_remote_env(
+            share,
+            D810_COBRA_WHEEL=str(wheel),
+            D810_COBRA_WHEEL_SHA256=COBRA_WHEEL_AARCH64_SHA256,
+            MOCK_DOCKER_SERVER_ARCH="arm64",
+        ),
+    )
+
+    assert result.returncode == 0, result.stderr
+
+    container_path = f"{COBRA_WHEEL_CONTAINER_DIR}/{COBRA_WHEEL_AARCH64_NAME}"
+    relative = wheel.relative_to(share)
+    wheel_mounts = [
+        call
+        for call in calls
+        if call.startswith("run-arg type=volume,src=idapro,")
+        and f"dst={container_path}" in call
+    ]
+    assert wheel_mounts == [
+        "run-arg type=volume,src=idapro,"
+        f"dst={container_path},volume-subpath={relative},readonly"
+    ], calls
+
+    # No local bind mount of the wheel survives remote mode.
+    assert not [call for call in calls if call == f"run-arg -v {wheel}:{container_path}:ro"]
+
+    # Every published-wheel gate still runs inside the container.
+    command = _remote_container_run(calls)
+    assert (
+        f"printf '%s  %s\\n' '{COBRA_WHEEL_AARCH64_SHA256}' "
+        f"'{container_path}' | sha256sum -c -"
+    ) in command
+    assert f"pip install --no-deps --force-reinstall --no-cache-dir -q '{container_path}'" in command
+    assert 'manifest["api_version"] == 1' in command
+    assert "import d810_cobra._cobra" in command
+    assert "solved.status is SolveStatus.SOLVED" in command
+    # A wheel run needs no build cache, remote or not.
+    assert "/opt/d810-cobra-cache" not in command
+
+
+def test_remote_mode_refuses_a_symlinked_wheel(tmp_path: Path) -> None:
+    """A link could name share bytes while pointing somewhere the engine cannot see."""
+    published = _recorded_wheel(COBRA_WHEEL_AARCH64_NAME)
+    if published is None:
+        pytest.skip(f"published wheel {COBRA_WHEEL_AARCH64_NAME} is unavailable")
+
+    share, repo = _share_layout(tmp_path)
+    real = tmp_path / "outside" / COBRA_WHEEL_AARCH64_NAME
+    real.parent.mkdir()
+    shutil.copy2(published, real)
+    link_dir = share / "wheels"
+    link_dir.mkdir()
+    link = link_dir / COBRA_WHEEL_AARCH64_NAME
+    link.symlink_to(real)
+
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--remote",
+        REMOTE_HOST,
+        "--",
+        "true",
+        repo_root=repo,
+        extra_env=_remote_env(
+            share,
+            D810_COBRA_WHEEL=str(link),
+            D810_COBRA_WHEEL_SHA256=COBRA_WHEEL_AARCH64_SHA256,
+            MOCK_DOCKER_SERVER_ARCH="arm64",
+        ),
+    )
+
+    assert result.returncode != 0
+    assert "cannot resolve the host path" in result.stderr
+    assert _runs(calls) == [call for call in _runs(calls) if "dst=/probe" in call]
+
+
+def test_remote_mode_refuses_a_wheel_outside_the_share(tmp_path: Path) -> None:
+    published = _recorded_wheel(COBRA_WHEEL_AARCH64_NAME)
+    if published is None:
+        pytest.skip(f"published wheel {COBRA_WHEEL_AARCH64_NAME} is unavailable")
+
+    share, repo = _share_layout(tmp_path)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    wheel = outside / COBRA_WHEEL_AARCH64_NAME
+    shutil.copy2(published, wheel)
+
+    result, _ = _run(
+        tmp_path,
+        "exec",
+        "--remote",
+        REMOTE_HOST,
+        "--",
+        "true",
+        repo_root=repo,
+        extra_env=_remote_env(
+            share,
+            D810_COBRA_WHEEL=str(wheel),
+            D810_COBRA_WHEEL_SHA256=COBRA_WHEEL_AARCH64_SHA256,
+            MOCK_DOCKER_SERVER_ARCH="arm64",
+        ),
+    )
+
+    assert result.returncode != 0
+    assert "must live under the SMB share root" in result.stderr or (
+        "live under the SMB share root" in result.stderr
+    )
