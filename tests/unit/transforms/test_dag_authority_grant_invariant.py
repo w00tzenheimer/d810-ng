@@ -51,7 +51,10 @@ from d810.analyses.control_flow.linearized_state_dag import (
 )
 from d810.ir.state_dag_key import StateDagNodeKey
 from d810.transforms.dag_authority import DagAuthority, DagDecision
-from d810.transforms.fragment_arbitration import filter_dag_disagreements
+from d810.transforms.fragment_arbitration import (
+    filter_dag_disagreements,
+    redirect_source,
+)
 from d810.transforms.graph_modification import (
     ConvertToGoto,
     EdgeRedirectViaPredSplit,
@@ -229,6 +232,22 @@ PERMITS_COVERAGE: dict[str, _PermitsCase] = {
         can_allow=False,
     ),
 }
+
+
+def _permits_methods_dispatched_by_permits() -> frozenset[str]:
+    """The ``permits_*`` methods ``DagAuthority.permits`` can actually route to.
+
+    Read off the dispatch table by reflection, so a newly added route shows up
+    here without anyone remembering to update a list.
+    """
+    tree = ast.parse(textwrap.dedent(inspect.getsource(DagAuthority.permits)))
+    return frozenset(
+        node.func.attr
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr.startswith("permits_")
+    )
 
 
 def _discovered_permits_methods() -> tuple[str, ...]:
@@ -945,31 +964,96 @@ class TestGapIsFailClosedAtEveryConsumer:
         assert len(records) == 1
         assert records[0].source_block == 10
 
-    def test_consumer_1_never_calls_permits_for_the_gapped_mod_kinds(self) -> None:
-        """ZSW / pred-split reach the consumer but bypass ``permits()``.
+    # -- one test per retired grant path (aa-v8et; review round 2, R4) -----
+    #
+    # The three latent grants are unreachable from production for *different*
+    # reasons, and a single shared test could not say which reason applied to
+    # which path -- the first version of this file asserted a reachability
+    # statement that was wrong for two of the three. Each path now gets its own
+    # test that exercises only that path and names its own mechanism.
 
-        This is the corrected reachability statement (aa-v8et): the two mod
-        kinds are dispatched by ``permits()``, but ``redirect_source`` returns
-        ``None`` for both, so the production filter keeps them at
-        ``fragment_arbitration.py:104-105`` before any verdict is asked for.
-        They are therefore kept on the planner's authority, never the DAG's.
+    def test_consumer_1_zero_state_write_is_dispatched_then_bypassed(
+        self,
+    ) -> None:
+        """ZeroStateWrite: ``permits()`` dispatches it; the filter never asks.
+
+        ``redirect_source`` returns ``None`` for a ZSW, so
+        ``filter_dag_disagreements`` keeps it at
+        ``fragment_arbitration.py:103-105`` before any verdict is requested.
+        It therefore survives on the planner's authority, never the DAG's --
+        and the verdict it would have received is a named gap, not an ALLOW.
         """
         authority = self._gap_authority()
         zsw = ZeroStateWrite(block_serial=77, insn_ea=0x1000)
-        splice = EdgeRedirectViaPredSplit(
-            src_block=122, old_target=45, new_target=180, via_pred=37
-        )
+
+        assert redirect_source(zsw) is None
+
         kept, records = filter_dag_disagreements(
-            [zsw, splice],
+            [zsw],
             _view(authority),
             strategy_name="test",
             phase="unit",
         )
-        assert [id(m) for m in kept] == [id(zsw), id(splice)]
+        assert [id(m) for m in kept] == [id(zsw)]
         assert records == ()
-        # And the verdicts themselves, had they been asked for, are gaps.
-        assert authority.permits(zsw).is_gap
-        assert authority.permits(splice).is_gap
+
+        decision = authority.permits(zsw)
+        assert decision.reason == "DAG_GAP:zero_state_write_not_dag_derivable"
+        assert not decision.allowed
+
+    def test_consumer_1_pred_split_is_dispatched_then_bypassed(self) -> None:
+        """EdgeRedirectViaPredSplit: dispatched by ``permits()``, bypassed too.
+
+        Same mechanism as the ZSW above and a different verdict: the corridor
+        splice reaches the DAG-evidence validator, which has no in-scope edge
+        for the corridor source and names that gap explicitly.
+        """
+        authority = self._gap_authority()
+        splice = EdgeRedirectViaPredSplit(
+            src_block=122, old_target=45, new_target=180, via_pred=37
+        )
+
+        assert redirect_source(splice) is None
+
+        kept, records = filter_dag_disagreements(
+            [splice],
+            _view(authority),
+            strategy_name="test",
+            phase="unit",
+        )
+        assert [id(m) for m in kept] == [id(splice)]
+        assert records == ()
+
+        decision = authority.permits(splice)
+        assert decision.reason == (
+            "DAG_GAP:edge_redirect_via_pred_split_no_dag_evidence"
+        )
+        assert not decision.allowed
+
+    def test_consumer_1_dead_block_terminator_is_never_dispatched(self) -> None:
+        """Dead-terminator: a different mechanism -- ``permits()`` never routes.
+
+        Its argument is a ``RedirectGoto``, for which ``redirect_source`` *does*
+        return a source, so the filter asks for a verdict; but ``permits()``
+        dispatches a RedirectGoto to ``permits_redirect_goto``. Nothing in the
+        dispatch table can reach ``permits_dead_block_terminator_redirect``, so
+        the extra caller-supplied inputs it needs (projected graph, dispatcher
+        and stop serials) can never be supplied by this consumer.
+
+        Asserted by reflection over the dispatch table rather than by calling
+        it, so adding a route to the method fails this test.
+        """
+        dispatched = _permits_methods_dispatched_by_permits()
+        assert "permits_dead_block_terminator_redirect" not in dispatched
+        assert "permits_redirect_goto" in dispatched
+
+        authority = self._gap_authority()
+        mod = RedirectGoto(from_serial=42, old_target=2, new_target=99)
+        assert redirect_source(mod) == 42
+
+        decision = authority.permits(mod)
+        assert "dead_block_terminator" not in decision.reason
+        assert decision.reason == "DAG_GAP:unknown_source"
 
     # -- consumer 2: apply_dag_conformance_gate ----------------------------
 
