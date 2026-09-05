@@ -66,20 +66,44 @@ schema -- absent from ``ids._RECORD_FIELDS``, from the wire encoding and from
 the record's equality -- because a live process-local authority is not
 content and cannot be serialized, detached or hashed.
 
-Generic walkers enumerate ``dataclasses.fields`` rather than the schema, so
-they see these fields anyway.  This is the one list that tells such a walker
-to skip them.  It is an explicit closed set rather than a "private and
-``compare=False``" rule because that rule would also swallow private
-*construction markers* such as ``ObligationEvidenceIndex._token`` and
-``PreparationAuthorityReceipt._minted``, whose ``__post_init__`` requires them
-to be present.  Adding a sidecar therefore means adding its name here, on
-purpose and visibly.
-
 Three names are in it: ``_runtime_identity`` (the minting scope of an
 internally produced route bundle), ``_runtime_binding`` (the arena that is the
 join authority for that bundle) and ``_runtime_refs`` (the references a record
 minted *from* a bundle -- a claim -- carries so a join need not read its
 content ID).
+
+**Generic walkers enumerate ``dataclasses.fields`` rather than the schema, so
+they see these fields anyway, and the codebase skips them by two different
+mechanisms.**  Both are sound; which one a walker uses follows from what it
+is walking.
+
+1. *This closed set*, at the three sites that must distinguish a sidecar from
+   any other private field: ``bind._is_runtime_authority_sidecar`` (used by
+   ``_registry_structural_snapshot`` and ``_detached_canonical_copy``) and
+   ``model._structural_key``.  They cannot use a "private" rule, because they
+   would then also swallow private *construction markers* such as
+   ``ObligationEvidenceIndex._token`` and ``PreparationAuthorityReceipt._minted``,
+   whose ``__post_init__`` requires them to be present -- a detached copy
+   without them raises.  Adding a sidecar therefore means adding its name
+   here, on purpose and visibly.
+
+2. *A ``name.startswith("_")`` skip*, at the walkers whose subject is a
+   record's **canonical schema** rather than its storage:
+   ``ids._ensure_registries`` (schema drift), ``model._validate_inventory_refs``,
+   ``model._claim_subjects``, ``SemanticSafetyCase``'s occurrence
+   revalidation, ``bind._route_failure_identity`` / ``_route_result_identity``
+   and the ``proposal`` patch-step walkers.  This is safe -- and stricter than
+   it looks -- because ``ids._ensure_registries`` *defines* the canonical
+   schema as ``fields(record_type)`` minus every underscore-prefixed name and
+   raises ``canonical record schema drift`` otherwise.  A private field
+   therefore cannot be canonical, so "skip private" and "skip non-canonical"
+   are the same predicate at those sites, and it needs no maintenance when a
+   sidecar is added.
+
+The distinction is not stylistic: mechanism 1 answers "is this field live
+runtime authority", mechanism 2 answers "is this field part of the canonical
+schema".  A walker that needs the first must not use the second, because a
+construction marker is private and is not authority.
 """
 
 

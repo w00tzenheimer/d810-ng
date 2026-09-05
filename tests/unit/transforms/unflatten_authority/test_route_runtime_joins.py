@@ -40,10 +40,14 @@ from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
 from d810.ir.semantic_edge import SemanticEdgeRole
 from d810.ir.storage_identity import StorageIdentity, StorageIdentityKind
 import d810.transforms.unflatten_authority.model as model
+import d810.transforms.unflatten_authority.producer_api as producer_api
 from d810.transforms.unflatten_authority.producer_api import bundle_route_proof_refs
 from tests.native_preanalysis import make_native_key
 
+from d810.transforms.unflatten_authority.evaluate import build_semantic_case
+
 from .helpers import exact_fixture
+from .test_evaluate import _complete_inputs, _role_subject, _with_entry_gate_facts
 
 NATIVE_KEY = make_native_key(function_rva=0x1000)
 
@@ -486,8 +490,6 @@ def _route_claim_payload() -> tuple[object, object, dict[str, object]]:
     with the sidecar and once without.
     """
 
-    from d810.transforms.unflatten_authority import producer_api
-
     source, proposal, _exclusion, _refs = exact_fixture()
     evidence = proposal.route_evidence
     proof = evidence.route_proofs[0]
@@ -658,7 +660,6 @@ def test_the_sidecar_channel_refuses_a_claim_type_that_declares_no_slot() -> Non
 def test_the_producer_mints_every_route_claim_carrying_its_bundle_references() -> None:
     """The claim leaves the factory bound, and its canonical bytes do not move."""
 
-    from d810.transforms.unflatten_authority import producer_api
 
     source, proposal, _exclusion, _refs = exact_fixture()
     evidence = proposal.route_evidence
@@ -701,11 +702,6 @@ def test_the_route_claim_correspondence_refuses_a_content_equal_foreign_claim() 
     even though every canonical byte agrees.
     """
 
-    from dataclasses import replace as dataclass_replace
-
-    from d810.transforms.unflatten_authority import model as authority_model
-    from d810.transforms.unflatten_authority import producer_api
-
     source, proposal, _exclusion, refs = exact_fixture()
     other_source, other_proposal, _other_exclusion, _other_refs = exact_fixture()
     proof = proposal.route_evidence.route_proofs[0]
@@ -732,12 +728,12 @@ def test_the_route_claim_correspondence_refuses_a_content_equal_foreign_claim() 
     ) != producer_api.route_claim_join_refs(own)
 
     def proposal_with(claim):
-        return dataclass_replace(
+        return replace(
             proposal,
             claims=(claim,),
-            plan_inputs=dataclass_replace(
+            plan_inputs=replace(
                 proposal.plan_inputs,
-                shape=authority_model.UnflattenPlanShape.PARTIAL_REWRITE,
+                shape=model.UnflattenPlanShape.PARTIAL_REWRITE,
             ),
         )
 
@@ -760,10 +756,7 @@ def test_the_route_claim_correspondence_refuses_a_content_equal_foreign_claim() 
 def test_an_unbound_claim_is_refused_at_the_claim_join() -> None:
     """A decoded claim carries a fingerprint and no authority; the join says so."""
 
-    from dataclasses import replace as dataclass_replace
 
-    from d810.transforms.unflatten_authority import model as authority_model
-    from d810.transforms.unflatten_authority import producer_api
 
     source, proposal, _exclusion, refs = exact_fixture()
     proof = proposal.route_evidence.route_proofs[0]
@@ -779,12 +772,12 @@ def test_an_unbound_claim_is_refused_at_the_claim_join() -> None:
     with pytest.raises(RuntimeJoinRejected, match="not bound to a runtime"):
         producer_api.route_claim_join_refs(decoded)
 
-    route_proposal = dataclass_replace(
+    route_proposal = replace(
         proposal,
         claims=(decoded,),
-        plan_inputs=dataclass_replace(
+        plan_inputs=replace(
             proposal.plan_inputs,
-            shape=authority_model.UnflattenPlanShape.PARTIAL_REWRITE,
+            shape=model.UnflattenPlanShape.PARTIAL_REWRITE,
         ),
     )
 
@@ -808,8 +801,6 @@ def test_a_claim_that_outlives_its_phase_can_no_longer_be_joined() -> None:
     be reference-keyed.
     """
 
-    from d810.transforms.unflatten_authority import producer_api
-
     with route_authority_phase("test-emission"):
         source, proposal, _exclusion, _refs = exact_fixture()
         proof = proposal.route_evidence.route_proofs[0]
@@ -827,3 +818,61 @@ def test_a_claim_that_outlives_its_phase_can_no_longer_be_joined() -> None:
         producer_api.route_claim_join_refs(claim)
     # The content is untouched by the phase ending.
     assert authority_ids.claim_id(claim) == claim.claim_id
+
+
+def _case_with_a_route_claim() -> object:
+    """Build one real safety case whose claims include a route claim."""
+
+    phase = model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT
+    entry = _role_subject(model.SemanticSubjectRole.SOURCE_ENTRY, "walker-pin")
+    catalog = tuple(
+        _role_subject(model.SemanticSubjectRole.SOURCE_CATALOG_BLOCK, str(index))
+        for index in range(3)
+    )
+    inputs = _with_entry_gate_facts(
+        _complete_inputs(source_subjects=(entry, *catalog), phase=phase),
+        passed=True,
+        reason="",
+    )
+    return build_semantic_case(
+        authority_id=authority_ids.authority_id("claim-walker-pin-case"),
+        phase=phase,
+        inputs=inputs,
+    )
+
+
+def test_the_generic_model_walkers_tolerate_a_detached_claim() -> None:
+    """The record shape a detached canonical copy produces must stay walkable.
+
+    ``bind._detached_canonical_copy`` rebuilds a record field by field and
+    deliberately leaves the sidecar slot **unwritten** -- not ``None``,
+    absent.  Two ``model`` walkers enumerate ``dataclasses.fields`` and read
+    each name with a bare ``getattr``, so adding the sidecar made them raise
+    ``AttributeError`` on exactly that shape.  Both are pinned here: with
+    either private-name skip removed, this test fails with
+
+        AttributeError: 'EquivalentSemanticRouteClaim' object has no
+        attribute '_runtime_refs'
+    """
+
+    case = _case_with_a_route_claim()
+    claim = next(
+        item for item in case.claims
+        if type(item) is model.EquivalentSemanticRouteClaim
+    )
+    detached = bind._detached_canonical_copy(claim, {})
+
+    # The shape itself: the slot is absent, not None.
+    with pytest.raises(AttributeError):
+        object.__getattribute__(detached, "_runtime_refs")
+    assert detached.runtime_refs is None
+    assert detached == claim
+
+    # Walker 1: model._claim_subjects.
+    assert model._claim_subjects(detached) == model._claim_subjects(claim)
+
+    # Walker 2: the safety case's occurrence revalidation, reached the way
+    # production reaches it -- by revalidating a case that carries the record.
+    rebuilt = replace(case, claims=(detached,))
+
+    assert rebuilt.claims[0] == claim
