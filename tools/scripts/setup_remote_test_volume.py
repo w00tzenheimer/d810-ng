@@ -50,6 +50,11 @@ EXIT_INDETERMINATE = 3
 PASSWORD_OPTION_PATTERN = re.compile(r"(?<=password=)[^,]*")
 CONTAINER_FORMAT = "{{.ID}} {{.Status}} {{.Names}}"
 WORK_VOLUME_ROLE_LABEL = "d810.role=work"
+COBRA_CACHE_VOLUME_ROLE_LABEL = "d810.role=cobra-cache"
+RETAINED_RUNNER_VOLUME_ROLE_LABELS = (
+    WORK_VOLUME_ROLE_LABEL,
+    COBRA_CACHE_VOLUME_ROLE_LABEL,
+)
 DEFAULT_SHARE_ROOT = "/srv/share-root"
 WORK_VOLUME_FORMAT = "{{.Name}}"
 PROBE_IMAGE = "alpine"
@@ -265,16 +270,13 @@ def share_root_digest(share_root: str) -> str:
 
 
 def build_work_volume_list_argv(
-    *, remote: str, volume: str, share_root: str
+    *, remote: str, volume: str, share_root: str, role_label: str = WORK_VOLUME_ROLE_LABEL
 ) -> list[str]:
-    """List the source-copy volumes belonging to THIS credential volume.
+    """List one exact retained-runner role for this credential volume.
 
     Selecting every ``d810.role=work`` volume on the engine would sweep in the
     copies of an unrelated share or credential, so the role label alone is not
     a safe selector.
-
-    Both roles the runner retains (the source copy and the CoBRA build cache)
-    are matched, because both hold state on the engine.
 
     >>> build_work_volume_list_argv(remote="h", volume="v", share_root="/x")[3:6]
     ['volume', 'ls', '--filter']
@@ -289,13 +291,32 @@ def build_work_volume_list_argv(
         "volume",
         "ls",
         "--filter",
-        "label=d810.role",
+        f"label={role_label}",
         "--filter",
         f"label=d810.credential_volume={volume}",
         "--filter",
         f"label=d810.share_root_digest={share_root_digest(share_root)}",
         "--format",
         WORK_VOLUME_FORMAT,
+    ]
+
+
+def build_retained_volume_list_argvs(
+    *, remote: str, volume: str, share_root: str
+) -> list[list[str]]:
+    """List each supported retained-runner role with its exact label.
+
+    A key-only ``d810.role`` filter would make a newly added role purgeable
+    before this helper explicitly opts into it.
+    """
+    return [
+        build_work_volume_list_argv(
+            remote=remote,
+            volume=volume,
+            share_root=share_root,
+            role_label=role_label,
+        )
+        for role_label in RETAINED_RUNNER_VOLUME_ROLE_LABELS
     ]
 
 
@@ -551,7 +572,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--share-root",
         default=DEFAULT_SHARE_ROOT,
         help=(
-            "host directory the share exports; selects which work volumes belong "
+            "host directory the share exports; selects which retained runner volumes belong "
             f"to this share (default: {DEFAULT_SHARE_ROOT})"
         ),
     )
@@ -579,7 +600,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--purge-work-volumes",
         action="store_true",
-        help="with --remove: also delete the retained per-worktree source copies",
+        help="with --remove: also delete retained runner volumes (source + CoBRA cache)",
     )
     parser.add_argument(
         "--force",
@@ -632,33 +653,34 @@ def _report_indeterminate(what: str, output: str) -> int:
 
 
 def format_work_volumes(volumes: Sequence[str]) -> str:
-    """Render the retained per-worktree source copies.
+    """Render retained per-worktree runner volumes.
 
     >>> print(format_work_volumes([]))
-    retained work volumes (source copies): none
+    retained runner volumes (source + CoBRA cache): none
     >>> print(format_work_volumes(["d810-work-wt-0011aabb"]))
-    retained work volumes (source copies):
+    retained runner volumes (source + CoBRA cache):
       d810-work-wt-0011aabb
     """
     if not volumes:
-        return "retained work volumes (source copies): none"
-    return "retained work volumes (source copies):\n" + "\n".join(
+        return "retained runner volumes (source + CoBRA cache): none"
+    return "retained runner volumes (source + CoBRA cache):\n" + "\n".join(
         f"  {name}" for name in volumes
     )
 
 
 def _list_work_volumes(arguments: argparse.Namespace) -> tuple[bool, list[str], str]:
-    """List retained work volumes; never assume none on error."""
-    status, output = run_capture(
-        build_work_volume_list_argv(
+    """List exact supported retained-runner roles; never assume none on error."""
+    volumes: set[str] = set()
+    for argv in build_retained_volume_list_argvs(
             remote=arguments.remote,
             volume=arguments.volume,
             share_root=arguments.share_root,
-        )
-    )
-    if status != 0:
-        return False, [], output
-    return True, parse_container_lines(output), output
+    ):
+        status, output = run_capture(argv)
+        if status != 0:
+            return False, [], output
+        volumes.update(parse_container_lines(output))
+    return True, sorted(volumes), ""
 
 
 def _list_containers(arguments: argparse.Namespace) -> tuple[bool, list[str], str]:
@@ -719,15 +741,12 @@ def _status(arguments: argparse.Namespace) -> int:
     if arguments.dry_run:
         print(" ".join(inspect_argv))
         print(" ".join(containers_argv))
-        print(
-            " ".join(
-                build_work_volume_list_argv(
-                    remote=arguments.remote,
-                    volume=arguments.volume,
-                    share_root=arguments.share_root,
-                )
-            )
-        )
+        for argv in build_retained_volume_list_argvs(
+            remote=arguments.remote,
+            volume=arguments.volume,
+            share_root=arguments.share_root,
+        ):
+            print(" ".join(argv))
         if not arguments.no_verify:
             print(
                 " ".join(
@@ -756,7 +775,7 @@ def _status(arguments: argparse.Namespace) -> int:
     print(format_status(inspect_output, container_output))
     listed, work_volumes, work_output = _list_work_volumes(arguments)
     if not listed:
-        return _report_indeterminate("which work volumes exist", work_output)
+        return _report_indeterminate("which retained runner volumes exist", work_output)
     print(format_work_volumes(work_volumes))
     if arguments.no_verify:
         return 0
@@ -765,17 +784,17 @@ def _status(arguments: argparse.Namespace) -> int:
 
 
 def _purge_work_volumes(arguments: argparse.Namespace) -> int:
-    """Report the retained source copies, and delete them only when asked."""
+    """Report retained runner volumes, and delete them only when asked."""
     listed, work_volumes, work_output = _list_work_volumes(arguments)
     if not listed:
-        return _report_indeterminate("which work volumes exist", work_output)
+        return _report_indeterminate("which retained runner volumes exist", work_output)
     if not work_volumes:
-        print("retained work volumes (source copies): none")
+        print("retained runner volumes (source + CoBRA cache): none")
         return 0
     print(format_work_volumes(work_volumes))
     if not arguments.purge_work_volumes:
         print(
-            "These retain copies of source and are NOT deleted with the credential "
+            "These retain runner state (source + CoBRA cache) and are NOT deleted with the credential "
             "volume; pass --purge-work-volumes to delete them too."
         )
         return 0
@@ -784,11 +803,11 @@ def _purge_work_volumes(arguments: argparse.Namespace) -> int:
             build_remove_volume_argv(remote=arguments.remote, volume=name)
         )
         if status != 0:
-            print(f"ERROR: could not remove work volume {name}", file=sys.stderr)
+            print(f"ERROR: could not remove retained runner volume {name}", file=sys.stderr)
             for line in output.strip().splitlines():
                 print(f"       {line}", file=sys.stderr)
             return status or 1
-        print(f"purged work volume {name}")
+        print(f"purged retained runner volume {name}")
     return 0
 
 
@@ -805,15 +824,12 @@ def _remove(arguments: argparse.Namespace) -> int:
         if arguments.force:
             print(f"docker -H ssh://{arguments.remote} rm -f <containers listed above>")
         print(" ".join(remove_argv))
-        print(
-            " ".join(
-                build_work_volume_list_argv(
-                    remote=arguments.remote,
-                    volume=arguments.volume,
-                    share_root=arguments.share_root,
-                )
-            )
-        )
+        for argv in build_retained_volume_list_argvs(
+            remote=arguments.remote,
+            volume=arguments.volume,
+            share_root=arguments.share_root,
+        ):
+            print(" ".join(argv))
         return 0
 
     presence, inspect_output = _inspect_volume(arguments)
@@ -823,8 +839,8 @@ def _remove(arguments: argparse.Namespace) -> int:
             inspect_output,
         )
     if presence == "absent":
-        # The credential volume may already be gone while its source copies are
-        # not: that is exactly when they would otherwise be unreachable.
+        # The credential volume may already be gone while its retained runner
+        # volumes are not: that is exactly when they would otherwise be unreachable.
         print(f"volume {arguments.volume} is already absent on ssh://{arguments.remote}")
         return _purge_work_volumes(arguments)
 

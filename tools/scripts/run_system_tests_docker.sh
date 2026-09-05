@@ -31,8 +31,8 @@
 #                           root (e.g. .claude/worktrees/agent-foo), set D810_WORKTREE_ROOT and pass
 #                           only the relative part: D810_WORKTREE_ROOT=.claude/worktrees -w agent-foo.
 #   -l, --logs              Mount work dir .tmp/logs at /root/.idapro/logs
-#   -o, --out FILE          (system/test only) Redirect stdout+stderr to WORK_DIR/.tmp/FILE. Use a relative
-#                           filename (e.g. out.txt), not an absolute path; the script prepends .tmp/.
+#   -o, --out FILE          (system/test only) Redirect stdout+stderr to WORK_DIR/.tmp/FILE. FILE must be one bare
+#                           filename (e.g. out.txt), with no slashes; the script prepends .tmp/.
 #   --enable-debug-logging  Set D810_DEBUG_LOGGING=1 inside the container so getLogger uses DEBUG as
 #                           the default level instead of INFO (explicit caller levels are unaffected).
 #   --enable-diag-snapshot  Set D810_DIAG_SNAPSHOT=1 inside the container.
@@ -49,11 +49,11 @@
 #                           volume (d810-work-<name>-<hash>) that becomes /work, so Cython .so files,
 #                           egg-info and pip output never touch the Mac tree. Only <worktree>/.tmp is
 #                           mounted read-write, at /work/.tmp, which is where -o captures, -l logs,
-#                           .tmp/cobra-linux and the cobra source archive already live. Files created
+#                           and the cobra source archive already live. Files created
 #                           there are owned by the share account's uid.
 #                           Only ONE remote run per worktree is allowed at a time (lock:
 #                           WORK_DIR/.tmp/remote-run.lock): .tmp is shared read-write, so -o files,
-#                           logs, diag SQLite databases and the cobra cache would collide.
+#                           logs, diag SQLite databases and finalized artifact staging would collide.
 #                           Requires macOS (the .tmp ACL for the share account is macOS-specific).
 #   --                      Remaining args passed to pytest (system/test) or used as command separator (exec)
 #
@@ -61,8 +61,8 @@
 #   -f, --function NAME     Pass --dump-function-pseudocode NAME
 #   -m, --maturity LIST     Pass --dump-microcode-maturity LIST (comma-separated)
 #   -p, --project NAME      Pass --dump-project NAME (JSON project name)
-#   -o, --out FILE          Redirect stdout+stderr to WORK_DIR/.tmp/FILE; truncated each run. Use a
-#                           relative filename (e.g. dump.txt), not an absolute path; the script prepends .tmp/.
+#   -o, --out FILE          Redirect stdout+stderr to WORK_DIR/.tmp/FILE; truncated each run. FILE must be one bare
+#                           filename (e.g. dump.txt), with no slashes; the script prepends .tmp/.
 #   --enable-debug-logging  Set D810_DEBUG_LOGGING=1 inside the container (see system/shell/exec above).
 #   --enable-diag-snapshot  Set D810_DIAG_SNAPSHOT=1 inside the container.
 #   --disable-fact-lifecycle
@@ -148,11 +148,12 @@
 #     0xc00000cc STATUS_BAD_NETWORK_NAME    the share name in device=//HOST/SHARE is wrong
 #
 #   `--status` runs the same probe read-only against an existing volume; `--no-verify` opts out.
-#   `--status` also lists the retained per-worktree work volumes: those hold COPIES OF SOURCE and
-#   outlive `--remove`, which reports them and deletes them only with `--purge-work-volumes`. They
-#   are selected by all three of d810.role=work, d810.credential_volume=<volume> and
-#   d810.share_root_digest, so another share's copies are never in scope; orphans are still
-#   reachable when the credential volume is already gone.
+#   `--status` also lists retained per-worktree runner volumes: those hold source copies and the
+#   CoBRA cache, outlive `--remove`, and are deleted only with `--purge-work-volumes`. They are
+#   selected by their exact supported role (d810.role=work or d810.role=cobra-cache), plus
+#   d810.credential_volume=<volume> and d810.share_root_digest, so another share's volumes or an
+#   unknown future role are never in scope; orphans are still reachable when the credential volume
+#   is already gone.
 #   An SMB password containing a comma is refused up front: the cifs `o=` value is comma-separated.
 #
 #   The option set deliberately omits nobrl, and --mount-opts REFUSES nobrl/nolock: in remote mode no
@@ -630,6 +631,7 @@ DUMP_FUNCTION=""
 DUMP_MATURITY=""
 DUMP_PROJECT=""
 DUMP_OUT=""
+DUMP_OUT_SET=0
 MOUNT_LOGS=""
 ENABLE_DEBUG_LOGGING=""
 ENABLE_DIAG_SNAPSHOT=""
@@ -658,7 +660,12 @@ while [ $# -gt 0 ]; do
       shift 2
       ;;
     -o|--out)
+      if [ $# -lt 2 ]; then
+        echo "ERROR: -o/--out requires one bare filename" >&2
+        exit 1
+      fi
       DUMP_OUT="$2"
+      DUMP_OUT_SET=1
       shift 2
       ;;
     -l|--logs)
@@ -724,6 +731,17 @@ if [ -n "$WORKTREE_REL" ]; then
     echo "ERROR: Worktree not found: $WORK_DIR" >&2
     exit 1
   fi
+fi
+
+# Output captures are intentionally confined to .tmp. Validate before remote
+# setup, which otherwise acquires a lock, creates .tmp, and talks to Docker.
+if [ "$DUMP_OUT_SET" = "1" ]; then
+  case "$DUMP_OUT" in
+    ''|.|..|*/*)
+      echo "ERROR: -o/--out must be one bare filename (not empty, . or .., and no /)" >&2
+      exit 1
+      ;;
+  esac
 fi
 
 # Inside container: work dir is always /work; src is either /work/src or worktree src
@@ -999,7 +1017,7 @@ _ensure_acl() {
 }
 
 _apply_tmp_acls() {
-  local candidate account
+  local account capture
   # Files the container creates are owned by the share account with 0600, so
   # without an inheritable ACE for the invoking user its own artifacts - the -o
   # capture above all - come back unreadable on this Mac.
@@ -1008,15 +1026,16 @@ _apply_tmp_acls() {
   for account in "$REMOTE_SMB_USER" "$local_account"; do
     # The .tmp root must carry the inheritable entries or nothing else can.
     _ensure_acl "$WORK_DIR/.tmp" dir "$account" 1
-    for candidate in "$WORK_DIR/.tmp/logs" "$WORK_DIR/.tmp/cobra-linux"; do
-      [ -d "$candidate" ] && _ensure_acl "$candidate" dir "$account"
-    done
+    # Finalized remote artifacts are copied into .tmp/logs/<run-id>, so this
+    # pre-existing directory is required rather than a best-effort descendant.
+    _ensure_acl "$WORK_DIR/.tmp/logs" dir "$account" 1
   done
   # A capture from an earlier run is owned by the share account and cannot be
   # re-ACLed from here; it is rewritten anyway, so remove it and let the new
   # file inherit both entries.
-  if [ -n "$DUMP_OUT" ] && [ -e "$WORK_DIR/.tmp/$DUMP_OUT" ]; then
-    rm -f "$WORK_DIR/.tmp/$DUMP_OUT"
+  capture="$WORK_DIR/.tmp/$DUMP_OUT"
+  if [ -n "$DUMP_OUT" ] && { [ -e "$capture" ] || [ -L "$capture" ]; }; then
+    rm -f -- "$capture"
   fi
 }
 
@@ -1093,14 +1112,14 @@ if [ -n "$REMOTE_HOST" ]; then
   # Export before any docker invocation so image inspection, the probe and the
   # workload all address the same engine.
   export DOCKER_HOST="ssh://$REMOTE_HOST"
-  _remote_preflight_engine
   # The lock still guards the shared read-write .tmp: -o captures, logs, diag
-  # SQLite databases and the cobra cache all collide between concurrent runs.
+  # SQLite databases and finalized artifact staging all collide between runs.
   _acquire_remote_lock
   WORK_VOLUME="$(_work_volume_name "$WORK_DIR")"
   COBRA_CACHE_VOLUME="d810-cobra-${WORK_VOLUME#d810-work-}"
-  mkdir -p "$WORK_DIR/.tmp"
+  mkdir -p "$WORK_DIR/.tmp/logs"
   _apply_tmp_acls
+  _remote_preflight_engine
   # PIDs restart at 1 in every container, so a pid-keyed database name is not
   # unique across concurrent runs on one shared mount. This id is, and it is
   # forwarded to the container like every other D810_* variable.

@@ -822,18 +822,27 @@ def test_absent_volume_error_classification() -> None:
     assert not setup_remote_test_volume.is_absent_volume_error(SSH_ERROR)
 
 
-def test_work_volume_listing_is_scoped_to_this_credential_and_share() -> None:
-    """The role label alone would sweep in another share's source copies."""
+def test_retained_volume_listing_targets_only_supported_roles() -> None:
+    """A future d810.role value must never become a purge target by default."""
     digest = setup_remote_test_volume.share_root_digest("/srv/share-root")
 
-    assert setup_remote_test_volume.build_work_volume_list_argv(
+    assert setup_remote_test_volume.build_retained_volume_list_argvs(
         remote="h", volume="idapro", share_root="/srv/share-root"
     ) == [
-        "docker", "-H", "ssh://h", "volume", "ls",
-        "--filter", "label=d810.role",
-        "--filter", "label=d810.credential_volume=idapro",
-        "--filter", f"label=d810.share_root_digest={digest}",
-        "--format", "{{.Name}}",
+        [
+            "docker", "-H", "ssh://h", "volume", "ls",
+            "--filter", "label=d810.role=work",
+            "--filter", "label=d810.credential_volume=idapro",
+            "--filter", f"label=d810.share_root_digest={digest}",
+            "--format", "{{.Name}}",
+        ],
+        [
+            "docker", "-H", "ssh://h", "volume", "ls",
+            "--filter", "label=d810.role=cobra-cache",
+            "--filter", "label=d810.credential_volume=idapro",
+            "--filter", f"label=d810.share_root_digest={digest}",
+            "--format", "{{.Name}}",
+        ],
     ]
     assert setup_remote_test_volume.share_root_digest("/other") != digest
 
@@ -855,7 +864,7 @@ def test_orphaned_work_volumes_are_reachable_without_the_credential_volume(
 
     assert status == 0
     assert "already absent" in printed
-    assert "purged work volume d810-work-orphan-0011aabb" in printed
+    assert "purged retained runner volume d810-work-orphan-0011aabb" in printed
     assert any(
         "volume rm d810-work-orphan-0011aabb" in " ".join(argv) for argv in recorded
     )
@@ -921,7 +930,7 @@ def test_status_enumerates_retained_work_volumes(
     printed = capsys.readouterr().out
 
     assert status == 0
-    assert "retained work volumes (source copies):" in printed
+    assert "retained runner volumes (source + CoBRA cache):" in printed
     assert "d810-work-wt-0011aabb" in printed
     assert "d810-work-other-22ccddee" in printed
 
@@ -968,7 +977,39 @@ def test_purge_removes_every_work_volume(
     joined = [" ".join(argv) for argv in recorded]
     assert any("volume rm d810-work-a-0011aabb" in call for call in joined)
     assert any("volume rm d810-work-b-22ccddee" in call for call in joined)
-    assert printed.count("purged work volume") == 2
+    assert printed.count("purged retained runner volume") == 2
+
+
+def test_purge_handles_each_supported_role_and_not_an_unknown_role(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recorded = _fake_capture(
+        monkeypatch,
+        {
+            "volume inspect": (1, ABSENT_ERROR),
+            "label=d810.role=work": (0, "d810-work-a-0011aabb\nshared\n"),
+            "label=d810.role=cobra-cache": (0, "d810-cobra-a-0011aabb\nshared\n"),
+        },
+    )
+
+    status = setup_remote_test_volume.main(["--remove", "--purge-work-volumes"])
+    printed = capsys.readouterr().out
+
+    assert status == 0
+    joined = [" ".join(argv) for argv in recorded]
+    listings = [call for call in joined if "volume ls" in call]
+    assert len(listings) == 2
+    assert all("--filter label=d810.role " not in call for call in listings)
+    assert {"label=d810.role=work", "label=d810.role=cobra-cache"} == {
+        next(token for token in call.split() if token.startswith("label=d810.role="))
+        for call in listings
+    }
+    assert any("volume rm d810-work-a-0011aabb" in call for call in joined)
+    assert any("volume rm d810-cobra-a-0011aabb" in call for call in joined)
+    assert sum("volume rm shared" in call for call in joined) == 1
+    assert not any("future-role" in call for call in joined)
+    assert "retained runner volumes (source + CoBRA cache)" in printed
 
 
 def test_work_volume_listing_failure_is_indeterminate(
@@ -987,7 +1028,7 @@ def test_work_volume_listing_failure_is_indeterminate(
     status = setup_remote_test_volume.main(["--status"])
 
     assert status == setup_remote_test_volume.EXIT_INDETERMINATE
-    assert "cannot determine which work volumes" in capsys.readouterr().err
+    assert "cannot determine which retained runner volumes" in capsys.readouterr().err
 
 
 def test_doctests_pass() -> None:

@@ -140,7 +140,12 @@ fi
 set -eu
 printf '%s\n' "$*" >> "${CHMOD_LOG:-/dev/null}"
 case "${1:-}" in
-  +a|-a#) exit "${MOCK_CHMOD_ACL_EXIT:-0}" ;;
+  +a|-a#)
+    if [ -n "${MOCK_CHMOD_ACL_FAIL_TARGET:-}" ] && [ "${!#}" = "$MOCK_CHMOD_ACL_FAIL_TARGET" ]; then
+      exit 1
+    fi
+    exit "${MOCK_CHMOD_ACL_EXIT:-0}"
+    ;;
 esac
 exec /bin/chmod "$@"
 """,
@@ -2019,7 +2024,7 @@ def test_remote_mode_grants_a_tmp_scoped_acl_only(tmp_path: Path) -> None:
     assert str(share) not in targets
     assert any(target == tmp_root for target in targets)
     assert any(target.endswith("/.tmp/logs") for target in targets)
-    assert any(target.endswith("/.tmp/cobra-linux") for target in targets)
+    assert not any(target.endswith("/.tmp/cobra-linux") for target in targets)
     assert any("smbuser allow" in call for call in acl_calls)
     assert any("file_inherit,directory_inherit" in call for call in acl_calls)
     # the invoking user needs an inheritable ACE too, or the container's own
@@ -2067,6 +2072,78 @@ def test_remote_mode_fails_closed_when_the_acl_cannot_be_applied(
     assert result.returncode != 0
     assert "could not grant" in result.stderr
     assert _runs(calls) == []
+
+
+def test_remote_mode_fails_closed_when_required_logs_acl_cannot_be_applied(
+    tmp_path: Path,
+) -> None:
+    """Finalized remote artifacts are staged into .tmp/logs, so it is required."""
+    share, repo = _share_layout(tmp_path)
+    logs = repo / ".tmp" / "logs"
+    logs.mkdir(parents=True)
+
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--remote",
+        REMOTE_HOST,
+        "--",
+        "true",
+        repo_root=repo,
+        extra_env=_remote_env(share, MOCK_CHMOD_ACL_FAIL_TARGET=str(logs)),
+    )
+
+    assert result.returncode != 0
+    assert f"could not grant smbuser access to {logs}" in result.stderr
+    assert calls == []
+
+
+@pytest.mark.parametrize("output", ["", ".", "..", "../victim.txt", "nested/out.txt"])
+def test_output_requires_a_bare_filename_before_remote_side_effects(
+    tmp_path: Path, output: str
+) -> None:
+    """A traversal must not delete a sibling before remote setup begins."""
+    share, repo = _share_layout(tmp_path)
+    victim = share / "victim.txt"
+    victim.write_text("must survive\n", encoding="utf-8")
+
+    result, calls = _run(
+        tmp_path,
+        "test",
+        "--remote",
+        REMOTE_HOST,
+        "-o",
+        output,
+        "--",
+        "-q",
+        repo_root=repo,
+        extra_env=_remote_env(share),
+    )
+
+    assert result.returncode != 0
+    assert "bare filename" in result.stderr
+    assert victim.read_text(encoding="utf-8") == "must survive\n"
+    assert not (repo / ".tmp").exists()
+    assert calls == []
+
+
+def test_output_flag_requires_a_value_before_remote_side_effects(tmp_path: Path) -> None:
+    share, repo = _share_layout(tmp_path)
+
+    result, calls = _run(
+        tmp_path,
+        "test",
+        "--remote",
+        REMOTE_HOST,
+        "-o",
+        repo_root=repo,
+        extra_env=_remote_env(share),
+    )
+
+    assert result.returncode != 0
+    assert "bare filename" in result.stderr
+    assert not (repo / ".tmp").exists()
+    assert calls == []
 
 
 def test_remote_mode_requires_a_darwin_host(tmp_path: Path) -> None:
@@ -2659,6 +2736,35 @@ def test_stale_capture_is_removed_so_the_new_one_inherits_the_acl(
     assert not [
         call for call in _chmod_calls(tmp_path) if call.endswith("/.tmp/out.txt")
     ]
+    assert "/work/.tmp/out.txt" in _remote_container_run(calls)
+
+
+def test_stale_capture_symlink_is_removed_without_touching_its_target(
+    tmp_path: Path,
+) -> None:
+    share, repo = _share_layout(tmp_path)
+    target = tmp_path / "capture-target.txt"
+    target.write_text("must survive\n", encoding="utf-8")
+    capture = repo / ".tmp" / "out.txt"
+    capture.parent.mkdir(parents=True)
+    capture.symlink_to(target)
+
+    result, calls = _run(
+        tmp_path,
+        "test",
+        "--remote",
+        REMOTE_HOST,
+        "-o",
+        "out.txt",
+        "--",
+        "-q",
+        repo_root=repo,
+        extra_env=_remote_env(share),
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert not capture.exists()
+    assert target.read_text(encoding="utf-8") == "must survive\n"
     assert "/work/.tmp/out.txt" in _remote_container_run(calls)
 
 
