@@ -784,6 +784,19 @@ if [ "$DUMP_OUT_SET" = "1" ]; then
   esac
 fi
 
+# The run id is interpolated into a container command that copies between two
+# fixed directories, so it must name one entry inside them and nothing else: a
+# path separator escapes both, and a quote would terminate the interpolation.
+# Same standard as -o above, and validated before any Docker contact.
+if [ -n "$ARTIFACT_RUN" ]; then
+  case "$ARTIFACT_RUN" in
+    .|..|*/*|*[!A-Za-z0-9._-]*)
+      echo "ERROR: --run must be one bare run id (letters, digits, . _ - only; no /)" >&2
+      exit 1
+      ;;
+  esac
+fi
+
 # Inside container: work dir is always /work; src is either /work/src or worktree src
 if [ -n "$WORKTREE_REL" ]; then
   PYWORK="/work/src"

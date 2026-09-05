@@ -3232,6 +3232,67 @@ def test_run_flag_requires_an_identifier(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
+    "run_id",
+    [
+        ".",
+        "..",
+        "../../etc",
+        "sub/dir",
+        "/absolute",
+        "trailing/",
+        "quote'; touch /tmp/pwned; '",
+        "spaced id",
+        "semi;colon",
+        "dollar$var",
+    ],
+)
+def test_run_flag_refuses_anything_but_a_bare_run_id(
+    tmp_path: Path,
+    run_id: str,
+) -> None:
+    """The id is interpolated into a container command between two fixed dirs."""
+    share, repo = _share_layout(tmp_path)
+
+    result, calls = _run(
+        tmp_path,
+        "artifacts",
+        "--remote",
+        REMOTE_HOST,
+        "--run",
+        run_id,
+        repo_root=repo,
+        extra_env=_remote_env(share),
+    )
+
+    assert result.returncode != 0
+    assert "--run must be one bare run id" in result.stderr
+    assert _runs(calls) == []
+    assert _docker_calls(calls) == []
+
+
+def test_run_flag_accepts_a_real_run_id(tmp_path: Path) -> None:
+    """The ids the runner mints are exactly the accepted shape."""
+    share, repo = _share_layout(tmp_path)
+    run_id = "20260905T101112Z-4321-abc123"
+
+    result, calls = _run(
+        tmp_path,
+        "artifacts",
+        "--remote",
+        REMOTE_HOST,
+        "--run",
+        run_id,
+        repo_root=repo,
+        extra_env=_remote_env(share),
+    )
+
+    assert result.returncode == 0, result.stderr
+    command = _remote_container_run(calls)
+    assert f"test -d '/work/runs/{run_id}'" in command
+    assert f"cp -a '/work/runs/{run_id}/.' '/work/.tmp/remote-runs/{run_id}/'" in command
+
+
+@pytest.mark.parametrize(
     "flags",
     [
         ("-l",),
