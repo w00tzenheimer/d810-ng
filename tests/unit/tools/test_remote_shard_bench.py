@@ -269,6 +269,60 @@ def test_dry_run_prints_the_planned_commands_only(
     assert printed[2].endswith("-w wt0 -o shard-baseline.txt -- t::a t::b -q")
 
 
+def test_runner_defaults_beside_this_script_not_under_repo_root(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The root checkout's runner may predate --remote; -w only moves sources."""
+    status = bench.main(
+        [
+            "--remote",
+            "host",
+            "--shard",
+            "wt0=t::a",
+            "--baseline",
+            "none",
+            "--dry-run",
+            "--repo-root",
+            str(tmp_path),
+        ]
+    )
+    printed = capsys.readouterr().out.strip()
+
+    assert status == 0
+    assert printed.startswith(str(bench.default_runner()))
+    assert str(tmp_path) not in printed.split(" ")[0]
+    assert bench.default_runner() == MODULE_PATH.parent / "run_system_tests_docker.sh"
+
+
+def test_explicit_runner_is_honored(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    runner = tmp_path / "custom-runner.sh"
+    runner.write_text("", encoding="utf-8")
+
+    status = bench.main(
+        [
+            "--remote",
+            "host",
+            "--shard",
+            "wt0=t::a",
+            "--baseline",
+            "none",
+            "--dry-run",
+            "--runner",
+            str(runner),
+            "--repo-root",
+            str(tmp_path),
+        ]
+    )
+    printed = capsys.readouterr().out.strip()
+
+    assert status == 0
+    assert printed.startswith(str(runner))
+
+
 def test_doctests_pass() -> None:
     import doctest
 

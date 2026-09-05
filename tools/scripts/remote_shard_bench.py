@@ -70,6 +70,16 @@ class BenchSummary:
     speedup: float | None
 
 
+def default_runner() -> Path:
+    """The runner shipped beside this script.
+
+    ``-w`` mounts a worktree's sources but the wrapper that runs is always the
+    one invoked, so the bench must not resolve the runner from ``--repo-root``:
+    the root checkout's copy can predate ``--remote`` entirely.
+    """
+    return Path(__file__).resolve().parent / "run_system_tests_docker.sh"
+
+
 def parse_shard_assignment(specification: str) -> tuple[str, tuple[str, ...]]:
     """Split ``WORKTREE=ID[,ID...]`` into its worktree and test ids.
 
@@ -276,7 +286,16 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_BASELINE,
         help="how to measure the unsharded arm (default: remote-sequential)",
     )
-    parser.add_argument("--repo-root", default=None, help="repo root (default: this checkout)")
+    parser.add_argument("--repo-root", default=None, help="repo root that owns .worktrees (default: this checkout)")
+    parser.add_argument(
+        "--runner",
+        default=None,
+        help=(
+            "runner script to invoke (default: the copy next to this script). "
+            "-w mounts the worktree's sources but always executes THIS runner, so the "
+            "default deliberately does not follow --repo-root."
+        ),
+    )
     parser.add_argument("--worktree-root", default=".worktrees", help="D810_WORKTREE_ROOT")
     parser.add_argument("--dry-run", action="store_true", help="print the planned commands only")
     return parser
@@ -285,7 +304,11 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     arguments = build_parser().parse_args(argv)
     repo_root = Path(arguments.repo_root or Path(__file__).resolve().parents[2]).resolve()
-    runner = str(repo_root / "tools" / "scripts" / "run_system_tests_docker.sh")
+    runner = str(
+        Path(arguments.runner).resolve()
+        if arguments.runner
+        else default_runner()
+    )
     try:
         shards = build_shards(arguments.shard)
     except ValueError as error:
