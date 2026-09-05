@@ -152,9 +152,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     arguments = build_parser().parse_args(argv)
     password = ""
     try:
-        password = getpass.getpass(
-            f"SMB password for {arguments.user}@{share_host(arguments.share)}: "
-        )
+        try:
+            password = getpass.getpass(
+                f"SMB password for {arguments.user}@{share_host(arguments.share)}: "
+            )
+        except (EOFError, KeyboardInterrupt):
+            print("ERROR: no SMB password was entered", file=sys.stderr)
+            return 1
         options = build_mount_options(
             password,
             share=arguments.share,
