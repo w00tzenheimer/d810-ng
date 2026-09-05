@@ -3801,7 +3801,6 @@ def use_route_authority_phase(
     lifecycle error is reported where the mistake is (activating an ended
     phase) instead of deep inside a producer factory.
 
-    >>> from d810.core.runtime_identity import RuntimeAuthorityArena
     >>> owner = RouteAuthorityPhase("session")
     >>> with use_route_authority_phase(owner):
     ...     active_route_authority_phase() is owner
@@ -7045,11 +7044,66 @@ def bind_route_evidence(
     )
 
 
+class RouteRebindVerification(Enum):
+    """What the producer binding could still prove when the seam ran.
+
+    The seam's substantive check -- every producer reference resolves to this
+    bundle's own proof *record* -- needs the producer's arena to still be open,
+    and whether it is depends on which producer path built the bundle.  Both
+    answers are legitimate and both occur in production, so the outcome is a
+    named value the transaction records rather than a branch it skips
+    silently.
+
+    ``PRODUCER_RECORDS_VERIFIED``
+        The producer's arena was open and every reference resolved to this
+        bundle's own proof record.  This is what a bundle carried unchanged
+        from the lifecycle session that projected it looks like: that arena is
+        owned by ``NativePreanalysisSessionState`` and is released only at
+        top-level session completion, i.e. after the transaction.
+    ``PRODUCER_ARENA_CLOSED``
+        A producer binding is present and its arena has been closed by its
+        owner, so record identity is not verifiable here.  This is what a
+        bundle *reminted inside the unflatten emission* looks like
+        (``minimal_unflatten_emit`` augments or extends the supplied bundle and
+        the new arena belongs to ``route_authority_phase("unflatten-emission")``,
+        which ends when the emission returns).  The emission's join authority
+        is *designed* to end with the emission, so this is an expected state,
+        not a fault -- and it is recorded rather than assumed.
+    ``PRODUCER_UNBOUND``
+        No producer binding at all: a decoded bundle, or one built field by
+        field.  Binding it is exactly what an explicit rebind is for.
+    """
+
+    PRODUCER_RECORDS_VERIFIED = "producer-records-verified"
+    PRODUCER_ARENA_CLOSED = "producer-arena-closed"
+    PRODUCER_UNBOUND = "producer-unbound"
+
+
+@dataclass(frozen=True, slots=True)
+class RouteAuthorityRebind:
+    """The authority a rebind minted, and what it was able to verify first."""
+
+    binding: RouteAuthorityBinding
+    verification: RouteRebindVerification
+
+    def __post_init__(self) -> None:
+        if type(self.binding) is not RouteAuthorityBinding:
+            raise TypeError("a route rebind carries a route authority binding")
+        if type(self.verification) is not RouteRebindVerification:
+            raise TypeError("a route rebind carries a named verification outcome")
+
+    @property
+    def records_verified(self) -> bool:
+        """Whether the producer's own proof records were checked at the seam."""
+
+        return self.verification is RouteRebindVerification.PRODUCER_RECORDS_VERIFIED
+
+
 def rebind_route_authority(
     evidence: CanonicalSemanticEvidence,
     *,
     arena: RuntimeAuthorityArena,
-) -> RouteAuthorityBinding:
+) -> RouteAuthorityRebind:
     """Return a *new* binding for this bundle's own proofs, minted in ``arena``.
 
     This is the named rebind at the **producer/transaction seam**, and it is
@@ -7074,6 +7128,14 @@ def rebind_route_authority(
       identity re-derives -- yet its proofs are different records, and binding
       them as though they were the producer's would let one route acquire two
       authorities.
+    * **whether that check ran is part of the result, not a silent branch.**
+      Whether the producer's arena is open depends on which producer path
+      built the bundle, and both answers occur in production, so the returned
+      :class:`RouteAuthorityRebind` names the outcome
+      (:class:`RouteRebindVerification`) and the caller records it.  A bundle
+      whose producer arena has been closed by its owner is an *expected* state
+      -- the unflatten emission's authority is designed to end with the
+      emission -- and it is reported rather than skipped.
     * "same group, same fingerprints" is **not** re-checked here.
       ``CanonicalSemanticEvidence.__post_init__`` already rejects a binding
       whose ``atomic_group_id`` or proof count differs from the bundle's, and
@@ -7102,20 +7164,28 @@ def rebind_route_authority(
         )
     route_proofs = evidence.route_proofs
     producer = evidence.route_binding
-    if producer is not None and producer.is_live:
+    if producer is None:
+        verification = RouteRebindVerification.PRODUCER_UNBOUND
+    elif not producer.is_live:
+        verification = RouteRebindVerification.PRODUCER_ARENA_CLOSED
+    else:
         for ref, proof in zip(producer.proof_refs, route_proofs, strict=True):
             if producer.proof_for(ref) is not proof:
                 raise RuntimeJoinRejected(
                     "the producer binding names another route proof record"
                 )
-    return _mint_route_binding(
-        arena,
-        # The transaction session opened this arena and closes it with itself.
-        own=False,
-        native_key=evidence.native_key,
-        generation=evidence.generation,
-        atomic_group_id=evidence.atomic_group_id,
-        route_proofs=route_proofs,
+        verification = RouteRebindVerification.PRODUCER_RECORDS_VERIFIED
+    return RouteAuthorityRebind(
+        _mint_route_binding(
+            arena,
+            # The transaction session opened this arena and closes it with itself.
+            own=False,
+            native_key=evidence.native_key,
+            generation=evidence.generation,
+            atomic_group_id=evidence.atomic_group_id,
+            route_proofs=route_proofs,
+        ),
+        verification,
     )
 
 
@@ -10076,6 +10146,8 @@ __all__ = [
     "active_route_authority_phase",
     "bind_route_evidence",
     "materialize_route_evidence",
+    "RouteAuthorityRebind",
+    "RouteRebindVerification",
     "rebind_route_authority",
     "route_authority_phase",
     "route_join_binding",

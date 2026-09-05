@@ -78,6 +78,7 @@ from d810.transforms.unflatten_authority.diagnostics import PhaseTimings, phase_
 from d810.transforms.unflatten_authority.views import compatibility_projection
 from d810.transforms.exit_path_liveness_policy import exit_path_blocks_live_violations
 from .runtime_authority import rebind_route_evidence
+
 from .canonical_session import (
     CanonicalSessionPhase,
     _canonical_validation_session,
@@ -1358,6 +1359,40 @@ def _live_binding_failed_verdict(
         None,
         (),
         rejection_detail=detail,
+    )
+
+
+def _record_route_authority_rebind(evidence, *, phase) -> None:
+    """Rebind one bundle at the producer/transaction seam and record the outcome.
+
+    The seam's substantive check -- that every producer reference names this
+    bundle's own proof record -- can only run while the producer's arena is
+    open, and whether it is depends on which producer path built the bundle
+    (``runtime_authority`` module docstring names both).  Neither answer is a
+    fault, but "the check did not run" must not be invisible: the outcome is
+    stored on the session by the rebind and is stated here as well, so a log
+    reader sees which guarantee a given transaction actually got.
+    """
+
+    rebind = rebind_route_evidence(evidence)
+    if rebind.records_verified:
+        # Deliberately unguarded.  ``logger.debug_on`` is a ``LevelFlag`` whose
+        # cache refreshes on a *config version* counter, not on a level change,
+        # so evaluating it here -- once per transaction, i.e. early and often --
+        # freezes the flag for this module's logger for the rest of the process
+        # and silently disables every later ``debug_on``-guarded diagnostic,
+        # including under ``caplog.set_level``.  The suite caught exactly that.
+        # ``logger.debug`` with %-style arguments already short-circuits, and
+        # these arguments are three attribute reads and a ``len``.
+        logger.debug(
+            "unflatten authority %s route rebind: %s (%d route proofs)",
+            phase.value, rebind.verification.value, len(rebind.binding.proof_refs),
+        )
+        return
+    logger.info(
+        "unflatten authority %s route rebind could not verify producer records: "
+        "%s (%d route proofs)",
+        phase.value, rebind.verification.value, len(rebind.binding.proof_refs),
     )
 
 
@@ -4794,14 +4829,18 @@ def _prepare_unflatten_authority_in_session(*, source, projection, plan, attempt
     source_route_authority = None
     projected_route_realization = None
     try:
-        # The producer/transaction seam.  The emission that built this bundle
-        # has ended and closed its arena, so the references it minted are not
-        # this scope's to use: the transaction verifies what the producer
-        # claimed about the bundle and mints its own references, in the arena
-        # this session owns.  A bundle that cannot be rebound -- decoded,
-        # reconstructed, or naming other proofs -- refuses here as a
-        # ValueError, which the boundary below turns into a rejected verdict.
-        rebind_route_evidence(proposal.route_evidence)
+        # The producer/transaction seam.  The references the producer minted
+        # are not this scope's to use, so the transaction verifies what the
+        # producer binding can still prove and mints its own references in the
+        # arena this session owns.  What that check was able to prove depends
+        # on the producer path and is recorded, never skipped silently; see
+        # ``runtime_authority``.  A bundle that cannot be rebound refuses here
+        # as a ValueError, which the boundary below turns into a rejected
+        # verdict.
+        _record_route_authority_rebind(
+            proposal.route_evidence,
+            phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        )
         inventory_started_ns = perf_counter_ns()
         source_materialization = capture_source_route_materialization(
             source, generation=proposal.source_identity_catalog.generation,
@@ -5880,8 +5919,23 @@ def _revalidate_observed_unflatten_authority_in_session(
         # The same seam, for the observed session.  It is a *different*
         # session and therefore a different arena, so the observed phase mints
         # its own references and can never mistake a projected ordinal for an
-        # observed one.
-        rebind_route_evidence(validated_prepared.proposal.route_evidence)
+        # observed one.  It gets its own provenance label: a refusal here is a
+        # route-authority rebind failure, and reporting it as an inventory
+        # failure would send a reader to the wrong stage.
+        _record_route_authority_rebind(
+            validated_prepared.proposal.route_evidence,
+            phase=model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY,
+        )
+    except (TypeError, ValueError) as error:
+        return _observed_live_binding_failure(
+            "observed_route_authority_rebind", error,
+            authority_id_value=validated_prepared.authority_id,
+            binding_id_value=authority.binding_id,
+            candidate_fingerprint=_unavailable_candidate_fingerprint(
+                "observed-route-authority-rebind"
+            ),
+        )
+    try:
         observed_materialization = capture_observed_route_materialization(
             observed, generation=observed_generation,
         )

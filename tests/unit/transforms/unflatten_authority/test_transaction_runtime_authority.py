@@ -10,7 +10,10 @@ boundary instead of escaping.
 
 from __future__ import annotations
 
+import ast
+import logging
 from dataclasses import fields, replace
+from pathlib import Path
 
 import pytest
 
@@ -25,6 +28,7 @@ from d810.analyses.control_flow.semantic_route_evidence import (
     canonical_semantic_evidence_from_proofs,
     materialize_route_evidence,
     rebind_route_authority,
+    RouteRebindVerification,
     route_authority_phase,
     route_join_binding,
     runtime_semantic_evidence_from_proofs,
@@ -47,6 +51,7 @@ from d810.transforms.unflatten_authority.canonical_session import (
 )
 from d810.transforms.unflatten_authority import bind
 from d810.transforms.unflatten_authority import ids as authority_ids
+from d810.transforms.unflatten_authority import legacy_codec
 from d810.transforms.unflatten_authority.runtime_authority import (
     TransactionSubjectRecord,
     rebind_route_evidence,
@@ -54,6 +59,8 @@ from d810.transforms.unflatten_authority.runtime_authority import (
     transaction_authority_session,
     transaction_route_arena,
     transaction_route_binding,
+    transaction_route_verification,
+    transaction_subject_ref,
 )
 from d810.analyses.control_flow.graph_checks import (
     check_effectful_reachability_preserved,
@@ -143,10 +150,10 @@ def test_the_two_transaction_phases_own_two_arenas_that_share_no_reference() -> 
     evidence = _emitted_bundle()
 
     with _canonical_validation_session(CanonicalSessionPhase.PROJECTED_PREPARATION):
-        projected = rebind_route_evidence(evidence)
+        projected = rebind_route_evidence(evidence).binding
         projected_refs = projected.proof_refs
     with _canonical_validation_session(CanonicalSessionPhase.OBSERVED_REVALIDATION):
-        observed = rebind_route_evidence(evidence)
+        observed = rebind_route_evidence(evidence).binding
 
         assert observed is not projected
         assert observed.proof_refs != projected_refs
@@ -172,7 +179,7 @@ def test_a_bundle_that_never_passed_the_seam_cannot_be_joined() -> None:
         with pytest.raises(RuntimeJoinRejected, match="was not rebound into this"):
             transaction_route_binding(evidence)
 
-        binding = rebind_route_evidence(evidence)
+        binding = rebind_route_evidence(evidence).binding
 
         assert transaction_route_binding(evidence) is binding
         assert binding.ref_for(evidence.route_proofs[0]) is binding.proof_refs[0]
@@ -191,7 +198,7 @@ def test_the_seam_is_idempotent_for_one_occurrence_in_one_session() -> None:
         second = rebind_route_evidence(evidence)
 
         assert first is second
-        assert len(first.proof_refs) == len(evidence.route_proofs)
+        assert len(first.binding.proof_refs) == len(evidence.route_proofs)
 
 
 def test_the_seam_never_adopts_the_producer_arena() -> None:
@@ -286,8 +293,11 @@ def test_an_unbound_bundle_is_what_the_seam_exists_to_bind() -> None:
     assert unbound.route_binding is None
 
     with _canonical_validation_session(CanonicalSessionPhase.PROJECTED_PREPARATION):
-        binding = rebind_route_evidence(unbound)
+        rebind = rebind_route_evidence(unbound)
+        binding = rebind.binding
 
+        assert rebind.verification is RouteRebindVerification.PRODUCER_UNBOUND
+        assert not rebind.records_verified
         assert binding.is_live
         assert binding.atomic_group_id == unbound.atomic_group_id
         assert len(binding.proof_refs) == len(unbound.route_proofs)
@@ -302,7 +312,7 @@ def test_the_seam_moves_no_canonical_byte_and_mints_no_content_id() -> None:
     before_ids = tuple(proof.proof_id for proof in evidence.route_proofs)
 
     with _canonical_validation_session(CanonicalSessionPhase.PROJECTED_PREPARATION):
-        rebound = rebind_route_evidence(evidence)
+        rebound = rebind_route_evidence(evidence).binding
 
         assert evidence.atomic_group_id == before_group
         assert tuple(proof.proof_id for proof in evidence.route_proofs) == before_ids
@@ -316,7 +326,7 @@ def test_the_binding_dies_with_the_session_that_minted_it() -> None:
     evidence = _emitted_bundle()
 
     with _canonical_validation_session(CanonicalSessionPhase.PROJECTED_PREPARATION):
-        binding = rebind_route_evidence(evidence)
+        binding = rebind_route_evidence(evidence).binding
         assert binding.is_live
 
     assert not binding.is_live
@@ -593,3 +603,232 @@ def test_the_generic_walkers_tolerate_a_detached_subject() -> None:
     assert bind._registry_structural_snapshot(
         detached
     ) == bind._registry_structural_snapshot(bound)
+
+
+def test_the_seam_names_what_it_could_verify_on_each_producer_path() -> None:
+    """The seam's substantive check is conditional; the condition is recorded.
+
+    Which of the three outcomes a transaction gets depends on the producer
+    path, and two of them occur in production:
+
+    * a bundle carried unchanged from the lifecycle session that projected it
+      keeps a **live** arena at the seam -- that session's phase is released at
+      top-level session completion, after the transaction;
+    * a bundle **reminted inside the unflatten emission** carries an arena the
+      emission phase closed on its way out, so record identity cannot be
+      checked here;
+    * a decoded bundle carries no binding at all.
+
+    None of the three is a fault, and none of them may be a silent branch.
+    """
+
+    session_owned = _bundle()  # arena still open, as the session provider's is
+    reminted_in_emission = _emitted_bundle()
+    decoded = materialize_route_evidence(_emitted_bundle())
+
+    with _canonical_validation_session(CanonicalSessionPhase.PROJECTED_PREPARATION):
+        assert (
+            rebind_route_evidence(session_owned).verification
+            is RouteRebindVerification.PRODUCER_RECORDS_VERIFIED
+        )
+        assert (
+            rebind_route_evidence(reminted_in_emission).verification
+            is RouteRebindVerification.PRODUCER_ARENA_CLOSED
+        )
+        assert (
+            rebind_route_evidence(decoded).verification
+            is RouteRebindVerification.PRODUCER_UNBOUND
+        )
+
+        # ...and every one of them is readable afterwards, from the session,
+        # rather than being consumed at the branch that decided it.
+        assert transaction_route_verification(session_owned).value == (
+            "producer-records-verified"
+        )
+        assert transaction_route_verification(reminted_in_emission).value == (
+            "producer-arena-closed"
+        )
+        assert transaction_route_verification(decoded).value == "producer-unbound"
+        assert rebind_route_evidence(session_owned).records_verified
+        assert not rebind_route_evidence(decoded).records_verified
+
+
+def test_the_verification_outcome_needs_the_seam_to_have_run() -> None:
+    """It is a recorded fact about a rebind, not a property computed on demand."""
+
+    evidence = _emitted_bundle()
+
+    with _canonical_validation_session(CanonicalSessionPhase.PROJECTED_PREPARATION):
+        with pytest.raises(RuntimeJoinRejected, match="was not rebound into this"):
+            transaction_route_verification(evidence)
+
+        rebind_route_evidence(evidence)
+
+        assert (
+            transaction_route_verification(evidence)
+            is RouteRebindVerification.PRODUCER_ARENA_CLOSED
+        )
+
+
+def test_a_live_producer_binding_still_fails_closed_on_a_foreign_record() -> None:
+    """Making the outcome explicit did not soften the check that can run."""
+
+    evidence = _bundle()
+    swapped = replace(
+        evidence,
+        route_proofs=tuple(replace(proof) for proof in evidence.route_proofs),
+    )
+
+    with _canonical_validation_session(CanonicalSessionPhase.PROJECTED_PREPARATION):
+        with pytest.raises(RuntimeJoinRejected, match="another route proof record"):
+            rebind_route_evidence(swapped)
+
+
+def test_a_decoded_subject_stays_unbound_inside_an_active_session() -> None:
+    """Decoding produces unbound values; a live session must not adopt them.
+
+    A subject rebuilt from a persisted payload has no runtime authority to
+    inherit.  Interning would have handed it the *same* reference as a live
+    subject of equal content merely because a session happened to be open,
+    which is the implicit adoption the binding design forbids.
+    """
+
+    with _canonical_validation_session(CanonicalSessionPhase.PROJECTED_PREPARATION):
+        live = _subject(SUBJECT_REF, 0x1200)
+        from_payload = authority_ids._subject_factory(
+            model.SemanticSubjectRef,
+            decoded=True,
+            kind=model.SemanticSubjectKind.BLOCK,
+            role=model.SemanticSubjectRole.PLANNED_HELPER,
+            block_ref=SUBJECT_REF,
+            anchor_ea=0x1200,
+            locator=model.BlockSubjectLocator(SUBJECT_REF, 0x1200),
+        )
+
+        assert from_payload == live
+        assert from_payload.subject_id == live.subject_id
+        assert from_payload.runtime_ref is None
+        assert live.runtime_ref is not None
+        with pytest.raises(RuntimeJoinRejected, match="was not minted by this"):
+            subject_join_ref(from_payload)
+
+
+def test_every_legacy_decode_site_marks_its_subjects_as_decoded() -> None:
+    """A new decode path must not silently acquire transaction authority.
+
+    The marker is opt-in, so the risk it carries is a decode site that forgets
+    it.  This reads the module and refuses that, which is cheaper and more
+    durable than trusting six call sites to stay marked.
+    """
+
+    source = Path(legacy_codec.__file__).read_text()
+    tree = ast.parse(source)
+    calls = [
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "_subject_factory"
+    ]
+
+    assert len(calls) == 6
+    for call in calls:
+        markers = [
+            keyword for keyword in call.keywords if keyword.arg == "decoded"
+        ]
+        assert len(markers) == 1, f"legacy_codec.py:{call.lineno} is unmarked"
+        assert markers[0].value.value is True, f"legacy_codec.py:{call.lineno}"
+
+
+def test_a_decoded_subject_can_still_be_rebound_by_asking() -> None:
+    """Unbound is the default, not a dead end: the named mint is still there."""
+
+    with _canonical_validation_session(CanonicalSessionPhase.PROJECTED_PREPARATION):
+        live = _subject(SUBJECT_REF, 0x1200)
+        from_payload = authority_ids._subject_factory(
+            model.SemanticSubjectRef,
+            decoded=True,
+            kind=model.SemanticSubjectKind.BLOCK,
+            role=model.SemanticSubjectRole.PLANNED_HELPER,
+            block_ref=SUBJECT_REF,
+            anchor_ea=0x1200,
+            locator=model.BlockSubjectLocator(SUBJECT_REF, 0x1200),
+        )
+
+        rebound = transaction_subject_ref(from_payload.subject_id)
+
+        assert rebound is subject_join_ref(live)
+
+
+def test_the_observed_seam_refusal_has_its_own_provenance() -> None:
+    """A rebind failure must not be reported as an inventory failure.
+
+    The observed rebind used to sit inside the inventory ``try``, so a refusal
+    at the seam surfaced as ``observed_inventory`` and sent a reader to the
+    wrong stage.  The behavioural half of this lives in
+    ``tests/system/runtime`` (the observed revalidation fixture needs
+    ``d810.hexrays``, which a unit test may not import); this half pins the
+    structure that decides the label: the rebind has a ``try`` of its own, and
+    the inventory build is not in it.
+    """
+
+    tree = ast.parse(Path(transaction_api.__file__).read_text())
+
+    def calls(node, name):
+        return [
+            call for statement in node
+            for call in ast.walk(statement)
+            if isinstance(call, ast.Call)
+            and isinstance(call.func, ast.Name)
+            and call.func.id == name
+        ]
+
+    observed = [
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.Try)
+        and calls(node.body, "_record_route_authority_rebind")
+        and any(calls(handler.body, "_observed_live_binding_failure")
+                for handler in node.handlers)
+    ]
+
+    assert len(observed) == 1
+    (node,) = observed
+    # The rebind is alone in its own try: an inventory failure and a seam
+    # refusal can no longer arrive under one label.
+    assert not calls(node.body, "_build_semantic_graph_inventory")
+    assert not calls(node.body, "capture_observed_route_materialization")
+    stages = {
+        literal.value
+        for handler in node.handlers
+        for call in calls(handler.body, "_observed_live_binding_failure")
+        for literal in call.args
+        if isinstance(literal, ast.Constant) and isinstance(literal.value, str)
+    }
+    assert stages == {"observed_route_authority_rebind"}
+
+
+def test_the_seam_recorder_does_not_freeze_this_modules_debug_flag(caplog) -> None:
+    """A cached level flag read early and often disables later diagnostics.
+
+    ``logger.debug_on`` is a ``LevelFlag`` that refreshes on a logging *config
+    version* counter, not on a level change.  Reading it once per transaction
+    -- which is what the seam recorder does -- would cache ``False`` for this
+    module's logger for the rest of the process and silently disable every
+    later ``debug_on``-guarded diagnostic, including under
+    ``caplog.set_level``.  The authority suite caught exactly that, in an
+    unrelated test, hundreds of tests later.
+    """
+
+    evidence = _emitted_bundle()
+    with _canonical_validation_session(CanonicalSessionPhase.PROJECTED_PREPARATION):
+        transaction_api._record_route_authority_rebind(
+            evidence, phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        )
+
+    logger_name = "d810.transforms.unflatten_authority.transaction_api"
+    caplog.set_level(logging.DEBUG, logger=logger_name)
+    transaction_api.logger.debug("probe after the seam recorder ran")
+
+    assert any(
+        record.getMessage() == "probe after the seam recorder ran"
+        for record in caplog.records
+    )

@@ -1,18 +1,40 @@
 """The transaction's side of the producer/transaction runtime authority seam.
 
 The producer and the transaction are two scopes, and a runtime reference is
-only meaningful inside the scope that minted it.  The producer's arena is owned
-by the emission phase and is *already closed* by the time the authority
-transaction reads the plan, so the transaction cannot join on the producer's
-references and must not adopt the producer's arena either -- adoption would
-make one scope's lifetime depend on another's.
+only meaningful inside the scope that minted it.  The transaction therefore
+mints its own and never adopts the producer's arena -- adoption would make one
+scope's lifetime depend on another's.
+
+**Whether the producer's arena is still open when the transaction runs depends
+on which producer path built the bundle, and both answers occur.**  Stated
+exactly, because an earlier version of this docstring asserted only the second
+one and the seam's check was silently conditional on it:
+
+* a bundle carried unchanged from the lifecycle session that projected it
+  (``NativePreanalysisSessionState.canonical_semantic_candidate_evidence_for``,
+  reached through ``SessionCanonicalSemanticEvidenceProvider``) belongs to that
+  session's ``RouteAuthorityPhase``, which is released by
+  ``close_route_authority()`` at *top-level session completion* --
+  ``ResolverSessionState.release_live_bindings`` -- which happens after the
+  authority transaction.  Its arena is **open** at the seam;
+* a bundle *reminted inside the unflatten emission* --
+  ``minimal_unflatten_emit`` augmenting the supplied bundle with a native entry
+  fact, or extending it with loop-guard terminal delivery proofs -- belongs to
+  ``route_authority_phase("unflatten-emission")``
+  (``state_machine.py``), which closes when the emission returns, before the
+  transaction runs.  Its arena is **closed** at the seam;
+* a decoded bundle, or one built field by field, carries no binding at all.
+
+All three are legitimate, so the seam reports which one it saw
+(``RouteRebindVerification``) and the transaction records it, instead of
+skipping its only substantive check without saying so.
 
 The seam is therefore an explicit, named **rebind**:
 
-``rebind_route_evidence`` verifies the producer binding a bundle carries -- same
-group, same proof fingerprints, and, while the producer arena is still open,
-the same proof *records* -- and then mints fresh references for that bundle in
-the arena the active :class:`CanonicalValidationSession` owns.  Nothing is
+``rebind_route_evidence`` verifies what the producer binding can still prove --
+while the producer arena is open, that every reference names this bundle's own
+proof *record* -- and then mints fresh references for that bundle in the arena
+the active :class:`CanonicalValidationSession` owns.  Nothing is
 copied and no content identity moves; ``atomic_group_id`` and every
 ``proof_id`` stay exactly the sha256 fingerprints they were, and remain
 non-authoritative for runtime joins.
@@ -42,6 +64,8 @@ from dataclasses import dataclass
 from d810.analyses.control_flow.semantic_route_evidence import (
     CanonicalSemanticEvidence,
     RouteAuthorityBinding,
+    RouteAuthorityRebind,
+    RouteRebindVerification,
     rebind_route_authority,
 )
 from d810.core.runtime_identity import (
@@ -100,27 +124,33 @@ def transaction_route_arena() -> RuntimeAuthorityArena:
 
 def rebind_route_evidence(
     evidence: CanonicalSemanticEvidence,
-) -> RouteAuthorityBinding:
+) -> RouteAuthorityRebind:
     """Rebind one producer bundle into this transaction, and return its authority.
 
     This is *the* seam step.  It is idempotent per session and per exact
     occurrence: the transaction reads ``proposal.route_evidence`` from many
     places, and every one of them must reach the same references, so a repeat
-    call returns the binding this session already minted instead of minting a
+    call returns the rebind this session already made instead of minting a
     second, unequal authority for one bundle.
 
     The producer's arena is never adopted and never closed here; only its
     claims about the bundle are checked, by
     :func:`d810.analyses.control_flow.semantic_route_evidence.rebind_route_authority`.
+
+    The returned :class:`RouteAuthorityRebind` names **what that check was able
+    to prove** -- see the module docstring for which producer path yields which
+    outcome.  It is stored on the session and readable afterwards through
+    :func:`transaction_route_verification`, so "the record check did not run
+    here" is an answer the transaction holds rather than a branch nobody sees.
     """
 
     session = transaction_authority_session()
     existing = session.runtime_binding_for(evidence)
     if existing is not None:
         return existing
-    binding = rebind_route_authority(evidence, arena=session.route_arena)
-    session.store_runtime_binding(evidence, binding)
-    return binding
+    rebind = rebind_route_authority(evidence, arena=session.route_arena)
+    session.store_runtime_binding(evidence, rebind)
+    return rebind
 
 
 def transaction_route_binding(
@@ -134,20 +164,43 @@ def transaction_route_binding(
     has no authority over it, not that it should quietly acquire some.
     """
 
-    if type(evidence) is not CanonicalSemanticEvidence:
-        raise TypeError("route join requires canonical semantic evidence")
-    session = transaction_authority_session()
-    binding = session.runtime_binding_for(evidence)
-    if binding is None:
-        raise RuntimeJoinRejected(
-            "canonical semantic evidence was not rebound into this "
-            "transaction; rebind it explicitly before joining on it"
-        )
+    binding = _transaction_rebind(evidence).binding
     if not binding.is_live:
         raise RuntimeJoinRejected(
             "the runtime authority arena of this transaction is closed"
         )
     return binding
+
+
+def transaction_route_verification(
+    evidence: CanonicalSemanticEvidence,
+) -> RouteRebindVerification:
+    """Return what the seam was able to verify about this bundle's producer.
+
+    The point of recording it is that the seam's substantive check is
+    *conditional* on the producer's arena still being open, and whether it is
+    depends on the producer path (module docstring).  A caller that needs the
+    stronger guarantee can ask for it here instead of assuming it; a caller
+    that does not still cannot lose the fact, because it is stored with the
+    binding rather than discarded at the branch.
+    """
+
+    return _transaction_rebind(evidence).verification
+
+
+def _transaction_rebind(
+    evidence: CanonicalSemanticEvidence,
+) -> RouteAuthorityRebind:
+    if type(evidence) is not CanonicalSemanticEvidence:
+        raise TypeError("route join requires canonical semantic evidence")
+    session = transaction_authority_session()
+    rebind = session.runtime_binding_for(evidence)
+    if rebind is None:
+        raise RuntimeJoinRejected(
+            "canonical semantic evidence was not rebound into this "
+            "transaction; rebind it explicitly before joining on it"
+        )
+    return rebind
 
 
 def transaction_subject_ref(subject_id: str) -> RuntimeAuthorityRef | None:
@@ -211,5 +264,6 @@ __all__ = [
     "transaction_authority_session",
     "transaction_route_arena",
     "transaction_route_binding",
+    "transaction_route_verification",
     "transaction_subject_ref",
 ]

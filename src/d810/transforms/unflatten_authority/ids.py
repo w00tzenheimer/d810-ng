@@ -1984,7 +1984,9 @@ def _subject_id_from_record(value: object) -> str:
     return subject_id(value.kind, value.role, value.locator)
 
 
-def _subject_factory(cls: type[object], **kwargs: object) -> object:
+def _subject_factory(
+    cls: type[object], *, decoded: bool = False, **kwargs: object,
+) -> object:
     """Mint one semantic subject, carrying this transaction's reference for it.
 
     The runtime sidecar is filled in here, from the active canonical
@@ -2000,6 +2002,16 @@ def _subject_factory(cls: type[object], **kwargs: object) -> object:
     -- and it makes such a subject fail closed at a transaction join instead
     of acquiring an authority no scope ever granted it.
 
+    ``decoded=True`` says the subject is being *reconstructed from a persisted
+    payload* rather than constructed live, and it keeps the reference ``None``
+    even inside an active session.  The binding design is explicit that
+    decoding produces unbound values which require an explicit, named rebind
+    before any runtime join: a decoded subject that acquired transaction
+    authority merely by being rebuilt while a session happened to be open
+    would be exactly the implicit adoption the design forbids, and the
+    interning mint would hand it the same reference as a live subject of equal
+    content.  ``legacy_codec`` passes it at every site.
+
     ``subject_id`` is minted exactly as before and stays a non-authoritative
     content fingerprint.
     """
@@ -2007,12 +2019,16 @@ def _subject_factory(cls: type[object], **kwargs: object) -> object:
     _ensure_registries()
     if cls is not _SUBJECT_TYPE:
         raise TypeError("subject factory requires SemanticSubjectRef")
+    if type(decoded) is not bool:
+        raise TypeError("subject factory decode marker must be an exact bool")
     required = {"kind", "role", "block_ref", "anchor_ea", "locator"}
     if set(kwargs) != required:
         raise TypeError("subject factory requires exactly the subject fields")
     minted = subject_id(kwargs["kind"], kwargs["role"], kwargs["locator"])
     kwargs["subject_id"] = minted
-    kwargs[RUNTIME_SUBJECT_SIDECAR_FIELD] = transaction_subject_ref(minted)
+    kwargs[RUNTIME_SUBJECT_SIDECAR_FIELD] = (
+        None if decoded else transaction_subject_ref(minted)
+    )
     return cls(**kwargs)
 
 

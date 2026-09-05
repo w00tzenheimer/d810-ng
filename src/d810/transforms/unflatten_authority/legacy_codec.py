@@ -795,6 +795,7 @@ def retirement_claim_from_legacy_proof(
     member_subjects = tuple(
         _subject_factory(
             SemanticSubjectRef,
+            decoded=True,
             kind=SemanticSubjectKind.BLOCK,
             role=SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE,
             block_ref=ref,
@@ -805,6 +806,7 @@ def retirement_claim_from_legacy_proof(
     )
     corridor = _subject_factory(
         SemanticSubjectRef,
+        decoded=True,
         kind=SemanticSubjectKind.CORRIDOR,
         role=SemanticSubjectRole.DISPATCHER_CORRIDOR,
         block_ref=entry_ref,
@@ -821,6 +823,7 @@ def retirement_claim_from_legacy_proof(
         (subject for subject in member_subjects if subject.block_ref == entry_ref),
         _subject_factory(
             SemanticSubjectRef,
+            decoded=True,
             kind=SemanticSubjectKind.BLOCK,
             role=SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE,
             block_ref=entry_ref,
@@ -1006,6 +1009,7 @@ def terminal_cycle_claim_from_legacy_proof(
         raise ValueError("legacy terminal proof does not bind one canonical route")
     cycle = _subject_factory(
         SemanticSubjectRef,
+        decoded=True,
         kind=SemanticSubjectKind.CORRIDOR,
         role=SemanticSubjectRole.DISPATCHER_CORRIDOR,
         block_ref=dispatcher_ref,
@@ -1018,6 +1022,7 @@ def terminal_cycle_claim_from_legacy_proof(
     )
     cleanup = _subject_factory(
         SemanticSubjectRef,
+        decoded=True,
         kind=SemanticSubjectKind.BLOCK,
         role=SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE,
         block_ref=merge_ref,
@@ -1026,6 +1031,7 @@ def terminal_cycle_claim_from_legacy_proof(
     )
     terminal = _subject_factory(
         SemanticSubjectRef,
+        decoded=True,
         kind=SemanticSubjectKind.TERMINAL,
         role=SemanticSubjectRole.TERMINAL_SITE,
         block_ref=stop_ref,
