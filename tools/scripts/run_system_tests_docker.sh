@@ -16,7 +16,8 @@
 #   shell     Run SETUP then start an interactive bash (docker run -it)
 #   exec      Run SETUP then exec COMMAND with ARGS (e.g. exec -- python -c 'print(1)' or exec -- bash -c '...')
 #   artifacts (remote only) List the runs retained on a worktree's work volume, or with --run RUN_ID
-#             copy one back to WORK_DIR/.tmp/remote-runs/RUN_ID. Failed runs are retained too.
+#             copy one back to WORK_DIR/.tmp/remote-runs/RUN_ID. Failed runs are retained too, and
+#             the newest D810_REMOTE_RUN_RETENTION runs are kept (default 20).
 #
 # SETUP (same for all commands): export IDA/PYTHONPATH env; install Python
 # dependencies unless the image carries d810's baked-runtime label; optionally
@@ -30,7 +31,12 @@
 #                           WORKTREE_ROOT (default .worktrees). If your worktree is under a different
 #                           root (e.g. .claude/worktrees/agent-foo), set D810_WORKTREE_ROOT and pass
 #                           only the relative part: D810_WORKTREE_ROOT=.claude/worktrees -w agent-foo.
-#   -l, --logs              Mount work dir .tmp/logs at /root/.idapro/logs
+#   -l, --logs              Mount work dir .tmp/logs at /root/.idapro/logs. In remote mode there is
+#                           nothing to mount - logs always live on the work volume - so the flag
+#                           instead requests that the finished artifacts be copied back to the share
+#                           at exit (--enable-debug-logging and --enable-diag-snapshot imply it).
+#                           Without any of them the run is still retained under /work/runs/<run-id>
+#                           and retrievable with the artifacts subcommand.
 #   -o, --out FILE          (system/test only) Redirect stdout+stderr to WORK_DIR/.tmp/FILE. FILE must be one bare
 #                           filename (e.g. out.txt), with no slashes; the script prepends .tmp/.
 #   --enable-debug-logging  Set D810_DEBUG_LOGGING=1 inside the container so getLogger uses DEBUG as
@@ -116,6 +122,11 @@
 #   D810_REMOTE_SMB_USER    Account the SMB share authenticates as, and the account the runner
 #                           grants a .tmp-scoped ACL to. It must match the
 #                           credential stored in the volume.
+#   D810_REMOTE_SKIP_CLOCK_CHECK
+#                           Downgrade the preflight engine-clock check to a warning (default: 0).
+#                           The check aborts when the engine clock is more than 120 s off (5 s for a
+#                           D810_NATIVE_PROFILE=1 timing leg): a skewed clock makes apt reject
+#                           repository signatures and invalidates every duration the run reports.
 #   D810_REMOTE_SHARE_ROOT  Absolute host directory that the SMB share exports
 #                           Every mounted host path must live under it; the runner fails closed
 #                           otherwise. Put machine-specific D810_REMOTE_* values in the ignored .env.
@@ -164,7 +175,8 @@
 #
 #   The option set deliberately omits nobrl, and --mount-opts REFUSES nobrl/nolock: in remote mode no
 #   SQLite database is ever written on this mount. Live databases and logs stay on the work volume
-#   (/work/runs/<run-id>/logs) and only finalized artifacts are copied to .tmp/logs afterwards, so
+#   (/work/runs/<run-id>/logs) and only finalized artifacts are copied to .tmp/logs afterwards, and
+#   only when -l/--logs, --enable-debug-logging or --enable-diag-snapshot asked for them, so
 #   byte-range locking here is never relied on. The mount's locking behaviour can still be measured
 #   (evidence for the record, not a design input):
 #
@@ -350,6 +362,12 @@ CONFIGURED_REMOTE_HOST="${D810_REMOTE_DOCKER_HOST-}"
 REMOTE_HOST=""
 REMOTE_VOLUME="${D810_REMOTE_VOLUME-idapro}"
 REMOTE_SHARE_ROOT="${D810_REMOTE_SHARE_ROOT-}"
+REMOTE_SKIP_CLOCK_CHECK="${D810_REMOTE_SKIP_CLOCK_CHECK-0}"
+REMOTE_CLOCK_OFFSET=""
+# The run store survives the sync wipe so a run without artifact flags is not
+# silently lost, which means it needs its own bound. Run ids start with a UTC
+# timestamp, so a lexicographic sort is chronological.
+REMOTE_RUN_RETENTION="${D810_REMOTE_RUN_RETENTION-20}"
 REMOTE_SMB_USER="${D810_REMOTE_SMB_USER-}"
 REMOTE_MODE=0
 REMOTE_ENGINE_OS=""
@@ -773,6 +791,19 @@ if [ "$DUMP_OUT_SET" = "1" ]; then
   esac
 fi
 
+# The run id is interpolated into a container command that copies between two
+# fixed directories, so it must name one entry inside them and nothing else: a
+# path separator escapes both, and a quote would terminate the interpolation.
+# Same standard as -o above, and validated before any Docker contact.
+if [ -n "$ARTIFACT_RUN" ]; then
+  case "$ARTIFACT_RUN" in
+    .|..|*/*|*[!A-Za-z0-9._-]*)
+      echo "ERROR: --run must be one bare run id (letters, digits, . _ - only; no /)" >&2
+      exit 1
+      ;;
+  esac
+fi
+
 # Inside container: work dir is always /work; src is either /work/src or worktree src
 if [ -n "$WORKTREE_REL" ]; then
   PYWORK="/work/src"
@@ -1167,6 +1198,45 @@ _remote_preflight_engine() {
     echo "ERROR: image not present on the remote engine ssh://$REMOTE_HOST: $DOCKER_IMAGE" >&2
     exit 1
   fi
+  _remote_check_engine_clock
+}
+
+# A skewed engine clock is not a cosmetic problem: apt rejects repository
+# signatures as "created after the --not-after date", which is what took the
+# CoBRA toolchain down, and every duration a timing leg reports is measured
+# against it. Cheap to measure, so measure it before anything depends on it.
+_remote_check_engine_clock() {
+  local before after engine_epoch midpoint tolerance=120 absolute
+  if [ "$NATIVE_PROFILE" = "1" ]; then
+    # A timing leg compares durations across hosts; seconds matter there.
+    tolerance=5
+  fi
+  before="$(date -u +%s)"
+  if ! engine_epoch="$(docker run --rm --entrypoint /bin/date "$DOCKER_IMAGE" -u +%s 2>/dev/null)"; then
+    engine_epoch=""
+  fi
+  after="$(date -u +%s)"
+  case "$engine_epoch" in
+    ''|*[!0-9]*)
+      echo "ERROR: cannot read the remote engine clock through $DOCKER_IMAGE" >&2
+      exit 1
+      ;;
+  esac
+  midpoint=$(( (before + after) / 2 ))
+  REMOTE_CLOCK_OFFSET=$(( engine_epoch - midpoint ))
+  absolute=${REMOTE_CLOCK_OFFSET#-}
+  printf '[remote] engine clock offset: %s s (tolerance %s s)\n' "$REMOTE_CLOCK_OFFSET" "$tolerance"
+  if [ "$absolute" -le "$tolerance" ]; then
+    return 0
+  fi
+  if [ "$REMOTE_SKIP_CLOCK_CHECK" = "1" ]; then
+    echo "WARNING: engine clock offset ${REMOTE_CLOCK_OFFSET}s exceeds ${tolerance}s; continuing because D810_REMOTE_SKIP_CLOCK_CHECK=1" >&2
+    return 0
+  fi
+  echo "ERROR: engine clock offset ${REMOTE_CLOCK_OFFSET}s exceeds the ${tolerance}s tolerance" >&2
+  echo "       resync the engine VM clock (Docker Desktop: restart it, or \`hwclock -s\` in a privileged container) and re-run" >&2
+  echo "       set D810_REMOTE_SKIP_CLOCK_CHECK=1 to downgrade this to a warning" >&2
+  exit 1
 }
 
 # The volume can exist and still not expose this checkout (wrong share, wrong
@@ -1194,6 +1264,16 @@ if [ -n "$REMOTE_HOST" ]; then
     echo "ERROR: remote mode requires D810_REMOTE_SMB_USER in the repository's ignored .env" >&2
     exit 1
   fi
+  # The account name is interpolated into the sed expressions that read and
+  # repair the .tmp ACL, where a / or a regex metacharacter would silently
+  # yield "no ACE present" and send the repair path round in circles. Same
+  # allowlist the volume helper applies before the name reaches cifs.
+  case "$REMOTE_SMB_USER" in
+    *[!A-Za-z0-9._@-]*)
+      echo "ERROR: D810_REMOTE_SMB_USER must match [A-Za-z0-9._@-]+ (it is used verbatim in ACL matching)" >&2
+      exit 1
+      ;;
+  esac
   # The share ACL below is macOS-specific and the whole remote mode depends on
   # it, so refuse before touching Docker rather than half-way through.
   if [ "$(uname -s)" != "Darwin" ]; then
@@ -1232,10 +1312,36 @@ if [ -n "$REMOTE_HOST" ]; then
   _ensure_acl "$REMOTE_ARCHIVE" file
 fi
 
+# Two consumers key on the image's identity: the provenance receipt below and
+# the CoBRA build cache marker. Both are stores that outlive the run, so a
+# placeholder id is worse than no run at all - it produces a receipt that names
+# no image and a marker no later run can match, silently forcing a rebuild on
+# every subsequent run. Local mode has no image preflight and remote mode is
+# only guarded against a PERSISTENT absence, so resolve strictly here.
+_require_image_id() {
+  local consumer="$1" resolved engine
+  resolved="$(docker image inspect --format '{{.Id}}' "$DOCKER_IMAGE" 2>/dev/null || true)"
+  case "$resolved" in
+    sha256:?*)
+      printf '%s' "$resolved"
+      return 0
+      ;;
+  esac
+  if [ "$REMOTE_MODE" = "1" ]; then
+    engine="the configured remote engine"
+  else
+    engine="the local Docker engine"
+  fi
+  echo "ERROR: cannot resolve the image id of $DOCKER_IMAGE on $engine" >&2
+  echo "       docker image inspect --format '{{.Id}}' returned: ${resolved:-<empty>} (expected a sha256: digest)" >&2
+  echo "       $consumer is keyed by this id; continuing would record a placeholder that outlives the run." >&2
+  exit 1
+}
+
 # Profile receipts need to identify the actual image that ran them. Keep this
 # test-only metadata separate from the image-selection environment variable,
 # which is deliberately wrapper-only and therefore not forwarded by default.
-DOCKER_IMAGE_ID="$(docker image inspect --format '{{.Id}}' "$DOCKER_IMAGE" 2>/dev/null || echo unknown)"
+DOCKER_IMAGE_ID="$(_require_image_id "the provenance receipt D810_TEST_RUNTIME_IMAGE_ID")"
 
 # Docker mount: host path -> container path (use variables so no host-specific paths in printed commands)
 if [ "$REMOTE_MODE" = "1" ]; then
@@ -1272,6 +1378,13 @@ if [ -n "$GIT_COMMON_DIR" ] && [ -d "$GIT_COMMON_DIR" ]; then
     fi
     ENV_GIT="GIT_DIR=/d810-git/$GIT_WORKTREE_REL"
   fi
+fi
+# In remote mode the logs directory always lives on the work volume, so -l has
+# no mount to make there. What it (and the two diagnostics flags) now select is
+# whether the finished artifacts are also copied back to the share at exit.
+REMOTE_STAGE_ARTIFACTS=""
+if [ -n "$MOUNT_LOGS" ] || [ -n "$ENABLE_DEBUG_LOGGING" ] || [ -n "$ENABLE_DIAG_SNAPSHOT" ]; then
+  REMOTE_STAGE_ARTIFACTS=1
 fi
 if [ -n "$MOUNT_LOGS" ]; then
   LOGS_DIR="${WORK_DIR}/.tmp/logs"
@@ -1373,7 +1486,10 @@ else
   mkdir -p "$COBRA_CACHE_DIR"
   _add_mount "$COBRA_CACHE_DIR" /opt/d810-cobra-cache rw
 fi
-COBRA_IMAGE_ID="$(docker image inspect --format '{{.Id}}' "$DOCKER_IMAGE" 2>/dev/null || printf '%s' unknown)"
+# The CoBRA build cache marker (linux-cobra-core-v2:<parent>:<core>:<image-id>:
+# <toolchain>) is stored in a retained volume, so an id resolved here must be
+# real on every path, including wheel mode where it is only metadata.
+COBRA_IMAGE_ID="$(_require_image_id "the CoBRA build cache marker")"
 
 # Plan: print what we're about to do so agents see worktree, output path, and options
 echo "$(basename "$0") plan:"
@@ -1385,12 +1501,17 @@ else
 fi
 if [ "$REMOTE_MODE" = "1" ]; then
   echo "  remote:   configured engine ($REMOTE_ENGINE_OS/$REMOTE_ENGINE_ARCH)"
+  echo "  engine clock offset: $REMOTE_CLOCK_OFFSET s"
   echo "  volume:   $REMOTE_VOLUME"
   echo "  share root: configured"
   echo "  subpath:  $WORK_SUBPATH (read-only at /work-src; .tmp read-write at /work/.tmp)"
   echo "  source digest: $SOURCE_DIGEST"
   echo "  run id:   $D810_RUN_ID (keys diag databases per run, not per pid)"
-  echo "  artifacts: /work/runs/$D810_RUN_ID/logs (work volume) staged to .tmp/logs/$D810_RUN_ID at exit"
+  if [ -n "$REMOTE_STAGE_ARTIFACTS" ]; then
+    echo "  artifacts: /work/runs/$D810_RUN_ID/logs (work volume) staged to .tmp/logs/$D810_RUN_ID at exit"
+  else
+    echo "  artifacts: /work/runs/$D810_RUN_ID/logs (work volume, retained; use the artifacts subcommand to copy)"
+  fi
   echo "  git:      $ENV_GIT"
   echo "  archive:  $REMOTE_ARCHIVE_CONTAINER_PATH (tracked + untracked-not-ignored, ignored content excluded)"
   echo "  allowlist: ${REMOTE_MANIFEST_EXTRA_ENTRIES:- none} (from $(basename "$REMOTE_MANIFEST_EXTRA"))"
@@ -1458,6 +1579,11 @@ fi
 ENV_IDA="IDA_PREFIX=/app/ida IDA_INSTALL_DIR=/app/ida D810_LIBCLANG_PATH=/app/ida/libclang.so"
 ENV_PYTHON="PYTHONPATH=${PYWORK}:/app/ida/python:\$PYTHONPATH"
 ENV_TEST="D810_NO_CYTHON=$NO_CYTHON D810_TEST_BINARY=$TEST_BINARY D810_TEST_RUNTIME_IMAGE=$DOCKER_IMAGE D810_TEST_RUNTIME_IMAGE_ID=$DOCKER_IMAGE_ID"
+if [ -n "$REMOTE_CLOCK_OFFSET" ]; then
+  # The receipt has to carry it: every duration in the run was measured
+  # against this clock.
+  ENV_TEST="$ENV_TEST D810_TEST_ENGINE_CLOCK_OFFSET=$REMOTE_CLOCK_OFFSET"
+fi
 [ -n "${D810_DIAG_SNAPSHOT:-}" ] && ENV_TEST="$ENV_TEST D810_DIAG_SNAPSHOT=$D810_DIAG_SNAPSHOT"
 [ -n "${D810_FACT_LIFECYCLE:-}" ] && ENV_TEST="$ENV_TEST D810_FACT_LIFECYCLE=$D810_FACT_LIFECYCLE"
 [ -n "$ENABLE_DIAG_SNAPSHOT" ] && ENV_TEST="$ENV_TEST D810_DIAG_SNAPSHOT=1"
@@ -1504,7 +1630,10 @@ if [ "$NATIVE_PROFILE" = "1" ]; then
   # PERFMON admits perf_event_open without granting the container full
   # privilege. SYS_PTRACE + the narrow seccomp relaxation admit py-spy attach.
   PROFILE_DOCKER_FLAGS="--cap-add=PERFMON --cap-add=SYS_PTRACE --security-opt=seccomp=unconfined"
-  PROFILE_SETUP="if ! command -v perf >/dev/null 2>&1; then apt-get update -qq && apt-get install -y --no-install-recommends linux-perf; fi; if [ ! -x $IDA_VENV_PYSPY ]; then $IDA_VENV_PIP install -q py-spy; fi; perf --version; $IDA_VENV_PYSPY --version"
+  # perf's absence used to be invisible: the steps were ';'-joined, so the
+  # whole thing returned py-spy's status and a profiling leg with no profiler
+  # looked like a successful one.
+  PROFILE_SETUP="{ if ! command -v perf >/dev/null 2>&1; then apt-get update -qq && apt-get install -y --no-install-recommends linux-perf; fi; } && { if [ ! -x $IDA_VENV_PYSPY ]; then $IDA_VENV_PIP install -q py-spy; fi; } && { perf --version || { echo 'ERROR: D810_NATIVE_PROFILE=1 but perf is not available; a profiling leg without a profiler is not a valid leg' >&2; exit 1; }; } && $IDA_VENV_PYSPY --version"
 fi
 
 # Per-container setup exports the runtime environment and installs dependencies
@@ -1525,14 +1654,25 @@ fi
 # neither setuptools nor Cython, so pip MUST build-isolate to install the
 # build-system.requires (setuptools/wheel/Cython).
 SPEEDUPS_CLEAN_CMD="find src/d810/speedups -type f -name '*-linux-gnu.so' -delete"
+# A build that produced no loadable extension is silent otherwise: the suite
+# runs in the Python fallback and reports the same green. Probe in a fresh
+# process (a stale import cache would answer for the previous build) and say
+# so in one unmistakable line.
+SPEEDUPS_PROBE="$IDA_VENV_PYTHON -c 'from d810.speedups.install import inspect_native_extensions; import sys; result = inspect_native_extensions(); print(\"[speedups] native extension: LOADED (\" + result.detail + \")\") if result.ok else print(result.detail, file=sys.stderr); raise SystemExit(0 if result.ok else 1)'"
+SPEEDUPS_PROBE_TOLERANT="{ $SPEEDUPS_PROBE || echo '[speedups] native extension: NOT LOADED (python fallback)'; }"
+SPEEDUPS_PROBE_REQUIRED="{ $SPEEDUPS_PROBE || { echo '[speedups] native extension: NOT LOADED (python fallback)' >&2; echo 'ERROR: D810_NO_CYTHON=0 asked for the native extension but none could be loaded; refusing to run the tests in the Python fallback' >&2; exit 1; }; }"
 if [ "$NO_CYTHON" = "1" ]; then
-  SPEEDUPS_BUILD_CMD="$SPEEDUPS_CLEAN_CMD && echo '[speedups] native build disabled by D810_NO_CYTHON=1'"
+  SPEEDUPS_BUILD_CMD="$SPEEDUPS_CLEAN_CMD && echo '[speedups] native build disabled by D810_NO_CYTHON=1' && $SPEEDUPS_PROBE_TOLERANT"
 elif [ "$CYTHON_PROFILE" = "1" ]; then
   # A profiling artifact is only useful when it actually contains Cython
   # trace events. Unlike the normal optional speedup build, fail closed here.
-  SPEEDUPS_BUILD_CMD="$SPEEDUPS_CLEAN_CMD && DEBUG=1 D810_BUILD_SPEEDUPS=1 $IDA_VENV_PIP install -e .[speedups] -q"
+  SPEEDUPS_BUILD_CMD="$SPEEDUPS_CLEAN_CMD && DEBUG=1 D810_BUILD_SPEEDUPS=1 $IDA_VENV_PIP install -e .[speedups] -q && $SPEEDUPS_PROBE_REQUIRED"
+elif [ "$NO_CYTHON" = "0" ]; then
+  # An explicit D810_NO_CYTHON=0 is a request, not a preference: a run that
+  # silently fell back to Python answers a different question than the one asked.
+  SPEEDUPS_BUILD_CMD="$SPEEDUPS_CLEAN_CMD && D810_BUILD_SPEEDUPS=1 $IDA_VENV_PIP install -e .[speedups] -q && $SPEEDUPS_PROBE_REQUIRED"
 else
-  SPEEDUPS_BUILD_CMD="$SPEEDUPS_CLEAN_CMD && D810_BUILD_SPEEDUPS=1 $IDA_VENV_PIP install -e .[speedups] -q"
+  SPEEDUPS_BUILD_CMD="$SPEEDUPS_CLEAN_CMD && D810_BUILD_SPEEDUPS=1 $IDA_VENV_PIP install -e .[speedups] -q && $SPEEDUPS_PROBE_TOLERANT"
 fi
 RUNTIME_PROBE="from d810.speedups import bootstrap; bootstrap.ensure_speedups_on_path(); import pytest, unicorn, z3; assert (4, 13) <= z3.get_version() < (4, 15, 5)"
 if _image_has_baked_runtime; then
@@ -1566,7 +1706,7 @@ if [ "$COBRA_EXTENSION_ENABLED" = "1" ]; then
       # commands; D810's test provenance keeps ENV_GIT.
       COBRA_SOURCE_SETUP="COBRA_BUILD_DIR=\$(mktemp -d) && env -u GIT_DIR -u GIT_COMMON_DIR git clone --no-checkout '$COBRA_SOURCE_URL' \"\$COBRA_BUILD_DIR\" && env -u GIT_DIR -u GIT_COMMON_DIR git -C \"\$COBRA_BUILD_DIR\" fetch --depth=1 origin '$COBRA_SOURCE_REVISION' && env -u GIT_DIR -u GIT_COMMON_DIR git -C \"\$COBRA_BUILD_DIR\" checkout --detach FETCH_HEAD && test \"\$(env -u GIT_DIR -u GIT_COMMON_DIR git -C \"\$COBRA_BUILD_DIR\" rev-parse HEAD)\" = '$COBRA_SOURCE_REVISION' && env -u GIT_DIR -u GIT_COMMON_DIR git -C \"\$COBRA_BUILD_DIR\" submodule update --init --recursive --depth=1 && test \"\$(env -u GIT_DIR -u GIT_COMMON_DIR git -C \"\$COBRA_BUILD_DIR/third_party/cobra\" rev-parse HEAD)\" = '$COBRA_CORE_SOURCE_REVISION'"
     fi
-    COBRA_SETUP="$COBRA_SOURCE_SETUP && export COBRA_ROOT=/opt/d810-cobra-cache && export COBRA_SOURCE_KEY='$COBRA_PARENT_SOURCE_ID:$COBRA_CORE_SOURCE_ID:$COBRA_IMAGE_ID' && COBRA_TOOLCHAIN_KEY=\$(if ! command -v cmake >/dev/null 2>&1 || ! command -v ninja >/dev/null 2>&1 || ! command -v c++ >/dev/null 2>&1; then apt-get update >/dev/null 2>&1 && apt-get install -y --no-install-recommends cmake ninja-build build-essential >/dev/null 2>&1; fi; cmake --version | head -1; ninja --version; c++ --version | head -1) && COBRA_MARKER=\"linux-cobra-core-v2:\$COBRA_SOURCE_KEY:\$COBRA_TOOLCHAIN_KEY\" && if [ ! -f \"\$COBRA_ROOT/.linux-build-ok\" ] || [ \"\$(<\"\$COBRA_ROOT/.linux-build-ok\")\" != \"\$COBRA_MARKER\" ]; then rm -rf \"\$COBRA_ROOT\"/* \"\$COBRA_ROOT\"/.[!.]* \"\$COBRA_ROOT\"/..?* 2>/dev/null || true; cp -a \"\$COBRA_BUILD_DIR/third_party/cobra/.\" \"\$COBRA_ROOT/\"; $IDA_VENV_PYTHON \"\$COBRA_BUILD_DIR/tools/build_cobra.py\" --root \"\$COBRA_ROOT\" && printf '%s\\n' \"\$COBRA_MARKER\" > \"\$COBRA_ROOT/.linux-build-ok\"; fi && $IDA_VENV_PYTHON -c 'import re, sys, tomllib; project=tomllib.load(open(sys.argv[1], \"rb\"))[\"project\"]; deps=project.get(\"dependencies\", []) + project.get(\"optional-dependencies\", {}).get(\"test\", []); print(\"\\n\".join(dep for dep in deps if re.match(r\"[A-Za-z0-9_.-]+\", dep.strip()).group(0).lower().replace(\"_\", \"-\").replace(\".\", \"-\") != \"d810-ng\"))' \"\$COBRA_BUILD_DIR/pyproject.toml\" > \"\$COBRA_BUILD_DIR/requirements.txt\" && $IDA_VENV_PIP install \"\$COBRA_BUILD_DIR[test]\" --no-deps -q --force-reinstall --no-cache-dir && $IDA_VENV_PIP install -r \"\$COBRA_BUILD_DIR/requirements.txt\" -q && $IDA_VENV_PYTHON -c 'import d810_cobra; manifest=d810_cobra.MANIFEST; assert manifest[\"api_version\"] == 1; assert manifest[\"implements\"] == {\"mba-solve\": \"cobra-solve\"}; from d810_cobra.expr import parse_cobra_output; from d810_cobra.prove import ProofResult, prove_equivalent; from d810_cobra.solve import SolveStatus, binding_available, solve_signature; assert binding_available(); tree=parse_cobra_output(\"(x0 | x1) - (x0 & x1)\", [\"a\", \"b\"]); solved=solve_signature(tree, [\"a\", \"b\"], 32); assert solved.status is SolveStatus.SOLVED and solved.tree is not None; assert prove_equivalent(tree, solved.tree, [\"a\", \"b\"], 32) is ProofResult.PROVED; import d810_cobra._cobra'"
+    COBRA_SETUP="$COBRA_SOURCE_SETUP && export COBRA_ROOT=/opt/d810-cobra-cache && export COBRA_SOURCE_KEY='$COBRA_PARENT_SOURCE_ID:$COBRA_CORE_SOURCE_ID:$COBRA_IMAGE_ID' && { if ! command -v cmake >/dev/null 2>&1 || ! command -v ninja >/dev/null 2>&1 || ! command -v c++ >/dev/null 2>&1; then apt-get update > /tmp/d810-cobra-apt.log 2>&1; apt-get install -y --no-install-recommends cmake ninja-build build-essential >> /tmp/d810-cobra-apt.log 2>&1; fi; __cobra_missing=''; for __cobra_tool in cmake ninja c++; do command -v \"\$__cobra_tool\" >/dev/null 2>&1 || __cobra_missing=\"\$__cobra_missing \$__cobra_tool\"; done; if [ -n \"\$__cobra_missing\" ]; then echo '[cobra] last 20 lines of apt output:' >&2; tail -n 20 /tmp/d810-cobra-apt.log >&2 2>/dev/null || true; echo \"ERROR: CoBRA toolchain provisioning failed; still missing:\$__cobra_missing; see apt output above; a skewed engine clock makes apt reject repository signatures\" >&2; exit 1; fi; } && COBRA_TOOLCHAIN_KEY=\$(cmake --version | head -1; ninja --version; c++ --version | head -1) && COBRA_MARKER=\"linux-cobra-core-v2:\$COBRA_SOURCE_KEY:\$COBRA_TOOLCHAIN_KEY\" && if [ ! -f \"\$COBRA_ROOT/.linux-build-ok\" ] || [ \"\$(<\"\$COBRA_ROOT/.linux-build-ok\")\" != \"\$COBRA_MARKER\" ]; then rm -rf \"\$COBRA_ROOT\"/* \"\$COBRA_ROOT\"/.[!.]* \"\$COBRA_ROOT\"/..?* 2>/dev/null || true; cp -a \"\$COBRA_BUILD_DIR/third_party/cobra/.\" \"\$COBRA_ROOT/\"; $IDA_VENV_PYTHON \"\$COBRA_BUILD_DIR/tools/build_cobra.py\" --root \"\$COBRA_ROOT\" && printf '%s\\n' \"\$COBRA_MARKER\" > \"\$COBRA_ROOT/.linux-build-ok\"; fi && $IDA_VENV_PYTHON -c 'import re, sys, tomllib; project=tomllib.load(open(sys.argv[1], \"rb\"))[\"project\"]; deps=project.get(\"dependencies\", []) + project.get(\"optional-dependencies\", {}).get(\"test\", []); print(\"\\n\".join(dep for dep in deps if re.match(r\"[A-Za-z0-9_.-]+\", dep.strip()).group(0).lower().replace(\"_\", \"-\").replace(\".\", \"-\") != \"d810-ng\"))' \"\$COBRA_BUILD_DIR/pyproject.toml\" > \"\$COBRA_BUILD_DIR/requirements.txt\" && $IDA_VENV_PIP install \"\$COBRA_BUILD_DIR[test]\" --no-deps -q --force-reinstall --no-cache-dir && $IDA_VENV_PIP install -r \"\$COBRA_BUILD_DIR/requirements.txt\" -q && $IDA_VENV_PYTHON -c 'import d810_cobra; manifest=d810_cobra.MANIFEST; assert manifest[\"api_version\"] == 1; assert manifest[\"implements\"] == {\"mba-solve\": \"cobra-solve\"}; from d810_cobra.expr import parse_cobra_output; from d810_cobra.prove import ProofResult, prove_equivalent; from d810_cobra.solve import SolveStatus, binding_available, solve_signature; assert binding_available(); tree=parse_cobra_output(\"(x0 | x1) - (x0 & x1)\", [\"a\", \"b\"]); solved=solve_signature(tree, [\"a\", \"b\"], 32); assert solved.status is SolveStatus.SOLVED and solved.tree is not None; assert prove_equivalent(tree, solved.tree, [\"a\", \"b\"], 32) is ProofResult.PROVED; import d810_cobra._cobra'"
   fi
   if [ -n "$EXTENSION_SETUP" ]; then
     EXTENSION_SETUP="$EXTENSION_SETUP && $COBRA_SETUP"
@@ -1574,11 +1714,21 @@ if [ "$COBRA_EXTENSION_ENABLED" = "1" ]; then
     EXTENSION_SETUP="$COBRA_SETUP"
   fi
 fi
+# Every setup stage is a hard precondition for the workload. Wrap it so it
+# names itself on failure and exits with its OWN status: the composed container
+# command used to join the workload to setup with "; ", which detached pytest
+# from a failed setup entirely - the container then exited with pytest's status
+# and a run with no CoBRA and no native extension reported success. That join
+# pre-exists on mainline.
+_stage_guard() {
+  printf '{ %s; } || { __d810_stage_status=$?; printf "[setup] ERROR: stage %s failed (exit %%s); tests not started\\n" "$__d810_stage_status" >&2; exit $__d810_stage_status; }' "$1" "$2"
+}
+
 SETUP_CMD="$LLVM_OPT_SETUP${LLVM_OPT_SETUP:+ && }export $ENV_IDA $ENV_PYTHON $ENV_GIT && $PROFILE_SETUP${PROFILE_SETUP:+ && }$DEPENDENCY_SETUP"
 if [ -n "$EXTENSION_SETUP" ]; then
-  SETUP_CMD="$SETUP_CMD && $EXTENSION_SETUP"
+  SETUP_CMD="$SETUP_CMD && $(_stage_guard "$EXTENSION_SETUP" extensions)"
 fi
-SETUP_CMD="$SETUP_CMD && { $SPEEDUPS_BUILD_CMD; }"
+SETUP_CMD="$SETUP_CMD && $(_stage_guard "$SPEEDUPS_BUILD_CMD" native-extension-build)"
 
 # Remote runs mirror the read-only SMB source into the writable work volume.
 # The mirror is exact: the destination is emptied first (except the .tmp mount)
@@ -1589,22 +1739,34 @@ if [ "$REMOTE_MODE" = "1" ]; then
 if [ -f '$SYNC_SENTINEL' ] && [ \"\$(cat '$SYNC_SENTINEL')\" = \"\$__digest\" ]; then \
   echo \"[sync] work volume already mirrors source digest \$__digest\"; \
 else \
-  rm -f '$SYNC_SENTINEL'; \
-  __t0=\$(date +%s); \
-  find /work -mindepth 1 -maxdepth 1 ! -name .tmp -exec rm -rf {} + ; \
-  tar -C /work -xf '$REMOTE_ARCHIVE_CONTAINER_PATH' ; \
-  printf '%s\\n' \"\$__digest\" > '$SYNC_SENTINEL'; \
+  rm -f '$SYNC_SENTINEL' && \
+  __t0=\$(date +%s) && \
+  find /work -mindepth 1 -maxdepth 1 ! -name .tmp ! -name runs -exec rm -rf {} + && \
+  tar -C /work -xf '$REMOTE_ARCHIVE_CONTAINER_PATH' && \
+  printf '%s\\n' \"\$__digest\" > '$SYNC_SENTINEL' && \
   echo \"[sync] mirrored /work-src -> /work in \$((\$(date +%s)-\$__t0))s (digest \$__digest)\"; \
 fi"
-  # The staging trap runs on failure too, so a crashed run still leaves its
-  # artifacts both in the run directory and on the share.
-  REMOTE_STAGING_CMD="RUN_LOGS=/work/runs/\$D810_RUN_ID/logs; \
-STAGE_DEST=/work/.tmp/logs/\$D810_RUN_ID; \
-mkdir -p \"\$RUN_LOGS\" \"\$STAGE_DEST\"; \
-rm -rf /root/.idapro/logs; mkdir -p /root/.idapro; ln -sfn \"\$RUN_LOGS\" /root/.idapro/logs; \
+  # The redirect is unconditional: every remote run keeps its live SQLite
+  # writers on the engine volume, never on the cifs share. Copying the result
+  # back to the share is what the artifact flags ask for - without them the run
+  # store is still complete and reachable through the artifacts subcommand, so
+  # the copy is pure share traffic. The run store is excluded from the sync
+  # wipe above, so a skipped copy never loses anything.
+  REMOTE_STAGING_CMD="__runs_keep=$REMOTE_RUN_RETENTION; \
+ls -1 /work/runs 2>/dev/null | sort | head -n -\$__runs_keep | while IFS= read -r __old; do rm -rf \"/work/runs/\$__old\"; done; \
+RUN_LOGS=/work/runs/\$D810_RUN_ID/logs && \
+mkdir -p \"\$RUN_LOGS\" && \
+rm -rf /root/.idapro/logs && mkdir -p /root/.idapro && ln -sfn \"\$RUN_LOGS\" /root/.idapro/logs"
+  if [ -n "$REMOTE_STAGE_ARTIFACTS" ]; then
+    # The staging trap runs on failure too, so a crashed run still leaves its
+    # artifacts both in the run directory and on the share.
+    REMOTE_STAGING_CMD="$REMOTE_STAGING_CMD && \
+STAGE_DEST=/work/.tmp/logs/\$D810_RUN_ID && \
+mkdir -p \"\$STAGE_DEST\" && \
 trap 'set +e; __stage_t0=\$(date +%s); cp -a \"\$RUN_LOGS\"/. \"\$STAGE_DEST\"/ 2>/dev/null; \
 echo \"[artifacts] staged \$RUN_LOGS -> \$STAGE_DEST in \$((\$(date +%s)-\$__stage_t0))s\"' EXIT"
-  SETUP_CMD="{ $REMOTE_SYNC_CMD; } && { $REMOTE_STAGING_CMD; } && $SETUP_CMD"
+  fi
+  SETUP_CMD="$(_stage_guard "$REMOTE_SYNC_CMD" source-sync) && $(_stage_guard "$REMOTE_STAGING_CMD" artifact-staging) && $SETUP_CMD"
 fi
 
 # Safely reassemble an array of args into a string suitable for embedding in
@@ -1729,7 +1891,7 @@ if [ "$CMD" = "system" ]; then
     mkdir -p "${WORK_DIR}/.tmp"
     SYS_LOG="/work/.tmp/${DUMP_OUT}"
     SYS_LOG_QUOTED="$(_d810_quote_arg "$SYS_LOG")"
-    SYS_TRUNCATE=": > $SYS_LOG_QUOTED; "
+    SYS_TRUNCATE=": > $SYS_LOG_QUOTED && "
     SYS_REDIR="> $SYS_LOG_QUOTED 2>&1"
   fi
   run_bash "$SETUP_CMD && ${SYS_TRUNCATE}$ENV_TEST $IDA_VENV_PYTHON tools/scripts/run_system_test_batches.py --python $IDA_VENV_PYTHON --batch-size $SYSTEM_BATCH_SIZE --log-dir /root/.idapro/logs/d810_logs tests/system -- $(_d810_quote_args "${SYSTEM_ARGS[@]}") $SYS_REDIR"
@@ -1745,7 +1907,7 @@ if [ "$CMD" = "test" ]; then
     mkdir -p "${WORK_DIR}/.tmp"
     SYS_LOG="/work/.tmp/${DUMP_OUT}"
     SYS_LOG_QUOTED="$(_d810_quote_arg "$SYS_LOG")"
-    SYS_TRUNCATE=": > $SYS_LOG_QUOTED; "
+    SYS_TRUNCATE=": > $SYS_LOG_QUOTED && "
     SYS_REDIR="> $SYS_LOG_QUOTED 2>&1"
   fi
   run_bash "$SETUP_CMD && ${SYS_TRUNCATE}$ENV_TEST $IDA_VENV_PYTHON -m pytest -v $PYTEST_EXTENSION_ARGS $(_d810_quote_args "${SYSTEM_ARGS[@]}") $SYS_REDIR"
@@ -1781,7 +1943,7 @@ if [ -n "$DUMP_OUT" ]; then
   mkdir -p "${WORK_DIR}/.tmp"
   LOG_PATH="/work/.tmp/${DUMP_OUT}"
   LOG_PATH_QUOTED="$(_d810_quote_arg "$LOG_PATH")"
-  TRUNCATE_CMD=": > $LOG_PATH_QUOTED; "
+  TRUNCATE_CMD=": > $LOG_PATH_QUOTED && "
   REDIR="> $LOG_PATH_QUOTED 2>&1"
 fi
 

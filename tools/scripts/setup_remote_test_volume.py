@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import argparse
 import getpass
+import hashlib
 import json
 import os
 import re
@@ -273,8 +274,6 @@ def share_root_digest(share_root: str) -> str:
     >>> len(share_root_digest("/x"))
     8
     """
-    import hashlib
-
     return hashlib.sha256(share_root.encode()).hexdigest()[:8]
 
 
@@ -513,6 +512,52 @@ def password_rejection_reason(password: str) -> str | None:
     return None
 
 
+#: The SMB account name is spliced into the cifs option string, so it is held
+#: to the characters an SMB account can actually contain.
+SMB_USER_PATTERN = re.compile(r"[A-Za-z0-9._@-]+")
+
+
+def identity_rejection_reason(name: str, value: str) -> str | None:
+    """Reject a share or user that would smuggle options into the ``o=`` value.
+
+    ``validate_mount_options`` refuses ``nobrl``/``nolock`` in ``--mount-opts``
+    but inspects only that field. The adjacent identity fields use the same
+    comma syntax and were unchecked, so ``--user 'u,nobrl'`` produced
+    ``username=u,nobrl,password=...`` and disabled byte-range locking on a
+    mount the whole design says must keep it.
+
+    >>> identity_rejection_reason("user", "share-account") is None
+    True
+    >>> identity_rejection_reason("share", "//files.example/project") is None
+    True
+    >>> identity_rejection_reason("user", "u,nobrl")  # doctest: +ELLIPSIS
+    "the SMB user contains a comma...smuggles nobrl/nolock..."
+    >>> identity_rejection_reason("user", "bad user")
+    "the SMB user must match [A-Za-z0-9._@-]+, got 'bad user'"
+    >>> identity_rejection_reason("share", "files.example/project")
+    "the SMB share must look like //HOST/NAME, got 'files.example/project'"
+    """
+    if not value:
+        return f"the SMB {name} is empty"
+    if "," in value:
+        return (
+            f"the SMB {name} contains a comma, so it would be read as further "
+            f"cifs options: {value!r} smuggles nobrl/nolock past the "
+            "--mount-opts refusal"
+        )
+    if name == "user":
+        if not SMB_USER_PATTERN.fullmatch(value):
+            return f"the SMB user must match [A-Za-z0-9._@-]+, got {value!r}"
+        return None
+    if not value.startswith("//"):
+        return f"the SMB share must look like //HOST/NAME, got {value!r}"
+    if any(character.isspace() for character in value) or set(value) & set("'\"`"):
+        return (
+            f"the SMB share must not contain whitespace or quotes, got {value!r}"
+        )
+    return None
+
+
 def explain_status_code(line: str) -> str:
     """Translate a kernel CIFS status line into an actionable sentence.
 
@@ -553,7 +598,12 @@ def run_capture(argv: Sequence[str]) -> tuple[int, str]:
 
 
 def run_probe(argv: Sequence[str]) -> tuple[int, str]:
-    """Run a probe container, merging stderr (the daemon error lands there)."""
+    """Run a probe container, merging stderr (the daemon error lands there).
+
+    Deliberately a second seam with the same body as ``run_capture``: tests
+    stub the probe and the ordinary docker queries independently, so folding
+    them together would make one unfakeable without the other.
+    """
     completed = subprocess.run(
         list(argv), capture_output=True, text=True, check=False
     )
@@ -673,12 +723,18 @@ def build_parser(configuration: dict[str, str] | None = None) -> argparse.Argume
     parser.add_argument(
         "--purge-work-volumes",
         action="store_true",
-        help="with --remove: also delete retained runner volumes (source + CoBRA cache)",
+        help=(
+            "with --remove (and with --recreate, which removes first): also delete "
+            "retained runner volumes (source + CoBRA cache)"
+        ),
     )
     parser.add_argument(
         "--force",
         action="store_true",
-        help="with --remove: also `docker rm -f` containers that still reference the volume",
+        help=(
+            "with --remove (and with --recreate, which removes first): also "
+            "`docker rm -f` containers that still reference the volume"
+        ),
     )
     parser.add_argument(
         "--no-verify",
@@ -1114,6 +1170,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 2
+    for field, value in (("share", arguments.share), ("user", arguments.user)):
+        if not value:
+            # --status / --remove do not need them; the check above already
+            # refused a missing value everywhere it is required.
+            continue
+        rejection = identity_rejection_reason(field, value)
+        if rejection is not None:
+            print(f"ERROR: {rejection}", file=sys.stderr)
+            return 2
     if arguments.status:
         return _status(arguments)
     if arguments.remove:

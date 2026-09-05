@@ -1,3 +1,4 @@
+import getpass
 import hashlib
 import os
 import re
@@ -26,6 +27,9 @@ COBRA_WHEEL_PREFLIGHT_DIR = "0.1.5-preflight"
 COBRA_WHEEL_TAG_COMMIT = "73b405c106d78e1fdc7576b217de39b7dcd0ddb3"
 COBRA_WHEEL_CORE_COMMIT = "72f616f822f538a0cfbea3c880f9d1e68bb9a8f1"
 COBRA_WHEEL_CONTAINER_DIR = "/opt/d810-cobra-wheel"
+# The runner refuses to run unless `docker image inspect --format '{{.Id}}'`
+# yields a real digest, so the fake engine has to answer with one.
+FAKE_IMAGE_ID = "sha256:" + "1f" * 32
 
 
 def _cobra_wheel(directory: str, name: str) -> Path | None:
@@ -102,12 +106,38 @@ if [ "${1:-}" = image ] && [ "${2:-}" = inspect ]; then
     printf 'Error response from daemon: No such image\\n' >&2
     exit 1
   fi
+  case "$*" in
+    *'{{.Id}}'*)
+      if [ -n "${MOCK_DOCKER_IMAGE_ID_FAILS:-}" ]; then
+        printf 'Error response from daemon: No such image\\n' >&2
+        exit 1
+      fi
+      printf '%s\\n' "${MOCK_DOCKER_IMAGE_ID-@FAKE_IMAGE_ID@}"
+      exit 0
+      ;;
+  esac
   printf '%s\\n' "${MOCK_DOCKER_LABEL:-}"
 fi
 if [ "${1:-}" = version ]; then
   printf '%s\\n' "${MOCK_DOCKER_SERVER_ARCH:-arm64}"
 fi
 if [ "${1:-}" = run ]; then
+  case "$*" in
+    *"--entrypoint /bin/date"*)
+      for arg in "$@"; do
+        printf 'run-arg %s\n' "$arg" >> "$DOCKER_LOG"
+      done
+      if [ -n "${MOCK_ENGINE_CLOCK_FAILS:-}" ]; then
+        exit 1
+      fi
+      if [ -n "${MOCK_ENGINE_CLOCK_OFFSET:-}" ]; then
+        printf '%s\n' "$(( $(/bin/date -u +%s) + MOCK_ENGINE_CLOCK_OFFSET ))"
+      else
+        /bin/date -u +%s
+      fi
+      exit 0
+      ;;
+  esac
   if [ -n "${MOCK_DOCKER_EXPECT_SOURCE_FILE:-}" ]; then
     source_mount=""
     for arg in "$@"; do
@@ -135,7 +165,7 @@ if [ "${1:-}" = run ]; then
   esac
   exit "${MOCK_DOCKER_RUN_EXIT:-0}"
 fi
-""",
+""".replace("@FAKE_IMAGE_ID@", FAKE_IMAGE_ID),
         encoding="utf-8",
     )
     docker.chmod(0o755)
@@ -257,9 +287,33 @@ def _probe_run(calls: list[str]) -> str:
     return runs[0]
 
 
+def _workload_runs(calls: list[str]) -> list[str]:
+    """Runs that are neither preflight probe: the actual work.
+
+    Preflight legitimately starts read-only containers (the volume probe and
+    the engine-clock reading), so "nothing ran" means no WORKLOAD ran.
+    """
+    return [
+        call
+        for call in _runs(calls)
+        if "dst=/probe" not in call and "--entrypoint /bin/date" not in call
+    ]
+
+
+def _clock_run(calls: list[str]) -> str | None:
+    """The one-shot container that reads the engine clock in preflight."""
+    runs = [call for call in _runs(calls) if "--entrypoint /bin/date" in call]
+    assert len(runs) <= 1, calls
+    return runs[0] if runs else None
+
+
 def _remote_container_run(calls: list[str]) -> str:
-    """The one workload container, ignoring the read-only volume probe."""
-    runs = [call for call in _runs(calls) if "dst=/probe" not in call]
+    """The one workload container, ignoring the preflight probes."""
+    runs = [
+        call
+        for call in _runs(calls)
+        if "dst=/probe" not in call and "--entrypoint /bin/date" not in call
+    ]
     assert len(runs) == 1, calls
     return runs[0]
 
@@ -270,8 +324,6 @@ def _chmod_calls(tmp_path: Path) -> list[str]:
 
 
 def _work_volume_name(worktree_dir: Path) -> str:
-    import hashlib
-
     digest = hashlib.sha256(str(worktree_dir).encode()).hexdigest()[:8]
     return f"d810-work-{worktree_dir.name}-{digest}"
 
@@ -1834,7 +1886,7 @@ def test_remote_mode_rejects_an_extension_root_outside_the_share_root(
 
     assert result.returncode != 0
     assert str(egglog) in result.stderr
-    assert _runs(calls) == []
+    assert _workload_runs(calls) == []
 
 
 def test_remote_mode_rejects_a_git_dir_outside_the_share_root(
@@ -1858,7 +1910,7 @@ def test_remote_mode_rejects_a_git_dir_outside_the_share_root(
 
     assert result.returncode != 0
     assert str(git_dir) in result.stderr
-    assert _runs(calls) == []
+    assert _workload_runs(calls) == []
 
 
 @pytest.mark.parametrize("share_root", ["relative/share", "missing-share"])
@@ -1917,7 +1969,7 @@ def test_remote_mode_allows_one_run_per_worktree(tmp_path: Path) -> None:
     assert result.returncode != 0
     assert "pid=4242" in result.stderr
     assert str(lock) in result.stderr
-    assert _runs(calls) == []
+    assert _workload_runs(calls) == []
     assert lock.is_dir()
 
 
@@ -1976,7 +2028,8 @@ def test_remote_mode_fails_closed_when_the_probe_cannot_see_the_worktree(
 
     assert result.returncode != 0
     assert "not reachable through volume idapro" in result.stderr
-    assert _runs(calls) == [_probe_run(calls)]
+    assert _workload_runs(calls) == []
+    assert _probe_run(calls) in calls
     assert not (repo / ".tmp" / "remote-run.lock").exists()
 
 
@@ -2119,8 +2172,6 @@ def test_remote_mode_grants_a_tmp_scoped_acl_only(tmp_path: Path) -> None:
     assert any("file_inherit,directory_inherit" in call for call in acl_calls)
     # the invoking user needs an inheritable ACE too, or the container's own
     # -o capture comes back unreadable (it is created 0600 by the share account)
-    import getpass
-
     assert any(f"{getpass.getuser()} allow" in call for call in acl_calls)
 
 
@@ -2161,7 +2212,7 @@ def test_remote_mode_fails_closed_when_the_acl_cannot_be_applied(
 
     assert result.returncode != 0
     assert "could not grant" in result.stderr
-    assert _runs(calls) == []
+    assert _workload_runs(calls) == []
 
 
 def test_remote_mode_fails_closed_when_required_logs_acl_cannot_be_applied(
@@ -2185,7 +2236,7 @@ def test_remote_mode_fails_closed_when_required_logs_acl_cannot_be_applied(
 
     assert result.returncode != 0
     assert f"could not grant share-account access to {logs}" in result.stderr
-    assert _runs(calls) == []
+    assert _workload_runs(calls) == []
 
 
 def test_remote_mode_rejects_a_logs_symlink_before_acls_or_workload_docker(
@@ -2210,7 +2261,7 @@ def test_remote_mode_rejects_a_logs_symlink_before_acls_or_workload_docker(
     assert result.returncode != 0
     assert "real directory" in result.stderr
     assert not any(str(repo / "src") in call for call in _chmod_calls(tmp_path))
-    assert _runs(calls) == []
+    assert _workload_runs(calls) == []
 
 
 def test_remote_mode_rejects_a_tmp_symlink_before_acls_or_workload_docker(
@@ -2235,7 +2286,7 @@ def test_remote_mode_rejects_a_tmp_symlink_before_acls_or_workload_docker(
     assert "real directory" in result.stderr
     assert not any(str(repo / "src") in call for call in _chmod_calls(tmp_path))
     assert not (repo / "src" / "logs").exists()
-    assert _runs(calls) == []
+    assert _workload_runs(calls) == []
 
 
 @pytest.mark.parametrize("output", ["", ".", "..", "../victim.txt", "nested/out.txt"])
@@ -2374,8 +2425,12 @@ def test_remote_mode_mirrors_source_into_the_work_volume(tmp_path: Path) -> None
         command,
     ), command
     assert "tar -C /work-src" not in command
-    # the destination is emptied first, so the mirror is exact
-    assert "find /work -mindepth 1 -maxdepth 1 ! -name .tmp -exec rm -rf {} +" in command
+    # the destination is emptied first, so the mirror is exact - except for the
+    # read-write .tmp mount and the retained run store
+    assert (
+        "find /work -mindepth 1 -maxdepth 1 ! -name .tmp ! -name runs -exec rm -rf {} +"
+        in command
+    )
     assert "set -o pipefail" in command
 
 
@@ -2452,7 +2507,7 @@ def test_allowlist_entries_are_validated(tmp_path: Path) -> None:
 
     assert result.returncode != 0
     assert "allowlisted path does not exist" in result.stderr
-    assert _runs(calls) == []
+    assert _workload_runs(calls) == []
 
 
 def test_allowlist_refuses_dotenv(tmp_path: Path) -> None:
@@ -2473,7 +2528,7 @@ def test_allowlist_refuses_dotenv(tmp_path: Path) -> None:
 
     assert result.returncode != 0
     assert "never list .env" in result.stderr
-    assert _runs(calls) == []
+    assert _workload_runs(calls) == []
 
 
 def test_allowlist_refuses_a_tracked_path(tmp_path: Path) -> None:
@@ -2502,7 +2557,7 @@ esac
 
     assert result.returncode != 0
     assert "not ignored by git" in result.stderr
-    assert _runs(calls) == []
+    assert _workload_runs(calls) == []
 
 
 def test_plan_reports_the_allowlist(tmp_path: Path) -> None:
@@ -2748,7 +2803,7 @@ def test_work_volume_creation_failure_fails_closed(tmp_path: Path) -> None:
 
     assert result.returncode != 0
     assert "could not create work volume" in result.stderr
-    assert _runs(calls) == []
+    assert _workload_runs(calls) == []
 
 
 def test_remote_lock_still_guards_the_shared_tmp(tmp_path: Path) -> None:
@@ -2770,7 +2825,7 @@ def test_remote_lock_still_guards_the_shared_tmp(tmp_path: Path) -> None:
 
     assert result.returncode != 0
     assert "already owns this worktree" in result.stderr
-    assert _runs(calls) == []
+    assert _workload_runs(calls) == []
 
 
 def _worktree_git_stub(common: Path, worktree_git: Path) -> str:
@@ -2960,7 +3015,7 @@ def test_acl_failure_on_the_tmp_root_still_fails_closed(tmp_path: Path) -> None:
 
     assert result.returncode != 0
     assert "could not grant" in result.stderr
-    assert _runs(calls) == []
+    assert _workload_runs(calls) == []
 
 
 def test_remote_mode_exports_a_run_id_for_database_keying(tmp_path: Path) -> None:
@@ -3023,7 +3078,116 @@ def test_remote_logs_are_staged_from_the_work_volume_at_exit(tmp_path: Path) -> 
     # exec would replace the shell and lose the trap
     assert 'exec "$@"' not in command
     assert '"$@"' in command
-    assert "artifacts: /work/runs/" in result.stdout
+    assert "staged to .tmp/logs/" in result.stdout
+
+
+@pytest.mark.parametrize(
+    "flag", ["-l", "--logs", "--enable-debug-logging", "--enable-diag-snapshot"]
+)
+def test_remote_artifact_flags_request_the_exit_copy_to_the_share(
+    tmp_path: Path,
+    flag: str,
+) -> None:
+    """Each artifact-bearing flag asks for the finished logs on the share."""
+    share, repo = _share_layout(tmp_path)
+
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--remote",
+        REMOTE_HOST,
+        flag,
+        "--",
+        "true",
+        repo_root=repo,
+        extra_env=_remote_env(share),
+    )
+
+    assert result.returncode == 0, result.stderr
+    command = _remote_container_run(calls)
+    assert 'ln -sfn "$RUN_LOGS" /root/.idapro/logs' in command
+    assert "STAGE_DEST=/work/.tmp/logs/$D810_RUN_ID" in command
+    assert 'cp -a "$RUN_LOGS"/. "$STAGE_DEST"/' in command
+    assert "staged to .tmp/logs/" in result.stdout
+
+
+def test_remote_without_artifact_flags_redirects_but_does_not_stage(
+    tmp_path: Path,
+) -> None:
+    """The redirect is unconditional; the share copy is not."""
+    share, repo = _share_layout(tmp_path)
+
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--remote",
+        REMOTE_HOST,
+        "--",
+        "true",
+        repo_root=repo,
+        extra_env=_remote_env(share),
+    )
+
+    assert result.returncode == 0, result.stderr
+    command = _remote_container_run(calls)
+    # the work-volume redirect stays, so no live SQLite writer reaches cifs
+    assert "RUN_LOGS=/work/runs/$D810_RUN_ID/logs" in command
+    assert 'ln -sfn "$RUN_LOGS" /root/.idapro/logs' in command
+    # nothing is copied to, or created on, the share
+    assert "STAGE_DEST" not in command
+    assert 'cp -a "$RUN_LOGS"' not in command
+    assert "[artifacts] staged" not in command
+    assert "/work/.tmp/logs/" not in command
+    assert "trap " not in command
+    assert (
+        "work volume, retained; use the artifacts subcommand to copy"
+        in result.stdout
+    )
+    assert "staged to .tmp/logs/" not in result.stdout
+
+
+def test_remote_sync_wipe_spares_the_run_store(tmp_path: Path) -> None:
+    """A digest change must not destroy runs whose logs were never staged."""
+    share, repo = _share_layout(tmp_path)
+
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--remote",
+        REMOTE_HOST,
+        "--",
+        "true",
+        repo_root=repo,
+        extra_env=_remote_env(share),
+    )
+
+    assert result.returncode == 0, result.stderr
+    command = _remote_container_run(calls)
+    assert (
+        "find /work -mindepth 1 -maxdepth 1 ! -name .tmp ! -name runs -exec rm -rf {} +"
+        in command
+    )
+
+
+def test_remote_run_store_is_bounded(tmp_path: Path) -> None:
+    """The wipe no longer prunes it, so the run store needs its own bound."""
+    share, repo = _share_layout(tmp_path)
+
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--remote",
+        REMOTE_HOST,
+        "--",
+        "true",
+        repo_root=repo,
+        extra_env=_remote_env(share, D810_REMOTE_RUN_RETENTION="3"),
+    )
+
+    assert result.returncode == 0, result.stderr
+    command = _remote_container_run(calls)
+    assert "__runs_keep=3" in command
+    assert "ls -1 /work/runs 2>/dev/null | sort | head -n -$__runs_keep" in command
 
 
 def test_local_mode_still_mounts_logs_directly(tmp_path: Path) -> None:
@@ -3106,6 +3270,68 @@ def test_run_flag_requires_an_identifier(tmp_path: Path) -> None:
     assert result.returncode != 0
     assert "--run requires a RUN_ID" in result.stderr
     assert _runs(calls) == []
+
+
+@pytest.mark.parametrize(
+    "run_id",
+    [
+        ".",
+        "..",
+        "../../etc",
+        "sub/dir",
+        "/absolute",
+        "trailing/",
+        "quote'; touch /tmp/pwned; '",
+        "spaced id",
+        "semi;colon",
+        "dollar$var",
+    ],
+)
+def test_run_flag_refuses_anything_but_a_bare_run_id(
+    tmp_path: Path,
+    run_id: str,
+) -> None:
+    """The id is interpolated into a container command between two fixed dirs."""
+    share, repo = _share_layout(tmp_path)
+
+    result, calls = _run(
+        tmp_path,
+        "artifacts",
+        "--remote",
+        REMOTE_HOST,
+        "--run",
+        run_id,
+        repo_root=repo,
+        extra_env=_remote_env(share),
+    )
+
+    assert result.returncode != 0
+    assert "--run must be one bare run id" in result.stderr
+    assert _runs(calls) == []
+    assert _docker_calls(calls) == []
+
+
+def test_run_flag_accepts_a_real_run_id(tmp_path: Path) -> None:
+    """The ids the runner mints are exactly the accepted shape."""
+    share, repo = _share_layout(tmp_path)
+    run_id = "20260905T101112Z-4321-abc123"
+
+    result, calls = _run(
+        tmp_path,
+        "artifacts",
+        "--remote",
+        REMOTE_HOST,
+        "--run",
+        run_id,
+        repo_root=repo,
+        extra_env=_remote_env(share),
+    )
+
+    assert result.returncode == 0, result.stderr
+    command = _remote_container_run(calls)
+    assert f"test -d '/work/runs/{run_id}'" in command
+    copy = f"cp -a '/work/runs/{run_id}/.' '/work/.tmp/remote-runs/{run_id}/'"
+    assert copy in command
 
 
 @pytest.mark.parametrize(
@@ -3251,7 +3477,7 @@ def test_remote_mode_refuses_a_symlinked_wheel(tmp_path: Path) -> None:
 
     assert result.returncode != 0
     assert "cannot resolve the host path" in result.stderr
-    assert _runs(calls) == [call for call in _runs(calls) if "dst=/probe" in call]
+    assert _workload_runs(calls) == []
 
 
 def test_remote_mode_refuses_a_wheel_outside_the_share(tmp_path: Path) -> None:
@@ -3415,3 +3641,650 @@ exit 0
     calls = docker_log.read_text(encoding="utf-8")
     assert "worktree-image" in calls, calls
     assert "main-image" not in calls, calls
+
+
+def test_image_id_failure_is_fatal_before_any_container(tmp_path: Path) -> None:
+    """An unresolvable id would name no image in the receipt and the marker."""
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--",
+        "true",
+        extra_env={"MOCK_DOCKER_IMAGE_ID_FAILS": "1"},
+    )
+
+    assert result.returncode != 0
+    assert "cannot resolve the image id of test-runtime-image" in result.stderr
+    assert "the local Docker engine" in result.stderr
+    assert "keyed by this id" in result.stderr
+    # nothing may start, and no marker or receipt may be computed
+    assert _runs(calls) == []
+    assert not [call for call in calls if call.startswith("create ")]
+    assert not [call for call in calls if "linux-cobra-core-v2" in call]
+
+
+def test_image_id_failure_is_fatal_in_local_mode_when_the_image_is_absent(
+    tmp_path: Path,
+) -> None:
+    """Local mode has no image preflight, so this is the only guard there."""
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--",
+        "true",
+        extra_env={"MOCK_DOCKER_IMAGE_MISSING": "1"},
+    )
+
+    assert result.returncode != 0
+    assert "cannot resolve the image id of test-runtime-image" in result.stderr
+    assert _runs(calls) == []
+
+
+def test_image_id_empty_is_fatal_before_any_container(tmp_path: Path) -> None:
+    """An empty id is as unusable as a failed inspect, and just as silent."""
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--",
+        "true",
+        extra_env={"MOCK_DOCKER_IMAGE_ID": ""},
+    )
+
+    assert result.returncode != 0
+    assert "cannot resolve the image id of test-runtime-image" in result.stderr
+    assert "<empty>" in result.stderr
+    assert _runs(calls) == []
+    assert not [call for call in calls if call.startswith("create ")]
+    assert not [call for call in calls if "linux-cobra-core-v2" in call]
+
+
+def test_image_id_that_is_not_a_digest_is_fatal(tmp_path: Path) -> None:
+    """The historical fallback wrote the literal 'unknown' into both stores."""
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--",
+        "true",
+        extra_env={"MOCK_DOCKER_IMAGE_ID": "unknown"},
+    )
+
+    assert result.returncode != 0
+    assert "cannot resolve the image id of test-runtime-image" in result.stderr
+    assert "unknown" in result.stderr
+    assert _runs(calls) == []
+
+
+def test_remote_image_id_failure_names_the_remote_engine_not_a_host(
+    tmp_path: Path,
+) -> None:
+    """The diagnostic must place the engine without leaking a hostname."""
+    share, repo = _share_layout(tmp_path)
+
+    result, _ = _run(
+        tmp_path,
+        "exec",
+        "--remote",
+        REMOTE_HOST,
+        "--",
+        "true",
+        repo_root=repo,
+        extra_env=_remote_env(share, MOCK_DOCKER_IMAGE_ID="unknown"),
+    )
+
+    assert result.returncode != 0
+    assert "the configured remote engine" in result.stderr
+    assert REMOTE_HOST not in result.stderr
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ("exec", "--", "true"),
+        ("system",),
+        ("test",),
+    ],
+)
+def test_no_emitted_command_ever_carries_an_unknown_image_id(
+    tmp_path: Path,
+    args: tuple[str, ...],
+) -> None:
+    """Neither the cache marker nor the receipt may name a placeholder image."""
+    result, calls = _run(tmp_path, *args)
+
+    assert result.returncode == 0, result.stderr
+    command = _container_run(calls)
+    source_key = command.split("COBRA_SOURCE_KEY=")[1].split("'")[1]
+    assert source_key.endswith(f":{FAKE_IMAGE_ID}"), source_key
+    assert "unknown" not in source_key
+    assert "linux-cobra-core-v2:" in command
+    receipt = command.split("D810_TEST_RUNTIME_IMAGE_ID=")[1].split()[0]
+    assert receipt == FAKE_IMAGE_ID, receipt
+
+
+@pytest.mark.parametrize("account", ["ac/count", "ac count", "ac.count]"])
+def test_remote_smb_user_must_be_safe_for_acl_matching(
+    tmp_path: Path,
+    account: str,
+) -> None:
+    """The account is interpolated verbatim into the ACL sed expressions."""
+    share, repo = _share_layout(tmp_path)
+
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--remote",
+        REMOTE_HOST,
+        "--",
+        "true",
+        repo_root=repo,
+        extra_env=_remote_env(share, D810_REMOTE_SMB_USER=account),
+    )
+
+    assert result.returncode != 0
+    assert "D810_REMOTE_SMB_USER must match" in result.stderr
+    assert _runs(calls) == []
+
+
+def _split_top_level(command: str) -> tuple[list[str], list[str]]:
+    """Split a bash command string into its top-level terms and separators.
+
+    Quotes, ``{ }`` groups, subshells and command substitutions are opaque, so
+    what comes back is exactly the chain the container shell would evaluate.
+    """
+    terms: list[str] = []
+    separators: list[str] = []
+    depth = 0
+    quote: str | None = None
+    current = ""
+    index = 0
+    while index < len(command):
+        character = command[index]
+        if quote == '"' and character == "\\":
+            current += command[index : index + 2]
+            index += 2
+            continue
+        if quote is not None:
+            current += character
+            if character == quote:
+                quote = None
+            index += 1
+            continue
+        if character in "'\"":
+            quote = character
+            current += character
+            index += 1
+            continue
+        if character in "{(":
+            depth += 1
+        elif character in "})":
+            depth -= 1
+        if depth == 0:
+            if command.startswith("&&", index) or command.startswith("||", index):
+                terms.append(current.strip())
+                separators.append(command[index : index + 2])
+                current = ""
+                index += 2
+                continue
+            if character == ";":
+                terms.append(current.strip())
+                separators.append(";")
+                current = ""
+                index += 1
+                continue
+        current += character
+        index += 1
+    if current.strip():
+        terms.append(current.strip())
+    return terms, separators
+
+
+def _inner_command(container_run: str) -> str:
+    marker = " -lc "
+    assert marker in container_run, container_run
+    return container_run.split(marker, 1)[1]
+
+
+WORKLOAD_INVOCATIONS = (
+    "run_system_test_batches.py",
+    "-m pytest",
+)
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ("system", "-o", "out.txt"),
+        ("system",),
+        ("test", "-o", "out.txt"),
+        ("test",),
+        ("dump", "-o", "out.txt"),
+        ("dump",),
+    ],
+)
+@pytest.mark.parametrize("remote", [False, True])
+def test_setup_is_a_hard_precondition_for_the_workload(
+    tmp_path: Path,
+    args: tuple[str, ...],
+    remote: bool,
+) -> None:
+    """A failed setup must never leave pytest to report the container status."""
+    if remote:
+        share, repo = _share_layout(tmp_path)
+        result, calls = _run(
+            tmp_path,
+            *args,
+            "--remote",
+            REMOTE_HOST,
+            repo_root=repo,
+            extra_env=_remote_env(share),
+        )
+        command = _remote_container_run(calls)
+    else:
+        result, calls = _run(tmp_path, *args)
+        command = _container_run(calls)
+
+    assert result.returncode == 0, result.stderr
+    terms, separators = _split_top_level(_inner_command(command))
+    assert terms, command
+    # a ';' here would detach the workload from setup, which is the defect:
+    # the container then exits with pytest's status whatever setup did
+    assert ";" not in separators, (separators, command)
+    # the only '||' allowed is a stage guard, which re-raises the stage's status
+    for position, separator in enumerate(separators):
+        if separator == "||":
+            assert terms[position + 1].startswith("{ __d810_stage_status=$?;"), (
+                terms[position + 1]
+            )
+            assert "exit $__d810_stage_status" in terms[position + 1]
+    assert any(
+        invocation in terms[-1] for invocation in WORKLOAD_INVOCATIONS
+    ), terms[-1]
+    # the workload is the LAST term, so nothing runs after a failed stage
+    for term in terms[:-1]:
+        assert not any(
+            invocation in term for invocation in WORKLOAD_INVOCATIONS
+        ), term
+
+
+@pytest.mark.parametrize(
+    "args",
+    [("system", "-o", "out.txt"), ("test", "-o", "out.txt"), ("dump", "-o", "out.txt")],
+)
+def test_a_failing_stage_stops_the_chain_and_keeps_its_own_status(
+    tmp_path: Path,
+    args: tuple[str, ...],
+) -> None:
+    """Run the emitted chain for real, failing one stage at a time."""
+    share, repo = _share_layout(tmp_path)
+    result, calls = _run(
+        tmp_path,
+        *args,
+        "--remote",
+        REMOTE_HOST,
+        repo_root=repo,
+        extra_env=_remote_env(share),
+    )
+    assert result.returncode == 0, result.stderr
+    terms, separators = _split_top_level(_inner_command(_remote_container_run(calls)))
+    # a guarded stage is one unit: "{ stage; } || { name it; exit its status; }"
+    units: list[str] = []
+    for position, term in enumerate(terms):
+        if position and separators[position - 1] == "||":
+            units[-1] = f"{units[-1]} || {term}"
+        else:
+            units.append(term)
+    terms = units
+    marker = tmp_path / "workload-ran"
+
+    for index in range(len(terms) - 1):
+        marker.unlink(missing_ok=True)
+        model = []
+        for position in range(len(terms)):
+            if position == index:
+                model.append("( exit 42 )")
+            elif position == len(terms) - 1:
+                model.append(f"touch {marker}")
+            else:
+                model.append("true")
+        completed = subprocess.run(
+            ["bash", "-c", " && ".join(model)],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        assert completed.returncode == 42, (index, terms[index])
+        assert not marker.exists(), terms[index]
+
+
+@pytest.mark.parametrize(
+    "stage",
+    ["source-sync", "artifact-staging", "extensions", "native-extension-build"],
+)
+def test_each_setup_stage_names_itself_and_exits_with_its_own_status(
+    tmp_path: Path,
+    stage: str,
+) -> None:
+    """The real emitted guard, run against a body that fails with a known code."""
+    share, repo = _share_layout(tmp_path)
+    result, calls = _run(
+        tmp_path,
+        "test",
+        "--remote",
+        REMOTE_HOST,
+        repo_root=repo,
+        extra_env=_remote_env(share),
+    )
+    assert result.returncode == 0, result.stderr
+    command = _inner_command(_remote_container_run(calls))
+
+    needle = f'|| {{ __d810_stage_status=$?; printf "[setup] ERROR: stage {stage} failed'
+    start = command.find(needle)
+    assert start != -1, command
+    guard = command[start : command.index("}", command.index("exit $__d810_stage_status", start)) + 1]
+
+    completed = subprocess.run(
+        ["bash", "-c", f"( exit 42 ) {guard}; touch {tmp_path / 'after'}"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 42, completed
+    assert f"stage {stage} failed (exit 42); tests not started" in completed.stderr
+    assert not (tmp_path / "after").exists()
+
+
+def test_cobra_toolchain_provisioning_fails_closed(tmp_path: Path) -> None:
+    """apt failures were swallowed and the key came back from c++ alone."""
+    result, calls = _run(tmp_path, "exec", "--", "true")
+
+    assert result.returncode == 0, result.stderr
+    command = _container_run(calls)
+    # apt output is kept so the real cause is visible
+    assert "apt-get update > /tmp/d810-cobra-apt.log 2>&1" in command
+    assert (
+        "apt-get install -y --no-install-recommends cmake ninja-build "
+        "build-essential >> /tmp/d810-cobra-apt.log 2>&1" in command
+    )
+    # each tool is re-checked AFTER provisioning, and a miss aborts
+    assert "for __cobra_tool in cmake ninja c++; do" in command
+    assert "tail -n 20 /tmp/d810-cobra-apt.log" in command
+    assert "ERROR: CoBRA toolchain provisioning failed" in command
+    assert "a skewed engine clock makes apt reject repository signatures" in command
+    # the key is derived only once the three tools are known to be present
+    provision = command.index("__cobra_missing")
+    assert provision < command.index("COBRA_TOOLCHAIN_KEY=$(cmake --version")
+    assert command.index("COBRA_TOOLCHAIN_KEY=$(cmake --version") < command.index(
+        "build_cobra.py"
+    )
+
+
+def test_cobra_toolchain_guard_aborts_before_the_source_build(tmp_path: Path) -> None:
+    """Run the emitted guard for real with the tools absent."""
+    result, calls = _run(tmp_path, "exec", "--", "true")
+    assert result.returncode == 0, result.stderr
+    command = _container_run(calls)
+
+    start = command.index("__cobra_missing=''")
+    end = command.index("fi; }", start) + len("fi;")
+    guard = command[start:end]
+    log = tmp_path / "apt.log"
+    log.write_text("E: Release file is not valid yet\n", encoding="utf-8")
+    guard = guard.replace("/tmp/d810-cobra-apt.log", str(log))
+    marker = tmp_path / "source-build-ran"
+    # a PATH with the ordinary utilities but no compiler toolchain
+    toolless = tmp_path / "toolless-bin"
+    toolless.mkdir()
+    for utility in ("tail", "touch", "cat"):
+        located = shutil.which(utility)
+        assert located is not None, utility
+        (toolless / utility).symlink_to(located)
+
+    completed = subprocess.run(
+        [shutil.which("bash") or "/bin/bash", "-c", f"{{ {guard} }} && touch {marker}"],
+        check=False,
+        capture_output=True,
+        text=True,
+        env={"PATH": str(toolless)},
+    )
+
+    assert completed.returncode == 1, completed
+    assert "CoBRA toolchain provisioning failed" in completed.stderr
+    assert "Release file is not valid yet" in completed.stderr
+    assert not marker.exists()
+
+
+NATIVE_PROBE_IMPORT = (
+    "from d810.speedups.install import inspect_native_extensions"
+)
+NATIVE_FALLBACK_LINE = "[speedups] native extension: NOT LOADED (python fallback)"
+
+
+@pytest.mark.parametrize("no_cython", ["1", ""])
+def test_a_python_fallback_run_says_so_but_still_runs(
+    tmp_path: Path,
+    no_cython: str,
+) -> None:
+    """Without an explicit request the fallback is allowed - but never silent."""
+    result, calls = _run(tmp_path, "exec", "--", "true", no_cython=no_cython or "1")
+
+    assert result.returncode == 0, result.stderr
+    command = _container_run(calls)
+    assert NATIVE_PROBE_IMPORT in command
+    assert f"|| echo '{NATIVE_FALLBACK_LINE}'" in command
+    # tolerant: no abort on a failed probe
+    assert "refusing to run the tests in the Python fallback" not in command
+
+
+def test_an_explicit_native_request_refuses_the_python_fallback(
+    tmp_path: Path,
+) -> None:
+    """D810_NO_CYTHON=0 is a request; a fallback answers a different question."""
+    result, calls = _run(tmp_path, "exec", "--", "true", no_cython="0")
+
+    assert result.returncode == 0, result.stderr
+    command = _container_run(calls)
+    assert NATIVE_PROBE_IMPORT in command
+    assert f"echo '{NATIVE_FALLBACK_LINE}' >&2" in command
+    assert (
+        "ERROR: D810_NO_CYTHON=0 asked for the native extension but none could "
+        "be loaded; refusing to run the tests in the Python fallback" in command
+    )
+    # the abort precedes the workload, which is the last top-level term
+    terms, _ = _split_top_level(_inner_command(command))
+    assert "refusing to run the tests" not in terms[-1]
+
+
+def test_the_native_probe_aborts_an_explicit_request_for_real(
+    tmp_path: Path,
+) -> None:
+    """Run the emitted required-probe guard with a probe that reports failure."""
+    result, calls = _run(tmp_path, "exec", "--", "true", no_cython="0")
+    assert result.returncode == 0, result.stderr
+    command = _container_run(calls)
+
+    start = command.index("{ /app/ida/.venv/bin/python -c 'from d810.speedups")
+    end = command.index("exit 1; }; }", start) + len("exit 1; }; }")
+    guard = command[start:end]
+    # stand in for the container interpreter with one that reports no extension
+    guard = guard.replace(
+        command[command.index("/app/ida/.venv/bin/python", start) : command.index(
+            " -c 'from d810.speedups", start
+        )],
+        "false --",
+    )
+    marker = tmp_path / "tests-ran"
+
+    completed = subprocess.run(
+        [shutil.which("bash") or "/bin/bash", "-c", f"{guard} && touch {marker}"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 1, completed
+    assert NATIVE_FALLBACK_LINE in completed.stderr
+    assert "refusing to run the tests in the Python fallback" in completed.stderr
+    assert not marker.exists()
+
+
+def test_engine_clock_within_tolerance_is_reported_and_accepted(
+    tmp_path: Path,
+) -> None:
+    share, repo = _share_layout(tmp_path)
+
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--remote",
+        REMOTE_HOST,
+        "--",
+        "true",
+        repo_root=repo,
+        extra_env=_remote_env(share, MOCK_ENGINE_CLOCK_OFFSET="3"),
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "engine clock offset:" in result.stdout
+    assert _clock_run(calls) is not None
+    # the measured offset travels with the run's provenance receipt
+    assert "D810_TEST_ENGINE_CLOCK_OFFSET=" in _remote_container_run(calls)
+
+
+def test_a_skewed_engine_clock_aborts_before_the_workload(tmp_path: Path) -> None:
+    """apt rejects repository signatures against a skewed clock."""
+    share, repo = _share_layout(tmp_path)
+
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--remote",
+        REMOTE_HOST,
+        "--",
+        "true",
+        repo_root=repo,
+        extra_env=_remote_env(share, MOCK_ENGINE_CLOCK_OFFSET="-755"),
+    )
+
+    assert result.returncode != 0
+    assert "exceeds the 120s tolerance" in result.stderr
+    assert "resync the engine VM clock" in result.stderr
+    assert "hwclock -s" in result.stderr
+    assert _workload_runs(calls) == []
+
+
+def test_a_timing_leg_holds_the_engine_clock_to_five_seconds(tmp_path: Path) -> None:
+    """Every duration a profiling leg reports is measured against that clock."""
+    share, repo = _share_layout(tmp_path)
+
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--remote",
+        REMOTE_HOST,
+        "--",
+        "true",
+        repo_root=repo,
+        extra_env=_remote_env(
+            share, MOCK_ENGINE_CLOCK_OFFSET="30", D810_NATIVE_PROFILE="1"
+        ),
+    )
+
+    assert result.returncode != 0
+    assert "exceeds the 5s tolerance" in result.stderr
+    assert _workload_runs(calls) == []
+
+
+def test_the_clock_check_can_be_downgraded_to_a_warning(tmp_path: Path) -> None:
+    share, repo = _share_layout(tmp_path)
+
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--remote",
+        REMOTE_HOST,
+        "--",
+        "true",
+        repo_root=repo,
+        extra_env=_remote_env(
+            share,
+            MOCK_ENGINE_CLOCK_OFFSET="-755",
+            D810_REMOTE_SKIP_CLOCK_CHECK="1",
+        ),
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "WARNING: engine clock offset" in result.stderr
+    assert "D810_REMOTE_SKIP_CLOCK_CHECK=1" in result.stderr
+    assert _remote_container_run(calls)
+
+
+def test_an_unreadable_engine_clock_fails_closed(tmp_path: Path) -> None:
+    share, repo = _share_layout(tmp_path)
+
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--remote",
+        REMOTE_HOST,
+        "--",
+        "true",
+        repo_root=repo,
+        extra_env=_remote_env(share, MOCK_ENGINE_CLOCK_FAILS="1"),
+    )
+
+    assert result.returncode != 0
+    assert "cannot read the remote engine clock" in result.stderr
+    assert _workload_runs(calls) == []
+
+def test_a_profiling_leg_without_perf_is_not_a_valid_leg(tmp_path: Path) -> None:
+    """perf's absence used to return py-spy's status and pass."""
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--",
+        "true",
+        no_cython="0",
+        extra_env={"D810_NATIVE_PROFILE": "1"},
+    )
+
+    assert result.returncode == 0, result.stderr
+    command = _container_run(calls)
+    assert (
+        "ERROR: D810_NATIVE_PROFILE=1 but perf is not available; a profiling "
+        "leg without a profiler is not a valid leg" in command
+    )
+    terms, separators = _split_top_level(_inner_command(command))
+    assert ";" not in separators
+    # the perf check must be a precondition, never a trailing observation
+    assert "perf --version" not in terms[-1]
+
+
+def test_the_perf_guard_aborts_for_real_when_perf_is_absent(tmp_path: Path) -> None:
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--",
+        "true",
+        no_cython="0",
+        extra_env={"D810_NATIVE_PROFILE": "1"},
+    )
+    assert result.returncode == 0, result.stderr
+    command = _container_run(calls)
+
+    start = command.index("{ perf --version ||")
+    end = command.index("; }; }", start) + len("; }; }")
+    guard = command[start:end]
+    marker = tmp_path / "profiled"
+
+    completed = subprocess.run(
+        [shutil.which("bash") or "/bin/bash", "-c", f"{guard} && touch {marker}"],
+        check=False,
+        capture_output=True,
+        text=True,
+        env={"PATH": str(tmp_path / "empty-bin")},
+    )
+
+    assert completed.returncode == 1, completed
+    assert "a profiling leg without a profiler is not a valid leg" in completed.stderr
+    assert not marker.exists()

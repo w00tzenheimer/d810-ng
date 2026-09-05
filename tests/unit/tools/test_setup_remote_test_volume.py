@@ -1278,3 +1278,60 @@ def test_invalid_mount_opts_fail_before_creating_anything(
     assert status == 1
     assert "must not set password" in captured.err
     assert not any("volume create" in " ".join(argv) for argv in recorded)
+
+
+@pytest.mark.parametrize(
+    ("flag", "value", "expected"),
+    [
+        ("--user", "u,nobrl", "nobrl/nolock"),
+        ("--user", "u,nolock", "nobrl/nolock"),
+        ("--user", "u,password=x", "nobrl/nolock"),
+        ("--user", "bad user", "[A-Za-z0-9._@-]+"),
+        ("--user", "quote'name", "[A-Za-z0-9._@-]+"),
+        ("--share", "//host/share,nobrl", "nobrl/nolock"),
+        ("--share", "host/share", "//HOST/NAME"),
+        ("--share", "//host/sh are", "whitespace or quotes"),
+        ("--share", "//host/sh'are", "whitespace or quotes"),
+    ],
+)
+def test_identity_fields_cannot_smuggle_cifs_options(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    flag: str,
+    value: str,
+    expected: str,
+) -> None:
+    """The comma guard covered only the password; the neighbours share syntax."""
+    recorded = _fake_capture(monkeypatch, {})
+
+    def _fail(*args: object, **kwargs: object) -> None:
+        raise AssertionError("a rejected identity must never reach docker")
+
+    monkeypatch.setattr(setup_remote_test_volume.subprocess, "run", _fail)
+    monkeypatch.setattr(
+        setup_remote_test_volume.getpass,
+        "getpass",
+        lambda prompt: pytest.fail("the password must not even be prompted for"),
+    )
+
+    status = setup_remote_test_volume.main([flag, value])
+    captured = capsys.readouterr()
+
+    assert status == 2
+    assert expected in captured.err
+    # refused before ANY docker contact, let alone volume create
+    assert recorded == []
+
+
+def test_identity_validation_accepts_the_configured_values(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert setup_remote_test_volume.identity_rejection_reason(
+        "user", "share-account"
+    ) is None
+    assert setup_remote_test_volume.identity_rejection_reason(
+        "share", "//files.example/project"
+    ) is None
+    assert setup_remote_test_volume.identity_rejection_reason("user", "") == (
+        "the SMB user is empty"
+    )
