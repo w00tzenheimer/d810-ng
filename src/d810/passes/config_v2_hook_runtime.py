@@ -44,10 +44,10 @@ from d810.passes.mba_egraph import (
     build_mba_egraph_pass,
 )
 from d810.passes.execution_stages import ExecutionHost
-from d810.passes.operational_config_v2 import operational_config_v2_pass_registry
 from d810.passes.pass_pipeline import PipelineConfig, PipelineConfigError
 from d810.passes.pipeline_config_parser import (
     require_config_v2_project,
+    require_config_v2_project_with_registry,
 )
 from d810.passes.state_machine_options import (
     STATE_MACHINE_NATIVE_PASS_IDS,
@@ -377,12 +377,14 @@ def compile_config_v2_hook_schedule(project_config) -> ConfigV2HookSchedule:
     legacy rules, and retired runtime mode metadata before any hook binding is
     materialized.
     """
-    configs = _runtime_pipeline_configs(project_config)
+    # One registry validates the payload and then resolves its hosted
+    # stages.  Building a second one would re-register every operational
+    # pass and re-resolve every optional backend manifest.
+    configs, registry = require_config_v2_project_with_registry(project_config)
     _validate_constant_simplification_ownership(configs)
 
     instruction_bindings: list[ConfigV2HookBinding] = []
     block_bindings: list[ConfigV2HookBinding] = []
-    registry = operational_config_v2_pass_registry()
     global_const_persistence_enabled = False
     constant_simplification_schedule = None
     native_present = any(

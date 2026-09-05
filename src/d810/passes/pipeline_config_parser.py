@@ -123,15 +123,19 @@ def pipeline_configs_from_project_config(project_config) -> tuple[PipelineConfig
     return tuple(configs)
 
 
-def require_config_v2_project(project_config) -> tuple[PipelineConfig, ...]:
-    """Require a complete, runtime-safe config-v2 project.
+def require_config_v2_project_with_registry(
+    project_config,
+) -> tuple[tuple[PipelineConfig, ...], PassRegistry]:
+    """Validate a config-v2 project and return the registry that validated it.
 
-    This is the single strict parser entry point. The permissive
-    ``pipeline_configs_from_project_config`` function remains available to
-    offline migration readers; runtime activation must use this function.
-    Legacy rule-array fields, missing/empty/malformed ``pipeline_v2``, and
-    retired mode/shadow metadata are hard errors with a copyable offline
-    migration command.
+    Building the operational registry is not free: it registers every
+    operational pass, and each registration resolves optional backend
+    manifests.  A caller that validates and then consumes the same registry
+    must therefore take this entry point rather than build a second one.
+
+    The registry is built inside the strict wrapper so an implementation that
+    is missing, ambiguous or incompatible still surfaces as a
+    :class:`PipelineConfigError` carrying the offline migration command.
     """
     try:
         _reject_legacy_rule_fields(project_config)
@@ -155,7 +159,20 @@ def require_config_v2_project(project_config) -> tuple[PipelineConfig, ...]:
             registry.build_spec(config)
     except Exception as exc:
         raise PipelineConfigError(_migration_message(project_config, str(exc))) from exc
-    return configs
+    return configs, registry
+
+
+def require_config_v2_project(project_config) -> tuple[PipelineConfig, ...]:
+    """Require a complete, runtime-safe config-v2 project.
+
+    This is the single strict parser entry point. The permissive
+    ``pipeline_configs_from_project_config`` function remains available to
+    offline migration readers; runtime activation must use this function.
+    Legacy rule-array fields, missing/empty/malformed ``pipeline_v2``, and
+    retired mode/shadow metadata are hard errors with a copyable offline
+    migration command.
+    """
+    return require_config_v2_project_with_registry(project_config)[0]
 
 
 def pass_specs_from_project_config(
