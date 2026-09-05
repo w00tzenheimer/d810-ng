@@ -3951,3 +3951,63 @@ def test_each_setup_stage_names_itself_and_exits_with_its_own_status(
     assert completed.returncode == 42, completed
     assert f"stage {stage} failed (exit 42); tests not started" in completed.stderr
     assert not (tmp_path / "after").exists()
+
+
+def test_cobra_toolchain_provisioning_fails_closed(tmp_path: Path) -> None:
+    """apt failures were swallowed and the key came back from c++ alone."""
+    result, calls = _run(tmp_path, "exec", "--", "true")
+
+    assert result.returncode == 0, result.stderr
+    command = _container_run(calls)
+    # apt output is kept so the real cause is visible
+    assert "apt-get update > /tmp/d810-cobra-apt.log 2>&1" in command
+    assert (
+        "apt-get install -y --no-install-recommends cmake ninja-build "
+        "build-essential >> /tmp/d810-cobra-apt.log 2>&1" in command
+    )
+    # each tool is re-checked AFTER provisioning, and a miss aborts
+    assert "for __cobra_tool in cmake ninja c++; do" in command
+    assert "tail -n 20 /tmp/d810-cobra-apt.log" in command
+    assert "ERROR: CoBRA toolchain provisioning failed" in command
+    assert "a skewed engine clock makes apt reject repository signatures" in command
+    # the key is derived only once the three tools are known to be present
+    provision = command.index("__cobra_missing")
+    assert provision < command.index("COBRA_TOOLCHAIN_KEY=$(cmake --version")
+    assert command.index("COBRA_TOOLCHAIN_KEY=$(cmake --version") < command.index(
+        "build_cobra.py"
+    )
+
+
+def test_cobra_toolchain_guard_aborts_before_the_source_build(tmp_path: Path) -> None:
+    """Run the emitted guard for real with the tools absent."""
+    result, calls = _run(tmp_path, "exec", "--", "true")
+    assert result.returncode == 0, result.stderr
+    command = _container_run(calls)
+
+    start = command.index("__cobra_missing=''")
+    end = command.index("fi; }", start) + len("fi;")
+    guard = command[start:end]
+    log = tmp_path / "apt.log"
+    log.write_text("E: Release file is not valid yet\n", encoding="utf-8")
+    guard = guard.replace("/tmp/d810-cobra-apt.log", str(log))
+    marker = tmp_path / "source-build-ran"
+    # a PATH with the ordinary utilities but no compiler toolchain
+    toolless = tmp_path / "toolless-bin"
+    toolless.mkdir()
+    for utility in ("tail", "touch", "cat"):
+        located = shutil.which(utility)
+        assert located is not None, utility
+        (toolless / utility).symlink_to(located)
+
+    completed = subprocess.run(
+        [shutil.which("bash") or "/bin/bash", "-c", f"{{ {guard} }} && touch {marker}"],
+        check=False,
+        capture_output=True,
+        text=True,
+        env={"PATH": str(toolless)},
+    )
+
+    assert completed.returncode == 1, completed
+    assert "CoBRA toolchain provisioning failed" in completed.stderr
+    assert "Release file is not valid yet" in completed.stderr
+    assert not marker.exists()
