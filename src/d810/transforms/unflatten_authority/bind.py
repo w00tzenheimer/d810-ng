@@ -12065,6 +12065,14 @@ def bind_subjects(
     for subject in subjects:
         if type(subject) is not model.SemanticSubjectRef:
             raise TypeError("subjects must contain SemanticSubjectRef values")
+        # Re-seal before validating, exactly as ``model._validate_inventory_refs``
+        # does for a CFG ref.  The canonical roundtrip this replaced decoded
+        # the subject, and decoding re-ran ``__post_init__``, so it rejected a
+        # subject whose sealed ``subject_id`` had been corrupted after
+        # construction.  ``validate_live_semantic_fields`` walks fields and
+        # cannot see that, so the seal is re-run here rather than silently
+        # dropped.  Cost is the subject's own (unconverted) ID derivation.
+        subject.__post_init__()
         # Live subject: semantic fields only.  The canonical representation
         # is built at an explicit materialisation boundary, not once per
         # subject per phase.  See task 5b-4.
@@ -12415,6 +12423,14 @@ def bind_projected_subjects(
     for subject in subjects:
         if type(subject) is not model.SemanticSubjectRef:
             raise TypeError("subjects must contain SemanticSubjectRef values")
+        # Re-seal before validating, exactly as ``model._validate_inventory_refs``
+        # does for a CFG ref.  The canonical roundtrip this replaced decoded
+        # the subject, and decoding re-ran ``__post_init__``, so it rejected a
+        # subject whose sealed ``subject_id`` had been corrupted after
+        # construction.  ``validate_live_semantic_fields`` walks fields and
+        # cannot see that, so the seal is re-run here rather than silently
+        # dropped.  Cost is the subject's own (unconverted) ID derivation.
+        subject.__post_init__()
         # Live subject: semantic fields only.  The canonical representation
         # is built at an explicit materialisation boundary, not once per
         # subject per phase.  See task 5b-4.
