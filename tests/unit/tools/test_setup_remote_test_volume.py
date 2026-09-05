@@ -119,11 +119,14 @@ def test_dry_run_prints_the_redacted_argv_and_runs_no_docker(
         raise AssertionError("--dry-run must not run docker")
 
     monkeypatch.setattr(setup_remote_test_volume.subprocess, "run", _fail)
-    monkeypatch.setattr(
-        setup_remote_test_volume,
-        "run_capture",
-        lambda argv: (_ for _ in ()).throw(AssertionError("--dry-run must not run docker")),
-    )
+    for seam in ("run_capture", "run_probe"):
+        monkeypatch.setattr(
+            setup_remote_test_volume,
+            seam,
+            lambda argv: (_ for _ in ()).throw(
+                AssertionError("--dry-run must not run docker")
+            ),
+        )
 
     status = setup_remote_test_volume.main(["--dry-run"])
     printed = capsys.readouterr().out
@@ -173,6 +176,9 @@ def test_success_runs_the_built_argv(
         setup_remote_test_volume, "run_capture", lambda argv: (1, "")
     )
     monkeypatch.setattr(
+        setup_remote_test_volume, "run_probe", lambda argv: (0, "mount-ok\n")
+    )
+    monkeypatch.setattr(
         setup_remote_test_volume.subprocess,
         "run",
         lambda command, **kwargs: recorded.append(list(command)),
@@ -209,6 +215,7 @@ def _fake_capture(monkeypatch: pytest.MonkeyPatch, responses: dict[str, tuple[in
         return (0, "")
 
     monkeypatch.setattr(setup_remote_test_volume, "run_capture", _capture)
+    monkeypatch.setattr(setup_remote_test_volume, "run_probe", _capture)
     return recorded
 
 
@@ -430,6 +437,159 @@ def test_dry_run_covers_status_and_remove_modes(
 def test_status_and_remove_are_mutually_exclusive() -> None:
     with pytest.raises(SystemExit):
         setup_remote_test_volume.main(["--status", "--remove"])
+
+
+def test_probe_argv_shapes() -> None:
+    assert setup_remote_test_volume.build_verify_probe_argv(
+        remote="h", volume="v"
+    ) == [
+        "docker", "-H", "ssh://h", "run", "--rm", "--mount",
+        "type=volume,src=v,dst=/probe,readonly", "alpine", "sh", "-c",
+        "ls /probe >/dev/null && echo mount-ok",
+    ]
+    assert setup_remote_test_volume.build_kernel_status_argv(
+        remote="h", image="other"
+    ) == [
+        "docker", "-H", "ssh://h", "run", "--rm", "--privileged", "other", "sh", "-c",
+        'dmesg | grep -E "CIFS: Status code" | tail -1',
+    ]
+
+
+@pytest.mark.parametrize(
+    "line,fragment",
+    [
+        ("CIFS: Status code returned 0xc000006d NT_STATUS_LOGON_FAILURE", "LOGON_FAILURE"),
+        ("CIFS: Status code returned 0xc000006e STATUS_ACCOUNT_RESTRICTION", "ACCOUNT_RESTRICTION"),
+        ("CIFS: Status code returned 0xc00000cc BAD_NETWORK_NAME", "BAD_NETWORK_NAME"),
+        ("unrelated", "no known CIFS status code"),
+    ],
+)
+def test_status_code_explanations(line: str, fragment: str) -> None:
+    assert fragment in setup_remote_test_volume.explain_status_code(line)
+
+
+def test_comma_password_is_refused_before_any_volume_create(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recorded = _fake_capture(monkeypatch, {"volume inspect": (1, "")})
+    monkeypatch.setattr(
+        setup_remote_test_volume.getpass, "getpass", lambda prompt: "bad,password"
+    )
+
+    def _fail(*args: object, **kwargs: object) -> None:
+        raise AssertionError("a comma password must never reach docker volume create")
+
+    monkeypatch.setattr(setup_remote_test_volume.subprocess, "run", _fail)
+
+    status = setup_remote_test_volume.main([])
+    captured = capsys.readouterr()
+
+    assert status == 1
+    assert "comma" in captured.err
+    assert not any("volume create" in " ".join(argv) for argv in recorded)
+    assert "bad,password" not in captured.out + captured.err
+    assert setup_remote_test_volume.password_rejection_reason("fine") is None
+
+
+def test_create_verifies_then_rolls_back_on_a_failed_mount(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recorded = _fake_capture(
+        monkeypatch,
+        {
+            "volume inspect": (1, ""),
+            "dst=/probe": (1, "docker: Error response from daemon: permission denied"),
+            "--privileged": (
+                0,
+                "CIFS: VFS: Status code returned 0xc000006d NT_STATUS_LOGON_FAILURE\n",
+            ),
+        },
+    )
+    monkeypatch.setattr(
+        setup_remote_test_volume.getpass, "getpass", lambda prompt: "hunter2"
+    )
+    monkeypatch.setattr(
+        setup_remote_test_volume.subprocess, "run", lambda command, **kwargs: None
+    )
+
+    status = setup_remote_test_volume.main([])
+    captured = capsys.readouterr()
+
+    assert status == 1
+    joined = [" ".join(argv) for argv in recorded]
+    probe_index = next(index for index, call in enumerate(joined) if "dst=/probe" in call)
+    kernel_index = next(index for index, call in enumerate(joined) if "--privileged" in call)
+    remove_index = next(index for index, call in enumerate(joined) if "volume rm" in call)
+    assert probe_index < kernel_index < remove_index
+    assert "permission denied" in captured.err
+    assert "0xc000006d" in captured.err
+    assert "LOGON_FAILURE" in captured.err
+    assert "not left persisted" in captured.err
+
+
+def test_create_keeps_the_volume_when_the_probe_succeeds(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recorded = _fake_capture(
+        monkeypatch, {"volume inspect": (1, ""), "dst=/probe": (0, "mount-ok\n")}
+    )
+    monkeypatch.setattr(
+        setup_remote_test_volume.getpass, "getpass", lambda prompt: "hunter2"
+    )
+    monkeypatch.setattr(
+        setup_remote_test_volume.subprocess, "run", lambda command, **kwargs: None
+    )
+
+    status = setup_remote_test_volume.main([])
+    printed = capsys.readouterr().out
+
+    assert status == 0
+    assert "mount-ok" in printed
+    assert not any("volume rm" in " ".join(argv) for argv in recorded)
+
+
+def test_no_verify_skips_the_probe_entirely(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recorded = _fake_capture(monkeypatch, {"volume inspect": (1, "")})
+    monkeypatch.setattr(
+        setup_remote_test_volume.getpass, "getpass", lambda prompt: "hunter2"
+    )
+    monkeypatch.setattr(
+        setup_remote_test_volume.subprocess, "run", lambda command, **kwargs: None
+    )
+
+    status = setup_remote_test_volume.main(["--no-verify"])
+    printed = capsys.readouterr().out
+
+    assert status == 0
+    assert "verification skipped" in printed
+    assert not any("dst=/probe" in " ".join(argv) for argv in recorded)
+
+
+def test_status_probes_the_existing_volume_without_removing_it(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recorded = _fake_capture(
+        monkeypatch,
+        {
+            "volume inspect": (0, INSPECT_PAYLOAD),
+            "dst=/probe": (1, "permission denied"),
+            "--privileged": (0, "CIFS: Status code returned 0xc000006e ACCOUNT_RESTRICTION\n"),
+        },
+    )
+
+    status = setup_remote_test_volume.main(["--status"])
+    captured = capsys.readouterr()
+
+    assert status == 1
+    assert "ACCOUNT_RESTRICTION" in captured.err
+    assert not any("volume rm" in " ".join(argv) for argv in recorded)
 
 
 def test_doctests_pass() -> None:

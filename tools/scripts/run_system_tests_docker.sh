@@ -123,6 +123,19 @@
 #   in the volume's options and is therefore visible to `docker volume inspect` on the remote host:
 #   that is the accepted trade for typing it once. Remove it with `docker volume rm idapro`.
 #
+#   The helper verifies a freshly created volume by mounting it read-only, and deletes it again if
+#   that fails, so a credential that does not work is never left persisted. `mount(2)` reports every
+#   authorization failure as the same "permission denied", so the helper also reads the engine's
+#   kernel log and prints the CIFS status code, which is what actually distinguishes them:
+#
+#     0xc000006d STATUS_LOGON_FAILURE       password / NT hash mismatch: re-tick the account under
+#                                           File Sharing > Options, re-enter the password, --recreate
+#     0xc000006e STATUS_ACCOUNT_RESTRICTION account refused for this logon type (e.g. guest disabled)
+#     0xc00000cc STATUS_BAD_NETWORK_NAME    the share name in device=//HOST/SHARE is wrong
+#
+#   `--status` runs the same probe read-only against an existing volume; `--no-verify` opts out.
+#   An SMB password containing a comma is refused up front: the cifs `o=` value is comma-separated.
+#
 #   The option set deliberately omits nobrl: if SQLite under /work/.tmp (diag DBs, debug logs) ever
 #   fails with a locking error over this mount, recreate the volume with nobrl appended. Byte-range
 #   locking is the thing to check first after any volume change:

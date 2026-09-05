@@ -45,6 +45,23 @@ DEFAULT_DIR_MODE = "0700"
 REDACTION = "********"
 PASSWORD_OPTION_PATTERN = re.compile(r"(?<=password=)[^,]*")
 CONTAINER_FORMAT = "{{.ID}} {{.Status}} {{.Names}}"
+PROBE_IMAGE = "alpine"
+PROBE_COMMAND = "ls /probe >/dev/null && echo mount-ok"
+KERNEL_STATUS_COMMAND = 'dmesg | grep -E "CIFS: Status code" | tail -1'
+STATUS_CODE_MEANINGS = {
+    "0xc000006d": (
+        "STATUS_LOGON_FAILURE: the password (or its NT hash) does not match. "
+        "Re-tick the account under File Sharing > Options, re-enter the password, "
+        "then re-run with --recreate."
+    ),
+    "0xc000006e": (
+        "STATUS_ACCOUNT_RESTRICTION: the account is refused for this logon type "
+        "(this is what a disabled guest account returns)."
+    ),
+    "0xc00000cc": (
+        "STATUS_BAD_NETWORK_NAME: the share name in device=//HOST/SHARE is wrong."
+    ),
+}
 LOCK_REMINDER = (
     "Per-worktree run locks are released by the runner's EXIT trap; a stale one is "
     "removed with: rmdir <worktree>/.tmp/remote-run.lock"
@@ -266,12 +283,98 @@ def format_status(inspect_output: str, container_output: str) -> str:
     return "\n".join(lines)
 
 
+def build_verify_probe_argv(
+    *, remote: str, volume: str, image: str = PROBE_IMAGE
+) -> list[str]:
+    """Build the read-only probe that proves the volume actually mounts.
+
+    >>> build_verify_probe_argv(remote="h", volume="v")[3:8]
+    ['run', '--rm', '--mount', 'type=volume,src=v,dst=/probe,readonly', 'alpine']
+    """
+    return [
+        "docker",
+        "-H",
+        f"ssh://{remote}",
+        "run",
+        "--rm",
+        "--mount",
+        f"type=volume,src={volume},dst=/probe,readonly",
+        image,
+        "sh",
+        "-c",
+        PROBE_COMMAND,
+    ]
+
+
+def build_kernel_status_argv(*, remote: str, image: str = PROBE_IMAGE) -> list[str]:
+    """Build the privileged dmesg read that names the real CIFS failure.
+
+    ``permission denied`` from mount(2) is the same string for a wrong password,
+    a disabled guest account and a wrong share name; only the kernel's status
+    code separates them.
+
+    >>> build_kernel_status_argv(remote="h")[3:6]
+    ['run', '--rm', '--privileged']
+    """
+    return [
+        "docker",
+        "-H",
+        f"ssh://{remote}",
+        "run",
+        "--rm",
+        "--privileged",
+        image,
+        "sh",
+        "-c",
+        KERNEL_STATUS_COMMAND,
+    ]
+
+
+def password_rejection_reason(password: str) -> str | None:
+    """Reject passwords that cannot survive the cifs option encoding.
+
+    The ``o=`` value is a comma-separated list, so an embedded comma silently
+    truncates or mis-parses the option string.
+
+    >>> password_rejection_reason("good-pw") is None
+    True
+    >>> password_rejection_reason("a,b")
+    'the SMB password contains a comma, which cifs mount options cannot encode'
+    """
+    if "," in password:
+        return "the SMB password contains a comma, which cifs mount options cannot encode"
+    return None
+
+
+def explain_status_code(line: str) -> str:
+    """Translate a kernel CIFS status line into an actionable sentence.
+
+    >>> explain_status_code("CIFS: Status code returned 0xc000006d NT_STATUS_LOGON_FAILURE")
+    'STATUS_LOGON_FAILURE: the password (or its NT hash) does not match. Re-tick the account under File Sharing > Options, re-enter the password, then re-run with --recreate.'
+    >>> explain_status_code("nothing recognisable")
+    'no known CIFS status code in the kernel log line'
+    """
+    lowered = line.lower()
+    for code, meaning in STATUS_CODE_MEANINGS.items():
+        if code in lowered:
+            return meaning
+    return "no known CIFS status code in the kernel log line"
+
+
 def run_capture(argv: Sequence[str]) -> tuple[int, str]:
     """Run a docker command and capture stdout (impure seam for tests)."""
     completed = subprocess.run(
         list(argv), capture_output=True, text=True, check=False
     )
     return completed.returncode, completed.stdout
+
+
+def run_probe(argv: Sequence[str]) -> tuple[int, str]:
+    """Run a probe container, merging stderr (the daemon error lands there)."""
+    completed = subprocess.run(
+        list(argv), capture_output=True, text=True, check=False
+    )
+    return completed.returncode, (completed.stdout or "") + (completed.stderr or "")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -305,11 +408,45 @@ def build_parser() -> argparse.ArgumentParser:
         help="with --remove: also `docker rm -f` containers that still reference the volume",
     )
     parser.add_argument(
+        "--no-verify",
+        action="store_true",
+        help="skip the read-only mount probe that verifies a created volume",
+    )
+    parser.add_argument(
+        "--image",
+        default=PROBE_IMAGE,
+        help=f"image used for the mount/dmesg probes (default: {PROBE_IMAGE})",
+    )
+    parser.add_argument(
         "--recreate",
         action="store_true",
         help="remove an existing volume before creating it (create mode refuses otherwise)",
     )
     return parser
+
+
+def _verify_mount(arguments: argparse.Namespace) -> int:
+    """Prove the volume mounts; on failure name the CIFS status code."""
+    probe_argv = build_verify_probe_argv(
+        remote=arguments.remote, volume=arguments.volume, image=arguments.image
+    )
+    status, output = run_probe(probe_argv)
+    if status == 0:
+        print(f"mount-ok: volume {arguments.volume} mounts on ssh://{arguments.remote}")
+        return 0
+    print(f"ERROR: volume {arguments.volume} does not mount:", file=sys.stderr)
+    for line in output.strip().splitlines():
+        print(f"       {line}", file=sys.stderr)
+    _, kernel_output = run_probe(
+        build_kernel_status_argv(remote=arguments.remote, image=arguments.image)
+    )
+    kernel_lines = [line.strip() for line in kernel_output.splitlines() if line.strip()]
+    if kernel_lines:
+        print(f"       kernel: {kernel_lines[-1]}", file=sys.stderr)
+        print(f"       meaning: {explain_status_code(kernel_lines[-1])}", file=sys.stderr)
+    else:
+        print("       kernel: no CIFS status line found in the engine's dmesg", file=sys.stderr)
+    return 1
 
 
 def _status(arguments: argparse.Namespace) -> int:
@@ -320,6 +457,16 @@ def _status(arguments: argparse.Namespace) -> int:
     if arguments.dry_run:
         print(" ".join(inspect_argv))
         print(" ".join(containers_argv))
+        if not arguments.no_verify:
+            print(
+                " ".join(
+                    build_verify_probe_argv(
+                        remote=arguments.remote,
+                        volume=arguments.volume,
+                        image=arguments.image,
+                    )
+                )
+            )
         return 0
     status, inspect_output = run_capture(inspect_argv)
     if status != 0:
@@ -327,7 +474,10 @@ def _status(arguments: argparse.Namespace) -> int:
         return 1
     _, container_output = run_capture(containers_argv)
     print(format_status(inspect_output, container_output))
-    return 0
+    if arguments.no_verify:
+        return 0
+    # Read-only and non-destructive: --status never removes anything.
+    return _verify_mount(arguments)
 
 
 def _remove(arguments: argparse.Namespace) -> int:
@@ -423,6 +573,10 @@ def _create(arguments: argparse.Namespace) -> int:
         except (EOFError, KeyboardInterrupt):
             print("ERROR: no SMB password was entered", file=sys.stderr)
             return 1
+        rejection = password_rejection_reason(password)
+        if rejection is not None:
+            print(f"ERROR: {rejection}", file=sys.stderr)
+            return 1
         options = build_mount_options(
             password,
             share=arguments.share,
@@ -437,6 +591,16 @@ def _create(arguments: argparse.Namespace) -> int:
         printable = " ".join(redact_argv(command, password))
         print(printable)
         if arguments.dry_run:
+            if not arguments.no_verify:
+                print(
+                    " ".join(
+                        build_verify_probe_argv(
+                            remote=arguments.remote,
+                            volume=arguments.volume,
+                            image=arguments.image,
+                        )
+                    )
+                )
             return 0
         try:
             subprocess.run(command, check=True)
@@ -453,6 +617,21 @@ def _create(arguments: argparse.Namespace) -> int:
             f"created volume {arguments.volume} on ssh://{arguments.remote}; "
             f"the password is visible to `docker volume inspect {arguments.volume}` there"
         )
+        if arguments.no_verify:
+            print("verification skipped (--no-verify); the credential is unproven")
+            return 0
+        if _verify_mount(arguments) != 0:
+            run_capture(
+                build_remove_volume_argv(
+                    remote=arguments.remote, volume=arguments.volume
+                )
+            )
+            print(
+                f"removed volume {arguments.volume} again so an unusable credential "
+                "is not left persisted on the remote host",
+                file=sys.stderr,
+            )
+            return 1
         return 0
     finally:
         password = ""
