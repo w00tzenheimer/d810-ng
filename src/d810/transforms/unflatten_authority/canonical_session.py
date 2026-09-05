@@ -104,7 +104,12 @@ import json
 import os
 import sys
 
-from d810.core.runtime_identity import RuntimeAuthorityArena, RuntimeAuthorityScope
+from d810.core.runtime_identity import (
+    RuntimeAuthorityArena,
+    RuntimeAuthorityKind,
+    RuntimeAuthorityRef,
+    RuntimeAuthorityScope,
+)
 
 _COUNTER_NAMES: tuple[str, ...] = (
     "deep_validations",
@@ -251,6 +256,7 @@ class CanonicalValidationSession:
     __slots__ = (
         "_phase", "_ledger", "_closed", "_bytes_cache", "_content_id_cache",
         "_inventory_seals", "_trust_sealed", "_route_arena", "_runtime_bindings",
+        "_interned_refs",
     )
 
     def __init__(
@@ -273,6 +279,7 @@ class CanonicalValidationSession:
             RuntimeAuthorityScope(f"unflatten-authority-transaction:{phase.value}")
         )
         self._runtime_bindings: dict[int, tuple[object, object]] = {}
+        self._interned_refs: dict[tuple[RuntimeAuthorityKind, object], RuntimeAuthorityRef] = {}
 
     @property
     def phase(self) -> CanonicalSessionPhase:
@@ -469,12 +476,44 @@ class CanonicalValidationSession:
             raise TypeError("a runtime binding must be an object, not None")
         self._runtime_bindings[id(value)] = (value, binding)
 
+    def interned_ref(
+        self, key: object, kind: RuntimeAuthorityKind, record: object,
+    ) -> RuntimeAuthorityRef:
+        """Return the one reference this session names ``key`` by.
+
+        Some authority records are *reconstructed* rather than passed around:
+        the transaction builds the same semantic subject from an inventory,
+        from a claim member and from a catalog witness, and every one of those
+        occurrences is the same subject.  Minting a fresh reference per
+        construction would make them three unequal authorities for one thing,
+        which is not a stricter join -- it is a broken one.
+
+        So the mint is interned on the record's canonical key, once per
+        session.  What that buys is scope, not content strictness: inside one
+        session a reference answers exactly what the canonical key answers,
+        and *across* sessions -- the projected preparation and the observed
+        revalidation are always two -- the references are unequal by
+        construction, so an ordinal from one phase can never be read as an
+        ordinal from the other.
+        """
+
+        self._require_open()
+        if type(kind) is not RuntimeAuthorityKind:
+            raise TypeError("an interned reference requires a runtime authority kind")
+        cached = self._interned_refs.get((kind, key))
+        if cached is not None:
+            return cached
+        ref = self._route_arena.mint(kind, record)
+        self._interned_refs[(kind, key)] = ref
+        return ref
+
     def _close(self) -> None:
         self._closed = True
         # The arena is the session's, so it ends with the session: a record
         # that leaves this transaction carries canonical fingerprints and no
         # authority to be joined on outside the phase that minted it.
         self._runtime_bindings.clear()
+        self._interned_refs.clear()
         self._route_arena.close()
 
 

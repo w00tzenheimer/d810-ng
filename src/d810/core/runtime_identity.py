@@ -53,10 +53,20 @@ skip it cannot drift apart: it is a member of
 """
 
 
+RUNTIME_SUBJECT_SIDECAR_FIELD = "_runtime_ref"
+"""Name of the sidecar slot a semantic subject carries its reference in.
+
+Named once, here, for the same reason as
+``RUNTIME_CLAIM_SIDECAR_FIELD``: the factory that writes the slot and the
+walkers that skip it must not drift apart.
+"""
+
+
 RUNTIME_AUTHORITY_SIDECAR_FIELDS = frozenset({
     "_runtime_identity",
     "_runtime_binding",
     RUNTIME_CLAIM_SIDECAR_FIELD,
+    RUNTIME_SUBJECT_SIDECAR_FIELD,
 })
 """Closed set of private dataclass fields that carry live runtime authority.
 
@@ -66,11 +76,12 @@ schema -- absent from ``ids._RECORD_FIELDS``, from the wire encoding and from
 the record's equality -- because a live process-local authority is not
 content and cannot be serialized, detached or hashed.
 
-Three names are in it: ``_runtime_identity`` (the minting scope of an
+Four names are in it: ``_runtime_identity`` (the minting scope of an
 internally produced route bundle), ``_runtime_binding`` (the arena that is the
-join authority for that bundle) and ``_runtime_refs`` (the references a record
+join authority for that bundle), ``_runtime_refs`` (the references a record
 minted *from* a bundle -- a claim -- carries so a join need not read its
-content ID).
+content ID) and ``_runtime_ref`` (the single reference a semantic subject
+carries, minted by the transaction session that constructed it).
 
 **Generic walkers enumerate ``dataclasses.fields`` rather than the schema, so
 they see these fields anyway, and the codebase skips them by two different
@@ -515,6 +526,7 @@ __all__ = [
     "RUNTIME_AUTHORITY_ID_PREFIX",
     "RUNTIME_AUTHORITY_SIDECAR_FIELDS",
     "RUNTIME_CLAIM_SIDECAR_FIELD",
+    "RUNTIME_SUBJECT_SIDECAR_FIELD",
     "RuntimeAuthorityArena",
     "RuntimeAuthorityArenaError",
     "RuntimeAuthorityKind",

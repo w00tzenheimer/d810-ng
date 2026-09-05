@@ -22,7 +22,11 @@ from d810.analyses.control_flow.logical_route_endpoint import (
     is_exact_logical_function_exit_inventory_row_shape,
 )
 from d810.core.native_preanalysis_key import NativePreanalysisKey
-from d810.core.runtime_identity import RUNTIME_AUTHORITY_SIDECAR_FIELDS
+from d810.core.runtime_identity import (
+    RUNTIME_AUTHORITY_SIDECAR_FIELDS,
+    RuntimeAuthorityKind,
+    RuntimeAuthorityRef,
+)
 from d810.ir.block_identity import NativeEaInterval, NativeEaIntervalSet, StableBlockIdentity
 from d810.core.typing import Literal, Protocol, TypeAlias, runtime_checkable
 from d810.ir.semantic_edge import SemanticEdgeRole
@@ -2156,6 +2160,28 @@ class SemanticSubjectRef:
     block_ref: CfgBlockRef | None
     anchor_ea: int | None
     locator: SemanticSubjectLocator
+    # Private, and therefore outside the canonical wire schema: the reference
+    # the transaction session that constructed this subject names it by.
+    # ``subject_id`` stays exactly the content fingerprint it was; this is the
+    # *join authority*, it belongs to one live arena, and it is never encoded,
+    # compared or repr'd.  A subject the producer built -- there is no session
+    # during the emission -- and a decoded subject both arrive without it, on
+    # purpose, and must be refused at a runtime join.
+    _runtime_ref: RuntimeAuthorityRef | None = dataclass_field(
+        default=None, compare=False, repr=False,
+    )
+
+    @property
+    def runtime_ref(self) -> "RuntimeAuthorityRef | None":
+        """Return the transaction reference for this subject, if it has one.
+
+        Read with a default for the same reason as
+        ``EquivalentSemanticRouteClaim.runtime_refs``: a detached canonical
+        copy is rebuilt field by field and deliberately never sets a private
+        slot.  ``None`` means *unbound*, which every runtime join must refuse.
+        """
+
+        return getattr(self, "_runtime_ref", None)
 
     def __post_init__(self) -> None:
         _enum(self.kind, SemanticSubjectKind, "kind")
@@ -2183,6 +2209,16 @@ class SemanticSubjectRef:
             raise ValueError("subject primary owner must match locator")
         if self.subject_id != _subject_id_from_record(self):
             raise ValueError("subject_id does not match canonical subject content")
+        # O(1), and deliberately here: the sidecar is part of the record's
+        # completeness, so it is checked while the record seals rather than
+        # trusted afterwards.  A factory that attached it after this ran would
+        # be mutating a sealed record, and this check would never see it.
+        runtime_ref = getattr(self, "_runtime_ref", None)
+        if runtime_ref is not None and (
+            type(runtime_ref) is not RuntimeAuthorityRef
+            or runtime_ref.kind is not RuntimeAuthorityKind.SUBJECT
+        ):
+            raise TypeError("semantic subject runtime ref must be a subject reference")
 
 
 @dataclass(frozen=True, slots=True)

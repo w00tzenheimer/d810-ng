@@ -10,7 +10,7 @@ boundary instead of escaping.
 
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import fields, replace
 
 import pytest
 
@@ -31,6 +31,8 @@ from d810.analyses.control_flow.semantic_route_evidence import (
     runtime_semantic_route_scope,
 )
 from d810.core.runtime_identity import (
+    RUNTIME_AUTHORITY_SIDECAR_FIELDS,
+    RUNTIME_SUBJECT_SIDECAR_FIELD,
     RuntimeAuthorityArena,
     RuntimeAuthorityKind,
     RuntimeJoinRejected,
@@ -43,8 +45,12 @@ from d810.transforms.unflatten_authority.canonical_session import (
     CanonicalValidationSession,
     _canonical_validation_session,
 )
+from d810.transforms.unflatten_authority import bind
+from d810.transforms.unflatten_authority import ids as authority_ids
 from d810.transforms.unflatten_authority.runtime_authority import (
+    TransactionSubjectRecord,
     rebind_route_evidence,
+    subject_join_ref,
     transaction_authority_session,
     transaction_route_arena,
     transaction_route_binding,
@@ -54,7 +60,7 @@ from d810.analyses.control_flow.graph_checks import (
     check_entry_reachability_not_collapsed,
     check_terminal_reachability_preserved,
 )
-from d810.transforms.cfg_transaction import CfgProjection
+from d810.transforms.cfg_transaction import CfgProjection, PlanBlockRef
 from d810.transforms.unflatten_authority import model, transaction_api
 from d810.transforms.unflatten_authority.gates import GenericCfgGateBundle
 from tests.native_preanalysis import make_native_key
@@ -392,3 +398,198 @@ def test_a_refused_rebind_rejects_the_transaction_instead_of_escaping(
         is model.UnflattenAuthorityReason.PROJECTED_BINDING_FAILED
     )
     assert isinstance(RuntimeJoinRejected("x"), ValueError)
+
+
+def _subject(block_ref: PlanBlockRef, anchor_ea: int):
+    return authority_ids._subject_factory(
+        model.SemanticSubjectRef,
+        kind=model.SemanticSubjectKind.BLOCK,
+        role=model.SemanticSubjectRole.PLANNED_HELPER,
+        block_ref=block_ref,
+        anchor_ea=anchor_ea,
+        locator=model.BlockSubjectLocator(block_ref, anchor_ea),
+    )
+
+
+SUBJECT_REF = PlanBlockRef("sha256:" + "1" * 64, "helper")
+
+
+def test_a_subject_minted_in_a_transaction_carries_that_transactions_reference() -> None:
+    with _canonical_validation_session(
+        CanonicalSessionPhase.PROJECTED_PREPARATION,
+    ) as session:
+        subject = _subject(SUBJECT_REF, 0x1200)
+
+        ref = subject_join_ref(subject)
+
+        assert ref is subject.runtime_ref
+        assert ref.kind is RuntimeAuthorityKind.SUBJECT
+        assert session.route_arena.owns(ref)
+        assert session.route_arena.get(ref).subject_id == subject.subject_id
+
+
+def test_the_same_subject_reconstructed_in_one_session_gets_one_reference() -> None:
+    """A subject is rebuilt from several sources; all of them are one subject.
+
+    The transaction constructs the same semantic subject from an inventory,
+    from a claim member and from a catalog witness.  Minting per construction
+    would make one subject three unequal authorities, which is not a stricter
+    join but a broken one, so the mint is interned on the canonical id.
+    """
+
+    with _canonical_validation_session(CanonicalSessionPhase.PROJECTED_PREPARATION):
+        first = _subject(SUBJECT_REF, 0x1200)
+        second = _subject(SUBJECT_REF, 0x1200)
+        other = _subject(PlanBlockRef("sha256:" + "1" * 64, "other"), 0x1300)
+
+        assert first is not second
+        assert first.subject_id == second.subject_id
+        assert subject_join_ref(first) is subject_join_ref(second)
+        assert subject_join_ref(other) is not subject_join_ref(first)
+
+
+def test_a_producer_built_subject_is_unbound_and_refused_at_a_join() -> None:
+    """The emission builds subjects with no session; they carry no authority."""
+
+    from_producer = _subject(SUBJECT_REF, 0x1200)
+
+    assert from_producer.runtime_ref is None
+
+    with _canonical_validation_session(CanonicalSessionPhase.PROJECTED_PREPARATION):
+        with pytest.raises(RuntimeJoinRejected, match="was not minted by this"):
+            subject_join_ref(from_producer)
+
+
+def test_a_subject_minted_by_another_session_is_refused() -> None:
+    with _canonical_validation_session(CanonicalSessionPhase.PROJECTED_PREPARATION):
+        projected = _subject(SUBJECT_REF, 0x1200)
+        assert subject_join_ref(projected) is projected.runtime_ref
+
+    with _canonical_validation_session(CanonicalSessionPhase.OBSERVED_REVALIDATION):
+        observed = _subject(SUBJECT_REF, 0x1200)
+
+        assert observed == projected
+        assert observed.runtime_ref is not projected.runtime_ref
+        with pytest.raises(RuntimeJoinRejected, match="another transaction session"):
+            subject_join_ref(projected)
+
+
+def test_the_subject_sidecar_is_written_before_the_record_seals(monkeypatch) -> None:
+    """The lifecycle invariant, observed from inside the seal."""
+
+    observed: list[object] = []
+    original = model.SemanticSubjectRef.__post_init__
+
+    def spy(self) -> None:
+        observed.append(getattr(self, "_runtime_ref", "<unwritten>"))
+        original(self)
+
+    monkeypatch.setattr(model.SemanticSubjectRef, "__post_init__", spy)
+
+    with _canonical_validation_session(CanonicalSessionPhase.PROJECTED_PREPARATION):
+        bound = _subject(SUBJECT_REF, 0x1200)
+    unbound = _subject(SUBJECT_REF, 0x1200)
+
+    assert observed == [bound.runtime_ref, None]
+    assert observed[0] is not None
+
+
+def test_a_subject_sidecar_of_the_wrong_kind_is_a_construction_error() -> None:
+    """The behavioural half: the check can only fire from inside the seal."""
+
+    with _canonical_validation_session(
+        CanonicalSessionPhase.PROJECTED_PREPARATION,
+    ) as session:
+        foreign = session.route_arena.mint(
+            RuntimeAuthorityKind.CLAIM, TransactionSubjectRecord("sha256:" + "0" * 64),
+        )
+        with pytest.raises(TypeError, match="must be a subject reference"):
+            model.SemanticSubjectRef(
+                kind=model.SemanticSubjectKind.BLOCK,
+                role=model.SemanticSubjectRole.PLANNED_HELPER,
+                subject_id=authority_ids.subject_id(
+                    model.SemanticSubjectKind.BLOCK,
+                    model.SemanticSubjectRole.PLANNED_HELPER,
+                    model.BlockSubjectLocator(SUBJECT_REF, 0x1200),
+                ),
+                block_ref=SUBJECT_REF,
+                anchor_ea=0x1200,
+                locator=model.BlockSubjectLocator(SUBJECT_REF, 0x1200),
+                _runtime_ref=foreign,
+            )
+
+
+def test_the_subject_sidecar_moves_no_canonical_byte_and_no_content_id() -> None:
+    """Content and authority stay separate: same bytes, same ID, same value."""
+
+    with _canonical_validation_session(CanonicalSessionPhase.PROJECTED_PREPARATION):
+        bound = _subject(SUBJECT_REF, 0x1200)
+    unbound = _subject(SUBJECT_REF, 0x1200)
+
+    assert bound.runtime_ref is not None
+    assert unbound.runtime_ref is None
+    assert bound == unbound
+    assert bound.subject_id == unbound.subject_id
+    assert authority_ids.canonical_bytes(bound) == authority_ids.canonical_bytes(
+        unbound
+    )
+    assert authority_ids.canonical_bytes(
+        (bound, unbound)
+    ) == authority_ids.canonical_bytes((unbound, unbound))
+    assert "_runtime_ref" not in repr(bound)
+
+
+def test_a_persisted_subject_decodes_unbound() -> None:
+    with _canonical_validation_session(CanonicalSessionPhase.PROJECTED_PREPARATION):
+        bound = _subject(SUBJECT_REF, 0x1200)
+
+        decoded = authority_ids.canonical_decode(authority_ids.canonical_bytes(bound))
+
+        assert decoded == bound
+        assert decoded.runtime_ref is None
+        assert (
+            authority_ids.validate_canonical_roundtrip(
+                bound, model.SemanticSubjectRef,
+            )
+            == bound
+        )
+
+
+def test_the_subject_sidecar_is_in_the_closed_set_and_outside_the_schema() -> None:
+    assert RUNTIME_SUBJECT_SIDECAR_FIELD in RUNTIME_AUTHORITY_SIDECAR_FIELDS
+    assert RUNTIME_SUBJECT_SIDECAR_FIELD == "_runtime_ref"
+    assert RUNTIME_SUBJECT_SIDECAR_FIELD not in authority_ids._RECORD_FIELDS[
+        model.SemanticSubjectRef
+    ]
+    assert all(
+        field.compare is False and field.repr is False
+        for field in fields(model.SemanticSubjectRef)
+        if field.name == RUNTIME_SUBJECT_SIDECAR_FIELD
+    )
+
+
+def test_the_generic_walkers_tolerate_a_detached_subject() -> None:
+    """A detached copy leaves the slot *unwritten*, not ``None``.
+
+    ``_detached_canonical_copy`` rebuilds a record from its canonical schema
+    only, so on a ``slots=True`` record the sidecar slot does not exist at
+    all.  Every reader must therefore go through the property, which reads it
+    with a default; a bare ``getattr`` would raise on exactly the shape
+    detaching produces.
+    """
+
+    with _canonical_validation_session(CanonicalSessionPhase.PROJECTED_PREPARATION):
+        bound = _subject(SUBJECT_REF, 0x1200)
+
+    detached = bind._detached_canonical_copy(bound, {})
+
+    with pytest.raises(AttributeError):
+        object.__getattribute__(detached, RUNTIME_SUBJECT_SIDECAR_FIELD)
+    assert detached.runtime_ref is None
+    assert detached == bound
+    assert authority_ids.canonical_bytes(detached) == authority_ids.canonical_bytes(
+        bound
+    )
+    assert bind._registry_structural_snapshot(
+        detached
+    ) == bind._registry_structural_snapshot(bound)

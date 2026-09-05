@@ -24,18 +24,50 @@ field by field, or simply never handed to the seam -- is refused with
 through the transaction's existing ``except (TypeError, ValueError)`` boundary
 and becomes a rejected verdict rather than an exception escaping into a
 decompilation.
+
+Semantic subjects take the same seam by a different route.  A subject is not
+handed across as one bundle: the transaction *reconstructs* the same subject
+from an inventory, from a claim member and from a catalog witness, so its
+reference is interned on the canonical ``subject_id`` once per session
+(:func:`transaction_subject_ref`) and written into the record at construction,
+before it seals.  A subject the producer built carries none -- there is no
+session during the emission -- and :func:`subject_join_ref` refuses it rather
+than inventing one.
 """
 
 from __future__ import annotations
+
+from dataclasses import dataclass
 
 from d810.analyses.control_flow.semantic_route_evidence import (
     CanonicalSemanticEvidence,
     RouteAuthorityBinding,
     rebind_route_authority,
 )
-from d810.core.runtime_identity import RuntimeAuthorityArena, RuntimeJoinRejected
+from d810.core.runtime_identity import (
+    RUNTIME_SUBJECT_SIDECAR_FIELD,
+    RuntimeAuthorityArena,
+    RuntimeAuthorityKind,
+    RuntimeAuthorityRef,
+    RuntimeJoinRejected,
+)
 
 from .canonical_session import CanonicalValidationSession, active_canonical_session
+
+
+@dataclass(frozen=True, slots=True)
+class TransactionSubjectRecord:
+    """The immutable record one subject reference names inside a session.
+
+    A reference names a record, and a semantic subject is *identified* by its
+    canonical ``subject_id`` -- a fingerprint of ``(kind, role, locator)``.
+    That fingerprint is therefore what the arena stores: it is complete before
+    the mint, it is never touched again, and it keeps the arena free of a
+    strong reference to the subject record itself, so nothing here can keep a
+    record graph alive past the session.
+    """
+
+    subject_id: str
 
 
 def transaction_authority_session() -> CanonicalValidationSession:
@@ -118,9 +150,66 @@ def transaction_route_binding(
     return binding
 
 
+def transaction_subject_ref(subject_id: str) -> RuntimeAuthorityRef | None:
+    """Return the reference this transaction names ``subject_id`` by, if any.
+
+    ``None`` is the honest answer outside a transaction session, and it is the
+    normal answer: the producer builds semantic subjects too -- inside the
+    unflatten emission, where no canonical validation session exists -- and
+    those subjects legitimately carry no transaction authority.  They are
+    values crossing a seam, exactly like a decoded record, and a join must
+    refuse them rather than invent an authority for them.
+    """
+
+    if type(subject_id) is not str:
+        raise TypeError("a subject reference requires an exact subject id")
+    session = active_canonical_session()
+    if session is None or session.closed:
+        return None
+    return session.interned_ref(
+        subject_id,
+        RuntimeAuthorityKind.SUBJECT,
+        TransactionSubjectRecord(subject_id),
+    )
+
+
+def subject_join_ref(subject: object) -> RuntimeAuthorityRef:
+    """Return the runtime authority of ``subject``, or refuse the join.
+
+    This is the only way a join reaches a subject's reference.  A subject
+    constructed outside a transaction session -- every subject the producer
+    put into the proposal -- carries none and is refused here, rather than
+    being silently compared by content by whichever join saw it first.
+
+    The parameter is untyped on purpose: this module sits *below*
+    ``model`` in the package's import order (``model`` -> ``ids`` -> here), so
+    it cannot name ``SemanticSubjectRef``.  It does not need to: the slot
+    either holds a subject reference or the value is not one, and both are
+    checked.
+    """
+
+    ref = getattr(subject, RUNTIME_SUBJECT_SIDECAR_FIELD, None)
+    if ref is None:
+        raise RuntimeJoinRejected(
+            "semantic subject was not minted by this transaction and carries "
+            "no runtime authority; it can only be compared by content"
+        )
+    if type(ref) is not RuntimeAuthorityRef or ref.kind is not RuntimeAuthorityKind.SUBJECT:
+        raise TypeError("semantic subject sidecar is not a subject reference")
+    session = transaction_authority_session()
+    if not session.route_arena.owns(ref):
+        raise RuntimeJoinRejected(
+            "semantic subject was minted by another transaction session"
+        )
+    return ref
+
+
 __all__ = [
+    "TransactionSubjectRecord",
     "rebind_route_evidence",
+    "subject_join_ref",
     "transaction_authority_session",
     "transaction_route_arena",
     "transaction_route_binding",
+    "transaction_subject_ref",
 ]

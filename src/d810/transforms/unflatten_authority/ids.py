@@ -19,7 +19,10 @@ from d810.ir.flowgraph import (
     InsnKind,
     OperandKind,
 )
-from d810.core.runtime_identity import RUNTIME_CLAIM_SIDECAR_FIELD
+from d810.core.runtime_identity import (
+    RUNTIME_CLAIM_SIDECAR_FIELD,
+    RUNTIME_SUBJECT_SIDECAR_FIELD,
+)
 from d810.ir.expressions import ValueOpKind
 from d810.ir.semantics import CallKind, ControlTransferKind, PredicateKind
 from d810.transforms.cfg_transaction import TransactionAttemptId
@@ -32,6 +35,7 @@ from d810.ir.graph_fingerprint import (
     portable_graph_fingerprint_values,
     portable_graph_projection,
 )
+from .runtime_authority import transaction_subject_ref
 from .canonical_session import (
     active_canonical_session,
     record_bytes_lookup,
@@ -1981,13 +1985,34 @@ def _subject_id_from_record(value: object) -> str:
 
 
 def _subject_factory(cls: type[object], **kwargs: object) -> object:
+    """Mint one semantic subject, carrying this transaction's reference for it.
+
+    The runtime sidecar is filled in here, from the active canonical
+    validation session, and is passed to ``cls(**kwargs)`` as an ordinary
+    keyword: the generated ``__init__`` assigns every field -- the sidecar
+    included -- *before* it calls ``__post_init__``, so the record is complete
+    when it seals.  That ordering is the lifecycle invariant, not a style
+    choice: attaching authority to an already-sealed record would be a
+    post-seal mutation its own validation could never see.
+
+    Outside a transaction session the reference is ``None``.  That is the
+    producer's normal case, not an error -- the emission builds subjects too
+    -- and it makes such a subject fail closed at a transaction join instead
+    of acquiring an authority no scope ever granted it.
+
+    ``subject_id`` is minted exactly as before and stays a non-authoritative
+    content fingerprint.
+    """
+
     _ensure_registries()
     if cls is not _SUBJECT_TYPE:
         raise TypeError("subject factory requires SemanticSubjectRef")
     required = {"kind", "role", "block_ref", "anchor_ea", "locator"}
     if set(kwargs) != required:
         raise TypeError("subject factory requires exactly the subject fields")
-    kwargs["subject_id"] = subject_id(kwargs["kind"], kwargs["role"], kwargs["locator"])
+    minted = subject_id(kwargs["kind"], kwargs["role"], kwargs["locator"])
+    kwargs["subject_id"] = minted
+    kwargs[RUNTIME_SUBJECT_SIDECAR_FIELD] = transaction_subject_ref(minted)
     return cls(**kwargs)
 
 
