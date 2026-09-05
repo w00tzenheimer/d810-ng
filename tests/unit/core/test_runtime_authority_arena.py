@@ -7,11 +7,13 @@ import dataclasses
 import pytest
 
 from d810.core.runtime_identity import (
+    RUNTIME_AUTHORITY_SIDECAR_FIELDS,
     RuntimeAuthorityArena,
     RuntimeAuthorityArenaError,
     RuntimeAuthorityKind,
     RuntimeAuthorityRef,
     RuntimeAuthorityScope,
+    RuntimeJoinRejected,
 )
 from d810.core.typing import NamedTuple
 from d810.transforms.unflatten_authority.ids import canonical_bytes
@@ -244,3 +246,50 @@ def test_arena_exposes_its_scope_without_taking_it_over() -> None:
     assert arena.namespace == "0x1400:g3"
     assert scope.identity(ref) == "runtime:0x1400:g3#route_group000001"
     assert "0x1400:g3" in repr(arena)
+
+
+def test_a_join_rejection_is_a_value_error_and_an_arena_error_is_not() -> None:
+    """The two exceptions answer different questions and travel differently.
+
+    A join rejection says the *input* to a correlation is not admissible, and
+    the pipeline's graceful-abstention contract is ``except (TypeError,
+    ValueError)`` -- so it must be a ``ValueError`` or every handler that was
+    written to decline a bad producer input would instead let it abort a
+    decompilation.  The arena's own error is an internal failure of an
+    authority lookup and is deliberately not in that hierarchy: every holder
+    of an arena translates it at its own boundary rather than letting it
+    escape.
+    """
+
+    assert issubclass(RuntimeJoinRejected, ValueError)
+    assert not issubclass(RuntimeJoinRejected, RuntimeError)
+    assert issubclass(RuntimeAuthorityArenaError, RuntimeError)
+    assert not issubclass(RuntimeAuthorityArenaError, ValueError)
+
+    with pytest.raises(ValueError):
+        raise RuntimeJoinRejected("a join refusal is a value error")
+
+
+def test_the_sidecar_field_set_is_closed_and_names_private_fields_only() -> None:
+    """Generic record-graph walkers key on this set; it must stay a closed set."""
+
+    assert type(RUNTIME_AUTHORITY_SIDECAR_FIELDS) is frozenset
+    assert RUNTIME_AUTHORITY_SIDECAR_FIELDS == {
+        "_runtime_identity", "_runtime_binding",
+    }
+    assert all(name.startswith("_") for name in RUNTIME_AUTHORITY_SIDECAR_FIELDS)
+
+
+def test_an_arena_is_reusable_only_until_its_owner_closes_it() -> None:
+    """The closed branch is the one an owner makes reachable in production."""
+
+    arena = RuntimeAuthorityArena(RuntimeAuthorityScope("0x1400:g3"))
+    ref = arena.mint(RuntimeAuthorityKind.ROUTE_PROOF, _Record("proof"))
+    assert arena.get(ref).label == "proof"
+
+    arena.close()
+
+    with pytest.raises(RuntimeAuthorityArenaError, match="closed"):
+        arena.get(ref)
+    arena.close()  # idempotent: an owner may close twice
+    assert arena.is_closed

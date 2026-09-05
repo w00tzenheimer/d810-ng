@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator, Mapping
+import contextlib
+from contextvars import ContextVar
 from dataclasses import dataclass, field, fields, is_dataclass, replace
 from enum import Enum
 import hashlib
 import json
 from types import MappingProxyType
-from collections.abc import Mapping
 
 from d810.core.logging import getLogger
 from d810.core.native_preanalysis_key import NativePreanalysisKey
@@ -3567,6 +3569,116 @@ class RouteAuthorityBinding:
         return None
 
 
+class RouteAuthorityPhase:
+    """The lifecycle owner of every route arena opened while it is active.
+
+    An arena that nobody closes is not fail-closed, it is merely garbage
+    collected: its "closed" branch never runs, and it keeps a second strong
+    reference to every proof of every bundle produced under it for as long as
+    the bundle lives.  This is that owner.  It is opened by the phase that
+    produces route evidence, it closes every arena it opened when that phase
+    ends -- including when the phase ends by raising -- and after that every
+    join on a bundle it produced is refused rather than answered by a scope
+    that outlived its own analysis.
+
+    A bundle produced *outside* an active phase keeps the pre-existing
+    behaviour: its arena has no owner and dies with the bundle.  The phase
+    owns exactly what it opened, which is why ``close`` is safe to call at a
+    boundary that did not create every bundle it can see.
+    """
+
+    __slots__ = ("_arenas", "_closed", "_label")
+
+    def __init__(self, label: str) -> None:
+        normalized = str(label).strip()
+        if not normalized:
+            raise ValueError("route authority phase requires a label")
+        self._label = normalized
+        self._arenas: list[RuntimeAuthorityArena] = []
+        self._closed = False
+
+    @property
+    def label(self) -> str:
+        """Return the readable name of the phase that owns these arenas."""
+
+        return self._label
+
+    @property
+    def closed(self) -> bool:
+        """Return whether this phase has released the arenas it owned."""
+
+        return self._closed
+
+    def adopt(self, arena: RuntimeAuthorityArena) -> None:
+        """Take ownership of one arena opened while this phase is running."""
+
+        if type(arena) is not RuntimeAuthorityArena:
+            raise TypeError("route authority phase owns runtime authority arenas")
+        if self._closed:
+            raise RuntimeJoinRejected(
+                "route authority phase is closed and cannot own a new arena"
+            )
+        self._arenas.append(arena)
+
+    def close(self) -> None:
+        """Close every arena this phase owns.  Idempotent."""
+
+        self._closed = True
+        arenas, self._arenas = self._arenas, []
+        for arena in arenas:
+            arena.close()
+
+    def __len__(self) -> int:
+        """Return how many arenas this phase currently owns."""
+
+        return len(self._arenas)
+
+    def __repr__(self) -> str:
+        return (
+            f"RouteAuthorityPhase(label={self._label!r}, "
+            f"arenas={len(self._arenas)}, closed={self._closed})"
+        )
+
+
+_ACTIVE_ROUTE_AUTHORITY_PHASE: ContextVar[RouteAuthorityPhase | None] = ContextVar(
+    "d810_route_authority_phase", default=None,
+)
+
+
+def active_route_authority_phase() -> RouteAuthorityPhase | None:
+    """Return the phase owning route arenas in the current context, if any."""
+
+    return _ACTIVE_ROUTE_AUTHORITY_PHASE.get()
+
+
+@contextlib.contextmanager
+def route_authority_phase(label: str) -> Iterator[RouteAuthorityPhase]:
+    """Own, for the duration of one producer phase, the arenas it opens.
+
+    The context variable token is always reset and the phase is always closed,
+    so a phase that ends by raising cannot leak a live arena into the next
+    one.  Nesting is allowed: the innermost phase owns what is minted while it
+    runs, which is what a nested producer step wants.
+
+    >>> from d810.core.runtime_identity import RuntimeAuthorityArena
+    >>> with route_authority_phase("doctest") as phase:
+    ...     arena = RuntimeAuthorityArena(RuntimeAuthorityScope("ns"))
+    ...     phase.adopt(arena)
+    ...     arena.is_closed
+    False
+    >>> arena.is_closed
+    True
+    """
+
+    phase = RouteAuthorityPhase(label)
+    token = _ACTIVE_ROUTE_AUTHORITY_PHASE.set(phase)
+    try:
+        yield phase
+    finally:
+        _ACTIVE_ROUTE_AUTHORITY_PHASE.reset(token)
+        phase.close()
+
+
 def _mint_route_binding(
     arena: RuntimeAuthorityArena,
     *,
@@ -3579,6 +3691,11 @@ def _mint_route_binding(
 
     if type(arena) is not RuntimeAuthorityArena:
         raise TypeError("route binding requires a runtime authority arena")
+    phase = _ACTIVE_ROUTE_AUTHORITY_PHASE.get()
+    if phase is not None:
+        # Ownership is taken before anything is minted, so an arena can never
+        # be populated and then orphaned by a failure part way through.
+        phase.adopt(arena)
     try:
         group_ref = arena.mint(
             RuntimeAuthorityKind.ROUTE_GROUP,
@@ -9715,10 +9832,13 @@ __all__ = [
     "CanonicalSemanticEvidenceProductionStage",
     "canonical_semantic_evidence_from_proofs",
     "RouteAuthorityBinding",
+    "RouteAuthorityPhase",
     "RouteGroupRecord",
     "RuntimeRouteIdentity",
+    "active_route_authority_phase",
     "bind_route_evidence",
     "materialize_route_evidence",
+    "route_authority_phase",
     "route_join_binding",
     "runtime_semantic_evidence_from_proofs",
     "runtime_semantic_route_scope",

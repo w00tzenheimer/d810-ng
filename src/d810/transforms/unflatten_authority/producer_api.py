@@ -168,13 +168,19 @@ def bundle_route_proof_refs(
 
     A proof that is not the bundle's own record -- a forgery, a
     ``dataclasses.replace`` copy, a proof from a different bundle -- is
-    refused.  The arena's own refusal is translated into ``rejection`` here,
-    at this boundary, so callers keep catching ``ValueError`` and the arena's
-    exception type does not leak into the authority package.
+    refused.  So is an unbound bundle and one whose arena its owner has
+    closed.  All four are translated into ``rejection`` here, at this
+    boundary, so callers keep catching ``ValueError`` with the message this
+    package already uses and the arena's exception type does not leak into it.
+
+    Resolving the binding is *inside* the translation, not before it: an
+    unbound or closed bundle is exactly the case a caller most needs
+    translated, and leaving it outside would send the untranslated rejection
+    past every ``except ValueError`` in the package.
     """
 
-    binding = route_join_binding(evidence)
     try:
+        binding = route_join_binding(evidence)
         return tuple(binding.ref_for(proof) for proof in proofs)
     except RuntimeJoinRejected as exc:
         raise ValueError(rejection) from exc

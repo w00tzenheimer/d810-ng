@@ -200,7 +200,7 @@ class RuntimeAuthorityArenaError(RuntimeError):
     """
 
 
-class RuntimeJoinRejected(RuntimeError):
+class RuntimeJoinRejected(ValueError):
     """Fail-closed refusal of a runtime join.
 
     An arena raises :class:`RuntimeAuthorityArenaError` for *its* three
@@ -216,6 +216,19 @@ class RuntimeJoinRejected(RuntimeError):
       constructed record -- reaching a join without an explicit rebind;
     * a reference or a record belonging to a different arena;
     * a reference whose arena has been closed by its lifecycle owner.
+
+    **It derives from ``ValueError`` on purpose.**  Every one of those three is
+    a statement that the *input* to a join is not admissible, which is what a
+    ``ValueError`` means in this codebase, and the whole deobfuscation
+    pipeline's graceful-abstention contract is written as
+    ``except (TypeError, ValueError)``: the emitter converts such a failure
+    into "produce no plan" rather than into a crash inside a decompilation.
+    A ``RuntimeError`` would have travelled straight through every one of
+    those handlers, so a proof that is merely not this bundle's record would
+    abort the pass instead of declining it.
+
+    >>> issubclass(RuntimeJoinRejected, ValueError)
+    True
     """
 
 

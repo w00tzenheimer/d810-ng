@@ -14,6 +14,7 @@ import pytest
 
 import d810.transforms.unflatten_authority.bind as bind
 import d810.transforms.unflatten_authority.ids as authority_ids
+import d810.analyses.control_flow.semantic_route_evidence as route_evidence
 from d810.analyses.control_flow.semantic_route_evidence import (
     CanonicalSemanticEvidence,
     SemanticRouteDestination,
@@ -24,6 +25,8 @@ from d810.analyses.control_flow.semantic_route_evidence import (
     bind_route_evidence,
     canonical_semantic_evidence_from_proofs,
     materialize_route_evidence,
+    route_authority_phase,
+    route_join_binding,
     runtime_semantic_route_scope,
 )
 from d810.core.runtime_identity import (
@@ -146,7 +149,12 @@ def test_an_unbound_bundle_cannot_be_joined_at_all() -> None:
     evidence = _bundle()
     unbound = materialize_route_evidence(evidence)
 
+    # The binding accessor states the real reason...
     with pytest.raises(RuntimeJoinRejected, match="not bound"):
+        route_join_binding(unbound)
+    # ...and the package boundary reports it in the vocabulary its callers,
+    # including the emitter's abstention handler, already catch.
+    with pytest.raises(ValueError, match=REJECTION):
         bundle_route_proof_refs(
             unbound, unbound.route_proofs, rejection=REJECTION,
         )
@@ -254,3 +262,208 @@ def test_the_sidecar_skip_cannot_reach_a_canonical_field() -> None:
 
     assert not (canonical_names & RUNTIME_AUTHORITY_SIDECAR_FIELDS)
     assert not any(name.startswith("_") for name in canonical_names)
+
+
+def test_the_translation_boundary_covers_an_unbound_and_a_closed_bundle() -> None:
+    """Every join refusal leaves this function as the package's ``ValueError``.
+
+    Resolving the binding used to happen before the translating ``try``, so an
+    unbound or closed bundle raised past every ``except ValueError`` in the
+    package -- including the emitter's abstention handler.  All four refusals
+    are inside the boundary now.
+    """
+
+    evidence = _bundle()
+    unbound = materialize_route_evidence(evidence)
+
+    with pytest.raises(ValueError, match=REJECTION) as unbound_error:
+        bundle_route_proof_refs(
+            unbound, unbound.route_proofs, rejection=REJECTION,
+        )
+    assert type(unbound_error.value) is ValueError
+    assert isinstance(unbound_error.value.__cause__, RuntimeJoinRejected)
+
+    closed = _bundle()
+    proofs = closed.route_proofs
+    route_join_binding(closed).arena.close()
+
+    with pytest.raises(ValueError, match=REJECTION) as closed_error:
+        bundle_route_proof_refs(closed, proofs, rejection=REJECTION)
+    assert type(closed_error.value) is ValueError
+    assert isinstance(closed_error.value.__cause__, RuntimeJoinRejected)
+
+
+def test_a_phase_owns_its_arenas_and_closes_them_on_the_production_path() -> None:
+    """The arena has a lifecycle owner, so its closed branch is reachable.
+
+    Without an owner the arena's lifetime is garbage collection, its
+    fail-closed branch never runs outside tests, and every bundle holds a
+    second strong reference set to its own proofs for as long as it lives.
+    """
+
+    with route_authority_phase("unit-test-production") as phase:
+        evidence = _bundle()
+        assert len(phase) == 1
+        assert not phase.closed
+        # The production join works while the phase that produced it is running.
+        refs = bundle_route_proof_refs(
+            evidence, evidence.route_proofs, rejection=REJECTION,
+        )
+        assert len(refs) == len(evidence.route_proofs)
+        proofs = evidence.route_proofs
+
+    assert phase.closed
+    assert evidence.route_binding is not None
+    assert not evidence.route_binding.is_live
+    # ...and afterwards the same production call refuses, as a ValueError the
+    # emitter's abstention handler catches.
+    with pytest.raises(ValueError, match=REJECTION) as error:
+        bundle_route_proof_refs(evidence, proofs, rejection=REJECTION)
+    assert isinstance(error.value.__cause__, RuntimeJoinRejected)
+
+
+def test_a_phase_closes_its_arenas_even_when_the_phase_raises() -> None:
+    holder: list[CanonicalSemanticEvidence] = []
+
+    with pytest.raises(RuntimeError, match="producer exploded"):
+        with route_authority_phase("unit-test-raising"):
+            holder.append(_bundle())
+            raise RuntimeError("producer exploded")
+
+    binding = holder[0].route_binding
+    assert binding is not None and not binding.is_live
+
+
+def test_a_bundle_produced_outside_a_phase_keeps_its_arena() -> None:
+    """The phase owns exactly what it opened, never what it merely saw."""
+
+    outside = _bundle()
+
+    with route_authority_phase("unit-test-scope") as phase:
+        inside = _bundle()
+        assert len(phase) == 1
+
+    assert not inside.route_binding.is_live
+    assert outside.route_binding.is_live
+    assert bundle_route_proof_refs(
+        outside, outside.route_proofs, rejection=REJECTION,
+    )
+
+
+def test_content_derived_id_validation_stays_content_keyed() -> None:
+    """``_validate_content_derived_ids`` is the persistence guarantee.
+
+    It must keep recomputing the sha256 of the bundle's own content and
+    comparing it to the identity the bundle carries.  A reference-keyed
+    version could not detect this: the references are correct and only the
+    content identity is forged.
+    """
+
+    evidence = canonical_semantic_evidence_from_proofs(NATIVE_KEY, 3, (_proof(),))
+    forged_group = "sha256:" + "0" * 64
+
+    # It accepts exactly what the producer minted...
+    route_evidence._validate_content_derived_ids(
+        native_key=evidence.native_key,
+        generation=evidence.generation,
+        atomic_group_id=evidence.atomic_group_id,
+        route_proofs=evidence.route_proofs,
+    )
+    # ...and refuses a group identity that is not the sha256 of the content.
+    with pytest.raises(Exception, match="atomic group id is not content-derived"):
+        route_evidence._validate_content_derived_ids(
+            native_key=evidence.native_key,
+            generation=evidence.generation,
+            atomic_group_id=forged_group,
+            route_proofs=evidence.route_proofs,
+        )
+    # A forged *proof* identity is refused for the same reason, and the
+    # references of this bundle are correct throughout: only a content check
+    # can see this.
+    forged_proof = replace(
+        evidence.route_proofs[0], proof_id="sha256:" + "1" * 64,
+    )
+    with pytest.raises(Exception, match="proof id is not content-derived"):
+        route_evidence._validate_content_derived_ids(
+            native_key=evidence.native_key,
+            generation=evidence.generation,
+            atomic_group_id=evidence.atomic_group_id,
+            route_proofs=(forged_proof,),
+        )
+
+
+def test_scope_derived_id_validation_stays_rendered_identity_keyed() -> None:
+    """``_validate_runtime_derived_ids`` checks the *rendering* against a scope.
+
+    It asks whether the identities a bundle publishes are the ones its own
+    scope minted, which is a question about strings by construction: the
+    reference is the answer it is checking against, not the thing it compares.
+    """
+
+    scope = route_evidence.runtime_semantic_route_scope(NATIVE_KEY, 3)
+    runtime = route_evidence.runtime_semantic_evidence_from_proofs(
+        NATIVE_KEY, 3, (_proof(),), scope=scope,
+    )
+    identity = runtime.runtime_identity
+    assert identity is not None
+
+    route_evidence._validate_runtime_derived_ids(
+        atomic_group_id=runtime.atomic_group_id,
+        route_proofs=runtime.route_proofs,
+        runtime_identity=identity,
+    )
+    with pytest.raises(Exception, match="atomic group id is not scope-derived"):
+        route_evidence._validate_runtime_derived_ids(
+            atomic_group_id=scope.identity(identity.proof_refs[0]),
+            route_proofs=runtime.route_proofs,
+            runtime_identity=identity,
+        )
+    with pytest.raises(Exception, match="proof ids are not scope-derived"):
+        route_evidence._validate_runtime_derived_ids(
+            atomic_group_id=runtime.atomic_group_id,
+            route_proofs=(
+                replace(runtime.route_proofs[0], proof_id="runtime:other#x"),
+            ),
+            runtime_identity=identity,
+        )
+
+
+def test_runtime_ingestion_dedup_stays_content_keyed() -> None:
+    """``_runtime_authoritative_proofs`` is the runtime ingestion boundary.
+
+    Like its canonical twin it runs before the successor bundle's identities
+    exist, and its divergence check is explicitly about the *rendered* input
+    id: the caller says which ids its own scope minted, and only those are
+    held to it.  There is no reference to key any of that on.
+    """
+
+    scope = route_evidence.runtime_semantic_route_scope(NATIVE_KEY, 3)
+    first = route_evidence.runtime_semantic_evidence_from_proofs(
+        NATIVE_KEY, 3, (_proof(),), scope=scope,
+    )
+    owned = frozenset(item.proof_id for item in first.route_proofs)
+    original = first.route_proofs[0]
+    divergent = replace(
+        original,
+        source_anchor_ea=0x1400,
+        source_identity=_identity(0x1400),
+        delivery_region=NativeEaInterval(0x1400, 0x1401),
+        state_write=replace(
+            original.state_write,
+            identity=_identity(0x1400),
+            instruction_ea=0x1400,
+            corridor_instruction_eas=(0x1400,),
+        ),
+    )
+
+    # Outside the owned set the same rendered id is a string coincidence.
+    assert len(
+        route_evidence._runtime_authoritative_proofs(
+            (first.route_proofs[0], divergent),
+        )
+    ) == 2
+    # Inside it, it is corruption.
+    with pytest.raises(Exception, match="divergent authoritative payload"):
+        route_evidence._runtime_authoritative_proofs(
+            (first.route_proofs[0], divergent), owned_route_ids=owned,
+        )
