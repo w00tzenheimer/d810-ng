@@ -78,10 +78,14 @@
 #                          wheel (.whl). Installing it skips the in-container clone,
 #                          toolchain install and C++ build entirely. Mutually exclusive
 #                          with D810_COBRA_ROOT; requires D810_COBRA_WHEEL_SHA256. The
-#                          recorded wheels live in _gitless/resource/cobra-wheels/0.1.5/.
+#                          accepted wheels are the PUBLISHED PyPI artifacts, kept in
+#                          _gitless/resource/cobra-wheels/0.1.5-published/.
 #   D810_COBRA_WHEEL_SHA256  Required with D810_COBRA_WHEEL: 64 lowercase hex characters.
 #                          Must match both the bytes on disk and a wheel recorded in this
 #                          script; an unrecorded wheel is rejected before any docker run.
+#                          An identical filename does NOT imply identical bytes: the
+#                          preflight builds in ../0.1.5/ carry the same names and the same
+#                          sizes as the published wheels and are deliberately refused.
 #   D810_DOCKER_MEMORY      Memory limit for container (default: 4g). OOM-kills if exceeded.
 #
 # Examples:
@@ -280,17 +284,26 @@ COBRA_EXTENSION_ENABLED=1
 COBRA_SOURCE_MODE="pinned-remote"
 COBRA_PARENT_SOURCE_ID="$COBRA_SOURCE_REVISION"
 COBRA_CORE_SOURCE_ID="$COBRA_CORE_SOURCE_REVISION"
-# A recorded prebuilt wheel is the immutable fast path: it installs in seconds
-# and skips the clone, the cmake/ninja provisioning and the 55-object C++
-# build. The table below is the entire allow-list. Its parent/core commits are
-# the provenance recorded when each artifact was published (both 0.1.5 rows
-# come from release commit 55540ab84d95bde080a5c1223f034b61fb483492, and both
-# currently equal COBRA_SOURCE_REVISION / COBRA_CORE_SOURCE_REVISION above).
-# They are kept literal on purpose: a later revision bump must not silently
-# re-label an already published wheel.
-# Columns: <sha256> <version>|<arch>|<parent commit>|<core commit>
-COBRA_RECORDED_WHEELS="b71d40e45146004a968a96a1b17493b16ac04f2a98e41c12a1f87a38ddf3ab25 0.1.5|aarch64|3b3c406270f1efd8e222f0b05040ae4e074b27d5|72f616f822f538a0cfbea3c880f9d1e68bb9a8f1
-c642e6a6d61f8b841d97df78375c6e1da43fc05a56c3b68218230ed23beaa762 0.1.5|x86_64|3b3c406270f1efd8e222f0b05040ae4e074b27d5|72f616f822f538a0cfbea3c880f9d1e68bb9a8f1"
+# A published prebuilt wheel is the immutable fast path: it installs in
+# seconds and skips the clone, the cmake/ninja provisioning and the 55-object
+# C++ build. The table below is the entire allow-list and holds only the
+# PUBLISHED PyPI artifacts of d810-cobra 0.1.5, built from tag v0.1.5
+# (73b405c106d78e1fdc7576b217de39b7dcd0ddb3) over core third_party/cobra
+# 72f616f822f538a0cfbea3c880f9d1e68bb9a8f1.
+#
+# The commits are kept literal on purpose: a later revision bump must not
+# silently re-label an already published wheel. Note the tag commit differs
+# from COBRA_SOURCE_REVISION above, which pins what source mode compiles.
+#
+# Preflight builds from 55540ab84d95bde080a5c1223f034b61fb483492, provenance
+# evidence, NOT accepted -- they carry the SAME filenames and the SAME sizes as
+# the published wheels but different bytes, so only the hash tells them apart:
+#   b71d40e45146004a968a96a1b17493b16ac04f2a98e41c12a1f87a38ddf3ab25  aarch64
+#   c642e6a6d61f8b841d97df78375c6e1da43fc05a56c3b68218230ed23beaa762  x86_64
+#
+# Columns: <sha256> <version>|<arch>|<tag commit>|<core commit>
+COBRA_RECORDED_WHEELS="2c85ffe14a1f3c1d2b750790332a7c0a5e911b35f7fc041ebedcd6532382c63c 0.1.5|aarch64|73b405c106d78e1fdc7576b217de39b7dcd0ddb3|72f616f822f538a0cfbea3c880f9d1e68bb9a8f1
+352133fd4f91227518714735b463b978760650b5f30c71f5276c0bccb90cb72c 0.1.5|x86_64|73b405c106d78e1fdc7576b217de39b7dcd0ddb3|72f616f822f538a0cfbea3c880f9d1e68bb9a8f1"
 
 _cobra_recorded_wheel_record() {
   local wanted="$1" digest record
@@ -379,7 +392,7 @@ if [ -n "${D810_COBRA_WHEEL+x}" ] || [ -n "${D810_COBRA_WHEEL_SHA256+x}" ]; then
     exit 1
   fi
   if ! COBRA_WHEEL_RECORD="$(_cobra_recorded_wheel_record "$D810_COBRA_WHEEL_SHA256")"; then
-    echo "ERROR: D810_COBRA_WHEEL_SHA256 $D810_COBRA_WHEEL_SHA256 is not a recorded d810-cobra wheel; recorded wheels live in _gitless/resource/cobra-wheels/" >&2
+    echo "ERROR: D810_COBRA_WHEEL_SHA256 $D810_COBRA_WHEEL_SHA256 is not a recorded d810-cobra wheel; the accepted published wheels live in _gitless/resource/cobra-wheels/0.1.5-published/ (an identical filename does not imply identical bytes)" >&2
     exit 1
   fi
   COBRA_WHEEL_VERSION="${COBRA_WHEEL_RECORD%%|*}"
@@ -746,7 +759,7 @@ fi
 if [ "$COBRA_EXTENSION_ENABLED" = "1" ]; then
   if [ "$COBRA_SOURCE_MODE" = "wheel" ]; then
     echo "  extension: d810-cobra (wheel $COBRA_WHEEL_BASENAME)"
-    echo "  cobra wheel: $D810_COBRA_WHEEL -> $COBRA_WHEEL_CONTAINER_PATH (read-only) sha256 $COBRA_WHEEL_SHA256; recorded $COBRA_WHEEL_VERSION parent $COBRA_PARENT_SOURCE_ID core $COBRA_CORE_SOURCE_ID"
+    echo "  cobra wheel: $D810_COBRA_WHEEL -> $COBRA_WHEEL_CONTAINER_PATH (read-only) published sha256 $COBRA_WHEEL_SHA256; d810-cobra $COBRA_WHEEL_VERSION tag v$COBRA_WHEEL_VERSION $COBRA_PARENT_SOURCE_ID core $COBRA_CORE_SOURCE_ID"
   else
     echo "  extension: d810-cobra ($COBRA_SOURCE_MODE $COBRA_SOURCE_REVISION)"
     if [ "$COBRA_SOURCE_MODE" = "mounted-pinned" ]; then

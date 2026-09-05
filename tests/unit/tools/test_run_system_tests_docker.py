@@ -15,25 +15,35 @@ COBRA_WHEEL_AARCH64_NAME = (
     "d810_cobra-0.1.5-cp313-cp313-manylinux_2_26_aarch64.manylinux_2_28_aarch64.whl"
 )
 COBRA_WHEEL_AARCH64_SHA256 = (
+    "2c85ffe14a1f3c1d2b750790332a7c0a5e911b35f7fc041ebedcd6532382c63c"
+)
+COBRA_WHEEL_PREFLIGHT_AARCH64_SHA256 = (
     "b71d40e45146004a968a96a1b17493b16ac04f2a98e41c12a1f87a38ddf3ab25"
 )
+COBRA_WHEEL_PUBLISHED_DIR = "0.1.5-published"
+COBRA_WHEEL_PREFLIGHT_DIR = "0.1.5"
+COBRA_WHEEL_TAG_COMMIT = "73b405c106d78e1fdc7576b217de39b7dcd0ddb3"
+COBRA_WHEEL_CORE_COMMIT = "72f616f822f538a0cfbea3c880f9d1e68bb9a8f1"
 COBRA_WHEEL_CONTAINER_DIR = "/opt/d810-cobra-wheel"
 
 
-def _recorded_wheel(name: str) -> Path | None:
-    """Return a recorded CoBRA wheel path, or None when it is not available.
+def _cobra_wheel(directory: str, name: str) -> Path | None:
+    """Return a stored CoBRA wheel path, or None when it is not available.
 
     The wheels are preserved outside git under ``_gitless/``, which exists in
     the main checkout but not in every worktree, so look upward from this
     checkout instead of hard-coding a host path.
     """
     for base in (REPO_ROOT, *REPO_ROOT.parents):
-        candidate = (
-            base / "_gitless" / "resource" / "cobra-wheels" / COBRA_WHEEL_VERSION / name
-        )
+        candidate = base / "_gitless" / "resource" / "cobra-wheels" / directory / name
         if candidate.is_file():
             return candidate
     return None
+
+
+def _recorded_wheel(name: str) -> Path | None:
+    """Return the PUBLISHED wheel, which is the only accepted identity."""
+    return _cobra_wheel(COBRA_WHEEL_PUBLISHED_DIR, name)
 
 
 def _make_harness(tmp_path: Path) -> tuple[Path, Path]:
@@ -493,10 +503,10 @@ def test_recorded_cobra_wheel_reports_its_verified_provenance(
     assert f"extension: d810-cobra (wheel {COBRA_WHEEL_AARCH64_NAME})" in result.stdout
     assert (
         f"cobra wheel: {wheel} -> {COBRA_WHEEL_CONTAINER_DIR}/"
-        f"{COBRA_WHEEL_AARCH64_NAME} (read-only) sha256 "
-        f"{COBRA_WHEEL_AARCH64_SHA256}; recorded {COBRA_WHEEL_VERSION} parent "
-        "3b3c406270f1efd8e222f0b05040ae4e074b27d5 core "
-        "72f616f822f538a0cfbea3c880f9d1e68bb9a8f1"
+        f"{COBRA_WHEEL_AARCH64_NAME} (read-only) published sha256 "
+        f"{COBRA_WHEEL_AARCH64_SHA256}; d810-cobra {COBRA_WHEEL_VERSION} tag "
+        f"v{COBRA_WHEEL_VERSION} {COBRA_WHEEL_TAG_COMMIT} core "
+        f"{COBRA_WHEEL_CORE_COMMIT}"
     ) in result.stdout
     assert "cobra cache:" not in result.stdout
 
@@ -721,6 +731,33 @@ def test_empty_cobra_wheel_variable_blames_itself(
     assert calls == []
     assert f"ERROR: {variable} is set but empty" in result.stderr
     assert f"{other} requires" not in result.stderr
+
+
+def test_preflight_cobra_wheel_is_refused_as_unrecorded(tmp_path: Path) -> None:
+    """Same filename, same size, different bytes: only the hash separates them."""
+    preflight = _cobra_wheel(COBRA_WHEEL_PREFLIGHT_DIR, COBRA_WHEEL_AARCH64_NAME)
+    if preflight is None:
+        pytest.skip(f"preflight wheel {COBRA_WHEEL_AARCH64_NAME} is unavailable")
+    published = _recorded_wheel(COBRA_WHEEL_AARCH64_NAME)
+    if published is not None:
+        assert preflight.name == published.name
+        assert preflight.stat().st_size == published.stat().st_size
+        assert preflight.read_bytes() != published.read_bytes()
+
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--",
+        "true",
+        extra_env={
+            "D810_COBRA_WHEEL": str(preflight),
+            "D810_COBRA_WHEEL_SHA256": COBRA_WHEEL_PREFLIGHT_AARCH64_SHA256,
+        },
+    )
+
+    assert result.returncode != 0
+    assert calls == []
+    assert "not a recorded d810-cobra wheel" in result.stderr
 
 
 def test_cobra_wheel_and_cobra_root_are_mutually_exclusive(tmp_path: Path) -> None:
