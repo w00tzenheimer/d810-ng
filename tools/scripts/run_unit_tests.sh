@@ -14,7 +14,7 @@
 # once -n is given); it defaults to "load" when -n is set and --dist is
 # not. Measured starting points for this repo (see
 # .superpowers/sdd/d81-4tsd-unit-xdist/task-1-report.md):
-#   tools/scripts/run_unit_tests.sh -n auto --dist loadfile
+#   tools/scripts/run_unit_tests.sh -n auto --dist load
 #   tools/scripts/run_unit_tests.sh -n 4 --dist load
 #
 # Any remaining arguments (a node id, -k EXPR, -x, etc.) are passed through
@@ -22,8 +22,20 @@
 # together with the file/tests suspected of poisoning it:
 #   tools/scripts/run_unit_tests.sh -n 2 --dist loadfile tests/unit/some_test.py
 #
+# --dry-run prints the resolved PYTHONPATH and `pytest` invocation as one
+# line and exits 0 without running anything.
+#
 # Usage:
-#   tools/scripts/run_unit_tests.sh [-n N|auto] [--dist load|loadfile|...] [PYTEST_ARGS...]
+#   tools/scripts/run_unit_tests.sh [-n N|auto] [--dist load|loadfile|...] \
+#       [--dry-run] [PYTEST_ARGS...]
+#
+# NOTE (ticket d81-4tsd, review 1, C1): this script must stay correct under
+# bash 3.2 (macOS ships that as /bin/bash; it predates the bash 4.4
+# exemption that lets "${arr[@]}" expand safely under `set -u` when arr is
+# empty -- referencing it directly throws "unbound variable"). Every
+# expansion of EXTRA_ARGS below therefore uses the
+# ${arr[@]+"${arr[@]}"} idiom, which works on bash 3.2 through current.
+# Do not "simplify" it back to a bare "${EXTRA_ARGS[@]}".
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -31,6 +43,7 @@ cd "$REPO_ROOT"
 
 WORKERS=""
 DIST=""
+DRY_RUN=0
 EXTRA_ARGS=()
 
 while [ "$#" -gt 0 ]; do
@@ -42,6 +55,10 @@ while [ "$#" -gt 0 ]; do
     --dist)
       DIST="$2"
       shift 2
+      ;;
+    --dry-run)
+      DRY_RUN=1
+      shift
       ;;
     --)
       shift
@@ -60,7 +77,7 @@ done
 # union of "tests/unit" and the caller's target, i.e. always the whole
 # suite, silently defeating a targeted reproduction run.
 HAS_POSITIONAL=0
-for arg in "${EXTRA_ARGS[@]}"; do
+for arg in ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}; do
   case "$arg" in
     -*) ;;
     *) HAS_POSITIONAL=1 ;;
@@ -80,7 +97,18 @@ elif [ -n "$DIST" ]; then
   exit 2
 fi
 
-PYTEST_ARGS+=("${EXTRA_ARGS[@]}")
+PYTEST_ARGS+=(${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"})
 
-export PYTHONPATH="src:tests${PYTHONPATH:+:$PYTHONPATH}"
+RESOLVED_PYTHONPATH="src:tests${PYTHONPATH:+:$PYTHONPATH}"
+
+if [ "$DRY_RUN" -eq 1 ]; then
+  printf 'PYTHONPATH=%s pyenv exec python -m pytest' "$RESOLVED_PYTHONPATH"
+  for a in "${PYTEST_ARGS[@]}"; do
+    printf ' %s' "$a"
+  done
+  printf '\n'
+  exit 0
+fi
+
+export PYTHONPATH="$RESOLVED_PYTHONPATH"
 exec pyenv exec python -m pytest "${PYTEST_ARGS[@]}"
