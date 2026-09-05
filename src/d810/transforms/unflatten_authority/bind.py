@@ -3362,17 +3362,29 @@ def _canonical_registry_seal(
     _logical_registry=_OBSERVED_LOGICAL_ENDPOINT_REGISTRY,
     _route_seal=_route_content_seal,
 ) -> str:
-    """Recompute one closed record's canonical live publication seal.
+    """Return one closed record's canonical live publication seal.
 
     The computation itself is untouched and lives in
-    :func:`_canonical_registry_seal_uncached`.  This wrapper only records the
-    phase-owned memo lookup; nothing is served from it yet.
+    :func:`_canonical_registry_seal_uncached`.  This wrapper reuses the answer
+    the *same* live occurrence already proved in *this* phase, and only then.
+
+    What is still detected, without exception: the memo is guarded by the exact
+    object identity and by the full 32-byte ``OccurrenceDigest`` over its
+    canonical schema, so any ``object.__setattr__`` anywhere in the reachable
+    graph moves the digest, misses, and runs the untouched computation -- which
+    raises the same message it raises today.  Nothing is stored before the
+    computation has fully succeeded, so a raising validation cannot populate a
+    reusable entry, and a reconstructed or equal-but-distinct occurrence is
+    validated on its own.
     """
 
     session = active_canonical_session()
     digest = _memoizable_digest(session, value)
     if digest is not None:
-        record_registry_seal(False)
+        cached = session.registry_seal_for(id(registry), value, digest)
+        record_registry_seal(cached is not None)
+        if cached is not None:
+            return cached
     seal = _canonical_registry_seal_uncached(
         value, registry, _site_registry, _binding_registry, _route_registry,
         _logical_registry, _route_seal,

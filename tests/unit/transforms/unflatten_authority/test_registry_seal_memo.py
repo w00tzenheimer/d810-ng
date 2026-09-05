@@ -45,7 +45,9 @@ def _isolated_process_ledger(monkeypatch):
 def _route_registry() -> dict:
     """Return the route publication registry the seal kernel closed over."""
 
-    return bind._canonical_registry_seal.__defaults__[2]
+    registry = test_bind._private_route_registry()
+    assert registry is bind._canonical_registry_seal.__defaults__[2]
+    return registry
 
 
 def _published_route_result() -> object:
@@ -125,10 +127,16 @@ def test_an_unregistered_type_never_memoizes() -> None:
         stranger.value = 2
         assert authority_ids._occurrence_stamp(stranger) == before
         # A registered record type is admitted.
-        assert bind._memoizable_digest(session, _published_route_result()) is not None
-        metrics = session.metrics
+        admitted = bind._memoizable_digest(session, _source_authority())
+        assert admitted is not None
+        before = session.metrics
+        # An unregistered value never reaches the memo, hit or miss.
+        session.store_registry_seal(0, stranger, None, "sha256:never")
+        assert bind._memoizable_digest(session, stranger) is None
+        after = session.metrics
 
-    assert metrics.registry_seal_hits == 0
+    assert after.registry_seal_hits == before.registry_seal_hits
+    assert after.registry_seal_misses == before.registry_seal_misses
 
 
 def test_no_session_never_memoizes() -> None:
@@ -324,3 +332,239 @@ def test_the_occurrence_digest_covers_every_field_the_seal_reads() -> None:
     assert sorted(
         item.__qualname__ for item in (reachable & incomplete)
     ) == []
+
+
+def _normalized_route_failure() -> tuple[object, dict]:
+    """Mint one published failure whose ``__post_init__`` sorts its anchors."""
+
+    accepted = bind.realize_projected_routes(
+        **test_bind._c_complete_kwargs(test_bind._compiler_redirect_goto_case)
+    )
+    relation = accepted.realization.rows[0].relation
+    canonical = tuple(sorted(
+        (relation.feeder, relation.old_target), key=authority_ids.canonical_bytes,
+    ))
+    cells = dict(zip(
+        bind._realize_projected_routes_from_claim_inventory.__code__.co_freevars,
+        bind._realize_projected_routes_from_claim_inventory.__closure__,
+    ))
+    failure = cells["failure"].cell_contents(
+        claim_id=None, proof_id=None, route_subject_id=None,
+        scope=model.RouteRealizationFailureScope.EVIDENCE,
+        proposal_id=None, evidence_id=None,
+        stage=model.RouteRealizationFailureStage.EFFECT_TERMINAL_PRESERVATION,
+        anchored_refs=tuple(reversed(canonical)),
+    )
+    assert failure.anchored_refs == canonical
+    return failure, _route_registry()
+
+
+# --- R2-F2 / R2-F3: the tamper baseline is unchanged --------------------
+
+
+def test_a_direct_mutation_is_still_refused_after_a_warm_memo() -> None:
+    """R2-F2: forging a direct field moves the digest, so the memo misses.
+
+    This is the slice's most important test.  Falsified by dropping the digest
+    from the memo key: the warm entry would then answer for the forged record.
+    """
+
+    authority = _source_authority()
+    with _canonical_validation_session(
+        CanonicalSessionPhase.PROJECTED_PREPARATION,
+    ) as session:
+        bind.validate_source_route_authority(authority)
+        assert len(session._registry_seals) == 1
+        forged = authority_ids.authority_id("forged-source-authority")
+        original = authority.source_authority_id
+        object.__setattr__(authority, "source_authority_id", forged)
+        try:
+            with pytest.raises((TypeError, ValueError)):
+                bind.validate_source_route_authority(authority)
+        finally:
+            object.__setattr__(authority, "source_authority_id", original)
+        metrics = session.metrics
+
+    # The refusal came from a miss, not from a served answer.
+    assert metrics.registry_seal_hits == 0
+    assert metrics.registry_seal_misses >= 2
+
+
+def test_a_deep_mutation_is_still_refused_after_a_warm_memo() -> None:
+    """R2-F3: a mutation below the direct children still misses.
+
+    Every direct field of the presented occurrence is the same object, so this
+    is exactly the case a shallow or bucketed key would serve wrongly.  It is
+    the ``gotcha_mop_equality_memo_on_bucket_hash`` failure mode.
+    """
+
+    authority = _source_authority()
+    # authority -> bound_evidence -> routes -> route -> evidence -> field:
+    # every direct child of the presented occurrence stays the same object.
+    deep = authority.bound_evidence.routes[0].evidence
+    original = deep.source_anchor_ea
+    with _canonical_validation_session(
+        CanonicalSessionPhase.PROJECTED_PREPARATION,
+    ) as session:
+        warm = bind._canonical_registry_seal(authority, _route_registry())
+        object.__setattr__(deep, "source_anchor_ea", original + 1)
+        try:
+            assert authority.bound_evidence.routes[0].evidence is deep
+            with pytest.raises((TypeError, ValueError)):
+                bind.validate_source_route_authority(authority)
+        finally:
+            object.__setattr__(deep, "source_anchor_ea", original)
+        restored = bind._canonical_registry_seal(authority, _route_registry())
+        metrics = session.metrics
+
+    assert restored == warm
+    assert metrics.registry_seal_hits == 1
+
+
+# --- R2-F4: the normalization check candidates A and B would delete -----
+
+
+def test_the_candidate_versus_canonical_comparison_still_runs() -> None:
+    """R2-F4: an unsorted stored tuple is still caught by the clone rebuild.
+
+    ``_canonical_record_snapshot`` compares the presented record against the
+    normalized canonical copy.  A memo defers that comparison for a repeat, it
+    never removes it: a record the session has not sealed is compared in full.
+    """
+
+    failure, registry = _normalized_route_failure()
+    canonical = failure.anchored_refs
+    assert len(canonical) >= 2
+    with _canonical_validation_session(
+        CanonicalSessionPhase.PROJECTED_PREPARATION,
+    ) as session:
+        object.__setattr__(failure, "anchored_refs", tuple(reversed(canonical)))
+        try:
+            with pytest.raises(
+                ValueError,
+                match="registry candidate differs from canonical live state",
+            ):
+                bind._canonical_registry_seal(failure, registry)
+        finally:
+            object.__setattr__(failure, "anchored_refs", canonical)
+        assert session._registry_seals == {}
+        # And the normalized record still seals.
+        assert bind._canonical_registry_seal(failure, registry) == registry[
+            id(failure)
+        ][1]
+
+
+def test_a_failed_seal_never_populates_a_reusable_entry() -> None:
+    """The store happens after success only, so a raise leaves nothing behind."""
+
+    authority = _source_authority()
+    original = authority.plan_id
+    with _canonical_validation_session(
+        CanonicalSessionPhase.PROJECTED_PREPARATION,
+    ) as session:
+        object.__setattr__(authority, "plan_id", authority_ids.authority_id("forged"))
+        try:
+            with pytest.raises((TypeError, ValueError)):
+                bind._canonical_registry_seal(authority, _route_registry())
+            assert session._registry_seals == {}
+        finally:
+            object.__setattr__(authority, "plan_id", original)
+
+
+# --- R2-F5: the memo actually fires -------------------------------------
+
+
+def test_a_memo_hit_performs_no_canonical_record_snapshot() -> None:
+    """R2-F5: zero clone rebuilds on a hit, exactly one on a miss."""
+
+    subject = _published_route_result()
+    registry = _route_registry()
+    snapshot = bind._canonical_record_snapshot
+    with _canonical_validation_session(
+        CanonicalSessionPhase.PROJECTED_PREPARATION,
+    ) as session:
+        with patch.object(bind, "_canonical_record_snapshot", wraps=snapshot) as miss:
+            first = bind._canonical_registry_seal(subject, registry)
+        with patch.object(bind, "_canonical_record_snapshot", wraps=snapshot) as hit:
+            second = bind._canonical_registry_seal(subject, registry)
+        metrics = session.metrics
+
+    assert first == second
+    assert miss.call_count == 1
+    assert hit.call_count == 0
+    assert metrics.registry_seal_misses == 1
+    assert metrics.registry_seal_hits == 1
+
+
+def test_the_result_validation_still_calls_the_seal_exactly_once() -> None:
+    """R2-F5: the memo changes the work inside a seal, never the call count."""
+
+    accepted = _published_route_result()
+    seal = bind._canonical_registry_seal
+    with _canonical_validation_session(
+        CanonicalSessionPhase.PROJECTED_PREPARATION,
+    ):
+        with patch.object(bind, "_canonical_registry_seal", wraps=seal) as replay:
+            bind.validate_projected_route_realization_result(accepted)
+
+    assert replay.call_count == 1
+
+
+# --- R2-F9: the counters ------------------------------------------------
+
+
+def test_the_memo_moves_only_the_counters_it_is_allowed_to_move() -> None:
+    """R2-F9: hits are non-zero and the untouched paths do not move."""
+
+    from d810.transforms.unflatten_authority import transaction_api
+
+    from . import test_live_inventory_validation as live
+
+    canonical_session.reset_process_work_metrics()
+    accepted = transaction_api.prepare_unflatten_authority(
+        **live._fixture_arguments()
+    )
+    assert type(accepted) is model.UnflattenAuthorityPreparationAccepted
+    metrics = canonical_session.process_work_metrics()
+
+    assert metrics.registry_seal_hits > 0
+    assert metrics.registry_seal_misses > 0
+    assert metrics.materializations == 0
+    assert metrics.inventory_validations > 0
+    # A stamp is taken per memoizable seal check, so the rise is bounded.
+    assert metrics.occurrence_stamps >= (
+        metrics.registry_seal_hits + metrics.registry_seal_misses
+    )
+
+
+def test_every_seal_taken_by_a_real_preparation_is_byte_identical() -> None:
+    """R2-F1, exhaustively: the memo answers what the strict path answers.
+
+    The fixture mints per-attempt UUIDs, so comparing ID strings across two
+    processes is not a valid oracle.  This compares the two paths inside one
+    process, on every seal a real preparation actually takes.
+    """
+
+    from d810.transforms.unflatten_authority import transaction_api
+
+    from . import test_live_inventory_validation as live
+
+    seal = bind._canonical_registry_seal
+    uncached = bind._canonical_registry_seal_uncached
+    compared: list[tuple[str, str]] = []
+
+    def _oracle(value, registry, *args, **kwargs):
+        answer = seal(value, registry, *args, **kwargs)
+        compared.append((answer, uncached(value, registry, *args, **kwargs)))
+        return answer
+
+    with patch.object(bind, "_canonical_registry_seal", _oracle):
+        accepted = transaction_api.prepare_unflatten_authority(
+            **live._fixture_arguments()
+        )
+
+    assert type(accepted) is model.UnflattenAuthorityPreparationAccepted
+    assert len(compared) > 0
+    assert [answer for answer, _ in compared] == [
+        strict for _, strict in compared
+    ]

@@ -423,6 +423,11 @@ def test_debug_logging_and_diagnostics_add_no_canonical_work(monkeypatch) -> Non
         d810_logging.LevelFlag.bump_config_version()
 
     assert noisy.as_payload() == quiet.as_payload()
+    # Not vacuous for the registry-seal memo either: DEBUG must not change how
+    # many seals are reused, and the fixture really does reuse some.
+    assert quiet.registry_seal_hits > 0
+    assert noisy.registry_seal_hits == quiet.registry_seal_hits
+    assert noisy.registry_seal_misses == quiet.registry_seal_misses
 
 
 def _arm_proposal_canonicalisation(monkeypatch, frame_name: str) -> list[str]:
