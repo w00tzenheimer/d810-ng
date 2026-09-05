@@ -5,6 +5,8 @@ from dataclasses import replace
 from types import SimpleNamespace
 
 from d810.analyses.control_flow.semantic_route_evidence import DecisionDagComparisonWitness
+from d810.analyses.control_flow.semantic_route_evidence import route_join_binding
+from d810.core.runtime_identity import RuntimeAuthorityRef
 
 from d810.ir.flowgraph import BlockKind, BlockSnapshot, InsnKind, InsnSnapshot, MopSnapshot, OperandKind
 from d810.ir.semantics import ControlTransferKind, PredicateKind
@@ -470,7 +472,7 @@ def test_concrete_entry_route_owns_its_exact_rebound_predecessor_proof() -> None
 
     # The unrelated selected-backedge index is intentionally empty.  A concrete
     # entry owns the exact canonical proof named by its rebound physical fact.
-    owners: dict[str, str] = {}
+    owners: dict[RuntimeAuthorityRef, str] = {}
     resolved = producer_api.resolve_concrete_entry_route(
         entry,
         source=source,
@@ -481,7 +483,9 @@ def test_concrete_entry_route_owns_its_exact_rebound_predecessor_proof() -> None
         proof_owners=owners,
     )
     assert resolved.proof_id == proof.proof_id
-    assert owners == {resolved.proof_id: "entry-prefix:blk1@0x2000"}
+    assert owners == {
+        route_join_binding(evidence).ref_for(resolved): "entry-prefix:blk1@0x2000",
+    }
 
 
 def test_concrete_entry_route_owns_exact_carrier_proof() -> None:
@@ -503,7 +507,7 @@ def test_concrete_entry_route_owns_exact_carrier_proof() -> None:
         state,
         "entry-carrier:blk1@0x2000",
     )
-    owners: dict[str, str] = {}
+    owners: dict[RuntimeAuthorityRef, str] = {}
 
     resolved = producer_api.resolve_concrete_entry_route(
         route,
@@ -518,7 +522,9 @@ def test_concrete_entry_route_owns_exact_carrier_proof() -> None:
     assert resolved is proof
     assert resolved.state_write is None
     assert resolved.state_carrier is not None
-    assert owners == {proof.proof_id: "entry-carrier:blk1@0x2000"}
+    assert owners == {
+        route_join_binding(evidence).ref_for(proof): "entry-carrier:blk1@0x2000",
+    }
 
 
 def test_concrete_entry_carrier_rejects_identity_state_anchor_target_and_owner_drift() -> None:
@@ -608,7 +614,9 @@ def test_concrete_entry_carrier_rejects_identity_state_anchor_target_and_owner_d
     with pytest.raises(ValueError, match="already owned"):
         producer_api.resolve_concrete_entry_route(
             route,
-            proof_owners={proof.proof_id: "backedge-owner"},
+            proof_owners={
+                route_join_binding(evidence).ref_for(proof): "backedge-owner",
+            },
             **kwargs,
         )
 
@@ -658,9 +666,13 @@ def test_concrete_entry_route_rejects_missing_ambiguous_drifted_or_duplicate_own
         object.__setattr__(state_write, "identity", original_identity)
     with pytest.raises(ValueError, match="already owned"):
         producer_api.resolve_concrete_entry_route(
-            route, proof_owners={proof.proof_id: "backedge"}, **kwargs,
+            route,
+            proof_owners={
+                route_join_binding(evidence).ref_for(proof): "backedge",
+            },
+            **kwargs,
         )
-    owners: dict[str, str] = {}
+    owners: dict[RuntimeAuthorityRef, str] = {}
     producer_api.resolve_concrete_entry_route(route, proof_owners=owners, **kwargs)
     with pytest.raises(ValueError, match="already owned"):
         producer_api.resolve_concrete_entry_route(

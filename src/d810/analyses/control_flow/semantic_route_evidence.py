@@ -12,9 +12,12 @@ from collections.abc import Mapping
 from d810.core.logging import getLogger
 from d810.core.native_preanalysis_key import NativePreanalysisKey
 from d810.core.runtime_identity import (
+    RuntimeAuthorityArena,
+    RuntimeAuthorityArenaError,
     RuntimeAuthorityKind,
     RuntimeAuthorityRef,
     RuntimeAuthorityScope,
+    RuntimeJoinRejected,
     is_runtime_authority_identity,
 )
 from d810.ir.block_identity import (
@@ -3456,6 +3459,150 @@ class RuntimeRouteIdentity:
 
 
 @dataclass(frozen=True, slots=True)
+class RouteGroupRecord:
+    """The immutable name an arena stores under one route group's reference.
+
+    A reference names a record, so the group reference needs a record even
+    though the bundle that owns the group does not exist yet when the
+    reference is minted.  This is that record: the three values that identify
+    the group, complete before the mint and never touched again.
+    """
+
+    native_key: NativePreanalysisKey
+    generation: int
+    atomic_group_id: str
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class RouteAuthorityBinding:
+    """The runtime join authority for one canonical route bundle.
+
+    Content identities and join authority are different concepts.  The
+    bundle's ``atomic_group_id`` and each proof's ``proof_id`` stay exactly
+    what they were -- reproducible sha256 fingerprints of immutable content,
+    which is what a reader at a persistence boundary needs.  This record is
+    what the *runtime* joins on: an arena, one ``ROUTE_GROUP`` reference, and
+    one ``ROUTE_PROOF`` reference per proof, minted in the bundle's canonical
+    proof order so that iterating references is as deterministic as iterating
+    the bundle.
+
+    A proof is resolved to its reference by **object identity**, not by
+    content.  That is the whole point: the arena holds each proof, so its
+    ``id`` cannot be recycled while the arena is open, and a
+    ``dataclasses.replace`` copy of a bound proof -- a different record with
+    the same content -- is refused instead of silently aliasing the original.
+
+    The binding is compared by identity (``eq=False``).  Two bundles that
+    encode to the same canonical bytes are the same *content*; they are never
+    the same *authority*.
+    """
+
+    arena: RuntimeAuthorityArena
+    group_ref: RuntimeAuthorityRef
+    proof_refs: tuple[RuntimeAuthorityRef, ...]
+    atomic_group_id: str
+    _by_identity: Mapping[int, RuntimeAuthorityRef] = field(repr=False)
+
+    @property
+    def is_live(self) -> bool:
+        """Return whether this binding's arena is still open."""
+
+        return not self.arena.is_closed
+
+    def ref_for(self, proof: "SemanticRouteProof") -> RuntimeAuthorityRef:
+        """Return the reference naming exactly ``proof``, or fail closed."""
+
+        ref = self._by_identity.get(id(proof))
+        if ref is None or self._resolve(ref) is not proof:
+            raise RuntimeJoinRejected(
+                "route proof is not a proof of this route bundle"
+            )
+        return ref
+
+    def proof_for(self, ref: RuntimeAuthorityRef) -> "SemanticRouteProof":
+        """Return the proof ``ref`` names, or fail closed."""
+
+        if type(ref) is not RuntimeAuthorityRef:
+            raise TypeError("route binding lookup requires a runtime reference")
+        if ref.kind is not RuntimeAuthorityKind.ROUTE_PROOF:
+            raise RuntimeJoinRejected("route binding resolves route proofs only")
+        return self._resolve(ref)
+
+    def order_key(self, ref: RuntimeAuthorityRef) -> tuple[int, int]:
+        """Return the deterministic sort key of one reference of this binding.
+
+        An ordinal only means anything inside the scope that issued it, so
+        ownership is checked before the key is handed out: a cross-scope sort
+        key is a bug, not a tie-break.
+        """
+
+        if type(ref) is not RuntimeAuthorityRef:
+            raise TypeError("route binding ordering requires a runtime reference")
+        self._resolve(ref)
+        return (int(ref.kind), int(ref.ordinal))
+
+    def _resolve(self, ref: RuntimeAuthorityRef) -> object:
+        try:
+            return self.arena.get(ref)
+        except RuntimeAuthorityArenaError as exc:
+            raise RuntimeJoinRejected(str(exc)) from exc
+
+    def __deepcopy__(self, memo: dict[int, object]) -> None:
+        """Return ``None``: a deep copy of a bundle carries no authority.
+
+        Deep copying a record graph produces new records.  The arena resolves
+        the records it minted, by identity, so it is not the authority for any
+        of them -- and duplicating the arena instead would fabricate a second
+        authority for one bundle, which is precisely what a scope-owned
+        reference exists to make impossible.
+
+        The honest answer is therefore *unbound*: the copy is a value, and a
+        caller who wants to join on it says so by calling
+        :func:`bind_route_evidence`.  Returning ``None`` is well typed because
+        the field this lands in is ``RouteAuthorityBinding | None``, and it
+        makes the copy fail closed at its first join rather than resolve to
+        the original's records.
+        """
+
+        return None
+
+
+def _mint_route_binding(
+    arena: RuntimeAuthorityArena,
+    *,
+    native_key: NativePreanalysisKey,
+    generation: int,
+    atomic_group_id: str,
+    route_proofs: tuple["SemanticRouteProof", ...],
+) -> RouteAuthorityBinding:
+    """Mint one group reference and one reference per proof, in bundle order."""
+
+    if type(arena) is not RuntimeAuthorityArena:
+        raise TypeError("route binding requires a runtime authority arena")
+    try:
+        group_ref = arena.mint(
+            RuntimeAuthorityKind.ROUTE_GROUP,
+            RouteGroupRecord(native_key, int(generation), str(atomic_group_id)),
+        )
+        proof_refs = tuple(
+            arena.mint(RuntimeAuthorityKind.ROUTE_PROOF, proof)
+            for proof in route_proofs
+        )
+    except RuntimeAuthorityArenaError as exc:
+        raise RuntimeJoinRejected(str(exc)) from exc
+    return RouteAuthorityBinding(
+        arena=arena,
+        group_ref=group_ref,
+        proof_refs=proof_refs,
+        atomic_group_id=str(atomic_group_id),
+        _by_identity=MappingProxyType({
+            id(proof): ref
+            for proof, ref in zip(route_proofs, proof_refs, strict=True)
+        }),
+    )
+
+
+@dataclass(frozen=True, slots=True)
 class CanonicalSemanticEvidence:
     """One atomic generation of provider-neutral semantic route proofs."""
 
@@ -3469,6 +3616,25 @@ class CanonicalSemanticEvidence:
     _runtime_identity: RuntimeRouteIdentity | None = field(
         default=None, compare=False, repr=False,
     )
+    # Private for the same reason, and a different question: this one says
+    # which arena is the *join authority* for this bundle while its canonical
+    # identities stay content-derived fingerprints.  A live arena is never
+    # serialized, and a decoded bundle arrives without one on purpose.
+    _runtime_binding: RouteAuthorityBinding | None = field(
+        default=None, compare=False, repr=False,
+    )
+
+    @property
+    def route_binding(self) -> "RouteAuthorityBinding | None":
+        """Return the arena binding this bundle was produced under, if any.
+
+        Read with a default for the same reason as ``runtime_identity``: this
+        class is revalidated through ``__post_init__`` on records rebuilt field
+        by field, which never set a private slot.  ``None`` means *unbound*,
+        which every runtime join must refuse; see :func:`route_join_binding`.
+        """
+
+        return getattr(self, "_runtime_binding", None)
 
     @property
     def runtime_identity(self) -> "RuntimeRouteIdentity | None":
@@ -3521,6 +3687,14 @@ class CanonicalSemanticEvidence:
             route_proofs=route_proofs,
             runtime_identity=self.runtime_identity,
         )
+        binding = self.route_binding
+        if binding is not None and (
+            binding.atomic_group_id != atomic_group_id
+            or len(binding.proof_refs) != len(route_proofs)
+        ):
+            raise SemanticRouteEvidenceRejected(
+                "route authority binding does not name this route bundle"
+            )
         object.__setattr__(self, "generation", generation)
         object.__setattr__(self, "atomic_group_id", atomic_group_id)
         object.__setattr__(
@@ -6241,21 +6415,39 @@ def canonical_semantic_evidence_from_proofs(
         proofs=route_proofs,
     )
     canonical_proofs = tuple(
-        replace(
-            proof,
-            atomic_group_id=group_id,
-            proof_id=_canonical_route_proof_id(
-                atomic_group_id=group_id,
-                proof=proof,
+        sorted(
+            (
+                replace(
+                    proof,
+                    atomic_group_id=group_id,
+                    proof_id=_canonical_route_proof_id(
+                        atomic_group_id=group_id,
+                        proof=proof,
+                    ),
+                )
+                for proof in route_proofs
             ),
+            key=lambda proof: proof.proof_id,
         )
-        for proof in route_proofs
     )
+    # Sorted before the mint, not after, so that reference order and canonical
+    # order are the same order.  The canonical sort is the wire ordering and
+    # stays exactly where it was (``__post_init__``); this one only makes the
+    # arena's mint order deterministic across runs.
     return CanonicalSemanticEvidence(
         native_key=native_key,
         generation=generation,
         atomic_group_id=group_id,
         route_proofs=canonical_proofs,
+        _runtime_binding=_mint_route_binding(
+            RuntimeAuthorityArena(
+                runtime_semantic_route_scope(native_key, generation)
+            ),
+            native_key=native_key,
+            generation=generation,
+            atomic_group_id=group_id,
+            route_proofs=canonical_proofs,
+        ),
     )
 
 
@@ -6463,8 +6655,15 @@ def runtime_semantic_evidence_from_proofs(
         scope.mint(RuntimeAuthorityKind.ROUTE_PROOF) for _ in route_proofs
     )
     runtime_proofs = tuple(
-        replace(proof, atomic_group_id=group_id, proof_id=scope.identity(ref))
-        for proof, ref in zip(route_proofs, proof_refs)
+        sorted(
+            (
+                replace(
+                    proof, atomic_group_id=group_id, proof_id=scope.identity(ref),
+                )
+                for proof, ref in zip(route_proofs, proof_refs)
+            ),
+            key=lambda proof: proof.proof_id,
+        )
     )
     return CanonicalSemanticEvidence(
         native_key=native_key,
@@ -6476,6 +6675,119 @@ def runtime_semantic_evidence_from_proofs(
             group_ref=group_ref,
             proof_refs=proof_refs,
         ),
+        _runtime_binding=_mint_route_binding(
+            RuntimeAuthorityArena(scope),
+            native_key=native_key,
+            generation=generation,
+            atomic_group_id=group_id,
+            route_proofs=runtime_proofs,
+        ),
+    )
+
+
+def route_join_binding(
+    evidence: CanonicalSemanticEvidence,
+) -> RouteAuthorityBinding:
+    """Return the join authority for ``evidence``, or refuse the join.
+
+    This is the only way a runtime join reaches a bundle's references, and it
+    is deliberately narrow.  A bundle that never entered an arena -- one
+    decoded from persistence, or built field by field -- has no authority for
+    a join and is refused here rather than being adopted implicitly by
+    whichever join happened to see it first.  A bundle whose arena its
+    lifecycle owner has closed is refused for the same reason.
+
+    Rebinding a decoded bundle is possible, but only through the explicit,
+    named :func:`bind_route_evidence`.
+    """
+
+    if type(evidence) is not CanonicalSemanticEvidence:
+        raise TypeError("route join requires canonical semantic evidence")
+    binding = evidence.route_binding
+    if binding is None:
+        raise RuntimeJoinRejected(
+            "canonical semantic evidence is not bound to a runtime authority "
+            "arena; rebind it explicitly before joining on it"
+        )
+    if not binding.is_live:
+        raise RuntimeJoinRejected(
+            "the runtime authority arena of this route bundle is closed"
+        )
+    return binding
+
+
+def bind_route_evidence(
+    evidence: CanonicalSemanticEvidence,
+    *,
+    arena: RuntimeAuthorityArena,
+) -> CanonicalSemanticEvidence:
+    """Adopt an unbound bundle into ``arena`` and return the bound value.
+
+    This is the named rebind step at the decode boundary.  It never mints or
+    moves a content identity: the returned bundle carries byte-identical
+    canonical fields, compares equal to its input, and encodes to the same
+    canonical bytes.  All it adds is the authority to join, and it adds it
+    only when a caller asks for it by name.
+
+    An already-bound bundle is refused rather than re-adopted, because
+    "re-adoption" is exactly the implicit behaviour the decode rule forbids:
+    the caller has to decide which arena owns the value, and a bundle that
+    already has one is not that caller's to give away.
+    """
+
+    if type(evidence) is not CanonicalSemanticEvidence:
+        raise TypeError("route rebind requires canonical semantic evidence")
+    if type(arena) is not RuntimeAuthorityArena:
+        raise TypeError("route rebind requires a runtime authority arena")
+    if evidence.route_binding is not None:
+        raise RuntimeJoinRejected(
+            "canonical semantic evidence is already bound to a runtime "
+            "authority arena"
+        )
+    if arena.is_closed:
+        raise RuntimeJoinRejected(
+            "cannot rebind into a closed runtime authority arena"
+        )
+    route_proofs = evidence.route_proofs
+    return CanonicalSemanticEvidence(
+        native_key=evidence.native_key,
+        generation=evidence.generation,
+        atomic_group_id=evidence.atomic_group_id,
+        route_proofs=route_proofs,
+        _runtime_identity=evidence.runtime_identity,
+        _runtime_binding=_mint_route_binding(
+            arena,
+            native_key=evidence.native_key,
+            generation=evidence.generation,
+            atomic_group_id=evidence.atomic_group_id,
+            route_proofs=route_proofs,
+        ),
+    )
+
+
+def materialize_route_evidence(
+    evidence: CanonicalSemanticEvidence,
+) -> CanonicalSemanticEvidence:
+    """Return the canonical, unbound value of ``evidence`` for persistence.
+
+    Materializing is the mirror of rebinding: it drops the join authority and
+    keeps the content.  The result compares equal to its input and encodes to
+    the same canonical bytes -- a reference was never in those bytes -- so
+    this function exists to make the *intent* explicit at a persistence
+    boundary, and to guarantee that what leaves the process cannot be joined
+    on when it comes back without a rebind.
+    """
+
+    if type(evidence) is not CanonicalSemanticEvidence:
+        raise TypeError("route materialization requires canonical semantic evidence")
+    if evidence.route_binding is None:
+        return evidence
+    return CanonicalSemanticEvidence(
+        native_key=evidence.native_key,
+        generation=evidence.generation,
+        atomic_group_id=evidence.atomic_group_id,
+        route_proofs=evidence.route_proofs,
+        _runtime_identity=evidence.runtime_identity,
     )
 
 
@@ -9402,7 +9714,12 @@ __all__ = [
     "CanonicalSemanticEvidenceProductionResult",
     "CanonicalSemanticEvidenceProductionStage",
     "canonical_semantic_evidence_from_proofs",
+    "RouteAuthorityBinding",
+    "RouteGroupRecord",
     "RuntimeRouteIdentity",
+    "bind_route_evidence",
+    "materialize_route_evidence",
+    "route_join_binding",
     "runtime_semantic_evidence_from_proofs",
     "runtime_semantic_route_scope",
     "semantic_evidence_with_additional_proofs",

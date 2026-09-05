@@ -43,6 +43,29 @@ content-derived guarantee for anything else.
 """
 
 
+RUNTIME_AUTHORITY_SIDECAR_FIELDS = frozenset({
+    "_runtime_identity",
+    "_runtime_binding",
+})
+"""Closed set of private dataclass fields that carry live runtime authority.
+
+A record may carry a *sidecar*: a private, ``compare=False`` field holding a
+scope or an arena binding.  It is deliberately outside the record's canonical
+schema -- absent from ``ids._RECORD_FIELDS``, from the wire encoding and from
+the record's equality -- because a live process-local authority is not
+content and cannot be serialized, detached or hashed.
+
+Generic walkers enumerate ``dataclasses.fields`` rather than the schema, so
+they see these fields anyway.  This is the one list that tells such a walker
+to skip them.  It is an explicit closed set rather than a "private and
+``compare=False``" rule because that rule would also swallow private
+*construction markers* such as ``ObligationEvidenceIndex._token`` and
+``PreparationAuthorityReceipt._minted``, whose ``__post_init__`` requires them
+to be present.  Adding a sidecar therefore means adding its name here, on
+purpose and visibly.
+"""
+
+
 class RuntimeAuthorityKind(IntEnum):
     """Closed set of authority records that may carry one runtime reference."""
 
@@ -174,6 +197,25 @@ class RuntimeAuthorityArenaError(RuntimeError):
     must fail closed catches one class instead of guessing between
     ``KeyError`` and ``ValueError``.  A wrong *type* is still a ``TypeError``:
     that is a programming error, not an authority decision.
+    """
+
+
+class RuntimeJoinRejected(RuntimeError):
+    """Fail-closed refusal of a runtime join.
+
+    An arena raises :class:`RuntimeAuthorityArenaError` for *its* three
+    rejections.  A join is a different vocabulary: it asks whether the records
+    in hand may be correlated at all, and its callers live outside this module.
+    Every holder of an arena therefore translates the arena's exception into
+    this one at its own boundary, so a join site catches exactly one class and
+    the arena's internal exception never escapes into calling code.
+
+    The three refusals that reach a join, all of them deliberate:
+
+    * a value that was never bound to an arena -- a decoded or directly
+      constructed record -- reaching a join without an explicit rebind;
+    * a reference or a record belonging to a different arena;
+    * a reference whose arena has been closed by its lifecycle owner.
     """
 
 
@@ -417,10 +459,12 @@ def is_runtime_authority_identity(value: object) -> bool:
 
 __all__ = [
     "RUNTIME_AUTHORITY_ID_PREFIX",
+    "RUNTIME_AUTHORITY_SIDECAR_FIELDS",
     "RuntimeAuthorityArena",
     "RuntimeAuthorityArenaError",
     "RuntimeAuthorityKind",
     "RuntimeAuthorityRef",
     "RuntimeAuthorityScope",
+    "RuntimeJoinRejected",
     "is_runtime_authority_identity",
 ]

@@ -11,6 +11,7 @@ from types import MappingProxyType, MemberDescriptorType
 import weakref
 
 from d810.core.logging import getLogger
+from d810.core.runtime_identity import RUNTIME_AUTHORITY_SIDECAR_FIELDS
 from d810.ir.flowgraph import BlockKind, InsnKind
 from d810.ir.semantics import ControlTransferKind
 from d810.ir.block_identity import StableBlockIdentity
@@ -3104,6 +3105,29 @@ def _stored_dataclass_field(value: object, name: str) -> object:
     raise TypeError("registered dataclass field has unsupported storage")
 
 
+def _is_runtime_authority_sidecar(field: object) -> bool:
+    """Return whether one dataclass field carries live runtime authority.
+
+    The structural snapshot and the detached copy are both about a record's
+    *canonical schema*, which is what a seal and a registry comparison
+    compare.  A runtime authority sidecar is not part of it: it is absent from
+    ``ids._RECORD_FIELDS``, from the wire encoding and from the record's
+    equality, and it holds a live arena, which is process-local authority
+    rather than content -- there is nothing about it a snapshot could record
+    and nothing a detached copy could legitimately duplicate.
+
+    Enumerating ``dataclasses.fields`` instead of the schema is what let it in.
+    The closed name set is in ``d810.core.runtime_identity``; see its
+    docstring for why this is not the broader "private and ``compare=False``"
+    rule.
+    """
+
+    return (
+        field.compare is False
+        and field.name in RUNTIME_AUTHORITY_SIDECAR_FIELDS
+    )
+
+
 def _registry_structural_snapshot(value: object) -> tuple[object, ...]:
     """Capture exact closed state without retaining or calling candidate values."""
     occurrences: dict[int, int] = {}
@@ -3184,6 +3208,7 @@ def _registry_structural_snapshot(value: object) -> tuple[object, ...]:
                 return tuple(
                     (field.name, visit(_stored_dataclass_field(item, field.name)))
                     for field in dataclass_fields(item_type)
+                    if not _is_runtime_authority_sidecar(field)
                 )
             return compound(
                 item,
@@ -3247,6 +3272,11 @@ def _detached_canonical_copy(value: object, memo: dict[int, object]) -> object:
         clone = object.__new__(value_type)
         memo[id(value)] = clone
         for item in dataclass_fields(value_type):
+            if _is_runtime_authority_sidecar(item):
+                # A detached copy is by definition unbound: it must not carry
+                # the original's live arena, and the reading properties on the
+                # record tolerate the unset slot exactly for this case.
+                continue
             object.__setattr__(
                 clone, item.name,
                 _detached_canonical_copy(

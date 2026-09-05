@@ -111,6 +111,7 @@ from d810.analyses.control_flow.semantic_route_evidence import (
     CanonicalSemanticEvidenceProductionContext,
     build_canonical_semantic_evidence,
     canonical_semantic_evidence_from_proofs,
+    route_join_binding,
     SemanticRouteFact,
     SemanticRouteFactKind,
     SemanticPartitionMemberReplacementWitness,
@@ -181,6 +182,7 @@ from d810.analyses.value_flow import (
 )
 from d810.core import logging
 from d810.core.native_preanalysis_key import NativePreanalysisKey
+from d810.core.runtime_identity import RuntimeAuthorityRef
 from d810.core.observability_unflat import note_unflat_counters
 from d810.core.typing import Mapping
 from d810.core.observability_preanalysis import (
@@ -15003,7 +15005,16 @@ def emit_minimal_unflatten(
             if native_bound_entry_route_mods and not concrete_entry_route_forecasts:
                 raise ValueError("native-bound concrete entry route lacks one exact proof")
             selected_route_proof_ids: list[str] = []
-            route_owner_by_proof_id: dict[str, str] = {}
+            # Route ownership is a runtime join: it asks which selection owns
+            # this exact canonical proof.  It keys on the bundle's arena
+            # reference, so a proof that is not this bundle's own record --
+            # a forgery, a copy, a proof from a superseded bundle -- cannot
+            # claim ownership by carrying a matching identifier string.  The
+            # binding is taken here, after the last point the bundle can be
+            # rebuilt, because a rebuild is a different bundle with different
+            # references.
+            route_binding = route_join_binding(canonical_route_evidence)
+            route_owner_by_proof_ref: dict[RuntimeAuthorityRef, str] = {}
             selected_transition_proofs: list[SemanticRouteProof] = []
             entry_liveness_proof: SemanticRouteProof | None = None
             terminal_delivery_by_redirect: dict[
@@ -15042,14 +15053,18 @@ def emit_minimal_unflatten(
             )
 
             def select_route(owner: str, proof) -> None:
-                prior_owner = route_owner_by_proof_id.get(proof.proof_id)
+                ref = route_binding.ref_for(proof)
+                prior_owner = route_owner_by_proof_ref.get(ref)
                 if prior_owner is not None:
                     if prior_owner != owner:
                         raise ValueError(
                             "canonical route proof selected by multiple owners"
                         )
                     return
-                route_owner_by_proof_id[proof.proof_id] = owner
+                route_owner_by_proof_ref[ref] = owner
+                # The selection that crosses into the authority transaction
+                # stays a content channel: the proposal schema carries
+                # canonical identifiers, and this list is what fills it.
                 selected_route_proof_ids.append(proof.proof_id)
 
             if held_entry_fact is not None and entry_endpoint_liveness_carriers:
@@ -15325,13 +15340,14 @@ def emit_minimal_unflatten(
                             ),
                         )
                     raise
-                if proof.proof_id not in route_owner_by_proof_id:
+                if route_binding.ref_for(proof) not in route_owner_by_proof_ref:
                     selected_transition_proofs.append(proof)
                 select_route("state_write_transition", proof)
 
             if (
                 entry_liveness_proof is not None
-                and entry_liveness_proof.proof_id not in route_owner_by_proof_id
+                and route_binding.ref_for(entry_liveness_proof)
+                not in route_owner_by_proof_ref
             ):
                 select_route("entry_endpoint_liveness", entry_liveness_proof)
 
@@ -15347,7 +15363,7 @@ def emit_minimal_unflatten(
                     block_refs_by_serial=block_refs_by_serial,
                     canonical_evidence=canonical_route_evidence,
                     selected_transitions=selected_transition_index,
-                    proof_owners=route_owner_by_proof_id,
+                    proof_owners=route_owner_by_proof_ref,
                 )
                 selected_route_proof_ids.append(proof.proof_id)
             for route in bootstrap_entry_routes:
@@ -15484,7 +15500,7 @@ def emit_minimal_unflatten(
                     selected_route_proofs=tuple(
                         proof
                         for proof in canonical_route_evidence.route_proofs
-                        if proof.proof_id in frozenset(selected_route_proof_ids)
+                        if route_binding.ref_for(proof) in route_owner_by_proof_ref
                     ),
                 )
             )

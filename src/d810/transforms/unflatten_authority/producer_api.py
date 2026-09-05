@@ -14,6 +14,7 @@ from dataclasses import dataclass, replace
 
 from d810.analyses.control_flow.semantic_route_evidence import (
     CanonicalSemanticEvidence,
+    route_join_binding,
     SemanticRouteDestination,
     SemanticRouteProof,
     SemanticRouteProofKind,
@@ -37,6 +38,7 @@ from d810.analyses.control_flow.effect_branch_exclusion import (
     ExactStateBranchEffectExclusion,
 )
 from d810.core.native_preanalysis_key import NativePreanalysisKey
+from d810.core.runtime_identity import RuntimeAuthorityRef, RuntimeJoinRejected
 from d810.ir.expressions import ValueOpKind
 from d810.ir.flowgraph import BlockKind, BlockSnapshot, FlowGraph, InsnKind, InsnSnapshot, MopSnapshot, OperandKind
 from d810.ir.graph_fingerprint import instruction_projection_without_block_references
@@ -146,6 +148,36 @@ class TransitionRouteSelectionKey:
             raise TypeError("transition route key requires stable target identity")
         object.__setattr__(self, "state_constant", int(self.state_constant) & 0xFFFFFFFF)
         object.__setattr__(self, "target_anchor_ea", int(self.target_anchor_ea))
+
+
+def bundle_route_proof_refs(
+    evidence: CanonicalSemanticEvidence,
+    proofs: Iterable[SemanticRouteProof],
+    *,
+    rejection: str,
+) -> tuple[RuntimeAuthorityRef, ...]:
+    """Return the arena reference of every proof, proving bundle membership.
+
+    This is the route-group -> proof join.  It replaces the pattern that built
+    a ``{proof.proof_id: proof}`` index of the whole bundle and then compared
+    each candidate to the indexed record: that asked whether some proof with
+    the same content ID is present *and* compares equal, which is a content
+    question answered by walking a record graph.  The authority question is
+    whether this exact record is a proof of this exact bundle, and the arena
+    answers it in constant time.
+
+    A proof that is not the bundle's own record -- a forgery, a
+    ``dataclasses.replace`` copy, a proof from a different bundle -- is
+    refused.  The arena's own refusal is translated into ``rejection`` here,
+    at this boundary, so callers keep catching ``ValueError`` and the arena's
+    exception type does not leak into the authority package.
+    """
+
+    binding = route_join_binding(evidence)
+    try:
+        return tuple(binding.ref_for(proof) for proof in proofs)
+    except RuntimeJoinRejected as exc:
+        raise ValueError(rejection) from exc
 
 
 @dataclass(frozen=True, slots=True)
@@ -1274,14 +1306,13 @@ def derive_authoritative_handler_serials(
     if type(state_identity) is not StorageIdentity:
         raise TypeError("state_identity must be a StorageIdentity")
     selected_proofs = tuple(selected_route_proofs)
-    known_proofs = {
-        proof.proof_id: proof
-        for proof in canonical_route_evidence.route_proofs
-    }
     if any(type(proof) is not SemanticRouteProof for proof in selected_proofs):
         raise TypeError("selected_route_proofs must contain canonical route proofs")
-    if any(known_proofs.get(proof.proof_id) != proof for proof in selected_proofs):
-        raise ValueError("selected route proof is foreign to canonical evidence")
+    bundle_route_proof_refs(
+        canonical_route_evidence,
+        selected_proofs,
+        rejection="selected route proof is foreign to canonical evidence",
+    )
     # A selected route claim discharges only its retired source endpoint. Its
     # destination remains a physical delivery obligation unless independently
     # discharged by a selected route that retires that exact source identity.
@@ -1742,7 +1773,7 @@ def resolve_concrete_entry_route(
     block_refs_by_serial: Mapping[int, AuthorityBlockRef],
     canonical_evidence: CanonicalSemanticEvidence,
     selected_transitions: TransitionRouteSelectionIndex,
-    proof_owners: MutableMapping[str, str],
+    proof_owners: MutableMapping[RuntimeAuthorityRef, str],
 ) -> SemanticRouteProof:
     """Select and own the exact canonical proof for one entry-prefix route."""
 
@@ -1830,9 +1861,17 @@ def resolve_concrete_entry_route(
     )
     if len(destinations) != 1:
         raise ValueError("concrete entry target/state proof mismatch")
-    if proof.proof_id in proof_owners:
+    # Ownership is keyed on the bundle's arena reference, so "already owned"
+    # is a statement about this exact canonical proof rather than about any
+    # record that renders the same identifier.
+    proof_ref = bundle_route_proof_refs(
+        canonical_evidence,
+        (proof,),
+        rejection="concrete entry proof is foreign to canonical evidence",
+    )[0]
+    if proof_ref in proof_owners:
         raise ValueError("concrete entry proof is already owned")
-    proof_owners[proof.proof_id] = route.proof_owner_identity
+    proof_owners[proof_ref] = route.proof_owner_identity
     return proof
 
 
@@ -3065,16 +3104,29 @@ def build_equivalent_route_claims(
     selected = tuple(selected_proof_ids)
     if not selected:
         return ()
-    known = {proof.proof_id: proof for proof in route_evidence.route_proofs}
     if any(type(item) is not str or not item for item in selected):
         raise TypeError("selected_proof_ids must contain exact proof IDs")
     if len(set(selected)) != len(selected):
         raise ValueError("selected_proof_ids must not contain duplicates")
-    if any(item not in known for item in selected):
+    # ``selected_proof_ids`` is a *content* channel: it crosses into the
+    # authority transaction as canonical identifiers and stays that way.  The
+    # resolution below is therefore the one place the content ID is read, and
+    # the claim order that comes out of it is the arena's mint order, not a
+    # string sort -- mint order is the bundle's canonical proof order, so this
+    # produces the identical sequence without ordering on a hash.
+    binding = route_join_binding(route_evidence)
+    wanted = frozenset(selected)
+    ordered_proofs = tuple(
+        binding.proof_for(ref)
+        for ref in sorted(binding.proof_refs, key=binding.order_key)
+    )
+    resolved = tuple(
+        proof for proof in ordered_proofs if proof.proof_id in wanted
+    )
+    if len(resolved) != len(selected):
         raise ValueError("selected route proof is foreign to canonical evidence")
     claims = []
-    for proof_id in sorted(selected):
-        proof = known[proof_id]
+    for proof in resolved:
         claims.append(
             _equivalent_route_claim(
                 source_catalog=source_catalog,
@@ -3217,6 +3269,7 @@ def build_exact_effect_claim(
 
 
 __all__ = [
+    "bundle_route_proof_refs",
     "ConcreteEntryRouteForecast",
     "TransitionRouteSelectionKey",
     "TransitionRouteSelectionIndex",

@@ -21,6 +21,7 @@ from d810.analyses.control_flow.logical_route_endpoint import (
     is_exact_logical_function_exit_inventory_row_shape,
 )
 from d810.core.native_preanalysis_key import NativePreanalysisKey
+from d810.core.runtime_identity import RUNTIME_AUTHORITY_SIDECAR_FIELDS
 from d810.ir.block_identity import NativeEaInterval, NativeEaIntervalSet, StableBlockIdentity
 from d810.core.typing import Literal, Protocol, TypeAlias, runtime_checkable
 from d810.ir.semantic_edge import SemanticEdgeRole
@@ -207,7 +208,14 @@ def _structural_key(value: object):
         return (
             "dataclass",
             value.__class__.__qualname__,
-            tuple((field.name, _structural_key(getattr(value, field.name))) for field in fields(value)),
+            # A runtime authority sidecar is not durable and not canonical: it
+            # names a live arena, so it has no key by construction.  See
+            # ``RUNTIME_AUTHORITY_SIDECAR_FIELDS``.
+            tuple(
+                (field.name, _structural_key(getattr(value, field.name)))
+                for field in fields(value)
+                if field.name not in RUNTIME_AUTHORITY_SIDECAR_FIELDS
+            ),
         )
     raise TypeError(f"no durable canonical key for {type(value).__name__}")
 
