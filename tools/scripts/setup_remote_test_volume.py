@@ -11,16 +11,24 @@ stored in the volume's options and is visible to ``docker volume inspect`` on
 the remote host.  That is the accepted trade for typing it once; remove it with
 ``docker volume rm <volume>``.
 
+The helper also undoes itself: ``--status`` shows what exists (with the stored
+password redacted) and what still references the volume, ``--remove`` deletes
+the volume and with it the stored credential.
+
 Examples::
 
     python3 tools/scripts/setup_remote_test_volume.py --dry-run
     python3 tools/scripts/setup_remote_test_volume.py --remote remote-engine.example
+    python3 tools/scripts/setup_remote_test_volume.py --status
+    python3 tools/scripts/setup_remote_test_volume.py --remove [--force]
 """
 
 from __future__ import annotations
 
 import argparse
 import getpass
+import json
+import re
 import subprocess
 import sys
 from typing import Sequence
@@ -35,6 +43,12 @@ DEFAULT_GID = "0"
 DEFAULT_FILE_MODE = "0700"
 DEFAULT_DIR_MODE = "0700"
 REDACTION = "********"
+PASSWORD_OPTION_PATTERN = re.compile(r"(?<=password=)[^,]*")
+CONTAINER_FORMAT = "{{.ID}} {{.Status}} {{.Names}}"
+LOCK_REMINDER = (
+    "Per-worktree run locks are released by the runner's EXIT trap; a stale one is "
+    "removed with: rmdir <worktree>/.tmp/remote-run.lock"
+)
 
 
 def share_host(share: str) -> str:
@@ -131,6 +145,135 @@ def redact_argv(argv: Sequence[str], password: str) -> list[str]:
     return [argument.replace(password, REDACTION) for argument in argv]
 
 
+def build_inspect_argv(*, remote: str, volume: str) -> list[str]:
+    """Build the ``docker volume inspect`` argv.
+
+    >>> build_inspect_argv(remote="h", volume="v")
+    ['docker', '-H', 'ssh://h', 'volume', 'inspect', 'v']
+    """
+    return ["docker", "-H", f"ssh://{remote}", "volume", "inspect", volume]
+
+
+def build_container_filter_argv(*, remote: str, volume: str) -> list[str]:
+    """Build the argv that lists containers still referencing the volume.
+
+    >>> build_container_filter_argv(remote="h", volume="v")[3:7]
+    ['ps', '-a', '--filter', 'volume=v']
+    """
+    return [
+        "docker",
+        "-H",
+        f"ssh://{remote}",
+        "ps",
+        "-a",
+        "--filter",
+        f"volume={volume}",
+        "--format",
+        CONTAINER_FORMAT,
+    ]
+
+
+def build_remove_volume_argv(*, remote: str, volume: str) -> list[str]:
+    """Build the ``docker volume rm`` argv.
+
+    >>> build_remove_volume_argv(remote="h", volume="v")
+    ['docker', '-H', 'ssh://h', 'volume', 'rm', 'v']
+    """
+    return ["docker", "-H", f"ssh://{remote}", "volume", "rm", volume]
+
+
+def build_remove_containers_argv(*, remote: str, container_ids: Sequence[str]) -> list[str]:
+    """Build the ``docker rm -f`` argv for leftover containers.
+
+    >>> build_remove_containers_argv(remote="h", container_ids=["a", "b"])
+    ['docker', '-H', 'ssh://h', 'rm', '-f', 'a', 'b']
+    """
+    if not container_ids:
+        raise ValueError("no containers to remove")
+    return ["docker", "-H", f"ssh://{remote}", "rm", "-f", *container_ids]
+
+
+def redact_options(options: str) -> str:
+    """Hide the password inside a stored ``o=`` option string.
+
+    ``docker volume inspect`` returns the credential in cleartext; nothing here
+    ever prints it.
+
+    >>> redact_options("addr=h,username=u,password=hunter2,vers=3.0")
+    'addr=h,username=u,password=********,vers=3.0'
+    >>> redact_options("addr=h,vers=3.0")
+    'addr=h,vers=3.0'
+    """
+    return PASSWORD_OPTION_PATTERN.sub(REDACTION, options)
+
+
+def parse_container_lines(output: str) -> list[str]:
+    r"""Split ``docker ps`` output into non-empty container lines.
+
+    >>> parse_container_lines("abc Up 2 min name\n\n")
+    ['abc Up 2 min name']
+    >>> parse_container_lines("")
+    []
+    """
+    return [line.strip() for line in output.splitlines() if line.strip()]
+
+
+def removal_decision(containers: Sequence[str], force: bool) -> str:
+    """Decide what to do about containers pinning the volume.
+
+    >>> removal_decision([], False)
+    'proceed'
+    >>> removal_decision(["abc Exited name"], False)
+    'refuse'
+    >>> removal_decision(["abc Exited name"], True)
+    'force'
+    """
+    if not containers:
+        return "proceed"
+    return "force" if force else "refuse"
+
+
+def format_status(inspect_output: str, container_output: str) -> str:
+    """Render ``volume inspect`` for humans, with the password redacted.
+
+    >>> print(format_status(
+    ...     '[{"Driver": "local", "Options": {"device": "//h/s",'
+    ...     ' "o": "username=u,password=pw", "type": "cifs"}}]', ""))
+    driver:  local
+    device:  //h/s
+    type:    cifs
+    options: username=u,password=********
+    containers referencing the volume: none
+    """
+    try:
+        payload = json.loads(inspect_output)
+    except (ValueError, TypeError):
+        payload = []
+    entry = payload[0] if isinstance(payload, list) and payload else {}
+    options = entry.get("Options") or {}
+    lines = [
+        f"driver:  {entry.get('Driver', 'unknown')}",
+        f"device:  {options.get('device', 'unknown')}",
+        f"type:    {options.get('type', 'unknown')}",
+        f"options: {redact_options(options.get('o', ''))}",
+    ]
+    containers = parse_container_lines(container_output)
+    if containers:
+        lines.append("containers referencing the volume:")
+        lines.extend(f"  {line}" for line in containers)
+    else:
+        lines.append("containers referencing the volume: none")
+    return "\n".join(lines)
+
+
+def run_capture(argv: Sequence[str]) -> tuple[int, str]:
+    """Run a docker command and capture stdout (impure seam for tests)."""
+    completed = subprocess.run(
+        list(argv), capture_output=True, text=True, check=False
+    )
+    return completed.returncode, completed.stdout
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=__doc__,
@@ -143,13 +286,134 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="print the redacted docker argv instead of running it",
+        help="print the redacted docker argv instead of running it (all modes)",
+    )
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument(
+        "--status",
+        action="store_true",
+        help="show the volume (password redacted) and anything still referencing it",
+    )
+    mode.add_argument(
+        "--remove",
+        action="store_true",
+        help="delete the volume, and with it the stored credential",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="with --remove: also `docker rm -f` containers that still reference the volume",
+    )
+    parser.add_argument(
+        "--recreate",
+        action="store_true",
+        help="remove an existing volume before creating it (create mode refuses otherwise)",
     )
     return parser
 
 
-def main(argv: Sequence[str] | None = None) -> int:
-    arguments = build_parser().parse_args(argv)
+def _status(arguments: argparse.Namespace) -> int:
+    inspect_argv = build_inspect_argv(remote=arguments.remote, volume=arguments.volume)
+    containers_argv = build_container_filter_argv(
+        remote=arguments.remote, volume=arguments.volume
+    )
+    if arguments.dry_run:
+        print(" ".join(inspect_argv))
+        print(" ".join(containers_argv))
+        return 0
+    status, inspect_output = run_capture(inspect_argv)
+    if status != 0:
+        print(f"volume {arguments.volume} is absent on ssh://{arguments.remote}")
+        return 1
+    _, container_output = run_capture(containers_argv)
+    print(format_status(inspect_output, container_output))
+    return 0
+
+
+def _remove(arguments: argparse.Namespace) -> int:
+    inspect_argv = build_inspect_argv(remote=arguments.remote, volume=arguments.volume)
+    containers_argv = build_container_filter_argv(
+        remote=arguments.remote, volume=arguments.volume
+    )
+    remove_argv = build_remove_volume_argv(
+        remote=arguments.remote, volume=arguments.volume
+    )
+    if arguments.dry_run:
+        print(" ".join(containers_argv))
+        if arguments.force:
+            print(f"docker -H ssh://{arguments.remote} rm -f <containers listed above>")
+        print(" ".join(remove_argv))
+        return 0
+
+    status, _ = run_capture(inspect_argv)
+    if status != 0:
+        print(f"volume {arguments.volume} is already absent on ssh://{arguments.remote}")
+        return 0
+
+    _, container_output = run_capture(containers_argv)
+    containers = parse_container_lines(container_output)
+    decision = removal_decision(containers, arguments.force)
+    if decision == "refuse":
+        print(
+            f"ERROR: {len(containers)} container(s) still reference volume {arguments.volume}:",
+            file=sys.stderr,
+        )
+        for line in containers:
+            print(f"       {line}", file=sys.stderr)
+        print(
+            "       The runner starts its containers with --rm, so a leftover means a crashed "
+            "or killed run. Re-run with --force to `docker rm -f` them first.",
+            file=sys.stderr,
+        )
+        return 1
+    if decision == "force":
+        identifiers = [line.split()[0] for line in containers]
+        status, _ = run_capture(
+            build_remove_containers_argv(
+                remote=arguments.remote, container_ids=identifiers
+            )
+        )
+        if status != 0:
+            print(
+                f"ERROR: could not remove containers {' '.join(identifiers)}",
+                file=sys.stderr,
+            )
+            return status or 1
+
+    status, _ = run_capture(remove_argv)
+    if status != 0:
+        print(
+            f"ERROR: docker volume rm {arguments.volume} failed with exit status {status}",
+            file=sys.stderr,
+        )
+        return status or 1
+    print(
+        f"removed volume {arguments.volume} from ssh://{arguments.remote}; "
+        "the stored SMB credential is deleted with it"
+    )
+    print(LOCK_REMINDER)
+    return 0
+
+
+def _create(arguments: argparse.Namespace) -> int:
+    if not arguments.dry_run:
+        status, _ = run_capture(
+            build_inspect_argv(remote=arguments.remote, volume=arguments.volume)
+        )
+        if status == 0:
+            if not arguments.recreate:
+                print(
+                    f"ERROR: volume {arguments.volume} already exists on ssh://{arguments.remote}; "
+                    "use --recreate to replace it or --remove to delete it",
+                    file=sys.stderr,
+                )
+                return 1
+            removal_status = _remove(arguments)
+            if removal_status != 0:
+                return removal_status
+    elif arguments.recreate:
+        print(" ".join(build_remove_volume_argv(remote=arguments.remote, volume=arguments.volume)))
+
     password = ""
     try:
         try:
@@ -171,10 +435,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             options=options,
         )
         printable = " ".join(redact_argv(command, password))
-        if arguments.dry_run:
-            print(printable)
-            return 0
         print(printable)
+        if arguments.dry_run:
+            return 0
         try:
             subprocess.run(command, check=True)
         except subprocess.CalledProcessError as error:
@@ -194,6 +457,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     finally:
         password = ""
         del password
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    arguments = build_parser().parse_args(argv)
+    if arguments.status:
+        return _status(arguments)
+    if arguments.remove:
+        return _remove(arguments)
+    return _create(arguments)
 
 
 if __name__ == "__main__":

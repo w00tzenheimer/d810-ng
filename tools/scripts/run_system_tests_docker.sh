@@ -106,6 +106,11 @@
 #
 #     python3 tools/scripts/setup_remote_test_volume.py --remote remote-engine.example
 #     python3 tools/scripts/setup_remote_test_volume.py --dry-run   # print the redacted argv
+#     python3 tools/scripts/setup_remote_test_volume.py --status    # what exists, password redacted
+#     python3 tools/scripts/setup_remote_test_volume.py --remove [--force]  # delete it + the credential
+#
+#   Create refuses an existing volume (use --recreate); --remove refuses while containers still
+#   reference it (use --force). Neither touches the Mac-side per-worktree run locks.
 #
 #   It runs `docker -H ssh://HOST volume create --driver local --opt type=cifs
 #   --opt device=//smb-server.example/idapro --opt o=addr=smb-server.example,username=smbuser,password=...,vers=3.0,

@@ -119,6 +119,11 @@ def test_dry_run_prints_the_redacted_argv_and_runs_no_docker(
         raise AssertionError("--dry-run must not run docker")
 
     monkeypatch.setattr(setup_remote_test_volume.subprocess, "run", _fail)
+    monkeypatch.setattr(
+        setup_remote_test_volume,
+        "run_capture",
+        lambda argv: (_ for _ in ()).throw(AssertionError("--dry-run must not run docker")),
+    )
 
     status = setup_remote_test_volume.main(["--dry-run"])
     printed = capsys.readouterr().out
@@ -141,6 +146,9 @@ def test_failure_reports_one_line_and_a_nonzero_status(
     def _fail(command: list[str], **kwargs: object) -> None:
         raise setup_remote_test_volume.subprocess.CalledProcessError(7, command)
 
+    monkeypatch.setattr(
+        setup_remote_test_volume, "run_capture", lambda argv: (1, "")
+    )
     monkeypatch.setattr(setup_remote_test_volume.subprocess, "run", _fail)
 
     status = setup_remote_test_volume.main([])
@@ -162,6 +170,9 @@ def test_success_runs_the_built_argv(
         setup_remote_test_volume.getpass, "getpass", lambda prompt: "hunter2"
     )
     monkeypatch.setattr(
+        setup_remote_test_volume, "run_capture", lambda argv: (1, "")
+    )
+    monkeypatch.setattr(
         setup_remote_test_volume.subprocess,
         "run",
         lambda command, **kwargs: recorded.append(list(command)),
@@ -175,6 +186,250 @@ def test_success_runs_the_built_argv(
     assert "username=tester" in " ".join(recorded[0])
     assert "hunter2" not in printed
     assert "docker volume inspect other" in printed
+
+
+INSPECT_PAYLOAD = (
+    '[{"Name": "idapro", "Driver": "local", "Mountpoint": "/var/lib/docker/volumes/idapro/_data",'
+    ' "Options": {"device": "//smb-server.example/idapro", "o":'
+    ' "addr=smb-server.example,username=smbuser,password=hunter2,vers=3.0,uid=0,gid=0,'
+    'file_mode=0700,dir_mode=0700", "type": "cifs"}}]'
+)
+
+
+def _fake_capture(monkeypatch: pytest.MonkeyPatch, responses: dict[str, tuple[int, str]]):
+    """Route run_capture by the docker sub-command, recording every argv."""
+    recorded: list[list[str]] = []
+
+    def _capture(argv):
+        argv = list(argv)
+        recorded.append(argv)
+        for key, response in responses.items():
+            if key in " ".join(argv):
+                return response
+        return (0, "")
+
+    monkeypatch.setattr(setup_remote_test_volume, "run_capture", _capture)
+    return recorded
+
+
+def test_inspect_and_filter_argv_shapes() -> None:
+    assert setup_remote_test_volume.build_inspect_argv(remote="h", volume="v") == [
+        "docker", "-H", "ssh://h", "volume", "inspect", "v",
+    ]
+    assert setup_remote_test_volume.build_container_filter_argv(remote="h", volume="v") == [
+        "docker", "-H", "ssh://h", "ps", "-a", "--filter", "volume=v",
+        "--format", "{{.ID}} {{.Status}} {{.Names}}",
+    ]
+    assert setup_remote_test_volume.build_remove_volume_argv(remote="h", volume="v") == [
+        "docker", "-H", "ssh://h", "volume", "rm", "v",
+    ]
+    assert setup_remote_test_volume.build_remove_containers_argv(
+        remote="h", container_ids=["a", "b"]
+    ) == ["docker", "-H", "ssh://h", "rm", "-f", "a", "b"]
+    with pytest.raises(ValueError):
+        setup_remote_test_volume.build_remove_containers_argv(remote="h", container_ids=[])
+
+
+def test_status_output_redacts_the_stored_password() -> None:
+    rendered = setup_remote_test_volume.format_status(INSPECT_PAYLOAD, "")
+
+    assert "hunter2" not in rendered
+    assert "password=********" in rendered
+    assert "driver:  local" in rendered
+    assert "device:  //smb-server.example/idapro" in rendered
+    assert "type:    cifs" in rendered
+    assert "containers referencing the volume: none" in rendered
+
+
+def test_status_output_lists_referencing_containers() -> None:
+    rendered = setup_remote_test_volume.format_status(
+        INSPECT_PAYLOAD, "abc123 Exited (137) 2 minutes ago sad_hopper\n"
+    )
+
+    assert "containers referencing the volume:" in rendered
+    assert "  abc123 Exited (137) 2 minutes ago sad_hopper" in rendered
+
+
+def test_status_output_survives_unparseable_inspect() -> None:
+    rendered = setup_remote_test_volume.format_status("not json", "")
+
+    assert "driver:  unknown" in rendered
+
+
+@pytest.mark.parametrize(
+    "containers,force,expected",
+    [
+        ([], False, "proceed"),
+        ([], True, "proceed"),
+        (["a Exited n"], False, "refuse"),
+        (["a Exited n"], True, "force"),
+    ],
+)
+def test_removal_decision(containers: list[str], force: bool, expected: str) -> None:
+    assert setup_remote_test_volume.removal_decision(containers, force) == expected
+
+
+def test_status_mode_reports_present_volume(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _fake_capture(
+        monkeypatch,
+        {"volume inspect": (0, INSPECT_PAYLOAD), "ps -a": (0, "abc Up 3 minutes runner\n")},
+    )
+
+    status = setup_remote_test_volume.main(["--status"])
+    printed = capsys.readouterr().out
+
+    assert status == 0
+    assert "hunter2" not in printed
+    assert "password=********" in printed
+    assert "abc Up 3 minutes runner" in printed
+
+
+def test_status_mode_reports_absent_volume(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _fake_capture(monkeypatch, {"volume inspect": (1, "")})
+
+    status = setup_remote_test_volume.main(["--status"])
+
+    assert status == 1
+    assert "is absent" in capsys.readouterr().out
+
+
+def test_remove_refuses_while_containers_reference_the_volume(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recorded = _fake_capture(
+        monkeypatch,
+        {"volume inspect": (0, INSPECT_PAYLOAD), "ps -a": (0, "abc Exited (137) leftover\n")},
+    )
+
+    status = setup_remote_test_volume.main(["--remove"])
+    captured = capsys.readouterr()
+
+    assert status == 1
+    assert "abc Exited (137) leftover" in captured.err
+    assert "--rm" in captured.err
+    assert not any("volume rm" in " ".join(argv) for argv in recorded)
+
+
+def test_remove_with_force_kills_containers_then_the_volume(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recorded = _fake_capture(
+        monkeypatch,
+        {"volume inspect": (0, INSPECT_PAYLOAD), "ps -a": (0, "abc Exited (137) leftover\n")},
+    )
+
+    status = setup_remote_test_volume.main(["--remove", "--force"])
+    printed = capsys.readouterr().out
+
+    assert status == 0
+    joined = [" ".join(argv) for argv in recorded]
+    assert any("rm -f abc" in call for call in joined)
+    assert joined.index([c for c in joined if "rm -f abc" in c][0]) < joined.index(
+        [c for c in joined if "volume rm" in c][0]
+    )
+    assert "stored SMB credential is deleted" in printed
+    assert "remote-run.lock" in printed
+
+
+def test_remove_is_idempotent_when_absent(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recorded = _fake_capture(monkeypatch, {"volume inspect": (1, "")})
+
+    status = setup_remote_test_volume.main(["--remove"])
+    printed = capsys.readouterr().out
+
+    assert status == 0
+    assert "already absent" in printed
+    assert not any("volume rm" in " ".join(argv) for argv in recorded)
+
+
+def test_remove_never_touches_worktree_locks(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    lock = tmp_path / ".tmp" / "remote-run.lock"
+    lock.mkdir(parents=True)
+    _fake_capture(monkeypatch, {"volume inspect": (0, INSPECT_PAYLOAD)})
+
+    assert setup_remote_test_volume.main(["--remove"]) == 0
+    assert lock.is_dir()
+
+
+def test_create_refuses_an_existing_volume(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _fake_capture(monkeypatch, {"volume inspect": (0, INSPECT_PAYLOAD)})
+
+    def _fail(prompt: str) -> str:
+        raise AssertionError("must refuse before prompting for a password")
+
+    monkeypatch.setattr(setup_remote_test_volume.getpass, "getpass", _fail)
+
+    status = setup_remote_test_volume.main([])
+
+    assert status == 1
+    assert "already exists" in capsys.readouterr().err
+
+
+def test_recreate_removes_then_creates(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recorded = _fake_capture(monkeypatch, {"volume inspect": (0, INSPECT_PAYLOAD)})
+    monkeypatch.setattr(
+        setup_remote_test_volume.getpass, "getpass", lambda prompt: "hunter2"
+    )
+    created: list[list[str]] = []
+    monkeypatch.setattr(
+        setup_remote_test_volume.subprocess,
+        "run",
+        lambda command, **kwargs: created.append(list(command)),
+    )
+
+    status = setup_remote_test_volume.main(["--recreate"])
+    printed = capsys.readouterr().out
+
+    assert status == 0
+    assert any("volume rm" in " ".join(argv) for argv in recorded)
+    assert created and "volume" in created[0] and "create" in created[0]
+    assert "hunter2" not in printed
+
+
+def test_dry_run_covers_status_and_remove_modes(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _fail(argv):
+        raise AssertionError("--dry-run must not run docker")
+
+    monkeypatch.setattr(setup_remote_test_volume, "run_capture", _fail)
+
+    assert setup_remote_test_volume.main(["--status", "--dry-run"]) == 0
+    status_output = capsys.readouterr().out
+    assert "volume inspect idapro" in status_output
+    assert "--filter volume=idapro" in status_output
+
+    assert setup_remote_test_volume.main(["--remove", "--dry-run", "--force"]) == 0
+    remove_output = capsys.readouterr().out
+    assert "--filter volume=idapro" in remove_output
+    assert "rm -f <containers listed above>" in remove_output
+    assert "volume rm idapro" in remove_output
+
+
+def test_status_and_remove_are_mutually_exclusive() -> None:
+    with pytest.raises(SystemExit):
+        setup_remote_test_volume.main(["--status", "--remove"])
 
 
 def test_doctests_pass() -> None:
