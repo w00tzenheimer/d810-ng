@@ -122,6 +122,11 @@
 #   D810_REMOTE_SMB_USER    Account the SMB share authenticates as, and the account the runner
 #                           grants a .tmp-scoped ACL to. It must match the
 #                           credential stored in the volume.
+#   D810_REMOTE_SKIP_CLOCK_CHECK
+#                           Downgrade the preflight engine-clock check to a warning (default: 0).
+#                           The check aborts when the engine clock is more than 120 s off (5 s for a
+#                           D810_NATIVE_PROFILE=1 timing leg): a skewed clock makes apt reject
+#                           repository signatures and invalidates every duration the run reports.
 #   D810_REMOTE_SHARE_ROOT  Absolute host directory that the SMB share exports
 #                           Every mounted host path must live under it; the runner fails closed
 #                           otherwise. Put machine-specific D810_REMOTE_* values in the ignored .env.
@@ -357,6 +362,8 @@ CONFIGURED_REMOTE_HOST="${D810_REMOTE_DOCKER_HOST-}"
 REMOTE_HOST=""
 REMOTE_VOLUME="${D810_REMOTE_VOLUME-idapro}"
 REMOTE_SHARE_ROOT="${D810_REMOTE_SHARE_ROOT-}"
+REMOTE_SKIP_CLOCK_CHECK="${D810_REMOTE_SKIP_CLOCK_CHECK-0}"
+REMOTE_CLOCK_OFFSET=""
 # The run store survives the sync wipe so a run without artifact flags is not
 # silently lost, which means it needs its own bound. Run ids start with a UTC
 # timestamp, so a lexicographic sort is chronological.
@@ -1191,6 +1198,45 @@ _remote_preflight_engine() {
     echo "ERROR: image not present on the remote engine ssh://$REMOTE_HOST: $DOCKER_IMAGE" >&2
     exit 1
   fi
+  _remote_check_engine_clock
+}
+
+# A skewed engine clock is not a cosmetic problem: apt rejects repository
+# signatures as "created after the --not-after date", which is what took the
+# CoBRA toolchain down, and every duration a timing leg reports is measured
+# against it. Cheap to measure, so measure it before anything depends on it.
+_remote_check_engine_clock() {
+  local before after engine_epoch midpoint tolerance=120 absolute
+  if [ "$NATIVE_PROFILE" = "1" ]; then
+    # A timing leg compares durations across hosts; seconds matter there.
+    tolerance=5
+  fi
+  before="$(date -u +%s)"
+  if ! engine_epoch="$(docker run --rm --entrypoint /bin/date "$DOCKER_IMAGE" -u +%s 2>/dev/null)"; then
+    engine_epoch=""
+  fi
+  after="$(date -u +%s)"
+  case "$engine_epoch" in
+    ''|*[!0-9]*)
+      echo "ERROR: cannot read the remote engine clock through $DOCKER_IMAGE" >&2
+      exit 1
+      ;;
+  esac
+  midpoint=$(( (before + after) / 2 ))
+  REMOTE_CLOCK_OFFSET=$(( engine_epoch - midpoint ))
+  absolute=${REMOTE_CLOCK_OFFSET#-}
+  printf '[remote] engine clock offset: %s s (tolerance %s s)\n' "$REMOTE_CLOCK_OFFSET" "$tolerance"
+  if [ "$absolute" -le "$tolerance" ]; then
+    return 0
+  fi
+  if [ "$REMOTE_SKIP_CLOCK_CHECK" = "1" ]; then
+    echo "WARNING: engine clock offset ${REMOTE_CLOCK_OFFSET}s exceeds ${tolerance}s; continuing because D810_REMOTE_SKIP_CLOCK_CHECK=1" >&2
+    return 0
+  fi
+  echo "ERROR: engine clock offset ${REMOTE_CLOCK_OFFSET}s exceeds the ${tolerance}s tolerance" >&2
+  echo "       resync the engine VM clock (Docker Desktop: restart it, or \`hwclock -s\` in a privileged container) and re-run" >&2
+  echo "       set D810_REMOTE_SKIP_CLOCK_CHECK=1 to downgrade this to a warning" >&2
+  exit 1
 }
 
 # The volume can exist and still not expose this checkout (wrong share, wrong
@@ -1455,6 +1501,7 @@ else
 fi
 if [ "$REMOTE_MODE" = "1" ]; then
   echo "  remote:   configured engine ($REMOTE_ENGINE_OS/$REMOTE_ENGINE_ARCH)"
+  echo "  engine clock offset: $REMOTE_CLOCK_OFFSET s"
   echo "  volume:   $REMOTE_VOLUME"
   echo "  share root: configured"
   echo "  subpath:  $WORK_SUBPATH (read-only at /work-src; .tmp read-write at /work/.tmp)"
@@ -1532,6 +1579,11 @@ fi
 ENV_IDA="IDA_PREFIX=/app/ida IDA_INSTALL_DIR=/app/ida D810_LIBCLANG_PATH=/app/ida/libclang.so"
 ENV_PYTHON="PYTHONPATH=${PYWORK}:/app/ida/python:\$PYTHONPATH"
 ENV_TEST="D810_NO_CYTHON=$NO_CYTHON D810_TEST_BINARY=$TEST_BINARY D810_TEST_RUNTIME_IMAGE=$DOCKER_IMAGE D810_TEST_RUNTIME_IMAGE_ID=$DOCKER_IMAGE_ID"
+if [ -n "$REMOTE_CLOCK_OFFSET" ]; then
+  # The receipt has to carry it: every duration in the run was measured
+  # against this clock.
+  ENV_TEST="$ENV_TEST D810_TEST_ENGINE_CLOCK_OFFSET=$REMOTE_CLOCK_OFFSET"
+fi
 [ -n "${D810_DIAG_SNAPSHOT:-}" ] && ENV_TEST="$ENV_TEST D810_DIAG_SNAPSHOT=$D810_DIAG_SNAPSHOT"
 [ -n "${D810_FACT_LIFECYCLE:-}" ] && ENV_TEST="$ENV_TEST D810_FACT_LIFECYCLE=$D810_FACT_LIFECYCLE"
 [ -n "$ENABLE_DIAG_SNAPSHOT" ] && ENV_TEST="$ENV_TEST D810_DIAG_SNAPSHOT=1"

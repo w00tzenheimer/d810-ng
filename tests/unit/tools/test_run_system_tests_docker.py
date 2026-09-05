@@ -122,6 +122,22 @@ if [ "${1:-}" = version ]; then
   printf '%s\\n' "${MOCK_DOCKER_SERVER_ARCH:-arm64}"
 fi
 if [ "${1:-}" = run ]; then
+  case "$*" in
+    *"--entrypoint /bin/date"*)
+      for arg in "$@"; do
+        printf 'run-arg %s\n' "$arg" >> "$DOCKER_LOG"
+      done
+      if [ -n "${MOCK_ENGINE_CLOCK_FAILS:-}" ]; then
+        exit 1
+      fi
+      if [ -n "${MOCK_ENGINE_CLOCK_OFFSET:-}" ]; then
+        printf '%s\n' "$(( $(/bin/date -u +%s) + MOCK_ENGINE_CLOCK_OFFSET ))"
+      else
+        /bin/date -u +%s
+      fi
+      exit 0
+      ;;
+  esac
   if [ -n "${MOCK_DOCKER_EXPECT_SOURCE_FILE:-}" ]; then
     source_mount=""
     for arg in "$@"; do
@@ -271,9 +287,33 @@ def _probe_run(calls: list[str]) -> str:
     return runs[0]
 
 
+def _workload_runs(calls: list[str]) -> list[str]:
+    """Runs that are neither preflight probe: the actual work.
+
+    Preflight legitimately starts read-only containers (the volume probe and
+    the engine-clock reading), so "nothing ran" means no WORKLOAD ran.
+    """
+    return [
+        call
+        for call in _runs(calls)
+        if "dst=/probe" not in call and "--entrypoint /bin/date" not in call
+    ]
+
+
+def _clock_run(calls: list[str]) -> str | None:
+    """The one-shot container that reads the engine clock in preflight."""
+    runs = [call for call in _runs(calls) if "--entrypoint /bin/date" in call]
+    assert len(runs) <= 1, calls
+    return runs[0] if runs else None
+
+
 def _remote_container_run(calls: list[str]) -> str:
-    """The one workload container, ignoring the read-only volume probe."""
-    runs = [call for call in _runs(calls) if "dst=/probe" not in call]
+    """The one workload container, ignoring the preflight probes."""
+    runs = [
+        call
+        for call in _runs(calls)
+        if "dst=/probe" not in call and "--entrypoint /bin/date" not in call
+    ]
     assert len(runs) == 1, calls
     return runs[0]
 
@@ -1846,7 +1886,7 @@ def test_remote_mode_rejects_an_extension_root_outside_the_share_root(
 
     assert result.returncode != 0
     assert str(egglog) in result.stderr
-    assert _runs(calls) == []
+    assert _workload_runs(calls) == []
 
 
 def test_remote_mode_rejects_a_git_dir_outside_the_share_root(
@@ -1870,7 +1910,7 @@ def test_remote_mode_rejects_a_git_dir_outside_the_share_root(
 
     assert result.returncode != 0
     assert str(git_dir) in result.stderr
-    assert _runs(calls) == []
+    assert _workload_runs(calls) == []
 
 
 @pytest.mark.parametrize("share_root", ["relative/share", "missing-share"])
@@ -1929,7 +1969,7 @@ def test_remote_mode_allows_one_run_per_worktree(tmp_path: Path) -> None:
     assert result.returncode != 0
     assert "pid=4242" in result.stderr
     assert str(lock) in result.stderr
-    assert _runs(calls) == []
+    assert _workload_runs(calls) == []
     assert lock.is_dir()
 
 
@@ -1988,7 +2028,8 @@ def test_remote_mode_fails_closed_when_the_probe_cannot_see_the_worktree(
 
     assert result.returncode != 0
     assert "not reachable through volume idapro" in result.stderr
-    assert _runs(calls) == [_probe_run(calls)]
+    assert _workload_runs(calls) == []
+    assert _probe_run(calls) in calls
     assert not (repo / ".tmp" / "remote-run.lock").exists()
 
 
@@ -2171,7 +2212,7 @@ def test_remote_mode_fails_closed_when_the_acl_cannot_be_applied(
 
     assert result.returncode != 0
     assert "could not grant" in result.stderr
-    assert _runs(calls) == []
+    assert _workload_runs(calls) == []
 
 
 def test_remote_mode_fails_closed_when_required_logs_acl_cannot_be_applied(
@@ -2195,7 +2236,7 @@ def test_remote_mode_fails_closed_when_required_logs_acl_cannot_be_applied(
 
     assert result.returncode != 0
     assert f"could not grant share-account access to {logs}" in result.stderr
-    assert _runs(calls) == []
+    assert _workload_runs(calls) == []
 
 
 def test_remote_mode_rejects_a_logs_symlink_before_acls_or_workload_docker(
@@ -2220,7 +2261,7 @@ def test_remote_mode_rejects_a_logs_symlink_before_acls_or_workload_docker(
     assert result.returncode != 0
     assert "real directory" in result.stderr
     assert not any(str(repo / "src") in call for call in _chmod_calls(tmp_path))
-    assert _runs(calls) == []
+    assert _workload_runs(calls) == []
 
 
 def test_remote_mode_rejects_a_tmp_symlink_before_acls_or_workload_docker(
@@ -2245,7 +2286,7 @@ def test_remote_mode_rejects_a_tmp_symlink_before_acls_or_workload_docker(
     assert "real directory" in result.stderr
     assert not any(str(repo / "src") in call for call in _chmod_calls(tmp_path))
     assert not (repo / "src" / "logs").exists()
-    assert _runs(calls) == []
+    assert _workload_runs(calls) == []
 
 
 @pytest.mark.parametrize("output", ["", ".", "..", "../victim.txt", "nested/out.txt"])
@@ -2466,7 +2507,7 @@ def test_allowlist_entries_are_validated(tmp_path: Path) -> None:
 
     assert result.returncode != 0
     assert "allowlisted path does not exist" in result.stderr
-    assert _runs(calls) == []
+    assert _workload_runs(calls) == []
 
 
 def test_allowlist_refuses_dotenv(tmp_path: Path) -> None:
@@ -2487,7 +2528,7 @@ def test_allowlist_refuses_dotenv(tmp_path: Path) -> None:
 
     assert result.returncode != 0
     assert "never list .env" in result.stderr
-    assert _runs(calls) == []
+    assert _workload_runs(calls) == []
 
 
 def test_allowlist_refuses_a_tracked_path(tmp_path: Path) -> None:
@@ -2516,7 +2557,7 @@ esac
 
     assert result.returncode != 0
     assert "not ignored by git" in result.stderr
-    assert _runs(calls) == []
+    assert _workload_runs(calls) == []
 
 
 def test_plan_reports_the_allowlist(tmp_path: Path) -> None:
@@ -2762,7 +2803,7 @@ def test_work_volume_creation_failure_fails_closed(tmp_path: Path) -> None:
 
     assert result.returncode != 0
     assert "could not create work volume" in result.stderr
-    assert _runs(calls) == []
+    assert _workload_runs(calls) == []
 
 
 def test_remote_lock_still_guards_the_shared_tmp(tmp_path: Path) -> None:
@@ -2784,7 +2825,7 @@ def test_remote_lock_still_guards_the_shared_tmp(tmp_path: Path) -> None:
 
     assert result.returncode != 0
     assert "already owns this worktree" in result.stderr
-    assert _runs(calls) == []
+    assert _workload_runs(calls) == []
 
 
 def _worktree_git_stub(common: Path, worktree_git: Path) -> str:
@@ -2974,7 +3015,7 @@ def test_acl_failure_on_the_tmp_root_still_fails_closed(tmp_path: Path) -> None:
 
     assert result.returncode != 0
     assert "could not grant" in result.stderr
-    assert _runs(calls) == []
+    assert _workload_runs(calls) == []
 
 
 def test_remote_mode_exports_a_run_id_for_database_keying(tmp_path: Path) -> None:
@@ -3436,7 +3477,7 @@ def test_remote_mode_refuses_a_symlinked_wheel(tmp_path: Path) -> None:
 
     assert result.returncode != 0
     assert "cannot resolve the host path" in result.stderr
-    assert _runs(calls) == [call for call in _runs(calls) if "dst=/probe" in call]
+    assert _workload_runs(calls) == []
 
 
 def test_remote_mode_refuses_a_wheel_outside_the_share(tmp_path: Path) -> None:
@@ -4085,3 +4126,114 @@ def test_the_native_probe_aborts_an_explicit_request_for_real(
     assert NATIVE_FALLBACK_LINE in completed.stderr
     assert "refusing to run the tests in the Python fallback" in completed.stderr
     assert not marker.exists()
+
+
+def test_engine_clock_within_tolerance_is_reported_and_accepted(
+    tmp_path: Path,
+) -> None:
+    share, repo = _share_layout(tmp_path)
+
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--remote",
+        REMOTE_HOST,
+        "--",
+        "true",
+        repo_root=repo,
+        extra_env=_remote_env(share, MOCK_ENGINE_CLOCK_OFFSET="3"),
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "engine clock offset:" in result.stdout
+    assert _clock_run(calls) is not None
+    # the measured offset travels with the run's provenance receipt
+    assert "D810_TEST_ENGINE_CLOCK_OFFSET=" in _remote_container_run(calls)
+
+
+def test_a_skewed_engine_clock_aborts_before_the_workload(tmp_path: Path) -> None:
+    """apt rejects repository signatures against a skewed clock."""
+    share, repo = _share_layout(tmp_path)
+
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--remote",
+        REMOTE_HOST,
+        "--",
+        "true",
+        repo_root=repo,
+        extra_env=_remote_env(share, MOCK_ENGINE_CLOCK_OFFSET="-755"),
+    )
+
+    assert result.returncode != 0
+    assert "exceeds the 120s tolerance" in result.stderr
+    assert "resync the engine VM clock" in result.stderr
+    assert "hwclock -s" in result.stderr
+    assert _workload_runs(calls) == []
+
+
+def test_a_timing_leg_holds_the_engine_clock_to_five_seconds(tmp_path: Path) -> None:
+    """Every duration a profiling leg reports is measured against that clock."""
+    share, repo = _share_layout(tmp_path)
+
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--remote",
+        REMOTE_HOST,
+        "--",
+        "true",
+        repo_root=repo,
+        extra_env=_remote_env(
+            share, MOCK_ENGINE_CLOCK_OFFSET="30", D810_NATIVE_PROFILE="1"
+        ),
+    )
+
+    assert result.returncode != 0
+    assert "exceeds the 5s tolerance" in result.stderr
+    assert _workload_runs(calls) == []
+
+
+def test_the_clock_check_can_be_downgraded_to_a_warning(tmp_path: Path) -> None:
+    share, repo = _share_layout(tmp_path)
+
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--remote",
+        REMOTE_HOST,
+        "--",
+        "true",
+        repo_root=repo,
+        extra_env=_remote_env(
+            share,
+            MOCK_ENGINE_CLOCK_OFFSET="-755",
+            D810_REMOTE_SKIP_CLOCK_CHECK="1",
+        ),
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "WARNING: engine clock offset" in result.stderr
+    assert "D810_REMOTE_SKIP_CLOCK_CHECK=1" in result.stderr
+    assert _remote_container_run(calls)
+
+
+def test_an_unreadable_engine_clock_fails_closed(tmp_path: Path) -> None:
+    share, repo = _share_layout(tmp_path)
+
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--remote",
+        REMOTE_HOST,
+        "--",
+        "true",
+        repo_root=repo,
+        extra_env=_remote_env(share, MOCK_ENGINE_CLOCK_FAILS="1"),
+    )
+
+    assert result.returncode != 0
+    assert "cannot read the remote engine clock" in result.stderr
+    assert _workload_runs(calls) == []
+
