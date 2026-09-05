@@ -79,7 +79,10 @@
 #   IDA_PREFIX, IDA_INSTALL_DIR, D810_LIBCLANG_PATH, PYTHONPATH, D810_NO_CYTHON, D810_TEST_BINARY  Set for tests
 #
 # Environment (host):
-#   Precedence: exported process environment > repository .env > defaults.
+#   Precedence: exported process environment > repository .env > defaults. A linked worktree
+#   has no .env of its own, so the main checkout's .env (the parent of the shared common git
+#   dir) is read instead; a worktree that does carry an .env still wins. Set D810_REPO_ROOT to
+#   name the directory holding the .env explicitly.
 #   When one source displaces another, the runner prints the winning source and
 #   value. Sensitive values are redacted.
 #   D810_DOCKER_IMAGE       Docker image (default: idapro-9.4)
@@ -302,6 +305,23 @@ if printenv D810_REPO_ROOT >/dev/null 2>&1; then
   DOTENV_ROOT="$D810_REPO_ROOT"
 else
   DOTENV_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+  # A linked worktree has its own top level but shares the main checkout's
+  # ignored .env, which is where the machine-specific D810_REMOTE_* settings
+  # live. Without this fallback `--remote` run from a worktree fails for want
+  # of a host that is configured one directory up. The main checkout is the
+  # parent of the shared common git dir; it is used only when it really
+  # carries a .env, so a worktree with its own .env still wins.
+  if [ -n "$DOTENV_ROOT" ] && [ ! -f "$DOTENV_ROOT/.env" ]; then
+    _dotenv_common="$(git rev-parse --git-common-dir 2>/dev/null || true)"
+    if [ -n "$_dotenv_common" ] && [ -d "$_dotenv_common" ]; then
+      _dotenv_common="$(cd "$_dotenv_common" && pwd -P)"
+      _dotenv_main="$(dirname "$_dotenv_common")"
+      if [ "$_dotenv_main" != "$DOTENV_ROOT" ] && [ -f "$_dotenv_main/.env" ]; then
+        DOTENV_ROOT="$_dotenv_main"
+      fi
+    fi
+    unset _dotenv_common _dotenv_main
+  fi
 fi
 if [ -n "$DOTENV_ROOT" ]; then
   _load_dotenv_non_overriding "$DOTENV_ROOT/.env" || exit 1

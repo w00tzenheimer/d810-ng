@@ -3285,3 +3285,133 @@ def test_remote_mode_refuses_a_wheel_outside_the_share(tmp_path: Path) -> None:
     assert "must live under the SMB share root" in result.stderr or (
         "live under the SMB share root" in result.stderr
     )
+
+
+def test_a_worktree_without_its_own_dotenv_reads_the_main_checkout(
+    tmp_path: Path,
+) -> None:
+    """Machine settings live in the main checkout's ignored .env, one level up."""
+    main = tmp_path / "main"
+    (main / ".git").mkdir(parents=True)
+    (main / "src").mkdir()
+    (main / "tests").mkdir()
+    (main / ".env").write_text(
+        "D810_DOCKER_IMAGE=dotenv-runtime-image\n", encoding="utf-8"
+    )
+    worktree = main / ".worktrees" / "feature"
+    (worktree / "src").mkdir(parents=True)
+    (worktree / "tests").mkdir()
+    assert not (worktree / ".env").exists()
+
+    script, docker_log = _make_harness(tmp_path, worktree)
+    git = tmp_path / "bin" / "git"
+    git.write_text(
+        f"""#!/usr/bin/env bash
+set -eu
+if [ "${{1:-}}" = "rev-parse" ]; then
+  for arg in "$@"; do
+    case "$arg" in
+      --show-toplevel) printf '%s\\n' '{worktree}'; exit 0 ;;
+      --git-common-dir) printf '%s\\n' '{main}/.git'; exit 0 ;;
+    esac
+  done
+fi
+exit 0
+""",
+        encoding="utf-8",
+    )
+    git.chmod(0o755)
+
+    env = os.environ.copy()
+    for name in (
+        "D810_REPO_ROOT",
+        "D810_DOCKER_IMAGE",
+        "D810_EGGLOG_ROOT",
+        "D810_COBRA_ROOT",
+        "D810_COBRA_WHEEL",
+        "D810_COBRA_WHEEL_SHA256",
+        "D810_REMOTE_DOCKER_HOST",
+        "D810_REMOTE_VOLUME",
+        "D810_REMOTE_SHARE_ROOT",
+        "DOCKER_HOST",
+    ):
+        env.pop(name, None)
+    env.update(
+        {
+            "PATH": f"{tmp_path / 'bin'}:{env['PATH']}",
+            "DOCKER_LOG": str(docker_log),
+            "CHMOD_LOG": str(tmp_path / "chmod.log"),
+            "MOCK_DOCKER_LABEL": "",
+            "D810_NO_CYTHON": "1",
+        }
+    )
+    result = subprocess.run(
+        [str(script), "exec", "--", "true"],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=str(worktree),
+        env=env,
+    )
+
+    assert result.returncode == 0, result.stderr
+    calls = docker_log.read_text(encoding="utf-8")
+    assert "dotenv-runtime-image" in calls, calls
+
+
+def test_a_worktree_with_its_own_dotenv_still_wins(tmp_path: Path) -> None:
+    """The fallback must not override a worktree that configured itself."""
+    main = tmp_path / "main"
+    (main / ".git").mkdir(parents=True)
+    (main / ".env").write_text("D810_DOCKER_IMAGE=main-image\n", encoding="utf-8")
+    worktree = main / ".worktrees" / "feature"
+    (worktree / "src").mkdir(parents=True)
+    (worktree / "tests").mkdir()
+    (worktree / ".env").write_text(
+        "D810_DOCKER_IMAGE=worktree-image\n", encoding="utf-8"
+    )
+
+    script, docker_log = _make_harness(tmp_path, worktree)
+    git = tmp_path / "bin" / "git"
+    git.write_text(
+        f"""#!/usr/bin/env bash
+set -eu
+if [ "${{1:-}}" = "rev-parse" ]; then
+  for arg in "$@"; do
+    case "$arg" in
+      --show-toplevel) printf '%s\\n' '{worktree}'; exit 0 ;;
+      --git-common-dir) printf '%s\\n' '{main}/.git'; exit 0 ;;
+    esac
+  done
+fi
+exit 0
+""",
+        encoding="utf-8",
+    )
+    git.chmod(0o755)
+
+    env = os.environ.copy()
+    for name in ("D810_REPO_ROOT", "D810_DOCKER_IMAGE", "DOCKER_HOST"):
+        env.pop(name, None)
+    env.update(
+        {
+            "PATH": f"{tmp_path / 'bin'}:{env['PATH']}",
+            "DOCKER_LOG": str(docker_log),
+            "CHMOD_LOG": str(tmp_path / "chmod.log"),
+            "MOCK_DOCKER_LABEL": "",
+            "D810_NO_CYTHON": "1",
+        }
+    )
+    result = subprocess.run(
+        [str(script), "exec", "--", "true"],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=str(worktree),
+        env=env,
+    )
+
+    assert result.returncode == 0, result.stderr
+    calls = docker_log.read_text(encoding="utf-8")
+    assert "worktree-image" in calls, calls
+    assert "main-image" not in calls, calls
