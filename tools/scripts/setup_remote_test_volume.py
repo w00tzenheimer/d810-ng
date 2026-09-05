@@ -513,6 +513,52 @@ def password_rejection_reason(password: str) -> str | None:
     return None
 
 
+#: The SMB account name is spliced into the cifs option string, so it is held
+#: to the characters an SMB account can actually contain.
+SMB_USER_PATTERN = re.compile(r"[A-Za-z0-9._@-]+")
+
+
+def identity_rejection_reason(name: str, value: str) -> str | None:
+    """Reject a share or user that would smuggle options into the ``o=`` value.
+
+    ``validate_mount_options`` refuses ``nobrl``/``nolock`` in ``--mount-opts``
+    but inspects only that field. The adjacent identity fields use the same
+    comma syntax and were unchecked, so ``--user 'u,nobrl'`` produced
+    ``username=u,nobrl,password=...`` and disabled byte-range locking on a
+    mount the whole design says must keep it.
+
+    >>> identity_rejection_reason("user", "share-account") is None
+    True
+    >>> identity_rejection_reason("share", "//files.example/project") is None
+    True
+    >>> identity_rejection_reason("user", "u,nobrl")
+    "the SMB user contains a comma, so it would be read as further cifs options: 'u,nobrl' smuggles nobrl/nolock past the --mount-opts refusal"
+    >>> identity_rejection_reason("user", "bad user")
+    "the SMB user must match [A-Za-z0-9._@-]+, got 'bad user'"
+    >>> identity_rejection_reason("share", "files.example/project")
+    "the SMB share must look like //HOST/NAME, got 'files.example/project'"
+    """
+    if not value:
+        return f"the SMB {name} is empty"
+    if "," in value:
+        return (
+            f"the SMB {name} contains a comma, so it would be read as further "
+            f"cifs options: {value!r} smuggles nobrl/nolock past the "
+            "--mount-opts refusal"
+        )
+    if name == "user":
+        if not SMB_USER_PATTERN.fullmatch(value):
+            return f"the SMB user must match [A-Za-z0-9._@-]+, got {value!r}"
+        return None
+    if not value.startswith("//"):
+        return f"the SMB share must look like //HOST/NAME, got {value!r}"
+    if any(character.isspace() for character in value) or set(value) & set("'\"`"):
+        return (
+            f"the SMB share must not contain whitespace or quotes, got {value!r}"
+        )
+    return None
+
+
 def explain_status_code(line: str) -> str:
     """Translate a kernel CIFS status line into an actionable sentence.
 
@@ -1114,6 +1160,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 2
+    for field, value in (("share", arguments.share), ("user", arguments.user)):
+        if not value:
+            # --status / --remove do not need them; the check above already
+            # refused a missing value everywhere it is required.
+            continue
+        rejection = identity_rejection_reason(field, value)
+        if rejection is not None:
+            print(f"ERROR: {rejection}", file=sys.stderr)
+            return 2
     if arguments.status:
         return _status(arguments)
     if arguments.remove:
