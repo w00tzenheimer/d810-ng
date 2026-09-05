@@ -3742,3 +3742,212 @@ def test_remote_smb_user_must_be_safe_for_acl_matching(
     assert result.returncode != 0
     assert "D810_REMOTE_SMB_USER must match" in result.stderr
     assert _runs(calls) == []
+
+
+def _split_top_level(command: str) -> tuple[list[str], list[str]]:
+    """Split a bash command string into its top-level terms and separators.
+
+    Quotes, ``{ }`` groups, subshells and command substitutions are opaque, so
+    what comes back is exactly the chain the container shell would evaluate.
+    """
+    terms: list[str] = []
+    separators: list[str] = []
+    depth = 0
+    quote: str | None = None
+    current = ""
+    index = 0
+    while index < len(command):
+        character = command[index]
+        if quote == '"' and character == "\\":
+            current += command[index : index + 2]
+            index += 2
+            continue
+        if quote is not None:
+            current += character
+            if character == quote:
+                quote = None
+            index += 1
+            continue
+        if character in "'\"":
+            quote = character
+            current += character
+            index += 1
+            continue
+        if character in "{(":
+            depth += 1
+        elif character in "})":
+            depth -= 1
+        if depth == 0:
+            if command.startswith("&&", index) or command.startswith("||", index):
+                terms.append(current.strip())
+                separators.append(command[index : index + 2])
+                current = ""
+                index += 2
+                continue
+            if character == ";":
+                terms.append(current.strip())
+                separators.append(";")
+                current = ""
+                index += 1
+                continue
+        current += character
+        index += 1
+    if current.strip():
+        terms.append(current.strip())
+    return terms, separators
+
+
+def _inner_command(container_run: str) -> str:
+    marker = " -lc "
+    assert marker in container_run, container_run
+    return container_run.split(marker, 1)[1]
+
+
+WORKLOAD_INVOCATIONS = (
+    "run_system_test_batches.py",
+    "-m pytest",
+)
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ("system", "-o", "out.txt"),
+        ("system",),
+        ("test", "-o", "out.txt"),
+        ("test",),
+        ("dump", "-o", "out.txt"),
+        ("dump",),
+    ],
+)
+@pytest.mark.parametrize("remote", [False, True])
+def test_setup_is_a_hard_precondition_for_the_workload(
+    tmp_path: Path,
+    args: tuple[str, ...],
+    remote: bool,
+) -> None:
+    """A failed setup must never leave pytest to report the container status."""
+    if remote:
+        share, repo = _share_layout(tmp_path)
+        result, calls = _run(
+            tmp_path,
+            *args,
+            "--remote",
+            REMOTE_HOST,
+            repo_root=repo,
+            extra_env=_remote_env(share),
+        )
+        command = _remote_container_run(calls)
+    else:
+        result, calls = _run(tmp_path, *args)
+        command = _container_run(calls)
+
+    assert result.returncode == 0, result.stderr
+    terms, separators = _split_top_level(_inner_command(command))
+    assert terms, command
+    # a ';' here would detach the workload from setup, which is the defect:
+    # the container then exits with pytest's status whatever setup did
+    assert ";" not in separators, (separators, command)
+    # the only '||' allowed is a stage guard, which re-raises the stage's status
+    for position, separator in enumerate(separators):
+        if separator == "||":
+            assert terms[position + 1].startswith("{ __d810_stage_status=$?;"), (
+                terms[position + 1]
+            )
+            assert "exit $__d810_stage_status" in terms[position + 1]
+    assert any(
+        invocation in terms[-1] for invocation in WORKLOAD_INVOCATIONS
+    ), terms[-1]
+    # the workload is the LAST term, so nothing runs after a failed stage
+    for term in terms[:-1]:
+        assert not any(
+            invocation in term for invocation in WORKLOAD_INVOCATIONS
+        ), term
+
+
+@pytest.mark.parametrize(
+    "args",
+    [("system", "-o", "out.txt"), ("test", "-o", "out.txt"), ("dump", "-o", "out.txt")],
+)
+def test_a_failing_stage_stops_the_chain_and_keeps_its_own_status(
+    tmp_path: Path,
+    args: tuple[str, ...],
+) -> None:
+    """Run the emitted chain for real, failing one stage at a time."""
+    share, repo = _share_layout(tmp_path)
+    result, calls = _run(
+        tmp_path,
+        *args,
+        "--remote",
+        REMOTE_HOST,
+        repo_root=repo,
+        extra_env=_remote_env(share),
+    )
+    assert result.returncode == 0, result.stderr
+    terms, separators = _split_top_level(_inner_command(_remote_container_run(calls)))
+    # a guarded stage is one unit: "{ stage; } || { name it; exit its status; }"
+    units: list[str] = []
+    for position, term in enumerate(terms):
+        if position and separators[position - 1] == "||":
+            units[-1] = f"{units[-1]} || {term}"
+        else:
+            units.append(term)
+    terms = units
+    marker = tmp_path / "workload-ran"
+
+    for index in range(len(terms) - 1):
+        marker.unlink(missing_ok=True)
+        model = []
+        for position in range(len(terms)):
+            if position == index:
+                model.append("( exit 42 )")
+            elif position == len(terms) - 1:
+                model.append(f"touch {marker}")
+            else:
+                model.append("true")
+        completed = subprocess.run(
+            ["bash", "-c", " && ".join(model)],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        assert completed.returncode == 42, (index, terms[index])
+        assert not marker.exists(), terms[index]
+
+
+@pytest.mark.parametrize(
+    "stage",
+    ["source-sync", "artifact-staging", "extensions", "native-extension-build"],
+)
+def test_each_setup_stage_names_itself_and_exits_with_its_own_status(
+    tmp_path: Path,
+    stage: str,
+) -> None:
+    """The real emitted guard, run against a body that fails with a known code."""
+    share, repo = _share_layout(tmp_path)
+    result, calls = _run(
+        tmp_path,
+        "test",
+        "--remote",
+        REMOTE_HOST,
+        repo_root=repo,
+        extra_env=_remote_env(share),
+    )
+    assert result.returncode == 0, result.stderr
+    command = _inner_command(_remote_container_run(calls))
+
+    needle = f'|| {{ __d810_stage_status=$?; printf "[setup] ERROR: stage {stage} failed'
+    start = command.find(needle)
+    assert start != -1, command
+    guard = command[start : command.index("}", command.index("exit $__d810_stage_status", start)) + 1]
+
+    completed = subprocess.run(
+        ["bash", "-c", f"( exit 42 ) {guard}; touch {tmp_path / 'after'}"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 42, completed
+    assert f"stage {stage} failed (exit 42); tests not started" in completed.stderr
+    assert not (tmp_path / "after").exists()

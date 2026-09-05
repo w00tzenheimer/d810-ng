@@ -1648,11 +1648,21 @@ if [ "$COBRA_EXTENSION_ENABLED" = "1" ]; then
     EXTENSION_SETUP="$COBRA_SETUP"
   fi
 fi
+# Every setup stage is a hard precondition for the workload. Wrap it so it
+# names itself on failure and exits with its OWN status: the composed container
+# command used to join the workload to setup with "; ", which detached pytest
+# from a failed setup entirely - the container then exited with pytest's status
+# and a run with no CoBRA and no native extension reported success. That join
+# pre-exists on mainline.
+_stage_guard() {
+  printf '{ %s; } || { __d810_stage_status=$?; printf "[setup] ERROR: stage %s failed (exit %%s); tests not started\\n" "$__d810_stage_status" >&2; exit $__d810_stage_status; }' "$1" "$2"
+}
+
 SETUP_CMD="$LLVM_OPT_SETUP${LLVM_OPT_SETUP:+ && }export $ENV_IDA $ENV_PYTHON $ENV_GIT && $PROFILE_SETUP${PROFILE_SETUP:+ && }$DEPENDENCY_SETUP"
 if [ -n "$EXTENSION_SETUP" ]; then
-  SETUP_CMD="$SETUP_CMD && $EXTENSION_SETUP"
+  SETUP_CMD="$SETUP_CMD && $(_stage_guard "$EXTENSION_SETUP" extensions)"
 fi
-SETUP_CMD="$SETUP_CMD && { $SPEEDUPS_BUILD_CMD; }"
+SETUP_CMD="$SETUP_CMD && $(_stage_guard "$SPEEDUPS_BUILD_CMD" native-extension-build)"
 
 # Remote runs mirror the read-only SMB source into the writable work volume.
 # The mirror is exact: the destination is emptied first (except the .tmp mount)
@@ -1663,11 +1673,11 @@ if [ "$REMOTE_MODE" = "1" ]; then
 if [ -f '$SYNC_SENTINEL' ] && [ \"\$(cat '$SYNC_SENTINEL')\" = \"\$__digest\" ]; then \
   echo \"[sync] work volume already mirrors source digest \$__digest\"; \
 else \
-  rm -f '$SYNC_SENTINEL'; \
-  __t0=\$(date +%s); \
-  find /work -mindepth 1 -maxdepth 1 ! -name .tmp ! -name runs -exec rm -rf {} + ; \
-  tar -C /work -xf '$REMOTE_ARCHIVE_CONTAINER_PATH' ; \
-  printf '%s\\n' \"\$__digest\" > '$SYNC_SENTINEL'; \
+  rm -f '$SYNC_SENTINEL' && \
+  __t0=\$(date +%s) && \
+  find /work -mindepth 1 -maxdepth 1 ! -name .tmp ! -name runs -exec rm -rf {} + && \
+  tar -C /work -xf '$REMOTE_ARCHIVE_CONTAINER_PATH' && \
+  printf '%s\\n' \"\$__digest\" > '$SYNC_SENTINEL' && \
   echo \"[sync] mirrored /work-src -> /work in \$((\$(date +%s)-\$__t0))s (digest \$__digest)\"; \
 fi"
   # The redirect is unconditional: every remote run keeps its live SQLite
@@ -1678,19 +1688,19 @@ fi"
   # wipe above, so a skipped copy never loses anything.
   REMOTE_STAGING_CMD="__runs_keep=$REMOTE_RUN_RETENTION; \
 ls -1 /work/runs 2>/dev/null | sort | head -n -\$__runs_keep | while IFS= read -r __old; do rm -rf \"/work/runs/\$__old\"; done; \
-RUN_LOGS=/work/runs/\$D810_RUN_ID/logs; \
-mkdir -p \"\$RUN_LOGS\"; \
-rm -rf /root/.idapro/logs; mkdir -p /root/.idapro; ln -sfn \"\$RUN_LOGS\" /root/.idapro/logs"
+RUN_LOGS=/work/runs/\$D810_RUN_ID/logs && \
+mkdir -p \"\$RUN_LOGS\" && \
+rm -rf /root/.idapro/logs && mkdir -p /root/.idapro && ln -sfn \"\$RUN_LOGS\" /root/.idapro/logs"
   if [ -n "$REMOTE_STAGE_ARTIFACTS" ]; then
     # The staging trap runs on failure too, so a crashed run still leaves its
     # artifacts both in the run directory and on the share.
-    REMOTE_STAGING_CMD="$REMOTE_STAGING_CMD; \
-STAGE_DEST=/work/.tmp/logs/\$D810_RUN_ID; \
-mkdir -p \"\$STAGE_DEST\"; \
+    REMOTE_STAGING_CMD="$REMOTE_STAGING_CMD && \
+STAGE_DEST=/work/.tmp/logs/\$D810_RUN_ID && \
+mkdir -p \"\$STAGE_DEST\" && \
 trap 'set +e; __stage_t0=\$(date +%s); cp -a \"\$RUN_LOGS\"/. \"\$STAGE_DEST\"/ 2>/dev/null; \
 echo \"[artifacts] staged \$RUN_LOGS -> \$STAGE_DEST in \$((\$(date +%s)-\$__stage_t0))s\"' EXIT"
   fi
-  SETUP_CMD="{ $REMOTE_SYNC_CMD; } && { $REMOTE_STAGING_CMD; } && $SETUP_CMD"
+  SETUP_CMD="$(_stage_guard "$REMOTE_SYNC_CMD" source-sync) && $(_stage_guard "$REMOTE_STAGING_CMD" artifact-staging) && $SETUP_CMD"
 fi
 
 # Safely reassemble an array of args into a string suitable for embedding in
@@ -1815,7 +1825,7 @@ if [ "$CMD" = "system" ]; then
     mkdir -p "${WORK_DIR}/.tmp"
     SYS_LOG="/work/.tmp/${DUMP_OUT}"
     SYS_LOG_QUOTED="$(_d810_quote_arg "$SYS_LOG")"
-    SYS_TRUNCATE=": > $SYS_LOG_QUOTED; "
+    SYS_TRUNCATE=": > $SYS_LOG_QUOTED && "
     SYS_REDIR="> $SYS_LOG_QUOTED 2>&1"
   fi
   run_bash "$SETUP_CMD && ${SYS_TRUNCATE}$ENV_TEST $IDA_VENV_PYTHON tools/scripts/run_system_test_batches.py --python $IDA_VENV_PYTHON --batch-size $SYSTEM_BATCH_SIZE --log-dir /root/.idapro/logs/d810_logs tests/system -- $(_d810_quote_args "${SYSTEM_ARGS[@]}") $SYS_REDIR"
@@ -1831,7 +1841,7 @@ if [ "$CMD" = "test" ]; then
     mkdir -p "${WORK_DIR}/.tmp"
     SYS_LOG="/work/.tmp/${DUMP_OUT}"
     SYS_LOG_QUOTED="$(_d810_quote_arg "$SYS_LOG")"
-    SYS_TRUNCATE=": > $SYS_LOG_QUOTED; "
+    SYS_TRUNCATE=": > $SYS_LOG_QUOTED && "
     SYS_REDIR="> $SYS_LOG_QUOTED 2>&1"
   fi
   run_bash "$SETUP_CMD && ${SYS_TRUNCATE}$ENV_TEST $IDA_VENV_PYTHON -m pytest -v $PYTEST_EXTENSION_ARGS $(_d810_quote_args "${SYSTEM_ARGS[@]}") $SYS_REDIR"
@@ -1867,7 +1877,7 @@ if [ -n "$DUMP_OUT" ]; then
   mkdir -p "${WORK_DIR}/.tmp"
   LOG_PATH="/work/.tmp/${DUMP_OUT}"
   LOG_PATH_QUOTED="$(_d810_quote_arg "$LOG_PATH")"
-  TRUNCATE_CMD=": > $LOG_PATH_QUOTED; "
+  TRUNCATE_CMD=": > $LOG_PATH_QUOTED && "
   REDIR="> $LOG_PATH_QUOTED 2>&1"
 fi
 
