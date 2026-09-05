@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Callable
-from dataclasses import dataclass, field
+from collections.abc import Callable, Collection
+from dataclasses import dataclass, field, replace
 from enum import Enum
 
 from d810.analyses.control_flow.dispatcher_resolution import StateDispatcherMap
@@ -65,6 +65,46 @@ class BranchOwnershipEvidenceKey(str, Enum):
     SIDE_EFFECT_GUARD_REASON = "side_effect_guard_reason"
 
 
+class BranchOwnershipProducerRegistration(str, Enum):
+    """Whether the producer that minted a row is vouched for at all.
+
+    ``REGISTERED``
+        ``oracle_kind`` names a producer enumerated in
+        :class:`BranchOwnershipOracleKind`, i.e. one this codebase ships and
+        reviews.
+
+    ``EXPLICITLY_ADAPTED``
+        An out-of-tree producer name that the *caller* vouched for at the
+        boundary, by naming it in ``adapted_producers`` when coercing the row
+        through :func:`branch_ownership_proof_from_any`.  Vouching is per call
+        and explicit; there is no mutable process-global registry a stray
+        import could extend.
+
+    ``UNKNOWN``
+        Nobody vouched for the producer.  The row is still carried as evidence,
+        but it may not mint semantic-bridge or nonsemantic-rewrite authority.
+    """
+
+    REGISTERED = "registered"
+    EXPLICITLY_ADAPTED = "explicitly_adapted"
+    UNKNOWN = "unknown"
+
+
+class BranchOwnershipTrustProvenance(str, Enum):
+    """Whether the row's trust value was a real boolean decision.
+
+    ``trusted`` used to be coerced with ``bool(value)`` at the duck-typed
+    boundary, so the string ``"false"`` -- and any other non-empty string, or
+    ``1`` -- became a *trusted* row.  A non-``bool`` trust value is now
+    recorded as ``MALFORMED``: the row keeps ``trusted=False`` and its
+    :attr:`BranchOwnershipProof.authority` is
+    :attr:`BranchOwnershipAuthority.UNRESOLVED_PROVENANCE`, never a grant.
+    """
+
+    WELL_FORMED = "well_formed"
+    MALFORMED = "malformed"
+
+
 class BranchOwnershipAuthority(str, Enum):
     """The single typed verdict a proof row carries.
 
@@ -86,11 +126,20 @@ class BranchOwnershipAuthority(str, Enum):
         Explains why no mutation is allowed.  Authorizes nothing.  Predicate
         proofs (``OPAQUE_ALWAYS_*``), terminal frontiers, equivalent arms and
         every untrusted row land here: they are evidence, not permission.
+
+    ``UNRESOLVED_PROVENANCE``
+        The row could not be trusted to *mean* anything: its trust value was
+        not a boolean, or the producer that minted it is not registered and
+        nobody adapted it.  Authorizes nothing, and is deliberately distinct
+        from ``DIAGNOSTIC_ONLY`` so a consumer can refuse the row loudly
+        instead of silently treating malformed provenance as ordinary
+        evidence.
     """
 
     SEMANTIC_BRIDGE = "semantic_bridge"
     NONSEMANTIC_REWRITE = "nonsemantic_rewrite"
     DIAGNOSTIC_ONLY = "diagnostic_only"
+    UNRESOLVED_PROVENANCE = "unresolved_provenance"
 
 
 def _enum_value(value: object) -> str:
@@ -146,6 +195,32 @@ class BranchOwnershipProof:
     )
     evidence: dict[str, object] = field(default_factory=dict)
     payload: dict[str, object] = field(default_factory=dict)
+    adapted_producer: bool = False
+    trust_provenance: BranchOwnershipTrustProvenance = (
+        BranchOwnershipTrustProvenance.WELL_FORMED
+    )
+
+    def __post_init__(self) -> None:
+        """Refuse a non-boolean trust decision at construction time.
+
+        In-tree producers pass a real ``bool``; anything else (``1``, ``0``,
+        ``"true"``, ``"false"``, ``None``) is a provenance bug that used to be
+        laundered into a trusted row by ``bool(value)``.  Duck-typed rows from
+        outside the tree are not constructed directly: they go through
+        :func:`branch_ownership_proof_from_any`, which converts a malformed
+        trust value into an explicit ``MALFORMED`` verdict rather than raising.
+        """
+        if not isinstance(self.trusted, bool):
+            raise TypeError(
+                "BranchOwnershipProof.trusted must be a bool, got "
+                f"{type(self.trusted).__name__!r} ({self.trusted!r}); "
+                "use branch_ownership_proof_from_any() for untyped input"
+            )
+        if not isinstance(self.adapted_producer, bool):
+            raise TypeError(
+                "BranchOwnershipProof.adapted_producer must be a bool, got "
+                f"{type(self.adapted_producer).__name__!r}"
+            )
 
     @property
     def proof_kind_name(self) -> str:
@@ -175,21 +250,48 @@ class BranchOwnershipProof:
         return True
 
     @property
+    def producer_registration(self) -> BranchOwnershipProducerRegistration:
+        """Who, if anyone, vouches for the producer that minted this row."""
+        if self.is_known_oracle:
+            return BranchOwnershipProducerRegistration.REGISTERED
+        if self.adapted_producer:
+            return BranchOwnershipProducerRegistration.EXPLICITLY_ADAPTED
+        return BranchOwnershipProducerRegistration.UNKNOWN
+
+    @property
     def authority(self) -> BranchOwnershipAuthority:
         """What this row permits, as one typed verdict.
 
         Equivalent by construction to the pair of ``authorizes_*`` properties
         below, which now delegate here so the ``trusted``-bool-plus-kind-string
         composition exists in exactly one place.
+
+        Two provenance gates sit in front of the grant verdicts:
+
+        * a row whose trust value was not a boolean is
+          ``UNRESOLVED_PROVENANCE``, whatever it claims to be;
+        * a grant (``SEMANTIC_BRIDGE`` / ``NONSEMANTIC_REWRITE``) requires a
+          producer that is registered or explicitly adapted.  An unknown
+          producer abstains rather than granting.
+
+        Registration gates *grants* only: an unknown producer's diagnostic row
+        stays ``DIAGNOSTIC_ONLY``, because reclassifying evidence would lose
+        information without making anything safer.
         """
-        if not bool(self.trusted):
+        if self.trust_provenance is not BranchOwnershipTrustProvenance.WELL_FORMED:
+            return BranchOwnershipAuthority.UNRESOLVED_PROVENANCE
+        if not self.trusted:
             return BranchOwnershipAuthority.DIAGNOSTIC_ONLY
         kind = self.proof_kind_name
         if kind == BranchOwnershipProofKind.REAL_DATA_DEPENDENT.value:
-            return BranchOwnershipAuthority.SEMANTIC_BRIDGE
-        if kind == BranchOwnershipProofKind.OBFUSCATION_RESIDUE_ARM.value:
-            return BranchOwnershipAuthority.NONSEMANTIC_REWRITE
-        return BranchOwnershipAuthority.DIAGNOSTIC_ONLY
+            verdict = BranchOwnershipAuthority.SEMANTIC_BRIDGE
+        elif kind == BranchOwnershipProofKind.OBFUSCATION_RESIDUE_ARM.value:
+            verdict = BranchOwnershipAuthority.NONSEMANTIC_REWRITE
+        else:
+            return BranchOwnershipAuthority.DIAGNOSTIC_ONLY
+        if self.producer_registration is BranchOwnershipProducerRegistration.UNKNOWN:
+            return BranchOwnershipAuthority.UNRESOLVED_PROVENANCE
+        return verdict
 
     @property
     def authorizes_nonsemantic_branch_rewrite(self) -> bool:
@@ -234,7 +336,7 @@ class BranchOwnershipProof:
 
         return (
             self.proof_kind_name == BranchOwnershipProofKind.UNRESOLVED.value
-            and not bool(self.trusted)
+            and not self.trusted
             and BranchOwnershipEvidenceKey.SIDE_EFFECT_GUARD_REASON.value
             in self.evidence
         )
@@ -290,11 +392,39 @@ def _normalized_oracle_kind(value: object) -> BranchOwnershipOracleKind | str:
 
 def branch_ownership_proof_from_any(
     value: object | None,
+    *,
+    adapted_producers: Collection[str] = (),
 ) -> BranchOwnershipProof | None:
-    """Coerce a proof object/dict into :class:`BranchOwnershipProof`."""
+    """Coerce a proof object/dict into :class:`BranchOwnershipProof`.
+
+    The input is untyped by design -- producers outside this package attach
+    dicts and duck-typed objects -- so this is the boundary where provenance is
+    checked rather than assumed:
+
+    ``trusted``
+        Must be a real ``bool``.  ``"true"``, ``"false"``, ``1``, ``0`` and
+        ``None`` are *not* coerced; the row is returned with ``trusted=False``
+        and :attr:`BranchOwnershipTrustProvenance.MALFORMED`, so it authorizes
+        nothing and a consumer can say why.
+
+    ``adapted_producers``
+        Producer names the caller explicitly vouches for.  A row whose
+        ``oracle_kind`` is neither an enumerated
+        :class:`BranchOwnershipOracleKind` nor named here cannot mint
+        semantic-bridge or nonsemantic-rewrite authority.  Vouching is a
+        per-call argument, not process-global state.
+    """
     if value is None:
         return None
+    adapted = frozenset(str(name) for name in adapted_producers)
     if isinstance(value, BranchOwnershipProof):
+        if (
+            adapted
+            and not value.adapted_producer
+            and not value.is_known_oracle
+            and value.oracle_kind_name in adapted
+        ):
+            return replace(value, adapted_producer=True)
         return value
     if isinstance(value, dict):
         proof_id = value.get("proof_id")
@@ -306,8 +436,14 @@ def branch_ownership_proof_from_any(
         proof_kind = getattr(value, "proof_kind", None)
         trusted = getattr(value, "trusted", None)
         reason = getattr(value, "reason", None)
-    if proof_id is None or proof_kind is None or trusted is None or reason is None:
+    if proof_id is None or proof_kind is None or reason is None:
         return None
+    if isinstance(trusted, bool):
+        trust_provenance = BranchOwnershipTrustProvenance.WELL_FORMED
+        trusted_value = trusted
+    else:
+        trust_provenance = BranchOwnershipTrustProvenance.MALFORMED
+        trusted_value = False
 
     def _field(name: str) -> object | None:
         if isinstance(value, dict):
@@ -320,10 +456,11 @@ def branch_ownership_proof_from_any(
             if isinstance(proof_kind, BranchOwnershipProofKind)
             else BranchOwnershipProofKind(str(proof_kind))
         )
+        oracle_kind = _normalized_oracle_kind(_field("oracle_kind"))
         return BranchOwnershipProof(
             proof_id=str(proof_id),
             proof_kind=kind,
-            trusted=bool(trusted),
+            trusted=trusted_value,
             reason=str(reason),
             source_block=_maybe_int(_field("source_block")),
             branch_arm=_maybe_int(_field("branch_arm")),
@@ -332,9 +469,14 @@ def branch_ownership_proof_from_any(
             target_entry=_maybe_int(_field("target_entry")),
             predicate_block=_maybe_int(_field("predicate_block")),
             dispatcher_entry_block=_maybe_int(_field("dispatcher_entry_block")),
-            oracle_kind=_normalized_oracle_kind(_field("oracle_kind")),
+            oracle_kind=oracle_kind,
             evidence=dict(_field("evidence") or {}),
             payload=dict(_field("payload") or {}),
+            adapted_producer=(
+                not isinstance(oracle_kind, BranchOwnershipOracleKind)
+                and _enum_value(oracle_kind) in adapted
+            ),
+            trust_provenance=trust_provenance,
         )
     except (TypeError, ValueError):
         return None
@@ -872,8 +1014,10 @@ __all__ = [
     "BranchOwnershipAuthority",
     "BranchOwnershipEvidenceKey",
     "BranchOwnershipOracleKind",
+    "BranchOwnershipProducerRegistration",
     "BranchOwnershipProof",
     "BranchOwnershipProofKind",
+    "BranchOwnershipTrustProvenance",
     "TRUSTED_OPAQUE_PROVENANCE_KINDS",
     "branch_ownership_proof_from_any",
     "collect_branch_ownership_proofs",

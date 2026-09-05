@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 
 from d810.analyses.control_flow.branch_ownership import (
+    BranchOwnershipAuthority,
     branch_ownership_proof_from_any,
 )
 from d810.analyses.control_flow.dispatch_key import (
@@ -208,12 +209,20 @@ def transition_trust_result_from_any(
 def _branch_ownership_transition_trust_result(
     transition: object,
 ) -> TransitionTrustResult | None:
+    """Adapt a branch-ownership proof into a transition trust decision.
+
+    A row whose provenance did not resolve -- a non-boolean trust value, or an
+    unregistered producer claiming grant authority -- is refused here with an
+    explicit reason.  It is deliberately not skipped: falling through would let
+    a weaker evidence source answer for a row that arrived malformed.
+    """
     for value in _branch_ownership_candidates(transition):
         proof = branch_ownership_proof_from_any(value)
         if proof is None:
             continue
         proof_kind = proof.proof_kind_name
-        if proof.authorizes_semantic_branch_bridge:
+        authority = proof.authority
+        if authority is BranchOwnershipAuthority.SEMANTIC_BRIDGE:
             return TransitionTrustResult(
                 True,
                 "branch_ownership_real_data_dependent",
@@ -223,12 +232,24 @@ def _branch_ownership_transition_trust_result(
                     "oracle_kind": proof.oracle_kind_name,
                 },
             )
+        if authority is BranchOwnershipAuthority.UNRESOLVED_PROVENANCE:
+            return TransitionTrustResult(
+                False,
+                f"branch_ownership_unresolved_provenance:{proof_kind}",
+                evidence={
+                    "proof_id": proof.proof_id,
+                    "trusted": proof.trusted,
+                    "oracle_kind": proof.oracle_kind_name,
+                    "producer_registration": proof.producer_registration.value,
+                    "trust_provenance": proof.trust_provenance.value,
+                },
+            )
         return TransitionTrustResult(
             False,
             f"branch_ownership_not_bridge_authority:{proof_kind}",
             evidence={
                 "proof_id": proof.proof_id,
-                "trusted": bool(proof.trusted),
+                "trusted": proof.trusted,
                 "oracle_kind": proof.oracle_kind_name,
             },
         )

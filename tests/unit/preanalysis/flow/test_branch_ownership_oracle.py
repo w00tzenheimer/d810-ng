@@ -11,6 +11,7 @@ from d810.backends.hexrays.evidence.ollvm_carrier import (
     project_ollvm_value_flow_evidence,
 )
 from d810.analyses.control_flow.branch_ownership import (
+    BranchOwnershipOracleKind,
     BranchOwnershipProof,
     BranchOwnershipProofKind,
     collect_branch_ownership_proofs,
@@ -739,7 +740,7 @@ def test_terminal_selector_backedge_rejects_semantic_external_edge_identity():
                 proof_kind=BranchOwnershipProofKind.OPAQUE_ALWAYS_TRUE,
                 trusted=True,
                 reason="synthetic_selector_path_constant",
-                oracle_kind="fixture",
+                oracle_kind=BranchOwnershipOracleKind.MOPTRACKER,
             )
         if (
             proof.source_state == external_state
@@ -751,7 +752,7 @@ def test_terminal_selector_backedge_rejects_semantic_external_edge_identity():
                 proof_kind=BranchOwnershipProofKind.OBFUSCATION_RESIDUE_ARM,
                 trusted=True,
                 reason="synthetic_external_residue",
-                oracle_kind="fixture",
+                oracle_kind=BranchOwnershipOracleKind.MOPTRACKER,
             )
         if (
             proof.source_state == external_state
@@ -763,7 +764,7 @@ def test_terminal_selector_backedge_rejects_semantic_external_edge_identity():
                 proof_kind=BranchOwnershipProofKind.REAL_DATA_DEPENDENT,
                 trusted=True,
                 reason="synthetic_external_semantic",
-                oracle_kind="fixture",
+                oracle_kind=BranchOwnershipOracleKind.MOPTRACKER,
             )
         return proof
 
@@ -856,7 +857,7 @@ def test_terminal_selector_backedge_rejects_unanchored_external_residue_identity
                 proof_kind=BranchOwnershipProofKind.OPAQUE_ALWAYS_TRUE,
                 trusted=True,
                 reason="synthetic_selector_path_constant",
-                oracle_kind="fixture",
+                oracle_kind=BranchOwnershipOracleKind.MOPTRACKER,
             )
         if proof.source_state == external_state and proof.target_state == payload_state:
             return replace(
@@ -864,7 +865,7 @@ def test_terminal_selector_backedge_rejects_unanchored_external_residue_identity
                 proof_kind=BranchOwnershipProofKind.OBFUSCATION_RESIDUE_ARM,
                 trusted=True,
                 reason="synthetic_unanchored_external_residue",
-                oracle_kind="fixture",
+                oracle_kind=BranchOwnershipOracleKind.MOPTRACKER,
             )
         return proof
 
@@ -947,7 +948,7 @@ def test_terminal_selector_backedge_reports_side_effect_materialization_gap():
                 proof_kind=BranchOwnershipProofKind.OPAQUE_ALWAYS_TRUE,
                 trusted=True,
                 reason="synthetic_selector_path_constant",
-                oracle_kind="fixture",
+                oracle_kind=BranchOwnershipOracleKind.MOPTRACKER,
             )
         if proof.source_state == external_state and proof.target_state == payload_state:
             return replace(
@@ -955,7 +956,7 @@ def test_terminal_selector_backedge_reports_side_effect_materialization_gap():
                 proof_kind=BranchOwnershipProofKind.UNRESOLVED,
                 trusted=False,
                 reason="z3_jumpfixer_discarded_arm_side_effect_guard",
-                oracle_kind="fixture",
+                oracle_kind=BranchOwnershipOracleKind.MOPTRACKER,
                 evidence={
                     **proof.evidence,
                     "side_effect_guard_reason": "discarded_arm_contains_payload_store",
