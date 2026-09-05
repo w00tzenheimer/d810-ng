@@ -115,9 +115,20 @@ def test_green_shard_requires_a_passing_summary(summary: str | None, green: bool
     assert bench.summary_is_green(summary) is green
 
 
-def _result(index: int, seconds: float, summary: str | None = "1 passed in 1.0s"):
+def _result(
+    index: int,
+    seconds: float,
+    summary: str | None = "1 passed in 1.0s",
+    revision: str | None = "abc1234def56",
+):
     shard = bench.Shard(index=index, worktree=f"wt{index}", test_ids=("t::a",))
-    return bench.ShardResult(shard=shard, seconds=seconds, returncode=0, summary=summary)
+    return bench.ShardResult(
+        shard=shard,
+        seconds=seconds,
+        returncode=0,
+        summary=summary,
+        revision=revision,
+    )
 
 
 def test_aggregate_reports_overhead_and_speedup() -> None:
@@ -163,10 +174,10 @@ def test_table_uses_minimal_separators_and_no_box_drawing() -> None:
 
     table = bench.render_table(summary)
 
-    assert "|-|-|-|-|-|-|" in table
+    assert "|-|-|-|-|-|-|-|" in table
     assert "|---" not in table
     assert not set(table) & set("┌┬─│└┘├┤┼")
-    assert "|1|wt1|1|80.0|0|MISSING|" in table
+    assert "|1|wt1|abc1234def56|1|80.0|0|MISSING|" in table
     assert "|speedup (baseline / parallel)|1.75x|" in table
 
 
@@ -210,13 +221,13 @@ def test_green_shard_output_makes_the_bench_pass(
 ) -> None:
     worktree = tmp_path / ".worktrees" / "wt0" / ".tmp"
     worktree.mkdir(parents=True)
-    (worktree / "shard-0.txt").write_text("1 passed in 42.00s\n", encoding="utf-8")
 
-    monkeypatch.setattr(
-        bench,
-        "run_commands_concurrently",
-        lambda commands, cwd, env: ([(50.0, 0)], 51.0),
-    )
+    def _launch(commands, cwd, env):
+        (worktree / "shard-0.txt").write_text("1 passed in 42.00s\n", encoding="utf-8")
+        return [(50.0, 0)], 51.0
+
+    monkeypatch.setattr(bench, "run_commands_concurrently", _launch)
+    monkeypatch.setattr(bench, "read_revision", lambda worktree_dir: "rev0")
 
     status = bench.main(
         [
@@ -321,6 +332,158 @@ def test_explicit_runner_is_honored(
 
     assert status == 0
     assert printed.startswith(str(runner))
+
+
+def _stub_run(monkeypatch: pytest.MonkeyPatch, measurements, wall, revisions=None):
+    monkeypatch.setattr(
+        bench, "run_commands_concurrently", lambda commands, cwd, env: (measurements, wall)
+    )
+    lookup = revisions or {}
+    monkeypatch.setattr(
+        bench, "read_revision", lambda worktree_dir: lookup.get(worktree_dir.name, "rev0")
+    )
+
+
+def _worktree(tmp_path: Path, name: str) -> Path:
+    directory = tmp_path / ".worktrees" / name / ".tmp"
+    directory.mkdir(parents=True, exist_ok=True)
+    return directory
+
+
+@pytest.mark.parametrize(
+    "counts,green",
+    [
+        ("1 passed in 1.0s", True),
+        ("1 failed, 1 passed in 1.0s", False),
+        ("2 errors in 1.0s", False),
+        ("1 error in 1.0s", False),
+        ("3 skipped in 1.0s", False),
+        ("1 passed, 2 warnings in 1.0s", True),
+    ],
+)
+def test_summary_counts_decide_greenness(counts: str, green: bool) -> None:
+    assert bench.summary_is_green(counts) is green
+
+
+def test_stale_output_is_deleted_before_launch(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A previous run's green capture must never stand in for this run."""
+    directory = _worktree(tmp_path, "wt0")
+    (directory / "shard-0.txt").write_text("1 passed in 42.00s\n", encoding="utf-8")
+
+    _stub_run(monkeypatch, [(5.0, 0)], 5.5)
+
+    status = bench.main(
+        [
+            "--remote", "host", "--shard", "wt0=t::a",
+            "--baseline", "none", "--repo-root", str(tmp_path),
+        ]
+    )
+    printed = capsys.readouterr().out
+
+    assert status == 1
+    assert "no passing summary" in printed
+    assert not (directory / "shard-0.txt").exists()
+
+
+def test_nonzero_runner_exit_fails_even_with_a_green_file(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    directory = _worktree(tmp_path, "wt0")
+
+    def _launch(commands, cwd, env):
+        (directory / "shard-0.txt").write_text("1 passed in 42.00s\n", encoding="utf-8")
+        return [(5.0, 23)], 5.5
+
+    monkeypatch.setattr(bench, "run_commands_concurrently", _launch)
+    monkeypatch.setattr(bench, "read_revision", lambda worktree_dir: "rev0")
+
+    status = bench.main(
+        [
+            "--remote", "host", "--shard", "wt0=t::a",
+            "--baseline", "none", "--repo-root", str(tmp_path),
+        ]
+    )
+    printed = capsys.readouterr().out
+
+    assert status == 1
+    assert "runner exited 23" in printed
+
+
+def test_mixed_revisions_fail_unless_allowed(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for name in ("wt0", "wt1"):
+        _worktree(tmp_path, name)
+
+    def _launch(commands, cwd, env):
+        for index, name in enumerate(("wt0", "wt1")):
+            (tmp_path / ".worktrees" / name / ".tmp" / f"shard-{index}.txt").write_text(
+                "1 passed in 1.00s\n", encoding="utf-8"
+            )
+        return [(5.0, 0), (6.0, 0)], 6.5
+
+    monkeypatch.setattr(bench, "run_commands_concurrently", _launch)
+    monkeypatch.setattr(
+        bench,
+        "read_revision",
+        lambda worktree_dir: "aaaa111" if worktree_dir.name == "wt0" else "bbbb222",
+    )
+
+    arguments = [
+        "--remote", "host", "--shard", "wt0=t::a", "--shard", "wt1=t::b",
+        "--baseline", "none", "--repo-root", str(tmp_path),
+    ]
+
+    assert bench.main(arguments) == 1
+    assert "mixed revisions" in capsys.readouterr().out
+
+    assert bench.main([*arguments, "--allow-mixed-revisions"]) == 0
+    assert "aaaa111" in capsys.readouterr().out
+
+
+def test_unknown_revision_fails_closed(tmp_path: Path) -> None:
+    assert bench.revision_conflict(["a", None], False) is not None
+    assert bench.revision_conflict(["a", None], True) is None
+    assert bench.build_revision_argv(tmp_path)[-1] == "HEAD"
+
+
+def test_failing_baseline_fails_the_bench(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    directory = _worktree(tmp_path, "wt0")
+
+    def _launch(commands, cwd, env):
+        (directory / "shard-0.txt").write_text("1 passed in 1.00s\n", encoding="utf-8")
+        return [(5.0, 0)], 5.5
+
+    class _Completed:
+        returncode = 7
+
+    monkeypatch.setattr(bench, "run_commands_concurrently", _launch)
+    monkeypatch.setattr(bench, "read_revision", lambda worktree_dir: "rev0")
+    monkeypatch.setattr(bench.subprocess, "run", lambda *a, **k: _Completed())
+
+    status = bench.main(
+        [
+            "--remote", "host", "--shard", "wt0=t::a",
+            "--repo-root", str(tmp_path),
+        ]
+    )
+    printed = capsys.readouterr().out
+
+    assert status == 1
+    assert "baseline runner exited 7" in printed
+    assert "baseline produced no passing summary" in printed
 
 
 def test_doctests_pass() -> None:

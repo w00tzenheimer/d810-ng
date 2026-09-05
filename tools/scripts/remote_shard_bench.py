@@ -56,6 +56,7 @@ class ShardResult:
     seconds: float
     returncode: int
     summary: str | None
+    revision: str | None = None
 
 
 @dataclass(frozen=True)
@@ -68,6 +69,8 @@ class BenchSummary:
     baseline_label: str
     baseline_summary: str | None
     speedup: float | None
+    baseline_returncode: int | None = None
+    baseline_revision: str | None = None
 
 
 def default_runner() -> Path:
@@ -153,15 +156,92 @@ def extract_pytest_summary(text: str) -> str | None:
     return matches[-1].strip().strip("=").strip()
 
 
+def parse_summary_counts(summary: str) -> dict[str, int]:
+    """Parse the ``N outcome`` pairs out of a pytest summary line.
+
+    >>> parse_summary_counts("2 passed, 1 warning in 3.00s") == {
+    ...     "passed": 2, "warning": 1}
+    True
+    >>> parse_summary_counts("1 failed, 1 passed in 9.0s") == {
+    ...     "failed": 1, "passed": 1}
+    True
+    """
+    counts: dict[str, int] = {}
+    for amount, outcome in re.findall(r"(\d+) ([a-z]+)", summary):
+        if outcome == "s":  # the trailing "in 3.00s" duration
+            continue
+        counts[outcome] = counts.get(outcome, 0) + int(amount)
+    return counts
+
+
 def summary_is_green(summary: str | None) -> bool:
-    """A shard counts only when its own output reports passing tests.
+    """A shard counts only when its output reports passes and no failures.
 
     >>> summary_is_green("1 passed in 1.0s"), summary_is_green("1 failed in 1.0s")
     (True, False)
-    >>> summary_is_green(None)
+    >>> summary_is_green("1 failed, 1 passed in 1.0s")
     False
+    >>> summary_is_green("2 errors in 1.0s"), summary_is_green(None)
+    (False, False)
     """
-    return summary is not None and "passed" in summary and "failed" not in summary
+    if summary is None:
+        return False
+    counts = parse_summary_counts(summary)
+    if any(counts.get(bad) for bad in ("failed", "error", "errors")):
+        return False
+    return counts.get("passed", 0) > 0
+
+
+def build_revision_argv(worktree_dir: Path) -> list[str]:
+    """Build the argv that reads a worktree's checked-out revision.
+
+    >>> build_revision_argv(Path("/w"))[:3]
+    ['git', '-C', '/w']
+    """
+    return ["git", "-C", str(worktree_dir), "rev-parse", "HEAD"]
+
+
+def revision_conflict(revisions: Sequence[str | None], allow_mixed: bool) -> str | None:
+    """Report when shards did not all run the same source revision.
+
+    >>> revision_conflict(["a", "a"], False) is None
+    True
+    >>> revision_conflict(["a", "b"], False)
+    'shards ran mixed revisions: a, b'
+    >>> revision_conflict(["a", "b"], True) is None
+    True
+    >>> revision_conflict(["a", None], False)
+    'shard revision could not be determined'
+    """
+    if allow_mixed:
+        return None
+    if any(revision is None for revision in revisions):
+        return "shard revision could not be determined"
+    distinct = sorted(set(revision for revision in revisions if revision))
+    if len(distinct) > 1:
+        return "shards ran mixed revisions: " + ", ".join(distinct)
+    return None
+
+
+def read_revision(worktree_dir: Path) -> str | None:
+    """Read a worktree's HEAD (impure seam for tests)."""
+    completed = subprocess.run(
+        build_revision_argv(worktree_dir),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if completed.returncode != 0:
+        return None
+    revision = completed.stdout.strip()
+    return revision or None
+
+
+def remove_stale_output(worktree_dir: Path, output_name: str) -> None:
+    """Delete a previous capture so a stale file can never be read as fresh."""
+    path = worktree_dir / ".tmp" / output_name
+    if path.exists():
+        path.unlink()
 
 
 def aggregate(
@@ -171,6 +251,8 @@ def aggregate(
     baseline_wall: float | None,
     baseline_label: str,
     baseline_summary: str | None,
+    baseline_returncode: int | None = None,
+    baseline_revision: str | None = None,
 ) -> BenchSummary:
     """Combine measured walls into the reported figures.
 
@@ -197,17 +279,23 @@ def aggregate(
         baseline_label=baseline_label,
         baseline_summary=baseline_summary,
         speedup=speedup,
+        baseline_returncode=baseline_returncode,
+        baseline_revision=baseline_revision,
     )
 
 
 def render_table(summary: BenchSummary) -> str:
     """Render the measured results as minimal-separator markdown tables."""
-    lines = ["|shard|worktree|tests|wall s|exit|pytest summary|", "|-|-|-|-|-|-|"]
+    lines = [
+        "|shard|worktree|revision|tests|wall s|exit|pytest summary|",
+        "|-|-|-|-|-|-|-|",
+    ]
     for result in summary.results:
         lines.append(
-            "|{index}|{worktree}|{count}|{seconds:.1f}|{code}|{summary}|".format(
+            "|{index}|{worktree}|{revision}|{count}|{seconds:.1f}|{code}|{summary}|".format(
                 index=result.shard.index,
                 worktree=result.shard.worktree,
+                revision=(result.revision or "unknown")[:12],
                 count=len(result.shard.test_ids),
                 seconds=result.seconds,
                 code=result.returncode,
@@ -228,6 +316,8 @@ def render_table(summary: BenchSummary) -> str:
             f"|baseline {summary.baseline_label} wall (s)|{summary.baseline_wall:.1f}|"
         )
         lines.append(f"|baseline summary|{summary.baseline_summary or 'MISSING'}|")
+        lines.append(f"|baseline exit|{summary.baseline_returncode}|")
+        lines.append(f"|baseline revision|{(summary.baseline_revision or 'unknown')[:12]}|")
     if summary.speedup is None:
         lines.append("|speedup (baseline / parallel)|not measured|")
     else:
@@ -297,6 +387,11 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument("--worktree-root", default=".worktrees", help="D810_WORKTREE_ROOT")
+    parser.add_argument(
+        "--allow-mixed-revisions",
+        action="store_true",
+        help="do not fail when the sharded worktrees are on different revisions",
+    )
     parser.add_argument("--dry-run", action="store_true", help="print the planned commands only")
     return parser
 
@@ -347,6 +442,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     env["D810_REPO_ROOT"] = str(repo_root)
     env["D810_WORKTREE_ROOT"] = arguments.worktree_root
 
+    # A previous run's capture would otherwise be read as this run's evidence.
+    baseline_worktree_dir = repo_root / arguments.worktree_root / shards[0].worktree
+    for shard in shards:
+        remove_stale_output(
+            repo_root / arguments.worktree_root / shard.worktree, shard.output_name
+        )
+    if baseline_command is not None:
+        remove_stale_output(baseline_worktree_dir, "shard-baseline.txt")
+
     print(f"[bench] launching {len(commands)} shard container(s) on {arguments.remote}")
     measurements, parallel_wall = run_commands_concurrently(commands, cwd=repo_root, env=env)
 
@@ -355,15 +459,23 @@ def main(argv: Sequence[str] | None = None) -> int:
         worktree_dir = repo_root / arguments.worktree_root / shard.worktree
         summary = extract_pytest_summary(read_output(worktree_dir, shard.output_name))
         results.append(
-            ShardResult(shard=shard, seconds=seconds, returncode=returncode, summary=summary)
+            ShardResult(
+                shard=shard,
+                seconds=seconds,
+                returncode=returncode,
+                summary=summary,
+                revision=read_revision(worktree_dir),
+            )
         )
 
     baseline_wall: float | None = None
     baseline_summary: str | None = None
+    baseline_returncode: int | None = None
+    baseline_revision: str | None = None
     if baseline_command is not None:
         print(f"[bench] measuring the {arguments.baseline} baseline")
         baseline_start = time.monotonic()
-        subprocess.run(
+        completed = subprocess.run(
             baseline_command,
             cwd=str(repo_root),
             env=env,
@@ -372,9 +484,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             check=False,
         )
         baseline_wall = time.monotonic() - baseline_start
+        baseline_returncode = completed.returncode
         baseline_summary = extract_pytest_summary(
-            read_output(repo_root / arguments.worktree_root / shards[0].worktree, "shard-baseline.txt")
+            read_output(baseline_worktree_dir, "shard-baseline.txt")
         )
+        baseline_revision = read_revision(baseline_worktree_dir)
 
     summary = aggregate(
         results,
@@ -382,15 +496,36 @@ def main(argv: Sequence[str] | None = None) -> int:
         baseline_wall=baseline_wall,
         baseline_label=arguments.baseline,
         baseline_summary=baseline_summary,
+        baseline_returncode=baseline_returncode,
+        baseline_revision=baseline_revision,
     )
     print(render_table(summary))
 
-    failed = [result for result in results if not summary_is_green(result.summary)]
-    if failed:
-        for result in failed:
-            print(
-                f"ERROR: shard {result.shard.index} ({result.shard.worktree}) produced no passing summary",
+    problems: list[str] = []
+    for result in results:
+        label = f"shard {result.shard.index} ({result.shard.worktree})"
+        if result.returncode != 0:
+            problems.append(f"{label} runner exited {result.returncode}")
+        if not summary_is_green(result.summary):
+            problems.append(
+                f"{label} produced no passing summary (got {result.summary or 'no summary'})"
             )
+    if baseline_command is not None:
+        if baseline_returncode != 0:
+            problems.append(f"baseline runner exited {baseline_returncode}")
+        if not summary_is_green(baseline_summary):
+            problems.append(
+                f"baseline produced no passing summary (got {baseline_summary or 'no summary'})"
+            )
+    revisions = [result.revision for result in results]
+    if baseline_command is not None:
+        revisions.append(baseline_revision)
+    conflict = revision_conflict(revisions, arguments.allow_mixed_revisions)
+    if conflict is not None:
+        problems.append(f"{conflict}; pass --allow-mixed-revisions to accept it")
+    if problems:
+        for problem in problems:
+            print(f"ERROR: {problem}")
         return 1
     return 0
 
