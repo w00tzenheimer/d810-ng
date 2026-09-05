@@ -1001,8 +1001,8 @@ def test_doctests_pass() -> None:
     "raw,expected",
     [
         ("", []),
-        ("nobrl", ["nobrl"]),
-        (" nobrl , noperm ", ["nobrl", "noperm"]),
+        ("noperm", ["noperm"]),
+        (" cache=none , actimeo=0 ", ["cache=none", "actimeo=0"]),
         ("cache=none,actimeo=0", ["cache=none", "actimeo=0"]),
     ],
 )
@@ -1017,6 +1017,9 @@ def test_valid_mount_option_tokens(raw: str, expected: list[str]) -> None:
         ("pass=x", "must not set password"),
         ("username=root", "must not set username"),
         ("user=root", "must not set username"),
+        ("nobrl", "must not set nobrl"),
+        ("nolock", "must not set nolock"),
+        ("cache=none,nobrl", "must not set nobrl"),
         ("SEC=ntlmv2", "invalid cifs option token"),
         ("no brl", "invalid cifs option token"),
         ("vers=3.0;rm -rf /", "invalid cifs option token"),
@@ -1028,9 +1031,9 @@ def test_rejected_mount_option_tokens(raw: str, fragment: str) -> None:
 
 
 def test_mount_opts_are_appended_to_the_option_string() -> None:
-    options = setup_remote_test_volume.build_mount_options("pw", extra_options="nobrl")
+    options = setup_remote_test_volume.build_mount_options("pw", extra_options="cache=none")
 
-    assert options.endswith(",dir_mode=0700,nobrl")
+    assert options.endswith(",dir_mode=0700,cache=none")
     assert setup_remote_test_volume.build_mount_options("pw").endswith("dir_mode=0700")
 
 
@@ -1044,13 +1047,39 @@ def test_mount_opts_are_reported_and_kept_out_of_the_credential(
     for seam in ("run_capture", "run_probe"):
         monkeypatch.setattr(setup_remote_test_volume, seam, lambda argv: (0, ""))
 
-    status = setup_remote_test_volume.main(["--dry-run", "--mount-opts", "nobrl,noperm"])
+    status = setup_remote_test_volume.main(
+        ["--dry-run", "--mount-opts", "cache=none,noperm"]
+    )
     printed = capsys.readouterr().out
 
     assert status == 0
-    assert "extra cifs options: nobrl,noperm" in printed
-    assert "dir_mode=0700,nobrl,noperm" in printed
+    assert "extra cifs options: cache=none,noperm" in printed
+    assert "dir_mode=0700,cache=none,noperm" in printed
     assert "hunter2" not in printed
+
+
+def test_nobrl_is_refused_because_staging_replaces_it(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Remote runs never write SQLite on this mount, so disabling locking is wrong."""
+    recorded = _fake_capture(monkeypatch, {"volume inspect": (1, ABSENT_ERROR)})
+    monkeypatch.setattr(
+        setup_remote_test_volume.getpass, "getpass", lambda prompt: "hunter2"
+    )
+
+    def _fail(*args: object, **kwargs: object) -> None:
+        raise AssertionError("nobrl must never reach docker volume create")
+
+    monkeypatch.setattr(setup_remote_test_volume.subprocess, "run", _fail)
+
+    status = setup_remote_test_volume.main(["--mount-opts", "nobrl"])
+    captured = capsys.readouterr()
+
+    assert status == 1
+    assert "must not set nobrl" in captured.err
+    assert "work volume" in captured.err
+    assert not any("volume create" in " ".join(argv) for argv in recorded)
 
 
 def test_invalid_mount_opts_fail_before_creating_anything(

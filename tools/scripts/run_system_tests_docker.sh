@@ -155,16 +155,14 @@
 #   reachable when the credential volume is already gone.
 #   An SMB password containing a comma is refused up front: the cifs `o=` value is comma-separated.
 #
-#   The option set deliberately omits nobrl: if SQLite under /work/.tmp (diag DBs, debug logs) ever
-#   fails with a locking error over this mount, recreate the volume with nobrl appended:
-#     python3 tools/scripts/setup_remote_test_volume.py --recreate --mount-opts nobrl
-#   (--mount-opts takes comma-separated in-kernel cifs options and refuses credential options.) Byte-range
-#   locking is the thing to check first after any volume change:
+#   The option set deliberately omits nobrl, and --mount-opts REFUSES nobrl/nolock: in remote mode no
+#   SQLite database is ever written on this mount. Live databases and logs stay on the work volume
+#   (/work/runs/<run-id>/logs) and only finalized artifacts are copied to .tmp/logs afterwards, so
+#   byte-range locking here is never relied on. The mount's locking behaviour can still be measured
+#   (evidence for the record, not a design input):
 #
-#     ./run_system_tests_docker.sh exec --remote HOST -w WT -- /app/ida/.venv/bin/python -c \
-#       "import sqlite3; c=sqlite3.connect('/work/.tmp/remote-smoke.sqlite3'); \
-#        c.execute('create table if not exists t(x)'); c.execute('insert into t values(1)'); \
-#        c.commit(); print('sqlite-ok', c.execute('select count(*) from t').fetchone())"
+#     ./run_system_tests_docker.sh exec --remote HOST -w WT -- \
+#       /app/ida/.venv/bin/python /work/tools/scripts/sqlite_cifs_probe.py
 #
 # Remote examples:
 #   ./run_system_tests_docker.sh exec --remote remote-engine.example -w my-worktree -- true

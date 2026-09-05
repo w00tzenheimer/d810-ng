@@ -2824,3 +2824,48 @@ def test_run_flag_requires_an_identifier(tmp_path: Path) -> None:
     assert result.returncode != 0
     assert "--run requires a RUN_ID" in result.stderr
     assert _runs(calls) == []
+
+
+@pytest.mark.parametrize(
+    "flags",
+    [
+        ("-l",),
+        ("--enable-diag-snapshot",),
+        ("-l", "--enable-diag-snapshot", "--enable-debug-logging"),
+    ],
+)
+def test_remote_mode_never_routes_a_log_writer_onto_cifs(
+    tmp_path: Path,
+    flags: tuple[str, ...],
+) -> None:
+    """No SQLite writer may land on the share, whatever the diagnostics flags."""
+    share, repo = _share_layout(tmp_path)
+
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--remote",
+        REMOTE_HOST,
+        *flags,
+        "--",
+        "true",
+        repo_root=repo,
+        extra_env=_remote_env(share),
+    )
+
+    assert result.returncode == 0, result.stderr
+    cifs_mounts = [
+        call
+        for call in calls
+        if call.startswith("run-arg type=volume,src=idapro,")
+    ]
+    assert cifs_mounts, calls
+    for mount in cifs_mounts:
+        assert "dst=/root/.idapro/logs" not in mount, mount
+    # the only writable cifs mount is .tmp itself
+    writable = [mount for mount in cifs_mounts if "readonly" not in mount]
+    assert {
+        mount.split("dst=")[1].split(",")[0] for mount in writable
+    } == {"/work/.tmp"}
+    command = _remote_container_run(calls)
+    assert 'ln -sfn "$RUN_LOGS" /root/.idapro/logs' in command

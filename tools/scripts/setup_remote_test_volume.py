@@ -102,10 +102,13 @@ def validate_mount_options(raw: str) -> list[str]:
     The value is spliced into a comma-separated list that also carries the
     credential, so each token is checked and the identity options are refused.
 
+    >>> validate_mount_options("cache=none")
+    ['cache=none']
+    >>> validate_mount_options(" actimeo=0 , noperm ")
+    ['actimeo=0', 'noperm']
     >>> validate_mount_options("nobrl")
-    ['nobrl']
-    >>> validate_mount_options(" nobrl , noperm ")
-    ['nobrl', 'noperm']
+    Traceback (most recent call last):
+    ValueError: --mount-opts must not set nobrl: the runner stages live SQLite on the work volume, so byte-range locking on this mount is never relied on and must not be disabled
     >>> validate_mount_options("")
     []
     >>> validate_mount_options("password=x")
@@ -125,6 +128,12 @@ def validate_mount_options(raw: str) -> list[str]:
             raise ValueError("--mount-opts must not set password")
         if name in ("username", "user"):
             raise ValueError("--mount-opts must not set username")
+        if name in ("nobrl", "nolock"):
+            raise ValueError(
+                f"--mount-opts must not set {name}: the runner stages live SQLite on "
+                "the work volume, so byte-range locking on this mount is never relied "
+                "on and must not be disabled"
+            )
         if not re.fullmatch(r"[a-z0-9_=.]+", token):
             raise ValueError(f"invalid cifs option token: {token!r}")
         tokens.append(token)
@@ -534,7 +543,8 @@ def build_parser() -> argparse.ArgumentParser:
         default="",
         help=(
             "extra cifs mount options appended verbatim to o= (comma-separated, "
-            "e.g. nobrl). Credentials cannot be set this way."
+            "e.g. cache=none). Credentials cannot be set this way, and neither "
+            "can nobrl/nolock: live SQLite is staged on the work volume instead."
         ),
     )
     parser.add_argument(
