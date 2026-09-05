@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from contextvars import ContextVar
 from d810.core.typing import Protocol
 from dataclasses import MISSING, dataclass, fields, is_dataclass
 from enum import Enum
@@ -41,9 +42,11 @@ from .canonical_session import (
     record_bytes_lookup,
     record_canonical_bytes_reuse,
     record_content_id_lookup,
+    record_content_id_mint,
     record_content_id_reuse,
     record_deep_validation,
     record_inventory_validation,
+    record_materialization,
     record_occurrence_stamp,
     record_roundtrip_decode,
     record_wire_encode,
@@ -1566,12 +1569,96 @@ def validate_canonical_roundtrip(value: object, expected_type: type[object]) -> 
     return decoded
 
 
+def validate_live_semantic_fields(
+    value: object, expected_type: type[object],
+) -> None:
+    """Validate one *live* record's semantic fields without canonicalising it.
+
+    This is the live-construction half of the dual identity: it proves the
+    record's exact type and that every value reachable from it is an exact,
+    registered, canonically representable value -- the same walk
+    ``canonical_bytes`` performs before it encodes -- and it stops there.  No
+    wire tree is built, no JSON is produced, no SHA-256 is computed and no
+    decode is attempted, so a record that never leaves the process never pays
+    for a representation nobody reads.
+
+    The canonical representation of the same record is built by
+    :func:`materialize_for_persistence` at an explicit boundary.
+
+    >>> validate_live_semantic_fields(("entry", 0x1000), tuple)
+    """
+
+    if type(value) is not expected_type:
+        raise TypeError(
+            f"expected {expected_type.__name__}, got {type(value).__name__}",
+        )
+    _validate_canonical_value(value)
+    record_deep_validation()
+
+
+@dataclass(frozen=True, slots=True)
+class CanonicalMaterialization:
+    """The canonical representation of one live record, built at a boundary."""
+
+    record: object
+    canonical_bytes: bytes
+
+
+#: Depth of the enclosing ``materialize_for_persistence`` frames.  A
+#: ``ContextVar`` rather than a plain global for exactly the reason
+#: ``_ACTIVE_SESSION`` is one: the value is per-execution-context, never
+#: shared process state.
+_MATERIALIZING: ContextVar[int] = ContextVar(
+    "d810_authority_materializing", default=0,
+)
+
+
+def materializing() -> bool:
+    """Report whether the caller runs inside an explicit materialisation.
+
+    >>> materializing()
+    False
+    """
+
+    return _MATERIALIZING.get() > 0
+
+
+def materialize_for_persistence(
+    value: object, expected_type: type[object],
+) -> CanonicalMaterialization:
+    """Build one live record's canonical representation at a named boundary.
+
+    This is the *only* operation that turns a live internal record into its
+    persisted form: canonical wire tree, canonical JSON bytes, the strict
+    deep validation and the exact decode check, exactly as
+    :func:`validate_canonical_roundtrip` has always performed them, so the
+    bytes are byte-identical to the ones the same input produced before this
+    boundary existed.  It is deliberately not a cached property: crossing the
+    boundary is an act the caller performs, not a field a record carries.
+
+    >>> materialize_for_persistence(("entry", 0x1000), tuple).record
+    ('entry', 4096)
+    """
+
+    token = _MATERIALIZING.set(_MATERIALIZING.get() + 1)
+    try:
+        encoded = canonical_bytes(value)
+        decoded = canonical_decode(encoded)
+        if type(decoded) is not expected_type or decoded != value:
+            raise ValueError("canonical roundtrip changed the authority value")
+    finally:
+        _MATERIALIZING.reset(token)
+    record_materialization()
+    return CanonicalMaterialization(decoded, encoded)
+
+
 def content_id(schema: str, value: object) -> str:
     if not isinstance(schema, str) or not schema.isascii() or not schema.strip():
         raise ValueError("schema must be non-empty ASCII")
     preimage = _PREFIX + schema.encode("ascii") + b"\0" + canonical_bytes(
         value, _record_lookup=record_content_id_lookup,
     )
+    record_content_id_mint()
     return "sha256:" + hashlib.sha256(preimage).hexdigest()
 
 
@@ -2059,6 +2146,7 @@ def _record_content_id(schema: str, value: object, omitted_field: str) -> str:
         ],
     }
     record_wire_encode()
+    record_content_id_mint()
     result = "sha256:" + hashlib.sha256(
         _PREFIX + schema.encode("ascii") + b"\0" + _json_bytes(wire)
     ).hexdigest()
@@ -2265,7 +2353,9 @@ def semantic_graph_fingerprint_cached(
 __all__ = [
     "BlockRecord", "CLAIM_SCHEMA", "DigestFixture", "DIGEST_FIXTURE_SCHEMA",
     "EVIDENCE_SCHEMA", "GraphRecord", "InsnRecord", "MopRecord", "SEMANTIC_GRAPH_SCHEMA",
-    "SUBJECT_SCHEMA", "canonical_bytes", "canonical_decode", "validate_canonical_roundtrip", "claim_id", "content_id",
+    "SUBJECT_SCHEMA", "canonical_bytes", "canonical_decode", "validate_canonical_roundtrip",
+    "validate_live_semantic_fields", "materialize_for_persistence", "materializing",
+    "CanonicalMaterialization", "claim_id", "content_id",
     "evidence_id", "justification_id", "case_id", "authority_id", "binding_id",
     "bound_unflatten_binding_id",
     "semantic_graph_fingerprint", "semantic_graph_fingerprint_cached",

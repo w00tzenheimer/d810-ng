@@ -65,7 +65,14 @@ from .model import (
     UnflattenPlanInputCatalog,
     UseDefFragmentWitness,
 )
-from .ids import _claim_factory, _subject_factory, authority_id, canonical_bytes, content_id
+from .ids import (
+    _claim_factory,
+    _subject_factory,
+    authority_id,
+    canonical_bytes,
+    content_id,
+    materialize_for_persistence,
+)
 # Keep one owner for this set.  In particular, the exact-effect spelling is
 # imported through proposal.py from its producer rather than copied here.
 LEGACY_RESERVED_KEYS = LEGACY_UNFLATTEN_KEYS
@@ -1212,8 +1219,11 @@ class LegacyUnflattenDecodeContext:
         if self.plan_inputs is not None:
             if type(self.plan_inputs) is not UnflattenPlanInputCatalog:
                 raise TypeError("plan_inputs must be closed")
-            from .ids import validate_canonical_roundtrip
-            validate_canonical_roundtrip(self.plan_inputs, UnflattenPlanInputCatalog)
+            # The legacy adaptation is the external-authority boundary for
+            # these catalogs: they arrive from persisted legacy metadata, so
+            # this is exactly where the canonical representation is built and
+            # the strict decode is required.
+            materialize_for_persistence(self.plan_inputs, UnflattenPlanInputCatalog)
             plan_refs = {
                 self.plan_inputs.source_entry_ref,
                 self.plan_inputs.dispatcher_entry_ref,
@@ -1224,7 +1234,7 @@ class LegacyUnflattenDecodeContext:
                 raise ValueError("exact legacy plan inputs contain a foreign ref")
             if self.use_def_witness is None or type(self.use_def_witness) is not UseDefFragmentWitness:
                 raise TypeError("exact legacy adaptation requires an owned use-def witness")
-            validate_canonical_roundtrip(self.use_def_witness, UseDefFragmentWitness)
+            materialize_for_persistence(self.use_def_witness, UseDefFragmentWitness)
             if any(ref not in refs for ref in self.use_def_witness.redirect_owner_refs):
                 raise ValueError("exact legacy use-def witness contains a foreign ref")
             if self.canonical_route_evidence is None:

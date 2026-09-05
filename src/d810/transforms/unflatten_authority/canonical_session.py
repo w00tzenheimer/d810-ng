@@ -126,6 +126,8 @@ _COUNTER_NAMES: tuple[str, ...] = (
     "inventory_seal_checks",
     "inventory_seal_hits",
     "occurrence_stamps",
+    "content_id_mints",
+    "materializations",
 )
 
 _REPORT_ENV = "D810_AUTHORITY_WORK_COUNTERS"
@@ -159,6 +161,8 @@ class CanonicalWorkMetrics:
     inventory_seal_checks: int = 0
     inventory_seal_hits: int = 0
     occurrence_stamps: int = 0
+    content_id_mints: int = 0
+    materializations: int = 0
 
     def __post_init__(self) -> None:
         for name in _COUNTER_NAMES:
@@ -374,6 +378,14 @@ class CanonicalValidationSession:
     def record_occurrence_stamp(self) -> None:
         self._require_open()
         self._ledger.occurrence_stamps += 1
+
+    def record_content_id_mint(self) -> None:
+        self._require_open()
+        self._ledger.content_id_mints += 1
+
+    def record_materialization(self) -> None:
+        self._require_open()
+        self._ledger.materializations += 1
 
     def cached_canonical_bytes(self, value: object, stamp: object) -> bytes | None:
         """Return canonical bytes already validated for this exact occurrence.
@@ -686,6 +698,24 @@ def record_occurrence_stamp() -> None:
         session.record_occurrence_stamp()
 
 
+def record_content_id_mint() -> None:
+    """Count one freshly computed content ID (a SHA-256 over canonical bytes)."""
+
+    _PROCESS_LEDGER.content_id_mints += 1
+    session = _ACTIVE_SESSION.get()
+    if session is not None:
+        session.record_content_id_mint()
+
+
+def record_materialization() -> None:
+    """Count one explicit ``materialize_for_persistence`` boundary crossing."""
+
+    _PROCESS_LEDGER.materializations += 1
+    session = _ACTIVE_SESSION.get()
+    if session is not None:
+        session.record_materialization()
+
+
 def process_work_metrics() -> CanonicalWorkMetrics:
     """Return the cumulative counts for this interpreter."""
 
@@ -783,11 +813,13 @@ __all__ = [
     "record_bytes_lookup",
     "record_canonical_bytes_reuse",
     "record_content_id_lookup",
+    "record_content_id_mint",
     "record_content_id_reuse",
     "record_deep_validation",
     "record_inventory_seal_check",
     "record_inventory_seal_mint",
     "record_inventory_validation",
+    "record_materialization",
     "record_occurrence_stamp",
     "record_roundtrip_decode",
     "record_wire_encode",

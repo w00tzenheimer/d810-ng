@@ -49,7 +49,7 @@ def _deep_authority() -> object:
 
 def test_work_metrics_are_exact_non_negative_ints() -> None:
     metrics = CanonicalWorkMetrics()
-    assert metrics.tuple == (0,) * 14
+    assert metrics.tuple == (0,) * 16
     assert metrics.total == 0
     assert tuple(metrics.as_payload()) == (
         "bytes_lookup_hits",
@@ -57,12 +57,14 @@ def test_work_metrics_are_exact_non_negative_ints() -> None:
         "canonical_bytes_reuses",
         "content_id_lookup_hits",
         "content_id_lookup_misses",
+        "content_id_mints",
         "content_id_reuses",
         "deep_validations",
         "inventory_seal_checks",
         "inventory_seal_hits",
         "inventory_seal_mints",
         "inventory_validations",
+        "materializations",
         "occurrence_stamps",
         "roundtrip_decodes",
         "wire_encodes",
