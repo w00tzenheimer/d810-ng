@@ -3375,6 +3375,51 @@ def test_runtime_merge_exempts_scope_local_ids_from_the_divergence_check() -> No
     assert len(merged.route_proofs) == 2
 
 
+def test_runtime_remint_rejects_same_scope_id_divergence() -> None:
+    """A proof recirculated under an id this scope minted must not diverge."""
+
+    scope = runtime_semantic_route_scope(NATIVE_KEY, 3)
+    evidence = runtime_semantic_evidence_from_proofs(
+        NATIVE_KEY, 3, (_proof(),), scope=scope,
+    )
+    proof = evidence.route_proofs[0]
+    forged = replace(
+        proof,
+        destinations=(replace(proof.destinations[0], target_anchor_ea=0x1201),),
+    )
+    assert forged.proof_id == proof.proof_id
+
+    with pytest.raises(
+        SemanticRouteEvidenceRejected,
+        match="divergent authoritative payload",
+    ) as rejection:
+        semantic_evidence_with_additional_proofs(evidence, (forged,))
+    assert "destinations" in str(rejection.value)
+    assert repr(proof.proof_id) in str(rejection.value)
+
+
+def test_runtime_remint_accepts_an_unforged_additional_proof() -> None:
+    scope = runtime_semantic_route_scope(NATIVE_KEY, 3)
+    evidence = runtime_semantic_evidence_from_proofs(
+        NATIVE_KEY, 3, (_proof(),), scope=scope,
+    )
+
+    grown = semantic_evidence_with_additional_proofs(
+        evidence, (_storage_choice_proof(),),
+    )
+
+    assert len(grown.route_proofs) == 2
+    assert grown.runtime_identity is not None
+    assert grown.runtime_identity.scope is scope
+
+
+def test_runtime_merge_rejects_an_untyped_owned_route_id_set() -> None:
+    with pytest.raises(TypeError, match="owned route ids must be an exact frozenset"):
+        route_evidence._runtime_authoritative_proofs(
+            (_proof(),), owned_route_ids={"runtime:0x1000:g3#route_proof000001"},
+        )
+
+
 def test_runtime_evidence_rejects_every_inconsistent_identity_pairing() -> None:
     scope = runtime_semantic_route_scope(NATIVE_KEY, 3)
     evidence = runtime_semantic_evidence_from_proofs(

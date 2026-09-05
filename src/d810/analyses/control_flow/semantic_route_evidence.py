@@ -6342,26 +6342,40 @@ def _runtime_route_proof_order(proof: SemanticRouteProof) -> tuple[object, ...]:
 
 def _runtime_authoritative_proofs(
     proofs: tuple[SemanticRouteProof, ...],
+    *,
+    owned_route_ids: frozenset[str] = frozenset(),
 ) -> tuple[SemanticRouteProof, ...]:
     """Merge repeated authoritative payloads by direct field comparison.
 
     This keeps the corruption check ``_canonical_authoritative_proofs`` makes:
     an input id that claims something about content must not name two
-    different payloads.  A ``runtime:`` input id is excluded from that check,
-    and only from that check, because it is a join key inside one scope rather
-    than a claim about content -- two scopes sharing a namespace render the
-    same strings for unrelated bundles, so comparing them would reject correct
-    input.  Within one scope no two references are equal, so a runtime id
-    cannot name two payloads in the first place.
+    different payloads.  It applies to every content-derived id, and to every
+    runtime id in ``owned_route_ids`` -- the exact identities the caller's own
+    scope minted, which a remint has in hand.
+
+    A runtime id outside that set is exempt, and only from this check, because
+    two scopes over one namespace render the same strings for unrelated
+    bundles and comparing those would reject correct input.  The exemption is
+    a statement about the rendered string, not about the reference: a caller
+    attaches whatever string it likes to a proof, so nothing here can tell a
+    foreign scope's id from a forgery of one.  Detection is therefore exactly
+    as good as the caller's ``owned_route_ids``, which is why the remint seam
+    supplies it and the fresh-build factory -- whose inputs carry producer
+    labels, not runtime ids -- does not need to.
     """
 
+    if type(owned_route_ids) is not frozenset:
+        raise TypeError("owned route ids must be an exact frozenset")
     buckets: dict[
         tuple[object, ...], list[tuple[tuple[object, ...], SemanticRouteProof]]
     ] = {}
     stable_by_input_id: dict[str, tuple[object, ...]] = {}
     for proof in proofs:
         stable = _stable_route_proof_key(proof)
-        if not is_runtime_authority_identity(proof.proof_id):
+        if (
+            not is_runtime_authority_identity(proof.proof_id)
+            or proof.proof_id in owned_route_ids
+        ):
             prior_stable = stable_by_input_id.setdefault(proof.proof_id, stable)
             if prior_stable != stable:
                 divergent_fields = tuple(
@@ -6417,6 +6431,7 @@ def runtime_semantic_evidence_from_proofs(
     proofs: tuple[SemanticRouteProof, ...],
     *,
     scope: RuntimeAuthorityScope,
+    source_route_ids: frozenset[str] = frozenset(),
 ) -> CanonicalSemanticEvidence:
     """Construct evidence whose join identities are minted by one live scope.
 
@@ -6425,14 +6440,19 @@ def runtime_semantic_evidence_from_proofs(
     same authoritative fields and rejects the same divergent-input-id
     corruption, but it never fingerprints, JSON encodes, or hashes them: the
     group and per-proof identities are scope-owned references, and the bundle
-    carries the scope so the consuming transaction stays inside it.  The one
-    deliberate difference is that a ``runtime:`` input id is not subject to the
-    divergence check; see ``_runtime_authoritative_proofs``.
+    carries the scope so the consuming transaction stays inside it.
+
+    ``source_route_ids`` names the runtime identities the caller's own scope
+    already minted, so that a proof recirculated under one of them is held to
+    the divergence check.  A runtime id from any other scope is a string
+    coincidence and stays exempt; see ``_runtime_authoritative_proofs``.
     """
 
     if type(scope) is not RuntimeAuthorityScope:
         raise TypeError("runtime semantic evidence requires a runtime scope")
-    route_proofs = _runtime_authoritative_proofs(tuple(proofs))
+    route_proofs = _runtime_authoritative_proofs(
+        tuple(proofs), owned_route_ids=source_route_ids,
+    )
     if not route_proofs:
         raise SemanticRouteEvidenceRejected(
             "canonical semantic evidence requires route proofs"
@@ -6469,6 +6489,10 @@ def semantic_evidence_with_additional_proofs(
     identities; an internally produced bundle stays inside its own reference
     scope, which also keeps the reminted identities distinct from the ones the
     superseded bundle handed out.
+
+    This is the seam that knows exactly which runtime identities the source
+    scope minted, so it is the seam that can hold a proof recirculated under
+    one of them to the divergent-payload check.
     """
 
     if type(evidence) is not CanonicalSemanticEvidence:
@@ -6486,6 +6510,9 @@ def semantic_evidence_with_additional_proofs(
         generation=evidence.generation,
         proofs=proofs,
         scope=identity.scope,
+        source_route_ids=frozenset(
+            identity.scope.identity(ref) for ref in identity.proof_refs
+        ),
     )
 
 
