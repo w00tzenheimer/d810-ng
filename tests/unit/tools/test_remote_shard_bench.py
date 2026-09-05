@@ -727,3 +727,38 @@ def test_allow_mixed_revisions_yields_no_ratio_end_to_end(
     assert status == 0
     assert "|speedup (baseline / parallel)|n/a (mixed sources)|" in printed
     assert "cases per minute" in printed
+
+
+def test_each_shard_is_timed_when_it_exits_not_when_the_slowest_does(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Waiting in order made a fast shard report the slowest shard's wall."""
+
+    class _Process:
+        def __init__(self, polls_until_exit: int) -> None:
+            self._left = polls_until_exit
+
+        def poll(self):
+            if self._left <= 0:
+                return 0
+            self._left -= 1
+            return None
+
+    processes = iter([_Process(10), _Process(1)])
+    monkeypatch.setattr(
+        bench.subprocess, "Popen", lambda *args, **kwargs: next(processes)
+    )
+    clock = iter([float(tick) for tick in range(0, 400)])
+    monkeypatch.setattr(bench.time, "monotonic", lambda: next(clock))
+    monkeypatch.setattr(bench.time, "sleep", lambda seconds: None)
+
+    measurements, total = bench.run_commands_concurrently(
+        [["a"], ["b"]], cwd=tmp_path, env={}
+    )
+
+    slow_wall, slow_rc = measurements[0]
+    fast_wall, fast_rc = measurements[1]
+    assert slow_rc == 0 and fast_rc == 0
+    assert fast_wall < slow_wall
+    assert total >= slow_wall

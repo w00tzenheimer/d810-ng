@@ -497,11 +497,24 @@ def run_commands_concurrently(
             stderr=subprocess.DEVNULL,
         )
         started.append((process, time.monotonic()))
-    measurements: list[tuple[float, int]] = []
-    for process, launch_time in started:
-        returncode = process.wait()
-        measurements.append((time.monotonic() - launch_time, returncode))
-    return measurements, time.monotonic() - overall_start
+    # Waiting on the shards in order would time every later shard as if it had
+    # run until the slowest one finished, so each is polled and stamped when it
+    # actually exits.
+    measurements: list[tuple[float, int] | None] = [None] * len(started)
+    remaining = set(range(len(started)))
+    while remaining:
+        for index in sorted(remaining):
+            process, launch_time = started[index]
+            returncode = process.poll()
+            if returncode is None:
+                continue
+            measurements[index] = (time.monotonic() - launch_time, returncode)
+            remaining.discard(index)
+        if remaining:
+            time.sleep(0.2)
+    return [entry for entry in measurements if entry is not None], (
+        time.monotonic() - overall_start
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
