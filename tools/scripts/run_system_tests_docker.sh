@@ -1092,9 +1092,23 @@ else
 fi
 ENV_GIT=""
 GIT_COMMON_DIR="$(git -C "$WORK_DIR" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+GIT_WORKTREE_DIR="$(git -C "$WORK_DIR" rev-parse --path-format=absolute --git-dir 2>/dev/null || true)"
 if [ -n "$GIT_COMMON_DIR" ] && [ -d "$GIT_COMMON_DIR" ]; then
   _add_mount "$GIT_COMMON_DIR" /d810-git ro
   ENV_GIT="GIT_DIR=/d810-git"
+  # A linked worktree's .git is a FILE pointing at <common>/worktrees/<name>,
+  # and that pointer is a macOS path the container cannot follow. Mounting the
+  # per-worktree git dir and naming it explicitly is what makes in-container
+  # `git rev-parse HEAD` report the TESTED worktree instead of the main
+  # checkout; GIT_COMMON_DIR has to be explicit because the worktree's
+  # commondir file is the relative "../..".
+  if [ "$REMOTE_MODE" = "1" ] \
+    && [ -n "$GIT_WORKTREE_DIR" ] \
+    && [ "$GIT_WORKTREE_DIR" != "$GIT_COMMON_DIR" ] \
+    && [ -d "$GIT_WORKTREE_DIR" ]; then
+    _add_mount "$GIT_WORKTREE_DIR" /d810-git-worktree ro
+    ENV_GIT="GIT_DIR=/d810-git-worktree GIT_COMMON_DIR=/d810-git"
+  fi
 fi
 if [ -n "$MOUNT_LOGS" ]; then
   LOGS_DIR="${WORK_DIR}/.tmp/logs"
@@ -1199,6 +1213,7 @@ if [ "$REMOTE_MODE" = "1" ]; then
   echo "  share root: $REMOTE_SHARE_ROOT"
   echo "  subpath:  $WORK_SUBPATH (read-only at /work-src; .tmp read-write at /work/.tmp)"
   echo "  source digest: $SOURCE_DIGEST"
+  echo "  git:      $ENV_GIT"
   echo "  archive:  $REMOTE_ARCHIVE_CONTAINER_PATH (tracked + untracked-not-ignored, ignored content excluded)"
   echo "  allowlist: ${REMOTE_MANIFEST_EXTRA_ENTRIES:- none} (from $(basename "$REMOTE_MANIFEST_EXTRA"))"
   echo "  work volume: $WORK_VOLUME ($WORK_VOLUME_STATE, retained source copy)"

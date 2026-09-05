@@ -2500,3 +2500,103 @@ def test_remote_lock_still_guards_the_shared_tmp(tmp_path: Path) -> None:
     assert result.returncode != 0
     assert "already owns this worktree" in result.stderr
     assert _runs(calls) == []
+
+
+def _worktree_git_stub(common: Path, worktree_git: Path) -> str:
+    return f"""#!/usr/bin/env bash
+set -eu
+case "$*" in
+  *--git-common-dir*) printf '%s\\n' '{common}'; exit 0 ;;
+  *--git-dir*) printf '%s\\n' '{worktree_git}'; exit 0 ;;
+  *"ls-files --others --exclude-standard -z"*) exit 0 ;;
+  *"ls-files -z"*) exit 0 ;;
+esac
+exit 1
+"""
+
+
+def test_remote_worktree_git_identity_points_at_the_tested_worktree(
+    tmp_path: Path,
+) -> None:
+    """GIT_DIR=/d810-git alone resolves the MAIN checkout's HEAD."""
+    share, repo = _share_layout(tmp_path)
+    common = repo / ".git"
+    worktree_git = common / "worktrees" / "wt"
+    worktree_git.mkdir(parents=True)
+    (repo / ".worktrees" / "wt" / "src").mkdir(parents=True)
+
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--remote",
+        REMOTE_HOST,
+        "-w",
+        "wt",
+        "--",
+        "true",
+        repo_root=repo,
+        extra_env=_remote_env(share),
+        mock_git=_worktree_git_stub(common, worktree_git),
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert (
+        calls.count(
+            "run-arg type=volume,src=idapro,dst=/d810-git-worktree,"
+            "volume-subpath=d810/.git/worktrees/wt,readonly"
+        )
+        == 1
+    )
+    command = _remote_container_run(calls)
+    assert "GIT_DIR=/d810-git-worktree GIT_COMMON_DIR=/d810-git" in command
+    assert "export IDA_PREFIX=/app/ida" in command
+    assert "GIT_DIR=/d810-git " not in command.split("GIT_DIR=/d810-git-worktree")[0]
+
+
+def test_remote_repo_root_keeps_the_plain_common_dir_form(tmp_path: Path) -> None:
+    share, repo = _share_layout(tmp_path)
+    common = repo / ".git"
+    common.mkdir()
+
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--remote",
+        REMOTE_HOST,
+        "--",
+        "true",
+        repo_root=repo,
+        extra_env=_remote_env(share),
+        mock_git=_worktree_git_stub(common, common),
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert not [call for call in calls if "d810-git-worktree" in call]
+    command = _remote_container_run(calls)
+    assert "GIT_DIR=/d810-git " in command
+    assert "GIT_COMMON_DIR" not in command
+
+
+def test_local_mode_git_identity_is_unchanged(tmp_path: Path) -> None:
+    """Local behaviour must stay byte-identical; the same defect is reported."""
+    share, repo = _share_layout(tmp_path)
+    common = repo / ".git"
+    worktree_git = common / "worktrees" / "wt"
+    worktree_git.mkdir(parents=True)
+    (repo / ".worktrees" / "wt" / "src").mkdir(parents=True)
+
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "-w",
+        "wt",
+        "--",
+        "true",
+        repo_root=repo,
+        mock_git=_worktree_git_stub(common, worktree_git),
+    )
+
+    assert result.returncode == 0, result.stderr
+    command = _container_run(calls)
+    assert "GIT_DIR=/d810-git " in command
+    assert "d810-git-worktree" not in command
