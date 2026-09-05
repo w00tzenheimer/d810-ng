@@ -101,13 +101,15 @@
 #                           under it; the runner fails closed otherwise.
 #
 # Remote mode (one-time setup on the remote engine):
-#   The volume is created once, by hand, on the machine that runs the containers:
+#   The volume is created once, by hand, with the stdlib helper (shell-agnostic: it reads the
+#   password through getpass, never through a shell builtin):
 #
-#     read -rs -p 'SMB password for smbuser@smb-server.example: ' SMB_PW && echo && \
-#     docker -H ssh://remote-engine.example volume create --driver local \
-#       --opt type=cifs --opt device=//smb-server.example/idapro \
-#       --opt "o=addr=smb-server.example,username=smbuser,password=${SMB_PW},vers=3.0,uid=0,gid=0,file_mode=0777,dir_mode=0777,nobrl,noperm" \
-#       idapro; unset SMB_PW
+#     python3 tools/scripts/setup_remote_test_volume.py --remote remote-engine.example
+#     python3 tools/scripts/setup_remote_test_volume.py --dry-run   # print the redacted argv
+#
+#   It runs `docker -H ssh://HOST volume create --driver local --opt type=cifs
+#   --opt device=//smb-server.example/idapro --opt o=addr=smb-server.example,username=smbuser,password=...,vers=3.0,
+#   uid=0,gid=0,file_mode=0700,dir_mode=0700 idapro`.
 #
 #   All of those options are in-kernel cifs options (docker's local driver calls mount(2) directly,
 #   so userspace-only mount.cifs options such as credentials= would NOT work). Verified against the
@@ -115,6 +117,9 @@
 #   while adding one unknown option makes the same mount fail with "invalid argument". The password is stored
 #   in the volume's options and is therefore visible to `docker volume inspect` on the remote host:
 #   that is the accepted trade for typing it once. Remove it with `docker volume rm idapro`.
+#
+#   The option set deliberately omits nobrl: if SQLite under /work/.tmp (diag DBs, debug logs) ever
+#   fails with a locking error over this mount, recreate the volume with nobrl appended.
 #
 # Remote examples:
 #   ./run_system_tests_docker.sh exec --remote remote-engine.example -w my-worktree -- true
