@@ -917,7 +917,23 @@ class HexRaysPatchTransactionParticipant:
 
 
 def _first_failure(error: Exception, phase: str) -> tuple[str, str]:
-    reason = str(error) or "runtime failure"
+    """Describe one transaction failure as ``(reason, first_failed_obligation)``.
+
+    The reason always names the exception *type*. An exception raised with no
+    arguments (a bare ``assert`` or ``raise SomeError()``) has an empty
+    ``str()``, and recording only that string persisted the literal fallback
+    ``"runtime failure"`` -- erasing the single fact needed to locate the
+    failure. The type name is never empty, so the recorded reason is always
+    actionable.
+
+    >>> _first_failure(ValueError("bad projection"), "preflight")
+    ('ValueError: bad projection', 'runtime:preflight')
+    >>> _first_failure(AssertionError(), "preflight")
+    ('AssertionError', 'runtime:preflight')
+    """
+    type_name = type(error).__name__
+    detail = str(error)
+    reason = f"{type_name}: {detail}" if detail else type_name
     return reason, f"runtime:{phase}"
 
 

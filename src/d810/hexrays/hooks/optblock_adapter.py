@@ -798,7 +798,11 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
             # is not a D810Exception (e.g. ida_mcp.sync.IDASyncError). Keep it
             # inside the Python callback and suppress this maturity.
             optimizer_logger.warning(
-                "Exception in block optimizer on blk %d: %s", blk.serial, e
+                "Exception in block optimizer on blk %d: %s: %s",
+                blk.serial,
+                type(e).__name__,
+                e,
+                exc_info=True,
             )
             self._pass_count = self._max_passes_current + 1
         return 0
