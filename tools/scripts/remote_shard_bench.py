@@ -21,6 +21,7 @@ Example::
 from __future__ import annotations
 
 import argparse
+import hashlib
 import os
 import re
 import subprocess
@@ -71,6 +72,7 @@ class BenchSummary:
     speedup: float | None
     baseline_returncode: int | None = None
     baseline_revision: str | None = None
+    valid: bool = True
 
 
 def default_runner() -> Path:
@@ -201,8 +203,82 @@ def build_revision_argv(worktree_dir: Path) -> list[str]:
     return ["git", "-C", str(worktree_dir), "rev-parse", "HEAD"]
 
 
+def build_porcelain_argv(worktree_dir: Path) -> list[str]:
+    """Build the argv listing tracked modifications.
+
+    >>> build_porcelain_argv(Path("/w"))[3:]
+    ['status', '--porcelain=v1', '-z']
+    """
+    return ["git", "-C", str(worktree_dir), "status", "--porcelain=v1", "-z"]
+
+
+def build_untracked_argv(worktree_dir: Path) -> list[str]:
+    """Build the argv listing untracked, non-ignored files.
+
+    >>> build_untracked_argv(Path("/w"))[3:]
+    ['ls-files', '--others', '--exclude-standard', '-z']
+    """
+    return ["git", "-C", str(worktree_dir), "ls-files", "--others", "--exclude-standard", "-z"]
+
+
+def build_worktree_diff_argv(worktree_dir: Path) -> list[str]:
+    """Build the argv producing the content of tracked modifications.
+
+    >>> build_worktree_diff_argv(Path("/w"))[3:]
+    ['diff', 'HEAD']
+    """
+    return ["git", "-C", str(worktree_dir), "diff", "HEAD"]
+
+
+def compute_source_digest(
+    revision: str | None,
+    porcelain: str,
+    diff: str,
+    untracked_contents: Sequence[tuple[str, bytes]],
+) -> str:
+    """Digest what a worktree would actually run, not just its commit.
+
+    A worktree carries uncommitted edits, so HEAD alone cannot say two shards
+    ran identical source. Untracked (non-ignored) file contents are included
+    because the sync mirrors them too.
+
+    >>> compute_source_digest("abc", "", "", []) == compute_source_digest("abc", "", "", [])
+    True
+    >>> compute_source_digest("abc", " M src/x.py", "", []) != compute_source_digest(
+    ...     "abc", "", "", [])
+    True
+    >>> len(compute_source_digest("abc", "", "", []))
+    16
+    """
+    digest = hashlib.sha256()
+    digest.update((revision or "no-head").encode())
+    digest.update(b"\x00")
+    digest.update(porcelain.encode("utf-8", "replace"))
+    digest.update(b"\x00")
+    digest.update(diff.encode("utf-8", "replace"))
+    for name, content in sorted(untracked_contents):
+        digest.update(b"\x00")
+        digest.update(name.encode("utf-8", "replace"))
+        digest.update(b"\x00")
+        digest.update(content)
+    return digest.hexdigest()[:16]
+
+
+def is_dirty(porcelain: str, untracked: Sequence[str]) -> bool:
+    """A worktree is dirty when git reports anything at all.
+
+    >>> is_dirty("", [])
+    False
+    >>> is_dirty(" M src/x.py", [])
+    True
+    >>> is_dirty("", ["new.py"])
+    True
+    """
+    return bool(porcelain.strip()) or bool(untracked)
+
+
 def revision_conflict(revisions: Sequence[str | None], allow_mixed: bool) -> str | None:
-    """Report when shards did not all run the same source revision.
+    """Report when the arms did not all run the same source digest.
 
     >>> revision_conflict(["a", "a"], False) is None
     True
@@ -237,6 +313,37 @@ def read_revision(worktree_dir: Path) -> str | None:
     return revision or None
 
 
+def read_source_state(worktree_dir: Path) -> tuple[str | None, bool]:
+    """Return (source digest, dirty) for a worktree, before anything runs."""
+    revision = read_revision(worktree_dir)
+    porcelain = subprocess.run(
+        build_porcelain_argv(worktree_dir), capture_output=True, text=True, check=False
+    )
+    if porcelain.returncode != 0:
+        return None, True
+    diff = subprocess.run(
+        build_worktree_diff_argv(worktree_dir),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    listing = subprocess.run(
+        build_untracked_argv(worktree_dir), capture_output=True, text=True, check=False
+    )
+    untracked = [name for name in listing.stdout.split("\0") if name]
+    contents: list[tuple[str, bytes]] = []
+    for name in untracked:
+        path = worktree_dir / name
+        try:
+            contents.append((name, path.read_bytes()))
+        except OSError:
+            contents.append((name, b"<unreadable>"))
+    digest = compute_source_digest(
+        revision, porcelain.stdout, diff.stdout, contents
+    )
+    return digest, is_dirty(porcelain.stdout, untracked)
+
+
 def remove_stale_output(worktree_dir: Path, output_name: str) -> None:
     """Delete a previous capture so a stale file can never be read as fresh."""
     path = worktree_dir / ".tmp" / output_name
@@ -253,6 +360,7 @@ def aggregate(
     baseline_summary: str | None,
     baseline_returncode: int | None = None,
     baseline_revision: str | None = None,
+    valid: bool = True,
 ) -> BenchSummary:
     """Combine measured walls into the reported figures.
 
@@ -263,12 +371,18 @@ def aggregate(
     ...     baseline_label="remote-sequential", baseline_summary=None)
     >>> summary.slowest_shard, summary.launch_overhead, summary.speedup
     (100.0, 10.0, 2.0)
+    >>> aggregate(
+    ...     [ShardResult(shard, 100.0, 1, None)],
+    ...     parallel_wall=110.0, baseline_wall=220.0,
+    ...     baseline_label="remote-sequential", baseline_summary=None,
+    ...     valid=False).speedup is None
+    True
     """
     if not results:
         raise ValueError("no shard results to aggregate")
     slowest = max(result.seconds for result in results)
     speedup = None
-    if baseline_wall is not None and parallel_wall > 0:
+    if valid and baseline_wall is not None and parallel_wall > 0:
         speedup = baseline_wall / parallel_wall
     return BenchSummary(
         results=tuple(results),
@@ -281,13 +395,14 @@ def aggregate(
         speedup=speedup,
         baseline_returncode=baseline_returncode,
         baseline_revision=baseline_revision,
+        valid=valid,
     )
 
 
 def render_table(summary: BenchSummary) -> str:
     """Render the measured results as minimal-separator markdown tables."""
     lines = [
-        "|shard|worktree|revision|tests|wall s|exit|pytest summary|",
+        "|shard|worktree|source digest|tests|wall s|exit|pytest summary|",
         "|-|-|-|-|-|-|-|",
     ]
     for result in summary.results:
@@ -317,8 +432,12 @@ def render_table(summary: BenchSummary) -> str:
         )
         lines.append(f"|baseline summary|{summary.baseline_summary or 'MISSING'}|")
         lines.append(f"|baseline exit|{summary.baseline_returncode}|")
-        lines.append(f"|baseline revision|{(summary.baseline_revision or 'unknown')[:12]}|")
-    if summary.speedup is None:
+        lines.append(
+            f"|baseline source digest|{(summary.baseline_revision or 'unknown')[:12]}|"
+        )
+    if not summary.valid:
+        lines.append("|speedup (baseline / parallel)|invalid|")
+    elif summary.speedup is None:
         lines.append("|speedup (baseline / parallel)|not measured|")
     else:
         lines.append(f"|speedup (baseline / parallel)|{summary.speedup:.2f}x|")
@@ -388,6 +507,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--worktree-root", default=".worktrees", help="D810_WORKTREE_ROOT")
     parser.add_argument(
+        "--allow-dirty",
+        action="store_true",
+        help=(
+            "bench worktrees that carry uncommitted or untracked changes; their "
+            "source digest then covers that working state"
+        ),
+    )
+    parser.add_argument(
         "--allow-mixed-revisions",
         action="store_true",
         help="do not fail when the sharded worktrees are on different revisions",
@@ -444,6 +571,18 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     # A previous run's capture would otherwise be read as this run's evidence.
     baseline_worktree_dir = repo_root / arguments.worktree_root / shards[0].worktree
+    # Source state is read BEFORE anything runs: afterwards the containers have
+    # already written into the tree and the reading would describe the wrong thing.
+    source_state: dict[str, tuple[str | None, bool]] = {}
+    for shard in shards:
+        worktree_dir = repo_root / arguments.worktree_root / shard.worktree
+        source_state[shard.worktree] = read_source_state(worktree_dir)
+    dirty = [name for name, (_digest, is_dirty_) in source_state.items() if is_dirty_]
+    if dirty and not arguments.allow_dirty:
+        for name in dirty:
+            print(f"ERROR: worktree {name} has uncommitted or untracked changes")
+        print("ERROR: pass --allow-dirty to bench the working tree as it stands")
+        return 1
     for shard in shards:
         remove_stale_output(
             repo_root / arguments.worktree_root / shard.worktree, shard.output_name
@@ -464,7 +603,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 seconds=seconds,
                 returncode=returncode,
                 summary=summary,
-                revision=read_revision(worktree_dir),
+                revision=source_state[shard.worktree][0],
             )
         )
 
@@ -488,18 +627,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         baseline_summary = extract_pytest_summary(
             read_output(baseline_worktree_dir, "shard-baseline.txt")
         )
-        baseline_revision = read_revision(baseline_worktree_dir)
-
-    summary = aggregate(
-        results,
-        parallel_wall=parallel_wall,
-        baseline_wall=baseline_wall,
-        baseline_label=arguments.baseline,
-        baseline_summary=baseline_summary,
-        baseline_returncode=baseline_returncode,
-        baseline_revision=baseline_revision,
-    )
-    print(render_table(summary))
+        baseline_revision = source_state[shards[0].worktree][0]
 
     problems: list[str] = []
     for result in results:
@@ -523,6 +651,20 @@ def main(argv: Sequence[str] | None = None) -> int:
     conflict = revision_conflict(revisions, arguments.allow_mixed_revisions)
     if conflict is not None:
         problems.append(f"{conflict}; pass --allow-mixed-revisions to accept it")
+
+    # The ratio is only rendered once every arm has been validated: a plausible
+    # number printed above an error is the failure mode this ordering removes.
+    summary = aggregate(
+        results,
+        parallel_wall=parallel_wall,
+        baseline_wall=baseline_wall,
+        baseline_label=arguments.baseline,
+        baseline_summary=baseline_summary,
+        baseline_returncode=baseline_returncode,
+        baseline_revision=baseline_revision,
+        valid=not problems,
+    )
+    print(render_table(summary))
     if problems:
         for problem in problems:
             print(f"ERROR: {problem}")

@@ -195,6 +195,9 @@ def test_missing_summary_makes_the_bench_fail(
         "run_commands_concurrently",
         lambda commands, cwd, env: ([(1.0, 0)], 1.5),
     )
+    monkeypatch.setattr(
+        bench, "read_source_state", lambda worktree_dir: ("dig0", False)
+    )
 
     status = bench.main(
         [
@@ -227,7 +230,7 @@ def test_green_shard_output_makes_the_bench_pass(
         return [(50.0, 0)], 51.0
 
     monkeypatch.setattr(bench, "run_commands_concurrently", _launch)
-    monkeypatch.setattr(bench, "read_revision", lambda worktree_dir: "rev0")
+    monkeypatch.setattr(bench, "read_source_state", lambda worktree_dir: ("dig0", False))
 
     status = bench.main(
         [
@@ -340,7 +343,9 @@ def _stub_run(monkeypatch: pytest.MonkeyPatch, measurements, wall, revisions=Non
     )
     lookup = revisions or {}
     monkeypatch.setattr(
-        bench, "read_revision", lambda worktree_dir: lookup.get(worktree_dir.name, "rev0")
+        bench,
+        "read_source_state",
+        lambda worktree_dir: (lookup.get(worktree_dir.name, "dig0"), False),
     )
 
 
@@ -401,7 +406,7 @@ def test_nonzero_runner_exit_fails_even_with_a_green_file(
         return [(5.0, 23)], 5.5
 
     monkeypatch.setattr(bench, "run_commands_concurrently", _launch)
-    monkeypatch.setattr(bench, "read_revision", lambda worktree_dir: "rev0")
+    monkeypatch.setattr(bench, "read_source_state", lambda worktree_dir: ("dig0", False))
 
     status = bench.main(
         [
@@ -433,8 +438,10 @@ def test_mixed_revisions_fail_unless_allowed(
     monkeypatch.setattr(bench, "run_commands_concurrently", _launch)
     monkeypatch.setattr(
         bench,
-        "read_revision",
-        lambda worktree_dir: "aaaa111" if worktree_dir.name == "wt0" else "bbbb222",
+        "read_source_state",
+        lambda worktree_dir: (
+            ("aaaa111", False) if worktree_dir.name == "wt0" else ("bbbb222", False)
+        ),
     )
 
     arguments = [
@@ -470,7 +477,7 @@ def test_failing_baseline_fails_the_bench(
         returncode = 7
 
     monkeypatch.setattr(bench, "run_commands_concurrently", _launch)
-    monkeypatch.setattr(bench, "read_revision", lambda worktree_dir: "rev0")
+    monkeypatch.setattr(bench, "read_source_state", lambda worktree_dir: ("dig0", False))
     monkeypatch.setattr(bench.subprocess, "run", lambda *a, **k: _Completed())
 
     status = bench.main(
@@ -484,6 +491,90 @@ def test_failing_baseline_fails_the_bench(
     assert status == 1
     assert "baseline runner exited 7" in printed
     assert "baseline produced no passing summary" in printed
+
+
+def test_source_digest_covers_uncommitted_and_untracked_content() -> None:
+    base = bench.compute_source_digest("abc", "", "", [])
+
+    assert bench.compute_source_digest("abc", "", "", []) == base
+    assert bench.compute_source_digest("abd", "", "", []) != base
+    assert bench.compute_source_digest("abc", " M src/x.py", "", []) != base
+    assert bench.compute_source_digest("abc", "", "@@ -1 +1 @@", []) != base
+    assert bench.compute_source_digest("abc", "", "", [("new.py", b"x")]) != base
+    assert bench.compute_source_digest("abc", "", "", [("new.py", b"x")]) != (
+        bench.compute_source_digest("abc", "", "", [("new.py", b"y")])
+    )
+    assert bench.build_porcelain_argv(Path("/w"))[3:] == [
+        "status", "--porcelain=v1", "-z",
+    ]
+    assert bench.build_untracked_argv(Path("/w"))[3:] == [
+        "ls-files", "--others", "--exclude-standard", "-z",
+    ]
+
+
+def test_dirty_worktree_is_refused_unless_allowed(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    directory = _worktree(tmp_path, "wt0")
+
+    def _launch(commands, cwd, env):
+        (directory / "shard-0.txt").write_text("1 passed in 1.00s\n", encoding="utf-8")
+        return [(5.0, 0)], 5.5
+
+    monkeypatch.setattr(bench, "run_commands_concurrently", _launch)
+    monkeypatch.setattr(
+        bench, "read_source_state", lambda worktree_dir: ("dirtydigest", True)
+    )
+
+    arguments = [
+        "--remote", "host", "--shard", "wt0=t::a",
+        "--baseline", "none", "--repo-root", str(tmp_path),
+    ]
+
+    assert bench.main(arguments) == 1
+    printed = capsys.readouterr().out
+    assert "uncommitted or untracked changes" in printed
+    assert "--allow-dirty" in printed
+    assert not (directory / "shard-0.txt").exists()
+
+    assert bench.main([*arguments, "--allow-dirty"]) == 0
+    assert "dirtydigest" in capsys.readouterr().out
+
+
+def test_failed_arm_never_prints_a_ratio(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A plausible speedup above an error is the reporting failure to avoid."""
+    directory = _worktree(tmp_path, "wt0")
+
+    def _launch(commands, cwd, env):
+        (directory / "shard-0.txt").write_text("1 passed in 1.00s\n", encoding="utf-8")
+        return [(5.0, 0)], 5.5
+
+    class _Completed:
+        returncode = 7
+
+    monkeypatch.setattr(bench, "run_commands_concurrently", _launch)
+    monkeypatch.setattr(
+        bench, "read_source_state", lambda worktree_dir: ("dig0", False)
+    )
+    monkeypatch.setattr(bench.subprocess, "run", lambda *a, **k: _Completed())
+
+    status = bench.main(
+        ["--remote", "host", "--shard", "wt0=t::a", "--repo-root", str(tmp_path)]
+    )
+    printed = capsys.readouterr().out
+
+    assert status == 1
+    assert "|speedup (baseline / parallel)|invalid|" in printed
+    assert "x|" not in printed.split("speedup")[1][:20]
+    table_index = printed.index("|speedup")
+    error_index = printed.index("ERROR:")
+    assert table_index < error_index
 
 
 def test_doctests_pass() -> None:
