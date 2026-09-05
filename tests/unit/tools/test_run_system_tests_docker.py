@@ -45,6 +45,7 @@ def _cobra_wheel(directory: str, name: str) -> Path | None:
 def _recorded_wheel(name: str) -> Path | None:
     """Return the PUBLISHED wheel, which is the only accepted identity."""
     return _cobra_wheel(COBRA_WHEEL_PUBLISHED_DIR, name)
+MANIFEST_ALLOWLIST = REPO_ROOT / "tools" / "scripts" / "remote_manifest_extra.txt"
 
 
 def _make_harness(
@@ -55,6 +56,8 @@ def _make_harness(
     script = root / "tools" / "scripts" / DOCKER_RUNNER.name
     script.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(DOCKER_RUNNER, script)
+    # The runner reads its allowlist from beside itself.
+    shutil.copy2(MANIFEST_ALLOWLIST, script.parent / MANIFEST_ALLOWLIST.name)
 
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir(exist_ok=True)
@@ -171,9 +174,12 @@ def _run(
     extra_env: dict[str, str] | None = None,
     mock_git: str | None = None,
     repo_root: Path | None = None,
+    allowlist: str | None = None,
 ) -> tuple[subprocess.CompletedProcess[str], list[str]]:
     root = repo_root if repo_root is not None else tmp_path
     script, docker_log = _make_harness(tmp_path, repo_root)
+    if allowlist is not None:
+        (script.parent / MANIFEST_ALLOWLIST.name).write_text(allowlist, encoding="utf-8")
     if mock_git is not None:
         git = tmp_path / "bin" / "git"
         git.write_text(mock_git, encoding="utf-8")
@@ -2095,20 +2101,151 @@ def test_remote_mode_mirrors_source_into_the_work_volume(tmp_path: Path) -> None
 
     assert result.returncode == 0, result.stderr
     command = _remote_container_run(calls)
-    assert "tar -C /work-src -cf -" in command
+    # contents come from one explicit manifest, never a directory walk
+    assert "tar -C /work-src --null -T '/work/.tmp/remote-manifest." in command
     assert "tar -C /work -xf -" in command
-    assert "--exclude=./.tmp" in command
-    assert "--exclude='*.so'" in command
-    assert "--exclude='*.pyd'" in command
-    assert "--exclude=./build" in command
-    assert "--exclude='*.egg-info'" in command
-    for cache in ("__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache"):
-        assert f"--exclude='{cache}'" in command
     # the destination is emptied first, so the mirror is exact
     assert "find /work -mindepth 1 -maxdepth 1 ! -name .tmp -exec rm -rf {} +" in command
-    # the worktree .git FILE is copied; only a .git directory is excluded
-    assert "if [ -d /work-src/.git ]; then __git_exclude='--exclude=./.git'; fi" in command
     assert "set -o pipefail" in command
+
+
+def test_manifest_excludes_ignored_files_and_build_output(tmp_path: Path) -> None:
+    """Ignored content is neither tested source nor covered by the digest."""
+    share, repo = _share_layout(tmp_path)
+    (repo / ".env").write_text("D810_API_TOKEN=secret\n", encoding="utf-8")
+    manifest_log = tmp_path / "manifest.log"
+
+    git_stub = f"""#!/usr/bin/env bash
+set -eu
+printf '%s\\n' "$*" >> '{manifest_log}'
+for arg in "$@"; do
+  if [ "$arg" = "--git-common-dir" ]; then exit 1; fi
+done
+case "$*" in
+  *"ls-files --others --exclude-standard -z"*)
+    printf 'untracked.py\\0'
+    ;;
+  *"ls-files -z"*)
+    printf 'src/d810/x.py\\0tests/t.py\\0samples/bins/libobfuscated.dll\\0'
+    printf 'src/d810/speedups/x.so\\0build/artifact.o\\0src/d810/__pycache__/x.pyc\\0'
+    ;;
+  *"check-ignore"*) exit 0 ;;
+esac
+"""
+
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--remote",
+        REMOTE_HOST,
+        "--",
+        "true",
+        repo_root=repo,
+        extra_env=_remote_env(share),
+        mock_git=git_stub,
+    )
+
+    assert result.returncode == 0, result.stderr
+    manifests = list((repo / ".tmp").glob("remote-manifest.*"))
+    # the manifest is cleaned up on exit, so read what the run recorded instead
+    assert not manifests
+    logged = manifest_log.read_text(encoding="utf-8")
+    assert "ls-files -z" in logged
+    assert "ls-files --others --exclude-standard -z" in logged
+    command = _remote_container_run(calls)
+    assert "--null -T" in command
+    # nothing walks the source tree, so ignored files cannot be swept in
+    assert "tar -C /work-src -cf - ." not in command
+    assert ".env" not in command
+
+
+def test_allowlist_entries_are_validated(tmp_path: Path) -> None:
+    share, repo = _share_layout(tmp_path)
+
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--remote",
+        REMOTE_HOST,
+        "--",
+        "true",
+        repo_root=repo,
+        extra_env=_remote_env(share),
+        allowlist="missing-file.txt\n",
+    )
+
+    assert result.returncode != 0
+    assert "allowlisted path does not exist" in result.stderr
+    assert _runs(calls) == []
+
+
+def test_allowlist_refuses_dotenv(tmp_path: Path) -> None:
+    share, repo = _share_layout(tmp_path)
+    (repo / ".env").write_text("D810_API_TOKEN=secret\n", encoding="utf-8")
+
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--remote",
+        REMOTE_HOST,
+        "--",
+        "true",
+        repo_root=repo,
+        extra_env=_remote_env(share),
+        allowlist=".env\n",
+    )
+
+    assert result.returncode != 0
+    assert "never list .env" in result.stderr
+    assert _runs(calls) == []
+
+
+def test_allowlist_refuses_a_tracked_path(tmp_path: Path) -> None:
+    share, repo = _share_layout(tmp_path)
+    (repo / "tracked.txt").write_text("x\n", encoding="utf-8")
+    git_stub = """#!/usr/bin/env bash
+set -eu
+case "$*" in
+  *check-ignore*) exit 1 ;;
+  *--git-common-dir*) exit 1 ;;
+esac
+"""
+
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--remote",
+        REMOTE_HOST,
+        "--",
+        "true",
+        repo_root=repo,
+        extra_env=_remote_env(share),
+        mock_git=git_stub,
+        allowlist="tracked.txt\n",
+    )
+
+    assert result.returncode != 0
+    assert "not ignored by git" in result.stderr
+    assert _runs(calls) == []
+
+
+def test_plan_reports_the_allowlist(tmp_path: Path) -> None:
+    share, repo = _share_layout(tmp_path)
+
+    result, _calls = _run(
+        tmp_path,
+        "exec",
+        "--remote",
+        REMOTE_HOST,
+        "--",
+        "true",
+        repo_root=repo,
+        extra_env=_remote_env(share),
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "allowlist:  none" in result.stdout
+    assert "archive contents: tracked + untracked-not-ignored files" in result.stdout
 
 
 def test_remote_sync_sentinel_gates_reuse_on_the_source_digest(

@@ -735,7 +735,14 @@ _release_remote_lock() {
   rm -rf "$REMOTE_LOCK_DIR"
 }
 
+REMOTE_MANIFEST=""
+_cleanup_remote_manifest() {
+  [ -n "$REMOTE_MANIFEST" ] || return 0
+  case "$REMOTE_MANIFEST" in */.tmp/remote-manifest.*) rm -f "$REMOTE_MANIFEST" ;; esac
+}
+
 _d810_exit_cleanup() {
+  _cleanup_remote_manifest
   _release_remote_lock
   _cleanup_cobra_source_artifact
 }
@@ -802,6 +809,53 @@ _source_digest() {
           [ -f "$directory/$relative" ] && shasum -a 256 "$directory/$relative" 2>/dev/null
         done
   } | shasum -a 256 | cut -c1-16
+}
+
+# The archive contents come from git's own view of the worktree, never from a
+# directory walk: ignored files are secrets and stale build state, and they are
+# not covered by the source digest either.
+MANIFEST_EXCLUDE_PATTERN='^\.tmp/|^\.tmp$|(^|/)__pycache__/|(^|/)\.pytest_cache/|(^|/)\.mypy_cache/|(^|/)\.ruff_cache/|(^|/)build/|\.egg-info(/|$)|\.so$|\.pyd$|^\.git$'
+REMOTE_MANIFEST_EXTRA="$(cd "$(dirname "$0")" && pwd -P)/remote_manifest_extra.txt"
+REMOTE_MANIFEST_EXTRA_ENTRIES=""
+
+_manifest_from_git() {
+  # Paths are emitted NUL-separated by git; the filter round-trips through
+  # newlines, which is safe here because no tracked path contains one.
+  {
+    GIT_NO_REPLACE_OBJECTS=1 git -C "$WORK_DIR" ls-files -z
+    GIT_NO_REPLACE_OBJECTS=1 git -C "$WORK_DIR" ls-files --others --exclude-standard -z
+  } | tr '\0' '\n' | grep -v -E "$MANIFEST_EXCLUDE_PATTERN" | LC_ALL=C sort -u | tr '\n' '\0'
+}
+
+_append_manifest_allowlist() {
+  local manifest="$1" line
+  [ -f "$REMOTE_MANIFEST_EXTRA" ] || {
+    echo "ERROR: remote allowlist file is missing: $REMOTE_MANIFEST_EXTRA" >&2
+    exit 1
+  }
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in ""|\#*) continue ;; esac
+    if [ "$line" = ".env" ] || [ "${line##*/}" = ".env" ]; then
+      echo "ERROR: $REMOTE_MANIFEST_EXTRA must never list .env" >&2
+      exit 1
+    fi
+    if [ ! -e "$WORK_DIR/$line" ]; then
+      echo "ERROR: allowlisted path does not exist in the worktree: $line" >&2
+      exit 1
+    fi
+    if ! GIT_NO_REPLACE_OBJECTS=1 git -C "$WORK_DIR" check-ignore -q "$line"; then
+      echo "ERROR: allowlisted path is not ignored by git (it is already archived): $line" >&2
+      exit 1
+    fi
+    printf '%s\0' "$line" >> "$manifest"
+    REMOTE_MANIFEST_EXTRA_ENTRIES="$REMOTE_MANIFEST_EXTRA_ENTRIES $line"
+  done < "$REMOTE_MANIFEST_EXTRA"
+}
+
+_build_remote_manifest() {
+  local manifest="$1"
+  _manifest_from_git > "$manifest"
+  _append_manifest_allowlist "$manifest"
 }
 
 # One volume per worktree PATH: two worktrees can share a basename under
@@ -980,6 +1034,8 @@ if [ -n "$REMOTE_HOST" ]; then
   WORK_VOLUME="$(_work_volume_name "$WORK_DIR")"
   mkdir -p "$WORK_DIR/.tmp"
   _apply_tmp_acls
+  REMOTE_MANIFEST="$WORK_DIR/.tmp/remote-manifest.$$"
+  _build_remote_manifest "$REMOTE_MANIFEST"
 fi
 
 # Profile receipts need to identify the actual image that ran them. Keep this
@@ -1107,6 +1163,8 @@ if [ "$REMOTE_MODE" = "1" ]; then
   echo "  share root: $REMOTE_SHARE_ROOT"
   echo "  subpath:  $WORK_SUBPATH (read-only at /work-src; .tmp read-write at /work/.tmp)"
   echo "  source digest: $SOURCE_DIGEST"
+  echo "  archive contents: tracked + untracked-not-ignored files (ignored content excluded)"
+  echo "  allowlist: ${REMOTE_MANIFEST_EXTRA_ENTRIES:- none} (from $(basename "$REMOTE_MANIFEST_EXTRA"))"
   echo "  work volume: $WORK_VOLUME ($WORK_VOLUME_STATE, retained source copy)"
   echo "  share user: $REMOTE_SMB_USER (ACL scoped to $WORK_DIR/.tmp)"
 fi
@@ -1302,10 +1360,7 @@ else \
   rm -f '$SYNC_SENTINEL'; \
   __t0=\$(date +%s); \
   find /work -mindepth 1 -maxdepth 1 ! -name .tmp -exec rm -rf {} + ; \
-  __git_exclude=''; if [ -d /work-src/.git ]; then __git_exclude='--exclude=./.git'; fi; \
-  tar -C /work-src -cf - --exclude=./.tmp \$__git_exclude --exclude='*.so' --exclude='*.pyd' \
-    --exclude=./build --exclude='*.egg-info' --exclude='__pycache__' --exclude='.pytest_cache' \
-    --exclude='.mypy_cache' --exclude='.ruff_cache' . | tar -C /work -xf - ; \
+  tar -C /work-src --null -T '/work/.tmp/$(basename "$REMOTE_MANIFEST")' -cf - | tar -C /work -xf - ; \
   printf '%s\\n' \"\$__digest\" > '$SYNC_SENTINEL'; \
   echo \"[sync] mirrored /work-src -> /work in \$((\$(date +%s)-\$__t0))s (digest \$__digest)\"; \
 fi"
