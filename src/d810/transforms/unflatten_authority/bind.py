@@ -40,6 +40,7 @@ from .ids import (
     canonical_bytes,
     semantic_graph_fingerprint,
     validate_canonical_roundtrip,
+    validate_live_semantic_fields,
     authority_id,
     source_route_authority_id,
     projected_route_realization_id,
@@ -12064,7 +12065,10 @@ def bind_subjects(
     for subject in subjects:
         if type(subject) is not model.SemanticSubjectRef:
             raise TypeError("subjects must contain SemanticSubjectRef values")
-        validate_canonical_roundtrip(subject, model.SemanticSubjectRef)
+        # Live subject: semantic fields only.  The canonical representation
+        # is built at an explicit materialisation boundary, not once per
+        # subject per phase.  See task 5b-4.
+        validate_live_semantic_fields(subject, model.SemanticSubjectRef)
         if subject.subject_id in seen_subjects:
             raise ValueError("subject bindings contain duplicate subjects")
         seen_subjects.add(subject.subject_id)
@@ -12411,7 +12415,10 @@ def bind_projected_subjects(
     for subject in subjects:
         if type(subject) is not model.SemanticSubjectRef:
             raise TypeError("subjects must contain SemanticSubjectRef values")
-        validate_canonical_roundtrip(subject, model.SemanticSubjectRef)
+        # Live subject: semantic fields only.  The canonical representation
+        # is built at an explicit materialisation boundary, not once per
+        # subject per phase.  See task 5b-4.
+        validate_live_semantic_fields(subject, model.SemanticSubjectRef)
         if subject.subject_id in seen_subjects:
             raise ValueError("subject bindings contain duplicate subjects")
         seen_subjects.add(subject.subject_id)

@@ -20,6 +20,7 @@ from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
 from d810.transforms.cfg_transaction import NativeBlockRef, PlanBlockRef
 from d810.transforms.unflatten_authority import canonical_session
 from d810.transforms.unflatten_authority import ids as authority_ids
+from d810.transforms.unflatten_authority import legacy_codec
 from d810.transforms.unflatten_authority import model
 from d810.transforms.unflatten_authority.canonical_session import (
     CanonicalSessionPhase,
@@ -29,6 +30,8 @@ from d810.transforms.unflatten_authority.canonical_session import (
     process_work_metrics,
 )
 from tests.native_preanalysis import make_native_key
+
+from . import test_bind
 
 NATIVE_KEY = make_native_key(function_rva=0x2000)
 
@@ -218,3 +221,39 @@ def test_the_new_counters_are_exact_ints_like_every_other_counter() -> None:
         CanonicalWorkMetrics(content_id_mints=True)
     with pytest.raises(TypeError):
         CanonicalWorkMetrics(materializations=-1)
+
+
+def test_the_legacy_boundary_materialises_exactly_its_two_catalogs() -> None:
+    """The one boundary this task named, measured and byte-checked.
+
+    ``LegacyUnflattenDecodeContext`` is where persisted legacy metadata
+    crosses into canonical authority, so it is a real persistence/external
+    boundary rather than an internal validation.  Exactly two records cross
+    it, the bytes are the ones ``canonical_bytes`` has always produced for the
+    same input, and the count is attributed.
+    """
+
+    source, proposal, _exclusion, refs = test_bind._exact_fixture()
+
+    before = process_work_metrics()
+    legacy_codec.LegacyUnflattenDecodeContext(
+        proposal.plan_id, source, 1, tuple(sorted(refs.items())),
+        proposal.route_evidence, proposal.plan_inputs, proposal.use_def_witness,
+    )
+    delta = process_work_metrics().delta(before)
+    assert delta.materializations == 2
+
+    plan_inputs = authority_ids.materialize_for_persistence(
+        proposal.plan_inputs, model.UnflattenPlanInputCatalog,
+    )
+    witness = authority_ids.materialize_for_persistence(
+        proposal.use_def_witness, model.UseDefFragmentWitness,
+    )
+    assert plan_inputs.canonical_bytes == authority_ids.canonical_bytes(
+        proposal.plan_inputs,
+    )
+    assert witness.canonical_bytes == authority_ids.canonical_bytes(
+        proposal.use_def_witness,
+    )
+    assert plan_inputs.record == proposal.plan_inputs
+    assert witness.record == proposal.use_def_witness

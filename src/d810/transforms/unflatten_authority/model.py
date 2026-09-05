@@ -56,7 +56,7 @@ from .ids import (
     authority_id,
     bound_unflatten_binding_id,
     canonical_bytes,
-    validate_canonical_roundtrip,
+    validate_live_semantic_fields,
     case_id,
     claim_id,
     evidence_id,
@@ -2484,7 +2484,11 @@ def _validate_inventory_refs(value: object, *, producer: bool, label: str) -> No
         if type(value) is NativeBlockRef:
             _validate_native_identity_primitives(value.identity, f"{label}.identity")
         value.__post_init__()
-        validate_canonical_roundtrip(value, type(value))
+        # A live inventory reference is validated, never canonicalised: its
+        # semantic fields are checked here and its canonical representation is
+        # built only by an explicit ``materialize_for_persistence`` at a
+        # persistence/export boundary.  See task 5b-4.
+        validate_live_semantic_fields(value, type(value))
         return
     if type(value) is tuple:
         for index, item in enumerate(value):
@@ -6111,10 +6115,12 @@ class SemanticGraphInventory:
             canonical_subject = subjects_by_id.get(binding.subject.subject_id)
             if canonical_subject is None:
                 raise ValueError("binding subject is absent from subjects")
-            if (
-                binding.subject != canonical_subject
-                or canonical_bytes(binding.subject) != canonical_bytes(canonical_subject)
-            ):
+            # Record equality is the whole predicate: a subject's canonical
+            # schema is exactly its ``compare=True`` fields (the runtime
+            # sidecars are private and excluded from both), so equal subjects
+            # cannot have unequal canonical bytes.  The second comparison was
+            # a canonical encode inside an internal join and is gone.
+            if binding.subject != canonical_subject:
                 raise ValueError("binding subject does not match canonical subject content")
         effects = tuple(sorted(self.effects, key=lambda item: (item.owner_serial, item.instruction_ordinal, item.instruction_ea, item.effect_kind.value)))
         terminals = tuple(sorted(self.terminals, key=lambda item: (item.owner_serial, item.instruction_ordinal is None, item.instruction_ordinal if item.instruction_ordinal is not None else -1, item.instruction_ea, item.terminal_kind.value)))

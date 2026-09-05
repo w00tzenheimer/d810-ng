@@ -1,0 +1,21 @@
+id: no-canonical-roundtrip-on-live-inventory-records
+
+valid:
+  - |
+      validate_live_semantic_fields(value, type(value))
+  - |
+      validate_live_semantic_fields(subject, model.SemanticSubjectRef)
+  - |
+      validate_canonical_roundtrip(catalog, model.SourceIdentityCatalog)
+  - |
+      validate_canonical_roundtrip(self.claim, model.TerminalCycleBreakClaim)
+  - |
+      materialize_for_persistence(self.plan_inputs, UnflattenPlanInputCatalog)
+
+invalid:
+  - |
+      validate_canonical_roundtrip(value, type(value))
+  - |
+      validate_canonical_roundtrip(subject, model.SemanticSubjectRef)
+  - |
+      validate_canonical_roundtrip(subject, SemanticSubjectRef)
