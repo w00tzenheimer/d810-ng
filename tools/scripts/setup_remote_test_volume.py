@@ -31,6 +31,7 @@ import json
 import re
 import subprocess
 import sys
+from pathlib import Path
 from typing import Sequence
 
 DEFAULT_REMOTE = "remote-engine.example"
@@ -43,6 +44,9 @@ DEFAULT_GID = "0"
 DEFAULT_FILE_MODE = "0700"
 DEFAULT_DIR_MODE = "0700"
 REDACTION = "********"
+EXIT_MOUNT_FAILED = 1
+EXIT_ROLLBACK_FAILED = 2
+EXIT_INDETERMINATE = 3
 PASSWORD_OPTION_PATTERN = re.compile(r"(?<=password=)[^,]*")
 CONTAINER_FORMAT = "{{.ID}} {{.Status}} {{.Names}}"
 PROBE_IMAGE = "alpine"
@@ -57,9 +61,10 @@ KERNEL_DMESG_COMMAND = "dmesg"
 STATUS_LINE_MARKER = "status code"
 STATUS_CODE_MEANINGS = {
     "0xc000006d": (
-        "STATUS_LOGON_FAILURE: the password (or its NT hash) does not match. "
-        "Re-tick the account under File Sharing > Options, re-enter the password, "
-        "then re-run with --recreate."
+        "STATUS_LOGON_FAILURE: authentication or account identity rejected for this "
+        "share. A stored SMB-NT hash only proves a hash exists, not that these "
+        "credentials are current or that this account is authorized here. Re-check "
+        "the account and its share access, then re-run with --recreate."
     ),
     "0xc000006e": (
         "STATUS_ACCOUNT_RESTRICTION: the account is refused for this logon type "
@@ -384,8 +389,10 @@ def password_rejection_reason(password: str) -> str | None:
 def explain_status_code(line: str) -> str:
     """Translate a kernel CIFS status line into an actionable sentence.
 
-    >>> explain_status_code("CIFS: Status code returned 0xc000006d NT_STATUS_LOGON_FAILURE")
-    'STATUS_LOGON_FAILURE: the password (or its NT hash) does not match. Re-tick the account under File Sharing > Options, re-enter the password, then re-run with --recreate.'
+    >>> explain_status_code(
+    ...     "CIFS: Status code returned 0xc000006d LOGON_FAILURE").startswith(
+    ...     "STATUS_LOGON_FAILURE: authentication or account identity rejected")
+    True
     >>> explain_status_code("nothing recognisable")
     'no known CIFS status code in the kernel log line'
     """
@@ -396,12 +403,26 @@ def explain_status_code(line: str) -> str:
     return "no known CIFS status code in the kernel log line"
 
 
+def is_absent_volume_error(output: str) -> bool:
+    """Only the daemon's own "no such volume" text means absent.
+
+    Any other failure (ssh down, daemon unreachable, permission) must not be
+    reported as absence.
+
+    >>> is_absent_volume_error("Error response from daemon: get idapro: no such volume")
+    True
+    >>> is_absent_volume_error("error during connect: ssh: connect to host ... refused")
+    False
+    """
+    return "no such volume" in output.lower()
+
+
 def run_capture(argv: Sequence[str]) -> tuple[int, str]:
     """Run a docker command and capture stdout (impure seam for tests)."""
     completed = subprocess.run(
         list(argv), capture_output=True, text=True, check=False
     )
-    return completed.returncode, completed.stdout
+    return completed.returncode, (completed.stdout or "") + (completed.stderr or "")
 
 
 def run_probe(argv: Sequence[str]) -> tuple[int, str]:
@@ -420,7 +441,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--remote", default=DEFAULT_REMOTE, help="remote Docker engine host")
     parser.add_argument("--volume", default=DEFAULT_VOLUME, help="volume name to create")
     parser.add_argument("--share", default=DEFAULT_SHARE, help="SMB share, e.g. //smb-server.example/idapro")
-    parser.add_argument("--user", default=DEFAULT_USER, help="SMB user")
+    parser.add_argument(
+        "--user",
+        default=DEFAULT_USER,
+        help=f"SMB user (default: {DEFAULT_USER}; override e.g. --user smbuser)",
+    )
     parser.add_argument(
         "--dry-run",
         action="store_true",
@@ -466,6 +491,35 @@ def build_parser() -> argparse.ArgumentParser:
         help="remove an existing volume before creating it (create mode refuses otherwise)",
     )
     return parser
+
+
+def _inspect_volume(arguments: argparse.Namespace) -> tuple[str, str]:
+    """Return ("present"|"absent"|"unknown", output) for the volume."""
+    status, output = run_capture(
+        build_inspect_argv(remote=arguments.remote, volume=arguments.volume)
+    )
+    if status == 0:
+        return "present", output
+    if is_absent_volume_error(output):
+        return "absent", output
+    return "unknown", output
+
+
+def _report_indeterminate(what: str, output: str) -> int:
+    print(f"ERROR: cannot determine {what}:", file=sys.stderr)
+    for line in output.strip().splitlines():
+        print(f"       {line}", file=sys.stderr)
+    return EXIT_INDETERMINATE
+
+
+def _list_containers(arguments: argparse.Namespace) -> tuple[bool, list[str], str]:
+    """List containers referencing the volume; never assume empty on error."""
+    status, output = run_capture(
+        build_container_filter_argv(remote=arguments.remote, volume=arguments.volume)
+    )
+    if status != 0:
+        return False, [], output
+    return True, parse_container_lines(output), output
 
 
 def _verify_mount(arguments: argparse.Namespace) -> int:
@@ -527,11 +581,20 @@ def _status(arguments: argparse.Namespace) -> int:
                 )
             )
         return 0
-    status, inspect_output = run_capture(inspect_argv)
-    if status != 0:
+    presence, inspect_output = _inspect_volume(arguments)
+    if presence == "unknown":
+        return _report_indeterminate(
+            f"whether volume {arguments.volume} exists on ssh://{arguments.remote}",
+            inspect_output,
+        )
+    if presence == "absent":
         print(f"volume {arguments.volume} is absent on ssh://{arguments.remote}")
         return 1
-    _, container_output = run_capture(containers_argv)
+    listed, _containers, container_output = _list_containers(arguments)
+    if not listed:
+        return _report_indeterminate(
+            f"which containers reference volume {arguments.volume}", container_output
+        )
     print(format_status(inspect_output, container_output))
     if arguments.no_verify:
         return 0
@@ -554,13 +617,21 @@ def _remove(arguments: argparse.Namespace) -> int:
         print(" ".join(remove_argv))
         return 0
 
-    status, _ = run_capture(inspect_argv)
-    if status != 0:
+    presence, inspect_output = _inspect_volume(arguments)
+    if presence == "unknown":
+        return _report_indeterminate(
+            f"whether volume {arguments.volume} exists on ssh://{arguments.remote}",
+            inspect_output,
+        )
+    if presence == "absent":
         print(f"volume {arguments.volume} is already absent on ssh://{arguments.remote}")
         return 0
 
-    _, container_output = run_capture(containers_argv)
-    containers = parse_container_lines(container_output)
+    listed, containers, container_output = _list_containers(arguments)
+    if not listed:
+        return _report_indeterminate(
+            f"which containers reference volume {arguments.volume}", container_output
+        )
     decision = removal_decision(containers, arguments.force)
     if decision == "refuse":
         print(
@@ -589,12 +660,14 @@ def _remove(arguments: argparse.Namespace) -> int:
             )
             return status or 1
 
-    status, _ = run_capture(remove_argv)
+    status, remove_output = run_capture(remove_argv)
     if status != 0:
         print(
             f"ERROR: docker volume rm {arguments.volume} failed with exit status {status}",
             file=sys.stderr,
         )
+        for line in remove_output.strip().splitlines():
+            print(f"       {line}", file=sys.stderr)
         return status or 1
     print(
         f"removed volume {arguments.volume} from ssh://{arguments.remote}; "
@@ -606,10 +679,13 @@ def _remove(arguments: argparse.Namespace) -> int:
 
 def _create(arguments: argparse.Namespace) -> int:
     if not arguments.dry_run:
-        status, _ = run_capture(
-            build_inspect_argv(remote=arguments.remote, volume=arguments.volume)
-        )
-        if status == 0:
+        presence, inspect_output = _inspect_volume(arguments)
+        if presence == "unknown":
+            return _report_indeterminate(
+                f"whether volume {arguments.volume} exists on ssh://{arguments.remote}",
+                inspect_output,
+            )
+        if presence == "present":
             if not arguments.recreate:
                 print(
                     f"ERROR: volume {arguments.volume} already exists on ssh://{arguments.remote}; "
@@ -680,17 +756,31 @@ def _create(arguments: argparse.Namespace) -> int:
             print("verification skipped (--no-verify); the credential is unproven")
             return 0
         if _verify_mount(arguments) != 0:
-            run_capture(
+            rollback_status, rollback_output = run_capture(
                 build_remove_volume_argv(
                     remote=arguments.remote, volume=arguments.volume
                 )
             )
+            if rollback_status != 0:
+                print(
+                    f"ERROR: rollback failed: docker volume rm {arguments.volume} exited "
+                    f"{rollback_status}",
+                    file=sys.stderr,
+                )
+                for line in rollback_output.strip().splitlines():
+                    print(f"       {line}", file=sys.stderr)
+                print(
+                    f"       VOLUME STILL EXISTS with the stored credential; remove it "
+                    f"manually with: {Path(__file__).name} --remove --volume {arguments.volume}",
+                    file=sys.stderr,
+                )
+                return EXIT_ROLLBACK_FAILED
             print(
                 f"removed volume {arguments.volume} again so an unusable credential "
                 "is not left persisted on the remote host",
                 file=sys.stderr,
             )
-            return 1
+            return EXIT_MOUNT_FAILED
         return 0
     finally:
         password = ""

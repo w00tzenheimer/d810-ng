@@ -150,7 +150,7 @@ def test_failure_reports_one_line_and_a_nonzero_status(
         raise setup_remote_test_volume.subprocess.CalledProcessError(7, command)
 
     monkeypatch.setattr(
-        setup_remote_test_volume, "run_capture", lambda argv: (1, "")
+        setup_remote_test_volume, "run_capture", lambda argv: (1, ABSENT_ERROR)
     )
     monkeypatch.setattr(setup_remote_test_volume.subprocess, "run", _fail)
 
@@ -173,7 +173,7 @@ def test_success_runs_the_built_argv(
         setup_remote_test_volume.getpass, "getpass", lambda prompt: "hunter2"
     )
     monkeypatch.setattr(
-        setup_remote_test_volume, "run_capture", lambda argv: (1, "")
+        setup_remote_test_volume, "run_capture", lambda argv: (1, ABSENT_ERROR)
     )
     monkeypatch.setattr(
         setup_remote_test_volume, "run_probe", lambda argv: (0, "mount-ok\n")
@@ -193,6 +193,9 @@ def test_success_runs_the_built_argv(
     assert "hunter2" not in printed
     assert "docker volume inspect other" in printed
 
+
+ABSENT_ERROR = "Error response from daemon: get idapro: no such volume"
+SSH_ERROR = "error during connect: ssh: connect to host remote-engine.example port 22: refused"
 
 INSPECT_PAYLOAD = (
     '[{"Name": "idapro", "Driver": "local", "Mountpoint": "/var/lib/docker/volumes/idapro/_data",'
@@ -302,7 +305,7 @@ def test_status_mode_reports_absent_volume(
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _fake_capture(monkeypatch, {"volume inspect": (1, "")})
+    _fake_capture(monkeypatch, {"volume inspect": (1, ABSENT_ERROR)})
 
     status = setup_remote_test_volume.main(["--status"])
 
@@ -354,7 +357,7 @@ def test_remove_is_idempotent_when_absent(
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    recorded = _fake_capture(monkeypatch, {"volume inspect": (1, "")})
+    recorded = _fake_capture(monkeypatch, {"volume inspect": (1, ABSENT_ERROR)})
 
     status = setup_remote_test_volume.main(["--remove"])
     printed = capsys.readouterr().out
@@ -570,7 +573,7 @@ def test_comma_password_is_refused_before_any_volume_create(
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    recorded = _fake_capture(monkeypatch, {"volume inspect": (1, "")})
+    recorded = _fake_capture(monkeypatch, {"volume inspect": (1, ABSENT_ERROR)})
     monkeypatch.setattr(
         setup_remote_test_volume.getpass, "getpass", lambda prompt: "bad,password"
     )
@@ -597,7 +600,7 @@ def test_create_verifies_then_rolls_back_on_a_failed_mount(
     recorded = _fake_capture(
         monkeypatch,
         {
-            "volume inspect": (1, ""),
+            "volume inspect": (1, ABSENT_ERROR),
             "dst=/probe": (1, "docker: Error response from daemon: permission denied"),
             "--privileged": [
                 (0, "[1.0] older line"),
@@ -640,7 +643,7 @@ def test_create_keeps_the_volume_when_the_probe_succeeds(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     recorded = _fake_capture(
-        monkeypatch, {"volume inspect": (1, ""), "dst=/probe": (0, "mount-ok\n")}
+        monkeypatch, {"volume inspect": (1, ABSENT_ERROR), "dst=/probe": (0, "mount-ok\n")}
     )
     monkeypatch.setattr(
         setup_remote_test_volume.getpass, "getpass", lambda prompt: "hunter2"
@@ -661,7 +664,7 @@ def test_no_verify_skips_the_probe_entirely(
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    recorded = _fake_capture(monkeypatch, {"volume inspect": (1, "")})
+    recorded = _fake_capture(monkeypatch, {"volume inspect": (1, ABSENT_ERROR)})
     monkeypatch.setattr(
         setup_remote_test_volume.getpass, "getpass", lambda prompt: "hunter2"
     )
@@ -703,6 +706,120 @@ def test_status_probes_the_existing_volume_without_removing_it(
     assert status == 1
     assert "ACCOUNT_RESTRICTION" in captured.err
     assert not any("volume rm" in " ".join(argv) for argv in recorded)
+
+
+def test_default_user_is_the_sharing_account() -> None:
+    assert setup_remote_test_volume.DEFAULT_USER == "smbuser"
+    assert "username=smbuser" in setup_remote_test_volume.build_mount_options("pw")
+
+
+def test_logon_failure_wording_does_not_claim_a_stale_password() -> None:
+    meaning = setup_remote_test_volume.explain_status_code("0xc000006d")
+
+    assert "authentication or account identity rejected" in meaning
+    assert "stale" not in meaning.lower()
+    assert "hash exists" in meaning
+
+
+@pytest.mark.parametrize("mode", [[], ["--status"], ["--remove"]])
+def test_indeterminate_inspect_never_reports_absence(
+    mode: list[str],
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An ssh or daemon failure is not evidence that the volume is gone."""
+    recorded = _fake_capture(monkeypatch, {"volume inspect": (1, SSH_ERROR)})
+
+    def _fail(*args: object, **kwargs: object) -> None:
+        raise AssertionError("must not act on an indeterminate inspect")
+
+    monkeypatch.setattr(setup_remote_test_volume.getpass, "getpass", _fail)
+
+    status = setup_remote_test_volume.main(mode)
+    captured = capsys.readouterr()
+
+    assert status == setup_remote_test_volume.EXIT_INDETERMINATE
+    assert "cannot determine" in captured.err
+    assert "ssh: connect to host" in captured.err
+    assert "absent" not in captured.out
+    assert not any("volume rm" in " ".join(argv) for argv in recorded)
+
+
+def test_indeterminate_container_listing_never_assumes_empty(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recorded = _fake_capture(
+        monkeypatch,
+        {"volume inspect": (0, INSPECT_PAYLOAD), "ps -a": (1, SSH_ERROR)},
+    )
+
+    status = setup_remote_test_volume.main(["--remove"])
+    captured = capsys.readouterr()
+
+    assert status == setup_remote_test_volume.EXIT_INDETERMINATE
+    assert "cannot determine which containers" in captured.err
+    assert not any("volume rm" in " ".join(argv) for argv in recorded)
+
+
+def test_failed_rollback_reports_that_the_credential_survives(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _fake_capture(
+        monkeypatch,
+        {
+            "volume inspect": (1, ABSENT_ERROR),
+            "dst=/probe": (1, "permission denied"),
+            "volume rm": (1, "Error response from daemon: volume is in use"),
+        },
+    )
+    monkeypatch.setattr(
+        setup_remote_test_volume.getpass, "getpass", lambda prompt: "hunter2"
+    )
+    monkeypatch.setattr(
+        setup_remote_test_volume.subprocess, "run", lambda command, **kwargs: None
+    )
+
+    status = setup_remote_test_volume.main([])
+    captured = capsys.readouterr()
+
+    assert status == setup_remote_test_volume.EXIT_ROLLBACK_FAILED
+    assert "VOLUME STILL EXISTS with the stored credential" in captured.err
+    assert "volume is in use" in captured.err
+    assert "--remove" in captured.err
+
+
+def test_successful_rollback_keeps_the_mount_failure_exit_code(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _fake_capture(
+        monkeypatch,
+        {
+            "volume inspect": (1, ABSENT_ERROR),
+            "dst=/probe": (1, "permission denied"),
+            "volume rm": (0, ""),
+        },
+    )
+    monkeypatch.setattr(
+        setup_remote_test_volume.getpass, "getpass", lambda prompt: "hunter2"
+    )
+    monkeypatch.setattr(
+        setup_remote_test_volume.subprocess, "run", lambda command, **kwargs: None
+    )
+
+    status = setup_remote_test_volume.main([])
+    captured = capsys.readouterr()
+
+    assert status == setup_remote_test_volume.EXIT_MOUNT_FAILED
+    assert "not left persisted" in captured.err
+    assert "VOLUME STILL EXISTS" not in captured.err
+
+
+def test_absent_volume_error_classification() -> None:
+    assert setup_remote_test_volume.is_absent_volume_error(ABSENT_ERROR)
+    assert not setup_remote_test_volume.is_absent_volume_error(SSH_ERROR)
 
 
 def test_doctests_pass() -> None:
