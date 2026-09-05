@@ -4011,3 +4011,77 @@ def test_cobra_toolchain_guard_aborts_before_the_source_build(tmp_path: Path) ->
     assert "CoBRA toolchain provisioning failed" in completed.stderr
     assert "Release file is not valid yet" in completed.stderr
     assert not marker.exists()
+
+
+NATIVE_PROBE_IMPORT = (
+    "from d810.speedups.install import inspect_native_extensions"
+)
+NATIVE_FALLBACK_LINE = "[speedups] native extension: NOT LOADED (python fallback)"
+
+
+@pytest.mark.parametrize("no_cython", ["1", ""])
+def test_a_python_fallback_run_says_so_but_still_runs(
+    tmp_path: Path,
+    no_cython: str,
+) -> None:
+    """Without an explicit request the fallback is allowed - but never silent."""
+    result, calls = _run(tmp_path, "exec", "--", "true", no_cython=no_cython or "1")
+
+    assert result.returncode == 0, result.stderr
+    command = _container_run(calls)
+    assert NATIVE_PROBE_IMPORT in command
+    assert f"|| echo '{NATIVE_FALLBACK_LINE}'" in command
+    # tolerant: no abort on a failed probe
+    assert "refusing to run the tests in the Python fallback" not in command
+
+
+def test_an_explicit_native_request_refuses_the_python_fallback(
+    tmp_path: Path,
+) -> None:
+    """D810_NO_CYTHON=0 is a request; a fallback answers a different question."""
+    result, calls = _run(tmp_path, "exec", "--", "true", no_cython="0")
+
+    assert result.returncode == 0, result.stderr
+    command = _container_run(calls)
+    assert NATIVE_PROBE_IMPORT in command
+    assert f"echo '{NATIVE_FALLBACK_LINE}' >&2" in command
+    assert (
+        "ERROR: D810_NO_CYTHON=0 asked for the native extension but none could "
+        "be loaded; refusing to run the tests in the Python fallback" in command
+    )
+    # the abort precedes the workload, which is the last top-level term
+    terms, _ = _split_top_level(_inner_command(command))
+    assert "refusing to run the tests" not in terms[-1]
+
+
+def test_the_native_probe_aborts_an_explicit_request_for_real(
+    tmp_path: Path,
+) -> None:
+    """Run the emitted required-probe guard with a probe that reports failure."""
+    result, calls = _run(tmp_path, "exec", "--", "true", no_cython="0")
+    assert result.returncode == 0, result.stderr
+    command = _container_run(calls)
+
+    start = command.index("{ /app/ida/.venv/bin/python -c 'from d810.speedups")
+    end = command.index("exit 1; }; }", start) + len("exit 1; }; }")
+    guard = command[start:end]
+    # stand in for the container interpreter with one that reports no extension
+    guard = guard.replace(
+        command[command.index("/app/ida/.venv/bin/python", start) : command.index(
+            " -c 'from d810.speedups", start
+        )],
+        "false --",
+    )
+    marker = tmp_path / "tests-ran"
+
+    completed = subprocess.run(
+        [shutil.which("bash") or "/bin/bash", "-c", f"{guard} && touch {marker}"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 1, completed
+    assert NATIVE_FALLBACK_LINE in completed.stderr
+    assert "refusing to run the tests in the Python fallback" in completed.stderr
+    assert not marker.exists()

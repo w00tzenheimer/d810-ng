@@ -1599,14 +1599,25 @@ fi
 # neither setuptools nor Cython, so pip MUST build-isolate to install the
 # build-system.requires (setuptools/wheel/Cython).
 SPEEDUPS_CLEAN_CMD="find src/d810/speedups -type f -name '*-linux-gnu.so' -delete"
+# A build that produced no loadable extension is silent otherwise: the suite
+# runs in the Python fallback and reports the same green. Probe in a fresh
+# process (a stale import cache would answer for the previous build) and say
+# so in one unmistakable line.
+SPEEDUPS_PROBE="$IDA_VENV_PYTHON -c 'from d810.speedups.install import inspect_native_extensions; import sys; result = inspect_native_extensions(); print(\"[speedups] native extension: LOADED (\" + result.detail + \")\") if result.ok else print(result.detail, file=sys.stderr); raise SystemExit(0 if result.ok else 1)'"
+SPEEDUPS_PROBE_TOLERANT="{ $SPEEDUPS_PROBE || echo '[speedups] native extension: NOT LOADED (python fallback)'; }"
+SPEEDUPS_PROBE_REQUIRED="{ $SPEEDUPS_PROBE || { echo '[speedups] native extension: NOT LOADED (python fallback)' >&2; echo 'ERROR: D810_NO_CYTHON=0 asked for the native extension but none could be loaded; refusing to run the tests in the Python fallback' >&2; exit 1; }; }"
 if [ "$NO_CYTHON" = "1" ]; then
-  SPEEDUPS_BUILD_CMD="$SPEEDUPS_CLEAN_CMD && echo '[speedups] native build disabled by D810_NO_CYTHON=1'"
+  SPEEDUPS_BUILD_CMD="$SPEEDUPS_CLEAN_CMD && echo '[speedups] native build disabled by D810_NO_CYTHON=1' && $SPEEDUPS_PROBE_TOLERANT"
 elif [ "$CYTHON_PROFILE" = "1" ]; then
   # A profiling artifact is only useful when it actually contains Cython
   # trace events. Unlike the normal optional speedup build, fail closed here.
-  SPEEDUPS_BUILD_CMD="$SPEEDUPS_CLEAN_CMD && DEBUG=1 D810_BUILD_SPEEDUPS=1 $IDA_VENV_PIP install -e .[speedups] -q"
+  SPEEDUPS_BUILD_CMD="$SPEEDUPS_CLEAN_CMD && DEBUG=1 D810_BUILD_SPEEDUPS=1 $IDA_VENV_PIP install -e .[speedups] -q && $SPEEDUPS_PROBE_REQUIRED"
+elif [ "$NO_CYTHON" = "0" ]; then
+  # An explicit D810_NO_CYTHON=0 is a request, not a preference: a run that
+  # silently fell back to Python answers a different question than the one asked.
+  SPEEDUPS_BUILD_CMD="$SPEEDUPS_CLEAN_CMD && D810_BUILD_SPEEDUPS=1 $IDA_VENV_PIP install -e .[speedups] -q && $SPEEDUPS_PROBE_REQUIRED"
 else
-  SPEEDUPS_BUILD_CMD="$SPEEDUPS_CLEAN_CMD && D810_BUILD_SPEEDUPS=1 $IDA_VENV_PIP install -e .[speedups] -q"
+  SPEEDUPS_BUILD_CMD="$SPEEDUPS_CLEAN_CMD && D810_BUILD_SPEEDUPS=1 $IDA_VENV_PIP install -e .[speedups] -q && $SPEEDUPS_PROBE_TOLERANT"
 fi
 RUNTIME_PROBE="from d810.speedups import bootstrap; bootstrap.ensure_speedups_on_path(); import pytest, unicorn, z3; assert (4, 13) <= z3.get_version() < (4, 15, 5)"
 if _image_has_baked_runtime; then
