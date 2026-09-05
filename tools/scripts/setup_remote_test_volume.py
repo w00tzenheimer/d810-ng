@@ -17,8 +17,9 @@ the volume and with it the stored credential.
 
 Examples::
 
+    # Put D810_REMOTE_* machine settings in the repository's ignored .env.
     python3 tools/scripts/setup_remote_test_volume.py --dry-run
-    python3 tools/scripts/setup_remote_test_volume.py --remote remote-engine.example
+    python3 tools/scripts/setup_remote_test_volume.py
     python3 tools/scripts/setup_remote_test_volume.py --status
     python3 tools/scripts/setup_remote_test_volume.py --remove [--force]
 """
@@ -28,16 +29,17 @@ from __future__ import annotations
 import argparse
 import getpass
 import json
+import os
 import re
 import subprocess
 import sys
 from pathlib import Path
 from typing import Sequence
 
-DEFAULT_REMOTE = "remote-engine.example"
+DEFAULT_REMOTE = ""
 DEFAULT_VOLUME = "idapro"
-DEFAULT_SHARE = "//smb-server.example/idapro"
-DEFAULT_USER = "smbuser"
+DEFAULT_SHARE = ""
+DEFAULT_USER = ""
 DEFAULT_VERSION = "3.0"
 DEFAULT_UID = "0"
 DEFAULT_GID = "0"
@@ -55,7 +57,14 @@ RETAINED_RUNNER_VOLUME_ROLE_LABELS = (
     WORK_VOLUME_ROLE_LABEL,
     COBRA_CACHE_VOLUME_ROLE_LABEL,
 )
-DEFAULT_SHARE_ROOT = "/srv/share-root"
+DEFAULT_SHARE_ROOT = ""
+REMOTE_CONFIG_KEYS = (
+    "D810_REMOTE_DOCKER_HOST",
+    "D810_REMOTE_VOLUME",
+    "D810_REMOTE_SMB_SHARE",
+    "D810_REMOTE_SMB_USER",
+    "D810_REMOTE_SHARE_ROOT",
+)
 WORK_VOLUME_FORMAT = "{{.Name}}"
 PROBE_IMAGE = "alpine"
 # Reading the engine's kernel ring buffer needs --privileged, so the image is
@@ -91,8 +100,8 @@ LOCK_REMINDER = (
 def share_host(share: str) -> str:
     """Return the server component of an SMB share path.
 
-    >>> share_host("//smb-server.example/idapro")
-    'smb-server.example'
+    >>> share_host("//files.example/project")
+    'files.example'
     """
     stripped = share.lstrip("/")
     host = stripped.split("/", 1)[0]
@@ -148,9 +157,9 @@ def validate_mount_options(raw: str) -> list[str]:
 def build_mount_options(
     password: str,
     *,
+    share: str,
+    user: str,
     extra_options: str = "",
-    share: str = DEFAULT_SHARE,
-    user: str = DEFAULT_USER,
     version: str = DEFAULT_VERSION,
     uid: str = DEFAULT_UID,
     gid: str = DEFAULT_GID,
@@ -163,8 +172,8 @@ def build_mount_options(
     ``mount(2)`` directly, so userspace-only ``mount.cifs`` options such as
     ``credentials=`` would not work.
 
-    >>> build_mount_options("pw")
-    'addr=smb-server.example,username=smbuser,password=pw,vers=3.0,uid=0,gid=0,file_mode=0700,dir_mode=0700'
+    >>> build_mount_options("pw", share="//files.example/project", user="share-account")
+    'addr=files.example,username=share-account,password=pw,vers=3.0,uid=0,gid=0,file_mode=0700,dir_mode=0700'
     """
     return ",".join(
         [
@@ -259,7 +268,7 @@ def build_container_filter_argv(*, remote: str, volume: str) -> list[str]:
 def share_root_digest(share_root: str) -> str:
     """Short digest of the exported share root, as the runner labels it.
 
-    >>> share_root_digest("/srv/share-root")[:2].isalnum()
+    >>> share_root_digest("/srv/project")[:2].isalnum()
     True
     >>> len(share_root_digest("/x"))
     8
@@ -551,14 +560,78 @@ def run_probe(argv: Sequence[str]) -> tuple[int, str]:
     return completed.returncode, (completed.stdout or "") + (completed.stderr or "")
 
 
-def build_parser() -> argparse.ArgumentParser:
+def _parse_dotenv(path: Path) -> dict[str, str]:
+    """Read simple KEY=VALUE entries without executing the file as shell code."""
+    values: dict[str, str] = {}
+    for line_number, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[7:].strip()
+        if "=" not in line:
+            raise ValueError(f"{path}:{line_number}: malformed entry")
+        name, value = line.split("=", 1)
+        name = name.strip()
+        value = value.strip()
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+            raise ValueError(f"{path}:{line_number}: malformed entry")
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        elif value.startswith(("\"", "'")):
+            raise ValueError(f"{path}:{line_number}: unterminated quote")
+        if name in REMOTE_CONFIG_KEYS:
+            values[name] = value
+    return values
+
+
+def _discover_dotenv(start: Path | None = None) -> Path | None:
+    """Find the nearest .env, including the main repo above an in-tree worktree."""
+    explicit = os.environ.get("D810_ENV_FILE")
+    if explicit:
+        path = Path(explicit).expanduser()
+        if not path.is_file():
+            raise ValueError(f"D810_ENV_FILE does not name a file: {path}")
+        return path
+    directory = (start or Path.cwd()).resolve()
+    for candidate_root in (directory, *directory.parents):
+        candidate = candidate_root / ".env"
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def load_remote_configuration(start: Path | None = None) -> dict[str, str]:
+    """Load ignored .env settings, then apply process-environment overrides."""
+    path = _discover_dotenv(start)
+    values = _parse_dotenv(path) if path is not None else {}
+    for name in REMOTE_CONFIG_KEYS:
+        if name in os.environ:
+            values[name] = os.environ[name]
+    return values
+
+
+def build_parser(configuration: dict[str, str] | None = None) -> argparse.ArgumentParser:
+    configuration = configuration or {}
     parser = argparse.ArgumentParser(
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("--remote", default=DEFAULT_REMOTE, help="remote Docker engine host")
-    parser.add_argument("--volume", default=DEFAULT_VOLUME, help="volume name to create")
-    parser.add_argument("--share", default=DEFAULT_SHARE, help="SMB share, e.g. //smb-server.example/idapro")
+    parser.add_argument(
+        "--remote",
+        default=configuration.get("D810_REMOTE_DOCKER_HOST", DEFAULT_REMOTE),
+        help="remote Docker engine host (or D810_REMOTE_DOCKER_HOST)",
+    )
+    parser.add_argument(
+        "--volume",
+        default=configuration.get("D810_REMOTE_VOLUME", DEFAULT_VOLUME),
+        help="volume name to create (or D810_REMOTE_VOLUME)",
+    )
+    parser.add_argument(
+        "--share",
+        default=configuration.get("D810_REMOTE_SMB_SHARE", DEFAULT_SHARE),
+        help="SMB share such as //HOST/NAME (or D810_REMOTE_SMB_SHARE)",
+    )
     parser.add_argument(
         "--mount-opts",
         default="",
@@ -570,16 +643,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--share-root",
-        default=DEFAULT_SHARE_ROOT,
+        default=configuration.get("D810_REMOTE_SHARE_ROOT", DEFAULT_SHARE_ROOT),
         help=(
             "host directory the share exports; selects which retained runner volumes belong "
-            f"to this share (default: {DEFAULT_SHARE_ROOT})"
+            "to this share (or D810_REMOTE_SHARE_ROOT)"
         ),
     )
     parser.add_argument(
         "--user",
-        default=DEFAULT_USER,
-        help=f"SMB user (default: {DEFAULT_USER}; override e.g. --user smbuser)",
+        default=configuration.get("D810_REMOTE_SMB_USER", DEFAULT_USER),
+        help="SMB user (or D810_REMOTE_SMB_USER)",
     )
     parser.add_argument(
         "--dry-run",
@@ -1013,7 +1086,34 @@ def _create(arguments: argparse.Namespace) -> int:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    arguments = build_parser().parse_args(argv)
+    try:
+        configuration = load_remote_configuration()
+    except (OSError, ValueError) as error:
+        print(f"ERROR: cannot load remote configuration: {error}", file=sys.stderr)
+        return 2
+    arguments = build_parser(configuration).parse_args(argv)
+    required = {
+        "--remote / D810_REMOTE_DOCKER_HOST": arguments.remote,
+        "--share-root / D810_REMOTE_SHARE_ROOT": arguments.share_root,
+    }
+    if not arguments.status and not arguments.remove:
+        required.update(
+            {
+                "--share / D810_REMOTE_SMB_SHARE": arguments.share,
+                "--user / D810_REMOTE_SMB_USER": arguments.user,
+            }
+        )
+    missing = [name for name, value in required.items() if not value]
+    if missing:
+        print(
+            "ERROR: missing remote configuration: " + ", ".join(missing),
+            file=sys.stderr,
+        )
+        print(
+            "       Put machine-specific D810_REMOTE_* values in the repository's ignored .env.",
+            file=sys.stderr,
+        )
+        return 2
     if arguments.status:
         return _status(arguments)
     if arguments.remove:

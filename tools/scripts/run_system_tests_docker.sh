@@ -40,7 +40,8 @@
 #                           export LLVM_OPT, and set D810_REQUIRE_LLVM_OPT=1.
 #   --disable-fact-lifecycle
 #                           Set D810_FACT_LIFECYCLE=0 inside the container.
-#   --remote HOST           Run the container on a remote Linux Docker engine reached over SSH
+#   --remote [HOST]         Run on a remote Linux Docker engine reached over SSH. If HOST is
+#                           omitted, use D810_REMOTE_DOCKER_HOST from the local .env.
 #                           (DOCKER_HOST=ssh://HOST). Sources and artifacts stay on this Mac and are
 #                           reached through the SMB-backed Docker volume named by D810_REMOTE_VOLUME:
 #                           every host bind mount becomes --mount type=volume,volume-subpath=<path
@@ -107,18 +108,20 @@
 #   D810_REMOTE_DOCKER_HOST Remote engine host for --remote (the flag wins when both are given)
 #   D810_REMOTE_VOLUME      Docker volume on the remote engine that exports the Mac's SMB share
 #                           (default: idapro)
+#   D810_REMOTE_SMB_SHARE   SMB share path used by the one-time setup helper (for example,
+#                           //HOST/SHARE). The runner itself uses the resulting Docker volume.
 #   D810_REMOTE_SMB_USER    Account the SMB share authenticates as, and the account the runner
-#                           grants a .tmp-scoped ACL to (default: smbuser). It must match the
+#                           grants a .tmp-scoped ACL to. It must match the
 #                           credential stored in the volume.
 #   D810_REMOTE_SHARE_ROOT  Absolute host directory that the SMB share exports
-#                           (default: /srv/share-root). Every mounted host path must live
-#                           under it; the runner fails closed otherwise.
+#                           Every mounted host path must live under it; the runner fails closed
+#                           otherwise. Put machine-specific D810_REMOTE_* values in the ignored .env.
 #
 # Remote mode (one-time setup on the remote engine):
 #   The volume is created once, by hand, with the stdlib helper (shell-agnostic: it reads the
 #   password through getpass, never through a shell builtin):
 #
-#     python3 tools/scripts/setup_remote_test_volume.py --remote remote-engine.example
+#     python3 tools/scripts/setup_remote_test_volume.py
 #     python3 tools/scripts/setup_remote_test_volume.py --dry-run   # print the redacted argv
 #     python3 tools/scripts/setup_remote_test_volume.py --status    # what exists, password redacted
 #     python3 tools/scripts/setup_remote_test_volume.py --remove [--force]  # delete it + the credential
@@ -127,7 +130,7 @@
 #   reference it (use --force). Neither touches the Mac-side per-worktree run locks.
 #
 #   It runs `docker -H ssh://HOST volume create --driver local --opt type=cifs
-#   --opt device=//smb-server.example/idapro --opt o=addr=smb-server.example,username=smbuser,password=...,vers=3.0,
+#   --opt device=//SMB_HOST/SHARE --opt o=addr=SMB_HOST,username=SMB_USER,password=...,vers=3.0,
 #   uid=0,gid=0,file_mode=0700,dir_mode=0700 idapro`.
 #
 #   All of those options are in-kernel cifs options (docker's local driver calls mount(2) directly,
@@ -166,10 +169,10 @@
 #       /app/ida/.venv/bin/python /work/tools/scripts/sqlite_cifs_probe.py
 #
 # Remote examples:
-#   ./run_system_tests_docker.sh exec --remote remote-engine.example -w my-worktree -- true
-#   ./run_system_tests_docker.sh test --remote remote-engine.example -w my-worktree -o remote.txt -- -q
+#   ./run_system_tests_docker.sh exec --remote -w my-worktree -- true
+#   ./run_system_tests_docker.sh test --remote -w my-worktree -o remote.txt -- -q
 #   # One container per worktree in parallel, with a measured sequential baseline:
-#   python3 tools/scripts/remote_shard_bench.py --remote remote-engine.example \
+#   python3 tools/scripts/remote_shard_bench.py --remote HOST \
 #     --shard 'worktree-a=tests/system/e2e/x.py::case_a' --shard 'worktree-b=tests/system/e2e/x.py::case_b'
 #
 # Examples:
@@ -209,6 +212,7 @@ _display_env_value() {
   local name="$1"
   local value="$2"
   case "$name" in
+    D810_REMOTE_DOCKER_HOST|D810_REMOTE_SMB_SHARE|D810_REMOTE_SMB_USER|D810_REMOTE_SHARE_ROOT) printf '<redacted>' ;;
     *TOKEN*|*KEY*|*SECRET*|*PASSWORD*|*CREDENTIAL*) printf '<redacted>' ;;
     *) printf '%s' "$value" ;;
   esac
@@ -312,7 +316,6 @@ _trace_default_override D810_TEST_BINARY libobfuscated.dll
 _trace_default_override D810_SYSTEM_BATCH_SIZE 20
 _trace_default_override D810_WORKTREE_ROOT .worktrees
 _trace_default_override D810_REMOTE_VOLUME idapro
-_trace_default_override D810_REMOTE_SHARE_ROOT /srv/share-root
 
 DOCKER_IMAGE="${D810_DOCKER_IMAGE-idapro-9.4}"
 DOCKER_MEMORY="${D810_DOCKER_MEMORY-4g}"
@@ -323,10 +326,11 @@ TEST_BINARY="${D810_TEST_BINARY-libobfuscated.dll}"
 SYSTEM_BATCH_SIZE="${D810_SYSTEM_BATCH_SIZE-20}"
 # Remote execution is opt-in: the flag wins over the environment, and every
 # value below only ever affects this wrapper (never the container environment).
-REMOTE_HOST="${D810_REMOTE_DOCKER_HOST-}"
+CONFIGURED_REMOTE_HOST="${D810_REMOTE_DOCKER_HOST-}"
+REMOTE_HOST=""
 REMOTE_VOLUME="${D810_REMOTE_VOLUME-idapro}"
-REMOTE_SHARE_ROOT="${D810_REMOTE_SHARE_ROOT-/srv/share-root}"
-REMOTE_SMB_USER="${D810_REMOTE_SMB_USER-smbuser}"
+REMOTE_SHARE_ROOT="${D810_REMOTE_SHARE_ROOT-}"
+REMOTE_SMB_USER="${D810_REMOTE_SMB_USER-}"
 REMOTE_MODE=0
 REMOTE_ENGINE_OS=""
 REMOTE_ENGINE_ARCH=""
@@ -703,12 +707,16 @@ while [ $# -gt 0 ]; do
       shift 2
       ;;
     --remote)
-      if [ $# -lt 2 ] || [ -z "$2" ]; then
-        echo "ERROR: --remote requires a HOST argument (e.g. --remote remote-engine.example)" >&2
+      if [ $# -ge 2 ] && [ -n "$2" ] && [ "${2#-}" = "$2" ]; then
+        REMOTE_HOST="$2"
+        shift 2
+      elif [ -n "$CONFIGURED_REMOTE_HOST" ]; then
+        REMOTE_HOST="$CONFIGURED_REMOTE_HOST"
+        shift
+      else
+        echo "ERROR: --remote requires HOST or D810_REMOTE_DOCKER_HOST in .env" >&2
         exit 1
       fi
-      REMOTE_HOST="$2"
-      shift 2
       ;;
     --)
       shift
@@ -1113,9 +1121,8 @@ _acquire_remote_lock() {
     exit 1
   fi
   REMOTE_LOCK_DIR="$lock_dir"
-  printf 'pid=%s host=%s remote=%s started=%s\n' \
-    "$$" "$(hostname 2>/dev/null || echo unknown)" "$REMOTE_HOST" \
-    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$lock_dir/owner"
+  printf 'pid=%s started=%s\n' \
+    "$$" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$lock_dir/owner"
 }
 
 _remote_preflight_engine() {
@@ -1145,7 +1152,7 @@ _remote_preflight_engine() {
 # The volume can exist and still not expose this checkout (wrong share, wrong
 # subpath, unmounted CIFS). Prove reachability read-only before any real work.
 _remote_probe_volume() {
-  printf '[remote] probing %s through volume %s on ssh://%s\n' "$WORK_DIR" "$REMOTE_VOLUME" "$REMOTE_HOST"
+  printf '[remote] probing subpath %s through volume %s\n' "$WORK_SUBPATH" "$REMOTE_VOLUME"
   if ! docker run --rm \
       --mount "type=volume,src=${REMOTE_VOLUME},dst=/probe,volume-subpath=${WORK_SUBPATH},readonly" \
       --entrypoint /bin/bash "$DOCKER_IMAGE" \
@@ -1159,6 +1166,14 @@ _remote_probe_volume() {
 
 if [ -n "$REMOTE_HOST" ]; then
   REMOTE_MODE=1
+  if [ -z "$REMOTE_SHARE_ROOT" ]; then
+    echo "ERROR: remote mode requires D810_REMOTE_SHARE_ROOT in the repository's ignored .env" >&2
+    exit 1
+  fi
+  if [ -z "$REMOTE_SMB_USER" ]; then
+    echo "ERROR: remote mode requires D810_REMOTE_SMB_USER in the repository's ignored .env" >&2
+    exit 1
+  fi
   # The share ACL below is macOS-specific and the whole remote mode depends on
   # it, so refuse before touching Docker rather than half-way through.
   if [ "$(uname -s)" != "Darwin" ]; then
@@ -1341,17 +1356,17 @@ fi
 COBRA_IMAGE_ID="$(docker image inspect --format '{{.Id}}' "$DOCKER_IMAGE" 2>/dev/null || printf '%s' unknown)"
 
 # Plan: print what we're about to do so agents see worktree, output path, and options
-echo "$0 plan:"
+echo "$(basename "$0") plan:"
 echo "  command: $CMD"
 if [ -n "$WORKTREE_REL" ]; then
-  echo "  worktree: $WORK_DIR (WORKTREE_ROOT=$WORKTREE_ROOT, REL=$WORKTREE_REL)"
+  echo "  worktree: $WORKTREE_ROOT/$WORKTREE_REL"
 else
-  echo "  worktree: $WORK_DIR (repo root)"
+  echo "  worktree: repo root"
 fi
 if [ "$REMOTE_MODE" = "1" ]; then
-  echo "  remote:   ssh://$REMOTE_HOST (engine $REMOTE_ENGINE_OS/$REMOTE_ENGINE_ARCH)"
+  echo "  remote:   configured engine ($REMOTE_ENGINE_OS/$REMOTE_ENGINE_ARCH)"
   echo "  volume:   $REMOTE_VOLUME"
-  echo "  share root: $REMOTE_SHARE_ROOT"
+  echo "  share root: configured"
   echo "  subpath:  $WORK_SUBPATH (read-only at /work-src; .tmp read-write at /work/.tmp)"
   echo "  source digest: $SOURCE_DIGEST"
   echo "  run id:   $D810_RUN_ID (keys diag databases per run, not per pid)"
@@ -1361,13 +1376,13 @@ if [ "$REMOTE_MODE" = "1" ]; then
   echo "  allowlist: ${REMOTE_MANIFEST_EXTRA_ENTRIES:- none} (from $(basename "$REMOTE_MANIFEST_EXTRA"))"
   echo "  work volume: $WORK_VOLUME ($WORK_VOLUME_STATE, retained source copy)"
   echo "  cobra cache volume: $COBRA_CACHE_VOLUME ($COBRA_CACHE_VOLUME_STATE)"
-  echo "  share user: $REMOTE_SMB_USER (ACL scoped to $WORK_DIR/.tmp)"
+  echo "  share user: configured (ACL scoped to worktree .tmp)"
 fi
 if [ -n "$DUMP_OUT" ]; then
-  echo "  output:   stdout+stderr -> $WORK_DIR/.tmp/$DUMP_OUT"
+  echo "  output:   stdout+stderr -> .tmp/$DUMP_OUT"
 fi
 if [ -n "$MOUNT_LOGS" ]; then
-  echo "  logs:     $LOGS_DIR -> /root/.idapro/logs in container"
+  echo "  logs:     .tmp/logs -> /root/.idapro/logs in container"
 fi
 if [ -n "$ENABLE_DEBUG_LOGGING" ]; then
   echo "  debug:    D810_DEBUG_LOGGING=1 (getLogger default level -> DEBUG)"
@@ -1446,7 +1461,7 @@ fi
 # Forward every set D810_* env var to the container via docker -e flags.
 # Wrapper-only vars (those that only affect this script) are excluded.
 _d810_extra_env_flags() {
-  local _skip=" D810_DOCKER_IMAGE D810_DOCKER_MEMORY D810_EGGLOG_ROOT D810_COBRA_ROOT D810_COBRA_WHEEL D810_COBRA_WHEEL_SHA256 D810_REPO_ROOT D810_WORKTREE_ROOT D810_MEMORY_LIMIT_BYTES D810_SYSTEM_BATCH_SIZE D810_REMOTE_DOCKER_HOST D810_REMOTE_VOLUME D810_REMOTE_SHARE_ROOT D810_REMOTE_SMB_USER "
+  local _skip=" D810_DOCKER_IMAGE D810_DOCKER_MEMORY D810_EGGLOG_ROOT D810_COBRA_ROOT D810_COBRA_WHEEL D810_COBRA_WHEEL_SHA256 D810_REPO_ROOT D810_WORKTREE_ROOT D810_MEMORY_LIMIT_BYTES D810_SYSTEM_BATCH_SIZE D810_REMOTE_DOCKER_HOST D810_REMOTE_VOLUME D810_REMOTE_SMB_SHARE D810_REMOTE_SHARE_ROOT D810_REMOTE_SMB_USER "
   local _out=""
   local _var _val
   for _var in ${!D810_@}; do

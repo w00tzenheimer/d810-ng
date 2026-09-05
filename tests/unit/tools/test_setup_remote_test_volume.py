@@ -26,17 +26,80 @@ def _load_module():
 setup_remote_test_volume = _load_module()
 
 
+@pytest.fixture(autouse=True)
+def _generic_remote_configuration(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("D810_REMOTE_DOCKER_HOST", "runner.example")
+    monkeypatch.setenv("D810_REMOTE_SMB_SHARE", "//files.example/project")
+    monkeypatch.setenv("D810_REMOTE_SMB_USER", "share-account")
+    monkeypatch.setenv("D810_REMOTE_SHARE_ROOT", "/srv/project")
+
+
+def test_configuration_loads_from_nearest_ignored_dotenv(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for name in setup_remote_test_volume.REMOTE_CONFIG_KEYS:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.delenv("D810_ENV_FILE", raising=False)
+    nested = tmp_path / ".worktrees" / "runner"
+    nested.mkdir(parents=True)
+    (tmp_path / ".env").write_text(
+        "D810_REMOTE_DOCKER_HOST=runner.example\n"
+        "D810_REMOTE_SMB_SHARE=//files.example/project\n"
+        "D810_REMOTE_SMB_USER=share-account\n"
+        f"D810_REMOTE_SHARE_ROOT={tmp_path}\n"
+        "IGNORED_SECRET=do-not-import\n",
+        encoding="utf-8",
+    )
+
+    configuration = setup_remote_test_volume.load_remote_configuration(nested)
+
+    assert configuration == {
+        "D810_REMOTE_DOCKER_HOST": "runner.example",
+        "D810_REMOTE_SMB_SHARE": "//files.example/project",
+        "D810_REMOTE_SMB_USER": "share-account",
+        "D810_REMOTE_SHARE_ROOT": str(tmp_path),
+    }
+
+
+def test_missing_machine_configuration_fails_before_password_or_docker(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for name in setup_remote_test_volume.REMOTE_CONFIG_KEYS:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.delenv("D810_ENV_FILE", raising=False)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        setup_remote_test_volume.getpass,
+        "getpass",
+        lambda prompt: (_ for _ in ()).throw(AssertionError("must not prompt")),
+    )
+    monkeypatch.setattr(
+        setup_remote_test_volume.subprocess,
+        "run",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("must not run docker")),
+    )
+
+    status = setup_remote_test_volume.main(["--dry-run"])
+
+    assert status == 2
+    assert "missing remote configuration" in capsys.readouterr().err
+
+
 def test_share_host_extracts_the_server() -> None:
-    assert setup_remote_test_volume.share_host("//smb-server.example/idapro") == "smb-server.example"
+    assert setup_remote_test_volume.share_host("//files.example/project") == "files.example"
     with pytest.raises(ValueError):
         setup_remote_test_volume.share_host("//")
 
 
 def test_mount_options_default_to_owner_only_modes() -> None:
-    options = setup_remote_test_volume.build_mount_options("hunter2")
+    options = setup_remote_test_volume.build_mount_options(
+        "test-password", share="//files.example/project", user="share-account"
+    )
 
     assert options == (
-        "addr=smb-server.example,username=smbuser,password=hunter2,vers=3.0,"
+        "addr=files.example,username=share-account,password=test-password,vers=3.0,"
         "uid=0,gid=0,file_mode=0700,dir_mode=0700"
     )
     assert "file_mode=0777" not in options
@@ -45,7 +108,9 @@ def test_mount_options_default_to_owner_only_modes() -> None:
 
 def test_mount_options_omit_the_dropped_cifs_flags() -> None:
     """The user's option set drops nobrl/noperm; do not smuggle them back."""
-    options = setup_remote_test_volume.build_mount_options("hunter2")
+    options = setup_remote_test_volume.build_mount_options(
+        "test-password", share="//files.example/project", user="share-account"
+    )
 
     assert "nobrl" not in options
     assert "noperm" not in options
@@ -63,16 +128,16 @@ def test_mount_options_follow_the_share_and_user() -> None:
 
 def test_volume_argv_targets_the_remote_engine() -> None:
     command = setup_remote_test_volume.build_volume_argv(
-        remote="remote-engine.example",
+        remote="runner.example",
         volume="idapro",
-        share="//smb-server.example/idapro",
+        share="//files.example/project",
         options="o-value",
     )
 
     assert command == [
         "docker",
         "-H",
-        "ssh://remote-engine.example",
+        "ssh://runner.example",
         "volume",
         "create",
         "--driver",
@@ -80,7 +145,7 @@ def test_volume_argv_targets_the_remote_engine() -> None:
         "--opt",
         "type=cifs",
         "--opt",
-        "device=//smb-server.example/idapro",
+        "device=//files.example/project",
         "--opt",
         "o=o-value",
         "idapro",
@@ -88,10 +153,12 @@ def test_volume_argv_targets_the_remote_engine() -> None:
 
 
 def test_redaction_hides_the_password_everywhere_it_appears() -> None:
-    password = "hunter2"
-    options = setup_remote_test_volume.build_mount_options(password)
+    password = "test-password"
+    options = setup_remote_test_volume.build_mount_options(
+        password, share="//files.example/project", user="share-account"
+    )
     command = setup_remote_test_volume.build_volume_argv(
-        remote="host", volume="idapro", share="//smb-server.example/idapro", options=options
+        remote="host", volume="idapro", share="//files.example/project", options=options
     )
 
     redacted = setup_remote_test_volume.redact_argv(command, password)
@@ -112,7 +179,7 @@ def test_dry_run_prints_the_redacted_argv_and_runs_no_docker(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        setup_remote_test_volume.getpass, "getpass", lambda prompt: "hunter2"
+        setup_remote_test_volume.getpass, "getpass", lambda prompt: "test-password"
     )
 
     def _fail(*args: object, **kwargs: object) -> None:
@@ -132,9 +199,9 @@ def test_dry_run_prints_the_redacted_argv_and_runs_no_docker(
     printed = capsys.readouterr().out
 
     assert status == 0
-    assert "hunter2" not in printed
+    assert "test-password" not in printed
     assert "password=********" in printed
-    assert "ssh://remote-engine.example" in printed
+    assert "ssh://runner.example" in printed
     assert "file_mode=0700,dir_mode=0700" in printed
 
 
@@ -195,12 +262,12 @@ def test_success_runs_the_built_argv(
 
 
 ABSENT_ERROR = "Error response from daemon: get idapro: no such volume"
-SSH_ERROR = "error during connect: ssh: connect to host remote-engine.example port 22: refused"
+SSH_ERROR = "error during connect: ssh: connect to host runner.example port 22: refused"
 
 INSPECT_PAYLOAD = (
     '[{"Name": "idapro", "Driver": "local", "Mountpoint": "/var/lib/docker/volumes/idapro/_data",'
-    ' "Options": {"device": "//smb-server.example/idapro", "o":'
-    ' "addr=smb-server.example,username=smbuser,password=hunter2,vers=3.0,uid=0,gid=0,'
+    ' "Options": {"device": "//files.example/project", "o":'
+    ' "addr=files.example,username=share-account,password=test-password,vers=3.0,uid=0,gid=0,'
     'file_mode=0700,dir_mode=0700", "type": "cifs"}}]'
 )
 
@@ -247,10 +314,10 @@ def test_inspect_and_filter_argv_shapes() -> None:
 def test_status_output_redacts_the_stored_password() -> None:
     rendered = setup_remote_test_volume.format_status(INSPECT_PAYLOAD, "")
 
-    assert "hunter2" not in rendered
+    assert "test-password" not in rendered
     assert "password=********" in rendered
     assert "driver:  local" in rendered
-    assert "device:  //smb-server.example/idapro" in rendered
+    assert "device:  //files.example/project" in rendered
     assert "type:    cifs" in rendered
     assert "containers referencing the volume: none" in rendered
 
@@ -708,9 +775,10 @@ def test_status_probes_the_existing_volume_without_removing_it(
     assert not any("volume rm" in " ".join(argv) for argv in recorded)
 
 
-def test_default_user_is_the_sharing_account() -> None:
-    assert setup_remote_test_volume.DEFAULT_USER == "smbuser"
-    assert "username=smbuser" in setup_remote_test_volume.build_mount_options("pw")
+def test_sharing_account_has_no_committed_default() -> None:
+    assert setup_remote_test_volume.DEFAULT_USER == ""
+    configuration = setup_remote_test_volume.load_remote_configuration()
+    assert configuration["D810_REMOTE_SMB_USER"] == "share-account"
 
 
 def test_logon_failure_wording_does_not_claim_a_stale_password() -> None:
@@ -824,10 +892,10 @@ def test_absent_volume_error_classification() -> None:
 
 def test_retained_volume_listing_targets_only_supported_roles() -> None:
     """A future d810.role value must never become a purge target by default."""
-    digest = setup_remote_test_volume.share_root_digest("/srv/share-root")
+    digest = setup_remote_test_volume.share_root_digest("/srv/project")
 
     assert setup_remote_test_volume.build_retained_volume_list_argvs(
-        remote="h", volume="idapro", share_root="/srv/share-root"
+        remote="h", volume="idapro", share_root="/srv/project"
     ) == [
         [
             "docker", "-H", "ssh://h", "volume", "ls",
@@ -1134,10 +1202,15 @@ def test_rejected_mount_option_tokens(raw: str, fragment: str) -> None:
 
 
 def test_mount_opts_are_appended_to_the_option_string() -> None:
-    options = setup_remote_test_volume.build_mount_options("pw", extra_options="cache=none")
+    identity = {"share": "//files.example/project", "user": "share-account"}
+    options = setup_remote_test_volume.build_mount_options(
+        "pw", extra_options="cache=none", **identity
+    )
 
     assert options.endswith(",dir_mode=0700,cache=none")
-    assert setup_remote_test_volume.build_mount_options("pw").endswith("dir_mode=0700")
+    assert setup_remote_test_volume.build_mount_options("pw", **identity).endswith(
+        "dir_mode=0700"
+    )
 
 
 def test_mount_opts_are_reported_and_kept_out_of_the_credential(

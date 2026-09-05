@@ -13,7 +13,7 @@ Every number it prints is measured here; nothing is estimated.
 
 Example::
 
-    python3 tools/scripts/remote_shard_bench.py --remote remote-engine.example \\
+    python3 tools/scripts/remote_shard_bench.py --remote HOST \\
         --shard 'perf-canonical-stamp-reviewed=tests/system/e2e/x.py::a' \\
         --shard 'ctrl-w7=tests/system/e2e/x.py::b'
 """

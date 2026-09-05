@@ -210,6 +210,7 @@ def _run(
     env.pop("D810_REMOTE_DOCKER_HOST", None)
     env.pop("D810_REMOTE_VOLUME", None)
     env.pop("D810_REMOTE_SHARE_ROOT", None)
+    env.pop("D810_REMOTE_SMB_USER", None)
     env.pop("DOCKER_HOST", None)
     env.update(
         {
@@ -1422,13 +1423,72 @@ def test_container_cleanup_preserves_foreign_platform_extensions(
     assert "-name '*.pyd'" not in command
 
 
-REMOTE_HOST = "remote-engine.example"
+REMOTE_HOST = "runner.example"
 
 
 def _remote_env(share: Path, **extra: str) -> dict[str, str]:
-    env = {"D810_REMOTE_SHARE_ROOT": str(share)}
+    env = {
+        "D810_REMOTE_SHARE_ROOT": str(share),
+        "D810_REMOTE_SMB_USER": "share-account",
+    }
     env.update(extra)
     return env
+
+
+def test_remote_mode_requires_local_share_configuration(tmp_path: Path) -> None:
+    share, repo = _share_layout(tmp_path)
+
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--remote",
+        REMOTE_HOST,
+        "--",
+        "true",
+        repo_root=repo,
+        extra_env={"D810_REMOTE_SHARE_ROOT": str(share)},
+    )
+
+    assert result.returncode != 0
+    assert calls == []
+    assert "D810_REMOTE_SMB_USER" in result.stderr
+
+
+def test_bare_remote_uses_dotenv_without_leaking_identifiers(tmp_path: Path) -> None:
+    share, repo = _share_layout(tmp_path)
+    secret_host = "private-runner.example"
+    secret_share = "//private-files.example/project"
+    secret_user = "private-share-account"
+    dotenv = (
+        f"D810_REMOTE_DOCKER_HOST={secret_host}\n"
+        f"D810_REMOTE_SMB_SHARE={secret_share}\n"
+        f"D810_REMOTE_SHARE_ROOT={share}\n"
+        f"D810_REMOTE_SMB_USER={secret_user}\n"
+    )
+
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--remote",
+        "--",
+        "true",
+        repo_root=repo,
+        dotenv=dotenv,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert calls
+    assert secret_host not in result.stdout
+    assert secret_share not in result.stdout
+    assert secret_user not in result.stdout
+    assert str(share) not in result.stdout
+    assert str(repo) not in result.stdout
+    assert "remote:   configured engine" in result.stdout
+    container = _remote_container_run(calls)
+    assert "D810_REMOTE_DOCKER_HOST" not in container
+    assert "D810_REMOTE_SMB_SHARE" not in container
+    assert "D810_REMOTE_SMB_USER" not in container
+    assert "D810_REMOTE_SHARE_ROOT" not in container
 
 
 def test_remote_mode_replaces_every_bind_mount_with_a_volume_subpath(
@@ -1602,7 +1662,7 @@ def test_remote_mode_sends_every_docker_call_to_the_ssh_host(
     assert set(hosts) == {f"ssh://{REMOTE_HOST}"}
 
 
-def test_remote_host_env_var_is_honored_and_the_flag_wins(tmp_path: Path) -> None:
+def test_remote_host_env_var_needs_opt_in_and_the_flag_wins(tmp_path: Path) -> None:
     share, repo = _share_layout(tmp_path)
 
     result, calls = _run(
@@ -1614,10 +1674,21 @@ def test_remote_host_env_var_is_honored_and_the_flag_wins(tmp_path: Path) -> Non
         extra_env=_remote_env(share, D810_REMOTE_DOCKER_HOST="env.example"),
     )
     assert result.returncode == 0, result.stderr
-    assert set(_docker_hosts(calls)) == {"ssh://env.example"}
-    assert "-e D810_REMOTE_DOCKER_HOST=env.example" not in _remote_container_run(
-        calls
+    assert set(_docker_hosts(calls)) == {""}
+
+    (tmp_path / "docker.log").unlink()
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--remote",
+        "--",
+        "true",
+        repo_root=repo,
+        extra_env=_remote_env(share, D810_REMOTE_DOCKER_HOST="env.example"),
     )
+    assert result.returncode == 0, result.stderr
+    assert set(_docker_hosts(calls)) == {"ssh://env.example"}
+    assert "-e D810_REMOTE_DOCKER_HOST=env.example" not in _remote_container_run(calls)
 
     (tmp_path / "docker.log").unlink()
     result, calls = _run(
@@ -1805,7 +1876,10 @@ def test_remote_mode_rejects_an_unusable_share_root(
         "--",
         "true",
         repo_root=repo,
-        extra_env={"D810_REMOTE_SHARE_ROOT": share_root},
+        extra_env={
+            "D810_REMOTE_SHARE_ROOT": share_root,
+            "D810_REMOTE_SMB_USER": "share-account",
+        },
     )
 
     assert result.returncode != 0
@@ -1827,7 +1901,7 @@ def test_remote_mode_allows_one_run_per_worktree(tmp_path: Path) -> None:
     share, repo = _share_layout(tmp_path)
     lock = repo / ".tmp" / "remote-run.lock"
     lock.mkdir(parents=True)
-    (lock / "owner").write_text("pid=4242 host=smb-server.example\n", encoding="utf-8")
+    (lock / "owner").write_text("pid=4242 started=2026-01-01T00:00:00Z\n", encoding="utf-8")
 
     result, calls = _run(
         tmp_path,
@@ -1961,10 +2035,12 @@ def test_remote_mode_reports_the_engine_and_volume_in_the_plan(
     )
 
     assert result.returncode == 0, result.stderr
-    assert f"remote:   ssh://{REMOTE_HOST}" in result.stdout
+    assert "remote:   configured engine" in result.stdout
+    assert REMOTE_HOST not in result.stdout
     assert "linux/amd64" in result.stdout
     assert "volume:   idapro" in result.stdout
-    assert f"share root: {share}" in result.stdout
+    assert "share root: configured" in result.stdout
+    assert str(share) not in result.stdout
     assert "subpath:  d810" in result.stdout
 
 
@@ -2039,7 +2115,7 @@ def test_remote_mode_grants_a_tmp_scoped_acl_only(tmp_path: Path) -> None:
     assert any(target == tmp_root for target in targets)
     assert any(target.endswith("/.tmp/logs") for target in targets)
     assert not any(target.endswith("/.tmp/cobra-linux") for target in targets)
-    assert any("smbuser allow" in call for call in acl_calls)
+    assert any("share-account allow" in call for call in acl_calls)
     assert any("file_inherit,directory_inherit" in call for call in acl_calls)
     # the invoking user needs an inheritable ACE too, or the container's own
     # -o capture comes back unreadable (it is created 0600 by the share account)
@@ -2108,7 +2184,7 @@ def test_remote_mode_fails_closed_when_required_logs_acl_cannot_be_applied(
     )
 
     assert result.returncode != 0
-    assert f"could not grant smbuser access to {logs}" in result.stderr
+    assert f"could not grant share-account access to {logs}" in result.stderr
     assert _runs(calls) == []
 
 
@@ -2598,7 +2674,7 @@ def test_remote_plan_reports_the_source_digest_and_work_volume(
     assert result.returncode == 0, result.stderr
     assert "source digest: " in result.stdout
     assert f"work volume: {_work_volume_name(repo)} (created" in result.stdout
-    assert "share user: smbuser" in result.stdout
+    assert "share user: configured" in result.stdout
     assert "read-only at /work-src" in result.stdout
 
 
