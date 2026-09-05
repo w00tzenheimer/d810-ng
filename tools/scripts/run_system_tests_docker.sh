@@ -1232,10 +1232,36 @@ if [ -n "$REMOTE_HOST" ]; then
   _ensure_acl "$REMOTE_ARCHIVE" file
 fi
 
+# Two consumers key on the image's identity: the provenance receipt below and
+# the CoBRA build cache marker. Both are stores that outlive the run, so a
+# placeholder id is worse than no run at all - it produces a receipt that names
+# no image and a marker no later run can match, silently forcing a rebuild on
+# every subsequent run. Local mode has no image preflight and remote mode is
+# only guarded against a PERSISTENT absence, so resolve strictly here.
+_require_image_id() {
+  local consumer="$1" resolved engine
+  resolved="$(docker image inspect --format '{{.Id}}' "$DOCKER_IMAGE" 2>/dev/null || true)"
+  case "$resolved" in
+    sha256:?*)
+      printf '%s' "$resolved"
+      return 0
+      ;;
+  esac
+  if [ "$REMOTE_MODE" = "1" ]; then
+    engine="the configured remote engine"
+  else
+    engine="the local Docker engine"
+  fi
+  echo "ERROR: cannot resolve the image id of $DOCKER_IMAGE on $engine" >&2
+  echo "       docker image inspect --format '{{.Id}}' returned: ${resolved:-<empty>} (expected a sha256: digest)" >&2
+  echo "       $consumer is keyed by this id; continuing would record a placeholder that outlives the run." >&2
+  exit 1
+}
+
 # Profile receipts need to identify the actual image that ran them. Keep this
 # test-only metadata separate from the image-selection environment variable,
 # which is deliberately wrapper-only and therefore not forwarded by default.
-DOCKER_IMAGE_ID="$(docker image inspect --format '{{.Id}}' "$DOCKER_IMAGE" 2>/dev/null || echo unknown)"
+DOCKER_IMAGE_ID="$(_require_image_id "the provenance receipt D810_TEST_RUNTIME_IMAGE_ID")"
 
 # Docker mount: host path -> container path (use variables so no host-specific paths in printed commands)
 if [ "$REMOTE_MODE" = "1" ]; then
@@ -1373,7 +1399,10 @@ else
   mkdir -p "$COBRA_CACHE_DIR"
   _add_mount "$COBRA_CACHE_DIR" /opt/d810-cobra-cache rw
 fi
-COBRA_IMAGE_ID="$(docker image inspect --format '{{.Id}}' "$DOCKER_IMAGE" 2>/dev/null || printf '%s' unknown)"
+# The CoBRA build cache marker (linux-cobra-core-v2:<parent>:<core>:<image-id>:
+# <toolchain>) is stored in a retained volume, so an id resolved here must be
+# real on every path, including wheel mode where it is only metadata.
+COBRA_IMAGE_ID="$(_require_image_id "the CoBRA build cache marker")"
 
 # Plan: print what we're about to do so agents see worktree, output path, and options
 echo "$(basename "$0") plan:"

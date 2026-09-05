@@ -26,6 +26,9 @@ COBRA_WHEEL_PREFLIGHT_DIR = "0.1.5-preflight"
 COBRA_WHEEL_TAG_COMMIT = "73b405c106d78e1fdc7576b217de39b7dcd0ddb3"
 COBRA_WHEEL_CORE_COMMIT = "72f616f822f538a0cfbea3c880f9d1e68bb9a8f1"
 COBRA_WHEEL_CONTAINER_DIR = "/opt/d810-cobra-wheel"
+# The runner refuses to run unless `docker image inspect --format '{{.Id}}'`
+# yields a real digest, so the fake engine has to answer with one.
+FAKE_IMAGE_ID = "sha256:" + "1f" * 32
 
 
 def _cobra_wheel(directory: str, name: str) -> Path | None:
@@ -102,6 +105,16 @@ if [ "${1:-}" = image ] && [ "${2:-}" = inspect ]; then
     printf 'Error response from daemon: No such image\\n' >&2
     exit 1
   fi
+  case "$*" in
+    *'{{.Id}}'*)
+      if [ -n "${MOCK_DOCKER_IMAGE_ID_FAILS:-}" ]; then
+        printf 'Error response from daemon: No such image\\n' >&2
+        exit 1
+      fi
+      printf '%s\\n' "${MOCK_DOCKER_IMAGE_ID-@FAKE_IMAGE_ID@}"
+      exit 0
+      ;;
+  esac
   printf '%s\\n' "${MOCK_DOCKER_LABEL:-}"
 fi
 if [ "${1:-}" = version ]; then
@@ -135,7 +148,7 @@ if [ "${1:-}" = run ]; then
   esac
   exit "${MOCK_DOCKER_RUN_EXIT:-0}"
 fi
-""",
+""".replace("@FAKE_IMAGE_ID@", FAKE_IMAGE_ID),
         encoding="utf-8",
     )
     docker.chmod(0o755)
@@ -3415,3 +3428,121 @@ exit 0
     calls = docker_log.read_text(encoding="utf-8")
     assert "worktree-image" in calls, calls
     assert "main-image" not in calls, calls
+
+
+def test_image_id_failure_is_fatal_before_any_container(tmp_path: Path) -> None:
+    """An unresolvable id would name no image in the receipt and the marker."""
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--",
+        "true",
+        extra_env={"MOCK_DOCKER_IMAGE_ID_FAILS": "1"},
+    )
+
+    assert result.returncode != 0
+    assert "cannot resolve the image id of test-runtime-image" in result.stderr
+    assert "the local Docker engine" in result.stderr
+    assert "keyed by this id" in result.stderr
+    # nothing may start, and no marker or receipt may be computed
+    assert _runs(calls) == []
+    assert not [call for call in calls if call.startswith("create ")]
+    assert not [call for call in calls if "linux-cobra-core-v2" in call]
+
+
+def test_image_id_failure_is_fatal_in_local_mode_when_the_image_is_absent(
+    tmp_path: Path,
+) -> None:
+    """Local mode has no image preflight, so this is the only guard there."""
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--",
+        "true",
+        extra_env={"MOCK_DOCKER_IMAGE_MISSING": "1"},
+    )
+
+    assert result.returncode != 0
+    assert "cannot resolve the image id of test-runtime-image" in result.stderr
+    assert _runs(calls) == []
+
+
+def test_image_id_empty_is_fatal_before_any_container(tmp_path: Path) -> None:
+    """An empty id is as unusable as a failed inspect, and just as silent."""
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--",
+        "true",
+        extra_env={"MOCK_DOCKER_IMAGE_ID": ""},
+    )
+
+    assert result.returncode != 0
+    assert "cannot resolve the image id of test-runtime-image" in result.stderr
+    assert "<empty>" in result.stderr
+    assert _runs(calls) == []
+    assert not [call for call in calls if call.startswith("create ")]
+    assert not [call for call in calls if "linux-cobra-core-v2" in call]
+
+
+def test_image_id_that_is_not_a_digest_is_fatal(tmp_path: Path) -> None:
+    """The historical fallback wrote the literal 'unknown' into both stores."""
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--",
+        "true",
+        extra_env={"MOCK_DOCKER_IMAGE_ID": "unknown"},
+    )
+
+    assert result.returncode != 0
+    assert "cannot resolve the image id of test-runtime-image" in result.stderr
+    assert "unknown" in result.stderr
+    assert _runs(calls) == []
+
+
+def test_remote_image_id_failure_names_the_remote_engine_not_a_host(
+    tmp_path: Path,
+) -> None:
+    """The diagnostic must place the engine without leaking a hostname."""
+    share, repo = _share_layout(tmp_path)
+
+    result, _ = _run(
+        tmp_path,
+        "exec",
+        "--remote",
+        REMOTE_HOST,
+        "--",
+        "true",
+        repo_root=repo,
+        extra_env=_remote_env(share, MOCK_DOCKER_IMAGE_ID="unknown"),
+    )
+
+    assert result.returncode != 0
+    assert "the configured remote engine" in result.stderr
+    assert REMOTE_HOST not in result.stderr
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ("exec", "--", "true"),
+        ("system",),
+        ("test",),
+    ],
+)
+def test_no_emitted_command_ever_carries_an_unknown_image_id(
+    tmp_path: Path,
+    args: tuple[str, ...],
+) -> None:
+    """Neither the cache marker nor the receipt may name a placeholder image."""
+    result, calls = _run(tmp_path, *args)
+
+    assert result.returncode == 0, result.stderr
+    command = _container_run(calls)
+    source_key = command.split("COBRA_SOURCE_KEY=")[1].split("'")[1]
+    assert source_key.endswith(f":{FAKE_IMAGE_ID}"), source_key
+    assert "unknown" not in source_key
+    assert "linux-cobra-core-v2:" in command
+    receipt = command.split("D810_TEST_RUNTIME_IMAGE_ID=")[1].split()[0]
+    assert receipt == FAKE_IMAGE_ID, receipt
