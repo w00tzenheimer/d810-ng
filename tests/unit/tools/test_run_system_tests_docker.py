@@ -1,5 +1,6 @@
 import hashlib
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -69,11 +70,28 @@ if [ "${1:-}" = info ]; then
   exit 0
 fi
 if [ "${1:-}" = volume ] && [ "${2:-}" = inspect ]; then
+  case "${3:-}" in
+    d810-work-*)
+      if [ -z "${MOCK_WORK_VOLUME_EXISTS:-}" ]; then
+        printf 'Error response from daemon: get %s: no such volume\\n' "${3:-}" >&2
+        exit 1
+      fi
+      printf '[]\\n'
+      exit 0
+      ;;
+  esac
   if [ -n "${MOCK_DOCKER_VOLUME_MISSING:-}" ]; then
     printf 'Error response from daemon: get %s: no such volume\\n' "${3:-}" >&2
     exit 1
   fi
   printf '[]\\n'
+  exit 0
+fi
+if [ "${1:-}" = volume ] && [ "${2:-}" = create ]; then
+  if [ -n "${MOCK_WORK_VOLUME_CREATE_FAILS:-}" ]; then
+    printf 'Error response from daemon: cannot create volume\\n' >&2
+    exit 1
+  fi
   exit 0
 fi
 if [ "${1:-}" = image ] && [ "${2:-}" = inspect ]; then
@@ -109,6 +127,37 @@ fi
         encoding="utf-8",
     )
     docker.chmod(0o755)
+
+    # The runner grants a .tmp-scoped ACL on the Mac before launching; record
+    # every invocation so tests can prove what it touched, then defer to the
+    # real chmod for the ordinary mode changes the script also makes.
+    chmod_stub = bin_dir / "chmod"
+    chmod_stub.write_text(
+        """#!/usr/bin/env bash
+set -eu
+printf '%s\n' "$*" >> "${CHMOD_LOG:-/dev/null}"
+case "${1:-}" in
+  +a|-a#) exit "${MOCK_CHMOD_ACL_EXIT:-0}" ;;
+esac
+exec /bin/chmod "$@"
+""",
+        encoding="utf-8",
+    )
+    chmod_stub.chmod(0o755)
+
+    uname_stub = bin_dir / "uname"
+    uname_stub.write_text(
+        """#!/usr/bin/env bash
+set -eu
+if [ "${1:-}" = "-s" ] && [ -n "${MOCK_UNAME_S:-}" ]; then
+  printf '%s\n' "$MOCK_UNAME_S"
+  exit 0
+fi
+exec /usr/bin/uname "$@"
+""",
+        encoding="utf-8",
+    )
+    uname_stub.chmod(0o755)
     return script, docker_log
 
 
@@ -146,6 +195,7 @@ def _run(
         {
             "PATH": f"{tmp_path / 'bin'}:{env['PATH']}",
             "DOCKER_LOG": str(docker_log),
+            "CHMOD_LOG": str(tmp_path / "chmod.log"),
             "MOCK_DOCKER_LABEL": label,
             "D810_REPO_ROOT": str(root),
             "D810_NO_CYTHON": no_cython,
@@ -191,6 +241,18 @@ def _remote_container_run(calls: list[str]) -> str:
     runs = [call for call in _runs(calls) if "dst=/probe" not in call]
     assert len(runs) == 1, calls
     return runs[0]
+
+
+def _chmod_calls(tmp_path: Path) -> list[str]:
+    log = tmp_path / "chmod.log"
+    return log.read_text(encoding="utf-8").splitlines() if log.exists() else []
+
+
+def _work_volume_name(worktree_dir: Path) -> str:
+    import hashlib
+
+    digest = hashlib.sha256(str(worktree_dir).encode()).hexdigest()[:8]
+    return f"d810-work-{worktree_dir.name}-{digest}"
 
 
 def _docker_hosts(calls: list[str]) -> list[str]:
@@ -1368,7 +1430,9 @@ def test_remote_mode_replaces_every_bind_mount_with_a_volume_subpath(
     assert result.returncode == 0, result.stderr
     assert "run-arg -v" not in calls
     expected = [
-        "type=volume,src=idapro,dst=/work,volume-subpath=d810",
+        f"type=volume,src={_work_volume_name(repo)},dst=/work",
+        "type=volume,src=idapro,dst=/work-src,volume-subpath=d810,readonly",
+        "type=volume,src=idapro,dst=/work/.tmp,volume-subpath=d810/.tmp",
         "type=volume,src=idapro,dst=/d810-git,volume-subpath=d810/.git,readonly",
         "type=volume,src=idapro,dst=/root/.idapro/logs,"
         "volume-subpath=d810/.tmp/logs",
@@ -1379,8 +1443,10 @@ def test_remote_mode_replaces_every_bind_mount_with_a_volume_subpath(
     ]
     for spec in expected:
         assert calls.count(f"run-arg {spec}") == 1, (spec, calls)
-    # five workload mounts plus the single read-only preflight probe mount
+    # the workload mounts plus the single read-only preflight probe mount
     assert calls.count("run-arg --mount") == len(expected) + 1
+    # source is never writable, and only .tmp is
+    assert "run-arg type=volume,src=idapro,dst=/work-src,volume-subpath=d810" not in calls
 
 
 def test_remote_mode_mounts_the_worktree_subpath(tmp_path: Path) -> None:
@@ -1403,11 +1469,20 @@ def test_remote_mode_mounts_the_worktree_subpath(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
     assert (
         calls.count(
-            "run-arg type=volume,src=idapro,dst=/work,"
-            "volume-subpath=d810/.worktrees/perf-review"
+            "run-arg type=volume,src=idapro,dst=/work-src,"
+            "volume-subpath=d810/.worktrees/perf-review,readonly"
         )
         == 1
     )
+    assert (
+        calls.count(
+            "run-arg type=volume,src=idapro,dst=/work/.tmp,"
+            "volume-subpath=d810/.worktrees/perf-review/.tmp"
+        )
+        == 1
+    )
+    work_volume = _work_volume_name(repo / ".worktrees" / "perf-review")
+    assert calls.count(f"run-arg type=volume,src={work_volume},dst=/work") == 1
 
 
 @pytest.mark.parametrize(
@@ -1439,9 +1514,12 @@ def test_remote_mode_uses_volume_mounts_in_every_docker_mode(
     assert result.returncode == 0, result.stderr
     assert "run-arg -v" not in calls
     assert (
-        calls.count("run-arg type=volume,src=idapro,dst=/work,volume-subpath=d810")
+        calls.count(
+            "run-arg type=volume,src=idapro,dst=/work-src,volume-subpath=d810,readonly"
+        )
         == 1
     )
+    assert calls.count(f"run-arg type=volume,src={_work_volume_name(repo)},dst=/work") == 1
     _remote_container_run(calls)
 
 
@@ -1542,7 +1620,7 @@ def test_remote_volume_name_is_configurable(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
     assert (
         calls.count(
-            "run-arg type=volume,src=other-share,dst=/work,volume-subpath=d810"
+            "run-arg type=volume,src=other-share,dst=/work-src,volume-subpath=d810,readonly"
         )
         == 1
     )
@@ -1898,3 +1976,281 @@ fi
     )
     assert [call for call in calls if pattern.match(call)], calls
     assert "run-arg -v" not in calls
+
+
+def test_remote_mode_grants_a_tmp_scoped_acl_only(tmp_path: Path) -> None:
+    """The share account must never gain write access to source, .git or root."""
+    share, repo = _share_layout(tmp_path)
+    (repo / ".tmp" / "logs").mkdir(parents=True)
+    (repo / ".tmp" / "cobra-linux").mkdir(parents=True)
+
+    result, _calls = _run(
+        tmp_path,
+        "exec",
+        "--remote",
+        REMOTE_HOST,
+        "--",
+        "true",
+        repo_root=repo,
+        extra_env=_remote_env(share),
+    )
+
+    assert result.returncode == 0, result.stderr
+    acl_calls = [call for call in _chmod_calls(tmp_path) if call.startswith("+a ")]
+    assert acl_calls
+    targets = [call.rsplit(" ", 1)[-1] for call in acl_calls]
+    tmp_root = str(repo / ".tmp")
+    for target in targets:
+        assert target == tmp_root or target.startswith(tmp_root + "/"), target
+    assert str(repo / "src") not in targets
+    assert str(repo / ".git") not in targets
+    assert str(share) not in targets
+    assert any(target == tmp_root for target in targets)
+    assert any(target.endswith("/.tmp/logs") for target in targets)
+    assert any(target.endswith("/.tmp/cobra-linux") for target in targets)
+    assert all("smbuser allow" in call for call in acl_calls)
+    assert any("file_inherit,directory_inherit" in call for call in acl_calls)
+
+
+def test_remote_acl_user_follows_the_smb_account(tmp_path: Path) -> None:
+    share, repo = _share_layout(tmp_path)
+
+    result, _calls = _run(
+        tmp_path,
+        "exec",
+        "--remote",
+        REMOTE_HOST,
+        "--",
+        "true",
+        repo_root=repo,
+        extra_env=_remote_env(share, D810_REMOTE_SMB_USER="otheruser"),
+    )
+
+    assert result.returncode == 0, result.stderr
+    acl_calls = [call for call in _chmod_calls(tmp_path) if call.startswith("+a ")]
+    assert acl_calls and all("otheruser allow" in call for call in acl_calls)
+
+
+def test_remote_mode_fails_closed_when_the_acl_cannot_be_applied(
+    tmp_path: Path,
+) -> None:
+    share, repo = _share_layout(tmp_path)
+
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--remote",
+        REMOTE_HOST,
+        "--",
+        "true",
+        repo_root=repo,
+        extra_env=_remote_env(share, MOCK_CHMOD_ACL_EXIT="1"),
+    )
+
+    assert result.returncode != 0
+    assert "could not grant" in result.stderr
+    assert _runs(calls) == []
+
+
+def test_remote_mode_requires_a_darwin_host(tmp_path: Path) -> None:
+    share, repo = _share_layout(tmp_path)
+
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--remote",
+        REMOTE_HOST,
+        "--",
+        "true",
+        repo_root=repo,
+        extra_env=_remote_env(share, MOCK_UNAME_S="Linux"),
+    )
+
+    assert result.returncode != 0
+    assert "Darwin" in result.stderr
+    assert calls == []
+    assert _chmod_calls(tmp_path) == []
+
+
+def test_local_mode_applies_no_acl(tmp_path: Path) -> None:
+    result, _calls = _run(tmp_path, "exec", "--", "true")
+
+    assert result.returncode == 0, result.stderr
+    assert [call for call in _chmod_calls(tmp_path) if call.startswith("+a ")] == []
+
+
+def test_remote_mode_mirrors_source_into_the_work_volume(tmp_path: Path) -> None:
+    share, repo = _share_layout(tmp_path)
+
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--remote",
+        REMOTE_HOST,
+        "--",
+        "true",
+        repo_root=repo,
+        extra_env=_remote_env(share),
+    )
+
+    assert result.returncode == 0, result.stderr
+    command = _remote_container_run(calls)
+    assert "tar -C /work-src -cf -" in command
+    assert "tar -C /work -xf -" in command
+    assert "--exclude=./.tmp" in command
+    assert "--exclude='*.so'" in command
+    assert "--exclude='*.pyd'" in command
+    assert "--exclude=./build" in command
+    assert "--exclude='*.egg-info'" in command
+    for cache in ("__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache"):
+        assert f"--exclude='{cache}'" in command
+    # the destination is emptied first, so the mirror is exact
+    assert "find /work -mindepth 1 -maxdepth 1 ! -name .tmp -exec rm -rf {} +" in command
+    # the worktree .git FILE is copied; only a .git directory is excluded
+    assert "if [ -d /work-src/.git ]; then __git_exclude='--exclude=./.git'; fi" in command
+    assert "set -o pipefail" in command
+
+
+def test_remote_sync_sentinel_gates_reuse_on_the_source_digest(
+    tmp_path: Path,
+) -> None:
+    share, repo = _share_layout(tmp_path)
+
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--remote",
+        REMOTE_HOST,
+        "--",
+        "true",
+        repo_root=repo,
+        extra_env=_remote_env(share),
+    )
+
+    assert result.returncode == 0, result.stderr
+    command = _remote_container_run(calls)
+    digests = re.findall(r"__digest='([0-9a-f]{16})'", command)
+    assert digests, command
+    digest = digests[0]
+    # reuse only on an exact digest match, sentinel cleared before mirroring,
+    # and written only after the mirror completed
+    assert f"[ -f '/work/.d810-sync-ok' ] && [ \"$(cat '/work/.d810-sync-ok')\" = \"$__digest\" ]" in command
+    assert "rm -f '/work/.d810-sync-ok'" in command
+    assert command.index("tar -C /work -xf -") < command.index(
+        "> '/work/.d810-sync-ok'"
+    )
+    assert digest in result.stdout
+
+
+def test_remote_plan_reports_the_source_digest_and_work_volume(
+    tmp_path: Path,
+) -> None:
+    share, repo = _share_layout(tmp_path)
+
+    result, _calls = _run(
+        tmp_path,
+        "exec",
+        "--remote",
+        REMOTE_HOST,
+        "--",
+        "true",
+        repo_root=repo,
+        extra_env=_remote_env(share),
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "source digest: " in result.stdout
+    assert f"work volume: {_work_volume_name(repo)} (created" in result.stdout
+    assert "share user: smbuser" in result.stdout
+    assert "read-only at /work-src" in result.stdout
+
+
+def test_work_volume_is_labelled_and_path_unique(tmp_path: Path) -> None:
+    share, repo = _share_layout(tmp_path)
+    (repo / ".worktrees" / "wt" / "src").mkdir(parents=True)
+    other_root = share / "other"
+    (other_root / ".worktrees" / "wt" / "src").mkdir(parents=True)
+
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--remote",
+        REMOTE_HOST,
+        "-w",
+        "wt",
+        "--",
+        "true",
+        repo_root=repo,
+        extra_env=_remote_env(share),
+    )
+
+    assert result.returncode == 0, result.stderr
+    create = [call for call in calls if call.startswith("volume create ")]
+    assert len(create) == 1
+    assert "--label d810.role=work" in create[0]
+    assert "--label d810.worktree=wt" in create[0]
+    assert "--label d810.share_root_digest=" in create[0]
+    first = _work_volume_name(repo / ".worktrees" / "wt")
+    second = _work_volume_name(other_root / ".worktrees" / "wt")
+    assert first != second
+    assert create[0].endswith(first)
+
+
+def test_existing_work_volume_is_reused_not_recreated(tmp_path: Path) -> None:
+    share, repo = _share_layout(tmp_path)
+
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--remote",
+        REMOTE_HOST,
+        "--",
+        "true",
+        repo_root=repo,
+        extra_env=_remote_env(share, MOCK_WORK_VOLUME_EXISTS="1"),
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert not [call for call in calls if call.startswith("volume create ")]
+    assert "(existing, retained source copy)" in result.stdout
+
+
+def test_work_volume_creation_failure_fails_closed(tmp_path: Path) -> None:
+    share, repo = _share_layout(tmp_path)
+
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--remote",
+        REMOTE_HOST,
+        "--",
+        "true",
+        repo_root=repo,
+        extra_env=_remote_env(share, MOCK_WORK_VOLUME_CREATE_FAILS="1"),
+    )
+
+    assert result.returncode != 0
+    assert "could not create work volume" in result.stderr
+    assert _runs(calls) == []
+
+
+def test_remote_lock_still_guards_the_shared_tmp(tmp_path: Path) -> None:
+    """The mirror removed the source-build reason, not the .tmp collision."""
+    share, repo = _share_layout(tmp_path)
+    lock = repo / ".tmp" / "remote-run.lock"
+    lock.mkdir(parents=True)
+
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--remote",
+        REMOTE_HOST,
+        "--",
+        "true",
+        repo_root=repo,
+        extra_env=_remote_env(share),
+    )
+
+    assert result.returncode != 0
+    assert "already owns this worktree" in result.stderr
+    assert _runs(calls) == []

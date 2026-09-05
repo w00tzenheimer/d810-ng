@@ -42,8 +42,17 @@
 #                           (DOCKER_HOST=ssh://HOST). Sources and artifacts stay on this Mac and are
 #                           reached through the SMB-backed Docker volume named by D810_REMOTE_VOLUME:
 #                           every host bind mount becomes --mount type=volume,volume-subpath=<path
-#                           relative to D810_REMOTE_SHARE_ROOT>. Only ONE remote run per worktree is
-#                           allowed at a time (lock: WORK_DIR/.tmp/remote-run.lock).
+#                           relative to D810_REMOTE_SHARE_ROOT>. The worktree is mounted READ-ONLY at
+#                           /work-src and mirrored at container start into a retained per-worktree
+#                           volume (d810-work-<name>-<hash>) that becomes /work, so Cython .so files,
+#                           egg-info and pip output never touch the Mac tree. Only <worktree>/.tmp is
+#                           mounted read-write, at /work/.tmp, which is where -o captures, -l logs,
+#                           .tmp/cobra-linux and the cobra source archive already live. Files created
+#                           there are owned by the share account's uid.
+#                           Only ONE remote run per worktree is allowed at a time (lock:
+#                           WORK_DIR/.tmp/remote-run.lock): .tmp is shared read-write, so -o files,
+#                           logs, diag SQLite databases and the cobra cache would collide.
+#                           Requires macOS (the .tmp ACL for the share account is macOS-specific).
 #   --                      Remaining args passed to pytest (system/test) or used as command separator (exec)
 #
 # Options (dump only):
@@ -96,6 +105,9 @@
 #   D810_REMOTE_DOCKER_HOST Remote engine host for --remote (the flag wins when both are given)
 #   D810_REMOTE_VOLUME      Docker volume on the remote engine that exports the Mac's SMB share
 #                           (default: idapro)
+#   D810_REMOTE_SMB_USER    Account the SMB share authenticates as, and the account the runner
+#                           grants a .tmp-scoped ACL to (default: smbuser). It must match the
+#                           credential stored in the volume.
 #   D810_REMOTE_SHARE_ROOT  Absolute host directory that the SMB share exports
 #                           (default: /srv/share-root). Every mounted host path must live
 #                           under it; the runner fails closed otherwise.
@@ -309,11 +321,21 @@ SYSTEM_BATCH_SIZE="${D810_SYSTEM_BATCH_SIZE-20}"
 REMOTE_HOST="${D810_REMOTE_DOCKER_HOST-}"
 REMOTE_VOLUME="${D810_REMOTE_VOLUME-idapro}"
 REMOTE_SHARE_ROOT="${D810_REMOTE_SHARE_ROOT-/srv/share-root}"
+REMOTE_SMB_USER="${D810_REMOTE_SMB_USER-smbuser}"
 REMOTE_MODE=0
 REMOTE_ENGINE_OS=""
 REMOTE_ENGINE_ARCH=""
 REMOTE_LOCK_DIR=""
 WORK_SUBPATH=""
+WORK_VOLUME=""
+SOURCE_DIGEST=""
+SYNC_SENTINEL="/work/.d810-sync-ok"
+# macOS normalizes requested rights, so the presence check compares against the
+# normalized spelling that `ls -lde` prints back.
+ACL_DIR_REQUEST="read,write,execute,delete,append,list,search,add_file,add_subdirectory,delete_child,readattr,writeattr,readextattr,writeextattr,readsecurity,file_inherit,directory_inherit"
+ACL_DIR_NORMALIZED="list,add_file,search,delete,add_subdirectory,delete_child,readattr,writeattr,readextattr,writeextattr,readsecurity,file_inherit,directory_inherit"
+ACL_FILE_REQUEST="read,write,execute,delete,append,readattr,writeattr,readextattr,writeextattr,readsecurity"
+ACL_FILE_NORMALIZED="read,write,execute,delete,append,readattr,writeattr,readextattr,writeextattr,readsecurity"
 [ -n "$DOCKER_IMAGE" ] || { echo "ERROR: D810_DOCKER_IMAGE is set but empty" >&2; exit 1; }
 [ -n "$DOCKER_MEMORY" ] || { echo "ERROR: D810_DOCKER_MEMORY is set but empty" >&2; exit 1; }
 case "$SYSTEM_BATCH_SIZE" in
@@ -764,6 +786,119 @@ _add_mount() {
   DOCKER_MOUNTS+=("${MOUNT_ARG_BUF[@]}")
 }
 
+# What a worktree would actually run: HEAD alone is not enough, because a
+# worktree carries uncommitted edits and untracked files that the sync mirrors.
+_source_digest() {
+  local directory="$1"
+  {
+    GIT_NO_REPLACE_OBJECTS=1 git -C "$directory" rev-parse HEAD 2>/dev/null || echo no-head
+    GIT_NO_REPLACE_OBJECTS=1 git -C "$directory" status --porcelain=v1 -z 2>/dev/null | tr '\0' '\n'
+    GIT_NO_REPLACE_OBJECTS=1 git -C "$directory" diff HEAD 2>/dev/null
+    GIT_NO_REPLACE_OBJECTS=1 git -C "$directory" ls-files --others --exclude-standard -z 2>/dev/null \
+      | tr '\0' '\n' \
+      | while IFS= read -r relative; do
+          [ -n "$relative" ] || continue
+          printf '%s\n' "$relative"
+          [ -f "$directory/$relative" ] && shasum -a 256 "$directory/$relative" 2>/dev/null
+        done
+  } | shasum -a 256 | cut -c1-16
+}
+
+# One volume per worktree PATH: two worktrees can share a basename under
+# different roots, and they must never share a source copy.
+_work_volume_name() {
+  local path="$1" sanitized digest
+  sanitized="$(printf '%s' "$(basename "$path")" | tr -c 'A-Za-z0-9_.-' '-' | cut -c1-40)"
+  digest="$(printf '%s' "$path" | shasum -a 256 | cut -c1-8)"
+  printf 'd810-work-%s-%s' "$sanitized" "$digest"
+}
+
+WORK_VOLUME_STATE=""
+_ensure_work_volume() {
+  if docker volume inspect "$WORK_VOLUME" >/dev/null 2>&1; then
+    WORK_VOLUME_STATE="existing"
+    return 0
+  fi
+  if ! docker volume create \
+      --label d810.role=work \
+      --label "d810.worktree=$(basename "$WORK_DIR")" \
+      --label "d810.share_root_digest=$(printf '%s' "$REMOTE_SHARE_ROOT" | shasum -a 256 | cut -c1-8)" \
+      "$WORK_VOLUME" >/dev/null; then
+    echo "ERROR: could not create work volume $WORK_VOLUME on ssh://$REMOTE_HOST" >&2
+    exit 1
+  fi
+  WORK_VOLUME_STATE="created"
+}
+
+# The share account is read-only everywhere except the ACL below, which is
+# scoped to .tmp: the source tree, .git and the share root must never become
+# writable for it.
+_acl_target_is_scoped() {
+  case "$1" in
+    "$WORK_DIR"/.tmp|"$WORK_DIR"/.tmp/*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+_acl_entry_rights() {
+  ls -lde "$1" 2>/dev/null | sed -n "s/^ *[0-9]*: *user:$REMOTE_SMB_USER allow //p" | head -1
+}
+
+_acl_drop_user_entries() {
+  local target="$1" index
+  while :; do
+    index="$(ls -lde "$target" 2>/dev/null | sed -n "s/^ *\([0-9]*\): *user:$REMOTE_SMB_USER .*/\1/p" | head -1)"
+    [ -n "$index" ] || break
+    chmod -a# "$index" "$target" || break
+  done
+}
+
+_ensure_acl() {
+  local target="$1" kind="$2" request normalized present right missing=0
+  if ! _acl_target_is_scoped "$target"; then
+    echo "ERROR: refusing to grant $REMOTE_SMB_USER access outside the worktree .tmp: $target" >&2
+    exit 1
+  fi
+  [ -e "$target" ] || return 0
+  if [ "$kind" = "dir" ]; then
+    request="$ACL_DIR_REQUEST"
+    normalized="$ACL_DIR_NORMALIZED"
+  else
+    request="$ACL_FILE_REQUEST"
+    normalized="$ACL_FILE_NORMALIZED"
+  fi
+  present="$(_acl_entry_rights "$target")"
+  if [ -n "$present" ]; then
+    for right in ${normalized//,/ }; do
+      case ",$present," in
+        *",$right,"*) ;;
+        *) missing=1 ;;
+      esac
+    done
+    if [ "$missing" = "0" ]; then
+      return 0
+    fi
+    # Present but incomplete: repair by replacing this user's entries only.
+    _acl_drop_user_entries "$target"
+  fi
+  if ! chmod +a "$REMOTE_SMB_USER allow $request" "$target"; then
+    echo "ERROR: could not grant $REMOTE_SMB_USER access to $target" >&2
+    exit 1
+  fi
+}
+
+_apply_tmp_acls() {
+  local candidate
+  _ensure_acl "$WORK_DIR/.tmp" dir
+  # Entries that already exist do not inherit the new ACE, so repair them too.
+  for candidate in "$WORK_DIR/.tmp/logs" "$WORK_DIR/.tmp/cobra-linux"; do
+    [ -d "$candidate" ] && _ensure_acl "$candidate" dir
+  done
+  if [ -n "$DUMP_OUT" ] && [ -f "$WORK_DIR/.tmp/$DUMP_OUT" ]; then
+    _ensure_acl "$WORK_DIR/.tmp/$DUMP_OUT" file
+  fi
+}
+
 _acquire_remote_lock() {
   local lock_dir="$WORK_DIR/.tmp/remote-run.lock" holder=""
   mkdir -p "$WORK_DIR/.tmp"
@@ -822,6 +957,12 @@ _remote_probe_volume() {
 
 if [ -n "$REMOTE_HOST" ]; then
   REMOTE_MODE=1
+  # The share ACL below is macOS-specific and the whole remote mode depends on
+  # it, so refuse before touching Docker rather than half-way through.
+  if [ "$(uname -s)" != "Darwin" ]; then
+    echo "ERROR: remote mode needs the macOS share host (uname -s = Darwin); got $(uname -s)" >&2
+    exit 1
+  fi
   if [[ "$REMOTE_SHARE_ROOT" != /* ]] || [ ! -d "$REMOTE_SHARE_ROOT" ]; then
     echo "ERROR: D810_REMOTE_SHARE_ROOT must be an absolute existing directory: $REMOTE_SHARE_ROOT" >&2
     exit 1
@@ -832,7 +973,13 @@ if [ -n "$REMOTE_HOST" ]; then
   # workload all address the same engine.
   export DOCKER_HOST="ssh://$REMOTE_HOST"
   _remote_preflight_engine
+  # The lock still guards the shared read-write .tmp: -o captures, logs, diag
+  # SQLite databases and the cobra cache all collide between concurrent runs.
   _acquire_remote_lock
+  SOURCE_DIGEST="$(_source_digest "$WORK_DIR")"
+  WORK_VOLUME="$(_work_volume_name "$WORK_DIR")"
+  mkdir -p "$WORK_DIR/.tmp"
+  _apply_tmp_acls
 fi
 
 # Profile receipts need to identify the actual image that ran them. Keep this
@@ -841,7 +988,16 @@ fi
 DOCKER_IMAGE_ID="$(docker image inspect --format '{{.Id}}' "$DOCKER_IMAGE" 2>/dev/null || echo unknown)"
 
 # Docker mount: host path -> container path (use variables so no host-specific paths in printed commands)
-_add_mount "$WORK_DIR" /work
+if [ "$REMOTE_MODE" = "1" ]; then
+  # Source arrives read-only over SMB and is mirrored into a container-writable
+  # volume, so builds (Cython .so, egg-info, pip) never write to the Mac tree.
+  _ensure_work_volume
+  DOCKER_MOUNTS+=(--mount "type=volume,src=${WORK_VOLUME},dst=/work")
+  _add_mount "$WORK_DIR" /work-src ro
+  _add_mount "$WORK_DIR/.tmp" /work/.tmp
+else
+  _add_mount "$WORK_DIR" /work
+fi
 ENV_GIT=""
 GIT_COMMON_DIR="$(git -C "$WORK_DIR" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
 if [ -n "$GIT_COMMON_DIR" ] && [ -d "$GIT_COMMON_DIR" ]; then
@@ -949,7 +1105,10 @@ if [ "$REMOTE_MODE" = "1" ]; then
   echo "  remote:   ssh://$REMOTE_HOST (engine $REMOTE_ENGINE_OS/$REMOTE_ENGINE_ARCH)"
   echo "  volume:   $REMOTE_VOLUME"
   echo "  share root: $REMOTE_SHARE_ROOT"
-  echo "  subpath:  $WORK_SUBPATH"
+  echo "  subpath:  $WORK_SUBPATH (read-only at /work-src; .tmp read-write at /work/.tmp)"
+  echo "  source digest: $SOURCE_DIGEST"
+  echo "  work volume: $WORK_VOLUME ($WORK_VOLUME_STATE, retained source copy)"
+  echo "  share user: $REMOTE_SMB_USER (ACL scoped to $WORK_DIR/.tmp)"
 fi
 if [ -n "$DUMP_OUT" ]; then
   echo "  output:   stdout+stderr -> $WORK_DIR/.tmp/$DUMP_OUT"
@@ -1034,7 +1193,7 @@ fi
 # Forward every set D810_* env var to the container via docker -e flags.
 # Wrapper-only vars (those that only affect this script) are excluded.
 _d810_extra_env_flags() {
-  local _skip=" D810_DOCKER_IMAGE D810_DOCKER_MEMORY D810_EGGLOG_ROOT D810_COBRA_ROOT D810_COBRA_WHEEL D810_COBRA_WHEEL_SHA256 D810_REPO_ROOT D810_WORKTREE_ROOT D810_MEMORY_LIMIT_BYTES D810_SYSTEM_BATCH_SIZE D810_REMOTE_DOCKER_HOST D810_REMOTE_VOLUME D810_REMOTE_SHARE_ROOT "
+  local _skip=" D810_DOCKER_IMAGE D810_DOCKER_MEMORY D810_EGGLOG_ROOT D810_COBRA_ROOT D810_COBRA_WHEEL D810_COBRA_WHEEL_SHA256 D810_REPO_ROOT D810_WORKTREE_ROOT D810_MEMORY_LIMIT_BYTES D810_SYSTEM_BATCH_SIZE D810_REMOTE_DOCKER_HOST D810_REMOTE_VOLUME D810_REMOTE_SHARE_ROOT D810_REMOTE_SMB_USER "
   local _out=""
   local _var _val
   for _var in ${!D810_@}; do
@@ -1130,6 +1289,28 @@ if [ -n "$EXTENSION_SETUP" ]; then
   SETUP_CMD="$SETUP_CMD && $EXTENSION_SETUP"
 fi
 SETUP_CMD="$SETUP_CMD && { $SPEEDUPS_BUILD_CMD; }"
+
+# Remote runs mirror the read-only SMB source into the writable work volume.
+# The mirror is exact: the destination is emptied first (except the .tmp mount)
+# and build outputs and caches are never copied in. The completion sentinel is
+# written only after a successful mirror, so a partial copy is never reused.
+if [ "$REMOTE_MODE" = "1" ]; then
+  REMOTE_SYNC_CMD="set -o pipefail; __digest='$SOURCE_DIGEST'; \
+if [ -f '$SYNC_SENTINEL' ] && [ \"\$(cat '$SYNC_SENTINEL')\" = \"\$__digest\" ]; then \
+  echo \"[sync] work volume already mirrors source digest \$__digest\"; \
+else \
+  rm -f '$SYNC_SENTINEL'; \
+  __t0=\$(date +%s); \
+  find /work -mindepth 1 -maxdepth 1 ! -name .tmp -exec rm -rf {} + ; \
+  __git_exclude=''; if [ -d /work-src/.git ]; then __git_exclude='--exclude=./.git'; fi; \
+  tar -C /work-src -cf - --exclude=./.tmp \$__git_exclude --exclude='*.so' --exclude='*.pyd' \
+    --exclude=./build --exclude='*.egg-info' --exclude='__pycache__' --exclude='.pytest_cache' \
+    --exclude='.mypy_cache' --exclude='.ruff_cache' . | tar -C /work -xf - ; \
+  printf '%s\\n' \"\$__digest\" > '$SYNC_SENTINEL'; \
+  echo \"[sync] mirrored /work-src -> /work in \$((\$(date +%s)-\$__t0))s (digest \$__digest)\"; \
+fi"
+  SETUP_CMD="{ $REMOTE_SYNC_CMD; } && $SETUP_CMD"
+fi
 
 # Safely reassemble an array of args into a string suitable for embedding in
 # a bash -c command that gets re-parsed by another shell (e.g. inside the
