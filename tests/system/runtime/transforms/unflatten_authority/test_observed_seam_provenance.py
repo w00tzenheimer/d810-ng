@@ -9,11 +9,22 @@ the MBA identity index), which a unit test may not import.
 
 from __future__ import annotations
 
+import ast
 import logging
+from dataclasses import fields
+from pathlib import Path
 
 import pytest
 
+from d810.analyses.control_flow.semantic_route_evidence import (
+    RouteRebindVerification,
+)
 from d810.core.runtime_identity import RuntimeJoinRejected
+from d810.hexrays.mutation import patch_transaction
+from d810.hexrays.mutation.patch_transaction import (
+    PatchTransactionExecution,
+    PreparedPatchCfgTransaction,
+)
 from d810.hexrays.ir.mba_identity_index import MbaBlockIdentityIndex
 from d810.hexrays.mutation.patch_binding import bind_patch_plan
 from d810.transforms.cfg_transaction import CfgProjection
@@ -24,6 +35,10 @@ from tests.unit.transforms.unflatten_authority.helpers import (
 from tests.unit.transforms.unflatten_authority.test_transaction_api import (
     _c1_direct_preparation_case,
 )
+
+
+def fields_by_name(record) -> dict:
+    return {item.name: item for item in fields(record)}
 
 
 _LIVE_MATURITY = 8  # MMAT_GLBOPT1; the live binder needs a real provider stage
@@ -92,3 +107,64 @@ def test_the_observed_seam_is_reached_and_reports_its_own_stage(
     messages = [record.getMessage() for record in caplog.records]
     assert any("observed_route_authority_rebind" in message for message in messages)
     assert not any("observed_inventory" in message for message in messages)
+
+
+def test_the_commit_receipt_carries_the_projected_seam_verification() -> None:
+    """The receipt is the surface that outlives both sessions and both arenas.
+
+    A committed receipt is read long after the transaction: the canonical
+    validation sessions are closed, the producer's arena is gone and so is the
+    transaction's, so ``transaction_route_verification`` cannot answer any
+    more.  The value therefore has to be carried, and this is where it lands.
+    """
+
+    receipt = PatchTransactionExecution(
+        applied_count=1,
+        graph=_bound_authority()["observed"],
+        receipt=object(),
+        projected_route_authority_verification=(
+            RouteRebindVerification.PRODUCER_ARENA_CLOSED
+        ),
+    )
+
+    assert receipt.projected_route_authority_verification is (
+        RouteRebindVerification.PRODUCER_ARENA_CLOSED
+    )
+    # Non-authoritative: absent is the default and is not a rejection.
+    assert PatchTransactionExecution(
+        applied_count=1, graph=receipt.graph, receipt=object(),
+    ).projected_route_authority_verification is None
+    assert (
+        fields_by_name(PreparedPatchCfgTransaction)[
+            "projected_route_authority_verification"
+        ].default
+        is None
+    )
+
+
+def test_the_participant_copies_the_verification_off_the_preparation_result() -> None:
+    """The wiring, without needing a live MBA to drive a whole transaction."""
+
+    tree = ast.parse(Path(patch_transaction.__file__).read_text())
+    reads = [
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "getattr"
+        and len(node.args) >= 2
+        and isinstance(node.args[1], ast.Constant)
+        and node.args[1].value == "route_authority_verification"
+    ]
+    assert len(reads) == 1
+
+    passed = {
+        keyword.arg
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id in {
+            "PreparedPatchCfgTransaction", "PatchTransactionExecution",
+        }
+        for keyword in node.keywords
+    }
+    assert "projected_route_authority_verification" in passed

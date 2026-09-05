@@ -23,6 +23,8 @@ from d810.transforms.plan import (
 )
 from d810.analyses.control_flow.semantic_route_evidence import (
     CanonicalRouteMaterialization,
+    CanonicalSemanticEvidence,
+    RouteRebindVerification,
     SemanticCorridorPoint,
     SemanticLogicalDagEndpoint,
     capture_observed_route_materialization,
@@ -1362,7 +1364,11 @@ def _live_binding_failed_verdict(
     )
 
 
-def _record_route_authority_rebind(evidence, *, phase) -> None:
+def _record_route_authority_rebind(
+    evidence: CanonicalSemanticEvidence,
+    *,
+    phase: model.UnflattenAuthorityPhase,
+) -> RouteRebindVerification:
     """Rebind one bundle at the producer/transaction seam and record the outcome.
 
     The seam's substantive check -- that every producer reference names this
@@ -1370,8 +1376,9 @@ def _record_route_authority_rebind(evidence, *, phase) -> None:
     open, and whether it is depends on which producer path built the bundle
     (``runtime_authority`` module docstring names both).  Neither answer is a
     fault, but "the check did not run" must not be invisible: the outcome is
-    stored on the session by the rebind and is stated here as well, so a log
-    reader sees which guarantee a given transaction actually got.
+    stored on the session by the rebind, stated here, and **returned** so that
+    it can ride the phase's result record.  The session's copy dies with the
+    session, so the returned value is the one that survives into a receipt.
     """
 
     rebind = rebind_route_evidence(evidence)
@@ -1388,12 +1395,50 @@ def _record_route_authority_rebind(evidence, *, phase) -> None:
             "unflatten authority %s route rebind: %s (%d route proofs)",
             phase.value, rebind.verification.value, len(rebind.binding.proof_refs),
         )
-        return
+        return rebind.verification
     logger.info(
         "unflatten authority %s route rebind could not verify producer records: "
         "%s (%d route proofs)",
         phase.value, rebind.verification.value, len(rebind.binding.proof_refs),
     )
+    return rebind.verification
+
+
+def _projected_route_authority_rebind_failure(
+    stage: str,
+    error: TypeError | ValueError,
+    *,
+    proposal,
+) -> "UnflattenAuthorityPreparationRejected":
+    """Report a projected seam refusal at its own stage, with its own fingerprint.
+
+    The observed side already had stage-specific provenance; the projected side
+    did not, because its seam sat inside the preparation's single several-hundred
+    line ``try``.  A reader who saw ``PROJECTED_BINDING_FAILED`` with the plan's
+    fingerprint had no way to tell a route-authority rebind refusal from any
+    other preparation failure.
+    """
+
+    message = str(error)
+    if len(message) > 512:
+        message = f"{message[:509]}..."
+    logger.warning(
+        "unflatten authority projected live binding rejected stage=%s %s: %s",
+        stage, type(error).__name__, message,
+    )
+    verdict = model.UnflattenAuthorityVerdict(
+        False,
+        model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        model.UnflattenAuthorityReason.PROJECTED_BINDING_FAILED,
+        authority_id(proposal),
+        None,
+        None,
+        _unavailable_candidate_fingerprint("projected-route-authority-rebind"),
+        None,
+        (),
+        rejection_detail=stage,
+    )
+    return UnflattenAuthorityPreparationRejected(verdict)
 
 
 def _observed_live_binding_failure(
@@ -4829,18 +4874,27 @@ def _prepare_unflatten_authority_in_session(*, source, projection, plan, attempt
     source_route_authority = None
     projected_route_realization = None
     try:
-        # The producer/transaction seam.  The references the producer minted
-        # are not this scope's to use, so the transaction verifies what the
-        # producer binding can still prove and mints its own references in the
-        # arena this session owns.  What that check was able to prove depends
-        # on the producer path and is recorded, never skipped silently; see
-        # ``runtime_authority``.  A bundle that cannot be rebound refuses here
-        # as a ValueError, which the boundary below turns into a rejected
-        # verdict.
-        _record_route_authority_rebind(
+        # The producer/transaction seam, in a try of its own.  The references
+        # the producer minted are not this scope's to use, so the transaction
+        # verifies what the producer binding can still prove and mints its own
+        # references in the arena this session owns.  What that check was able
+        # to prove depends on the producer path and is recorded, never skipped
+        # silently; see ``runtime_authority``.
+        #
+        # The scope is the point: the preparation body below is several hundred
+        # lines under one handler, so a refusal here would otherwise be reported
+        # as a generic projected binding failure with the plan's own
+        # fingerprint.  A seam refusal is its own stage and says so, exactly as
+        # the observed side does.
+        route_authority_verification = _record_route_authority_rebind(
             proposal.route_evidence,
             phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
         )
+    except (TypeError, ValueError) as error:
+        return _projected_route_authority_rebind_failure(
+            "projected_route_authority_rebind", error, proposal=proposal,
+        )
+    try:
         inventory_started_ns = perf_counter_ns()
         source_materialization = capture_source_route_materialization(
             source, generation=proposal.source_identity_catalog.generation,
@@ -5276,7 +5330,10 @@ def _prepare_unflatten_authority_in_session(*, source, projection, plan, attempt
                 preparation_attempt_id=attempt_id,
                 entry_endpoint_liveness_receipts=entry_liveness_receipts,
             )
-            return UnflattenAuthorityPreparationAccepted(prepared, verdict)
+            return UnflattenAuthorityPreparationAccepted(
+                prepared, verdict,
+                route_authority_verification=route_authority_verification,
+            )
         # The canonical verdict is already rejecting.  Revalidate the same
         # exhaustive ledger once for diagnostics; no dimension-specific gate
         # owns a second loss model or replays the classification.
@@ -5284,7 +5341,10 @@ def _prepare_unflatten_authority_in_session(*, source, projection, plan, attempt
             gates.validate_projected_loss_ledger(projected_loss_ledger, case)
         except ValueError:
             pass
-        return UnflattenAuthorityPreparationRejected(verdict)
+        return UnflattenAuthorityPreparationRejected(
+            verdict,
+            route_authority_verification=route_authority_verification,
+        )
     except (TypeError, ValueError) as error:
         logger.warning(
             "unflatten authority projected binding failed: %s: %s",
@@ -5299,6 +5359,7 @@ def _prepare_unflatten_authority_in_session(*, source, projection, plan, attempt
         )
         return UnflattenAuthorityPreparationRejected(
             verdict,
+            route_authority_verification=route_authority_verification,
         )
 
 

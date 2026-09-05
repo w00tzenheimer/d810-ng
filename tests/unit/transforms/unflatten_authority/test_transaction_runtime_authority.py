@@ -34,6 +34,7 @@ from d810.analyses.control_flow.semantic_route_evidence import (
     runtime_semantic_evidence_from_proofs,
     runtime_semantic_route_scope,
 )
+from d810.core import logging as d810_logging
 from d810.core.runtime_identity import (
     RUNTIME_AUTHORITY_SIDECAR_FIELDS,
     RUNTIME_SUBJECT_SIDECAR_FIELD,
@@ -48,6 +49,7 @@ from d810.transforms.unflatten_authority.canonical_session import (
     CanonicalSessionPhase,
     CanonicalValidationSession,
     _canonical_validation_session,
+    active_canonical_session,
 )
 from d810.transforms.unflatten_authority import bind
 from d810.transforms.unflatten_authority import ids as authority_ids
@@ -810,25 +812,272 @@ def test_the_seam_recorder_does_not_freeze_this_modules_debug_flag(caplog) -> No
     """A cached level flag read early and often disables later diagnostics.
 
     ``logger.debug_on`` is a ``LevelFlag`` that refreshes on a logging *config
-    version* counter, not on a level change.  Reading it once per transaction
-    -- which is what the seam recorder does -- would cache ``False`` for this
-    module's logger for the rest of the process and silently disable every
-    later ``debug_on``-guarded diagnostic, including under
-    ``caplog.set_level``.  The authority suite caught exactly that, in an
-    unrelated test, hundreds of tests later.
+    version* counter, not on a level change (``core/logging.py``).  Reading it
+    once per transaction -- which is what the seam recorder would do if it were
+    guarded -- caches ``False`` for this module's logger for the rest of the
+    process and silently disables every later ``debug_on``-guarded diagnostic,
+    such as the native-origin subset acceptance line at
+    ``transaction_api._observed_native_origin_mismatch_diagnostics``.
+
+    The assertion has to be on ``debug_on`` itself.  A plain
+    ``logger.debug(...)`` probe proves nothing here: ``caplog.set_level`` calls
+    ``Logger.setLevel``, which clears the *stdlib* ``isEnabledFor`` cache, so
+    the probe is captured whether or not the ``LevelFlag`` is stale.  Only the
+    flag the guard actually consults distinguishes the two.
     """
 
-    evidence = _emitted_bundle()
-    with _canonical_validation_session(CanonicalSessionPhase.PROJECTED_PREPARATION):
-        transaction_api._record_route_authority_rebind(
-            evidence, phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+    logger_name = "d810.transforms.unflatten_authority.transaction_api"
+    module_logger = transaction_api.logger
+    previous = module_logger.level
+    # Both outcomes, because the recorder logs on two branches and a guard on
+    # either of them freezes the flag just as effectively.
+    verified = _bundle()
+    unverified = _emitted_bundle()
+    try:
+        # Reproduce production ordering: DEBUG is off when the transaction
+        # runs, so a guarded recorder reads the flag and caches ``False``.
+        # The explicit level plus version bump is what makes this test
+        # discriminate rather than depend on the ambient suite level.
+        module_logger.setLevel(d810_logging.WARNING)
+        d810_logging.LevelFlag.bump_config_version()
+
+        with _canonical_validation_session(
+            CanonicalSessionPhase.PROJECTED_PREPARATION,
+        ):
+            assert transaction_api._record_route_authority_rebind(
+                verified, phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+            ) is RouteRebindVerification.PRODUCER_RECORDS_VERIFIED
+            assert transaction_api._record_route_authority_rebind(
+                unverified, phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+            ) is RouteRebindVerification.PRODUCER_ARENA_CLOSED
+
+        caplog.set_level(logging.DEBUG, logger=logger_name)
+
+        # This is the assertion that fails when the guard is restored: the
+        # recorder above would have frozen the flag before the level changed,
+        # and ``LevelFlag`` does not notice a level change.
+        assert bool(module_logger.debug_on)
+
+        module_logger.debug("probe after the seam recorder ran")
+        assert any(
+            record.getMessage() == "probe after the seam recorder ran"
+            for record in caplog.records
         )
+    finally:
+        module_logger.setLevel(previous)
+        d810_logging.LevelFlag.bump_config_version()
+
+
+def test_the_debug_flag_probe_would_catch_a_restored_guard(caplog) -> None:
+    """Prove the assertion above discriminates, instead of trusting that it does.
+
+    This freezes the flag exactly the way a restored ``if logger.debug_on:``
+    guard in the seam recorder would -- by evaluating it once while DEBUG is
+    off -- and then shows that the plain ``logger.debug`` probe still passes
+    while the ``debug_on`` assertion fails.  Without this, the test above could
+    be asserting something that is true either way.
+    """
 
     logger_name = "d810.transforms.unflatten_authority.transaction_api"
-    caplog.set_level(logging.DEBUG, logger=logger_name)
-    transaction_api.logger.debug("probe after the seam recorder ran")
+    module_logger = transaction_api.logger
+    previous = module_logger.level
+    try:
+        # Start from a genuinely refreshed flag: ``LevelFlag`` only recomputes
+        # when the config version moves, so a stale value from an earlier test
+        # would make this prove nothing in either direction.
+        module_logger.setLevel(d810_logging.WARNING)
+        d810_logging.LevelFlag.bump_config_version()
+        frozen = bool(module_logger.debug_on)  # what a restored guard would do
+        assert frozen is False
 
-    assert any(
-        record.getMessage() == "probe after the seam recorder ran"
-        for record in caplog.records
+        caplog.set_level(logging.DEBUG, logger=logger_name)
+        module_logger.debug("probe under a frozen level flag")
+
+        # The stdlib cache was cleared by ``setLevel``, so the probe is
+        # captured...
+        assert any(
+            record.getMessage() == "probe under a frozen level flag"
+            for record in caplog.records
+        )
+        # ...while the flag the guard consults is still stale.  That gap is the
+        # whole defect, and it is why the test above asserts on ``debug_on``.
+        assert bool(module_logger.debug_on) is False
+    finally:
+        module_logger.setLevel(previous)
+        d810_logging.LevelFlag.bump_config_version()
+
+
+def _prepared_from_the_real_fixture(bundle_state: str):
+    """Run the real preparation with the proposal's bundle in a chosen state."""
+
+    values = test_bind._compiler_guarded_convert_to_goto_case(include_graphs=True)
+    plan, attempt, source, projected = values[1], values[5], values[6], values[7]
+    proposal = plan.unflatten_proposal
+    if bundle_state == "dead":
+        # Exactly what the emission does: build the bundle inside a phase that
+        # ends before the transaction runs.
+        with route_authority_phase("test-emission"):
+            evidence = canonical_semantic_evidence_from_proofs(
+                native_key=proposal.route_evidence.native_key,
+                generation=proposal.route_evidence.generation,
+                proofs=proposal.route_evidence.route_proofs,
+            )
+        plan = replace(plan, unflatten_proposal=replace(proposal, route_evidence=evidence))
+    elif bundle_state == "absent":
+        evidence = materialize_route_evidence(proposal.route_evidence)
+        plan = replace(plan, unflatten_proposal=replace(proposal, route_evidence=evidence))
+    raw_effect = check_effectful_reachability_preserved(source, post_cfg=projected)
+    gates = GenericCfgGateBundle(
+        check_entry_reachability_not_collapsed(source, post_cfg=projected),
+        raw_effect,
+        raw_effect,
+        check_terminal_reachability_preserved(source, post_cfg=projected),
+    )
+    return transaction_api.prepare_unflatten_authority(
+        source=source,
+        projection=CfgProjection(plan.plan_id, plan.snapshot_id, projected),
+        plan=plan,
+        attempt_id=attempt,
+        generic_gates=gates,
+    )
+
+
+@pytest.mark.parametrize(
+    "bundle_state,expected",
+    (
+        ("live", RouteRebindVerification.PRODUCER_RECORDS_VERIFIED),
+        ("dead", RouteRebindVerification.PRODUCER_ARENA_CLOSED),
+        ("absent", RouteRebindVerification.PRODUCER_UNBOUND),
+    ),
+)
+def test_the_seam_outcome_survives_the_session_on_the_result(
+    bundle_state: str, expected: RouteRebindVerification,
+) -> None:
+    """The verification rides the result, so it outlives the arena that decided it.
+
+    The session's copy dies with the session and the producer's arena is gone
+    too, so after a transaction the only thing that can still answer "what did
+    the seam actually verify" is the result object.  Before this it was an INFO
+    log line, which no consumer can read.
+    """
+
+    result = _prepared_from_the_real_fixture(bundle_state)
+
+    assert type(result) is model.UnflattenAuthorityPreparationAccepted
+    assert result.route_authority_verification is expected
+    # The session that decided it is closed: the value is carried, not queried.
+    assert active_canonical_session() is None
+    with pytest.raises(RuntimeJoinRejected, match="requires an active canonical"):
+        transaction_route_verification(result.prepared.proposal.route_evidence)
+
+
+def test_the_seam_outcome_is_a_record_of_what_was_checked_never_a_grant() -> None:
+    """It is non-authoritative: an absent value is not a rejection.
+
+    Nothing consults it to decide authority.  A result built without it -- any
+    caller constructing one directly -- is valid, and a result carrying the
+    weakest outcome is still accepted.
+    """
+
+    result = _prepared_from_the_real_fixture("absent")
+
+    assert result.verdict.accepted
+    assert result.route_authority_verification is (
+        RouteRebindVerification.PRODUCER_UNBOUND
+    )
+    without = model.UnflattenAuthorityPreparationAccepted(
+        result.prepared, result.verdict,
+    )
+    assert without.route_authority_verification is None
+    with pytest.raises(TypeError, match="must be a RouteRebindVerification"):
+        model.UnflattenAuthorityPreparationAccepted(
+            result.prepared, result.verdict,
+            route_authority_verification="producer-unbound",
+        )
+
+
+def test_the_projected_seam_refusal_has_its_own_provenance() -> None:
+    """The projected seam refusal is its own stage, like the observed one.
+
+    It used to sit inside the preparation's several-hundred-line ``try``, whose
+    single handler reports a generic ``PROJECTED_BINDING_FAILED`` with the
+    plan's own fingerprint, so a reader could not tell a seam refusal from any
+    other preparation failure.
+    """
+
+    tree = ast.parse(Path(transaction_api.__file__).read_text())
+
+    def calls(nodes, name):
+        return [
+            call for statement in nodes
+            for call in ast.walk(statement)
+            if isinstance(call, ast.Call)
+            and isinstance(call.func, ast.Name)
+            and call.func.id == name
+        ]
+
+    projected = [
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.Try)
+        and calls(node.body, "_record_route_authority_rebind")
+        and any(
+            calls(handler.body, "_projected_route_authority_rebind_failure")
+            for handler in node.handlers
+        )
+    ]
+
+    assert len(projected) == 1
+    (node,) = projected
+    # Alone in its own try: the preparation body is not under this handler.
+    assert not calls(node.body, "_build_semantic_graph_inventory")
+    assert not calls(node.body, "capture_source_route_materialization")
+    stages = {
+        literal.value
+        for handler in node.handlers
+        for call in calls(handler.body, "_projected_route_authority_rebind_failure")
+        for literal in call.args
+        if isinstance(literal, ast.Constant) and isinstance(literal.value, str)
+    }
+    assert stages == {"projected_route_authority_rebind"}
+
+
+def test_a_refused_projected_seam_reports_its_own_stage_and_fingerprint(
+    monkeypatch,
+) -> None:
+    """The behavioural half: a distinct fingerprint and a distinct detail."""
+
+    values = test_bind._compiler_guarded_convert_to_goto_case(include_graphs=True)
+    plan, attempt, source, projected = values[1], values[5], values[6], values[7]
+    raw_effect = check_effectful_reachability_preserved(source, post_cfg=projected)
+    gates = GenericCfgGateBundle(
+        check_entry_reachability_not_collapsed(source, post_cfg=projected),
+        raw_effect,
+        raw_effect,
+        check_terminal_reachability_preserved(source, post_cfg=projected),
+    )
+    arguments = {
+        "source": source,
+        "projection": CfgProjection(plan.plan_id, plan.snapshot_id, projected),
+        "plan": plan,
+        "attempt_id": attempt,
+        "generic_gates": gates,
+    }
+    accepted = transaction_api.prepare_unflatten_authority(**arguments)
+    assert type(accepted) is model.UnflattenAuthorityPreparationAccepted
+
+    def _refused(evidence, *, phase):
+        raise RuntimeJoinRejected("the projected seam refuses this bundle")
+
+    monkeypatch.setattr(transaction_api, "_record_route_authority_rebind", _refused)
+    refused = transaction_api.prepare_unflatten_authority(**arguments)
+
+    assert type(refused) is model.UnflattenAuthorityPreparationRejected
+    assert refused.verdict.rejection_detail == "projected_route_authority_rebind"
+    assert refused.verdict.candidate_fingerprint != (
+        accepted.verdict.candidate_fingerprint
+    )
+    assert refused.verdict.candidate_fingerprint == (
+        transaction_api._unavailable_candidate_fingerprint(
+            "projected-route-authority-rebind"
+        )
     )

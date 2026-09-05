@@ -17,6 +17,7 @@ from d810.analyses.control_flow.semantic_route_evidence import (
     CanonicalSemanticEvidence,
     BoundCanonicalSemanticEvidence,
     RouteClaimAuthorityRefs,
+    RouteRebindVerification,
 )
 from d810.analyses.control_flow.logical_route_endpoint import (
     is_exact_logical_function_exit_inventory_row_shape,
@@ -8166,10 +8167,23 @@ class ObservedUnflattenAuthorityAccepted:
 class UnflattenAuthorityPreparationAccepted:
     prepared: PreparedUnflattenAuthority
     verdict: UnflattenAuthorityVerdict
+    # What the producer/transaction seam was able to verify about this
+    # transaction's route bundle.  It is a *record of what was checked*, never
+    # a grant: nothing consults it to decide authority, and an absent value
+    # (a caller that built this result directly) is not a rejection.  It rides
+    # the result because the session that produced it -- and the arena whose
+    # liveness decided it -- are both gone by the time a receipt is read.
+    route_authority_verification: RouteRebindVerification | None = None
 
     def __post_init__(self) -> None:
         if type(self.prepared) is not PreparedUnflattenAuthority:
             raise TypeError("prepared must be PreparedUnflattenAuthority")
+        if self.route_authority_verification is not None and type(
+            self.route_authority_verification
+        ) is not RouteRebindVerification:
+            raise TypeError(
+                "route_authority_verification must be a RouteRebindVerification"
+            )
         if type(self.verdict) is not UnflattenAuthorityVerdict or not self.verdict.accepted:
             raise ValueError("preparation accepted requires an accepted verdict")
         if (
@@ -8197,10 +8211,20 @@ class ProposalValidationFailure:
 class UnflattenAuthorityPreparationRejected:
     verdict: UnflattenAuthorityVerdict
     proposal_failure: "ProposalValidationFailure | None" = None
+    # Same non-authoritative record as on the accepted result.  A rejection is
+    # exactly when a reader most wants to know which guarantee the seam was
+    # able to give, so it is carried here too rather than only on success.
+    route_authority_verification: RouteRebindVerification | None = None
 
     def __post_init__(self) -> None:
         if type(self.verdict) is not UnflattenAuthorityVerdict or self.verdict.accepted:
             raise ValueError("preparation rejected requires a rejected verdict")
+        if self.route_authority_verification is not None and type(
+            self.route_authority_verification
+        ) is not RouteRebindVerification:
+            raise TypeError(
+                "route_authority_verification must be a RouteRebindVerification"
+            )
         if self.proposal_failure is not None and type(self.proposal_failure) is not ProposalValidationFailure:
             raise TypeError("proposal_failure must be ProposalValidationFailure or None")
 

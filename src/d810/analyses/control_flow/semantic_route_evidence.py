@@ -7062,13 +7062,15 @@ class RouteRebindVerification(Enum):
         top-level session completion, i.e. after the transaction.
     ``PRODUCER_ARENA_CLOSED``
         A producer binding is present and its arena has been closed by its
-        owner, so record identity is not verifiable here.  This is what a
-        bundle *reminted inside the unflatten emission* looks like
-        (``minimal_unflatten_emit`` augments or extends the supplied bundle and
-        the new arena belongs to ``route_authority_phase("unflatten-emission")``,
-        which ends when the emission returns).  The emission's join authority
-        is *designed* to end with the emission, so this is an expected state,
-        not a fault -- and it is recorded rather than assumed.
+        owner, so record identity is not verifiable here.  This is what any
+        bundle the *unflatten emission* produced looks like: the one the
+        emitter builds itself when the lifecycle provider supplies nothing (the
+        common case), and the ones it remints by augmenting or extending a
+        supplied bundle.  All of them belong to
+        ``route_authority_phase("unflatten-emission")``, which ends when the
+        emission returns.  The emission's join authority is *designed* to end
+        with the emission, so this is an expected state, not a fault -- and it
+        is recorded rather than assumed.
     ``PRODUCER_UNBOUND``
         No producer binding at all: a decoded bundle, or one built field by
         field.  Binding it is exactly what an explicit rebind is for.

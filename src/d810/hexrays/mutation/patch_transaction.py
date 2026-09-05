@@ -436,6 +436,10 @@ class PreparedPatchCfgTransaction(PreparedCfgTransaction):
     unflatten_authority: object | None = None
     projected_unflatten_verdict: object | None = None
     projected_unflatten_timing: unflatten_authority_api.PhaseTimings | None = None
+    #: What the producer/transaction seam could verify about the route bundle.
+    #: A record of what was checked, never a grant: nothing reads it to decide
+    #: whether the transaction may proceed.
+    projected_route_authority_verification: object | None = None
 
     def __post_init__(self) -> None:
         PreparedCfgTransaction.__post_init__(self)
@@ -455,6 +459,10 @@ class PatchTransactionExecution(PatchPlanExecutionResult):
     observed_unflatten_verdict: object | None = None
     projected_unflatten_timing: unflatten_authority_api.PhaseTimings | None = None
     observed_unflatten_timing: unflatten_authority_api.PhaseTimings | None = None
+    #: The readable commit receipt's copy of the same non-authoritative record.
+    #: This is the surface that survives the transaction: both sessions and
+    #: both arenas are gone by the time anything reads a committed receipt.
+    projected_route_authority_verification: object | None = None
 
     def __post_init__(self) -> None:
         PatchPlanExecutionResult.__post_init__(self)
@@ -533,6 +541,13 @@ class HexRaysPatchTransactionParticipant:
     )
     _unflatten_authority: object | None = field(default=None, init=False, repr=False)
     _projected_unflatten_verdict: object | None = field(default=None, init=False, repr=False)
+    # Non-authoritative: what the producer/transaction seam was able to
+    # verify about the route bundle during the projected preparation.  The
+    # session that decided it is closed by the time a receipt is read, so
+    # the value has to be carried rather than queried.
+    _projected_route_authority_verification: object | None = field(
+        default=None, init=False, repr=False,
+    )
     _observed_unflatten_verdict: object | None = field(default=None, init=False, repr=False)
     _observed_unflatten_verdict_occurrence: object | None = field(default=None, init=False, repr=False)
     _observed_unflatten_acceptance: object | None = field(default=None, init=False, repr=False)
@@ -687,6 +702,9 @@ class HexRaysPatchTransactionParticipant:
         else:
             semantic_verdict = semantic_result.verdict
             semantic_authority = None
+        self._projected_route_authority_verification = getattr(
+            semantic_result, "route_authority_verification", None,
+        )
         # A preparation rejection is already the final projected-phase truth.
         # Accepted preparation remains provisional until the exact live patch
         # binding is sealed in ``bind``; publishing it here would allow a later
@@ -778,6 +796,9 @@ class HexRaysPatchTransactionParticipant:
             unflatten_authority=semantic_authority,
             projected_unflatten_verdict=semantic_verdict,
             projected_unflatten_timing=self._projected_unflatten_timing,
+            projected_route_authority_verification=(
+                self._projected_route_authority_verification
+            ),
         )
         self.gateway._record_cfg_preflighted()
         self._prepared = prepared
@@ -1192,6 +1213,9 @@ class _PatchTransactionLifecycle:
             receipt=receipt,
             creation_receipts=creation_receipts,
             projected_unflatten_verdict=self.participant._projected_unflatten_verdict,
+            projected_route_authority_verification=(
+                self.participant._projected_route_authority_verification
+            ),
             observed_unflatten_verdict=self.participant._observed_unflatten_verdict,
             projected_unflatten_timing=self.participant._projected_unflatten_timing,
             observed_unflatten_timing=self.participant._observed_unflatten_timing,

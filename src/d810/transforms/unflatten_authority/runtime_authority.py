@@ -10,20 +10,32 @@ on which producer path built the bundle, and both answers occur.**  Stated
 exactly, because an earlier version of this docstring asserted only the second
 one and the seam's check was silently conditional on it:
 
-* a bundle carried unchanged from the lifecycle session that projected it
+* **open** -- a bundle carried unchanged from the lifecycle session that
+  projected it
   (``NativePreanalysisSessionState.canonical_semantic_candidate_evidence_for``,
-  reached through ``SessionCanonicalSemanticEvidenceProvider``) belongs to that
-  session's ``RouteAuthorityPhase``, which is released by
-  ``close_route_authority()`` at *top-level session completion* --
-  ``ResolverSessionState.release_live_bindings`` -- which happens after the
-  authority transaction.  Its arena is **open** at the seam;
-* a bundle *reminted inside the unflatten emission* --
-  ``minimal_unflatten_emit`` augmenting the supplied bundle with a native entry
-  fact, or extending it with loop-guard terminal delivery proofs -- belongs to
-  ``route_authority_phase("unflatten-emission")``
-  (``state_machine.py``), which closes when the emission returns, before the
-  transaction runs.  Its arena is **closed** at the seam;
-* a decoded bundle, or one built field by field, carries no binding at all.
+  reached through ``SessionCanonicalSemanticEvidenceProvider``, published by the
+  pass and read at ``state_machine.py`` as ``CANONICAL_SEMANTIC_EVIDENCE``).
+  Its arena belongs to that session's ``RouteAuthorityPhase``, released by
+  ``close_route_authority()`` at *top-level session completion*
+  (``ResolverSessionState.release_live_bindings``), which happens after the
+  authority transaction;
+* **closed** -- a bundle the emitter *built itself*, which is what happens
+  whenever the provider supplies nothing (``state_machine.py`` resolves
+  ``canonical_route_evidence`` to ``None``): ``minimal_unflatten_emit`` calls
+  ``build_canonical_semantic_evidence`` ->
+  ``canonical_semantic_evidence_from_proofs`` (``own=True``) and that object is
+  what reaches the transaction as ``proposal.route_evidence``.  This is the
+  common closed case, not an edge one;
+* **closed** -- a bundle the emitter *reminted*: augmenting the supplied bundle
+  with a native entry fact, or extending it with loop-guard terminal delivery
+  proofs.  Both mint a fresh arena the same way;
+* in both closed cases the arena belongs to
+  ``route_authority_phase("unflatten-emission")`` (``state_machine.py``), which
+  closes when the emission returns -- before the transaction runs.  The
+  emission's join authority is *designed* to end with the emission, so a closed
+  producer arena is an expected state rather than a fault;
+* **absent** -- a decoded bundle, or one built field by field, carries no
+  binding at all.
 
 All three are legitimate, so the seam reports which one it saw
 (``RouteRebindVerification``) and the transaction records it, instead of
