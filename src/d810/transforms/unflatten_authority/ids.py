@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from d810.core.typing import Protocol
 from dataclasses import MISSING, dataclass, fields, is_dataclass
 from enum import Enum
 import gc
@@ -1040,6 +1041,43 @@ def _json_bytes(value: object) -> bytes:
     return json.dumps(value, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("ascii")
 
 
+class OccurrenceDigest(bytes):
+    """A phase-local cache *guard*, never an authority or content digest.
+
+    It is deliberately not interchangeable with the ``sha256:`` content IDs
+    this module mints.  An ``OccurrenceDigest`` covers ``id()`` values for
+    cycles and for values of unregistered types, so it is reproducible only
+    within one process and only while those objects are alive.  It answers
+    exactly one question -- "is this same object still byte-identical to when
+    it was cached" -- and must never be persisted, compared across processes,
+    or used as a cache key.
+
+    Subclassing ``bytes`` keeps equality, hashing and the session caches
+    working unchanged while giving the value a name that cannot be mistaken
+    for an authority digest at a call site.
+    """
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:
+        return f"OccurrenceDigest({bytes(self).hex()})"
+
+
+class _OccurrenceHasher(Protocol):
+    """The only hasher capability the occurrence walk uses."""
+
+    def update(self, data: bytes, /) -> None: ...
+
+    def digest(self) -> bytes: ...
+
+
+#: Exact type object -> its stamp token.  Unbounded by design and safe: the
+#: table can only ever hold the distinct types the authority canonicalizes in
+#: this process (they are module-level singletons, so the set is finite and
+#: small), and the strong reference is load-bearing -- it is what stops a
+#: dead type's ``id()`` from being recycled by a later type and silently
+#: aliasing two stamps.  Evicting an entry would trade bounded memory for an
+#: unsound guard.
 _OCCURRENCE_TYPE_TOKENS: dict[type, bytes] = {}
 
 
@@ -1048,8 +1086,8 @@ def _occurrence_type_token(cls: type) -> bytes:
 
     The tuple mirror this replaced compared types by identity (tuple equality
     falls back to ``is`` for type objects). The token embeds ``id(cls)`` and
-    the dict holds a strong reference, so no live type can be confused with a
-    later type that reuses its address.
+    ``_OCCURRENCE_TYPE_TOKENS`` holds a strong reference, so no live type can
+    be confused with a later type that reuses its address.
     """
 
     token = _OCCURRENCE_TYPE_TOKENS.get(cls)
@@ -1061,7 +1099,9 @@ def _occurrence_type_token(cls: type) -> bytes:
     return token
 
 
-def _feed_occurrence_token(hasher: object, tag: bytes, payload: bytes) -> None:
+def _feed_occurrence_token(
+    hasher: _OccurrenceHasher, tag: bytes, payload: bytes
+) -> None:
     """Append one length-delimited token so no two shapes can alias."""
 
     hasher.update(tag)
@@ -1069,7 +1109,9 @@ def _feed_occurrence_token(hasher: object, tag: bytes, payload: bytes) -> None:
     hasher.update(payload)
 
 
-def _feed_occurrence(value: object, hasher: object, seen: set[int]) -> None:
+def _feed_occurrence(
+    value: object, hasher: _OccurrenceHasher, seen: set[int]
+) -> None:
     """Stream one value's structural shape into ``hasher``."""
 
     if value is None or type(value) in (bool, int, str, bytes):
@@ -1151,7 +1193,7 @@ def _feed_occurrence(value: object, hasher: object, seen: set[int]) -> None:
     _feed_occurrence_token(hasher, b"i", repr(marker).encode("ascii"))
 
 
-def _occurrence_stamp(value: object) -> bytes:
+def _occurrence_stamp(value: object) -> OccurrenceDigest:
     """Return a fixed-size structural digest guarding one cache entry.
 
     This is an entry guard, never a cache key or an authority digest.  It
@@ -1172,7 +1214,7 @@ def _occurrence_stamp(value: object) -> bytes:
 
     hasher = hashlib.blake2b(digest_size=32)
     _feed_occurrence(value, hasher, set())
-    return hasher.digest()
+    return OccurrenceDigest(hasher.digest())
 
 
 def canonical_bytes(value: object) -> bytes:

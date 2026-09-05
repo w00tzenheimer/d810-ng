@@ -27,7 +27,10 @@ from types import MappingProxyType
 
 import pytest
 
-from d810.transforms.unflatten_authority.ids import _occurrence_stamp
+from d810.transforms.unflatten_authority.ids import (
+    OccurrenceDigest,
+    _occurrence_stamp,
+)
 
 
 def _deep_size(obj: object, seen: set[int] | None = None) -> int:
@@ -130,9 +133,30 @@ def test_stamp_terminates_on_a_self_referential_container() -> None:
     assert _occurrence_stamp(value) == _occurrence_stamp(value)
 
 
+def _containers(value: object) -> int:
+    if isinstance(value, dict):
+        return 1 + sum(_containers(item) for item in value.values())
+    if isinstance(value, tuple):
+        return 1 + sum(_containers(item) for item in value)
+    return 0
+
+
 def test_stamp_of_a_deep_value_does_not_exhaust_the_interpreter_stack() -> None:
-    # ``_tree(60, 1)`` nests ~120 containers; the guard must survive the same
-    # nesting depth the authority records reach.
     value = _tree(60, 1)
 
-    assert isinstance(_occurrence_stamp(value), bytes)
+    # Measured, not asserted from memory: one dict plus one tuple per level.
+    assert _containers(value) == 121
+
+    assert isinstance(_occurrence_stamp(value), OccurrenceDigest)
+
+
+def test_stamp_is_a_named_guard_type_not_an_authority_digest() -> None:
+    stamp = _occurrence_stamp(_tree(2, 2))
+
+    assert type(stamp) is OccurrenceDigest
+    assert isinstance(stamp, bytes)
+    assert len(stamp) == 32
+    # It must keep behaving as bytes for the session caches' equality checks.
+    assert stamp == bytes(stamp)
+    assert hash(stamp) == hash(bytes(stamp))
+    assert repr(stamp).startswith("OccurrenceDigest(")
