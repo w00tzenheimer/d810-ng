@@ -517,107 +517,101 @@ class TestIndexHelpers:
 
 
 from d810.transforms.graph_modification import EdgeRedirectViaPredSplit
-from d810.transforms.dag_authority import (
-    CorridorSpliceData,
-)
 
 
 class TestCorridorSpliceClosure:
-    """uee-7wcd: DagAuthority gains awareness of function-specific
-    corridor splices, moving the gap from
-    ``DAG_GAP:unknown_mod_kind:EdgeRedirectViaPredSplit`` to either
-    authoritative ALLOW (when seed data matches) or
-    ``DAG_GAP:edge_redirect_via_pred_split_seed_missing`` (when no
-    seed data is available for the shared block).
+    """uee-7wcd + aa-v8et: the corridor splice verdict is DAG-derived.
+
+    uee-7wcd originally closed the
+    ``DAG_GAP:unknown_mod_kind:EdgeRedirectViaPredSplit`` gap by seeding the
+    authority with a hardcoded per-function ``CorridorSpliceData`` literal and
+    ALLOWing when the mod matched it. The aa-v8et audit removed both the seed
+    registry (``planner._corridor_seed_data_for_snapshot``) and the seeding
+    channel: the arbiter's ``proof_edge_key`` named no DAG edge, so it was
+    vouching for a constant a human typed.
+
+    The gap is still closed — just from the DAG's own commitment for the
+    corridor source instead.
     """
 
-    def _seeded_authority(self, *seeds: CorridorSpliceData) -> DagAuthority:
-        return DagAuthority(_dag(), corridor_data=tuple(seeds))
-
-    def test_canonical_corridor_splice_for_returns_seed(self) -> None:
-        seed = CorridorSpliceData(
-            function_ea=0x180012B60,
-            shared_block=45,
-            base_target=126,
-            clone_source=122,
-            clone_target=180,
-        )
-        auth = self._seeded_authority(seed)
-        assert auth.canonical_corridor_splice_for(45) is seed
-
-    def test_canonical_corridor_splice_for_returns_none_when_unseeded(self) -> None:
-        auth = self._seeded_authority()
-        assert auth.canonical_corridor_splice_for(45) is None
-
-    def test_permits_edge_redirect_via_pred_split_allows_when_seed_matches(
-        self,
-    ) -> None:
-        seed = CorridorSpliceData(
-            function_ea=0x180012B60,
-            shared_block=45,
-            base_target=126,
-            clone_source=122,
-            clone_target=180,
-        )
-        auth = self._seeded_authority(seed)
-        mod = EdgeRedirectViaPredSplit(
+    def _mod(self, *, new_target: int = 180) -> EdgeRedirectViaPredSplit:
+        return EdgeRedirectViaPredSplit(
             src_block=122,
             old_target=45,
-            new_target=180,
+            new_target=new_target,
             via_pred=37,
             clone_until=45,
         )
-        decision = auth.permits_edge_redirect_via_pred_split(mod)
+
+    def test_allows_when_a_dag_edge_commits_the_corridor_source(self) -> None:
+        edge = _edge(
+            source_handler=122,
+            target_handler=180,
+            target_entry_anchor=180,
+            source_block=122,
+        )
+        auth = DagAuthority(_dag(edges=(edge,)))
+        decision = auth.permits_edge_redirect_via_pred_split(self._mod())
         assert decision.allowed
         assert decision.target_entry_anchor == 180
-        assert decision.proof_edge_key[0] == "corridor_splice"
+        assert decision.proof_edge_key == (122, None, 180, "EdgeRedirectViaPredSplit")
 
-    def test_permits_edge_redirect_via_pred_split_disagrees_on_target_mismatch(
-        self,
-    ) -> None:
-        seed = CorridorSpliceData(
-            function_ea=0x180012B60,
-            shared_block=45,
-            base_target=126,
-            clone_source=122,
-            clone_target=180,
+    def test_disagrees_when_the_dag_commits_a_different_target(self) -> None:
+        edge = _edge(
+            source_handler=122,
+            target_handler=180,
+            target_entry_anchor=180,
+            source_block=122,
         )
-        auth = self._seeded_authority(seed)
-        mod = EdgeRedirectViaPredSplit(
-            src_block=122,
-            old_target=45,
-            new_target=999,  # disagrees with seed clone_target=180
-            via_pred=37,
+        auth = DagAuthority(_dag(edges=(edge,)))
+        decision = auth.permits_edge_redirect_via_pred_split(
+            self._mod(new_target=999)
         )
-        decision = auth.permits_edge_redirect_via_pred_split(mod)
         assert decision.is_disagreement
-        assert "corridor_splice@45" in decision.reason
+        assert "dag=180" in decision.reason
 
-    def test_permits_edge_redirect_via_pred_split_gap_when_no_seed(self) -> None:
-        auth = self._seeded_authority()  # no seeds
-        mod = EdgeRedirectViaPredSplit(
-            src_block=122,
-            old_target=45,
-            new_target=180,
-            via_pred=37,
-        )
-        decision = auth.permits_edge_redirect_via_pred_split(mod)
+    def test_gaps_when_the_dag_is_silent_about_the_corridor_source(self) -> None:
+        auth = DagAuthority(_dag())
+        decision = auth.permits_edge_redirect_via_pred_split(self._mod())
         assert decision.is_gap
-        assert decision.reason == "DAG_GAP:edge_redirect_via_pred_split_seed_missing"
+        assert (
+            decision.reason
+            == "DAG_GAP:edge_redirect_via_pred_split_no_dag_evidence"
+        )
+
+    def test_gaps_when_the_dag_contradicts_itself(self) -> None:
+        auth = DagAuthority(
+            _dag(
+                edges=(
+                    _edge(
+                        source_handler=122,
+                        target_handler=180,
+                        target_entry_anchor=180,
+                        source_block=122,
+                    ),
+                    _edge(
+                        source_handler=122,
+                        target_handler=181,
+                        target_entry_anchor=181,
+                        source_block=122,
+                    ),
+                )
+            )
+        )
+        decision = auth.permits_edge_redirect_via_pred_split(self._mod())
+        assert decision.is_gap
+        assert decision.reason == "DAG_GAP:dag_internal_conflict"
 
     def test_permits_dispatcher_routes_edge_redirect_via_pred_split(self) -> None:
         # The named gap is a strict improvement over the prior
         # DAG_GAP:unknown_mod_kind:EdgeRedirectViaPredSplit.
-        auth = self._seeded_authority()
-        mod = EdgeRedirectViaPredSplit(
-            src_block=122,
-            old_target=45,
-            new_target=180,
-            via_pred=37,
-        )
-        decision = auth.permits(mod)
+        auth = DagAuthority(_dag())
+        decision = auth.permits(self._mod())
         assert decision.is_gap
-        assert decision.reason == "DAG_GAP:edge_redirect_via_pred_split_seed_missing"
+        assert (
+            decision.reason
+            == "DAG_GAP:edge_redirect_via_pred_split_no_dag_evidence"
+        )
 
 
 # ----------------------------------------------------------------------------

@@ -356,6 +356,77 @@ class TestLatentGrantSurfaces:
         decision = authority.permits(ZeroStateWrite(block_serial=10, insn_ea=0x1000))
         assert decision.is_gap
 
+    def test_permits_edge_redirect_via_pred_split_requires_dag_evidence(
+        self,
+    ) -> None:
+        """The corridor splice must be backed by a DAG edge, not a literal.
+
+        The old ALLOW matched a ``CorridorSpliceData`` seeded at construction
+        from a hardcoded per-function registry in the planner
+        (``shared_block=45, clone_source=122, clone_target=180`` for
+        ``sub_7FFD3338C040`` only). Its ``proof_edge_key`` was
+        ``("corridor_splice", 45, 122, 180)`` — it named no DAG edge, so the
+        authority was vouching for a constant a human typed.
+
+        Note this path *is* dispatched by ``permits()``; the dispatch was never
+        the missing link. It is unreachable in production only because
+        ``redirect_source(EdgeRedirectViaPredSplit)`` is ``None``, so the
+        production filter keeps the mod before ``permits()`` is called.
+        """
+        mod = EdgeRedirectViaPredSplit(
+            src_block=122,
+            old_target=45,
+            new_target=180,
+            via_pred=37,
+            clone_until=45,
+        )
+
+        # No DAG edge for the corridor source -> gap, never a grant.
+        silent = _empty_authority()
+        decision = silent.permits_edge_redirect_via_pred_split(mod)
+        assert not decision.allowed
+        assert decision.is_gap
+        assert (
+            decision.reason
+            == "DAG_GAP:edge_redirect_via_pred_split_no_dag_evidence"
+        )
+        assert decision.proof_edge_key is None
+
+        # A DAG edge committing the corridor source to the proposed target is
+        # the only thing that earns an ALLOW, and the proof names that edge.
+        backed = DagAuthority(
+            _dag(edges=(_edge(source_block=122, target_entry_anchor=180),))
+        )
+        allowed = backed.permits_edge_redirect_via_pred_split(mod)
+        assert allowed.allowed
+        assert allowed.target_entry_anchor == 180
+        assert allowed.proof_edge_key == (122, None, 180, "EdgeRedirectViaPredSplit")
+
+        # A DAG that commits the source somewhere else is a disagreement.
+        contrary = DagAuthority(
+            _dag(edges=(_edge(source_block=122, target_entry_anchor=999),))
+        )
+        refused = contrary.permits_edge_redirect_via_pred_split(mod)
+        assert not refused.allowed
+        assert refused.is_disagreement
+        assert "dag=999" in refused.reason
+
+    def test_no_seeded_corridor_channel_survives(self) -> None:
+        """The non-DAG seeding channel itself is gone, not just its match arm.
+
+        Leaving ``corridor_data=`` reachable with no producer would re-open the
+        exact door the audit closed: any caller could inject a literal and get
+        an ALLOW back.
+        """
+        import d810.passes.planner as planner_module
+        import d810.transforms.dag_authority as dag_authority_module
+
+        assert not hasattr(planner_module, "_corridor_seed_data_for_snapshot")
+        assert not hasattr(dag_authority_module, "CorridorSpliceData")
+        assert not hasattr(DagAuthority, "canonical_corridor_splice_for")
+        with pytest.raises(TypeError):
+            DagAuthority(_dag(), corridor_data=())  # type: ignore[call-arg]
+
     def test_permits_dead_block_terminator_redirect_is_a_gap_not_a_grant(
         self,
     ) -> None:

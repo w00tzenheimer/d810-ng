@@ -22,21 +22,9 @@ from d810.analyses.control_flow.linearized_state_dag import (
 
 __all__ = (
     "AnchorKey",
-    "CorridorSpliceData",
     "DagAuthority",
     "DagDecision",
 )
-
-
-@dataclass(frozen=True, slots=True)
-class CorridorSpliceData:
-    "Function-specific corridor-clone splice points (uee-7wcd).\n\n    Some lowering decisions cannot today be derived from the preanalysis\n    ``LinearizedStateDag``: e.g., ``sub_7FFD3338C040``'s\n    ``deferred_corridor_clone`` emission requires hand-tuned splice\n    points (shared block, base target, clone source/target) that\n    no current DAG schema field encodes.  R2's emission catalogue\n    flagged this as a DAG_GAP candidate (uee-7wcd in the\n    DAG-as-arbiter epic).\n\n    The closure path is to seed :class:`DagAuthority` with this\n    function-specific data at construction time so the arbiter can\n    authoritatively ALLOW corridor-shaped mods rather than letting\n    them slip through as ``DAG_GAP:edge_redirect_via_pred_split``.\n    The data lives in ``engine`` (family-agnostic) so any future\n    function with a corridor pattern can register without touching\n    Hodur internals.\n\n    Attributes:\n        function_ea: ``mba.entry_ea`` this corridor applies to.  Used\n            to gate registry consultation (don't apply sub_7FFD's\n            corridor to other functions).\n        shared_block: The shared dispatch block being spliced\n            (e.g., 45 for sub_7FFD).\n        base_target: Where the shared block's primary redirect goes\n            (e.g., 126 for sub_7FFD).\n        clone_source: The block whose corridor is cloned per-pred\n            (e.g., 122 for sub_7FFD).\n        clone_target: Where the cloned corridor's tail redirects\n            (e.g., 180 for sub_7FFD).\n"
-
-    function_ea: int
-    shared_block: int
-    base_target: int
-    clone_source: int
-    clone_target: int
 
 
 # Composite key for a redirect anchor: (block_serial, branch_arm).
@@ -149,7 +137,6 @@ class DagAuthority:
         "_node_by_handler",
         "_node_by_entry_anchor",
         "_planner_scope_edge_kinds",
-        "_corridor_by_shared_block",
     )
 
     # Edge kinds the planner currently emits modifications for.  Other
@@ -160,22 +147,9 @@ class DagAuthority:
         {SemanticEdgeKind.TRANSITION, SemanticEdgeKind.CONDITIONAL_TRANSITION}
     )
 
-    def __init__(
-        self,
-        dag: LinearizedStateDag,
-        *,
-        corridor_data: tuple[CorridorSpliceData, ...] = (),
-    ) -> None:
+    def __init__(self, dag: LinearizedStateDag) -> None:
         self._dag = dag
         self._planner_scope_edge_kinds = self._PLANNER_SCOPE_EDGE_KINDS
-        # Map shared_block -> corridor data for O(1) consultation by
-        # ``permits_edge_redirect_via_pred_split`` and
-        # ``canonical_corridor_splice_for``.  Empty by default; planner
-        # seeds this with function-specific data based on
-        # ``mba.entry_ea`` (uee-7wcd).
-        self._corridor_by_shared_block: dict[int, CorridorSpliceData] = {
-            int(c.shared_block): c for c in corridor_data
-        }
 
         # Build the (src_block, branch_arm) -> target_entry_anchor index.
         # When two edges in scope agree on a target, collapse them into a
@@ -352,17 +326,6 @@ class DagAuthority:
         """
         return DagDecision.gap("zero_state_write_not_dag_derivable")
 
-    def canonical_corridor_splice_for(
-        self, shared_block: int
-    ) -> CorridorSpliceData | None:
-        """Return the corridor splice data for a shared block, or None.
-
-        uee-7wcd extension.  When seeded by the planner with function-
-        specific corridor data, this query authoritatively answers
-        "is this shared_block a known corridor splice point?"
-        """
-        return self._corridor_by_shared_block.get(int(shared_block))
-
     def permits_edge_redirect_via_pred_split(
         self, mod: EdgeRedirectViaPredSplit
     ) -> DagDecision:
@@ -373,42 +336,43 @@ class DagAuthority:
         ``mod.src_block .. mod.clone_until`` whose tail retargets to
         ``mod.new_target``.
 
-        Decision rules:
+        Evidence policy (aa-v8et)
+        -------------------------
+        This method used to ALLOW when the mod matched a
+        :class:`CorridorSpliceData` record seeded at construction time from a
+        hardcoded per-function registry in the planner. That seed was not
+        DAG-derived — it was a literal (``shared_block=45, base_target=126,
+        clone_source=122, clone_target=180``) registered for one entry EA —
+        and the resulting ``proof_edge_key`` named no DAG edge at all. Both
+        the seed registry and the match branch are gone; the seeding channel
+        went with them so it cannot be re-supplied by a future caller.
 
-        * If ``DagAuthority`` was seeded with corridor data for the
-          shared block (= ``mod.old_target``) and the (clone_source,
-          clone_target) pair matches the recorded splice, ALLOW.
-        * If corridor data is seeded but the (src, target) tuple
-          disagrees with the registered splice points,
-          ``DAG_DISAGREEMENT:corridor_splice@<shared>``.
-        * If no corridor data is seeded for this shared block,
-          ``DAG_GAP:edge_redirect_via_pred_split_seed_missing``.
+        The only evidence the arbiter accepts now is the DAG's own
+        commitment for the corridor source:
+
+        * DAG canonically commits ``mod.src_block`` to ``mod.new_target``
+          → ALLOW, proved by that edge.
+        * DAG commits ``mod.src_block`` somewhere else →
+          ``DAG_DISAGREEMENT``.
+        * DAG has no in-scope edge from ``mod.src_block`` →
+          ``DAG_GAP:edge_redirect_via_pred_split_no_dag_evidence``.
+        * DAG contradicts itself about ``mod.src_block`` →
+          ``DAG_GAP:dag_internal_conflict``.
+
+        The splice *topology* (``via_pred``, ``clone_until``) remains outside
+        anything the DAG models; the ALLOW speaks only to the corridor's
+        destination, which is safe because the verdict can never do more than
+        keep a modification the planner already proposed.
 
         The shared fragment-level filter (``filter_dag_disagreements``)
-        currently only validates RedirectGoto / ConvertToGoto; this
-        method exists to make the validation path *available* for
-        tests + future filter extensions.
+        currently only reaches ``permits()`` for RedirectGoto / ConvertToGoto,
+        so this method has no production consumer today.
         """
-        shared_block = int(mod.old_target)
-        corridor = self._corridor_by_shared_block.get(shared_block)
-        if corridor is None:
-            return DagDecision.gap("edge_redirect_via_pred_split_seed_missing")
-        if int(mod.src_block) == int(corridor.clone_source) and int(
-            mod.new_target
-        ) == int(corridor.clone_target):
-            return DagDecision.allow(
-                target_entry_anchor=int(corridor.clone_target),
-                proof_edge_key=(
-                    "corridor_splice",
-                    int(corridor.shared_block),
-                    int(corridor.clone_source),
-                    int(corridor.clone_target),
-                ),
-            )
-        return DagDecision.refuse(
-            f"DAG_DISAGREEMENT:corridor_splice@{shared_block}->"
-            f"{{planner=({mod.src_block},{mod.new_target}),"
-            f"dag=({corridor.clone_source},{corridor.clone_target})}}"
+        return self._validate_unconditional_redirect(
+            src=int(mod.src_block),
+            proposed_target=int(mod.new_target),
+            mod_kind="EdgeRedirectViaPredSplit",
+            unknown_source_gap="edge_redirect_via_pred_split_no_dag_evidence",
         )
 
     def permits_dead_block_terminator_redirect(
@@ -492,10 +456,11 @@ class DagAuthority:
         if kind == "ZeroStateWrite":
             return self.permits_zero_state_write(mod)  # type: ignore[arg-type]
         if kind == "EdgeRedirectViaPredSplit":
-            # uee-7wcd: EdgeRedirectViaPredSplit goes through the
-            # corridor-aware validator.  Without seeded corridor data
-            # this returns DAG_GAP:edge_redirect_via_pred_split_seed_missing,
-            # but the named gap is a strict improvement over the prior
+            # uee-7wcd / aa-v8et: EdgeRedirectViaPredSplit goes through the
+            # DAG-evidence validator.  When the DAG has no in-scope edge from
+            # the corridor source this returns
+            # DAG_GAP:edge_redirect_via_pred_split_no_dag_evidence, which is a
+            # strict improvement over the prior
             # DAG_GAP:unknown_mod_kind:EdgeRedirectViaPredSplit.
             return self.permits_edge_redirect_via_pred_split(mod)  # type: ignore[arg-type]
         return DagDecision.gap(f"unknown_mod_kind:{kind}")
@@ -510,6 +475,7 @@ class DagAuthority:
         src: int,
         proposed_target: int,
         mod_kind: str,
+        unknown_source_gap: str = "unknown_source",
     ) -> DagDecision:
         """Shared validation core for RedirectGoto / ConvertToGoto.
 
@@ -527,7 +493,7 @@ class DagAuthority:
             # gap names so diagnostics can route them.
             if self.conflicts_for_source(src, branch_arm=None):
                 return DagDecision.gap("dag_internal_conflict")
-            return DagDecision.gap("unknown_source")
+            return DagDecision.gap(unknown_source_gap)
         if proposed_target == canonical:
             return DagDecision.allow(
                 target_entry_anchor=canonical,
