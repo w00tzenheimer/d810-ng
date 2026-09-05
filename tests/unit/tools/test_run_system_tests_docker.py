@@ -2629,3 +2629,52 @@ def test_local_mode_git_identity_is_unchanged(tmp_path: Path) -> None:
     command = _container_run(calls)
     assert "GIT_DIR=/d810-git " in command
     assert "/d810-git/worktrees" not in command
+
+
+def test_stale_capture_is_removed_so_the_new_one_inherits_the_acl(
+    tmp_path: Path,
+) -> None:
+    """A capture owned by the share account cannot be re-ACLed from here."""
+    share, repo = _share_layout(tmp_path)
+    capture = repo / ".tmp" / "out.txt"
+    capture.parent.mkdir(parents=True)
+    capture.write_text("stale capture\n", encoding="utf-8")
+
+    result, calls = _run(
+        tmp_path,
+        "test",
+        "--remote",
+        REMOTE_HOST,
+        "-o",
+        "out.txt",
+        "--",
+        "-q",
+        repo_root=repo,
+        extra_env=_remote_env(share),
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert not capture.exists()
+    assert not [
+        call for call in _chmod_calls(tmp_path) if call.endswith("/.tmp/out.txt")
+    ]
+    assert "/work/.tmp/out.txt" in _remote_container_run(calls)
+
+
+def test_acl_failure_on_the_tmp_root_still_fails_closed(tmp_path: Path) -> None:
+    share, repo = _share_layout(tmp_path)
+
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--remote",
+        REMOTE_HOST,
+        "--",
+        "true",
+        repo_root=repo,
+        extra_env=_remote_env(share, MOCK_CHMOD_ACL_EXIT="1"),
+    )
+
+    assert result.returncode != 0
+    assert "could not grant" in result.stderr
+    assert _runs(calls) == []

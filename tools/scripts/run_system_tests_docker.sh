@@ -949,7 +949,7 @@ _acl_drop_user_entries() {
 }
 
 _ensure_acl() {
-  local target="$1" kind="$2" account="${3:-$REMOTE_SMB_USER}" request normalized present right missing=0
+  local target="$1" kind="$2" account="${3:-$REMOTE_SMB_USER}" strict="${4:-0}" request normalized present right missing=0
   if ! _acl_target_is_scoped "$target"; then
     echo "ERROR: refusing to grant $REMOTE_SMB_USER access outside the worktree .tmp: $target" >&2
     exit 1
@@ -977,8 +977,13 @@ _ensure_acl() {
     _acl_drop_user_entries "$target" "$account"
   fi
   if ! chmod +a "$account allow $request" "$target"; then
-    echo "ERROR: could not grant $account access to $target" >&2
-    exit 1
+    if [ "$strict" = "1" ]; then
+      echo "ERROR: could not grant $account access to $target" >&2
+      exit 1
+    fi
+    # A descendant created by the other account cannot have its ACL changed
+    # from here. Inheritance from .tmp covers everything created from now on.
+    echo "[remote] note: leaving existing ACL on $target (not owned here)" >&2
   fi
 }
 
@@ -990,14 +995,18 @@ _apply_tmp_acls() {
   local local_account
   local_account="$(id -un)"
   for account in "$REMOTE_SMB_USER" "$local_account"; do
-    _ensure_acl "$WORK_DIR/.tmp" dir "$account"
+    # The .tmp root must carry the inheritable entries or nothing else can.
+    _ensure_acl "$WORK_DIR/.tmp" dir "$account" 1
     for candidate in "$WORK_DIR/.tmp/logs" "$WORK_DIR/.tmp/cobra-linux"; do
       [ -d "$candidate" ] && _ensure_acl "$candidate" dir "$account"
     done
-    if [ -n "$DUMP_OUT" ] && [ -f "$WORK_DIR/.tmp/$DUMP_OUT" ]; then
-      _ensure_acl "$WORK_DIR/.tmp/$DUMP_OUT" file "$account"
-    fi
   done
+  # A capture from an earlier run is owned by the share account and cannot be
+  # re-ACLed from here; it is rewritten anyway, so remove it and let the new
+  # file inherit both entries.
+  if [ -n "$DUMP_OUT" ] && [ -e "$WORK_DIR/.tmp/$DUMP_OUT" ]; then
+    rm -f "$WORK_DIR/.tmp/$DUMP_OUT"
+  fi
 }
 
 _acquire_remote_lock() {
