@@ -473,11 +473,16 @@ def test_block_optimizer_safe_point_claim_installs_existing_stale_pointer_fence(
     )
     manager.current_maturity = ida_hexrays.MMAT_GLBOPT2
     manager._flow_context = SimpleNamespace(
-        new_mba_mutation_gateway=lambda: object(),
         execution_attempt_context=lambda: (None, None, None),
     )
     pipeline = _MutatingPassPipeline()
-    manager.configure(pass_pipeline=pipeline)
+    # Mutation authority comes from the lifecycle coordinator, never from the
+    # flow context; without one the pipeline abstains before it can claim a
+    # safe point and this test would assert nothing.
+    manager.configure(
+        decompilation_lifecycle=_MutationGatewayLifecycle(object(), object()),
+        pass_pipeline=pipeline,
+    )
     mba = _make_block(maturity=ida_hexrays.MMAT_GLBOPT2).mba
 
     manager._run_pass_pipeline_once(mba, phase_label="MMAT_GLBOPT2")
