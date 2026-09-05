@@ -2387,8 +2387,12 @@ def test_remote_mode_mirrors_source_into_the_work_volume(tmp_path: Path) -> None
         command,
     ), command
     assert "tar -C /work-src" not in command
-    # the destination is emptied first, so the mirror is exact
-    assert "find /work -mindepth 1 -maxdepth 1 ! -name .tmp -exec rm -rf {} +" in command
+    # the destination is emptied first, so the mirror is exact - except for the
+    # read-write .tmp mount and the retained run store
+    assert (
+        "find /work -mindepth 1 -maxdepth 1 ! -name .tmp ! -name runs -exec rm -rf {} +"
+        in command
+    )
     assert "set -o pipefail" in command
 
 
@@ -3036,7 +3040,113 @@ def test_remote_logs_are_staged_from_the_work_volume_at_exit(tmp_path: Path) -> 
     # exec would replace the shell and lose the trap
     assert 'exec "$@"' not in command
     assert '"$@"' in command
-    assert "artifacts: /work/runs/" in result.stdout
+    assert "staged to .tmp/logs/" in result.stdout
+
+
+@pytest.mark.parametrize(
+    "flag", ["-l", "--logs", "--enable-debug-logging", "--enable-diag-snapshot"]
+)
+def test_remote_artifact_flags_request_the_exit_copy_to_the_share(
+    tmp_path: Path,
+    flag: str,
+) -> None:
+    """Each artifact-bearing flag asks for the finished logs on the share."""
+    share, repo = _share_layout(tmp_path)
+
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--remote",
+        REMOTE_HOST,
+        flag,
+        "--",
+        "true",
+        repo_root=repo,
+        extra_env=_remote_env(share),
+    )
+
+    assert result.returncode == 0, result.stderr
+    command = _remote_container_run(calls)
+    assert 'ln -sfn "$RUN_LOGS" /root/.idapro/logs' in command
+    assert "STAGE_DEST=/work/.tmp/logs/$D810_RUN_ID" in command
+    assert 'cp -a "$RUN_LOGS"/. "$STAGE_DEST"/' in command
+    assert "staged to .tmp/logs/" in result.stdout
+
+
+def test_remote_without_artifact_flags_redirects_but_does_not_stage(
+    tmp_path: Path,
+) -> None:
+    """The redirect is unconditional; the share copy is not."""
+    share, repo = _share_layout(tmp_path)
+
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--remote",
+        REMOTE_HOST,
+        "--",
+        "true",
+        repo_root=repo,
+        extra_env=_remote_env(share),
+    )
+
+    assert result.returncode == 0, result.stderr
+    command = _remote_container_run(calls)
+    # the work-volume redirect stays, so no live SQLite writer reaches cifs
+    assert "RUN_LOGS=/work/runs/$D810_RUN_ID/logs" in command
+    assert 'ln -sfn "$RUN_LOGS" /root/.idapro/logs' in command
+    # nothing is copied to, or created on, the share
+    assert "STAGE_DEST" not in command
+    assert 'cp -a "$RUN_LOGS"' not in command
+    assert "[artifacts] staged" not in command
+    assert "/work/.tmp/logs/" not in command
+    assert "trap " not in command
+    assert "work volume, retained; use the artifacts subcommand to copy" in result.stdout
+    assert "staged to .tmp/logs/" not in result.stdout
+
+
+def test_remote_sync_wipe_spares_the_run_store(tmp_path: Path) -> None:
+    """A digest change must not destroy runs whose logs were never staged."""
+    share, repo = _share_layout(tmp_path)
+
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--remote",
+        REMOTE_HOST,
+        "--",
+        "true",
+        repo_root=repo,
+        extra_env=_remote_env(share),
+    )
+
+    assert result.returncode == 0, result.stderr
+    command = _remote_container_run(calls)
+    assert (
+        "find /work -mindepth 1 -maxdepth 1 ! -name .tmp ! -name runs -exec rm -rf {} +"
+        in command
+    )
+
+
+def test_remote_run_store_is_bounded(tmp_path: Path) -> None:
+    """The wipe no longer prunes it, so the run store needs its own bound."""
+    share, repo = _share_layout(tmp_path)
+
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--remote",
+        REMOTE_HOST,
+        "--",
+        "true",
+        repo_root=repo,
+        extra_env=_remote_env(share, D810_REMOTE_RUN_RETENTION="3"),
+    )
+
+    assert result.returncode == 0, result.stderr
+    command = _remote_container_run(calls)
+    assert "__runs_keep=3" in command
+    assert "ls -1 /work/runs 2>/dev/null | sort | head -n -$__runs_keep" in command
 
 
 def test_local_mode_still_mounts_logs_directly(tmp_path: Path) -> None:

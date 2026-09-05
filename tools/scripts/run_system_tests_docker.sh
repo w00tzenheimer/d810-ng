@@ -16,7 +16,8 @@
 #   shell     Run SETUP then start an interactive bash (docker run -it)
 #   exec      Run SETUP then exec COMMAND with ARGS (e.g. exec -- python -c 'print(1)' or exec -- bash -c '...')
 #   artifacts (remote only) List the runs retained on a worktree's work volume, or with --run RUN_ID
-#             copy one back to WORK_DIR/.tmp/remote-runs/RUN_ID. Failed runs are retained too.
+#             copy one back to WORK_DIR/.tmp/remote-runs/RUN_ID. Failed runs are retained too, and
+#             the newest D810_REMOTE_RUN_RETENTION runs are kept (default 20).
 #
 # SETUP (same for all commands): export IDA/PYTHONPATH env; install Python
 # dependencies unless the image carries d810's baked-runtime label; optionally
@@ -30,7 +31,12 @@
 #                           WORKTREE_ROOT (default .worktrees). If your worktree is under a different
 #                           root (e.g. .claude/worktrees/agent-foo), set D810_WORKTREE_ROOT and pass
 #                           only the relative part: D810_WORKTREE_ROOT=.claude/worktrees -w agent-foo.
-#   -l, --logs              Mount work dir .tmp/logs at /root/.idapro/logs
+#   -l, --logs              Mount work dir .tmp/logs at /root/.idapro/logs. In remote mode there is
+#                           nothing to mount - logs always live on the work volume - so the flag
+#                           instead requests that the finished artifacts be copied back to the share
+#                           at exit (--enable-debug-logging and --enable-diag-snapshot imply it).
+#                           Without any of them the run is still retained under /work/runs/<run-id>
+#                           and retrievable with the artifacts subcommand.
 #   -o, --out FILE          (system/test only) Redirect stdout+stderr to WORK_DIR/.tmp/FILE. FILE must be one bare
 #                           filename (e.g. out.txt), with no slashes; the script prepends .tmp/.
 #   --enable-debug-logging  Set D810_DEBUG_LOGGING=1 inside the container so getLogger uses DEBUG as
@@ -164,7 +170,8 @@
 #
 #   The option set deliberately omits nobrl, and --mount-opts REFUSES nobrl/nolock: in remote mode no
 #   SQLite database is ever written on this mount. Live databases and logs stay on the work volume
-#   (/work/runs/<run-id>/logs) and only finalized artifacts are copied to .tmp/logs afterwards, so
+#   (/work/runs/<run-id>/logs) and only finalized artifacts are copied to .tmp/logs afterwards, and
+#   only when -l/--logs, --enable-debug-logging or --enable-diag-snapshot asked for them, so
 #   byte-range locking here is never relied on. The mount's locking behaviour can still be measured
 #   (evidence for the record, not a design input):
 #
@@ -350,6 +357,10 @@ CONFIGURED_REMOTE_HOST="${D810_REMOTE_DOCKER_HOST-}"
 REMOTE_HOST=""
 REMOTE_VOLUME="${D810_REMOTE_VOLUME-idapro}"
 REMOTE_SHARE_ROOT="${D810_REMOTE_SHARE_ROOT-}"
+# The run store survives the sync wipe so a run without artifact flags is not
+# silently lost, which means it needs its own bound. Run ids start with a UTC
+# timestamp, so a lexicographic sort is chronological.
+REMOTE_RUN_RETENTION="${D810_REMOTE_RUN_RETENTION-20}"
 REMOTE_SMB_USER="${D810_REMOTE_SMB_USER-}"
 REMOTE_MODE=0
 REMOTE_ENGINE_OS=""
@@ -1299,6 +1310,13 @@ if [ -n "$GIT_COMMON_DIR" ] && [ -d "$GIT_COMMON_DIR" ]; then
     ENV_GIT="GIT_DIR=/d810-git/$GIT_WORKTREE_REL"
   fi
 fi
+# In remote mode the logs directory always lives on the work volume, so -l has
+# no mount to make there. What it (and the two diagnostics flags) now select is
+# whether the finished artifacts are also copied back to the share at exit.
+REMOTE_STAGE_ARTIFACTS=""
+if [ -n "$MOUNT_LOGS" ] || [ -n "$ENABLE_DEBUG_LOGGING" ] || [ -n "$ENABLE_DIAG_SNAPSHOT" ]; then
+  REMOTE_STAGE_ARTIFACTS=1
+fi
 if [ -n "$MOUNT_LOGS" ]; then
   LOGS_DIR="${WORK_DIR}/.tmp/logs"
   mkdir -p "$LOGS_DIR"
@@ -1419,7 +1437,11 @@ if [ "$REMOTE_MODE" = "1" ]; then
   echo "  subpath:  $WORK_SUBPATH (read-only at /work-src; .tmp read-write at /work/.tmp)"
   echo "  source digest: $SOURCE_DIGEST"
   echo "  run id:   $D810_RUN_ID (keys diag databases per run, not per pid)"
-  echo "  artifacts: /work/runs/$D810_RUN_ID/logs (work volume) staged to .tmp/logs/$D810_RUN_ID at exit"
+  if [ -n "$REMOTE_STAGE_ARTIFACTS" ]; then
+    echo "  artifacts: /work/runs/$D810_RUN_ID/logs (work volume) staged to .tmp/logs/$D810_RUN_ID at exit"
+  else
+    echo "  artifacts: /work/runs/$D810_RUN_ID/logs (work volume, retained; use the artifacts subcommand to copy)"
+  fi
   echo "  git:      $ENV_GIT"
   echo "  archive:  $REMOTE_ARCHIVE_CONTAINER_PATH (tracked + untracked-not-ignored, ignored content excluded)"
   echo "  allowlist: ${REMOTE_MANIFEST_EXTRA_ENTRIES:- none} (from $(basename "$REMOTE_MANIFEST_EXTRA"))"
@@ -1620,19 +1642,31 @@ if [ -f '$SYNC_SENTINEL' ] && [ \"\$(cat '$SYNC_SENTINEL')\" = \"\$__digest\" ];
 else \
   rm -f '$SYNC_SENTINEL'; \
   __t0=\$(date +%s); \
-  find /work -mindepth 1 -maxdepth 1 ! -name .tmp -exec rm -rf {} + ; \
+  find /work -mindepth 1 -maxdepth 1 ! -name .tmp ! -name runs -exec rm -rf {} + ; \
   tar -C /work -xf '$REMOTE_ARCHIVE_CONTAINER_PATH' ; \
   printf '%s\\n' \"\$__digest\" > '$SYNC_SENTINEL'; \
   echo \"[sync] mirrored /work-src -> /work in \$((\$(date +%s)-\$__t0))s (digest \$__digest)\"; \
 fi"
-  # The staging trap runs on failure too, so a crashed run still leaves its
-  # artifacts both in the run directory and on the share.
-  REMOTE_STAGING_CMD="RUN_LOGS=/work/runs/\$D810_RUN_ID/logs; \
+  # The redirect is unconditional: every remote run keeps its live SQLite
+  # writers on the engine volume, never on the cifs share. Copying the result
+  # back to the share is what the artifact flags ask for - without them the run
+  # store is still complete and reachable through the artifacts subcommand, so
+  # the copy is pure share traffic. The run store is excluded from the sync
+  # wipe above, so a skipped copy never loses anything.
+  REMOTE_STAGING_CMD="__runs_keep=$REMOTE_RUN_RETENTION; \
+ls -1 /work/runs 2>/dev/null | sort | head -n -\$__runs_keep | while IFS= read -r __old; do rm -rf \"/work/runs/\$__old\"; done; \
+RUN_LOGS=/work/runs/\$D810_RUN_ID/logs; \
+mkdir -p \"\$RUN_LOGS\"; \
+rm -rf /root/.idapro/logs; mkdir -p /root/.idapro; ln -sfn \"\$RUN_LOGS\" /root/.idapro/logs"
+  if [ -n "$REMOTE_STAGE_ARTIFACTS" ]; then
+    # The staging trap runs on failure too, so a crashed run still leaves its
+    # artifacts both in the run directory and on the share.
+    REMOTE_STAGING_CMD="$REMOTE_STAGING_CMD; \
 STAGE_DEST=/work/.tmp/logs/\$D810_RUN_ID; \
-mkdir -p \"\$RUN_LOGS\" \"\$STAGE_DEST\"; \
-rm -rf /root/.idapro/logs; mkdir -p /root/.idapro; ln -sfn \"\$RUN_LOGS\" /root/.idapro/logs; \
+mkdir -p \"\$STAGE_DEST\"; \
 trap 'set +e; __stage_t0=\$(date +%s); cp -a \"\$RUN_LOGS\"/. \"\$STAGE_DEST\"/ 2>/dev/null; \
 echo \"[artifacts] staged \$RUN_LOGS -> \$STAGE_DEST in \$((\$(date +%s)-\$__stage_t0))s\"' EXIT"
+  fi
   SETUP_CMD="{ $REMOTE_SYNC_CMD; } && { $REMOTE_STAGING_CMD; } && $SETUP_CMD"
 fi
 
