@@ -530,8 +530,8 @@ def identity_rejection_reason(name: str, value: str) -> str | None:
     True
     >>> identity_rejection_reason("share", "//files.example/project") is None
     True
-    >>> identity_rejection_reason("user", "u,nobrl")
-    "the SMB user contains a comma, so it would be read as further cifs options: 'u,nobrl' smuggles nobrl/nolock past the --mount-opts refusal"
+    >>> identity_rejection_reason("user", "u,nobrl")  # doctest: +ELLIPSIS
+    "the SMB user contains a comma...smuggles nobrl/nolock..."
     >>> identity_rejection_reason("user", "bad user")
     "the SMB user must match [A-Za-z0-9._@-]+, got 'bad user'"
     >>> identity_rejection_reason("share", "files.example/project")

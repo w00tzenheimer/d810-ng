@@ -3098,7 +3098,10 @@ def test_remote_without_artifact_flags_redirects_but_does_not_stage(
     assert "[artifacts] staged" not in command
     assert "/work/.tmp/logs/" not in command
     assert "trap " not in command
-    assert "work volume, retained; use the artifacts subcommand to copy" in result.stdout
+    assert (
+        "work volume, retained; use the artifacts subcommand to copy"
+        in result.stdout
+    )
     assert "staged to .tmp/logs/" not in result.stdout
 
 
@@ -3286,7 +3289,8 @@ def test_run_flag_accepts_a_real_run_id(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
     command = _remote_container_run(calls)
     assert f"test -d '/work/runs/{run_id}'" in command
-    assert f"cp -a '/work/runs/{run_id}/.' '/work/.tmp/remote-runs/{run_id}/'" in command
+    copy = f"cp -a '/work/runs/{run_id}/.' '/work/.tmp/remote-runs/{run_id}/'"
+    assert copy in command
 
 
 @pytest.mark.parametrize(
