@@ -19,6 +19,12 @@ COBRA_WHEEL_AARCH64_NAME = (
 COBRA_WHEEL_AARCH64_SHA256 = (
     "2c85ffe14a1f3c1d2b750790332a7c0a5e911b35f7fc041ebedcd6532382c63c"
 )
+COBRA_WHEEL_X86_64_NAME = (
+    "d810_cobra-0.1.5-cp313-cp313-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl"
+)
+COBRA_WHEEL_X86_64_SHA256 = (
+    "352133fd4f91227518714735b463b978760650b5f30c71f5276c0bccb90cb72c"
+)
 COBRA_WHEEL_PREFLIGHT_AARCH64_SHA256 = (
     "b71d40e45146004a968a96a1b17493b16ac04f2a98e41c12a1f87a38ddf3ab25"
 )
@@ -119,7 +125,11 @@ if [ "${1:-}" = image ] && [ "${2:-}" = inspect ]; then
   printf '%s\\n' "${MOCK_DOCKER_LABEL:-}"
 fi
 if [ "${1:-}" = version ]; then
-  printf '%s\\n' "${MOCK_DOCKER_SERVER_ARCH:-arm64}"
+  if [ -n "${DOCKER_HOST:-}" ]; then
+    printf '%s\\n' "${MOCK_DOCKER_REMOTE_SERVER_ARCH:-${MOCK_DOCKER_SERVER_ARCH:-arm64}}"
+  else
+    printf '%s\\n' "${MOCK_DOCKER_SERVER_ARCH:-arm64}"
+  fi
 fi
 if [ "${1:-}" = run ]; then
   case "$*" in
@@ -2136,6 +2146,99 @@ fi
     )
     assert [call for call in calls if pattern.match(call)], calls
     assert "run-arg -v" not in calls
+
+
+def _wheel_on_share(share: Path, name: str) -> Path | None:
+    """Copy a recorded wheel under the share root, byte-for-byte.
+
+    Remote mode refuses any mount outside the share, so the wheel a remote run
+    installs has to live there; the sha256 gate then still applies.
+    """
+    wheel = _recorded_wheel(name)
+    if wheel is None:
+        return None
+    destination = share / "wheels" / name
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(wheel, destination)
+    return destination
+
+
+def test_remote_mode_checks_the_cobra_wheel_against_the_remote_engine(
+    tmp_path: Path,
+) -> None:
+    """The wheel must match the engine that runs it, not this machine.
+
+    --remote points DOCKER_HOST at another architecture, so an x86_64 wheel is
+    the correct choice for an amd64 remote engine even on an arm64 Mac.
+    """
+    share, repo = _share_layout(tmp_path)
+    wheel = _wheel_on_share(share, COBRA_WHEEL_X86_64_NAME)
+    if wheel is None:
+        pytest.skip(f"recorded wheel {COBRA_WHEEL_X86_64_NAME} is unavailable")
+
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--remote",
+        REMOTE_HOST,
+        "--",
+        "true",
+        repo_root=repo,
+        extra_env=_remote_env(
+            share,
+            D810_COBRA_WHEEL=str(wheel),
+            D810_COBRA_WHEEL_SHA256=COBRA_WHEEL_X86_64_SHA256,
+            MOCK_DOCKER_SERVER_ARCH="arm64",
+            MOCK_DOCKER_REMOTE_SERVER_ARCH="amd64",
+        ),
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "wheel but the Docker engine is" not in result.stderr
+    assert _runs(calls)
+    # The architecture probe itself has to be addressed to the remote engine.
+    hosts = _docker_hosts(calls)
+    versions = [
+        index
+        for index, call in enumerate(_docker_calls(calls))
+        if call.startswith("version ")
+    ]
+    assert versions, calls
+    assert all(hosts[index] == f"ssh://{REMOTE_HOST}" for index in versions), calls
+
+
+def test_remote_mode_rejects_a_wheel_that_only_matches_the_local_engine(
+    tmp_path: Path,
+) -> None:
+    """An aarch64 wheel is wrong for an amd64 remote engine, Mac or not."""
+    share, repo = _share_layout(tmp_path)
+    wheel = _wheel_on_share(share, COBRA_WHEEL_AARCH64_NAME)
+    if wheel is None:
+        pytest.skip(f"recorded wheel {COBRA_WHEEL_AARCH64_NAME} is unavailable")
+
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--remote",
+        REMOTE_HOST,
+        "--",
+        "true",
+        repo_root=repo,
+        extra_env=_remote_env(
+            share,
+            D810_COBRA_WHEEL=str(wheel),
+            D810_COBRA_WHEEL_SHA256=COBRA_WHEEL_AARCH64_SHA256,
+            MOCK_DOCKER_SERVER_ARCH="arm64",
+            MOCK_DOCKER_REMOTE_SERVER_ARCH="amd64",
+        ),
+    )
+
+    assert result.returncode != 0
+    assert "aarch64 wheel but the Docker engine is x86_64" in result.stderr
+    # preflight's read-only probes may have run; no workload container did
+    assert _workload_runs(calls) == []
+    # Failing closed before the lock leaves nothing to clean up.
+    assert not (repo / ".tmp" / "remote-run.lock").exists()
 
 
 def test_remote_mode_grants_a_tmp_scoped_acl_only(tmp_path: Path) -> None:

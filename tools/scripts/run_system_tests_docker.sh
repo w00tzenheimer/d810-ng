@@ -575,21 +575,12 @@ if [ -n "${D810_COBRA_WHEEL+x}" ] || [ -n "${D810_COBRA_WHEEL_SHA256+x}" ]; then
       ;;
   esac
   # A wheel carries native code, so the engine architecture decides which of
-  # the recorded wheels is installable. Ask the engine rather than the host:
-  # a remote or emulated engine need not match this machine.
-  COBRA_DOCKER_SERVER_ARCH="$(docker version --format '{{.Server.Arch}}' 2>/dev/null || true)"
-  case "$COBRA_DOCKER_SERVER_ARCH" in
-    arm64) COBRA_DOCKER_ENGINE_ARCH="aarch64" ;;
-    amd64) COBRA_DOCKER_ENGINE_ARCH="x86_64" ;;
-    *)
-      echo "ERROR: D810_COBRA_WHEEL needs a known Docker engine architecture; docker version --format '{{.Server.Arch}}' returned '$COBRA_DOCKER_SERVER_ARCH' (expected arm64 or amd64)" >&2
-      exit 1
-      ;;
-  esac
-  if [ "$COBRA_DOCKER_ENGINE_ARCH" != "$COBRA_WHEEL_ARCH" ]; then
-    echo "ERROR: D810_COBRA_WHEEL is a $COBRA_WHEEL_ARCH wheel but the Docker engine is $COBRA_DOCKER_ENGINE_ARCH (docker server arch $COBRA_DOCKER_SERVER_ARCH); use the recorded $COBRA_DOCKER_ENGINE_ARCH wheel" >&2
-    exit 1
-  fi
+  # the recorded wheels is installable. That question can only be asked once
+  # the engine is known, and --remote picks the engine while parsing arguments,
+  # which happens after this block: the probe therefore runs later, from
+  # _verify_cobra_wheel_engine_arch, against the engine that will actually run
+  # the container.
+  COBRA_WHEEL_ARCH_CHECK_PENDING=1
   COBRA_WHEEL_SHA256="$D810_COBRA_WHEEL_SHA256"
   COBRA_WHEEL_CONTAINER_PATH="/opt/d810-cobra-wheel/$COBRA_WHEEL_BASENAME"
   COBRA_SOURCE_MODE="wheel"
@@ -1251,6 +1242,27 @@ _remote_check_engine_clock() {
   exit 1
 }
 
+# The CoBRA wheel is native code, so it must match the engine that will run it,
+# not this machine: --remote points DOCKER_HOST at another architecture. Every
+# caller reaches this only after DOCKER_HOST is final.
+_verify_cobra_wheel_engine_arch() {
+  [ "${COBRA_WHEEL_ARCH_CHECK_PENDING:-0}" = "1" ] || return 0
+  COBRA_WHEEL_ARCH_CHECK_PENDING=0
+  COBRA_DOCKER_SERVER_ARCH="$(docker version --format '{{.Server.Arch}}' 2>/dev/null || true)"
+  case "$COBRA_DOCKER_SERVER_ARCH" in
+    arm64) COBRA_DOCKER_ENGINE_ARCH="aarch64" ;;
+    amd64) COBRA_DOCKER_ENGINE_ARCH="x86_64" ;;
+    *)
+      echo "ERROR: D810_COBRA_WHEEL needs a known Docker engine architecture; docker version --format '{{.Server.Arch}}' returned '$COBRA_DOCKER_SERVER_ARCH' (expected arm64 or amd64)" >&2
+      exit 1
+      ;;
+  esac
+  if [ "$COBRA_DOCKER_ENGINE_ARCH" != "$COBRA_WHEEL_ARCH" ]; then
+    echo "ERROR: D810_COBRA_WHEEL is a $COBRA_WHEEL_ARCH wheel but the Docker engine is $COBRA_DOCKER_ENGINE_ARCH (docker server arch $COBRA_DOCKER_SERVER_ARCH); use the recorded $COBRA_DOCKER_ENGINE_ARCH wheel" >&2
+    exit 1
+  fi
+}
+
 # The volume can exist and still not expose this checkout (wrong share, wrong
 # subpath, unmounted CIFS). Prove reachability read-only before any real work.
 _remote_probe_volume() {
@@ -1302,6 +1314,9 @@ if [ -n "$REMOTE_HOST" ]; then
   # workload all address the same engine.
   export DOCKER_HOST="ssh://$REMOTE_HOST"
   _remote_preflight_engine
+  # Before the lock and the source archive: a wheel for the wrong engine is a
+  # configuration error, not a run to clean up after.
+  _verify_cobra_wheel_engine_arch
   _validate_remote_artifact_dirs
   # The lock still guards the shared read-write .tmp: -o captures, logs, diag
   # SQLite databases and finalized artifact staging all collide between runs.
@@ -1322,6 +1337,10 @@ if [ -n "$REMOTE_HOST" ]; then
   REMOTE_ARCHIVE_CONTAINER_PATH="/work/.tmp/$(basename "$REMOTE_ARCHIVE_DIR")/source.tar"
   _ensure_acl "$REMOTE_ARCHIVE_DIR" dir
   _ensure_acl "$REMOTE_ARCHIVE" file
+fi
+
+if [ -z "$REMOTE_HOST" ]; then
+  _verify_cobra_wheel_engine_arch
 fi
 
 # Two consumers key on the image's identity: the provenance receipt below and
