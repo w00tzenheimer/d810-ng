@@ -521,3 +521,37 @@ def test_a_missing_identity_file_fails_closed_in_both_readers(
     runner = _runner_loader_with_identity(tmp_path / "absent")
     assert runner.returncode != 0
     assert "unreadable" in runner.stderr
+
+
+def test_a_disagreeing_parent_commit_fails_closed_in_every_reader(
+    tmp_path: Path,
+) -> None:
+    """Same version/tag/core, different parent: still two releases, not one.
+
+    A baked image and a source build that pin different d810-cobra revisions
+    are not comparable measurements even when the wheel's own version, tag
+    commit and core commit agree, so a row disagreeing only on parent_commit
+    must be refused exactly like any other multi-release file.
+    """
+    other_parent = "4b3c406270f1efd8e222f0b05040ae4e074b27d5"
+    assert other_parent != PARENT_COMMIT
+
+    disagreeing = tmp_path / "published_identity"
+    disagreeing.write_text(
+        f"aarch64 {PUBLISHED_AARCH64_SHA256} {VERSION} {TAG_COMMIT} "
+        f"{CORE_COMMIT} {PARENT_COMMIT} {AARCH64_WHEEL}\n"
+        f"x86_64 {PUBLISHED_X86_64_SHA256} {VERSION} {TAG_COMMIT} "
+        f"{CORE_COMMIT} {other_parent} {X86_64_WHEEL}\n",
+        encoding="utf-8",
+    )
+
+    shell = _bake_loader_with_identity(tmp_path, disagreeing)
+    assert shell.returncode != 0
+    assert "more than one release" in shell.stderr
+
+    runner = _runner_loader_with_identity(disagreeing)
+    assert runner.returncode != 0
+    assert "more than one release" in runner.stderr
+
+    with pytest.raises(ValueError, match="describes a second release"):
+        published_identity(disagreeing)
