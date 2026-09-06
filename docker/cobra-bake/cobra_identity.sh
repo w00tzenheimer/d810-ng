@@ -2,25 +2,66 @@
 # cobra_identity.sh - the one published identity of d810-cobra, for shells.
 #
 # Sourced by the image build script and by the context-staging helper so the
-# bake, the labels and the post-build verification cannot drift apart.  The
-# hashes are the PUBLISHED PyPI artifacts of d810-cobra 0.1.5.  The preflight
-# wheels built before the release share their filenames and sizes but not
-# their bytes; they are provenance evidence only and are never accepted here.
+# bake, the labels and the post-build verification cannot drift apart.
+#
+# It declares NOTHING itself: every value is read from published_identity
+# beside it, which the Docker test runner and the tests of both read too.
+# A hash rotation is one edit, in one file, or it is a test failure.
+#
+# Reading a data file rather than sourcing one is deliberate: a malformed row
+# must fail closed, not execute.
 
-COBRA_BAKE_VERSION="0.1.5"
-# Build/tag commit of the published release (tag v0.1.5).
-COBRA_BAKE_TAG_COMMIT="73b405c106d78e1fdc7576b217de39b7dcd0ddb3"
-# CoBRA core (third_party/cobra) commit the release was built over.
-COBRA_BAKE_CORE_COMMIT="72f616f822f538a0cfbea3c880f9d1e68bb9a8f1"
-# d810-cobra source revision the runner pins for source builds.  The baked
-# image must name it so a baked run and a source run are comparable.
-COBRA_BAKE_PARENT_COMMIT="3b3c406270f1efd8e222f0b05040ae4e074b27d5"
+COBRA_BAKE_IDENTITY_FILE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/published_identity"
 
-COBRA_BAKE_SHA256_AARCH64="2c85ffe14a1f3c1d2b750790332a7c0a5e911b35f7fc041ebedcd6532382c63c"
-COBRA_BAKE_SHA256_X86_64="352133fd4f91227518714735b463b978760650b5f30c71f5276c0bccb90cb72c"
+_cobra_bake_load_identity() {
+  local arch sha version tag core parent wheel rows=0
+  if [ ! -r "$COBRA_BAKE_IDENTITY_FILE" ]; then
+    echo "ERROR: the published d810-cobra identity is unreadable: $COBRA_BAKE_IDENTITY_FILE" >&2
+    return 1
+  fi
+  COBRA_BAKE_VERSION=""
+  while read -r arch sha version tag core parent wheel; do
+    case "$arch" in ""|\#*) continue ;; esac
+    if [ -z "$wheel" ] || [ -n "${sha//[0-9a-f]/}" ] || [ "${#sha}" -ne 64 ]; then
+      echo "ERROR: malformed row in $COBRA_BAKE_IDENTITY_FILE: $arch $sha" >&2
+      return 1
+    fi
+    case "$arch" in
+      aarch64)
+        COBRA_BAKE_SHA256_AARCH64="$sha"
+        COBRA_BAKE_WHEEL_AARCH64="$wheel"
+        ;;
+      x86_64)
+        COBRA_BAKE_SHA256_X86_64="$sha"
+        COBRA_BAKE_WHEEL_X86_64="$wheel"
+        ;;
+      *)
+        echo "ERROR: unsupported architecture in $COBRA_BAKE_IDENTITY_FILE: $arch" >&2
+        return 1
+        ;;
+    esac
+    # Every row describes the same release; a row that disagrees is a drift
+    # this file exists to prevent, so refuse rather than pick a winner.
+    if [ -n "$COBRA_BAKE_VERSION" ] && { [ "$version" != "$COBRA_BAKE_VERSION" ] \
+      || [ "$tag" != "$COBRA_BAKE_TAG_COMMIT" ] \
+      || [ "$core" != "$COBRA_BAKE_CORE_COMMIT" ] \
+      || [ "$parent" != "$COBRA_BAKE_PARENT_COMMIT" ]; }; then
+      echo "ERROR: $COBRA_BAKE_IDENTITY_FILE describes more than one release" >&2
+      return 1
+    fi
+    COBRA_BAKE_VERSION="$version"
+    COBRA_BAKE_TAG_COMMIT="$tag"
+    COBRA_BAKE_CORE_COMMIT="$core"
+    COBRA_BAKE_PARENT_COMMIT="$parent"
+    rows=$((rows + 1))
+  done < "$COBRA_BAKE_IDENTITY_FILE"
+  if [ "$rows" -ne 2 ] || [ -z "$COBRA_BAKE_SHA256_AARCH64" ] || [ -z "$COBRA_BAKE_SHA256_X86_64" ]; then
+    echo "ERROR: $COBRA_BAKE_IDENTITY_FILE must name exactly one aarch64 and one x86_64 wheel" >&2
+    return 1
+  fi
+}
 
-COBRA_BAKE_WHEEL_AARCH64="d810_cobra-${COBRA_BAKE_VERSION}-cp313-cp313-manylinux_2_26_aarch64.manylinux_2_28_aarch64.whl"
-COBRA_BAKE_WHEEL_X86_64="d810_cobra-${COBRA_BAKE_VERSION}-cp313-cp313-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl"
+_cobra_bake_load_identity || return 1 2>/dev/null || exit 1
 
 # cobra_bake_arch_for_platform linux/arm64 -> aarch64
 cobra_bake_arch_for_platform() {

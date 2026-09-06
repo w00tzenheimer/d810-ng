@@ -14,6 +14,17 @@ d810 -- it is mounted at run time, and installing it would shadow the mounted
 tree -- can be proven identical but not exercised.  That case is declared, not
 inferred: see ``D810_COBRA_REQUIRE_SOLVE``.
 
+Imports follow from that, and the split is deliberate rather than lazy.
+``d810_cobra`` and ``d810_cobra._cobra`` are bound at module scope, as the
+project requires: at the pinned revision the package ``__init__`` reaches only
+``d810_cobra.expr`` and ``d810_cobra.probe``, neither of which imports d810, so
+they load in an image that carries none.  ``d810_cobra.solve`` does
+(``solve.py`` line 19, ``from d810.core import getLogger``), so hoisting it
+would make this file fail to import in exactly the environment the reduced
+mode exists for.  Those three names therefore stay inside
+``_prove_known_answer_solve`` -- a documented exception, not a silent one, and
+nothing else in this file may import inside a function.
+
 Environment:
 
 ``D810_COBRA_EXPECT_VERSION``
@@ -42,6 +53,9 @@ import importlib.util
 import os
 import sys
 import sysconfig
+
+import d810_cobra
+import d810_cobra._cobra
 
 EXPECT_VERSION = os.environ.get("D810_COBRA_EXPECT_VERSION", "")
 EXPECT_ARCH = os.environ.get("D810_COBRA_EXPECT_ARCH", "")
@@ -74,9 +88,6 @@ def main() -> int:
             "D810_COBRA_REQUIRE_SOLVE=0 claims d810 is unavailable, but it is "
             "importable here; run the full verification instead"
         )
-
-    import d810_cobra
-    import d810_cobra._cobra
 
     manifest = d810_cobra.MANIFEST
     assert manifest["api_version"] == 1, manifest

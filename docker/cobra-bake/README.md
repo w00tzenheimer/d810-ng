@@ -14,15 +14,26 @@ directory is the tracked, reviewable half of that arrangement:
 
 | file | role |
 |-|-|
-| `cobra_identity.sh` | the published identity (version, per-arch wheel name + sha256, tag/core/parent commits) and the label comparison, sourced by the image build script |
+| `published_identity` | **the single source of truth**: version, per-arch wheel name + sha256, tag/core/parent commits. Nothing else declares them |
+| `cobra_identity.sh` | reads `published_identity` into shell variables, plus the label comparison; sourced by the image build script |
 | `stage_cobra_bake_context.sh` | copies the one architecture-matching published wheel, its `SHA256SUMS` line and the verifier into a Docker build context |
 | `verify_cobra_install.py` | manifest + compiled-extension import + known-answer solve + identity assertions; run by the bake step, by the build script's verification table, and by hand |
 | | `D810_COBRA_REQUIRE_SOLVE=0` selects the reduced check for an environment without d810, and asserts d810 really is absent |
 | `Dockerfile.cobra-bake.fragment` | the exact `ARG` / `RUN` / `LABEL` block inserted into the image Dockerfile |
-| `SHA256SUMS.published` | the published hashes, in `sha256sum -c` form |
 
 `Dockerfile.cobra-bake.fragment` is a copy, not an include: Docker has no
 `#include`. Changing the bake means changing both it and the image Dockerfile.
+
+`published_identity` is a whitespace-delimited table on purpose. It is the only
+shape both bash (a `while read -r` loop -- no `jq`, no dependency, and no
+shell-sourcing of a data file) and Python (`str.split`) parse without a second
+copy or a parser: JSON would force `jq`, which is not guaranteed on the host,
+or an `eval`-based shell hack. The Docker test runner
+(`tools/scripts/run_system_tests_docker.sh`) reads the same file for its
+accepted-wheel table and its pinned source revision, and both readers fail
+closed when it is missing or malformed. `tests/unit/tools/test_cobra_bake.py`
+asserts that neither reader carries a literal copy, so editing one alone is a
+test failure rather than a silent desync.
 
 ## Labels
 
@@ -49,7 +60,7 @@ upstream code.
 The preflight wheels built before the 0.1.5 release share their filenames AND
 their sizes with the published ones, and differ only in their bytes. They are
 provenance evidence and are never an accepted production identity here. Only
-the two hashes in `SHA256SUMS.published` are.
+the two hashes in `published_identity` are.
 
 ## The image build script
 
@@ -58,6 +69,23 @@ the two hashes in `SHA256SUMS.published` are.
 architecture-matching wheel into the build context, and passes the five
 `--build-arg` values for `SPEEDUPS=1` variants only. It takes
 `--cobra-wheel-dir DIR` to point at the published wheels.
+
+It reads this directory from the repository root, two levels above itself, so
+the identity, the staging helper and the verifier are under version control
+even though the script is not.
+
+Which architecture it builds is decided by the installer, not by a flag. For
+9.4 the x86-64 installer is `_gitless/resource/9.4/ida9.4.run`, so `-v 9.4`
+alone builds `linux/amd64`; the arm64 installer sits beside it as
+`ida9.4.run.arm64` and the arm64 image is built from its own resource
+directory, `-v 9.4 -r _gitless/resource/9.4-arm64`. The platform still comes
+from the installer's ELF header, so the resource directory is what selects it.
+
+Every build re-points the local `:latest` tag at the `:cli` image it just
+produced. Two architectures cannot hold one tag, so
+`idapro-9.4-speedups:latest` resolves to whichever was built last -- which is
+also why the runner reads the CoBRA labels from the engine that will run the
+container rather than trusting a tag.
 
 Its verification table gains a `COBRA` column, which fails the run non-zero on
 any mismatch:

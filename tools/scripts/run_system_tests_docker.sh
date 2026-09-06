@@ -449,8 +449,60 @@ fi
 # this exact parent and submodule revision; accepting an arbitrary checkout
 # would merely reintroduce the version-identity bug this pin prevents.
 COBRA_SOURCE_URL="https://github.com/w00tzenheimer/d810-CoBRA.git"
-COBRA_SOURCE_REVISION="3b3c406270f1efd8e222f0b05040ae4e074b27d5"
-COBRA_CORE_SOURCE_REVISION="72f616f822f538a0cfbea3c880f9d1e68bb9a8f1"
+# Every value that identifies a published d810-cobra artifact -- both wheel
+# hashes, the release version, the tag and core commits, and the source
+# revision this script pins -- is read from ONE tracked file, which the image
+# bake (docker/cobra-bake/cobra_identity.sh) and the tests of both read too.
+# Re-declaring any of them here is how a wheel rotation silently desyncs the
+# runner from the image that was built for it.
+#
+# The file is data, not shell: it is parsed, never sourced, so a malformed row
+# fails closed instead of executing.
+COBRA_IDENTITY_FILE="$(cd "$(dirname "$0")/../.." && pwd -P)/docker/cobra-bake/published_identity"
+COBRA_RECORDED_WHEELS=""
+COBRA_SOURCE_REVISION=""
+COBRA_CORE_SOURCE_REVISION=""
+_cobra_load_published_identity() {
+  local arch sha version tag core parent wheel rows=0
+  if [ ! -r "$COBRA_IDENTITY_FILE" ]; then
+    echo "ERROR: the published d810-cobra identity is unreadable: $COBRA_IDENTITY_FILE" >&2
+    echo "       Every accepted wheel hash and the pinned source revision come from that file; without it no CoBRA identity can be checked." >&2
+    exit 1
+  fi
+  while read -r arch sha version tag core parent wheel; do
+    case "$arch" in ""|\#*) continue ;; esac
+    case "$arch" in
+      aarch64|x86_64) ;;
+      *)
+        echo "ERROR: unsupported architecture in $COBRA_IDENTITY_FILE: $arch" >&2
+        exit 1
+        ;;
+    esac
+    if [[ ! "$sha" =~ ^[0-9a-f]{64}$ ]] || [ -z "$wheel" ] \
+      || [[ ! "$tag" =~ ^[0-9a-f]{40}$ ]] || [[ ! "$core" =~ ^[0-9a-f]{40}$ ]] \
+      || [[ ! "$parent" =~ ^[0-9a-f]{40}$ ]] || [ -z "$version" ]; then
+      echo "ERROR: malformed row in $COBRA_IDENTITY_FILE: $arch $sha" >&2
+      exit 1
+    fi
+    # Every row describes the same release; a row that disagrees is exactly
+    # the drift this file exists to prevent, so refuse rather than pick one.
+    if [ -n "$COBRA_SOURCE_REVISION" ] \
+      && { [ "$parent" != "$COBRA_SOURCE_REVISION" ] || [ "$core" != "$COBRA_CORE_SOURCE_REVISION" ]; }; then
+      echo "ERROR: $COBRA_IDENTITY_FILE describes more than one release" >&2
+      exit 1
+    fi
+    COBRA_SOURCE_REVISION="$parent"
+    COBRA_CORE_SOURCE_REVISION="$core"
+    COBRA_RECORDED_WHEELS="${COBRA_RECORDED_WHEELS:+$COBRA_RECORDED_WHEELS
+}$sha $version|$arch|$tag|$core"
+    rows=$((rows + 1))
+  done < "$COBRA_IDENTITY_FILE"
+  if [ "$rows" -eq 0 ]; then
+    echo "ERROR: $COBRA_IDENTITY_FILE names no published d810-cobra wheel" >&2
+    exit 1
+  fi
+}
+_cobra_load_published_identity
 COBRA_EXTENSION_ENABLED=1
 COBRA_SOURCE_MODE="pinned-remote"
 COBRA_PARENT_SOURCE_ID="$COBRA_SOURCE_REVISION"
@@ -464,26 +516,6 @@ COBRA_BAKED_WHEEL_SHA256=""
 COBRA_BAKED_TAG_COMMIT=""
 COBRA_BAKED_CORE_COMMIT=""
 COBRA_BAKED_PARENT_COMMIT=""
-# A published prebuilt wheel is the immutable fast path: it installs in
-# seconds and skips the clone, the cmake/ninja provisioning and the 55-object
-# C++ build. The table below is the entire allow-list and holds only the
-# PUBLISHED PyPI artifacts of d810-cobra 0.1.5, built from tag v0.1.5
-# (73b405c106d78e1fdc7576b217de39b7dcd0ddb3) over core third_party/cobra
-# 72f616f822f538a0cfbea3c880f9d1e68bb9a8f1.
-#
-# The commits are kept literal on purpose: a later revision bump must not
-# silently re-label an already published wheel. Note the tag commit differs
-# from COBRA_SOURCE_REVISION above, which pins what source mode compiles.
-#
-# Preflight builds from 55540ab84d95bde080a5c1223f034b61fb483492, provenance
-# evidence, NOT accepted -- they carry the SAME filenames and the SAME sizes as
-# the published wheels but different bytes, so only the hash tells them apart:
-#   b71d40e45146004a968a96a1b17493b16ac04f2a98e41c12a1f87a38ddf3ab25  aarch64
-#   c642e6a6d61f8b841d97df78375c6e1da43fc05a56c3b68218230ed23beaa762  x86_64
-#
-# Columns: <sha256> <version>|<arch>|<tag commit>|<core commit>
-COBRA_RECORDED_WHEELS="2c85ffe14a1f3c1d2b750790332a7c0a5e911b35f7fc041ebedcd6532382c63c 0.1.5|aarch64|73b405c106d78e1fdc7576b217de39b7dcd0ddb3|72f616f822f538a0cfbea3c880f9d1e68bb9a8f1
-352133fd4f91227518714735b463b978760650b5f30c71f5276c0bccb90cb72c 0.1.5|x86_64|73b405c106d78e1fdc7576b217de39b7dcd0ddb3|72f616f822f538a0cfbea3c880f9d1e68bb9a8f1"
 
 # A harness fixture has no release behind it, so its record names none: the
 # version and architecture come from the filename pip will read, and the
@@ -1310,6 +1342,14 @@ _remote_check_engine_clock() {
 # The CoBRA wheel is native code, so it must match the engine that will run it,
 # not this machine: --remote points DOCKER_HOST at another architecture. Every
 # caller reaches this only after DOCKER_HOST is final.
+#
+# Both published-wheel paths use it. An explicit wheel is named by the
+# operator; a baked one is named by the image's labels, whose recorded hash
+# identifies the architecture just as precisely. Either way the check is one
+# `docker version` BEFORE any container starts -- the in-container assertion
+# is a backstop, and reaching it means a setup container was started for a
+# wheel that could never have imported.
+COBRA_WHEEL_ARCH_SUBJECT="D810_COBRA_WHEEL"
 _verify_cobra_wheel_engine_arch() {
   [ "${COBRA_WHEEL_ARCH_CHECK_PENDING:-0}" = "1" ] || return 0
   COBRA_WHEEL_ARCH_CHECK_PENDING=0
@@ -1318,12 +1358,12 @@ _verify_cobra_wheel_engine_arch() {
     arm64) COBRA_DOCKER_ENGINE_ARCH="aarch64" ;;
     amd64) COBRA_DOCKER_ENGINE_ARCH="x86_64" ;;
     *)
-      echo "ERROR: D810_COBRA_WHEEL needs a known Docker engine architecture; docker version --format '{{.Server.Arch}}' returned '$COBRA_DOCKER_SERVER_ARCH' (expected arm64 or amd64)" >&2
+      echo "ERROR: $COBRA_WHEEL_ARCH_SUBJECT needs a known Docker engine architecture; docker version --format '{{.Server.Arch}}' returned '$COBRA_DOCKER_SERVER_ARCH' (expected arm64 or amd64)" >&2
       exit 1
       ;;
   esac
   if [ "$COBRA_DOCKER_ENGINE_ARCH" != "$COBRA_WHEEL_ARCH" ]; then
-    echo "ERROR: D810_COBRA_WHEEL is a $COBRA_WHEEL_ARCH wheel but the Docker engine is $COBRA_DOCKER_ENGINE_ARCH (docker server arch $COBRA_DOCKER_SERVER_ARCH); use the recorded $COBRA_DOCKER_ENGINE_ARCH wheel" >&2
+    echo "ERROR: $COBRA_WHEEL_ARCH_SUBJECT is a $COBRA_WHEEL_ARCH wheel but the Docker engine is $COBRA_DOCKER_ENGINE_ARCH (docker server arch $COBRA_DOCKER_SERVER_ARCH); use the recorded $COBRA_DOCKER_ENGINE_ARCH wheel" >&2
     exit 1
   fi
 }
@@ -1415,6 +1455,14 @@ _detect_baked_cobra() {
   COBRA_WHEEL_SHA256="$sha"
   COBRA_PARENT_SOURCE_ID="$tag"
   COBRA_CORE_SOURCE_ID="$core"
+
+  # The baked wheel is native code too. Its architecture comes from the
+  # published record for the hash the image declares, so it is known here,
+  # before anything is started -- refuse at the cheap `docker version` stage
+  # rather than inside a setup container that can only fail to import.
+  COBRA_WHEEL_ARCH_SUBJECT="the d810-cobra wheel baked into $DOCKER_IMAGE"
+  COBRA_WHEEL_ARCH_CHECK_PENDING=1
+  _verify_cobra_wheel_engine_arch
 }
 
 # The volume can exist and still not expose this checkout (wrong share, wrong
