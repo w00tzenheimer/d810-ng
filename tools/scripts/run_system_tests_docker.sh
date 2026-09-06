@@ -39,6 +39,13 @@
 #                           and retrievable with the artifacts subcommand.
 #   -o, --out FILE          (system/test only) Redirect stdout+stderr to WORK_DIR/.tmp/FILE. FILE must be one bare
 #                           filename (e.g. out.txt), with no slashes; the script prepends .tmp/.
+#   --start-batch N         (system only) Skip ahead to batch N (1-based) instead of starting at 1.
+#                           Resume recipe: rerun the SAME system command with --start-batch <first
+#                           unfinished batch>, where the batch number is the one printed in the
+#                           "[system-batch]" lines of the capture. The batcher recomputes the batch
+#                           list from the test selection and --batch-size on every run, so the test
+#                           selection (PYTEST_ARGS) and D810_SYSTEM_BATCH_SIZE must be identical to
+#                           the run being resumed or the numbering will not line up.
 #   --enable-debug-logging  Set D810_DEBUG_LOGGING=1 inside the container so getLogger uses DEBUG as
 #                           the default level instead of INFO (explicit caller levels are unaffected).
 #   --enable-diag-snapshot  Set D810_DIAG_SNAPSHOT=1 inside the container.
@@ -776,6 +783,7 @@ ENABLE_DIAG_SNAPSHOT=""
 ENABLE_LLVM_OPT=""
 DISABLE_FACT_LIFECYCLE=""
 ARTIFACT_RUN=""
+START_BATCH=""
 EXTRA_PYTEST=()
 EXEC_ARGS=()
 
@@ -837,6 +845,27 @@ while [ $# -gt 0 ]; do
         exit 1
       fi
       ARTIFACT_RUN="$2"
+      shift 2
+      ;;
+    --start-batch)
+      # Spliced verbatim into the batcher's argv, so it must be exactly a
+      # positive integer (^[1-9][0-9]*$) and nothing else: empty, non-digit,
+      # or leading-zero values are all refused before any docker contact.
+      if [ $# -lt 2 ]; then
+        echo "ERROR: --start-batch requires N (positive integer batch number)" >&2
+        exit 2
+      fi
+      case "$2" in
+        ''|*[!0-9]*|0*)
+          echo "ERROR: --start-batch must be a positive integer (e.g. 7), got '$2'" >&2
+          exit 2
+          ;;
+      esac
+      if [ "$CMD" != "system" ]; then
+        echo "ERROR: --start-batch is only valid with the system command" >&2
+        exit 2
+      fi
+      START_BATCH="$2"
       shift 2
       ;;
     --remote)
@@ -2164,7 +2193,7 @@ if [ "$CMD" = "system" ]; then
     SYS_TRUNCATE=": > $SYS_LOG_QUOTED && "
     SYS_REDIR="> $SYS_LOG_QUOTED 2>&1"
   fi
-  run_bash "$SETUP_CMD && ${SYS_TRUNCATE}$ENV_TEST $IDA_VENV_PYTHON tools/scripts/run_system_test_batches.py --python $IDA_VENV_PYTHON --batch-size $SYSTEM_BATCH_SIZE --log-dir /root/.idapro/logs/d810_logs tests/system -- $(_d810_quote_args "${SYSTEM_ARGS[@]}") $SYS_REDIR"
+  run_bash "$SETUP_CMD && ${SYS_TRUNCATE}$ENV_TEST $IDA_VENV_PYTHON tools/scripts/run_system_test_batches.py --python $IDA_VENV_PYTHON --batch-size $SYSTEM_BATCH_SIZE${START_BATCH:+ --start-batch $START_BATCH} --log-dir /root/.idapro/logs/d810_logs tests/system -- $(_d810_quote_args "${SYSTEM_ARGS[@]}") $SYS_REDIR"
   exit 0
 fi
 

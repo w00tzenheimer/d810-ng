@@ -518,6 +518,71 @@ def test_system_mode_uses_fresh_interpreter_batches(tmp_path: Path) -> None:
     assert "tests/system" in command
     assert "--batch-size 20" in command
     assert "pytest tests/system -v" not in command
+    # Default invocation must stay byte-identical to before --start-batch
+    # existed: no flag at all when the caller does not pass one.
+    assert "--start-batch" not in command
+
+
+def test_start_batch_reaches_the_batcher_command(tmp_path: Path) -> None:
+    result, calls = _run(tmp_path, "system", "--start-batch", "7", "--", "-q")
+
+    assert result.returncode == 0, result.stderr
+    command = _container_run(calls)
+    assert "run_system_test_batches.py" in command
+    assert re.search(r"--batch-size 20 --start-batch 7 --log-dir", command)
+    # The flag must land before the '--' pytest separator, not after it.
+    assert command.index("--start-batch 7") < command.index(" -- ")
+
+
+def test_start_batch_reaches_the_batcher_command_in_remote_mode(
+    tmp_path: Path,
+) -> None:
+    share, repo = _share_layout(tmp_path)
+
+    result, calls = _run(
+        tmp_path,
+        "system",
+        "--remote",
+        REMOTE_HOST,
+        "--start-batch",
+        "3",
+        "--",
+        "-q",
+        repo_root=repo,
+        extra_env=_remote_env(share),
+    )
+
+    assert result.returncode == 0, result.stderr
+    command = _remote_container_run(calls)
+    assert "run_system_test_batches.py" in command
+    assert "--start-batch 3" in command
+    assert command.index("--start-batch 3") < command.index(" -- ")
+
+
+@pytest.mark.parametrize("bad_value", ["0", "", "abc", "7;x"])
+def test_start_batch_rejects_non_positive_integers(
+    tmp_path: Path,
+    bad_value: str,
+) -> None:
+    # bad_value is passed as a real argv element (including the empty-string
+    # case), never interpolated into a shell string, so this also proves the
+    # value cannot be used for injection.
+    args = ("system", "--start-batch", bad_value, "--", "-q")
+
+    result, calls = _run(tmp_path, *args)
+
+    assert result.returncode == 2, result.stderr
+    assert "--start-batch" in result.stderr
+    assert calls == []
+
+
+def test_start_batch_refused_outside_system_mode(tmp_path: Path) -> None:
+    result, calls = _run(tmp_path, "test", "--start-batch", "7", "--", "-q")
+
+    assert result.returncode == 2, result.stderr
+    assert "--start-batch" in result.stderr
+    assert "system" in result.stderr
+    assert calls == []
 
 
 def test_core_mode_does_not_mount_or_forward_extension_root(
