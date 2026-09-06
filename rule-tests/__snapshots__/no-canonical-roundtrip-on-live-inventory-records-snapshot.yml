@@ -1,0 +1,23 @@
+id: no-canonical-roundtrip-on-live-inventory-records
+snapshots:
+  ? |
+    validate_canonical_roundtrip(subject, SemanticSubjectRef)
+  : labels:
+    - source: validate_canonical_roundtrip(subject, SemanticSubjectRef)
+      style: primary
+      start: 0
+      end: 57
+  ? |
+    validate_canonical_roundtrip(subject, model.SemanticSubjectRef)
+  : labels:
+    - source: validate_canonical_roundtrip(subject, model.SemanticSubjectRef)
+      style: primary
+      start: 0
+      end: 63
+  ? |
+    validate_canonical_roundtrip(value, type(value))
+  : labels:
+    - source: validate_canonical_roundtrip(value, type(value))
+      style: primary
+      start: 0
+      end: 48

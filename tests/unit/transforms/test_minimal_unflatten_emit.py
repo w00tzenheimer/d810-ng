@@ -53,6 +53,7 @@ from d810.analyses.control_flow.semantic_transition import (
     NativeBoundRouteBindingEvidence,
     NativeBoundTransitionRoute,
 )
+from d810.core.runtime_identity import RuntimeJoinRejected
 from d810.analyses.control_flow.semantic_route_evidence import (
     CanonicalSemanticEvidenceProductionAbstention,
     CanonicalSemanticEvidenceProductionFactCoordinate,
@@ -4819,6 +4820,100 @@ def test_native_bound_entry_route_receipt_identifies_exact_redirect(monkeypatch)
         if isinstance(mod, RedirectGoto)
     }
     _assert_no_legacy_plan_metadata(plan)
+
+
+def test_route_join_rejection_abstains_instead_of_escaping_the_emitter(
+    monkeypatch, _seam,
+) -> None:
+    """A refused route join must decline the plan, never abort the pass.
+
+    ``emit_minimal_unflatten`` converts a producer failure into "emit nothing"
+    with ``except (TypeError, ValueError)``.  The route-authority joins raise
+    ``RuntimeJoinRejected``, and its only production caller above the emitter
+    (``state_machine``) has no handler at all, so if that exception were not a
+    ``ValueError`` a proof that is merely not this bundle's own record would
+    escape the emitter and abort a decompilation instead of declining it.
+    """
+
+    class _CleanUseDefSafety:
+        def redirect_use_def_violations(self, *_args, **_kwargs):
+            return ()
+
+    state = 0x16AA65E9
+    source_write = InsnSnapshot(
+        0, 0x1001, (),
+        l=MopSnapshot(kind=OperandKind.NUMBER, size=4, value=state),
+        d=MopSnapshot(
+            kind=OperandKind.STACK, size=4, stkoff=_STATE, stack_refs=(_STATE,),
+        ),
+        kind=InsnKind.MOV,
+        raw_opcode=0,
+    )
+    target_insn = InsnSnapshot(
+        0, 0x2000, (),
+        l=MopSnapshot(kind=OperandKind.NUMBER, size=4, value=0x0BADF00D),
+        d=MopSnapshot(
+            kind=OperandKind.STACK, size=4, stkoff=_STATE, stack_refs=(_STATE,),
+        ),
+        kind=InsnKind.MOV,
+        raw_opcode=0,
+    )
+    fg = FlowGraph(
+        blocks={
+            0: BlockSnapshot(0, 0, (2,), (), 0, 0x1000, (source_write,)),
+            2: _b(2, (20,), (0, 20)),
+            20: BlockSnapshot(20, 0, (2,), (2,), 0, 0x2000, (target_insn,)),
+            99: _b(99, (), ()),
+        }, entry_serial=0, func_ea=0x1000,
+    )
+    monkeypatch.setattr(
+        minimal_unflatten_emit_module,
+        "recover_state_write_transitions_via_partitioned_fixpoint",
+        lambda *_args, **_kwargs: (StateWriteTransition(0, None, None, True, None),),
+    )
+    entry_route = NativeBoundTransitionRoute("entry", 0x1001, 0, state, 20)
+    kwargs = dict(
+        state_var_stkoff=_STATE,
+        dispatcher_entry_serial=2,
+        native_key=NATIVE_KEY,
+        block_refs_by_serial={
+            serial: NativeBlockRef(StableBlockIdentity.from_intervals(
+                (NativeEaInterval(block.start_ea, block.start_ea + 0x20),),
+                native_key=NATIVE_KEY,
+                exact_instruction_eas=tuple(insn.ea for insn in block.insn_snapshots),
+            )) for serial, block in fg.blocks.items()
+        },
+        native_bound_transition_routes=(entry_route,),
+        dispatcher_region_serials=frozenset({2}),
+        authoritative_handler_serials=frozenset({20}),
+        use_def_safety=_CleanUseDefSafety(),
+        live_function=object(),
+    )
+    dispatcher = _disp({state: 20}, exit_block=99)
+
+    accepted = emit_minimal_unflatten(fg, dispatcher, **kwargs)
+    assert accepted.unflatten_proposal is not None
+
+    reached = []
+
+    def refuse(_evidence):
+        reached.append(1)
+        raise RuntimeJoinRejected(
+            "canonical semantic evidence is not bound to a runtime authority arena"
+        )
+
+    monkeypatch.setattr(
+        minimal_unflatten_emit_module, "route_join_binding", refuse,
+    )
+
+    declined = emit_minimal_unflatten(fg, dispatcher, **kwargs)
+
+    assert reached, "the join under test was never reached"
+    assert declined.unflatten_proposal is None
+    assert graph_modifications(declined) == []
+    # The reason the two asserts above hold, stated so a future edit that
+    # rebases the exception cannot quietly reintroduce the escape.
+    assert issubclass(RuntimeJoinRejected, ValueError)
 
 
 def test_native_bound_interval_range_cannot_bypass_function_entry() -> None:

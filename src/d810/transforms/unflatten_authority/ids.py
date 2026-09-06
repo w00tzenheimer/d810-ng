@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from contextvars import ContextVar
 from d810.core.typing import Protocol
 from dataclasses import MISSING, dataclass, fields, is_dataclass
 from enum import Enum
@@ -19,6 +20,10 @@ from d810.ir.flowgraph import (
     InsnKind,
     OperandKind,
 )
+from d810.core.runtime_identity import (
+    RUNTIME_CLAIM_SIDECAR_FIELD,
+    RUNTIME_SUBJECT_SIDECAR_FIELD,
+)
 from d810.ir.expressions import ValueOpKind
 from d810.ir.semantics import CallKind, ControlTransferKind, PredicateKind
 from d810.transforms.cfg_transaction import TransactionAttemptId
@@ -31,12 +36,19 @@ from d810.ir.graph_fingerprint import (
     portable_graph_fingerprint_values,
     portable_graph_projection,
 )
+from .runtime_authority import transaction_subject_ref
 from .canonical_session import (
+    OccurrenceDigest,
     active_canonical_session,
+    record_bytes_lookup,
     record_canonical_bytes_reuse,
+    record_content_id_lookup,
+    record_content_id_mint,
     record_content_id_reuse,
     record_deep_validation,
     record_inventory_validation,
+    record_materialization,
+    record_occurrence_stamp,
     record_roundtrip_decode,
     record_wire_encode,
 )
@@ -1041,28 +1053,6 @@ def _json_bytes(value: object) -> bytes:
     return json.dumps(value, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("ascii")
 
 
-class OccurrenceDigest(bytes):
-    """A phase-local cache *guard*, never an authority or content digest.
-
-    It is deliberately not interchangeable with the ``sha256:`` content IDs
-    this module mints.  An ``OccurrenceDigest`` covers ``id()`` values for
-    cycles and for values of unregistered types, so it is reproducible only
-    within one process and only while those objects are alive.  It answers
-    exactly one question -- "is this same object still byte-identical to when
-    it was cached" -- and must never be persisted, compared across processes,
-    or used as a cache key.
-
-    Subclassing ``bytes`` keeps equality, hashing and the session caches
-    working unchanged while giving the value a name that cannot be mistaken
-    for an authority digest at a call site.
-    """
-
-    __slots__ = ()
-
-    def __repr__(self) -> str:
-        return f"OccurrenceDigest({bytes(self).hex()})"
-
-
 class _OccurrenceHasher(Protocol):
     """The only hasher capability the occurrence walk uses."""
 
@@ -1212,16 +1202,108 @@ def _occurrence_stamp(value: object) -> OccurrenceDigest:
     in constant space.
     """
 
+    # One attribution per root stamp.  Every call to this function is a
+    # root: the recursion lives in ``_feed_occurrence``, which must never
+    # record, or the per-lookup counters would count nodes, not walks.
+    record_occurrence_stamp()
     hasher = hashlib.blake2b(digest_size=32)
     _feed_occurrence(value, hasher, set())
     return OccurrenceDigest(hasher.digest())
 
 
-def canonical_bytes(value: object) -> bytes:
+_SEALED_ATOM_TYPES = (int, str, bytes)
+
+
+class _SealedGuard:
+    """Identity guard over one occurrence's direct children (trusted mode).
+
+    Holds strong references to the children so their ``id()`` values cannot be
+    recycled while the entry lives.  Two guards are equal when every child is
+    the same object, an equal atom of the same exact type, or (for a replaced
+    child only) a structurally equal occurrence per :func:`_occurrence_stamp`.
+    Never an authority digest, never a cache key.
+    """
+
+    __slots__ = ("children",)
+
+    def __init__(self, children: tuple[object, ...]) -> None:
+        self.children = children
+
+    def __eq__(self, other: object) -> bool:
+        if type(other) is not _SealedGuard:
+            return NotImplemented
+        mine = self.children
+        theirs = other.children
+        if len(mine) != len(theirs):
+            return False
+        for item, live in zip(mine, theirs):
+            if item is live:
+                continue
+            item_type = type(item)
+            if item_type is not type(live):
+                return False
+            if item_type in _SEALED_ATOM_TYPES:
+                if item == live:
+                    continue
+                return False
+            if _occurrence_stamp(item) != _occurrence_stamp(live):
+                return False
+        return True
+
+    __hash__ = None
+
+
+def _sealed_guard(value: object) -> _SealedGuard:
+    """Return the direct-children guard for one occurrence (no recursion)."""
+
+    if value is None or type(value) in (bool, int, str, bytes, float):
+        return _SealedGuard((value,))
+    if isinstance(value, Enum):
+        return _SealedGuard((value,))
+    if type(value) is dict or type(value) is MappingProxyType:
+        mapping = _exact_canonical_mapping(value)
+        children: list[object] = []
+        for key, item in dict.items(mapping):
+            children.append(key)
+            children.append(item)
+        return _SealedGuard(tuple(children))
+    if type(value) in (list, tuple, frozenset):
+        return _SealedGuard(tuple(value))
+    _ensure_registries()
+    names = _RECORD_FIELDS.get(type(value), _EXTERNAL_FIELDS.get(type(value)))
+    if names is not None:
+        if type(value).__name__ == "NativePreanalysisKey":
+            return _SealedGuard(tuple(
+                type(value).SCHEMA_VERSION if name == "schema_version"
+                else getattr(value, name)
+                for name in names
+            ))
+        return _SealedGuard(tuple(getattr(value, name) for name in names))
+    return _SealedGuard((("unknown", type(value), id(value)),))
+
+
+def _occurrence_guard(session: object, value: object) -> object:
+    """Return the cache-entry guard the active session's mode requires."""
+
+    if session.trust_sealed:
+        return _sealed_guard(value)
+    return _occurrence_stamp(value)
+
+
+def canonical_bytes(
+    value: object, *, _record_lookup: object = record_bytes_lookup,
+) -> bytes:
+    """Encode ``value``; ``_record_lookup`` attributes the session lookup path.
+
+    Content-ID callers pass their own attribution but still enter through this
+    public function, so a module-attribute wrapper observes every root encode.
+    """
+
     session = active_canonical_session()
-    stamp = None if session is None else _occurrence_stamp(value)
+    stamp = None if session is None else _occurrence_guard(session, value)
     if session is not None:
         cached = session.cached_canonical_bytes(value, stamp)
+        _record_lookup(cached is not None)
         if cached is not None:
             record_canonical_bytes_reuse()
             return cached
@@ -1466,10 +1548,96 @@ def validate_canonical_roundtrip(value: object, expected_type: type[object]) -> 
     return decoded
 
 
+def validate_live_semantic_fields(
+    value: object, expected_type: type[object],
+) -> None:
+    """Validate one *live* record's semantic fields without canonicalising it.
+
+    This is the live-construction half of the dual identity: it proves the
+    record's exact type and that every value reachable from it is an exact,
+    registered, canonically representable value -- the same walk
+    ``canonical_bytes`` performs before it encodes -- and it stops there.  No
+    wire tree is built, no JSON is produced, no SHA-256 is computed and no
+    decode is attempted, so a record that never leaves the process never pays
+    for a representation nobody reads.
+
+    The canonical representation of the same record is built by
+    :func:`materialize_for_persistence` at an explicit boundary.
+
+    >>> validate_live_semantic_fields(("entry", 0x1000), tuple)
+    """
+
+    if type(value) is not expected_type:
+        raise TypeError(
+            f"expected {expected_type.__name__}, got {type(value).__name__}",
+        )
+    _validate_canonical_value(value)
+    record_deep_validation()
+
+
+@dataclass(frozen=True, slots=True)
+class CanonicalMaterialization:
+    """The canonical representation of one live record, built at a boundary."""
+
+    record: object
+    canonical_bytes: bytes
+
+
+#: Depth of the enclosing ``materialize_for_persistence`` frames.  A
+#: ``ContextVar`` rather than a plain global for exactly the reason
+#: ``_ACTIVE_SESSION`` is one: the value is per-execution-context, never
+#: shared process state.
+_MATERIALIZING: ContextVar[int] = ContextVar(
+    "d810_authority_materializing", default=0,
+)
+
+
+def materializing() -> bool:
+    """Report whether the caller runs inside an explicit materialisation.
+
+    >>> materializing()
+    False
+    """
+
+    return _MATERIALIZING.get() > 0
+
+
+def materialize_for_persistence(
+    value: object, expected_type: type[object],
+) -> CanonicalMaterialization:
+    """Build one live record's canonical representation at a named boundary.
+
+    This is the *only* operation that turns a live internal record into its
+    persisted form: canonical wire tree, canonical JSON bytes, the strict
+    deep validation and the exact decode check, exactly as
+    :func:`validate_canonical_roundtrip` has always performed them, so the
+    bytes are byte-identical to the ones the same input produced before this
+    boundary existed.  It is deliberately not a cached property: crossing the
+    boundary is an act the caller performs, not a field a record carries.
+
+    >>> materialize_for_persistence(("entry", 0x1000), tuple).record
+    ('entry', 4096)
+    """
+
+    token = _MATERIALIZING.set(_MATERIALIZING.get() + 1)
+    try:
+        encoded = canonical_bytes(value)
+        decoded = canonical_decode(encoded)
+        if type(decoded) is not expected_type or decoded != value:
+            raise ValueError("canonical roundtrip changed the authority value")
+    finally:
+        _MATERIALIZING.reset(token)
+    record_materialization()
+    return CanonicalMaterialization(decoded, encoded)
+
+
 def content_id(schema: str, value: object) -> str:
     if not isinstance(schema, str) or not schema.isascii() or not schema.strip():
         raise ValueError("schema must be non-empty ASCII")
-    preimage = _PREFIX + schema.encode("ascii") + b"\0" + canonical_bytes(value)
+    preimage = _PREFIX + schema.encode("ascii") + b"\0" + canonical_bytes(
+        value, _record_lookup=record_content_id_lookup,
+    )
+    record_content_id_mint()
     return "sha256:" + hashlib.sha256(preimage).hexdigest()
 
 
@@ -1882,14 +2050,51 @@ def _subject_id_from_record(value: object) -> str:
     return subject_id(value.kind, value.role, value.locator)
 
 
-def _subject_factory(cls: type[object], **kwargs: object) -> object:
+def _subject_factory(
+    cls: type[object], *, decoded: bool = False, **kwargs: object,
+) -> object:
+    """Mint one semantic subject, carrying this transaction's reference for it.
+
+    The runtime sidecar is filled in here, from the active canonical
+    validation session, and is passed to ``cls(**kwargs)`` as an ordinary
+    keyword: the generated ``__init__`` assigns every field -- the sidecar
+    included -- *before* it calls ``__post_init__``, so the record is complete
+    when it seals.  That ordering is the lifecycle invariant, not a style
+    choice: attaching authority to an already-sealed record would be a
+    post-seal mutation its own validation could never see.
+
+    Outside a transaction session the reference is ``None``.  That is the
+    producer's normal case, not an error -- the emission builds subjects too
+    -- and it makes such a subject fail closed at a transaction join instead
+    of acquiring an authority no scope ever granted it.
+
+    ``decoded=True`` says the subject is being *reconstructed from a persisted
+    payload* rather than constructed live, and it keeps the reference ``None``
+    even inside an active session.  The binding design is explicit that
+    decoding produces unbound values which require an explicit, named rebind
+    before any runtime join: a decoded subject that acquired transaction
+    authority merely by being rebuilt while a session happened to be open
+    would be exactly the implicit adoption the design forbids, and the
+    interning mint would hand it the same reference as a live subject of equal
+    content.  ``legacy_codec`` passes it at every site.
+
+    ``subject_id`` is minted exactly as before and stays a non-authoritative
+    content fingerprint.
+    """
+
     _ensure_registries()
     if cls is not _SUBJECT_TYPE:
         raise TypeError("subject factory requires SemanticSubjectRef")
+    if type(decoded) is not bool:
+        raise TypeError("subject factory decode marker must be an exact bool")
     required = {"kind", "role", "block_ref", "anchor_ea", "locator"}
     if set(kwargs) != required:
         raise TypeError("subject factory requires exactly the subject fields")
-    kwargs["subject_id"] = subject_id(kwargs["kind"], kwargs["role"], kwargs["locator"])
+    minted = subject_id(kwargs["kind"], kwargs["role"], kwargs["locator"])
+    kwargs["subject_id"] = minted
+    kwargs[RUNTIME_SUBJECT_SIDECAR_FIELD] = (
+        None if decoded else transaction_subject_ref(minted)
+    )
     return cls(**kwargs)
 
 
@@ -1897,9 +2102,10 @@ def _record_content_id(schema: str, value: object, omitted_field: str) -> str:
     if not is_dataclass(value) or isinstance(value, type):
         raise TypeError("content ID factory requires a registered record")
     session = active_canonical_session()
-    stamp = None if session is None else _occurrence_stamp(value)
+    stamp = None if session is None else _occurrence_guard(session, value)
     if session is not None:
         cached = session.cached_content_id(value, schema, omitted_field, stamp)
+        record_content_id_lookup(cached is not None)
         if cached is not None:
             record_content_id_reuse()
             return cached
@@ -1919,6 +2125,7 @@ def _record_content_id(schema: str, value: object, omitted_field: str) -> str:
         ],
     }
     record_wire_encode()
+    record_content_id_mint()
     result = "sha256:" + hashlib.sha256(
         _PREFIX + schema.encode("ascii") + b"\0" + _json_bytes(wire)
     ).hexdigest()
@@ -1927,12 +2134,43 @@ def _record_content_id(schema: str, value: object, omitted_field: str) -> str:
     return result
 
 
-def _claim_factory(cls: type[object], *args: object, **kwargs: object) -> object:
+def _claim_factory(
+    cls: type[object],
+    *args: object,
+    runtime_refs: object = None,
+    **kwargs: object,
+) -> object:
+    """Mint one claim, optionally carrying the runtime refs it was built from.
+
+    ``runtime_refs`` is the keyword-only *sidecar channel*: the caller that
+    holds the route bundle passes the references its binding already minted,
+    so the claim carries a join authority without re-minting, rendering or
+    round-tripping anything.  The sidecar is outside ``_RECORD_FIELDS``, so no
+    canonical byte and no content ID moves -- ``claim_id`` stays exactly the
+    content fingerprint it was.
+
+    The slot is written **before** the ID is minted and before
+    ``__post_init__`` runs, because this factory builds with
+    ``object.__new__`` and per-field ``object.__setattr__``: a record must be
+    complete when it seals, and attaching authority afterwards would be a
+    post-seal mutation that the record's own validation could never see.  For
+    the same reason a claim type that declares the slot always gets it
+    written, ``None`` included -- a generic ``dataclasses.fields`` walker
+    reads it by name and an unwritten slot raises.
+    """
+
     _ensure_registries()
     declared = _RECORD_FIELDS.get(cls)
     if declared is None or "claim_id" not in declared:
         raise TypeError("claim factory requires a registered claim record")
     payload_names = tuple(name for name in declared if name != "claim_id")
+    carries_sidecar = any(
+        field.name == RUNTIME_CLAIM_SIDECAR_FIELD for field in fields(cls)
+    )
+    if runtime_refs is not None and not carries_sidecar:
+        raise TypeError(
+            "claim factory sidecar requires a claim record that declares one"
+        )
     if args and kwargs:
         raise TypeError("claim factory accepts positional or keyword fields, not both")
     optional_defaults = {
@@ -1960,6 +2198,8 @@ def _claim_factory(cls: type[object], *args: object, **kwargs: object) -> object
     raw = object.__new__(cls)
     for name in payload_names:
         object.__setattr__(raw, name, kwargs[name])
+    if carries_sidecar:
+        object.__setattr__(raw, RUNTIME_CLAIM_SIDECAR_FIELD, runtime_refs)
     object.__setattr__(raw, "claim_id", "sha256:" + "0" * 64)
     object.__setattr__(raw, "claim_id", claim_id(raw))
     try:
@@ -1973,6 +2213,8 @@ def _claim_factory(cls: type[object], *args: object, **kwargs: object) -> object
             raise
         kwargs = {name: getattr(raw, name) for name in payload_names}
         kwargs["claim_id"] = normalized_id
+        if carries_sidecar:
+            kwargs[RUNTIME_CLAIM_SIDECAR_FIELD] = runtime_refs
         return cls(**kwargs)
     return raw
 
@@ -2090,7 +2332,9 @@ def semantic_graph_fingerprint_cached(
 __all__ = [
     "BlockRecord", "CLAIM_SCHEMA", "DigestFixture", "DIGEST_FIXTURE_SCHEMA",
     "EVIDENCE_SCHEMA", "GraphRecord", "InsnRecord", "MopRecord", "SEMANTIC_GRAPH_SCHEMA",
-    "SUBJECT_SCHEMA", "canonical_bytes", "canonical_decode", "validate_canonical_roundtrip", "claim_id", "content_id",
+    "SUBJECT_SCHEMA", "canonical_bytes", "canonical_decode", "validate_canonical_roundtrip",
+    "validate_live_semantic_fields", "materialize_for_persistence", "materializing",
+    "CanonicalMaterialization", "claim_id", "content_id",
     "evidence_id", "justification_id", "case_id", "authority_id", "binding_id",
     "bound_unflatten_binding_id",
     "semantic_graph_fingerprint", "semantic_graph_fingerprint_cached",

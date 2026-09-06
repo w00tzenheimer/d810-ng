@@ -11,6 +11,7 @@ from types import MappingProxyType, MemberDescriptorType
 import weakref
 
 from d810.core.logging import getLogger
+from d810.core.runtime_identity import RUNTIME_AUTHORITY_SIDECAR_FIELDS
 from d810.ir.flowgraph import BlockKind, InsnKind
 from d810.ir.semantics import ControlTransferKind
 from d810.ir.block_identity import StableBlockIdentity
@@ -27,6 +28,11 @@ from d810.transforms.cfg_transaction import (
 )
 from . import ids as authority_ids
 from . import model, producer_api
+from .canonical_session import (
+    CanonicalValidationSession,
+    active_canonical_session,
+    record_registry_seal,
+)
 from .gates import GenericEffectfulGateFacts
 from .proposal import (
     CanonicalPatchStepDescriptor,
@@ -39,6 +45,7 @@ from .ids import (
     canonical_bytes,
     semantic_graph_fingerprint,
     validate_canonical_roundtrip,
+    validate_live_semantic_fields,
     authority_id,
     source_route_authority_id,
     projected_route_realization_id,
@@ -62,6 +69,7 @@ from .ids import (
     patch_step_fact_id,
     patch_step_fact_id as _canonical_patch_step_fact_id,
 )
+from .ids import OccurrenceDigest, _occurrence_stamp
 
 
 logger = getLogger(__name__)
@@ -658,6 +666,9 @@ _OBSERVED_LOWERED_CONDITIONAL_TOPOLOGY_REGISTRY: dict[
 # depending upward on the transaction facade.
 _ENTRY_ENDPOINT_LIVENESS_RECEIPT_OCCURRENCES: dict[int, tuple[object, str]] = {}
 _REGISTRY_PUBLICATION_LOCK = threading.RLock()
+#: "no ticket was handed in"; distinct from ``None``, which means "this value
+#: is not memoizable" and must not be recomputed by the callee.
+_MEMO_TICKET_UNSET = object()
 
 
 def _registry_reference(
@@ -691,8 +702,11 @@ def _register_registry_occurrence(
 ) -> object:
     key = id(value)
     reference = _registry_reference(value, registry, key)
+    # The memo guard is a full recursive walk and a first registration can
+    # never hit it, so take the ticket before the global publication lock.
+    memo = _registry_seal_memo(value)
     with _REGISTRY_PUBLICATION_LOCK:
-        canonical_seal = _canonical_registry_seal(value, registry)
+        canonical_seal = _canonical_registry_seal(value, registry, _memo=memo)
         if seal != canonical_seal:
             raise ValueError("registry publication seal is not canonical")
         if _registry_occurrence_is_registered(
@@ -729,6 +743,13 @@ class _AtomicPublicationBatch:
 
     def commit(self) -> None:
         """Precheck every exact occurrence before the first registry write."""
+        # Same hoist as _register_registry_occurrence: every guard walk this
+        # batch needs is taken before the global publication lock.
+        tickets: dict[int, object] = {}
+        for _registry, key, reference, _seal in self._entries:
+            live = reference()
+            if live is not None and key not in tickets:
+                tickets[key] = _registry_seal_memo(live)
         with _REGISTRY_PUBLICATION_LOCK:
             if self._committed:
                 raise ValueError("publication batch is already committed")
@@ -741,7 +762,9 @@ class _AtomicPublicationBatch:
                 value = reference()
                 if value is None:
                     raise ValueError("publication batch occurrence is no longer live")
-                canonical_seal = _canonical_registry_seal(value, registry)
+                canonical_seal = _canonical_registry_seal(
+                    value, registry, _memo=tickets.get(key),
+                )
                 if canonical_seal != seal:
                     raise ValueError("publication batch content seal differs")
                 previous = seen.get(occurrence)
@@ -3104,6 +3127,29 @@ def _stored_dataclass_field(value: object, name: str) -> object:
     raise TypeError("registered dataclass field has unsupported storage")
 
 
+def _is_runtime_authority_sidecar(field: object) -> bool:
+    """Return whether one dataclass field carries live runtime authority.
+
+    The structural snapshot and the detached copy are both about a record's
+    *canonical schema*, which is what a seal and a registry comparison
+    compare.  A runtime authority sidecar is not part of it: it is absent from
+    ``ids._RECORD_FIELDS``, from the wire encoding and from the record's
+    equality, and it holds a live arena, which is process-local authority
+    rather than content -- there is nothing about it a snapshot could record
+    and nothing a detached copy could legitimately duplicate.
+
+    Enumerating ``dataclasses.fields`` instead of the schema is what let it in.
+    The closed name set is in ``d810.core.runtime_identity``; see its
+    docstring for why this is not the broader "private and ``compare=False``"
+    rule.
+    """
+
+    return (
+        field.compare is False
+        and field.name in RUNTIME_AUTHORITY_SIDECAR_FIELDS
+    )
+
+
 def _registry_structural_snapshot(value: object) -> tuple[object, ...]:
     """Capture exact closed state without retaining or calling candidate values."""
     occurrences: dict[int, int] = {}
@@ -3184,6 +3230,7 @@ def _registry_structural_snapshot(value: object) -> tuple[object, ...]:
                 return tuple(
                     (field.name, visit(_stored_dataclass_field(item, field.name)))
                     for field in dataclass_fields(item_type)
+                    if not _is_runtime_authority_sidecar(field)
                 )
             return compound(
                 item,
@@ -3247,6 +3294,11 @@ def _detached_canonical_copy(value: object, memo: dict[int, object]) -> object:
         clone = object.__new__(value_type)
         memo[id(value)] = clone
         for item in dataclass_fields(value_type):
+            if _is_runtime_authority_sidecar(item):
+                # A detached copy is by definition unbound: it must not carry
+                # the original's live arena, and the reading properties on the
+                # record tolerate the unset slot exactly for this case.
+                continue
             object.__setattr__(
                 clone, item.name,
                 _detached_canonical_copy(
@@ -3292,7 +3344,112 @@ def _route_result_identity(value: object) -> str:
     ))
 
 
+def _memoizable_digest(
+    session: CanonicalValidationSession | None, value: object,
+) -> OccurrenceDigest | None:
+    """Return the guard digest for one seal subject, or ``None`` to never memoize.
+
+    ``_feed_occurrence`` falls through to an **identity-only** stamp for any
+    type absent from ``ids._RECORD_FIELDS`` / ``ids._EXTERNAL_FIELDS``: a type
+    token plus ``repr(id(value))``.  Such a digest never changes under
+    mutation, so memoizing on it would serve a stale seal for a tampered
+    record.  The helper therefore fails closed -- no session, or an
+    unregistered type, means today's behaviour with no memo at all.
+    """
+
+    if session is None:
+        return None
+    authority_ids._ensure_registries()
+    value_type = type(value)
+    if (
+        value_type not in authority_ids._RECORD_FIELDS
+        and value_type not in authority_ids._EXTERNAL_FIELDS
+    ):
+        return None
+    return _occurrence_stamp(value)
+
+
+def _registry_seal_memo(
+    value: object,
+) -> tuple[CanonicalValidationSession, OccurrenceDigest] | None:
+    """Return this phase's memo ticket for one seal subject, or ``None``.
+
+    A ticket is the pair the memo needs: the owning session and the guard
+    digest, both read *before* any registry lock is taken.  The digest is a
+    full recursive walk, so publication paths hoist this call above
+    ``_REGISTRY_PUBLICATION_LOCK`` and hand the ticket to the seal -- a first
+    registration can never hit the memo, so nothing is lost by computing the
+    guard outside the lock and the global lock stops paying for it.
+
+    Fails closed by falling through to the strict path, never by serving: the
+    memo is an optimisation, so a digest that cannot be taken means no memo,
+    while the seal computation itself is always performed.
+    """
+
+    session = active_canonical_session()
+    if session is None:
+        return None
+    try:
+        digest = _memoizable_digest(session, value)
+    except Exception:  # noqa: BLE001 - bypassing the memo is always safe
+        logger.debug(
+            "registry seal memo unavailable for %s", type(value).__name__,
+            exc_info=True,
+        )
+        return None
+    if digest is None:
+        return None
+    return (session, digest)
+
+
 def _canonical_registry_seal(
+    value: object,
+    registry: dict[int, tuple[weakref.ReferenceType[object], str]],
+    _site_registry=_SITE_REGISTRY,
+    _binding_registry=_SITE_BINDING_REGISTRY,
+    _route_registry=_ROUTE_REGISTRY,
+    _logical_registry=_OBSERVED_LOGICAL_ENDPOINT_REGISTRY,
+    _route_seal=_route_content_seal,
+    *,
+    _memo: tuple[CanonicalValidationSession, OccurrenceDigest] | None | object
+    = _MEMO_TICKET_UNSET,
+) -> str:
+    """Return one closed record's canonical live publication seal.
+
+    The computation itself is untouched and lives in
+    :func:`_canonical_registry_seal_uncached`.  This wrapper reuses the answer
+    the *same* live occurrence already proved in *this* phase, and only then.
+
+    ``_memo`` lets a caller that already took the ticket outside a registry
+    lock hand it in; unset means take it here.
+
+    What is still detected, without exception: the memo is guarded by the exact
+    object identity and by the full 32-byte ``OccurrenceDigest`` over its
+    canonical schema, so any ``object.__setattr__`` anywhere in the reachable
+    graph moves the digest, misses, and runs the untouched computation -- which
+    raises the same message it raises today.  Nothing is stored before the
+    computation has fully succeeded, so a raising validation cannot populate a
+    reusable entry, and a reconstructed or equal-but-distinct occurrence is
+    validated on its own.
+    """
+
+    memo = _registry_seal_memo(value) if _memo is _MEMO_TICKET_UNSET else _memo
+    if memo is not None:
+        session, digest = memo
+        cached = session.registry_seal_for(id(registry), value, digest)
+        record_registry_seal(cached is not None)
+        if cached is not None:
+            return cached
+    seal = _canonical_registry_seal_uncached(
+        value, registry, _site_registry, _binding_registry, _route_registry,
+        _logical_registry, _route_seal,
+    )
+    if memo is not None:
+        memo[0].store_registry_seal(id(registry), value, memo[1], seal)
+    return seal
+
+
+def _canonical_registry_seal_uncached(
     value: object,
     registry: dict[int, tuple[weakref.ReferenceType[object], str]],
     _site_registry=_SITE_REGISTRY,
@@ -3514,20 +3671,40 @@ def _route_claims(proposal: model.ProposedUnflattenContract) -> tuple[model.Equi
     return tuple(sorted(claims, key=lambda claim: claim.claim_id))
 
 
+def _derived_proposal_id(proposal: object, proof: object | None) -> str:
+    """Read an already-derived proposal ID instead of canonicalising one.
+
+    A diagnostic coordinate must not encode a whole proposal: point 6 of the
+    canonical-reuse plan forbids any logging or diagnostics argument from
+    reaching ``canonical_bytes``.  Every caller that rejects *after* the source
+    authority exists holds ``SourceBoundRouteAuthority.proposal_id``, whose
+    ``__post_init__`` already pins it to ``authority_id(self.proposal)``
+    (``model.py``: ``"proposal_id is not content-derived"``), so the two are
+    byte-identical by construction.  Without such a proof -- the source binder's
+    own failure path, where the authority does not exist yet -- this falls
+    through to today's behaviour unchanged.
+    """
+
+    if type(proof) is model.SourceBoundRouteAuthority:
+        return proof.proposal_id
+    return authority_id(proposal)
+
+
 def _route_failure_coordinates(proposal: object, *, stage: model.RouteRealizationFailureStage,
                                 claim: object | None = None,
                                 proof_override: object | None = None,
                                 fact: object | None = None,
                                 descriptor: object | None = None,
                                 extra_anchored_refs: tuple[object, ...] = (),
-                                scope_override: object | None = None) -> dict[str, object]:
+                                scope_override: object | None = None,
+                                proposal_proof: object | None = None) -> dict[str, object]:
     """Build typed diagnostic coordinates without exposing validation prose."""
     claim_id = proof_id = route_subject_id = None
     proposal_id = evidence_id = None
     scope = model.RouteRealizationFailureScope.PROPOSAL
     try:
         if type(proposal) is model.ProposedUnflattenContract:
-            proposal_id = authority_id(proposal)
+            proposal_id = _derived_proposal_id(proposal, proposal_proof)
             evidence_id = proposal.route_evidence.atomic_group_id
             scope = model.RouteRealizationFailureScope.EVIDENCE
     except (TypeError, ValueError):
@@ -7071,6 +7248,7 @@ def _legacy_structural_projected_routes(*, source_authority: model.SourceBoundRo
         )
         failure = _failure(**_route_failure_coordinates(
             source_authority.proposal if type(source_authority) is model.SourceBoundRouteAuthority else None,
+            proposal_proof=source_authority,
             stage=active_stage,
             claim=active_claim,
             fact=active_fact,
@@ -8688,6 +8866,7 @@ def _make_route_kernels():
         rejected = failure(**_route_failure_coordinates(
             source_authority.proposal
             if type(source_authority) is model.SourceBoundRouteAuthority else None,
+            proposal_proof=source_authority,
             stage=model.RouteRealizationFailureStage.CLAIM_SELECTION,
             claim=claim,
             fact=fact,
@@ -8718,6 +8897,7 @@ def _make_route_kernels():
             rejected = failure(**_route_failure_coordinates(
                 source_authority.proposal
                 if type(source_authority) is model.SourceBoundRouteAuthority else None,
+                proposal_proof=source_authority,
                 stage=stage,
             ))
             return result(model.ProjectedRouteRealizationRejected, {"failures": (rejected,)})
@@ -8779,6 +8959,7 @@ def _make_route_kernels():
             rejected = failure(**_route_failure_coordinates(
                 source_authority.proposal
                 if type(source_authority) is model.SourceBoundRouteAuthority else None,
+                proposal_proof=source_authority,
                 stage=stage,
             ))
             return result(
@@ -8848,6 +9029,7 @@ def _make_route_kernels():
             failure_value = failure(**_route_failure_coordinates(
                 source_authority.proposal
                 if type(source_authority) is model.SourceBoundRouteAuthority else None,
+                proposal_proof=source_authority,
                 **coordinates,
             ))
             return result(
@@ -8862,6 +9044,7 @@ def _make_route_kernels():
             )
             failure_value = failure(**_route_failure_coordinates(
                 source_authority.proposal,
+                proposal_proof=source_authority,
                 stage=model.RouteRealizationFailureStage.EFFECT_TERMINAL_PRESERVATION,
             ))
             return result(
@@ -8876,6 +9059,7 @@ def _make_route_kernels():
             rejected = failure(**_route_failure_coordinates(
                 source_authority.proposal
                 if type(source_authority) is model.SourceBoundRouteAuthority else None,
+                proposal_proof=source_authority,
                 stage=stage,
             ))
             return result(
@@ -12034,7 +12218,18 @@ def bind_subjects(
     for subject in subjects:
         if type(subject) is not model.SemanticSubjectRef:
             raise TypeError("subjects must contain SemanticSubjectRef values")
-        validate_canonical_roundtrip(subject, model.SemanticSubjectRef)
+        # Re-seal before validating, exactly as ``model._validate_inventory_refs``
+        # does for a CFG ref.  The canonical roundtrip this replaced decoded
+        # the subject, and decoding re-ran ``__post_init__``, so it rejected a
+        # subject whose sealed ``subject_id`` had been corrupted after
+        # construction.  ``validate_live_semantic_fields`` walks fields and
+        # cannot see that, so the seal is re-run here rather than silently
+        # dropped.  Cost is the subject's own (unconverted) ID derivation.
+        subject.__post_init__()
+        # Live subject: semantic fields only.  The canonical representation
+        # is built at an explicit materialisation boundary, not once per
+        # subject per phase.  See task 5b-4.
+        validate_live_semantic_fields(subject, model.SemanticSubjectRef)
         if subject.subject_id in seen_subjects:
             raise ValueError("subject bindings contain duplicate subjects")
         seen_subjects.add(subject.subject_id)
@@ -12381,7 +12576,18 @@ def bind_projected_subjects(
     for subject in subjects:
         if type(subject) is not model.SemanticSubjectRef:
             raise TypeError("subjects must contain SemanticSubjectRef values")
-        validate_canonical_roundtrip(subject, model.SemanticSubjectRef)
+        # Re-seal before validating, exactly as ``model._validate_inventory_refs``
+        # does for a CFG ref.  The canonical roundtrip this replaced decoded
+        # the subject, and decoding re-ran ``__post_init__``, so it rejected a
+        # subject whose sealed ``subject_id`` had been corrupted after
+        # construction.  ``validate_live_semantic_fields`` walks fields and
+        # cannot see that, so the seal is re-run here rather than silently
+        # dropped.  Cost is the subject's own (unconverted) ID derivation.
+        subject.__post_init__()
+        # Live subject: semantic fields only.  The canonical representation
+        # is built at an explicit materialisation boundary, not once per
+        # subject per phase.  See task 5b-4.
+        validate_live_semantic_fields(subject, model.SemanticSubjectRef)
         if subject.subject_id in seen_subjects:
             raise ValueError("subject bindings contain duplicate subjects")
         seen_subjects.add(subject.subject_id)

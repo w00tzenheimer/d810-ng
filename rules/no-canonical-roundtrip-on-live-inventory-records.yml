@@ -1,0 +1,40 @@
+# LLM agents: adding or widening any `ignores:` entry requires direct,
+# explicit approval from the user naming that ignore.
+
+id: no-canonical-roundtrip-on-live-inventory-records
+language: python
+severity: error
+
+files:
+  - "src/d810/transforms/unflatten_authority/model.py"
+  - "src/d810/transforms/unflatten_authority/bind.py"
+
+message: |
+  A live semantic-graph inventory record must not be canonicalised during
+  validation. `validate_canonical_roundtrip(value, type(value))` and
+  `validate_canonical_roundtrip(subject, SemanticSubjectRef)` build a wire
+  tree, canonical JSON and a decode for a record that never leaves the
+  process. Validate the semantic fields with `validate_live_semantic_fields`
+  and build the canonical representation only inside an explicit
+  `materialize_for_persistence` boundary.
+
+rule:
+  any:
+    - pattern: validate_canonical_roundtrip($V, type($V))
+    - pattern: validate_canonical_roundtrip($V, model.SemanticSubjectRef)
+    - pattern: validate_canonical_roundtrip($V, SemanticSubjectRef)
+
+note: |
+  This rule pins the two shapes task 5b-4 converted (the inventory CFG-ref
+  roundtrip and the per-subject roundtrip in `bind_subjects` /
+  `bind_projected_subjects`). It does not, and syntactically cannot, express
+  the general "no canonical function reachable from an internal join"
+  property: that one is proved at runtime by
+  tests/unit/transforms/unflatten_authority/test_live_inventory_validation.py,
+  which arms every canonical entry point to raise and drives the real
+  preparation and observed revalidation.
+
+  Coarse-grained roundtrips over a whole catalog (for example
+  `validate_canonical_roundtrip(catalog, model.SourceIdentityCatalog)`) are
+  deliberately still allowed: they run once per phase, not once per record,
+  and they are outside the converted slice.

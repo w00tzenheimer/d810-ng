@@ -16,11 +16,18 @@ import re
 from d810.analyses.control_flow.semantic_route_evidence import (
     CanonicalSemanticEvidence,
     BoundCanonicalSemanticEvidence,
+    RouteClaimAuthorityRefs,
+    RouteRebindVerification,
 )
 from d810.analyses.control_flow.logical_route_endpoint import (
     is_exact_logical_function_exit_inventory_row_shape,
 )
 from d810.core.native_preanalysis_key import NativePreanalysisKey
+from d810.core.runtime_identity import (
+    RUNTIME_AUTHORITY_SIDECAR_FIELDS,
+    RuntimeAuthorityKind,
+    RuntimeAuthorityRef,
+)
 from d810.ir.block_identity import NativeEaInterval, NativeEaIntervalSet, StableBlockIdentity
 from d810.core.typing import Literal, Protocol, TypeAlias, runtime_checkable
 from d810.ir.semantic_edge import SemanticEdgeRole
@@ -43,13 +50,13 @@ from d810.transforms.cfg_transaction import (
     TransactionAttemptId,
 )
 from .ids import (
-    _occurrence_stamp,
+    _occurrence_guard,
     _subject_id_from_record,
     _validate_id,
     authority_id,
     bound_unflatten_binding_id,
     canonical_bytes,
-    validate_canonical_roundtrip,
+    validate_live_semantic_fields,
     case_id,
     claim_id,
     evidence_id,
@@ -76,7 +83,11 @@ from .ids import (
     CLONED_SEMANTIC_ORIGIN_SCHEMA,
     CLONED_SEMANTIC_PREFIX_SCHEMA,
 )
-from .canonical_session import active_canonical_session
+from .canonical_session import (
+    active_canonical_session,
+    record_inventory_seal_check,
+    record_inventory_seal_mint,
+)
 from .legacy_keys import LEGACY_UNFLATTEN_KEYS
 from .gates import GenericCfgGateFacts
 
@@ -203,7 +214,14 @@ def _structural_key(value: object):
         return (
             "dataclass",
             value.__class__.__qualname__,
-            tuple((field.name, _structural_key(getattr(value, field.name))) for field in fields(value)),
+            # A runtime authority sidecar is not durable and not canonical: it
+            # names a live arena, so it has no key by construction.  See
+            # ``RUNTIME_AUTHORITY_SIDECAR_FIELDS``.
+            tuple(
+                (field.name, _structural_key(getattr(value, field.name)))
+                for field in fields(value)
+                if field.name not in RUNTIME_AUTHORITY_SIDECAR_FIELDS
+            ),
         )
     raise TypeError(f"no durable canonical key for {type(value).__name__}")
 
@@ -2143,6 +2161,28 @@ class SemanticSubjectRef:
     block_ref: CfgBlockRef | None
     anchor_ea: int | None
     locator: SemanticSubjectLocator
+    # Private, and therefore outside the canonical wire schema: the reference
+    # the transaction session that constructed this subject names it by.
+    # ``subject_id`` stays exactly the content fingerprint it was; this is the
+    # *join authority*, it belongs to one live arena, and it is never encoded,
+    # compared or repr'd.  A subject the producer built -- there is no session
+    # during the emission -- and a decoded subject both arrive without it, on
+    # purpose, and must be refused at a runtime join.
+    _runtime_ref: RuntimeAuthorityRef | None = dataclass_field(
+        default=None, compare=False, repr=False,
+    )
+
+    @property
+    def runtime_ref(self) -> "RuntimeAuthorityRef | None":
+        """Return the transaction reference for this subject, if it has one.
+
+        Read with a default for the same reason as
+        ``EquivalentSemanticRouteClaim.runtime_refs``: a detached canonical
+        copy is rebuilt field by field and deliberately never sets a private
+        slot.  ``None`` means *unbound*, which every runtime join must refuse.
+        """
+
+        return getattr(self, "_runtime_ref", None)
 
     def __post_init__(self) -> None:
         _enum(self.kind, SemanticSubjectKind, "kind")
@@ -2170,6 +2210,16 @@ class SemanticSubjectRef:
             raise ValueError("subject primary owner must match locator")
         if self.subject_id != _subject_id_from_record(self):
             raise ValueError("subject_id does not match canonical subject content")
+        # O(1), and deliberately here: the sidecar is part of the record's
+        # completeness, so it is checked while the record seals rather than
+        # trusted afterwards.  A factory that attached it after this ran would
+        # be mutating a sealed record, and this check would never see it.
+        runtime_ref = getattr(self, "_runtime_ref", None)
+        if runtime_ref is not None and (
+            type(runtime_ref) is not RuntimeAuthorityRef
+            or runtime_ref.kind is not RuntimeAuthorityKind.SUBJECT
+        ):
+            raise TypeError("semantic subject runtime ref must be a subject reference")
 
 
 @dataclass(frozen=True, slots=True)
@@ -2434,7 +2484,11 @@ def _validate_inventory_refs(value: object, *, producer: bool, label: str) -> No
         if type(value) is NativeBlockRef:
             _validate_native_identity_primitives(value.identity, f"{label}.identity")
         value.__post_init__()
-        validate_canonical_roundtrip(value, type(value))
+        # A live inventory reference is validated, never canonicalised: its
+        # semantic fields are checked here and its canonical representation is
+        # built only by an explicit ``materialize_for_persistence`` at a
+        # persistence/export boundary.  See task 5b-4.
+        validate_live_semantic_fields(value, type(value))
         return
     if type(value) is tuple:
         for index, item in enumerate(value):
@@ -3493,6 +3547,12 @@ def _route_destination_locator(subject: SemanticSubjectRef) -> BlockSubjectLocat
 def _claim_subjects(claim: ProducerUnflattenClaim) -> tuple[SemanticSubjectRef, ...]:
     subjects: list[SemanticSubjectRef] = []
     for field in fields(claim):
+        # A private field is never a canonical subject, and a runtime
+        # authority sidecar may legitimately be an unset slot on a detached
+        # canonical copy -- reading it here would raise on exactly the record
+        # shape detaching produces.
+        if field.name.startswith("_"):
+            continue
         value = getattr(claim, field.name)
         if type(value) is SemanticSubjectRef:
             subjects.append(value)
@@ -3701,6 +3761,26 @@ class EquivalentSemanticRouteClaim:
     atomic_group_id: str
     source_generation: int
     dag_endpoint_subjects: tuple[SemanticSubjectRef, ...] = ()
+    # Private, and therefore outside the canonical wire schema: the arena
+    # references this claim was minted from.  ``claim_id`` stays exactly the
+    # content fingerprint it was; this is the *join authority*, it names a
+    # live arena, and it is never encoded, compared or repr'd.  A decoded
+    # claim arrives without it on purpose and must be refused at a join.
+    _runtime_refs: RouteClaimAuthorityRefs | None = dataclass_field(
+        default=None, compare=False, repr=False,
+    )
+
+    @property
+    def runtime_refs(self) -> "RouteClaimAuthorityRefs | None":
+        """Return the arena references this claim was minted from, if any.
+
+        Read with a default for the same reason as
+        ``CanonicalSemanticEvidence.route_binding``: a detached canonical copy
+        is rebuilt field by field and deliberately never sets a private slot.
+        ``None`` means *unbound*, which every runtime join must refuse.
+        """
+
+        return getattr(self, "_runtime_refs", None)
 
     def __post_init__(self) -> None:
         _claim_common(self.claim_id, self.kind, UnflattenClaimKind.EQUIVALENT_SEMANTIC_ROUTE, self.source_generation)
@@ -3763,6 +3843,19 @@ class EquivalentSemanticRouteClaim:
             or proofs[0] != self.replacement_route_subject.locator.proof_id
         ):
             raise ValueError("route claim atomic_group_id must match route locators")
+        # O(1), and deliberately here: the sidecar is part of the record's
+        # completeness, so it is checked while the record seals rather than
+        # trusted afterwards.  A factory that attached it after this ran would
+        # be mutating a sealed record, and this check would never see it.
+        runtime_refs = getattr(self, "_runtime_refs", None)
+        if runtime_refs is not None:
+            if type(runtime_refs) is not RouteClaimAuthorityRefs:
+                raise TypeError("route claim runtime refs must be route claim references")
+            if (
+                runtime_refs.atomic_group_id != self.atomic_group_id
+                or len(runtime_refs.proof_refs) != len(proofs)
+            ):
+                raise ValueError("route claim runtime refs name another route group")
         if self.claim_id != claim_id(self):
             raise ValueError("claim_id does not match canonical claim content")
 
@@ -6022,10 +6115,12 @@ class SemanticGraphInventory:
             canonical_subject = subjects_by_id.get(binding.subject.subject_id)
             if canonical_subject is None:
                 raise ValueError("binding subject is absent from subjects")
-            if (
-                binding.subject != canonical_subject
-                or canonical_bytes(binding.subject) != canonical_bytes(canonical_subject)
-            ):
+            # Record equality is the whole predicate: a subject's canonical
+            # schema is exactly its ``compare=True`` fields (the runtime
+            # sidecars are private and excluded from both), so equal subjects
+            # cannot have unequal canonical bytes.  The second comparison was
+            # a canonical encode inside an internal join and is gone.
+            if binding.subject != canonical_subject:
                 raise ValueError("binding subject does not match canonical subject content")
         effects = tuple(sorted(self.effects, key=lambda item: (item.owner_serial, item.instruction_ordinal, item.instruction_ea, item.effect_kind.value)))
         terminals = tuple(sorted(self.terminals, key=lambda item: (item.owner_serial, item.instruction_ordinal is None, item.instruction_ordinal if item.instruction_ordinal is not None else -1, item.instruction_ea, item.terminal_kind.value)))
@@ -6416,7 +6511,8 @@ class SemanticGraphInventory:
             raise ValueError("inventory_digest does not match inventory content")
         session = active_canonical_session()
         if session is not None:
-            session.seal_inventory(self, _occurrence_stamp(self))
+            session.seal_inventory(self, _occurrence_guard(session, self))
+            record_inventory_seal_mint()
 
 
 def validate_semantic_graph_inventory(value: object) -> SemanticGraphInventory:
@@ -6425,10 +6521,13 @@ def validate_semantic_graph_inventory(value: object) -> SemanticGraphInventory:
     if type(value) is not SemanticGraphInventory:
         raise TypeError("inventory must be SemanticGraphInventory")
     session = active_canonical_session()
-    if session is not None and session.inventory_is_sealed(
-        value, _occurrence_stamp(value),
-    ):
-        return value
+    if session is not None:
+        sealed = session.inventory_is_sealed(
+            value, _occurrence_guard(session, value),
+        )
+        record_inventory_seal_check(sealed)
+        if sealed:
+            return value
     value.__post_init__()
     return value
 
@@ -7373,6 +7472,11 @@ class SemanticSafetyCase:
                 return
             validated_occurrences.add(identity)
             for record_field in fields(value):
+                # Canonical occurrences only: a private runtime authority
+                # sidecar is outside the schema this revalidates, and it is an
+                # unset slot on a detached canonical copy.
+                if record_field.name.startswith("_"):
+                    continue
                 validate_occurrence(getattr(value, record_field.name))
             post_init = getattr(type(value), "__post_init__", None)
             if post_init is not None:
@@ -7513,10 +7617,42 @@ class UnflattenAuthorityVerdict:
     observed_acceptance: "ObservedUnflattenAuthorityAccepted | None" = None
     loss_ledger: SemanticLossLedger | None = None
     rejection_detail: str | None = None
+    # Private, and therefore outside the canonical wire schema: what the
+    # producer/transaction seam was able to verify about this transaction's
+    # route bundle.  It is process-local provenance, not content -- a record of
+    # *what was checked*, never a grant, and nothing reads it to decide
+    # anything.  It rides the verdict because the observed phase returns
+    # nothing else, and because the session and both arenas that decided it are
+    # gone by the time a receipt or a diagnostic is read.  ``None`` is valid on
+    # every verdict, including every one built before the seam runs.
+    _route_authority_verification: RouteRebindVerification | None = dataclass_field(
+        default=None, compare=False, repr=False,
+    )
+
+    @property
+    def route_authority_verification(self) -> "RouteRebindVerification | None":
+        """Return what the seam verified for this transaction, if it recorded it.
+
+        Read with a default for the same reason as every other sidecar
+        accessor on this branch: a detached canonical copy is rebuilt field by
+        field from the canonical schema and deliberately never writes a private
+        slot, so a bare attribute read would raise on exactly the shape
+        detaching produces.
+        """
+
+        return getattr(self, "_route_authority_verification", None)
 
     def __post_init__(self) -> None:
         if type(self.accepted) is not bool:
             raise TypeError("accepted must be bool")
+        # O(1), and deliberately here: the sidecar is part of the record's
+        # completeness, so it is checked while the record seals rather than
+        # trusted afterwards.
+        verification = getattr(self, "_route_authority_verification", None)
+        if verification is not None and type(verification) is not RouteRebindVerification:
+            raise TypeError(
+                "route authority verification must be a RouteRebindVerification"
+            )
         _enum(self.phase, UnflattenAuthorityPhase, "phase")
         _enum(self.reason, UnflattenAuthorityReason, "reason")
         for name in ("authority_id", "binding_id", "case_id"):
@@ -8069,10 +8205,23 @@ class ObservedUnflattenAuthorityAccepted:
 class UnflattenAuthorityPreparationAccepted:
     prepared: PreparedUnflattenAuthority
     verdict: UnflattenAuthorityVerdict
+    # What the producer/transaction seam was able to verify about this
+    # transaction's route bundle.  It is a *record of what was checked*, never
+    # a grant: nothing consults it to decide authority, and an absent value
+    # (a caller that built this result directly) is not a rejection.  It rides
+    # the result because the session that produced it -- and the arena whose
+    # liveness decided it -- are both gone by the time a receipt is read.
+    route_authority_verification: RouteRebindVerification | None = None
 
     def __post_init__(self) -> None:
         if type(self.prepared) is not PreparedUnflattenAuthority:
             raise TypeError("prepared must be PreparedUnflattenAuthority")
+        if self.route_authority_verification is not None and type(
+            self.route_authority_verification
+        ) is not RouteRebindVerification:
+            raise TypeError(
+                "route_authority_verification must be a RouteRebindVerification"
+            )
         if type(self.verdict) is not UnflattenAuthorityVerdict or not self.verdict.accepted:
             raise ValueError("preparation accepted requires an accepted verdict")
         if (
@@ -8100,10 +8249,20 @@ class ProposalValidationFailure:
 class UnflattenAuthorityPreparationRejected:
     verdict: UnflattenAuthorityVerdict
     proposal_failure: "ProposalValidationFailure | None" = None
+    # Same non-authoritative record as on the accepted result.  A rejection is
+    # exactly when a reader most wants to know which guarantee the seam was
+    # able to give, so it is carried here too rather than only on success.
+    route_authority_verification: RouteRebindVerification | None = None
 
     def __post_init__(self) -> None:
         if type(self.verdict) is not UnflattenAuthorityVerdict or self.verdict.accepted:
             raise ValueError("preparation rejected requires a rejected verdict")
+        if self.route_authority_verification is not None and type(
+            self.route_authority_verification
+        ) is not RouteRebindVerification:
+            raise TypeError(
+                "route_authority_verification must be a RouteRebindVerification"
+            )
         if self.proposal_failure is not None and type(self.proposal_failure) is not ProposalValidationFailure:
             raise TypeError("proposal_failure must be ProposalValidationFailure or None")
 

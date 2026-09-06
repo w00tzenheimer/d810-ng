@@ -312,6 +312,11 @@ class ResolverSessionState:
         self.current_mba_token = None
         self.current_mba_identity_binding = None
         self.current_imported_root_handles = ()
+        # The canonical semantic bundles this session projected carry a runtime
+        # authority arena each.  This is where their owner ends, so this is
+        # where they are released: a bundle that outlives its session may still
+        # be read as content, but it can no longer be *joined* on.
+        self.native_preanalysis.close_route_authority()
 
     def invalidate_current_mba_binding(self) -> None:
         """Drop only the generation-local index after a structural mutation."""

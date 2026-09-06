@@ -86,6 +86,7 @@ from d810.analyses.control_flow.semantic_route_evidence import (
     canonical_semantic_evidence_from_proofs,
     SemanticRouteShape,
     bind_canonical_semantic_evidence,
+    route_authority_phase,
     semantic_route_proof_reaches_consumer,
 )
 from d810.analyses.control_flow.frontend_normalization import (
@@ -3376,95 +3377,104 @@ class LowerStateMachine(PipelinePass):
                     initial_state=int(initial_state),
                     condition_chain_dag=condition_chain_dag,
                 )
-            plan = emit_minimal_unflatten(
-                context.graph,
-                dispatcher,
-                block_refs_by_serial=(
-                    {}
-                    if current_block_identity_index is None
-                    else current_block_identity_index.plan_refs_by_serial()
-                ),
-                snapshot_id=(
-                    None
-                    if current_block_identity_index is None
-                    else current_block_identity_index.snapshot_id
-                ),
-                source_generation=(
-                    None
-                    if current_block_identity_index is None
-                    else current_block_identity_index.generation
-                ),
-                source_maturity=(
-                    None
-                    if current_block_identity_index is None
-                    else MaturityEnvelope(
-                        ir=context.maturity,
-                        provider="hexrays",
-                        provider_id=int(current_block_identity_index.maturity),
-                    )
-                ),
-                state_var_stkoff=(
-                    int(state_var_stkoff) if state_var_stkoff is not None else None
-                ),
-                state_var_reg=state_var_reg,
-                dispatcher_entry_serial=int(dispatcher_entry),
-                pre_header_serial=getattr(range_evidence, "pre_header_serial", None),
-                initial_state=initial_state,
-                initial_state_write_witness=initial_state_write_witness,
-                state_dispatcher_map=getattr(recovery, "dispatch_map", None),
-                native_bound_transition_routes=native_bound_transition_routes,
-                is_indirect=is_indirect,
-                fact_view=getattr(context, "facts", None),
-                emu=emu,
-                live_block_for=_make_live_block_for(live_function),
-                use_def_safety=context.capabilities.optional(UseDefSafetyCapability),
-                live_function=live_function,
-                branch_witness_map=branch_witness_map,
-                branch_witness_emu=branch_witness_emu,
-                entry_bridge_exit_path_blocks=entry_bridge_exit_path_blocks,
-                entry_bridge_requires_witness=entry_bridge_requires_witness,
-                exit_path_effect_recovery=(
-                    isinstance(context.project_config, dict)
-                    and bool(context.project_config.get("exit_path_effect_recovery"))
-                ),
-                recover_multi_entry_back_edges=recover_multi_entry_back_edges,
-                materialized_indirect_transfers=materialized_indirect_transfers,
-                imported_direct_boundary_evidence=(imported_direct_boundary_evidence),
-                imported_conditional_boundary_evidence=(
-                    imported_conditional_boundary_evidence
-                ),
-                imported_native_eas_by_serial=imported_native_eas_by_serial,
-                native_carrier_consumer_serials_by_load_ea=(
-                    native_carrier_consumer_serials_by_load_ea
-                ),
-                materialized_state_routes=materialized_state_routes,
-                legacy_handler_by_state=legacy_handler_by_state,
-                materialized_handler_by_state=materialized_handler_by_state,
-                handler_entry_eas_by_serial=materialized_handler_entry_eas,
-                state_carrier_vd_stkoffs_by_store_ea=(
-                    state_carrier_vd_stkoffs_by_store_ea
-                ),
-                materialized_computed_goto_profile=(materialized_computed_goto_profile),
-                condition_chain_route_evidence=condition_chain_route_evidence,
-                authoritative_handler_serials=authoritative_handler_serials,
-                recovered_dispatch_map_handler_serials=(
-                    recovered_dispatch_map_handler_serials
-                ),
-                missing_materialized_handler_targets=(
-                    missing_materialized_handler_targets
-                ),
-                dispatcher_region_serials=dispatcher_region_serials,
-                entry_bridge_evidence=entry_bridge_evidence,
-                bound_bootstrap_routes=bound_bootstrap_routes,
-                block_serial_for_native_identity=(block_serial_for_native_identity),
-                native_key=(
-                    None
-                    if current_block_identity_index is None
-                    else current_block_identity_index.native_key
-                ),
-                native_cfg_persistence=self.native_cfg_persistence,
-                canonical_route_evidence=canonical_route_evidence,
-            )
+            # The emission is the producer phase that owns every route
+            # authority arena opened while it runs -- the canonical bundle it
+            # builds from its own facts, and every bundle it remints.  Their
+            # join authority ends with the emission that created them: the
+            # plan that leaves here carries canonical identities, which is
+            # what the authority transaction reads, and any later attempt to
+            # *join* on the producer's bundle is refused instead of answered
+            # by a scope that outlived its analysis.
+            with route_authority_phase("unflatten-emission"):
+                plan = emit_minimal_unflatten(
+                    context.graph,
+                    dispatcher,
+                    block_refs_by_serial=(
+                        {}
+                        if current_block_identity_index is None
+                        else current_block_identity_index.plan_refs_by_serial()
+                    ),
+                    snapshot_id=(
+                        None
+                        if current_block_identity_index is None
+                        else current_block_identity_index.snapshot_id
+                    ),
+                    source_generation=(
+                        None
+                        if current_block_identity_index is None
+                        else current_block_identity_index.generation
+                    ),
+                    source_maturity=(
+                        None
+                        if current_block_identity_index is None
+                        else MaturityEnvelope(
+                            ir=context.maturity,
+                            provider="hexrays",
+                            provider_id=int(current_block_identity_index.maturity),
+                        )
+                    ),
+                    state_var_stkoff=(
+                        int(state_var_stkoff) if state_var_stkoff is not None else None
+                    ),
+                    state_var_reg=state_var_reg,
+                    dispatcher_entry_serial=int(dispatcher_entry),
+                    pre_header_serial=getattr(range_evidence, "pre_header_serial", None),
+                    initial_state=initial_state,
+                    initial_state_write_witness=initial_state_write_witness,
+                    state_dispatcher_map=getattr(recovery, "dispatch_map", None),
+                    native_bound_transition_routes=native_bound_transition_routes,
+                    is_indirect=is_indirect,
+                    fact_view=getattr(context, "facts", None),
+                    emu=emu,
+                    live_block_for=_make_live_block_for(live_function),
+                    use_def_safety=context.capabilities.optional(UseDefSafetyCapability),
+                    live_function=live_function,
+                    branch_witness_map=branch_witness_map,
+                    branch_witness_emu=branch_witness_emu,
+                    entry_bridge_exit_path_blocks=entry_bridge_exit_path_blocks,
+                    entry_bridge_requires_witness=entry_bridge_requires_witness,
+                    exit_path_effect_recovery=(
+                        isinstance(context.project_config, dict)
+                        and bool(context.project_config.get("exit_path_effect_recovery"))
+                    ),
+                    recover_multi_entry_back_edges=recover_multi_entry_back_edges,
+                    materialized_indirect_transfers=materialized_indirect_transfers,
+                    imported_direct_boundary_evidence=(imported_direct_boundary_evidence),
+                    imported_conditional_boundary_evidence=(
+                        imported_conditional_boundary_evidence
+                    ),
+                    imported_native_eas_by_serial=imported_native_eas_by_serial,
+                    native_carrier_consumer_serials_by_load_ea=(
+                        native_carrier_consumer_serials_by_load_ea
+                    ),
+                    materialized_state_routes=materialized_state_routes,
+                    legacy_handler_by_state=legacy_handler_by_state,
+                    materialized_handler_by_state=materialized_handler_by_state,
+                    handler_entry_eas_by_serial=materialized_handler_entry_eas,
+                    state_carrier_vd_stkoffs_by_store_ea=(
+                        state_carrier_vd_stkoffs_by_store_ea
+                    ),
+                    materialized_computed_goto_profile=(materialized_computed_goto_profile),
+                    condition_chain_route_evidence=condition_chain_route_evidence,
+                    authoritative_handler_serials=authoritative_handler_serials,
+                    recovered_dispatch_map_handler_serials=(
+                        recovered_dispatch_map_handler_serials
+                    ),
+                    missing_materialized_handler_targets=(
+                        missing_materialized_handler_targets
+                    ),
+                    dispatcher_region_serials=dispatcher_region_serials,
+                    entry_bridge_evidence=entry_bridge_evidence,
+                    bound_bootstrap_routes=bound_bootstrap_routes,
+                    block_serial_for_native_identity=(block_serial_for_native_identity),
+                    native_key=(
+                        None
+                        if current_block_identity_index is None
+                        else current_block_identity_index.native_key
+                    ),
+                    native_cfg_persistence=self.native_cfg_persistence,
+                    canonical_route_evidence=canonical_route_evidence,
+                )
             plan = _typed_or_empty_unflatten_plan(plan)
             plan_metadata = plan.metadata_dict()
             _publish(context, LOWER_STATE_MACHINE_PLAN_METADATA, plan_metadata)

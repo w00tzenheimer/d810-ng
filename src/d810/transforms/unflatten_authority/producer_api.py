@@ -14,6 +14,9 @@ from dataclasses import dataclass, replace
 
 from d810.analyses.control_flow.semantic_route_evidence import (
     CanonicalSemanticEvidence,
+    RouteAuthorityBinding,
+    RouteClaimAuthorityRefs,
+    route_join_binding,
     SemanticRouteDestination,
     SemanticRouteProof,
     SemanticRouteProofKind,
@@ -37,6 +40,7 @@ from d810.analyses.control_flow.effect_branch_exclusion import (
     ExactStateBranchEffectExclusion,
 )
 from d810.core.native_preanalysis_key import NativePreanalysisKey
+from d810.core.runtime_identity import RuntimeAuthorityRef, RuntimeJoinRejected
 from d810.ir.expressions import ValueOpKind
 from d810.ir.flowgraph import BlockKind, BlockSnapshot, FlowGraph, InsnKind, InsnSnapshot, MopSnapshot, OperandKind
 from d810.ir.graph_fingerprint import instruction_projection_without_block_references
@@ -146,6 +150,76 @@ class TransitionRouteSelectionKey:
             raise TypeError("transition route key requires stable target identity")
         object.__setattr__(self, "state_constant", int(self.state_constant) & 0xFFFFFFFF)
         object.__setattr__(self, "target_anchor_ea", int(self.target_anchor_ea))
+
+
+def bundle_route_proof_refs(
+    evidence: CanonicalSemanticEvidence,
+    proofs: Iterable[SemanticRouteProof],
+    *,
+    rejection: str,
+) -> tuple[RuntimeAuthorityRef, ...]:
+    """Return the arena reference of every proof, proving bundle membership.
+
+    This is the route-group -> proof join.  It replaces the pattern that built
+    a ``{proof.proof_id: proof}`` index of the whole bundle and then compared
+    each candidate to the indexed record: that asked whether some proof with
+    the same content ID is present *and* compares equal, which is a content
+    question answered by walking a record graph.  The authority question is
+    whether this exact record is a proof of this exact bundle, and the arena
+    answers it in constant time.
+
+    A proof that is not the bundle's own record -- a forgery, a
+    ``dataclasses.replace`` copy, a proof from a different bundle -- is
+    refused.  So is an unbound bundle and one whose arena its owner has
+    closed.  All four are translated into ``rejection`` here, at this
+    boundary, so callers keep catching ``ValueError`` with the message this
+    package already uses and the arena's exception type does not leak into it.
+
+    Resolving the binding is *inside* the translation, not before it: an
+    unbound or closed bundle is exactly the case a caller most needs
+    translated, and leaving it outside would send the untranslated rejection
+    past every ``except ValueError`` in the package.
+    """
+
+    try:
+        binding = route_join_binding(evidence)
+        return tuple(binding.ref_for(proof) for proof in proofs)
+    except RuntimeJoinRejected as exc:
+        raise ValueError(rejection) from exc
+
+
+def route_claim_join_refs(
+    claim: EquivalentSemanticRouteClaim,
+) -> RouteClaimAuthorityRefs:
+    """Return the join authority of one route claim, or refuse the join.
+
+    The mirror of ``route_join_binding`` for the records minted *from* a
+    bundle.  A claim that never carried a sidecar -- decoded from
+    persistence, or built field by field -- has no authority for a join and is
+    refused here rather than silently falling back to its content
+    fingerprint, which would answer a different question ("is some claim with
+    these bytes present") than the one a join asks ("is this claim about that
+    route").  A claim whose arena its lifecycle owner has closed is refused
+    for the same reason.
+
+    ``RuntimeJoinRejected`` is a ``ValueError``, so a caller inside the
+    emission's abstention contract declines the plan instead of aborting the
+    decompilation.
+    """
+
+    if type(claim) is not EquivalentSemanticRouteClaim:
+        raise TypeError("route claim join requires an equivalent route claim")
+    refs = claim.runtime_refs
+    if refs is None:
+        raise RuntimeJoinRejected(
+            "equivalent semantic route claim is not bound to a runtime "
+            "authority arena; it carries a content fingerprint only"
+        )
+    if not refs.is_live:
+        raise RuntimeJoinRejected(
+            "the runtime authority arena of this route claim is closed"
+        )
+    return refs
 
 
 @dataclass(frozen=True, slots=True)
@@ -1274,14 +1348,13 @@ def derive_authoritative_handler_serials(
     if type(state_identity) is not StorageIdentity:
         raise TypeError("state_identity must be a StorageIdentity")
     selected_proofs = tuple(selected_route_proofs)
-    known_proofs = {
-        proof.proof_id: proof
-        for proof in canonical_route_evidence.route_proofs
-    }
     if any(type(proof) is not SemanticRouteProof for proof in selected_proofs):
         raise TypeError("selected_route_proofs must contain canonical route proofs")
-    if any(known_proofs.get(proof.proof_id) != proof for proof in selected_proofs):
-        raise ValueError("selected route proof is foreign to canonical evidence")
+    bundle_route_proof_refs(
+        canonical_route_evidence,
+        selected_proofs,
+        rejection="selected route proof is foreign to canonical evidence",
+    )
     # A selected route claim discharges only its retired source endpoint. Its
     # destination remains a physical delivery obligation unless independently
     # discharged by a selected route that retires that exact source identity.
@@ -1742,7 +1815,7 @@ def resolve_concrete_entry_route(
     block_refs_by_serial: Mapping[int, AuthorityBlockRef],
     canonical_evidence: CanonicalSemanticEvidence,
     selected_transitions: TransitionRouteSelectionIndex,
-    proof_owners: MutableMapping[str, str],
+    proof_owners: MutableMapping[RuntimeAuthorityRef, str],
 ) -> SemanticRouteProof:
     """Select and own the exact canonical proof for one entry-prefix route."""
 
@@ -1830,9 +1903,17 @@ def resolve_concrete_entry_route(
     )
     if len(destinations) != 1:
         raise ValueError("concrete entry target/state proof mismatch")
-    if proof.proof_id in proof_owners:
+    # Ownership is keyed on the bundle's arena reference, so "already owned"
+    # is a statement about this exact canonical proof rather than about any
+    # record that renders the same identifier.
+    proof_ref = bundle_route_proof_refs(
+        canonical_evidence,
+        (proof,),
+        rejection="concrete entry proof is foreign to canonical evidence",
+    )[0]
+    if proof_ref in proof_owners:
         raise ValueError("concrete entry proof is already owned")
-    proof_owners[proof.proof_id] = route.proof_owner_identity
+    proof_owners[proof_ref] = route.proof_owner_identity
     return proof
 
 
@@ -2899,9 +2980,19 @@ def _equivalent_route_claim(
     source_catalog: SourceIdentityCatalog,
     route_evidence: CanonicalSemanticEvidence,
     proof: SemanticRouteProof,
+    binding: RouteAuthorityBinding,
     block_refs_by_serial: Mapping[int, AuthorityBlockRef] | None,
 ) -> EquivalentSemanticRouteClaim:
-    """Adapt one selected canonical proof into a closed route claim."""
+    """Adapt one selected canonical proof into a closed route claim.
+
+    ``binding`` is the bundle's own join authority, resolved once by the
+    caller.  The claim is minted carrying the references it already holds for
+    exactly this proof, so a later join asks the arena which route a claim is
+    about instead of re-deriving it from a content ID.  ``binding.claim_refs``
+    resolves the proof by object identity, so a proof that is not this
+    bundle's record fails closed here rather than minting a claim whose
+    authority names the wrong route.
+    """
 
     if proof.native_key != source_catalog.native_key:
         raise ValueError("canonical route proof has a foreign native key")
@@ -3030,6 +3121,7 @@ def _equivalent_route_claim(
     replacement_subject = retired_subject
     return _claim_factory(
         EquivalentSemanticRouteClaim,
+        runtime_refs=binding.claim_refs(proof),
         kind=UnflattenClaimKind.EQUIVALENT_SEMANTIC_ROUTE,
         retired_route_subject=retired_subject,
         replacement_route_subject=replacement_subject,
@@ -3065,21 +3157,35 @@ def build_equivalent_route_claims(
     selected = tuple(selected_proof_ids)
     if not selected:
         return ()
-    known = {proof.proof_id: proof for proof in route_evidence.route_proofs}
     if any(type(item) is not str or not item for item in selected):
         raise TypeError("selected_proof_ids must contain exact proof IDs")
     if len(set(selected)) != len(selected):
         raise ValueError("selected_proof_ids must not contain duplicates")
-    if any(item not in known for item in selected):
+    # ``selected_proof_ids`` is a *content* channel: it crosses into the
+    # authority transaction as canonical identifiers and stays that way.  The
+    # resolution below is therefore the one place the content ID is read, and
+    # the claim order that comes out of it is the arena's mint order, not a
+    # string sort -- mint order is the bundle's canonical proof order, so this
+    # produces the identical sequence without ordering on a hash.
+    binding = route_join_binding(route_evidence)
+    wanted = frozenset(selected)
+    ordered_proofs = tuple(
+        binding.proof_for(ref)
+        for ref in sorted(binding.proof_refs, key=binding.order_key)
+    )
+    resolved = tuple(
+        proof for proof in ordered_proofs if proof.proof_id in wanted
+    )
+    if len(resolved) != len(selected):
         raise ValueError("selected route proof is foreign to canonical evidence")
     claims = []
-    for proof_id in sorted(selected):
-        proof = known[proof_id]
+    for proof in resolved:
         claims.append(
             _equivalent_route_claim(
                 source_catalog=source_catalog,
                 route_evidence=route_evidence,
                 proof=proof,
+                binding=binding,
                 source=source,
                 block_refs_by_serial=block_refs_by_serial,
             )
@@ -3119,7 +3225,20 @@ def resolve_equivalent_route_claim(
         selected_proof_ids=claim.route_proof_ids,
         block_refs_by_serial=block_refs_by_serial,
     )
-    selected = tuple(item for item in rebuilt if item.claim_id == claim.claim_id)
+    # The claim -> claim correspondence is an authority question, so it keys
+    # on the references the bundle minted, not on the content fingerprint.
+    # ``rebuilt`` was minted from ``proposal.route_evidence`` a few lines
+    # above, so a claim that belongs to this proposal names references from
+    # that same arena; one that does not is refused instead of matching a
+    # foreign claim that happens to encode to the same bytes.  ``claim_id``
+    # remains the fingerprint, and full value equality still decides.
+    try:
+        wanted = route_claim_join_refs(claim)
+        selected = tuple(
+            item for item in rebuilt if route_claim_join_refs(item) == wanted
+        )
+    except RuntimeJoinRejected as exc:
+        raise ValueError("route claim is stale or ambiguous") from exc
     if len(selected) != 1 or selected[0] != claim:
         raise ValueError("route claim is stale or ambiguous")
     return claim
@@ -3217,6 +3336,7 @@ def build_exact_effect_claim(
 
 
 __all__ = [
+    "bundle_route_proof_refs",
     "ConcreteEntryRouteForecast",
     "TransitionRouteSelectionKey",
     "TransitionRouteSelectionIndex",
@@ -3238,6 +3358,7 @@ __all__ = [
     "build_exact_effect_claim",
     "build_equivalent_route_claims",
     "resolve_equivalent_route_claim",
+    "route_claim_join_refs",
     "concrete_entry_route_key",
     "resolve_concrete_entry_route",
     "bootstrap_entry_route_key",

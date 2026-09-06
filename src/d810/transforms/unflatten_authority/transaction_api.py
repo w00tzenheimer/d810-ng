@@ -23,6 +23,8 @@ from d810.transforms.plan import (
 )
 from d810.analyses.control_flow.semantic_route_evidence import (
     CanonicalRouteMaterialization,
+    CanonicalSemanticEvidence,
+    RouteRebindVerification,
     SemanticCorridorPoint,
     SemanticLogicalDagEndpoint,
     capture_observed_route_materialization,
@@ -77,6 +79,8 @@ from d810.transforms.unflatten_authority.gates import (
 from d810.transforms.unflatten_authority.diagnostics import PhaseTimings, phase_observation
 from d810.transforms.unflatten_authority.views import compatibility_projection
 from d810.transforms.exit_path_liveness_policy import exit_path_blocks_live_violations
+from .runtime_authority import rebind_route_evidence
+
 from .canonical_session import (
     CanonicalSessionPhase,
     _canonical_validation_session,
@@ -1360,6 +1364,83 @@ def _live_binding_failed_verdict(
     )
 
 
+def _record_route_authority_rebind(
+    evidence: CanonicalSemanticEvidence,
+    *,
+    phase: model.UnflattenAuthorityPhase,
+) -> RouteRebindVerification:
+    """Rebind one bundle at the producer/transaction seam and record the outcome.
+
+    The seam's substantive check -- that every producer reference names this
+    bundle's own proof record -- can only run while the producer's arena is
+    open, and whether it is depends on which producer path built the bundle
+    (``runtime_authority`` module docstring names both).  Neither answer is a
+    fault, but "the check did not run" must not be invisible: the outcome is
+    stored on the session by the rebind, stated here, and **returned** so that
+    it can ride the phase's result record.  The session's copy dies with the
+    session, so the returned value is the one that survives into a receipt.
+    """
+
+    rebind = rebind_route_evidence(evidence)
+    if rebind.records_verified:
+        # Deliberately unguarded.  ``logger.debug_on`` is a ``LevelFlag`` whose
+        # cache refreshes on a *config version* counter, not on a level change,
+        # so evaluating it here -- once per transaction, i.e. early and often --
+        # freezes the flag for this module's logger for the rest of the process
+        # and silently disables every later ``debug_on``-guarded diagnostic,
+        # including under ``caplog.set_level``.  The suite caught exactly that.
+        # ``logger.debug`` with %-style arguments already short-circuits, and
+        # these arguments are three attribute reads and a ``len``.
+        logger.debug(
+            "unflatten authority %s route rebind: %s (%d route proofs)",
+            phase.value, rebind.verification.value, len(rebind.binding.proof_refs),
+        )
+        return rebind.verification
+    logger.info(
+        "unflatten authority %s route rebind could not verify producer records: "
+        "%s (%d route proofs)",
+        phase.value, rebind.verification.value, len(rebind.binding.proof_refs),
+    )
+    return rebind.verification
+
+
+def _projected_route_authority_rebind_failure(
+    stage: str,
+    error: TypeError | ValueError,
+    *,
+    proposal,
+) -> "UnflattenAuthorityPreparationRejected":
+    """Report a projected seam refusal at its own stage, with its own fingerprint.
+
+    The observed side already had stage-specific provenance; the projected side
+    did not, because its seam sat inside the preparation's single several-hundred
+    line ``try``.  A reader who saw ``PROJECTED_BINDING_FAILED`` with the plan's
+    fingerprint had no way to tell a route-authority rebind refusal from any
+    other preparation failure.
+    """
+
+    message = str(error)
+    if len(message) > 512:
+        message = f"{message[:509]}..."
+    logger.warning(
+        "unflatten authority projected live binding rejected stage=%s %s: %s",
+        stage, type(error).__name__, message,
+    )
+    verdict = model.UnflattenAuthorityVerdict(
+        False,
+        model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        model.UnflattenAuthorityReason.PROJECTED_BINDING_FAILED,
+        authority_id(proposal),
+        None,
+        None,
+        _unavailable_candidate_fingerprint("projected-route-authority-rebind"),
+        None,
+        (),
+        rejection_detail=stage,
+    )
+    return UnflattenAuthorityPreparationRejected(verdict)
+
+
 def _observed_live_binding_failure(
     stage: str,
     error: TypeError | ValueError | AttributeError,
@@ -1367,6 +1448,7 @@ def _observed_live_binding_failure(
     authority_id_value: str | None = None,
     binding_id_value: str | None = None,
     candidate_fingerprint: str | None = None,
+    route_authority_verification: RouteRebindVerification | None = None,
 ) -> model.UnflattenAuthorityVerdict:
     """Log a bounded stage-specific live binding rejection."""
     message = str(error)
@@ -1398,6 +1480,7 @@ def _observed_live_binding_failure(
         None,
         (),
         rejection_detail=detail,
+        _route_authority_verification=route_authority_verification,
     )
 
 
@@ -4793,6 +4876,27 @@ def _prepare_unflatten_authority_in_session(*, source, projection, plan, attempt
     source_route_authority = None
     projected_route_realization = None
     try:
+        # The producer/transaction seam, in a try of its own.  The references
+        # the producer minted are not this scope's to use, so the transaction
+        # verifies what the producer binding can still prove and mints its own
+        # references in the arena this session owns.  What that check was able
+        # to prove depends on the producer path and is recorded, never skipped
+        # silently; see ``runtime_authority``.
+        #
+        # The scope is the point: the preparation body below is several hundred
+        # lines under one handler, so a refusal here would otherwise be reported
+        # as a generic projected binding failure with the plan's own
+        # fingerprint.  A seam refusal is its own stage and says so, exactly as
+        # the observed side does.
+        route_authority_verification = _record_route_authority_rebind(
+            proposal.route_evidence,
+            phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        )
+    except (TypeError, ValueError) as error:
+        return _projected_route_authority_rebind_failure(
+            "projected_route_authority_rebind", error, proposal=proposal,
+        )
+    try:
         inventory_started_ns = perf_counter_ns()
         source_materialization = capture_source_route_materialization(
             source, generation=proposal.source_identity_catalog.generation,
@@ -5228,7 +5332,10 @@ def _prepare_unflatten_authority_in_session(*, source, projection, plan, attempt
                 preparation_attempt_id=attempt_id,
                 entry_endpoint_liveness_receipts=entry_liveness_receipts,
             )
-            return UnflattenAuthorityPreparationAccepted(prepared, verdict)
+            return UnflattenAuthorityPreparationAccepted(
+                prepared, verdict,
+                route_authority_verification=route_authority_verification,
+            )
         # The canonical verdict is already rejecting.  Revalidate the same
         # exhaustive ledger once for diagnostics; no dimension-specific gate
         # owns a second loss model or replays the classification.
@@ -5236,7 +5343,10 @@ def _prepare_unflatten_authority_in_session(*, source, projection, plan, attempt
             gates.validate_projected_loss_ledger(projected_loss_ledger, case)
         except ValueError:
             pass
-        return UnflattenAuthorityPreparationRejected(verdict)
+        return UnflattenAuthorityPreparationRejected(
+            verdict,
+            route_authority_verification=route_authority_verification,
+        )
     except (TypeError, ValueError) as error:
         logger.warning(
             "unflatten authority projected binding failed: %s: %s",
@@ -5251,6 +5361,7 @@ def _prepare_unflatten_authority_in_session(*, source, projection, plan, attempt
         )
         return UnflattenAuthorityPreparationRejected(
             verdict,
+            route_authority_verification=route_authority_verification,
         )
 
 
@@ -5868,6 +5979,26 @@ def _revalidate_observed_unflatten_authority_in_session(
         )
     inventory_started_ns = perf_counter_ns()
     try:
+        # The same seam, for the observed session.  It is a *different*
+        # session and therefore a different arena, so the observed phase mints
+        # its own references and can never mistake a projected ordinal for an
+        # observed one.  It gets its own provenance label: a refusal here is a
+        # route-authority rebind failure, and reporting it as an inventory
+        # failure would send a reader to the wrong stage.
+        observed_route_authority_verification = _record_route_authority_rebind(
+            validated_prepared.proposal.route_evidence,
+            phase=model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY,
+        )
+    except (TypeError, ValueError) as error:
+        return _observed_live_binding_failure(
+            "observed_route_authority_rebind", error,
+            authority_id_value=validated_prepared.authority_id,
+            binding_id_value=authority.binding_id,
+            candidate_fingerprint=_unavailable_candidate_fingerprint(
+                "observed-route-authority-rebind"
+            ),
+        )
+    try:
         observed_materialization = capture_observed_route_materialization(
             observed, generation=observed_generation,
         )
@@ -5889,6 +6020,7 @@ def _revalidate_observed_unflatten_authority_in_session(
             candidate_fingerprint=_unavailable_candidate_fingerprint(
                 "observed-inventory"
             ),
+            route_authority_verification=observed_route_authority_verification,
         )
     inventory_ms = _elapsed_ms(inventory_started_ns, perf_counter_ns())
     phase_build_metrics = model.PhaseBuildMetrics(
@@ -5927,6 +6059,7 @@ def _revalidate_observed_unflatten_authority_in_session(
             authority_id_value=validated_prepared.authority_id,
             binding_id_value=authority.binding_id,
             candidate_fingerprint=observed_fingerprint,
+            route_authority_verification=observed_route_authority_verification,
         )
     evaluation_started_ns = perf_counter_ns()
     observed_case = build_semantic_case(
@@ -5934,7 +6067,14 @@ def _revalidate_observed_unflatten_authority_in_session(
         phase=model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY,
         inputs=inputs,
     )
-    verdict = replace(evaluate_case(observed_case), binding_id=authority.binding_id)
+    # The seam outcome rides the verdict from here on: the observed phase
+    # returns nothing else, and every later ``replace`` carries the private
+    # slot along, so a rejection carries it exactly like an acceptance.
+    verdict = replace(
+        evaluate_case(observed_case),
+        binding_id=authority.binding_id,
+        _route_authority_verification=observed_route_authority_verification,
+    )
     observed_ledger = build_semantic_loss_ledger(observed_case, verdict)
     verdict = replace(verdict, loss_ledger=observed_ledger)
     projected_ledger = validated_prepared.projected_loss_ledger

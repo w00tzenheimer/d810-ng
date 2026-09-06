@@ -310,10 +310,13 @@ def _subject(model, kind, role, locator):
 
 
 def _reissued_claim(claim, **changes):
+    # The canonical payload is the claim's *schema*: a private runtime
+    # authority sidecar is not a field the factory accepts as a payload name,
+    # and the sidecar has its own keyword-only channel.
     payload = {
         name: getattr(claim, name)
         for name in claim.__dataclass_fields__
-        if name != "claim_id"
+        if name != "claim_id" and not name.startswith("_")
     }
     payload.update(changes)
     return _claim_factory(type(claim), **payload)
