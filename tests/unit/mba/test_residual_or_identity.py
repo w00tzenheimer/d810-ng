@@ -7,9 +7,11 @@ import pytest
 from d810.backends.mba.compiled_pattern_catalogue import CompiledPatternCatalogue
 from d810.backends.mba.native_z3_proof_template import NativeZ3ProofTemplate
 from d810.mba.certified_rule_compiler import (
+    CompiledMbaRule,
+    RuleCompilationReceipt,
     RuleCompilationStatus,
     apply_compiled_rule_to_term,
-    compile_mba_rule_catalogue,
+    compile_family_rule_catalogue,
     compiled_rules_for_families,
 )
 from d810.mba.subterm_atomization import atomize_repeated_subterms
@@ -18,6 +20,25 @@ from d810.mba.typed_term import TypedBvTerm, canonicalize_ac_term
 
 RULE_NAME = "MbaResidualRule_2aa7de9f2ef4"
 MASK = 0xFFFFFBFB
+
+
+@pytest.fixture(scope="module")
+def or_rule_receipt() -> RuleCompilationReceipt:
+    """Compile only the "or" family once for this whole module.
+
+    ``compile_mba_rule_catalogue()`` verifies all ~200 declared rules across
+    every family (measured ~99% Z3 solver wall time, ~130 s cold); this
+    module only ever needs ``RULE_NAME`` from the "or" family, so scope the
+    compile to avoid paying for the other families here.
+    """
+    return compile_family_rule_catalogue("or").receipt_for("or", RULE_NAME)
+
+
+@pytest.fixture(scope="module")
+def or_rule(or_rule_receipt: RuleCompilationReceipt) -> CompiledMbaRule:
+    rule = or_rule_receipt.compiled_rule
+    assert rule is not None
+    return rule
 
 
 def _leaf(name: str, width: int = 32) -> TypedBvTerm:
@@ -69,26 +90,26 @@ def test_mined_rule_is_explicitly_admitted_in_the_or_family() -> None:
     assert MbaResidualRule_2aa7de9f2ef4 in MBA_RULE_FAMILIES["or"]
 
 
-def test_mined_rule_compiles_with_all_four_certificate_widths() -> None:
-    receipt = compile_mba_rule_catalogue().receipt_for("or", RULE_NAME)
+def test_mined_rule_compiles_with_all_four_certificate_widths(
+    or_rule_receipt: RuleCompilationReceipt,
+) -> None:
+    assert or_rule_receipt.status is RuleCompilationStatus.COMPILED
+    assert or_rule_receipt.canonical_name == RULE_NAME
+    assert or_rule_receipt.compiled_rule is not None
+    assert or_rule_receipt.compiled_rule.proof_widths == (8, 16, 32, 64)
 
-    assert receipt.status is RuleCompilationStatus.COMPILED
-    assert receipt.canonical_name == RULE_NAME
-    assert receipt.compiled_rule is not None
-    assert receipt.compiled_rule.proof_widths == (8, 16, 32, 64)
 
-
-def test_mined_rule_matches_full_concrete_expression_and_restores_masked_or() -> None:
-    rule = compile_mba_rule_catalogue().receipt_for("or", RULE_NAME).compiled_rule
-    assert rule is not None
-    replacement = apply_compiled_rule_to_term(rule, _candidate())
+def test_mined_rule_matches_full_concrete_expression_and_restores_masked_or(
+    or_rule: CompiledMbaRule,
+) -> None:
+    replacement = apply_compiled_rule_to_term(or_rule, _candidate())
 
     assert replacement == _raw_node("or", _leaf("masked"), _leaf("v17"))
 
 
-def test_mined_rule_restores_the_concrete_masked_subterm_after_atomized_match() -> None:
-    rule = compile_mba_rule_catalogue().receipt_for("or", RULE_NAME).compiled_rule
-    assert rule is not None
+def test_mined_rule_restores_the_concrete_masked_subterm_after_atomized_match(
+    or_rule: CompiledMbaRule,
+) -> None:
     v17 = _leaf("v17")
     masked = _raw_node("and", _leaf("v135"), _constant(MASK))
     concrete = _raw_node(
@@ -109,24 +130,21 @@ def test_mined_rule_restores_the_concrete_masked_subterm_after_atomized_match() 
         _raw_node("mul", _constant(2), masked),
     )
     atomized = atomize_repeated_subterms(concrete)
-    atomized_replacement = apply_compiled_rule_to_term(rule, atomized.atomized_term)
+    atomized_replacement = apply_compiled_rule_to_term(or_rule, atomized.atomized_term)
 
     assert atomized_replacement is not None
     assert atomized.restore(atomized_replacement) == _raw_node("or", masked, v17)
 
 
-def test_mined_rule_rejects_one_coefficient_near_miss() -> None:
-    rule = compile_mba_rule_catalogue().receipt_for("or", RULE_NAME).compiled_rule
-    assert rule is not None
-
-    assert apply_compiled_rule_to_term(rule, _candidate(coefficient=3)) is None
+def test_mined_rule_rejects_one_coefficient_near_miss(or_rule: CompiledMbaRule) -> None:
+    assert apply_compiled_rule_to_term(or_rule, _candidate(coefficient=3)) is None
 
 
 @pytest.mark.parametrize("width", (8, 16, 32, 64))
-def test_mined_rule_native_proof_template_succeeds_at_each_width(width: int) -> None:
-    rule = compile_mba_rule_catalogue().receipt_for("or", RULE_NAME).compiled_rule
-    assert rule is not None
-    template = NativeZ3ProofTemplate.from_compiled_rule(rule, width=width)
+def test_mined_rule_native_proof_template_succeeds_at_each_width(
+    width: int, or_rule: CompiledMbaRule
+) -> None:
+    template = NativeZ3ProofTemplate.from_compiled_rule(or_rule, width=width)
     assert template is not None
     left = _leaf("left", width)
     right = _leaf("right", width)

@@ -576,6 +576,43 @@ def compile_add_rule_catalogue() -> MbaRuleCatalogue:
     )
 
 
+def compile_family_rule_catalogue(family: str) -> MbaRuleCatalogue:
+    """Compile a single declared rule family without the rest of the corpus.
+
+    ``compile_mba_rule_catalogue`` verifies every declared rule across every
+    family; each rule is proven with Z3 at all four ``CERTIFICATE_WIDTHS``,
+    so the whole-corpus call is dominated by native Z3 solver time (measured
+    ~99% of wall time, not Python overhead) that is wasted work for a caller
+    that only needs one family's receipts. This is a thin wrapper around the
+    same cached ``_compile_selected_rule_catalogue`` used by
+    ``compile_add_rule_catalogue``, keyed on just ``family`` so unrelated
+    families are never verified.
+    """
+    return _compile_selected_rule_catalogue(
+        (family,),
+        ((family, tuple(MBA_RULE_FAMILIES[family])),),
+    )
+
+
+def compile_selected_rules_catalogue(
+    selection: Mapping[str, tuple[type[VerifiableRule], ...]],
+) -> MbaRuleCatalogue:
+    """Compile an explicit subset of declared rule types, keyed by family.
+
+    Shares the same cached ``_compile_selected_rule_catalogue`` path as
+    ``compile_add_rule_catalogue`` and ``compile_family_rule_catalogue``.
+    Exists for callers that need a handful of representative rules spanning
+    many families rather than one whole family or the whole corpus -- for
+    example a cheap, non-``slow`` corpus-shape smoke test that must stay
+    in the default selection after the full 201-rule corpus compile moved
+    out of it.
+    """
+    declaration_version = tuple(
+        (family, tuple(rule_types)) for family, rule_types in selection.items()
+    )
+    return _compile_selected_rule_catalogue(tuple(selection), declaration_version)
+
+
 def executable_rule_order_key(
     rule: CompiledMbaRule,
 ) -> tuple[str, str, tuple[str, ...]]:

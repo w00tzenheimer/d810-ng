@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import ast
 import dataclasses
+from collections.abc import Iterator
 from pathlib import Path
+
+import pytest
 
 from d810.core import typing
 
@@ -81,19 +84,40 @@ GATEWAYLESS_NONSTRUCTURAL_ENTRYPOINTS = {
 }
 
 
-def _production_calls():
-    for path in SRC_ROOT.rglob("*.py"):
-        relative = path.relative_to(SRC_ROOT).as_posix()
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+ProductionSourceTrees = tuple[tuple[str, ast.Module], ...]
+
+
+@pytest.fixture(scope="module")
+def production_source_trees() -> ProductionSourceTrees:
+    """Parse every production ``.py`` file under ``SRC_ROOT`` exactly once.
+
+    Seven tests in this module each independently re-walked and re-parsed
+    the whole ``src/d810`` tree (measured ~3.3 s per test, ~24 s total for
+    this file alone). The tree does not change during a test run, so share
+    one read-and-parse pass across the module instead.
+    """
+    return tuple(
+        (
+            path.relative_to(SRC_ROOT).as_posix(),
+            ast.parse(path.read_text(encoding="utf-8"), filename=str(path)),
+        )
+        for path in SRC_ROOT.rglob("*.py")
+    )
+
+
+def _production_calls(
+    source_trees: ProductionSourceTrees,
+) -> Iterator[tuple[str, ast.Call]]:
+    for relative, tree in source_trees:
         for node in ast.walk(tree):
             if isinstance(node, ast.Call):
                 yield relative, node
 
 
-def _production_calls_in_functions():
-    for path in SRC_ROOT.rglob("*.py"):
-        relative = path.relative_to(SRC_ROOT).as_posix()
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+def _production_calls_in_functions(
+    source_trees: ProductionSourceTrees,
+) -> Iterator[tuple[str, str | None, ast.Call]]:
+    for relative, tree in source_trees:
 
         class FunctionCallVisitor(ast.NodeVisitor):
             def __init__(self) -> None:
@@ -116,9 +140,31 @@ def _production_calls_in_functions():
         yield from calls
 
 
-def test_sdk_structural_writes_stay_in_the_gateway_backend() -> None:
+@pytest.fixture(scope="module")
+def production_calls(
+    production_source_trees: ProductionSourceTrees,
+) -> tuple[tuple[str, ast.Call], ...]:
+    """Every ``ast.Call`` node in the production tree, walked exactly once.
+
+    Four tests need this same (relative path, call node) sequence; without
+    this fixture each of them re-walks every already-parsed tree from
+    scratch.
+    """
+    return tuple(_production_calls(production_source_trees))
+
+
+@pytest.fixture(scope="module")
+def production_calls_in_functions(
+    production_source_trees: ProductionSourceTrees,
+) -> tuple[tuple[str, str | None, ast.Call], ...]:
+    return tuple(_production_calls_in_functions(production_source_trees))
+
+
+def test_sdk_structural_writes_stay_in_the_gateway_backend(
+    production_calls: tuple[tuple[str, ast.Call], ...],
+) -> None:
     violations = []
-    for relative, call in _production_calls():
+    for relative, call in production_calls:
         function = call.func
         if (
             isinstance(function, ast.Attribute)
@@ -139,9 +185,11 @@ def test_sdk_structural_writes_stay_in_the_gateway_backend() -> None:
     assert violations == []
 
 
-def test_only_manager_and_gateway_create_mutation_gateways() -> None:
+def test_only_manager_and_gateway_create_mutation_gateways(
+    production_calls: tuple[tuple[str, ast.Call], ...],
+) -> None:
     violations = []
-    for relative, call in _production_calls():
+    for relative, call in production_calls:
         if (
             isinstance(call.func, ast.Name)
             and call.func.id == "MbaMutationGateway"
@@ -151,9 +199,11 @@ def test_only_manager_and_gateway_create_mutation_gateways() -> None:
     assert violations == []
 
 
-def test_only_nonstructural_probes_construct_gatewayless_modifiers() -> None:
+def test_only_nonstructural_probes_construct_gatewayless_modifiers(
+    production_calls_in_functions: tuple[tuple[str, str | None, ast.Call], ...],
+) -> None:
     violations = []
-    for relative, function_name, call in _production_calls_in_functions():
+    for relative, function_name, call in production_calls_in_functions:
         constructor = call.func
         constructor_name = (
             constructor.id
@@ -200,11 +250,11 @@ def test_jump_fixer_uses_the_shared_typed_transaction_port() -> None:
     assert "apply" not in calls
 
 
-def test_low_level_cfg_mutation_helpers_are_private_to_the_gateway_backend() -> None:
+def test_low_level_cfg_mutation_helpers_are_private_to_the_gateway_backend(
+    production_source_trees: ProductionSourceTrees,
+) -> None:
     violations = []
-    for path in SRC_ROOT.rglob("*.py"):
-        relative = path.relative_to(SRC_ROOT).as_posix()
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    for relative, tree in production_source_trees:
         for node in ast.walk(tree):
             if (
                 isinstance(node, ast.ImportFrom)
@@ -215,12 +265,12 @@ def test_low_level_cfg_mutation_helpers_are_private_to_the_gateway_backend() -> 
     assert violations == []
 
 
-def test_production_has_no_adapter_local_serial_maps() -> None:
+def test_production_has_no_adapter_local_serial_maps(
+    production_source_trees: ProductionSourceTrees,
+) -> None:
     forbidden = {"serial_map", "serial_remap", "ea_to_serial"}
     violations = []
-    for path in SRC_ROOT.rglob("*.py"):
-        relative = path.relative_to(SRC_ROOT).as_posix()
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    for relative, tree in production_source_trees:
         for node in ast.walk(tree):
             name = (
                 node.id
@@ -422,12 +472,12 @@ def test_every_plan_created_block_requires_a_plan_ref_creation_witness() -> None
     assert "block_id: PlanBlockRef" in plan_source
 
 
-def test_every_production_patch_plan_compiler_call_names_exact_block_authority() -> (
-    None
-):
+def test_every_production_patch_plan_compiler_call_names_exact_block_authority(
+    production_calls: tuple[tuple[str, ast.Call], ...],
+) -> None:
     """Executable compilation cannot degrade when serial authority is absent."""
     violations: list[str] = []
-    for relative, call in _production_calls():
+    for relative, call in production_calls:
         function = call.func
         if not isinstance(function, ast.Name) or function.id != "compile_patch_plan":
             continue
@@ -438,9 +488,9 @@ def test_every_production_patch_plan_compiler_call_names_exact_block_authority()
     assert violations == []
 
 
-def test_every_production_minimal_unflatten_emit_names_complete_source_authority() -> (
-    None
-):
+def test_every_production_minimal_unflatten_emit_names_complete_source_authority(
+    production_calls: tuple[tuple[str, ast.Call], ...],
+) -> None:
     """Minimal unflattening must preserve complete source authority."""
     required = {
         "block_refs_by_serial",
@@ -449,7 +499,7 @@ def test_every_production_minimal_unflatten_emit_names_complete_source_authority
         "source_maturity",
     }
     violations: list[str] = []
-    for relative, call in _production_calls():
+    for relative, call in production_calls:
         function = call.func
         if (
             not isinstance(function, ast.Name)
