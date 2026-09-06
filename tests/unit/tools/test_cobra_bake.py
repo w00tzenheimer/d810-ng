@@ -254,6 +254,10 @@ def test_verifier_proves_behaviour_not_just_import() -> None:
     assert '"mba-solve": "cobra-solve"' in source
     assert 'manifest["api_version"] == 1' in source
     assert "import d810_cobra._cobra" in source
+    # No lazy imports: the d810_cobra names are bound at module level, which is
+    # also what makes an image that cannot import the backend fail immediately.
+    body = source[source.index("def main()") :]
+    assert "import " not in body
 
 
 def test_no_untracked_host_paths_leak_into_the_bake_assets() -> None:

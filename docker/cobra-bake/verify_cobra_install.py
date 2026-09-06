@@ -18,6 +18,13 @@ Environment:
 
 Both are optional: without them the identity assertions are skipped and only
 the behaviour is proven.
+
+The d810_cobra imports are at module level, as the project's style requires.
+That means this file cannot be imported where d810-cobra is absent -- which is
+every environment except inside the built image, and the only place it is ever
+run. Failing at import there is the correct outcome anyway: an image that
+cannot import the backend has nothing to verify. Its callers therefore treat
+it as a program, not a module, and its tests read it as text.
 """
 
 from __future__ import annotations
@@ -27,17 +34,17 @@ import os
 import sys
 import sysconfig
 
+import d810_cobra
+import d810_cobra._cobra
+from d810_cobra.expr import parse_cobra_output
+from d810_cobra.prove import ProofResult, prove_equivalent
+from d810_cobra.solve import SolveStatus, binding_available, solve_signature
+
 EXPECT_VERSION = os.environ.get("D810_COBRA_EXPECT_VERSION", "")
 EXPECT_ARCH = os.environ.get("D810_COBRA_EXPECT_ARCH", "")
 
 
 def main() -> int:
-    import d810_cobra
-    import d810_cobra._cobra
-    from d810_cobra.expr import parse_cobra_output
-    from d810_cobra.prove import ProofResult, prove_equivalent
-    from d810_cobra.solve import SolveStatus, binding_available, solve_signature
-
     manifest = d810_cobra.MANIFEST
     assert manifest["api_version"] == 1, manifest
     assert manifest["implements"] == {"mba-solve": "cobra-solve"}, manifest
