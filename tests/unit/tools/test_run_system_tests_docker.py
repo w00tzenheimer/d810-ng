@@ -121,6 +121,16 @@ if [ "${1:-}" = image ] && [ "${2:-}" = inspect ]; then
       printf '%s\\n' "${MOCK_DOCKER_IMAGE_ID-@FAKE_IMAGE_ID@}"
       exit 0
       ;;
+    *'org.d810.cobra.version'*)
+      # The baked-CoBRA labels are read in ONE inspect, as a |-joined row, and
+      # a remote engine is a different machine with its own copy of the tag.
+      if [ -n "${DOCKER_HOST:-}" ]; then
+        printf '%s\\n' "${MOCK_DOCKER_REMOTE_COBRA_LABELS-${MOCK_DOCKER_COBRA_LABELS:-||||}}"
+      else
+        printf '%s\\n' "${MOCK_DOCKER_COBRA_LABELS:-||||}"
+      fi
+      exit 0
+      ;;
   esac
   printf '%s\\n' "${MOCK_DOCKER_LABEL:-}"
 fi
@@ -4457,3 +4467,305 @@ def test_run_retention_defaults_to_twenty(tmp_path: Path) -> None:
 
     assert result.returncode == 0, result.stderr
     assert "__runs_keep=20;" in _remote_container_run(calls)
+
+
+# ---------------------------------------------------------------------------
+# Baked CoBRA: the image already carries the published wheel
+# ---------------------------------------------------------------------------
+COBRA_PARENT_PIN = "3b3c406270f1efd8e222f0b05040ae4e074b27d5"
+
+
+def _baked_labels(
+    version: str = COBRA_WHEEL_VERSION,
+    sha256: str = COBRA_WHEEL_AARCH64_SHA256,
+    tag: str = COBRA_WHEEL_TAG_COMMIT,
+    core: str = COBRA_WHEEL_CORE_COMMIT,
+    parent: str = COBRA_PARENT_PIN,
+) -> str:
+    """The org.d810.cobra.* row the runner reads in one `image inspect`."""
+    return "|".join((version, sha256, tag, core, parent))
+
+
+def test_baked_cobra_image_installs_nothing_and_still_proves_the_backend(
+    tmp_path: Path,
+) -> None:
+    """The labels are the image's claim; the known-answer solve is the proof."""
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--",
+        "true",
+        extra_env={"MOCK_DOCKER_COBRA_LABELS": _baked_labels()},
+    )
+
+    assert result.returncode == 0, result.stderr
+    command = _container_run(calls)
+    # Nothing is installed, cloned, compiled or hashed on the way in.
+    for installed in (
+        "pip install --no-deps --force-reinstall",
+        "sha256sum -c -",
+        "git clone",
+        "build_cobra.py",
+        "cmake",
+        "/opt/d810-cobra-wheel",
+        "/opt/d810-cobra-source",
+        "/opt/d810-cobra-cache",
+    ):
+        assert installed not in command, installed
+    # ... but the full contract is still proven inside the container.
+    assert '"implements"] == {"mba-solve": "cobra-solve"}' in command
+    assert "import d810_cobra._cobra" in command
+    assert "prove_equivalent(tree, solved.tree" in command
+    assert (
+        f'importlib.metadata.version("d810-cobra") == "{COBRA_WHEEL_VERSION}"' in command
+    )
+    assert not (tmp_path / ".tmp" / "cobra-linux").exists()
+
+
+def test_baked_cobra_verification_is_a_hard_setup_precondition(
+    tmp_path: Path,
+) -> None:
+    """A failed verification must stop the run, not hand over to pytest."""
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--",
+        "true",
+        extra_env={"MOCK_DOCKER_COBRA_LABELS": _baked_labels()},
+    )
+
+    assert result.returncode == 0, result.stderr
+    command = _container_run(calls)
+    assert "stage extensions failed" in command
+    assert "; pytest" not in command
+
+
+def test_baked_cobra_is_named_in_the_preamble(tmp_path: Path) -> None:
+    result, _calls = _run(
+        tmp_path,
+        "exec",
+        "--",
+        "true",
+        extra_env={"MOCK_DOCKER_COBRA_LABELS": _baked_labels()},
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert (
+        "extension: d810-cobra (baked "
+        f"{COBRA_WHEEL_VERSION} {COBRA_WHEEL_AARCH64_SHA256[:12]} "
+        f"tag {COBRA_WHEEL_TAG_COMMIT[:7]})"
+    ) in result.stdout
+    assert COBRA_WHEEL_AARCH64_SHA256 in result.stdout
+    assert COBRA_WHEEL_TAG_COMMIT in result.stdout
+    assert "nothing installed, verification still enforced" in result.stdout
+
+
+def test_baked_cobra_identity_reaches_the_provenance_receipt(
+    tmp_path: Path,
+) -> None:
+    """A receipt has to name the artifact its measurements were produced by."""
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--",
+        "true",
+        extra_env={"MOCK_DOCKER_COBRA_LABELS": _baked_labels()},
+    )
+
+    assert result.returncode == 0, result.stderr
+    command = _container_run(calls)
+    assert f"D810_TEST_COBRA_WHEEL_SHA256={COBRA_WHEEL_AARCH64_SHA256}" in command
+    assert f"D810_TEST_COBRA_TAG_COMMIT={COBRA_WHEEL_TAG_COMMIT}" in command
+    assert "D810_TEST_COBRA_SOURCE_MODE=baked" in command
+
+
+def test_source_built_cobra_records_no_published_identity(tmp_path: Path) -> None:
+    """A compiled backend has no published hash; the receipt must not invent one."""
+    result, calls = _run(tmp_path, "exec", "--", "true")
+
+    assert result.returncode == 0, result.stderr
+    command = _container_run(calls)
+    assert "D810_TEST_COBRA_WHEEL_SHA256" not in command
+    assert "D810_TEST_COBRA_TAG_COMMIT" not in command
+
+
+def test_incomplete_baked_labels_are_an_error_not_a_rebuild(tmp_path: Path) -> None:
+    """Half a claim is the state that would hide an install that never happened."""
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--",
+        "true",
+        extra_env={
+            "MOCK_DOCKER_COBRA_LABELS": _baked_labels(sha256="", core=""),
+        },
+    )
+
+    assert result.returncode != 0
+    assert "label set is incomplete" in result.stderr
+    assert "org.d810.cobra.wheel_sha256" in result.stderr
+    assert "org.d810.cobra.core_commit" in result.stderr
+    assert _workload_runs(calls) == []
+
+
+def test_unpublished_baked_wheel_hash_is_refused(tmp_path: Path) -> None:
+    """The preflight wheels share the published filenames, not their bytes."""
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--",
+        "true",
+        extra_env={
+            "MOCK_DOCKER_COBRA_LABELS": _baked_labels(
+                sha256=COBRA_WHEEL_PREFLIGHT_AARCH64_SHA256
+            ),
+        },
+    )
+
+    assert result.returncode != 0
+    assert COBRA_WHEEL_PREFLIGHT_AARCH64_SHA256 in result.stderr
+    assert "not a published d810-cobra wheel" in result.stderr
+    assert _workload_runs(calls) == []
+
+
+def test_baked_labels_must_agree_with_the_published_record(tmp_path: Path) -> None:
+    """A label set can be complete and still describe the wrong release."""
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--",
+        "true",
+        extra_env={"MOCK_DOCKER_COBRA_LABELS": _baked_labels(tag="0" * 40)},
+    )
+
+    assert result.returncode != 0
+    assert "labels disagree with the published record" in result.stderr
+    assert _workload_runs(calls) == []
+
+
+def test_baked_parent_commit_must_equal_the_runner_pin(tmp_path: Path) -> None:
+    """A baked run and a source run must describe the same upstream code."""
+    stale_parent = "1" * 40
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--",
+        "true",
+        extra_env={"MOCK_DOCKER_COBRA_LABELS": _baked_labels(parent=stale_parent)},
+    )
+
+    assert result.returncode != 0
+    assert stale_parent in result.stderr
+    assert COBRA_PARENT_PIN in result.stderr
+    assert "this runner pins" in result.stderr
+    assert _workload_runs(calls) == []
+
+
+def test_explicit_wheel_outranks_a_baked_image(tmp_path: Path) -> None:
+    """An operator naming a wheel means it, whatever the image carries."""
+    wheel = _recorded_wheel(COBRA_WHEEL_AARCH64_NAME)
+    if wheel is None:
+        pytest.skip(f"recorded wheel {COBRA_WHEEL_AARCH64_NAME} is unavailable")
+
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--",
+        "true",
+        extra_env={
+            "D810_COBRA_WHEEL": str(wheel),
+            "D810_COBRA_WHEEL_SHA256": COBRA_WHEEL_AARCH64_SHA256,
+            "MOCK_DOCKER_COBRA_LABELS": _baked_labels(),
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert f"extension: d810-cobra (wheel {COBRA_WHEEL_AARCH64_NAME})" in result.stdout
+    assert "baked" not in result.stdout
+    command = _container_run(calls)
+    assert "sha256sum -c -" in command
+
+
+def test_explicit_cobra_root_outranks_a_baked_image(tmp_path: Path) -> None:
+    """The mounted-pinned development path must not be silently discarded."""
+    result, _calls = _run(
+        tmp_path,
+        "exec",
+        "--",
+        "true",
+        extra_env={
+            "D810_COBRA_ROOT": str(tmp_path / "absent-cobra-checkout"),
+            "MOCK_DOCKER_COBRA_LABELS": _baked_labels(),
+        },
+    )
+
+    # It fails on the checkout, which proves the baked image never took over.
+    assert result.returncode != 0
+    assert "D810_COBRA_ROOT must be an absolute existing directory" in result.stderr
+
+
+def test_remote_mode_reads_the_baked_labels_from_the_remote_engine(
+    tmp_path: Path,
+) -> None:
+    """--remote runs on another machine, whose copy of the tag may differ."""
+    share, repo = _share_layout(tmp_path)
+
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--remote",
+        REMOTE_HOST,
+        "--",
+        "true",
+        repo_root=repo,
+        extra_env=_remote_env(
+            share,
+            MOCK_DOCKER_COBRA_LABELS="||||",
+            MOCK_DOCKER_REMOTE_COBRA_LABELS=_baked_labels(
+                sha256=COBRA_WHEEL_X86_64_SHA256
+            ),
+        ),
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert (
+        f"extension: d810-cobra (baked {COBRA_WHEEL_VERSION} "
+        f"{COBRA_WHEEL_X86_64_SHA256[:12]}"
+    ) in result.stdout
+    command = _remote_container_run(calls)
+    assert "git clone" not in command
+    # Every label inspect has to be addressed to the engine that will run it.
+    hosts = _docker_hosts(calls)
+    inspects = [
+        index
+        for index, call in enumerate(_docker_calls(calls))
+        if "org.d810.cobra.version" in call
+    ]
+    assert inspects, calls
+    assert all(hosts[index] == f"ssh://{REMOTE_HOST}" for index in inspects), calls
+
+
+def test_remote_mode_ignores_a_baked_label_set_that_only_exists_locally(
+    tmp_path: Path,
+) -> None:
+    """The Mac's image of the same tag says nothing about the remote engine's."""
+    share, repo = _share_layout(tmp_path)
+
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--remote",
+        REMOTE_HOST,
+        "--",
+        "true",
+        repo_root=repo,
+        extra_env=_remote_env(
+            share,
+            MOCK_DOCKER_COBRA_LABELS=_baked_labels(),
+            MOCK_DOCKER_REMOTE_COBRA_LABELS="||||",
+        ),
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "baked" not in result.stdout
+    assert "git clone" in _remote_container_run(calls)
