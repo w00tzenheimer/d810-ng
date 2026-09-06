@@ -50,6 +50,24 @@ their sizes with the published ones, and differ only in their bytes. They are
 provenance evidence and are never an accepted production identity here. Only
 the two hashes in `SHA256SUMS.published` are.
 
+## The image build script
+
+`tools/scripts/build_ida_images.sh` (untracked, beside the installers) sources
+`cobra_identity.sh`, calls `stage_cobra_bake_context.sh` to put the one
+architecture-matching wheel into the build context, and passes the five
+`--build-arg` values for `SPEEDUPS=1` variants only. It takes
+`--cobra-wheel-dir DIR` to point at the published wheels.
+
+Its verification table gains a `COBRA` column, which fails the run non-zero on
+any mismatch:
+
+- a speedups image must carry labels that match the published record for its
+  architecture, and must then pass `verify_cobra_install.py` in a container --
+  a build can succeed with a `--build-arg` that never reached the stage, and
+  an image can carry correct labels over a broken install, so both are checked;
+- a vanilla image must carry no CoBRA claim at all, because a mislabelled
+  vanilla image would make the runner skip an install that never happened.
+
 ## Verifying a baked image by hand
 
     docker run --rm -e D810_COBRA_EXPECT_VERSION=0.1.5 \
