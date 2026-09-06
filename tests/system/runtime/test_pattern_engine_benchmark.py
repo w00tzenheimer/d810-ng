@@ -35,6 +35,7 @@ from d810.hexrays.ir import minsn_utils
 from d810.hexrays.ir.minsn_utils import minsn_to_ast
 from d810.hexrays.ir.mop_snapshot import MopSnapshot
 from d810.mba.provider_outcome import RawMatcherWorkReceipt
+from tests.runtime_provenance import runtime_provenance
 from d810.optimizers.microcode.instructions.pattern_matching.handler import (
     PatternStorage,
     optimizer_logger,
@@ -1529,10 +1530,12 @@ class TestCanonicalFallbackWorkBounds:
         assert fallback_calls["allocation_peak_bytes"] < 10 * 1024 * 1024
         assert fallback_calls["profile"]
         fallback_p95 = fallback[0] if len(fallback) == 1 else self._p95(fallback)
+        _provenance = runtime_provenance()
         self._append_performance_receipt(
             "\n## Task 7 callback benchmark\n\n"
             f"- Host worktree commit: `{benchmark_commit}`\n"
-            f"- Docker image: `{os.environ.get('D810_TEST_RUNTIME_IMAGE', 'unknown')}` (`{os.environ.get('D810_TEST_RUNTIME_IMAGE_ID', 'unknown')}`)\n"
+            f"- Docker image: `{_provenance['runtime_image']}` (`{_provenance['runtime_image_id']}`)\n"
+            f"- Engine clock offset: `{_provenance['engine_clock_offset_seconds']}` s\n"
             f"- Runtime backend: `{get_engine_info()['backend']}`; `D810_NO_CYTHON={os.environ.get('D810_NO_CYTHON', '1')}`\n"
             "- Commands: Python `D810_BENCHMARK_COMMIT=$(git -C .worktrees/canonical-mba-matcher-fallback rev-parse HEAD) ./tools/scripts/run_system_tests_docker.sh test -w canonical-mba-matcher-fallback -o task7-production-benchmark-real-python-final.txt -- tests/system/runtime/test_pattern_engine_benchmark.py::TestCanonicalFallbackWorkBounds::test_bounded_callback_performance -q -s -rs`; Cython `D810_BENCHMARK_COMMIT=$(git -C .worktrees/canonical-mba-matcher-fallback rev-parse HEAD) D810_NO_CYTHON=0 ./tools/scripts/run_system_tests_docker.sh test -w canonical-mba-matcher-fallback -o task7-production-benchmark-real-cython-final.txt -- tests/system/runtime/test_pattern_engine_benchmark.py::TestCanonicalFallbackWorkBounds::test_bounded_callback_performance -q -s -rs`\n"
             "- Mode comparison: fresh production `Add_HackersDelightRule_4` adapter set with `D810_CANONICAL_MATCH_FALLBACK=0` (baseline) versus `=1` (candidate); identical full catalogue rules, cache policy, pinned compiler-shape function, candidate EA, and AST digest.\n"
