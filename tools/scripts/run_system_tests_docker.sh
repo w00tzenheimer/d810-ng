@@ -62,6 +62,13 @@
 #                           WORK_DIR/.tmp/remote-run.lock): .tmp is shared read-write, so -o files,
 #                           logs, diag SQLite databases and finalized artifact staging would collide.
 #                           Requires macOS (the .tmp ACL for the share account is macOS-specific).
+#                           Root-runner rule: in remote mode always invoke the ROOT
+#                           checkout's copy of this script with -w <worktree>; a
+#                           worktree's own copy may predate fixes like the engine-
+#                           architecture probe (an older copy misreported an x86_64
+#                           engine as aarch64, aborting the wheel check). The per-
+#                           worktree lock, work volume and cache volume are keyed by
+#                           the TARGET worktree path, not by which copy runs.
 #   --                      Remaining args passed to pytest (system/test) or used as command separator (exec)
 #
 # Options (dump only):
