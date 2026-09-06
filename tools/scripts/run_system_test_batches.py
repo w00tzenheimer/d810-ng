@@ -195,6 +195,22 @@ def parse_pytest_durations(output: str) -> list[dict[str, float | str]]:
     return durations
 
 
+#: Verbosity flags are stripped from the COLLECT pass only. ``--collect-only -q``
+#: is what prints one node id per line; a second ``-q`` from the caller makes it
+#: print "path: N" instead and the driver sees an empty selection. They are left
+#: untouched on the batch commands, where they are the caller's reporting choice.
+_VERBOSITY_ARGS = frozenset({"-q", "-qq", "--quiet", "-v", "-vv", "-vvv", "--verbose"})
+
+
+def strip_verbosity_args(pytest_args: Sequence[str]) -> tuple[str, ...]:
+    """Return *pytest_args* without verbosity-only flags.
+
+    >>> strip_verbosity_args(("-q", "-m", "not slow"))
+    ('-m', 'not slow')
+    """
+    return tuple(arg for arg in pytest_args if arg not in _VERBOSITY_ARGS)
+
+
 def _augment_pytest_args_with_durations(
     pytest_args: Sequence[str], durations: int
 ) -> tuple[str, ...]:
@@ -405,7 +421,7 @@ def run_batches(
         "--collect-only",
         "-q",
         root,
-        *pytest_args,
+        *strip_verbosity_args(pytest_args),
     ]
     collected = run(collect_command, check=False, capture_output=True, text=True)
     if collected.returncode != 0:

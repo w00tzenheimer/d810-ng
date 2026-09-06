@@ -1050,3 +1050,31 @@ def test_selection_dir_defaults_to_the_run_log_dir(tmp_path) -> None:
         (tmp_path / module.BATCH_LOG_FILENAME).read_text(encoding="utf-8").strip()
     )
     assert record["selection_file"].endswith("selection-shard0-batch1.txt")
+
+
+def test_collection_ignores_caller_verbosity_flags() -> None:
+    """`-- -q` from the caller plus the driver's own `-q` is `-qq`, at which
+    pytest prints "path: N" instead of node ids and the driver collects
+    nothing. Verbosity is a reporting choice for the BATCHES; the collect pass
+    owns its own."""
+    module = _module()
+    fake_run = _collect_stub(["tests/system/test_x.py::test_a"])
+
+    module.run_batches(
+        python="/runtime/python",
+        root="tests/system",
+        pytest_args=("-q", "--quiet", "-v", "-vv", "--verbose", "-m", "not slow"),
+        batch_size=20,
+        run=fake_run,
+    )
+
+    collect = [call for call in fake_run.calls if "--collect-only" in call][0]
+    assert collect.count("-q") == 1
+    assert "--quiet" not in collect
+    assert "-v" not in collect and "-vv" not in collect and "--verbose" not in collect
+    # Selection-affecting arguments must still reach collection, or the batches
+    # would run tests the caller deselected.
+    assert collect[-2:] == ["-m", "not slow"]
+    # The batch command keeps exactly what the caller asked for.
+    batch = [call for call in fake_run.calls if "--collect-only" not in call][0]
+    assert "-q" in batch and "-vv" in batch
