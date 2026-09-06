@@ -6,6 +6,14 @@ below end in a real known-answer solve plus a proof of equivalence.  The same
 program runs in three places: the image bake step, the image build script's
 verification table, and any manual triage of a baked image.
 
+The solve is only reachable where ``d810`` itself is importable.
+``d810_cobra.solve`` imports ``d810.core`` at module scope, and
+``d810_cobra.prove`` needs a ``z3`` that only ``import d810`` puts on
+``sys.path``, so a wheel installed into an image that deliberately carries no
+d810 -- it is mounted at run time, and installing it would shadow the mounted
+tree -- can be proven identical but not exercised.  That case is declared, not
+inferred: see ``D810_COBRA_REQUIRE_SOLVE``.
+
 Environment:
 
 ``D810_COBRA_EXPECT_VERSION``
@@ -18,29 +26,34 @@ Environment:
 
 Both are optional: without them the identity assertions are skipped and only
 the behaviour is proven.
+
+``D810_COBRA_REQUIRE_SOLVE``
+    ``0`` selects the reduced check for an environment without d810: manifest,
+    compiled extension and identity, no solve.  It is not a way to silence a
+    failing solve -- the reduced mode ASSERTS that d810 is genuinely absent, so
+    setting it anywhere the solve could have run is itself an error.  Defaults
+    to ``1``.
 """
 
 from __future__ import annotations
 
 import importlib.metadata
+import importlib.util
 import os
 import sys
 import sysconfig
 
 EXPECT_VERSION = os.environ.get("D810_COBRA_EXPECT_VERSION", "")
 EXPECT_ARCH = os.environ.get("D810_COBRA_EXPECT_ARCH", "")
+REQUIRE_SOLVE = os.environ.get("D810_COBRA_REQUIRE_SOLVE", "1") != "0"
 
 
-def main() -> int:
-    import d810_cobra
-    import d810_cobra._cobra
+def _prove_known_answer_solve() -> None:
+    """Run the solve the mba-solve backend exists to run, and prove it."""
     from d810_cobra.expr import parse_cobra_output
     from d810_cobra.prove import ProofResult, prove_equivalent
     from d810_cobra.solve import SolveStatus, binding_available, solve_signature
 
-    manifest = d810_cobra.MANIFEST
-    assert manifest["api_version"] == 1, manifest
-    assert manifest["implements"] == {"mba-solve": "cobra-solve"}, manifest
     assert binding_available(), "the compiled binding is not available"
 
     tree = parse_cobra_output("(x0 | x1) - (x0 & x1)", ["a", "b"])
@@ -49,6 +62,28 @@ def main() -> int:
     assert (
         prove_equivalent(tree, solved.tree, ["a", "b"], 32) is ProofResult.PROVED
     ), "the known-answer solve is not equivalent to its input"
+
+
+def main() -> int:
+    # The reduced mode describes an environment, so it has to be true of the
+    # environment, and it is checked FIRST: otherwise the flag would be a way
+    # to pass a broken backend anywhere, which is the failure mode a
+    # verification program exists to prevent.
+    if not REQUIRE_SOLVE:
+        assert importlib.util.find_spec("d810") is None, (
+            "D810_COBRA_REQUIRE_SOLVE=0 claims d810 is unavailable, but it is "
+            "importable here; run the full verification instead"
+        )
+
+    import d810_cobra
+    import d810_cobra._cobra
+
+    manifest = d810_cobra.MANIFEST
+    assert manifest["api_version"] == 1, manifest
+    assert manifest["implements"] == {"mba-solve": "cobra-solve"}, manifest
+
+    if REQUIRE_SOLVE:
+        _prove_known_answer_solve()
 
     version = importlib.metadata.version("d810-cobra")
     if EXPECT_VERSION:
@@ -67,7 +102,13 @@ def main() -> int:
         site_dirs,
     )
 
-    print(f"d810-cobra {version} verified: {binary}")
+    if REQUIRE_SOLVE:
+        print(f"d810-cobra {version} verified: {binary}")
+    else:
+        print(
+            f"d810-cobra {version} installed: {binary} "
+            "(manifest + extension + identity; no solve, d810 is not installed here)"
+        )
     return 0
 
 
