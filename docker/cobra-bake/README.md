@@ -70,6 +70,23 @@ architecture-matching wheel into the build context, and passes the five
 `--build-arg` values for `SPEEDUPS=1` variants only. It takes
 `--cobra-wheel-dir DIR` to point at the published wheels.
 
+It reads this directory from the repository root, two levels above itself, so
+the identity, the staging helper and the verifier are under version control
+even though the script is not.
+
+Which architecture it builds is decided by the installer, not by a flag. For
+9.4 the x86-64 installer is `_gitless/resource/9.4/ida9.4.run`, so `-v 9.4`
+alone builds `linux/amd64`; the arm64 installer sits beside it as
+`ida9.4.run.arm64` and the arm64 image is built from its own resource
+directory, `-v 9.4 -r _gitless/resource/9.4-arm64`. The platform still comes
+from the installer's ELF header, so the resource directory is what selects it.
+
+Every build re-points the local `:latest` tag at the `:cli` image it just
+produced. Two architectures cannot hold one tag, so
+`idapro-9.4-speedups:latest` resolves to whichever was built last -- which is
+also why the runner reads the CoBRA labels from the engine that will run the
+container rather than trusting a tag.
+
 Its verification table gains a `COBRA` column, which fails the run non-zero on
 any mismatch:
 
