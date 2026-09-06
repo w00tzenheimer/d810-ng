@@ -5102,3 +5102,214 @@ def test_remote_mode_accepts_a_baked_image_matching_the_remote_engine(
     assert result.returncode == 0, result.stderr
     assert "wheel but the Docker engine is" not in result.stderr
     assert "git clone" not in _remote_container_run(calls)
+
+
+# ---------------------------------------------------------------------------
+# Cost-aware packing and N-way container sharding (system mode)
+# ---------------------------------------------------------------------------
+
+
+def _batcher_runs(calls: list[str]) -> list[str]:
+    return [call for call in _runs(calls) if "run_system_test_batches.py" in call]
+
+
+def test_system_mode_default_asks_for_neither_a_plan_nor_shards(
+    tmp_path: Path,
+) -> None:
+    result, calls = _run(tmp_path, "system", "--", "-q")
+
+    assert result.returncode == 0, result.stderr
+    command = _container_run(calls)
+    assert "--plan" not in command
+    assert "--cost-ledger" not in command
+    assert "--shard-count" not in command
+    assert "--shard-index" not in command
+    assert "--log-dir /root/.idapro/logs/d810_logs " in command
+
+
+def test_lane_plan_reaches_the_batcher_with_a_default_cost_ledger(
+    tmp_path: Path,
+) -> None:
+    result, calls = _run(tmp_path, "system", "--plan", "lane", "--", "-q")
+
+    assert result.returncode == 0, result.stderr
+    command = _container_run(calls)
+    assert "--plan lane" in command
+    assert "/root/.idapro/logs/d810_logs/system_batches.jsonl" in command
+    assert command.index("--plan lane") < command.index(" -- ")
+
+
+def test_lane_threshold_reaches_the_batcher(tmp_path: Path) -> None:
+    result, calls = _run(
+        tmp_path, "system", "--plan", "lane", "--lane-threshold-seconds", "45", "--", "-q"
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "--lane-threshold-seconds 45" in _container_run(calls)
+
+
+def test_plan_rejects_an_unknown_mode(tmp_path: Path) -> None:
+    result, calls = _run(tmp_path, "system", "--plan", "magic", "--", "-q")
+
+    assert result.returncode == 2, result.stdout
+    assert "--plan" in result.stderr
+    assert calls == []
+
+
+def test_cost_ledger_is_repeatable_and_overrides_the_default(tmp_path: Path) -> None:
+    result, calls = _run(
+        tmp_path,
+        "system",
+        "--plan",
+        "cost",
+        "--cost-ledger",
+        "/work/.tmp/a.jsonl",
+        "--cost-ledger",
+        "/work/.tmp/b.jsonl",
+        "--",
+        "-q",
+    )
+
+    assert result.returncode == 0, result.stderr
+    command = _container_run(calls)
+    assert "--cost-ledger /work/.tmp/a.jsonl" in command
+    assert "--cost-ledger /work/.tmp/b.jsonl" in command
+
+
+def test_cost_ledger_rejects_a_relative_path(tmp_path: Path) -> None:
+    result, calls = _run(tmp_path, "system", "--cost-ledger", "a.jsonl", "--", "-q")
+
+    assert result.returncode == 2, result.stdout
+    assert "--cost-ledger" in result.stderr
+    assert calls == []
+
+
+def test_shards_one_is_byte_identical_to_the_unsharded_command(tmp_path: Path) -> None:
+    plain, plain_calls = _run(tmp_path, "system", "--", "-q")
+    assert plain.returncode == 0, plain.stderr
+    plain_command = _runs(plain_calls)[-1]
+
+    # The harness appends to one docker log per tmp_path, so compare the last
+    # container each invocation started.
+    result, calls = _run(tmp_path, "system", "--shards", "1", "--", "-q")
+    assert result.returncode == 0, result.stderr
+    assert _runs(calls)[-1] == plain_command
+
+
+def test_shards_prewarms_once_then_runs_one_container_per_shard(
+    tmp_path: Path,
+) -> None:
+    result, calls = _run(
+        tmp_path, "system", "--plan", "lane", "--shards", "3", "--", "-q"
+    )
+
+    assert result.returncode == 0, result.stderr
+    batchers = _batcher_runs(calls)
+    assert len(batchers) == 3
+    # The prewarm container is a separate run that does the dependency setup
+    # and no tests, so the concurrent shards never race on the editable
+    # install, the CoBRA cache or (in remote mode) the /work mirror.
+    prewarm = [
+        call
+        for call in _runs(calls)
+        if "shards-prewarm" in call and "run_system_test_batches.py" not in call
+    ]
+    assert len(prewarm) == 1
+    for shard_index in range(3):
+        assert any(
+            f"--shard-index {shard_index} --shard-count 3" in call for call in batchers
+        )
+        assert any(
+            f"--log-dir /root/.idapro/logs/d810_logs/shard-{shard_index}" in call
+            for call in batchers
+        )
+
+
+def test_shards_give_every_container_its_own_capture_file(tmp_path: Path) -> None:
+    result, calls = _run(
+        tmp_path, "system", "--shards", "2", "-o", "sharded.txt", "--", "-q"
+    )
+
+    assert result.returncode == 0, result.stderr
+    batchers = _batcher_runs(calls)
+    assert len(batchers) == 2
+    assert any("/work/.tmp/shard0-sharded.txt" in call for call in batchers)
+    assert any("/work/.tmp/shard1-sharded.txt" in call for call in batchers)
+
+
+def test_shards_give_every_container_its_own_run_id(tmp_path: Path) -> None:
+    result, calls = _run(tmp_path, "system", "--shards", "2", "--", "-q")
+
+    assert result.returncode == 0, result.stderr
+    run_ids = set()
+    for call in _batcher_runs(calls):
+        match = re.search(r"D810_RUN_ID=(\S+)", call)
+        assert match is not None, call
+        run_ids.add(match.group(1))
+    assert len(run_ids) == 2
+
+
+@pytest.mark.parametrize("bad_value", ["0", "", "abc", "2;x", "-1"])
+def test_shards_rejects_non_positive_integers(tmp_path: Path, bad_value: str) -> None:
+    result, calls = _run(tmp_path, "system", "--shards", bad_value, "--", "-q")
+
+    assert result.returncode == 2, result.stdout
+    assert "--shards" in result.stderr
+    assert calls == []
+
+
+def test_shards_refused_outside_system_mode(tmp_path: Path) -> None:
+    result, calls = _run(tmp_path, "test", "--shards", "2", "--", "-q")
+
+    assert result.returncode == 2, result.stdout
+    assert "--shards" in result.stderr
+    assert calls == []
+
+
+def test_start_batch_with_shards_requires_naming_the_shard(tmp_path: Path) -> None:
+    result, calls = _run(
+        tmp_path, "system", "--shards", "3", "--start-batch", "5", "--", "-q"
+    )
+
+    assert result.returncode == 2, result.stdout
+    assert "--only-shard" in result.stderr
+    assert calls == []
+
+
+def test_only_shard_resumes_exactly_one_shard_of_the_plan(tmp_path: Path) -> None:
+    result, calls = _run(
+        tmp_path,
+        "system",
+        "--shards",
+        "3",
+        "--only-shard",
+        "1",
+        "--start-batch",
+        "5",
+        "--",
+        "-q",
+    )
+
+    assert result.returncode == 0, result.stderr
+    batchers = _batcher_runs(calls)
+    assert len(batchers) == 1
+    assert "--shard-index 1 --shard-count 3" in batchers[0]
+    assert "--start-batch 5" in batchers[0]
+
+
+def test_only_shard_must_be_inside_the_shard_count(tmp_path: Path) -> None:
+    result, calls = _run(
+        tmp_path, "system", "--shards", "2", "--only-shard", "2", "--", "-q"
+    )
+
+    assert result.returncode == 2, result.stdout
+    assert "--only-shard" in result.stderr
+    assert calls == []
+
+
+def test_only_shard_requires_shards(tmp_path: Path) -> None:
+    result, calls = _run(tmp_path, "system", "--only-shard", "0", "--", "-q")
+
+    assert result.returncode == 2, result.stdout
+    assert "--only-shard" in result.stderr
+    assert calls == []
