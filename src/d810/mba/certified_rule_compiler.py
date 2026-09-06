@@ -594,6 +594,25 @@ def compile_family_rule_catalogue(family: str) -> MbaRuleCatalogue:
     )
 
 
+def compile_selected_rules_catalogue(
+    selection: Mapping[str, tuple[type[VerifiableRule], ...]],
+) -> MbaRuleCatalogue:
+    """Compile an explicit subset of declared rule types, keyed by family.
+
+    Shares the same cached ``_compile_selected_rule_catalogue`` path as
+    ``compile_add_rule_catalogue`` and ``compile_family_rule_catalogue``.
+    Exists for callers that need a handful of representative rules spanning
+    many families rather than one whole family or the whole corpus -- for
+    example a cheap, non-``slow`` corpus-shape smoke test that must stay
+    in the default selection after the full 201-rule corpus compile moved
+    out of it.
+    """
+    declaration_version = tuple(
+        (family, tuple(rule_types)) for family, rule_types in selection.items()
+    )
+    return _compile_selected_rule_catalogue(tuple(selection), declaration_version)
+
+
 def executable_rule_order_key(
     rule: CompiledMbaRule,
 ) -> tuple[str, str, tuple[str, ...]]:

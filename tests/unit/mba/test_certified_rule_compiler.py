@@ -16,7 +16,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from d810.mba.rules.catalogue import MBA_RULE_FAMILIES
+from d810.core.typing import Mapping
+from d810.mba.certified_rule_compiler import (
+    RuleCompilationStatus,
+    compile_selected_rules_catalogue,
+)
+from d810.mba.rules.catalogue import FAMILY_REJECTION_REASONS, MBA_RULE_FAMILIES
 from d810.mba.typed_term import TypedBvTerm, canonicalize_ac_term
 from tests.unit.mba._compiled_rule_fixture import admitted_rule
 
@@ -24,6 +29,22 @@ from tests.unit.mba._compiled_rule_fixture import admitted_rule
 RECEIPT_MANIFEST = (
     Path(__file__).resolve().parents[2] / "fixtures/mba/certification_receipts.json"
 )
+
+# One already-verified-cheap representative rule per portable family (see
+# task-1-report.md "Fix round 1" for how these were chosen: the first
+# declared rule in that family whose compile does not fall into the one
+# pathological Z3 proof -- Add_EidSboxOffset13_1/23_1 alone cost 14-20s --
+# that would blow the "smoke stays under ~10s" budget).
+_SMOKE_REPRESENTATIVE_RULE_NAMES: Mapping[str, str] = {
+    "add": "Add_HackersDelightRule_1",
+    "and": "And_HackersDelightRule_1",
+    "bnot": "Bnot_EidSboxOffset27_1",
+    "mul": "Mul_FactorRule_1",
+    "neg": "Neg_HackersDelightRule_1",
+    "or": "Or_EidRepeatedMaskedOperand_1",
+    "sub": "Sub_HackersDelightRule_1",
+    "xor": "Xor_HackersDelightRule_1",
+}
 
 
 def _leaf(name: str, width: int = 32) -> TypedBvTerm:
@@ -91,6 +112,65 @@ def test_checked_in_certification_receipts_match_current_rule_fingerprints() -> 
         fingerprint = receipt["semantic_fingerprint"]
         if fingerprint is not None:
             assert fingerprint == _fingerprint(rule_type)
+
+
+def test_corpus_shape_smoke_compiles_one_rule_per_family_at_all_widths() -> None:
+    """Cheap default-selection stand-in for the now-``slow`` full corpus compile.
+
+    Every ``compile_mba_rule_catalogue()`` caller in this test suite is
+    ``@pytest.mark.slow`` (the tests immediately above and below, plus
+    ``test_canonical_fallback_regressions.py``'s motivating-rule test), and
+    CI runs the default (``not slow``) selection. That means nothing in the
+    default/CI run compiles or Z3-proves a rule anymore -- a rule whose
+    proof starts failing, or a family that becomes unclassified (neither
+    portable nor policy-rejected), would pass silently until someone runs
+    ``-m slow``.
+
+    This closes that gap cheaply: it compiles exactly one already-COMPILED,
+    already-cheap representative rule from each of the 8 portable families
+    across all four ``CERTIFICATE_WIDTHS`` (so it still calls Z3, unlike
+    ``test_checked_in_certification_receipts_match_current_rule_fingerprints``
+    above, which only diffs a checked-in manifest), and confirms each of the
+    7 policy-rejected families is still classified ``REJECTED`` with its
+    declared reason rather than falling through to
+    ``_compile_rule_families``'s "unclassified MBA rule family" error. It
+    does not replace the full 201-rule ``slow`` compile (duplicate/alias
+    provenance, exact counts, and every non-representative rule's proof are
+    still ``slow``-only); it only keeps corpus *shape* -- "does the pipeline
+    still classify and prove across every declared family" -- in the fast
+    gate.
+    """
+    portable_families = frozenset(MBA_RULE_FAMILIES) - frozenset(
+        FAMILY_REJECTION_REASONS
+    )
+    assert portable_families == frozenset(_SMOKE_REPRESENTATIVE_RULE_NAMES)
+
+    rules_by_name = {
+        (family, rule_type.__name__): rule_type
+        for family, rule_types in MBA_RULE_FAMILIES.items()
+        for rule_type in rule_types
+    }
+    selection = {
+        family: (rules_by_name[(family, name)],)
+        for family, name in _SMOKE_REPRESENTATIVE_RULE_NAMES.items()
+    }
+    for family in FAMILY_REJECTION_REASONS:
+        selection[family] = (MBA_RULE_FAMILIES[family][0],)
+
+    catalogue = compile_selected_rules_catalogue(selection)
+    receipts_by_key = catalogue.receipts_by_key
+
+    for family, name in _SMOKE_REPRESENTATIVE_RULE_NAMES.items():
+        receipt = receipts_by_key[(family, name)]
+        assert receipt.status is RuleCompilationStatus.COMPILED
+        assert receipt.compiled_rule is not None
+        assert receipt.compiled_rule.proof_widths == (8, 16, 32, 64)
+
+    for family, reason in FAMILY_REJECTION_REASONS.items():
+        rejected_name = MBA_RULE_FAMILIES[family][0].__name__
+        receipt = receipts_by_key[(family, rejected_name)]
+        assert receipt.status is RuleCompilationStatus.REJECTED
+        assert receipt.reason == reason
 
 
 @pytest.mark.slow
