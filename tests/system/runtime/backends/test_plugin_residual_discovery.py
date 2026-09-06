@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import importlib.metadata
 import json
 from collections import defaultdict
 from pathlib import Path
@@ -277,6 +278,41 @@ def _activate_real_provider(
     return backends, implementation, lease, sink, schedule
 
 
+def _real_provider_case(
+    pass_id: str,
+    plugin_name: str,
+    distribution: str,
+    provider: str,
+    status: str,
+    reason: str,
+):
+    """Build one real-provider parametrization case.
+
+    ``PluginIdentity.version`` (see ``d810.core.plugins._distribution_version``)
+    is read from the installed distribution's metadata, not baked in at build
+    time. A pinned SOURCE build of ``d810-cobra`` reports ``0.1.4`` while the
+    published wheel (and the images baked from it) reports ``0.1.5``, so the
+    expected version must track whatever is actually installed rather than a
+    literal -- otherwise the assertion fails by construction on any
+    wheel/baked runner. Skip the case outright when the distribution isn't
+    installed at all instead of asserting against a fabricated version.
+    """
+    try:
+        version = importlib.metadata.version(distribution)
+    except importlib.metadata.PackageNotFoundError:
+        return pytest.param(
+            pass_id,
+            plugin_name,
+            distribution,
+            None,
+            provider,
+            status,
+            reason,
+            marks=pytest.mark.skip(reason=f"{distribution} distribution is not installed"),
+        )
+    return (pass_id, plugin_name, distribution, version, provider, status, reason)
+
+
 @pytest.mark.usefixtures("libobfuscated_setup")
 class TestRealProviderResidualDiscovery:
     binary_name = "libobfuscated.dll"
@@ -284,8 +320,12 @@ class TestRealProviderResidualDiscovery:
     @pytest.mark.parametrize(
         ("pass_id", "plugin_name", "distribution", "version", "provider", "status", "reason"),
         (
-            ("mba-egraph", "egglog", "d810-egglog", "0.1.0", "egraph", "over_budget", "candidate_budget"),
-            ("mba-solve", "cobra", "d810-cobra", "0.1.4", "coefficient_solver", "ineligible", "leaf_budget"),
+            _real_provider_case(
+                "mba-egraph", "egglog", "d810-egglog", "egraph", "over_budget", "candidate_budget"
+            ),
+            _real_provider_case(
+                "mba-solve", "cobra", "d810-cobra", "coefficient_solver", "ineligible", "leaf_budget"
+            ),
         ),
     )
     def test_real_provider_attempt_is_attributed_through_outer_optimizer(
