@@ -87,10 +87,24 @@ print('\n'.join(keep))" > /tmp/cobra-requirements.txt; \
         /app/ida/.venv/bin/pip install --no-cache-dir -r /tmp/cobra-requirements.txt; \
         rm -f /tmp/cobra-requirements.txt; \
         \
-        # A compiled extension can import and still be mis-wired, so this runs
-        # a real known-answer solve rather than reading a boolean.
+        # A compiled extension can import and still be mis-wired, so the
+        # manifest, the extension itself and the wheel identity are checked
+        # here rather than trusted.
+        #
+        # The known-answer solve is NOT reachable at this point and asking for
+        # it would fail every build: d810_cobra.solve imports d810.core at
+        # module scope, d810_cobra.prove needs the z3 that only `import d810`
+        # puts on sys.path, and this image deliberately contains no d810 - it
+        # is mounted at run time, and installing it here would shadow the
+        # mounted tree.  D810_COBRA_REQUIRE_SOLVE=0 selects the reduced check
+        # AND asserts that d810 really is absent, so it cannot be used to hide
+        # a failing solve.  The solve is enforced twice over, where d810
+        # exists: by the build script's verification table (which mounts the
+        # repository's src/ into a container of this image) and by the test
+        # runner's baked-mode setup stage on every run.
         D810_COBRA_EXPECT_VERSION="${COBRA_VERSION}" \
         D810_COBRA_EXPECT_ARCH="${COBRA_ARCH}" \
+        D810_COBRA_REQUIRE_SOLVE=0 \
             /app/ida/.venv/bin/python /cobra-bake/verify_cobra_install.py; \
         \
     else \

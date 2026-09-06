@@ -18,6 +18,7 @@ directory is the tracked, reviewable half of that arrangement:
 | `cobra_identity.sh` | reads `published_identity` into shell variables, plus the label comparison; sourced by the image build script |
 | `stage_cobra_bake_context.sh` | copies the one architecture-matching published wheel, its `SHA256SUMS` line and the verifier into a Docker build context |
 | `verify_cobra_install.py` | manifest + compiled-extension import + known-answer solve + identity assertions; run by the bake step, by the build script's verification table, and by hand |
+| | `D810_COBRA_REQUIRE_SOLVE=0` selects the reduced check for an environment without d810, and asserts d810 really is absent |
 | `Dockerfile.cobra-bake.fragment` | the exact `ARG` / `RUN` / `LABEL` block inserted into the image Dockerfile |
 
 `Dockerfile.cobra-bake.fragment` is a copy, not an include: Docker has no
@@ -75,12 +76,37 @@ any mismatch:
 - a speedups image must carry labels that match the published record for its
   architecture, and must then pass `verify_cobra_install.py` in a container --
   a build can succeed with a `--build-arg` that never reached the stage, and
-  an image can carry correct labels over a broken install, so both are checked;
+  an image can carry correct labels over a broken install, so both are checked.
+  That container gets this repository's `src/` mounted read-only on
+  `PYTHONPATH`, because the solve needs d810 (see below);
 - a vanilla image must carry no CoBRA claim at all, because a mislabelled
   vanilla image would make the runner skip an install that never happened.
+
+## Where the known-answer solve can and cannot run
+
+The image contains no d810: it is mounted at run time, and installing it would
+shadow the mounted tree. `d810_cobra.solve` imports `d810.core` at module
+scope, and `d810_cobra.prove` needs the `z3` that only `import d810` puts on
+`sys.path`. So the solve is not reachable during the image build, and the bake
+step runs the reduced check -- manifest, compiled extension, wheel identity --
+with `D810_COBRA_REQUIRE_SOLVE=0`.
+
+That flag is a declaration, not a mute button: the reduced mode asserts that
+`d810` is genuinely not importable, so setting it anywhere the solve could have
+run fails instead of passing quietly.
+
+The solve is then enforced twice, in the two places d810 exists:
+
+- the build script's verification table, immediately after the build, in a
+  container of the image with `src/` mounted;
+- the test runner's baked-mode setup stage, on every run.
 
 ## Verifying a baked image by hand
 
     docker run --rm -e D810_COBRA_EXPECT_VERSION=0.1.5 \
+      -v "$PWD/src:/d810-src:ro" -e PYTHONPATH=/d810-src \
       -v "$PWD/docker/cobra-bake/verify_cobra_install.py:/verify.py:ro" \
       <image> /verify.py
+
+Without the `src/` mount the same command needs
+`-e D810_COBRA_REQUIRE_SOLVE=0`, and then proves identity only.

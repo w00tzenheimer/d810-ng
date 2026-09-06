@@ -9,7 +9,9 @@ identity cannot land unreviewed and unverified.
 from __future__ import annotations
 
 import hashlib
+import os
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -254,10 +256,83 @@ def test_verifier_proves_behaviour_not_just_import() -> None:
     assert '"mba-solve": "cobra-solve"' in source
     assert 'manifest["api_version"] == 1' in source
     assert "import d810_cobra._cobra" in source
-    # No lazy imports: the d810_cobra names are bound at module level, which is
-    # also what makes an image that cannot import the backend fail immediately.
+    # No lazy imports, with ONE documented exception. d810_cobra.solve imports
+    # d810.core at module scope, so hoisting the solve names would make this
+    # file fail to import in exactly the d810-less image the reduced mode
+    # exists for; the package itself and the compiled extension do not, and
+    # are bound at module scope like everything else.
+    assert "\nimport d810_cobra\nimport d810_cobra._cobra\n" in source
     body = source[source.index("def main()") :]
-    assert "import " not in body
+    assert "import " not in body, "main() must not import lazily"
+    solve_fn = source[
+        source.index("def _prove_known_answer_solve") : source.index("def main()")
+    ]
+    assert sorted(
+        line.strip() for line in solve_fn.splitlines() if line.strip().startswith("from")
+    ) == [
+        "from d810_cobra.expr import parse_cobra_output",
+        "from d810_cobra.prove import ProofResult, prove_equivalent",
+        "from d810_cobra.solve import SolveStatus, binding_available, solve_signature",
+    ]
+    assert "d810_cobra.solve`` imports ``d810.core`` at module scope" in source
+
+
+def test_verifier_defaults_to_requiring_the_solve() -> None:
+    """A caller who sets nothing gets the strongest check."""
+    source = VERIFIER.read_text()
+    assert 'os.environ.get("D810_COBRA_REQUIRE_SOLVE", "1") != "0"' in source
+
+
+def test_reduced_mode_refuses_an_environment_that_could_have_solved(
+    tmp_path: Path,
+) -> None:
+    """``D810_COBRA_REQUIRE_SOLVE=0`` declares an environment; it must hold.
+
+    Without this the flag would silence a failing backend everywhere instead of
+    describing the one place -- an image with no d810 -- where the solve cannot
+    run at all.
+    """
+    # d810_cobra is imported at module scope, so it has to be importable for
+    # the program to reach its checks at all. A stub with a DELIBERATELY wrong
+    # manifest stands in: if the declaration check did not run first, this run
+    # would fail on the manifest instead, and the disarmed flag would have been
+    # decided by something other than the environment it claims to describe.
+    stub = tmp_path / "stub"
+    (stub / "d810_cobra").mkdir(parents=True)
+    (stub / "d810_cobra" / "__init__.py").write_text(
+        'MANIFEST = {"api_version": 999, "implements": {}}\n', encoding="utf-8"
+    )
+    (stub / "d810_cobra" / "_cobra.py").write_text("", encoding="utf-8")
+
+    env = dict(os.environ)
+    env["D810_COBRA_REQUIRE_SOLVE"] = "0"
+    env["PYTHONPATH"] = os.pathsep.join([str(stub), str(REPO_ROOT / "src")])
+    result = subprocess.run(
+        [sys.executable, str(VERIFIER)],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=env,
+        cwd=REPO_ROOT,
+    )
+    assert result.returncode != 0
+    assert "claims d810 is unavailable, but it is importable" in result.stderr
+    # It has to fail on the declaration, before any check of the backend.
+    assert "api_version" not in result.stderr
+    assert "No module named 'd810_cobra'" not in result.stderr
+
+
+def test_bake_step_runs_the_reduced_check_and_says_why() -> None:
+    """The image carries no d810, so the fragment cannot ask for the solve."""
+    fragment = FRAGMENT.read_text()
+    assert "D810_COBRA_REQUIRE_SOLVE=0" in fragment
+    assert "d810_cobra.solve imports d810.core" in fragment
+
+
+def test_readme_documents_where_the_solve_is_enforced() -> None:
+    readme = (BAKE_DIR / "README.md").read_text()
+    assert "D810_COBRA_REQUIRE_SOLVE" in readme
+    assert "PYTHONPATH=/d810-src" in readme
 
 
 def test_no_untracked_host_paths_leak_into_the_bake_assets() -> None:
