@@ -5313,3 +5313,47 @@ def test_only_shard_requires_shards(tmp_path: Path) -> None:
     assert result.returncode == 2, result.stdout
     assert "--only-shard" in result.stderr
     assert calls == []
+
+
+def test_fast_lanes_reaches_the_batcher(tmp_path: Path) -> None:
+    result, calls = _run(
+        tmp_path, "system", "--plan", "lane", "--fast-lanes", "2", "--", "-q"
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "--fast-lanes 2" in _container_run(calls)
+
+
+def test_fast_lane_budget_reaches_the_batcher(tmp_path: Path) -> None:
+    result, calls = _run(
+        tmp_path,
+        "system",
+        "--plan",
+        "lane",
+        "--fast-lane-budget-seconds",
+        "540",
+        "--",
+        "-q",
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "--fast-lane-budget-seconds 540" in _container_run(calls)
+
+
+@pytest.mark.parametrize("bad_value", ["0", "", "abc", "2;x"])
+def test_fast_lanes_rejects_non_positive_integers(
+    tmp_path: Path, bad_value: str
+) -> None:
+    result, calls = _run(tmp_path, "system", "--fast-lanes", bad_value, "--", "-q")
+
+    assert result.returncode == 2, result.stdout
+    assert "--fast-lanes" in result.stderr
+    assert calls == []
+
+
+def test_fast_lanes_refused_outside_system_mode(tmp_path: Path) -> None:
+    result, calls = _run(tmp_path, "test", "--fast-lanes", "2", "--", "-q")
+
+    assert result.returncode == 2, result.stdout
+    assert "--fast-lanes" in result.stderr
+    assert calls == []

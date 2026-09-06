@@ -38,6 +38,7 @@ class _FakePopen:
 
     def __init__(self, command, *, stdout_text: str, stderr_text: str, returncode: int):
         self.args = list(command)
+        self.pid = 4242
         self.stdout = io.StringIO(stdout_text)
         self.stderr = io.StringIO(stderr_text)
         self._returncode = returncode
@@ -445,14 +446,14 @@ def test_stream_and_capture_tees_output_live_not_after_exit(tmp_path) -> None:
     out = _RecordingStream()
     err = _RecordingStream()
 
-    completed = module._stream_and_capture(
+    result = module._stream_and_capture(
         [sys.executable, str(script)],
         stdout_sink=out,
         stderr_sink=err,
     )
 
-    assert completed.returncode == 0
-    assert completed.stdout == "first-line\nsecond-line\n"
+    assert result.completed.returncode == 0
+    assert result.completed.stdout == "first-line\nsecond-line\n"
 
     first_ts = next(ts for text, ts in out.events if "first-line" in text)
     second_ts = next(ts for text, ts in out.events if "second-line" in text)
@@ -781,7 +782,7 @@ def test_run_batches_lane_plan_runs_the_fast_tests_in_one_interpreter(tmp_path) 
     assert selections[1] == [heavy]
 
 
-def test_run_batches_lane_plan_reserves_shard_zero_for_the_fast_lane(tmp_path) -> None:
+def test_run_batches_lane_plan_spreads_lane_batches_over_the_shards(tmp_path) -> None:
     module = _module()
     slow = [f"tests/system/test_x.py::TestSlow{index}::test_a" for index in range(4)]
     nodeids = ["tests/system/test_x.py::TestFast::test_a", *slow]
@@ -823,8 +824,11 @@ def test_run_batches_lane_plan_reserves_shard_zero_for_the_fast_lane(tmp_path) -
             [nodeid for batch in _batch_selections(fake_run.calls) for nodeid in batch]
         )
 
-    assert seen[0] == ["tests/system/test_x.py::TestFast::test_a"]
-    assert sorted(seen[1] + seen[2]) == sorted(slow)
+    # Plain LPT: the four 100 s slow tests dominate, so the fast lane rides
+    # along on whichever shard is lightest. Every shard has work and nothing
+    # is run twice or dropped.
+    assert sorted(nodeid for shard in seen for nodeid in shard) == sorted(nodeids)
+    assert all(shard for shard in seen)
 
 
 def test_run_batches_records_the_lane_in_the_ledger(tmp_path) -> None:
@@ -862,3 +866,187 @@ def test_run_batches_rejects_an_unknown_plan_mode() -> None:
         )
         == 5
     )
+
+
+# ---------------------------------------------------------------------------
+# Risk closure: node-id selection through a file, and peak RSS in the ledger
+# ---------------------------------------------------------------------------
+
+
+def test_a_large_selection_goes_through_a_file_not_the_argv(tmp_path) -> None:
+    module = _module()
+    nodeids = [
+        f"tests/system/e2e/test_very_long_module_name_{index}.py::TestClass::test_case[{index}]"
+        for index in range(2000)
+    ]
+    fake_run = _collect_stub(nodeids)
+
+    module.run_batches(
+        python="/runtime/python",
+        root="tests/system",
+        pytest_args=(),
+        batch_size=len(nodeids),
+        run=fake_run,
+        selection_dir=str(tmp_path),
+    )
+
+    command = [call for call in fake_run.calls if "--collect-only" not in call][0]
+    at_args = [arg for arg in command if arg.startswith("@")]
+    assert len(at_args) == 1
+    assert not [arg for arg in command if arg.startswith("tests/")]
+    selection = Path(at_args[0][1:])
+    assert selection.read_text(encoding="utf-8").splitlines() == nodeids
+
+
+def test_a_small_selection_still_goes_through_the_argv(tmp_path) -> None:
+    module = _module()
+    nodeids = ["tests/system/test_x.py::test_a", "tests/system/test_x.py::test_b"]
+    fake_run = _collect_stub(nodeids)
+
+    module.run_batches(
+        python="/runtime/python",
+        root="tests/system",
+        pytest_args=(),
+        batch_size=20,
+        run=fake_run,
+        selection_dir=str(tmp_path),
+    )
+
+    command = [call for call in fake_run.calls if "--collect-only" not in call][0]
+    assert not [arg for arg in command if arg.startswith("@")]
+    assert command[4:6] == nodeids
+
+
+def test_selection_files_are_named_per_shard_and_batch(tmp_path) -> None:
+    module = _module()
+    # Each batch must clear SELECTION_FILE_BYTES for the file path to be taken.
+    nodeids = [f"tests/system/test_x.py::TestG{index}::test_{'a' * 7000}" for index in range(20)]
+    fake_run = _collect_stub(nodeids)
+
+    module.run_batches(
+        python="/runtime/python",
+        root="tests/system",
+        pytest_args=(),
+        batch_size=10,
+        shard_index=0,
+        shard_count=1,
+        run=fake_run,
+        selection_dir=str(tmp_path),
+    )
+
+    names = sorted(path.name for path in Path(tmp_path).glob("*.txt"))
+    assert names == ["selection-shard0-batch1.txt", "selection-shard0-batch2.txt"]
+
+
+def test_peak_rss_is_recorded_for_every_batch(tmp_path) -> None:
+    module = _module()
+    nodeids = ["tests/system/test_x.py::test_a"]
+    fake_run = _collect_stub(nodeids)
+    popen = _fake_popen_factory([("1 passed in 0.1s\n", "", 0)])
+
+    module.run_batches(
+        python="/runtime/python",
+        root="tests/system",
+        pytest_args=(),
+        batch_size=20,
+        run=fake_run,
+        popen=popen,
+        log_dir=str(tmp_path),
+        run_id="fixed",
+        rss_reader=lambda pid: 1_234_567,
+    )
+
+    record = json.loads(
+        (tmp_path / module.BATCH_LOG_FILENAME).read_text(encoding="utf-8").strip()
+    )
+    assert record["peak_rss_kib"] == 1_234_567
+
+
+def test_peak_rss_is_null_when_the_platform_cannot_report_it(tmp_path) -> None:
+    module = _module()
+    fake_run = _collect_stub(["tests/system/test_x.py::test_a"])
+    popen = _fake_popen_factory([("1 passed in 0.1s\n", "", 0)])
+
+    module.run_batches(
+        python="/runtime/python",
+        root="tests/system",
+        pytest_args=(),
+        batch_size=20,
+        run=fake_run,
+        popen=popen,
+        log_dir=str(tmp_path),
+        run_id="fixed",
+        rss_reader=lambda pid: None,
+    )
+
+    record = json.loads(
+        (tmp_path / module.BATCH_LOG_FILENAME).read_text(encoding="utf-8").strip()
+    )
+    assert record["peak_rss_kib"] is None
+
+
+def test_read_peak_rss_kib_parses_vmhwm(tmp_path) -> None:
+    module = _module()
+    status = tmp_path / "status"
+    status.write_text(
+        "Name:\tpython3\nVmPeak:\t 9999999 kB\nVmHWM:\t 1441792 kB\nVmRSS:\t 1000 kB\n",
+        encoding="utf-8",
+    )
+    assert module.read_peak_rss_kib(1, status_path=str(status)) == 1_441_792
+
+
+def test_read_peak_rss_kib_returns_none_without_proc(tmp_path) -> None:
+    module = _module()
+    assert module.read_peak_rss_kib(1, status_path=str(tmp_path / "absent")) is None
+
+
+def test_main_wires_the_fast_lane_flags_through(monkeypatch) -> None:
+    module = _module()
+    captured: dict = {}
+    monkeypatch.setattr(module, "run_batches", lambda **kwargs: captured.update(kwargs) or 0)
+    assert (
+        module.main(
+            [
+                "--plan",
+                "lane",
+                "--fast-lanes",
+                "2",
+                "--fast-lane-budget-seconds",
+                "540",
+                "--selection-dir",
+                "/logs/sel",
+                "tests/system",
+            ]
+        )
+        == 0
+    )
+    assert captured["fast_lanes"] == 2
+    assert captured["fast_lane_budget_seconds"] == 540.0
+    assert captured["selection_dir"] == "/logs/sel"
+
+
+def test_selection_dir_defaults_to_the_run_log_dir(tmp_path) -> None:
+    """The runner always passes --log-dir, so the selection file lands beside
+    the ledger with no extra wiring and is retained with the run's artifacts."""
+    module = _module()
+    nodeids = [f"tests/system/test_x.py::TestG{index}::test_{'a' * 7000}" for index in range(20)]
+    fake_run = _collect_stub(nodeids)
+    popen = _fake_popen_factory([("20 passed in 1s\n", "", 0)])
+
+    module.run_batches(
+        python="/runtime/python",
+        root="tests/system",
+        pytest_args=(),
+        batch_size=20,
+        run=fake_run,
+        popen=popen,
+        log_dir=str(tmp_path),
+        run_id="fixed",
+    )
+
+    written = sorted(path.name for path in (tmp_path / "selection").glob("*.txt"))
+    assert written == ["selection-shard0-batch1.txt"]
+    record = json.loads(
+        (tmp_path / module.BATCH_LOG_FILENAME).read_text(encoding="utf-8").strip()
+    )
+    assert record["selection_file"].endswith("selection-shard0-batch1.txt")

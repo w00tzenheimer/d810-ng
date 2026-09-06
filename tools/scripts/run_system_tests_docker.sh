@@ -59,6 +59,15 @@
 #   --lane-threshold-seconds N
 #                           (system only) Measured per-test cost at which a test leaves the fast
 #                           lane. Lower it to move more work into the sharded slow lane.
+#   --fast-lanes K          (system only) OPT-IN. Split the fast lane over K interpreters. Off by
+#                           default: the fast lane is ONE interpreter and its ~20 min is accepted.
+#                           Chunks are packed by FILE and a file is never split, so a file's
+#                           imports are never paid twice; there are still no per-20 restarts
+#                           inside a chunk. Splitting is what would let the shard assignment
+#                           interleave the fast lane with the slow tests, if that is ever wanted.
+#   --fast-lane-budget-seconds N
+#                           (system only) OPT-IN. Ledger cost a fast-lane chunk may reach before
+#                           the lane splits again. Unbounded by default.
 #   --cost-ledger PATH      (system only, repeatable) Absolute CONTAINER path to a
 #                           system_batches.jsonl to price tests from. Absent files are ignored and
 #                           the plan degrades to a uniform-cost split.
@@ -820,6 +829,8 @@ SYSTEM_SHARDS=1
 ONLY_SHARD=""
 SYSTEM_PLAN="fixed"
 LANE_THRESHOLD=""
+FAST_LANES=""
+FAST_LANE_BUDGET=""
 COST_LEDGERS=()
 DEFAULT_COST_LEDGER="/root/.idapro/logs/d810_logs/system_batches.jsonl"
 EXTRA_PYTEST=()
@@ -962,6 +973,42 @@ while [ $# -gt 0 ]; do
         exit 2
       fi
       SYSTEM_PLAN="$2"
+      shift 2
+      ;;
+    --fast-lanes)
+      if [ $# -lt 2 ]; then
+        echo "ERROR: --fast-lanes requires N (positive integer interpreter count)" >&2
+        exit 2
+      fi
+      case "$2" in
+        ''|*[!0-9]*|0*)
+          echo "ERROR: --fast-lanes must be a positive integer (e.g. 2), got '$2'" >&2
+          exit 2
+          ;;
+      esac
+      if [ "$CMD" != "system" ]; then
+        echo "ERROR: --fast-lanes is only valid with the system command" >&2
+        exit 2
+      fi
+      FAST_LANES="$2"
+      shift 2
+      ;;
+    --fast-lane-budget-seconds)
+      if [ $# -lt 2 ]; then
+        echo "ERROR: --fast-lane-budget-seconds requires a number of seconds" >&2
+        exit 2
+      fi
+      case "$2" in
+        ''|*[!0-9.]*|.*|*.*.*)
+          echo "ERROR: --fast-lane-budget-seconds must be a positive number, got '$2'" >&2
+          exit 2
+          ;;
+      esac
+      if [ "$CMD" != "system" ]; then
+        echo "ERROR: --fast-lane-budget-seconds is only valid with the system command" >&2
+        exit 2
+      fi
+      FAST_LANE_BUDGET="$2"
       shift 2
       ;;
     --lane-threshold-seconds)
@@ -2346,6 +2393,8 @@ if [ "$CMD" = "system" ]; then
   if [ "$SYSTEM_PLAN" != "fixed" ]; then
     BATCHER_FLAGS="$BATCHER_FLAGS --plan $SYSTEM_PLAN"
     [ -n "$LANE_THRESHOLD" ] && BATCHER_FLAGS="$BATCHER_FLAGS --lane-threshold-seconds $LANE_THRESHOLD"
+    [ -n "$FAST_LANES" ] && BATCHER_FLAGS="$BATCHER_FLAGS --fast-lanes $FAST_LANES"
+    [ -n "$FAST_LANE_BUDGET" ] && BATCHER_FLAGS="$BATCHER_FLAGS --fast-lane-budget-seconds $FAST_LANE_BUDGET"
     # A cost plan with no ledger degrades to a uniform-cost split, which is
     # silently NOT what was asked for, so default to the ledger the runner
     # itself writes (present whenever -l mounted a previous run's logs).

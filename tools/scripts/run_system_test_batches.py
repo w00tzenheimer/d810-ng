@@ -41,6 +41,7 @@ import subprocess
 import sys
 import threading
 import time
+from typing import NamedTuple
 import uuid
 
 # The planner is a sibling script, not an installed package: this driver runs
@@ -65,6 +66,61 @@ ISOLATED_NODEIDS = frozenset(
 
 DEFAULT_DURATIONS = 25
 BATCH_LOG_FILENAME = "system_batches.jsonl"
+
+#: A selection longer than this many bytes is handed to pytest through a file
+#: instead of argv. The fast lane names ~4700 node ids (~517 KB); execve is
+#: bounded (ARG_MAX, and MAX_ARG_STRLEN per argument) and a suite that has to
+#: grow past that bound is not a failure mode worth discovering in a 20-minute
+#: container. pytest reads @FILE natively (argparse fromfile_prefix_chars).
+#: Below the threshold the argv is unchanged, so the fixed plan is untouched.
+SELECTION_FILE_BYTES = 65536
+
+#: Sampling period for the child's peak RSS, in seconds.
+RSS_SAMPLE_SECONDS = 2.0
+
+
+def read_peak_rss_kib(pid: int, *, status_path: str | None = None) -> int | None:
+    """Return the child's peak resident set size in KiB, or None.
+
+    ``VmHWM`` in ``/proc/<pid>/status`` is the kernel's own high-water mark, so
+    it needs no sampling to be exact -- only to be read before the process
+    exits. Absent /proc (macOS, where the unit tests run) it returns None
+    rather than a wrong number.
+    """
+    path = status_path if status_path is not None else f"/proc/{pid}/status"
+    try:
+        with open(path, encoding="utf-8") as handle:
+            for line in handle:
+                if line.startswith("VmHWM:"):
+                    return int(line.split()[1])
+    except (OSError, ValueError, IndexError):
+        return None
+    return None
+
+
+def write_selection_file(directory: str, name: str, nodeids: Sequence[str]) -> str:
+    """Write *nodeids* one per line and return the path.
+
+    The file is kept, not deleted: it is the exact selection a batch ran, which
+    is what a resume or a post-mortem needs.
+    """
+    os.makedirs(directory, exist_ok=True)
+    path = os.path.join(directory, name)
+    with open(path, "w", encoding="utf-8") as handle:
+        for nodeid in nodeids:
+            handle.write(nodeid)
+            handle.write("\n")
+    return path
+
+
+def _selection_args(
+    nodeids: Sequence[str], *, selection_dir: str | None, name: str
+) -> tuple[str, ...]:
+    """Return the pytest arguments naming *nodeids*: argv, or one @FILE."""
+    size = sum(len(nodeid) + 1 for nodeid in nodeids)
+    if selection_dir is None or size <= SELECTION_FILE_BYTES:
+        return tuple(nodeids)
+    return ("@" + write_selection_file(selection_dir, name, nodeids),)
 
 _SUMMARY_LINE_RE = re.compile(
     r"=*\s*(?P<counts>\d+\s+\w+(?:,\s*\d+\s+\w+)*)\s+in\s+"
@@ -151,13 +207,21 @@ def _augment_pytest_args_with_durations(
     return tuple(pytest_args) + (f"--durations={durations}",)
 
 
+class StreamResult(NamedTuple):
+    """A finished child process plus the peak RSS it reached, when known."""
+
+    completed: subprocess.CompletedProcess
+    peak_rss_kib: int | None
+
+
 def _stream_and_capture(
     command: Sequence[str],
     *,
     popen: Callable[..., subprocess.Popen] = subprocess.Popen,
     stdout_sink=None,
     stderr_sink=None,
-) -> subprocess.CompletedProcess:
+    rss_reader: Callable[[int], int | None] | None = None,
+) -> StreamResult:
     """Run *command*, tee-ing stdout/stderr to the parent live while also
     capturing full text for the ``--durations`` and jsonl-record parsers.
 
@@ -187,20 +251,48 @@ def _stream_and_capture(
         finally:
             pipe.close()
 
-    threads = (
+    peak = {"rss": None}
+    finished = threading.Event()
+
+    def _sample() -> None:
+        # d86971ad9's whole premise is that one interpreter's RSS grows without
+        # bound after idapro.close_database. Recording the high-water mark per
+        # batch is what lets a run decide that instead of assuming it.
+        reader = rss_reader or read_peak_rss_kib
+        pid = getattr(process, "pid", None)
+        if pid is None:
+            return
+        while True:
+            value = reader(pid)
+            if value is not None and (peak["rss"] is None or value > peak["rss"]):
+                peak["rss"] = value
+            if finished.wait(RSS_SAMPLE_SECONDS):
+                value = reader(pid)
+                if value is not None and (peak["rss"] is None or value > peak["rss"]):
+                    peak["rss"] = value
+                return
+
+    threads = [
         threading.Thread(target=_pump, args=(process.stdout, out_sink, "stdout")),
         threading.Thread(target=_pump, args=(process.stderr, err_sink, "stderr")),
-    )
+    ]
+    sampler = threading.Thread(target=_sample, daemon=True)
     for thread in threads:
         thread.start()
+    sampler.start()
     for thread in threads:
         thread.join()
     returncode = process.wait()
-    return subprocess.CompletedProcess(
-        list(command),
-        returncode,
-        stdout="".join(captured["stdout"]),
-        stderr="".join(captured["stderr"]),
+    finished.set()
+    sampler.join(timeout=RSS_SAMPLE_SECONDS * 2)
+    return StreamResult(
+        subprocess.CompletedProcess(
+            list(command),
+            returncode,
+            stdout="".join(captured["stdout"]),
+            stderr="".join(captured["stderr"]),
+        ),
+        peak["rss"],
     )
 
 
@@ -234,6 +326,8 @@ def _plan(
     max_tests: int,
     lane_threshold_seconds: float,
     fast_max_tests: int | None,
+    fast_lanes: int | None = None,
+    fast_lane_budget_seconds: float = planner.DEFAULT_FAST_LANE_BUDGET_SECONDS,
 ) -> tuple[planner.PlannedBatch, ...]:
     """Return the batch plan for *plan* mode.
 
@@ -248,6 +342,8 @@ def _plan(
             threshold_seconds=lane_threshold_seconds,
             isolated=frozenset(ISOLATED_NODEIDS),
             fast_max_tests=fast_max_tests,
+            fast_lanes=fast_lanes,
+            fast_lane_budget_seconds=fast_lane_budget_seconds,
         )
     if plan == "cost":
         return planner.plan_batches(
@@ -297,6 +393,10 @@ def run_batches(
     max_tests: int = planner.DEFAULT_MAX_TESTS,
     shard_index: int = 0,
     shard_count: int = 1,
+    fast_lanes: int | None = None,
+    fast_lane_budget_seconds: float = planner.DEFAULT_FAST_LANE_BUDGET_SECONDS,
+    selection_dir: str | None = None,
+    rss_reader: Callable[[int], int | None] | None = None,
 ) -> int:
     collect_command = [
         python,
@@ -339,11 +439,13 @@ def run_batches(
         max_tests=max_tests,
         lane_threshold_seconds=lane_threshold_seconds,
         fast_max_tests=fast_max_tests,
+        fast_lanes=fast_lanes,
+        fast_lane_budget_seconds=fast_lane_budget_seconds,
     )
-    if plan == "lane":
-        assignment = planner.assign_lane_shards(planned, shard_count)
-    else:
-        assignment = planner.assign_shards(planned, shard_count)
+    # Plain LPT for every plan: a single fast batch is the largest item, so it
+    # still gets a shard to itself, while --fast-lanes chunks can pack against
+    # the slow lane instead of leaving one long item to bound the makespan.
+    assignment = planner.assign_shards(planned, shard_count)
     owned = assignment[shard_index]
     batches = tuple(planned[index] for index in owned)
     isolated_nodeids = tuple(nodeid for nodeid in nodeids if nodeid in ISOLATED_NODEIDS)
@@ -366,6 +468,8 @@ def run_batches(
         flush=True,
     )
     effective_run_id = run_id or f"{time.strftime('%Y%m%dT%H%M%S')}-{uuid.uuid4().hex[:8]}"
+    if selection_dir is None and log_dir is not None:
+        selection_dir = os.path.join(log_dir, "selection")
     augmented_pytest_args = _augment_pytest_args_with_durations(pytest_args, durations)
     ran = 0
     for index, planned_batch in enumerate(batches[start_batch - 1 :], start=start_batch):
@@ -379,10 +483,18 @@ def run_batches(
             f"estimated={planned_batch.estimated_seconds:.1f}s first={batch[0]}",
             flush=True,
         )
-        command = [python, "-m", "pytest", "-v", *batch, *augmented_pytest_args]
+        selection = _selection_args(
+            batch,
+            selection_dir=selection_dir,
+            name=f"selection-shard{shard_index}-batch{index}.txt",
+        )
+        command = [python, "-m", "pytest", "-v", *selection, *augmented_pytest_args]
         start_epoch = now()
+        peak_rss_kib: int | None = None
         if log_dir is not None:
-            completed = _stream_and_capture(command, popen=popen)
+            streamed = _stream_and_capture(command, popen=popen, rss_reader=rss_reader)
+            completed = streamed.completed
+            peak_rss_kib = streamed.peak_rss_kib
             end_epoch = now()
             combined_output = (completed.stdout or "") + (completed.stderr or "")
             record = {
@@ -395,6 +507,8 @@ def run_batches(
                 "global_batch_total": len(planned),
                 "estimated_seconds": planned_batch.estimated_seconds,
                 "lane": planned_batch.lane,
+                "peak_rss_kib": peak_rss_kib,
+                "selection_file": selection[0][1:] if selection[:1] and selection[0].startswith("@") else None,
                 "first_nodeid": batch[0],
                 "test_count": len(batch),
                 "start_epoch": start_epoch,
@@ -515,6 +629,34 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="0-based index of this shard within --shard-count.",
     )
     parser.add_argument(
+        "--fast-lanes",
+        type=int,
+        default=None,
+        help=(
+            "Split the fast lane into N interpreters (--plan lane). Off by "
+            "default: the fast lane is ONE interpreter. Chunks are packed by "
+            "file; a file is never split."
+        ),
+    )
+    parser.add_argument(
+        "--fast-lane-budget-seconds",
+        type=float,
+        default=planner.DEFAULT_FAST_LANE_BUDGET_SECONDS,
+        help=(
+            "Ledger cost a fast-lane chunk may reach before the lane splits. "
+            "Unbounded by default, so the fast lane stays one interpreter."
+        ),
+    )
+    parser.add_argument(
+        "--selection-dir",
+        default=None,
+        help=(
+            "Directory to write per-batch node-id selection files to. A "
+            "selection over %d bytes is passed to pytest as @FILE instead of "
+            "argv." % SELECTION_FILE_BYTES
+        ),
+    )
+    parser.add_argument(
         "--shard-count",
         type=int,
         default=1,
@@ -546,6 +688,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         max_tests=args.max_tests,
         shard_index=args.shard_index,
         shard_count=args.shard_count,
+        fast_lanes=args.fast_lanes,
+        fast_lane_budget_seconds=args.fast_lane_budget_seconds,
+        selection_dir=args.selection_dir,
     )
 
 
