@@ -12,6 +12,22 @@ When ``log_dir`` is supplied, each batch also appends one JSON line to
 summary counts, and the slowest per-test durations (via ``--durations``), so
 a full suite run produces its own time profile. See
 ``tools/scripts/batch_profile.py`` for the report reader.
+
+Two opt-in levers sit on top of the fixed split, both off by default so an
+unadorned invocation behaves exactly as before:
+
+``--plan lane`` (the shape the suite is meant to run in)
+    One interpreter for every test the ledger prices under
+    ``--lane-threshold-seconds`` (30 s), March-style, plus one interpreter per
+    slow test. ``--plan cost`` is the intermediate shape: cost-aware packing
+    that still bounds database-open groups per interpreter. ``--plan fixed``
+    (the default) is the historical ``--batch-size`` split.
+
+``--shard-count N`` / ``--shard-index K``
+    Every shard collects and plans the *same* batches, assigns them to N shards
+    with longest-processing-time-first, and runs only its own. There is no
+    coordination between shards: the plan is a pure function of the collected
+    node ids and the cost ledger, so N containers agree on it independently.
 """
 
 from __future__ import annotations
@@ -26,6 +42,16 @@ import sys
 import threading
 import time
 import uuid
+
+# The planner is a sibling script, not an installed package: this driver runs
+# inside the IDA container as a plain path (``$PYTHON tools/scripts/...``), so
+# its directory is on sys.path already; the insert only covers loaders that do
+# not set sys.path[0] (importlib.spec_from_file_location, python -P).
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+if _SCRIPT_DIR not in sys.path:
+    sys.path.insert(0, _SCRIPT_DIR)
+
+import system_batch_planner as planner  # noqa: E402
 
 
 Run = Callable[..., subprocess.CompletedProcess]
@@ -194,6 +220,61 @@ def _batches(values: Sequence[str], size: int) -> tuple[tuple[str, ...], ...]:
     )
 
 
+PLAN_MODES = ("fixed", "cost", "lane")
+
+
+def _plan(
+    nodeids: Sequence[str],
+    *,
+    batch_size: int,
+    plan: str,
+    costs: planner.CostTable,
+    cost_budget_seconds: float,
+    max_group_keys: int,
+    max_tests: int,
+    lane_threshold_seconds: float,
+    fast_max_tests: int | None,
+) -> tuple[planner.PlannedBatch, ...]:
+    """Return the batch plan for *plan* mode.
+
+    Every shape comes back as ``PlannedBatch`` so shard assignment can price a
+    fixed-size split too: without a ledger every node id costs the same, which
+    makes the LPT assignment fall back to balancing test counts.
+    """
+    if plan == "lane":
+        return planner.plan_lane_batches(
+            nodeids,
+            costs=costs,
+            threshold_seconds=lane_threshold_seconds,
+            isolated=frozenset(ISOLATED_NODEIDS),
+            fast_max_tests=fast_max_tests,
+        )
+    if plan == "cost":
+        return planner.plan_batches(
+            nodeids,
+            costs=costs,
+            isolated=frozenset(ISOLATED_NODEIDS),
+            max_group_keys=max_group_keys,
+            cost_budget_seconds=cost_budget_seconds,
+            max_tests=max_tests,
+        )
+    regular_nodeids = tuple(
+        nodeid for nodeid in nodeids if nodeid not in ISOLATED_NODEIDS
+    )
+    isolated_nodeids = tuple(nodeid for nodeid in nodeids if nodeid in ISOLATED_NODEIDS)
+    slices = _batches(regular_nodeids, batch_size) + tuple(
+        (nodeid,) for nodeid in isolated_nodeids
+    )
+    return tuple(
+        planner.PlannedBatch(
+            nodeids=batch,
+            estimated_seconds=sum(costs.cost_of(nodeid) for nodeid in batch),
+            group_keys=len({planner.group_key(nodeid) for nodeid in batch}),
+        )
+        for batch in slices
+    )
+
+
 def run_batches(
     *,
     python: str,
@@ -207,6 +288,15 @@ def run_batches(
     run_id: str | None = None,
     durations: int = DEFAULT_DURATIONS,
     now: Callable[[], float] = time.time,
+    plan: str = "fixed",
+    cost_ledgers: Sequence[str] = (),
+    lane_threshold_seconds: float = planner.DEFAULT_LANE_THRESHOLD_SECONDS,
+    fast_max_tests: int | None = None,
+    cost_budget_seconds: float = planner.DEFAULT_COST_BUDGET_SECONDS,
+    max_group_keys: int = planner.DEFAULT_MAX_GROUP_KEYS,
+    max_tests: int = planner.DEFAULT_MAX_TESTS,
+    shard_index: int = 0,
+    shard_count: int = 1,
 ) -> int:
     collect_command = [
         python,
@@ -228,31 +318,65 @@ def run_batches(
         sys.stderr.write("[system-batch] collection selected no tests\n")
         return 5
 
-    regular_nodeids = tuple(
-        nodeid for nodeid in nodeids if nodeid not in ISOLATED_NODEIDS
+    if shard_count < 1 or not 0 <= shard_index < shard_count:
+        sys.stderr.write(
+            f"[system-batch] shard_index={shard_index} outside "
+            f"0..{shard_count - 1}\n"
+        )
+        return 5
+
+    if plan not in PLAN_MODES:
+        sys.stderr.write(f"[system-batch] unknown plan mode: {plan}\n")
+        return 5
+    costs = planner.load_cost_table(tuple(cost_ledgers))
+    planned = _plan(
+        nodeids,
+        batch_size=batch_size,
+        plan=plan,
+        costs=costs,
+        cost_budget_seconds=cost_budget_seconds,
+        max_group_keys=max_group_keys,
+        max_tests=max_tests,
+        lane_threshold_seconds=lane_threshold_seconds,
+        fast_max_tests=fast_max_tests,
     )
+    if plan == "lane":
+        assignment = planner.assign_lane_shards(planned, shard_count)
+    else:
+        assignment = planner.assign_shards(planned, shard_count)
+    owned = assignment[shard_index]
+    batches = tuple(planned[index] for index in owned)
     isolated_nodeids = tuple(nodeid for nodeid in nodeids if nodeid in ISOLATED_NODEIDS)
-    batches = _batches(regular_nodeids, batch_size) + tuple(
-        (nodeid,) for nodeid in isolated_nodeids
-    )
-    if start_batch < 1 or start_batch > len(batches):
+    if start_batch < 1 or start_batch > max(len(batches), 1):
         sys.stderr.write(
             f"[system-batch] start_batch={start_batch} outside 1..{len(batches)}\n"
         )
         return 5
+    loads = planner.shard_loads(planned, assignment)
     print(
         f"[system-batch] collected={len(nodeids)} "
-        f"batch_size={batch_size} batches={len(batches)} "
+        f"plan={plan} batch_size={batch_size} "
+        f"planned_batches={len(planned)} "
+        f"shard={shard_index}/{shard_count} batches={len(batches)} "
+        f"estimated={loads[shard_index]:.1f}s "
+        f"cost_sources={len(costs.sources)} measured={costs.measured} "
+        f"default_cost={costs.default_seconds:.3f}s "
         f"isolated={len(isolated_nodeids)} "
         f"start_batch={start_batch}",
         flush=True,
     )
     effective_run_id = run_id or f"{time.strftime('%Y%m%dT%H%M%S')}-{uuid.uuid4().hex[:8]}"
     augmented_pytest_args = _augment_pytest_args_with_durations(pytest_args, durations)
-    for index, batch in enumerate(batches[start_batch - 1 :], start=start_batch):
+    ran = 0
+    for index, planned_batch in enumerate(batches[start_batch - 1 :], start=start_batch):
+        batch = planned_batch.nodeids
+        global_index = owned[index - 1] + 1
         print(
             f"[system-batch {index}/{len(batches)}] "
-            f"tests={len(batch)} first={batch[0]}",
+            f"shard={shard_index} global={global_index}/{len(planned)} "
+            f"lane={planned_batch.lane} "
+            f"tests={len(batch)} groups={planned_batch.group_keys} "
+            f"estimated={planned_batch.estimated_seconds:.1f}s first={batch[0]}",
             flush=True,
         )
         command = [python, "-m", "pytest", "-v", *batch, *augmented_pytest_args]
@@ -263,8 +387,14 @@ def run_batches(
             combined_output = (completed.stdout or "") + (completed.stderr or "")
             record = {
                 "run_id": effective_run_id,
+                "shard": shard_index,
+                "shard_count": shard_count,
                 "batch_index": index,
                 "batch_total": len(batches),
+                "global_batch_index": global_index,
+                "global_batch_total": len(planned),
+                "estimated_seconds": planned_batch.estimated_seconds,
+                "lane": planned_batch.lane,
                 "first_nodeid": batch[0],
                 "test_count": len(batch),
                 "start_epoch": start_epoch,
@@ -277,16 +407,20 @@ def run_batches(
             _write_batch_record(log_dir, record)
         else:
             completed = run(command, check=False)
+        ran += len(batch)
         if completed.returncode != 0:
             print(
                 f"[system-batch {index}/{len(batches)}] "
-                f"failed exit={completed.returncode}",
+                f"shard={shard_index} failed exit={completed.returncode}",
                 file=sys.stderr,
                 flush=True,
             )
             return int(completed.returncode)
 
-    print(f"[system-batch] completed={len(nodeids)} exit=0", flush=True)
+    print(
+        f"[system-batch] shard={shard_index}/{shard_count} completed={ran} exit=0",
+        flush=True,
+    )
     return 0
 
 
@@ -316,6 +450,79 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=DEFAULT_DURATIONS,
         help="pytest --durations=N to request per batch (0 disables).",
     )
+    parser.add_argument(
+        "--plan",
+        choices=PLAN_MODES,
+        default="fixed",
+        help=(
+            "fixed: the historical --batch-size split (default). "
+            "cost: cost-aware packing bounded by database-open groups. "
+            "lane: one interpreter for every test under "
+            "--lane-threshold-seconds plus one per slow test."
+        ),
+    )
+    parser.add_argument(
+        "--lane-threshold-seconds",
+        type=float,
+        default=planner.DEFAULT_LANE_THRESHOLD_SECONDS,
+        help="Measured cost at which a test leaves the fast lane (--plan lane).",
+    )
+    parser.add_argument(
+        "--fast-max-tests",
+        type=int,
+        default=None,
+        help=(
+            "Bound the fast lane to N tests per interpreter. Unset by default: "
+            "a fast lane that runs out of memory is a finding to report, not "
+            "something to silently re-batch."
+        ),
+    )
+    parser.add_argument(
+        "--cost-ledger",
+        action="append",
+        default=[],
+        dest="cost_ledgers",
+        help=(
+            "system_batches.jsonl to price tests from; repeatable. Absent files "
+            "are ignored and packing degrades to a uniform-cost group split."
+        ),
+    )
+    parser.add_argument(
+        "--cost-budget-seconds",
+        type=float,
+        default=planner.DEFAULT_COST_BUDGET_SECONDS,
+        help="Estimated wall a packed batch may reach before it is closed.",
+    )
+    parser.add_argument(
+        "--max-group-keys",
+        type=int,
+        default=planner.DEFAULT_MAX_GROUP_KEYS,
+        help=(
+            "Database-open groups (class scopes) one interpreter may host. "
+            "20 reproduces the worst case --batch-size 20 already admitted."
+        ),
+    )
+    parser.add_argument(
+        "--max-tests",
+        type=int,
+        default=planner.DEFAULT_MAX_TESTS,
+        help="Hard cap on node ids per packed batch (resume granularity).",
+    )
+    parser.add_argument(
+        "--shard-index",
+        type=int,
+        default=0,
+        help="0-based index of this shard within --shard-count.",
+    )
+    parser.add_argument(
+        "--shard-count",
+        type=int,
+        default=1,
+        help=(
+            "Number of shards the plan is split across. 1 (the default) runs "
+            "every batch, which is the historical behaviour."
+        ),
+    )
     parser.add_argument("pytest_args", nargs=argparse.REMAINDER)
     args = parser.parse_args(argv)
     pytest_args = tuple(args.pytest_args)
@@ -330,6 +537,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         log_dir=args.log_dir,
         run_id=args.run_id,
         durations=args.durations,
+        plan=args.plan,
+        cost_ledgers=tuple(args.cost_ledgers),
+        lane_threshold_seconds=args.lane_threshold_seconds,
+        fast_max_tests=args.fast_max_tests,
+        cost_budget_seconds=args.cost_budget_seconds,
+        max_group_keys=args.max_group_keys,
+        max_tests=args.max_tests,
+        shard_index=args.shard_index,
+        shard_count=args.shard_count,
     )
 
 
