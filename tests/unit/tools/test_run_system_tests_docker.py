@@ -11,30 +11,33 @@ import pytest
 
 from d810.core.typing import NamedTuple
 
+from tests.cobra_published_identity import (
+    PUBLISHED_IDENTITY_FILE,
+    published_identity,
+)
+
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 DOCKER_RUNNER = REPO_ROOT / "tools" / "scripts" / "run_system_tests_docker.sh"
 RUNTIME_LABEL = "dev-emulation-z3-v1"
-COBRA_WHEEL_VERSION = "0.1.5"
-COBRA_WHEEL_AARCH64_NAME = (
-    "d810_cobra-0.1.5-cp313-cp313-manylinux_2_26_aarch64.manylinux_2_28_aarch64.whl"
-)
-COBRA_WHEEL_AARCH64_SHA256 = (
-    "2c85ffe14a1f3c1d2b750790332a7c0a5e911b35f7fc041ebedcd6532382c63c"
-)
-COBRA_WHEEL_X86_64_NAME = (
-    "d810_cobra-0.1.5-cp313-cp313-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl"
-)
-COBRA_WHEEL_X86_64_SHA256 = (
-    "352133fd4f91227518714735b463b978760650b5f30c71f5276c0bccb90cb72c"
-)
+# Derived, never re-declared: docker/cobra-bake/published_identity is the one
+# place these values are written down, and the runner reads the same file. A
+# second copy here is how a wheel rotation passes its own file's tests while
+# disagreeing with the runner it is testing.
+PUBLISHED_IDENTITY = PUBLISHED_IDENTITY_FILE
+_IDENTITY = published_identity()
+COBRA_WHEEL_VERSION = _IDENTITY.version
+COBRA_WHEEL_AARCH64_NAME = _IDENTITY.wheels["aarch64"].filename
+COBRA_WHEEL_AARCH64_SHA256 = _IDENTITY.wheels["aarch64"].sha256
+COBRA_WHEEL_X86_64_NAME = _IDENTITY.wheels["x86_64"].filename
+COBRA_WHEEL_X86_64_SHA256 = _IDENTITY.wheels["x86_64"].sha256
 COBRA_WHEEL_PREFLIGHT_AARCH64_SHA256 = (
     "b71d40e45146004a968a96a1b17493b16ac04f2a98e41c12a1f87a38ddf3ab25"
 )
 COBRA_WHEEL_PUBLISHED_DIR = "0.1.5-published"
 COBRA_WHEEL_PREFLIGHT_DIR = "0.1.5-preflight"
-COBRA_WHEEL_TAG_COMMIT = "73b405c106d78e1fdc7576b217de39b7dcd0ddb3"
-COBRA_WHEEL_CORE_COMMIT = "72f616f822f538a0cfbea3c880f9d1e68bb9a8f1"
+COBRA_WHEEL_TAG_COMMIT = _IDENTITY.tag_commit
+COBRA_WHEEL_CORE_COMMIT = _IDENTITY.core_commit
 COBRA_WHEEL_CONTAINER_DIR = "/opt/d810-cobra-wheel"
 # The runner refuses to run unless `docker image inspect --format '{{.Id}}'`
 # yields a real digest, so the fake engine has to answer with one.
@@ -144,6 +147,12 @@ def _make_harness(
     shutil.copy2(DOCKER_RUNNER, script)
     # The runner reads its allowlist from beside itself.
     shutil.copy2(MANIFEST_ALLOWLIST, script.parent / MANIFEST_ALLOWLIST.name)
+    # ... and every accepted CoBRA identity from the one tracked source, two
+    # levels up. A harness that omitted it would exercise a runner that has no
+    # published wheel table at all.
+    staged_identity = root / PUBLISHED_IDENTITY.relative_to(REPO_ROOT)
+    staged_identity.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(PUBLISHED_IDENTITY, staged_identity)
 
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir(exist_ok=True)
@@ -4506,7 +4515,7 @@ def test_run_retention_defaults_to_twenty(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 # Baked CoBRA: the image already carries the published wheel
 # ---------------------------------------------------------------------------
-COBRA_PARENT_PIN = "3b3c406270f1efd8e222f0b05040ae4e074b27d5"
+COBRA_PARENT_PIN = _IDENTITY.parent_commit
 
 
 def _baked_labels(

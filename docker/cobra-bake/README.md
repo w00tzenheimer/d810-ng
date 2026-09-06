@@ -14,14 +14,25 @@ directory is the tracked, reviewable half of that arrangement:
 
 | file | role |
 |-|-|
-| `cobra_identity.sh` | the published identity (version, per-arch wheel name + sha256, tag/core/parent commits) and the label comparison, sourced by the image build script |
+| `published_identity` | **the single source of truth**: version, per-arch wheel name + sha256, tag/core/parent commits. Nothing else declares them |
+| `cobra_identity.sh` | reads `published_identity` into shell variables, plus the label comparison; sourced by the image build script |
 | `stage_cobra_bake_context.sh` | copies the one architecture-matching published wheel, its `SHA256SUMS` line and the verifier into a Docker build context |
 | `verify_cobra_install.py` | manifest + compiled-extension import + known-answer solve + identity assertions; run by the bake step, by the build script's verification table, and by hand |
 | `Dockerfile.cobra-bake.fragment` | the exact `ARG` / `RUN` / `LABEL` block inserted into the image Dockerfile |
-| `SHA256SUMS.published` | the published hashes, in `sha256sum -c` form |
 
 `Dockerfile.cobra-bake.fragment` is a copy, not an include: Docker has no
 `#include`. Changing the bake means changing both it and the image Dockerfile.
+
+`published_identity` is a whitespace-delimited table on purpose. It is the only
+shape both bash (a `while read -r` loop -- no `jq`, no dependency, and no
+shell-sourcing of a data file) and Python (`str.split`) parse without a second
+copy or a parser: JSON would force `jq`, which is not guaranteed on the host,
+or an `eval`-based shell hack. The Docker test runner
+(`tools/scripts/run_system_tests_docker.sh`) reads the same file for its
+accepted-wheel table and its pinned source revision, and both readers fail
+closed when it is missing or malformed. `tests/unit/tools/test_cobra_bake.py`
+asserts that neither reader carries a literal copy, so editing one alone is a
+test failure rather than a silent desync.
 
 ## Labels
 
@@ -48,7 +59,7 @@ upstream code.
 The preflight wheels built before the 0.1.5 release share their filenames AND
 their sizes with the published ones, and differ only in their bytes. They are
 provenance evidence and are never an accepted production identity here. Only
-the two hashes in `SHA256SUMS.published` are.
+the two hashes in `published_identity` are.
 
 ## The image build script
 
