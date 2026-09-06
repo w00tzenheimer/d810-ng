@@ -130,6 +130,18 @@ def test_complete_masked_affine_solver_is_parameterized_not_fixture_specific() -
 
 
 def test_z3_independently_proves_the_recovered_predicate() -> None:
+    """Regression guard for a RESOURCE-class flake (seen at host load ~36).
+
+    The production path bounds this proof with a 100 ms wall-clock
+    ``timeout_ms``, which exists to keep a live decompile responsive but
+    makes the *test's* outcome depend on host CPU contention rather than on
+    the property being proved. A prior measurement of this exact proof
+    completed in ~11 ms wall clock and consumed ~53,000 Z3 resource-limit
+    ticks (``solver.statistics()["rlimit-count"]``); ``rlimit`` below gives
+    a >150x margin over that measurement while remaining a deterministic
+    budget Z3 enforces by counting its own internal work, not wall time, so
+    it is unaffected by other processes competing for the CPU.
+    """
     pytest.importorskip("z3")
     module = importlib.import_module(_MODULE)
     variable = module.Variable("input", 32)
@@ -137,4 +149,6 @@ def test_z3_independently_proves_the_recovered_predicate() -> None:
     recovered = module.recover_finite_zero_set_predicate(predicate)
 
     assert recovered is not None
-    assert module.z3_proves_finite_zero_set_predicate(predicate, recovered)
+    assert module.z3_proves_finite_zero_set_predicate(
+        predicate, recovered, rlimit=8_000_000
+    )

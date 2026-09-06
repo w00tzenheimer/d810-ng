@@ -415,12 +415,23 @@ def recover_finite_zero_set_predicate(
 def z3_proves_finite_zero_set_predicate(
     predicate: Predicate,
     match: FiniteZeroSetPredicateMatch,
+    *,
+    rlimit: int | None = None,
 ) -> bool:
     """Prove the original typed predicate equals the recovered exclusion set.
 
     This is deliberately independent of the modular-affine solver.  Missing
     Z3, an unsupported operation, a second leaf, or ``unknown`` all deny the
     proof so a native caller can abstain safely.
+
+    By default this bounds the check with the production
+    ``FiniteZeroSetPredicateRule`` wall-clock ``timeout_ms`` (100 ms), which
+    exists to keep a live decompile from stalling on one candidate. Pass
+    ``rlimit`` to bound it with a Z3 resource-unit budget instead: unlike a
+    millisecond timeout, ``rlimit`` counts internal solver ticks and is
+    unaffected by host CPU contention, so a caller that needs a
+    load-independent pass/fail outcome (this module's own test suite) should
+    use it rather than inherit the production wall-clock deadline.
     """
 
     try:
@@ -478,7 +489,10 @@ def z3_proves_finite_zero_set_predicate(
             *(native_input != z3.BitVecVal(value, 32) for value in match.excluded_values)
         )
         solver = z3.Solver()
-        solver.set(timeout=FiniteZeroSetPredicateRule.CONSTRAINTS[-1].timeout_ms)
+        if rlimit is not None:
+            solver.set(rlimit=rlimit)
+        else:
+            solver.set(timeout=FiniteZeroSetPredicateRule.CONSTRAINTS[-1].timeout_ms)
         solver.add(original != replacement)
         return solver.check() == z3.unsat
     except Exception:
