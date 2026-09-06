@@ -1342,6 +1342,14 @@ _remote_check_engine_clock() {
 # The CoBRA wheel is native code, so it must match the engine that will run it,
 # not this machine: --remote points DOCKER_HOST at another architecture. Every
 # caller reaches this only after DOCKER_HOST is final.
+#
+# Both published-wheel paths use it. An explicit wheel is named by the
+# operator; a baked one is named by the image's labels, whose recorded hash
+# identifies the architecture just as precisely. Either way the check is one
+# `docker version` BEFORE any container starts -- the in-container assertion
+# is a backstop, and reaching it means a setup container was started for a
+# wheel that could never have imported.
+COBRA_WHEEL_ARCH_SUBJECT="D810_COBRA_WHEEL"
 _verify_cobra_wheel_engine_arch() {
   [ "${COBRA_WHEEL_ARCH_CHECK_PENDING:-0}" = "1" ] || return 0
   COBRA_WHEEL_ARCH_CHECK_PENDING=0
@@ -1350,12 +1358,12 @@ _verify_cobra_wheel_engine_arch() {
     arm64) COBRA_DOCKER_ENGINE_ARCH="aarch64" ;;
     amd64) COBRA_DOCKER_ENGINE_ARCH="x86_64" ;;
     *)
-      echo "ERROR: D810_COBRA_WHEEL needs a known Docker engine architecture; docker version --format '{{.Server.Arch}}' returned '$COBRA_DOCKER_SERVER_ARCH' (expected arm64 or amd64)" >&2
+      echo "ERROR: $COBRA_WHEEL_ARCH_SUBJECT needs a known Docker engine architecture; docker version --format '{{.Server.Arch}}' returned '$COBRA_DOCKER_SERVER_ARCH' (expected arm64 or amd64)" >&2
       exit 1
       ;;
   esac
   if [ "$COBRA_DOCKER_ENGINE_ARCH" != "$COBRA_WHEEL_ARCH" ]; then
-    echo "ERROR: D810_COBRA_WHEEL is a $COBRA_WHEEL_ARCH wheel but the Docker engine is $COBRA_DOCKER_ENGINE_ARCH (docker server arch $COBRA_DOCKER_SERVER_ARCH); use the recorded $COBRA_DOCKER_ENGINE_ARCH wheel" >&2
+    echo "ERROR: $COBRA_WHEEL_ARCH_SUBJECT is a $COBRA_WHEEL_ARCH wheel but the Docker engine is $COBRA_DOCKER_ENGINE_ARCH (docker server arch $COBRA_DOCKER_SERVER_ARCH); use the recorded $COBRA_DOCKER_ENGINE_ARCH wheel" >&2
     exit 1
   fi
 }
@@ -1447,6 +1455,14 @@ _detect_baked_cobra() {
   COBRA_WHEEL_SHA256="$sha"
   COBRA_PARENT_SOURCE_ID="$tag"
   COBRA_CORE_SOURCE_ID="$core"
+
+  # The baked wheel is native code too. Its architecture comes from the
+  # published record for the hash the image declares, so it is known here,
+  # before anything is started -- refuse at the cheap `docker version` stage
+  # rather than inside a setup container that can only fail to import.
+  COBRA_WHEEL_ARCH_SUBJECT="the d810-cobra wheel baked into $DOCKER_IMAGE"
+  COBRA_WHEEL_ARCH_CHECK_PENDING=1
+  _verify_cobra_wheel_engine_arch
 }
 
 # The volume can exist and still not expose this checkout (wrong share, wrong

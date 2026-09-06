@@ -4761,6 +4761,8 @@ def test_remote_mode_reads_the_baked_labels_from_the_remote_engine(
             MOCK_DOCKER_REMOTE_COBRA_LABELS=_baked_labels(
                 sha256=COBRA_WHEEL_X86_64_SHA256
             ),
+            # The x86_64 wheel is the correct one for that engine.
+            MOCK_DOCKER_REMOTE_SERVER_ARCH="amd64",
         ),
     )
 
@@ -4928,3 +4930,110 @@ def test_the_wheel_under_test_falls_back_to_the_fixture(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
     assert f"extension: d810-cobra (wheel {under_test.name})" in result.stdout
     assert under_test.sha256 in _container_run(calls)
+
+
+def test_a_baked_wheel_for_the_wrong_engine_is_refused_before_any_container(
+    tmp_path: Path,
+) -> None:
+    """The in-container assertion is a backstop, not the gate.
+
+    Reaching it would mean a setup container was started for a wheel that
+    could never have imported; the wheel path already refuses at the cheap
+    `docker version` stage, and a baked image's recorded hash names its
+    architecture just as precisely.
+    """
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--",
+        "true",
+        extra_env={
+            "MOCK_DOCKER_COBRA_LABELS": _baked_labels(),
+            "MOCK_DOCKER_SERVER_ARCH": "amd64",
+        },
+    )
+
+    assert result.returncode != 0
+    assert "aarch64 wheel but the Docker engine is x86_64" in result.stderr
+    assert "baked into" in result.stderr
+    assert _workload_runs(calls) == []
+
+
+def test_an_unknown_engine_architecture_refuses_a_baked_image(
+    tmp_path: Path,
+) -> None:
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--",
+        "true",
+        extra_env={
+            "MOCK_DOCKER_COBRA_LABELS": _baked_labels(),
+            "MOCK_DOCKER_SERVER_ARCH": "riscv64",
+        },
+    )
+
+    assert result.returncode != 0
+    assert "known Docker engine architecture" in result.stderr
+    assert _workload_runs(calls) == []
+
+
+def test_remote_mode_refuses_a_baked_image_built_for_the_local_engine(
+    tmp_path: Path,
+) -> None:
+    """The Mac's architecture says nothing about the engine that will run it."""
+    share, repo = _share_layout(tmp_path)
+
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--remote",
+        REMOTE_HOST,
+        "--",
+        "true",
+        repo_root=repo,
+        extra_env=_remote_env(
+            share,
+            MOCK_DOCKER_COBRA_LABELS="||||",
+            # An aarch64 wheel baked into the image the amd64 remote will run.
+            MOCK_DOCKER_REMOTE_COBRA_LABELS=_baked_labels(),
+            MOCK_DOCKER_SERVER_ARCH="arm64",
+            MOCK_DOCKER_REMOTE_SERVER_ARCH="amd64",
+        ),
+    )
+
+    assert result.returncode != 0
+    assert "aarch64 wheel but the Docker engine is x86_64" in result.stderr
+    assert _workload_runs(calls) == []
+    # Failing closed before the lock leaves nothing to clean up.
+    assert not (repo / ".tmp" / "remote-run.lock").exists()
+
+
+def test_remote_mode_accepts_a_baked_image_matching_the_remote_engine(
+    tmp_path: Path,
+) -> None:
+    """The x86_64 wheel is the right one there, and the local arch is irrelevant."""
+    share, repo = _share_layout(tmp_path)
+
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--remote",
+        REMOTE_HOST,
+        "--",
+        "true",
+        repo_root=repo,
+        extra_env=_remote_env(
+            share,
+            MOCK_DOCKER_COBRA_LABELS="||||",
+            MOCK_DOCKER_REMOTE_COBRA_LABELS=_baked_labels(
+                sha256=COBRA_WHEEL_X86_64_SHA256
+            ),
+            MOCK_DOCKER_SERVER_ARCH="arm64",
+            MOCK_DOCKER_REMOTE_SERVER_ARCH="amd64",
+        ),
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "wheel but the Docker engine is" not in result.stderr
+    assert "git clone" not in _remote_container_run(calls)
