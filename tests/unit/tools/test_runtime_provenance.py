@@ -6,6 +6,7 @@ import json
 
 import pytest
 
+from tests.cobra_published_identity import published_identity
 from tests.runtime_provenance import MISSING_PROVENANCE, runtime_provenance
 
 REMOTE_ENVIRONMENT = {
@@ -68,10 +69,11 @@ def test_a_positive_offset_survives_unchanged() -> None:
     )
 
 
-PUBLISHED_WHEEL_SHA256 = (
-    "2c85ffe14a1f3c1d2b750790332a7c0a5e911b35f7fc041ebedcd6532382c63c"
-)
-TAG_COMMIT = "73b405c106d78e1fdc7576b217de39b7dcd0ddb3"
+# Derived, never re-declared: docker/cobra-bake/published_identity is the
+# single source of truth for every published wheel hash and release commit.
+_IDENTITY = published_identity()
+PUBLISHED_WHEEL_SHA256 = _IDENTITY.wheels["aarch64"].sha256
+TAG_COMMIT = _IDENTITY.tag_commit
 
 
 def test_a_baked_receipt_records_the_published_wheel_and_tag() -> None:

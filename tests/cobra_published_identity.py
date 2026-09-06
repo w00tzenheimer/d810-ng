@@ -63,7 +63,7 @@ def published_identity(path: Path | None = None) -> PublishedIdentity:
     """
     source = PUBLISHED_IDENTITY_FILE if path is None else path
     wheels: dict[str, PublishedWheel] = {}
-    release: tuple[str, str, str] | None = None
+    release: tuple[str, str, str, str] | None = None
     for number, line in enumerate(
         source.read_text(encoding="utf-8").splitlines(), start=1
     ):
@@ -81,10 +81,9 @@ def published_identity(path: Path | None = None) -> PublishedIdentity:
                 raise ValueError(f"{source}:{number}: {commit} is not a commit")
         if arch in wheels:
             raise ValueError(f"{source}:{number}: duplicate architecture {arch}")
-        if release is not None and release != (version, tag, core):
+        if release is not None and release != (version, tag, core, parent):
             raise ValueError(f"{source}:{number}: describes a second release")
-        release = (version, tag, core)
-        parent_commit = parent
+        release = (version, tag, core, parent)
         wheels[arch] = PublishedWheel(arch=arch, sha256=sha256, filename=filename)
     if release is None:
         raise ValueError(f"{source}: names no published wheel")
@@ -92,6 +91,6 @@ def published_identity(path: Path | None = None) -> PublishedIdentity:
         version=release[0],
         tag_commit=release[1],
         core_commit=release[2],
-        parent_commit=parent_commit,
+        parent_commit=release[3],
         wheels=wheels,
     )
