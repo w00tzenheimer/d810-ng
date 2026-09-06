@@ -804,6 +804,18 @@ if [ -n "$ARTIFACT_RUN" ]; then
   esac
 fi
 
+# The retention bound is spliced into the container payload as the operand of
+# "head -n -N", so it has to be a count and nothing else: a non-numeric value
+# is shell injection, an empty one silently disables the prune (${VAR-20} does
+# not substitute for a value that is set but empty), and 0 makes "head -n -0"
+# print every run and delete the lot.
+case "$REMOTE_RUN_RETENTION" in
+  ''|0*|*[!0-9]*)
+    echo "ERROR: D810_REMOTE_RUN_RETENTION must be a positive integer (>= 1), got '$REMOTE_RUN_RETENTION'" >&2
+    exit 2
+    ;;
+esac
+
 # Inside container: work dir is always /work; src is either /work/src or worktree src
 if [ -n "$WORKTREE_REL" ]; then
   PYWORK="/work/src"

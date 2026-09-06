@@ -4288,3 +4288,69 @@ def test_the_perf_guard_aborts_for_real_when_perf_is_absent(tmp_path: Path) -> N
     assert completed.returncode == 1, completed
     assert "a profiling leg without a profiler is not a valid leg" in completed.stderr
     assert not marker.exists()
+
+
+@pytest.mark.parametrize(
+    "retention",
+    ["0", "", "abc", "5; rm -rf /", "05", "-1", " 7", "7 "],
+)
+def test_run_retention_must_be_a_positive_integer(
+    tmp_path: Path,
+    retention: str,
+) -> None:
+    """It is the operand of 'head -n -N' inside the container payload."""
+    share, repo = _share_layout(tmp_path)
+
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--remote",
+        REMOTE_HOST,
+        "--",
+        "true",
+        repo_root=repo,
+        extra_env=_remote_env(share, D810_REMOTE_RUN_RETENTION=retention),
+    )
+
+    assert result.returncode == 2, result.stderr
+    assert "D810_REMOTE_RUN_RETENTION must be a positive integer" in result.stderr
+    # refused before any docker contact, so nothing could act on the value
+    assert _docker_calls(calls) == []
+
+
+def test_a_valid_run_retention_reaches_the_payload_unchanged(
+    tmp_path: Path,
+) -> None:
+    share, repo = _share_layout(tmp_path)
+
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--remote",
+        REMOTE_HOST,
+        "--",
+        "true",
+        repo_root=repo,
+        extra_env=_remote_env(share, D810_REMOTE_RUN_RETENTION="7"),
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "__runs_keep=7;" in _remote_container_run(calls)
+
+
+def test_run_retention_defaults_to_twenty(tmp_path: Path) -> None:
+    share, repo = _share_layout(tmp_path)
+
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--remote",
+        REMOTE_HOST,
+        "--",
+        "true",
+        repo_root=repo,
+        extra_env=_remote_env(share),
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "__runs_keep=20;" in _remote_container_run(calls)
