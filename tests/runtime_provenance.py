@@ -1,8 +1,9 @@
 """Provenance fields every performance receipt must record.
 
-The runner exports the identity of the container that produced a measurement
-and, for a remote run, the offset of the engine clock those measurements were
-timed against. A receipt without the offset cannot be compared against another
+The runner exports the identity of the container that produced a measurement,
+the identity of the d810-cobra artifact that solved inside it, and, for a
+remote run, the offset of the engine clock those measurements were timed
+against. A receipt without the offset cannot be compared against another
 host's, so the fields are assembled here once and consumed by every writer.
 """
 
@@ -26,6 +27,19 @@ def runtime_provenance(
     ``engine_clock_offset_seconds`` is set only by a ``--remote`` run; a local
     run has no engine clock of its own, so it records the placeholder.
 
+    The ``cobra_*`` fields are set only when a PUBLISHED d810-cobra wheel is
+    installed -- baked into the image or mounted explicitly. A source-built
+    backend has no published identity, and inventing one would make two
+    different artifacts look like the same measurement, so it records the
+    placeholder.
+
+    >>> runtime_provenance({})["cobra_wheel_sha256"]
+    'n/a'
+    >>> runtime_provenance({"D810_TEST_COBRA_SOURCE_MODE": "baked"})[
+    ...     "cobra_source_mode"
+    ... ]
+    'baked'
+
     >>> runtime_provenance({})["engine_clock_offset_seconds"]
     'n/a'
     >>> runtime_provenance({"D810_TEST_ENGINE_CLOCK_OFFSET": "-3"})[
@@ -45,5 +59,14 @@ def runtime_provenance(
         ),
         "engine_clock_offset_seconds": (
             source.get("D810_TEST_ENGINE_CLOCK_OFFSET") or MISSING_PROVENANCE
+        ),
+        "cobra_source_mode": (
+            source.get("D810_TEST_COBRA_SOURCE_MODE") or MISSING_PROVENANCE
+        ),
+        "cobra_wheel_sha256": (
+            source.get("D810_TEST_COBRA_WHEEL_SHA256") or MISSING_PROVENANCE
+        ),
+        "cobra_tag_commit": (
+            source.get("D810_TEST_COBRA_TAG_COMMIT") or MISSING_PROVENANCE
         ),
     }

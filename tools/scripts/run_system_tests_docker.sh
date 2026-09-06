@@ -113,6 +113,24 @@
 #                          An identical filename does NOT imply identical bytes: the
 #                          preflight builds in ../0.1.5-preflight/ carry the same names
 #                          and sizes as the published wheels and are deliberately refused.
+#   D810_COBRA_HARNESS_WHEEL_SHA256  TEST HARNESS ONLY. One extra accepted wheel
+#                          identity, so the unit tests can exercise wheel mode with a
+#                          committed fixture instead of a multi-megabyte artifact that
+#                          lives outside git. A run using it says so on stderr and in
+#                          its preamble, and its receipt records the fixture hash,
+#                          which matches no published artifact. Never set it to run
+#                          real work.
+#
+#   CoBRA source precedence: an explicit D810_COBRA_WHEEL / D810_COBRA_ROOT wins;
+#                          otherwise a BAKED image is used (one carrying the
+#                          org.d810.cobra.* labels written by the image bake --
+#                          nothing is installed, the baked install is only
+#                          verified); otherwise the pinned remote source is
+#                          cloned and compiled. Source compilation is a
+#                          development fallback, never a silent recovery: a
+#                          baked image whose label set is incomplete, whose
+#                          wheel sha256 was never published, or whose recorded
+#                          parent commit is not this script's pin aborts the run.
 #   D810_DOCKER_MEMORY      Memory limit for container (default: 4g). OOM-kills if exceeded.
 #   D810_REMOTE_DOCKER_HOST Remote engine host for --remote (the flag wins when both are given)
 #   D810_REMOTE_VOLUME      Docker volume on the remote engine that exports the Mac's SMB share
@@ -437,6 +455,15 @@ COBRA_EXTENSION_ENABLED=1
 COBRA_SOURCE_MODE="pinned-remote"
 COBRA_PARENT_SOURCE_ID="$COBRA_SOURCE_REVISION"
 COBRA_CORE_SOURCE_ID="$COBRA_CORE_SOURCE_REVISION"
+# A baked image carries the published wheel and says so in its labels, written
+# by docker/cobra-bake. Reading them is how this script learns it has nothing
+# to install; they are filled in by _detect_baked_cobra once DOCKER_HOST names
+# the engine that will actually run the container.
+COBRA_BAKED_VERSION=""
+COBRA_BAKED_WHEEL_SHA256=""
+COBRA_BAKED_TAG_COMMIT=""
+COBRA_BAKED_CORE_COMMIT=""
+COBRA_BAKED_PARENT_COMMIT=""
 # A published prebuilt wheel is the immutable fast path: it installs in
 # seconds and skips the clone, the cmake/ninja provisioning and the 55-object
 # C++ build. The table below is the entire allow-list and holds only the
@@ -457,6 +484,29 @@ COBRA_CORE_SOURCE_ID="$COBRA_CORE_SOURCE_REVISION"
 # Columns: <sha256> <version>|<arch>|<tag commit>|<core commit>
 COBRA_RECORDED_WHEELS="2c85ffe14a1f3c1d2b750790332a7c0a5e911b35f7fc041ebedcd6532382c63c 0.1.5|aarch64|73b405c106d78e1fdc7576b217de39b7dcd0ddb3|72f616f822f538a0cfbea3c880f9d1e68bb9a8f1
 352133fd4f91227518714735b463b978760650b5f30c71f5276c0bccb90cb72c 0.1.5|x86_64|73b405c106d78e1fdc7576b217de39b7dcd0ddb3|72f616f822f538a0cfbea3c880f9d1e68bb9a8f1"
+
+# A harness fixture has no release behind it, so its record names none: the
+# version and architecture come from the filename pip will read, and the
+# commit columns say what the artifact is instead of naming a real revision.
+_cobra_harness_wheel_record() {
+  local basename version platform arch
+  basename="$(basename "$1")"
+  if [[ ! "$basename" =~ ^d810_cobra-([0-9A-Za-z.]+)-cp313-cp313-([0-9A-Za-z._]+)\.whl$ ]]; then
+    echo "ERROR: D810_COBRA_HARNESS_WHEEL_SHA256 needs a d810_cobra-<version>-cp313-cp313-<platform>.whl basename: $basename" >&2
+    return 1
+  fi
+  version="${BASH_REMATCH[1]}"
+  platform="${BASH_REMATCH[2]}"
+  case "$platform" in
+    *aarch64*) arch="aarch64" ;;
+    *x86_64*)  arch="x86_64" ;;
+    *)
+      echo "ERROR: harness fixture platform tag $platform names neither aarch64 nor x86_64: $basename" >&2
+      return 1
+      ;;
+  esac
+  printf '%s|%s|harness-fixture|harness-fixture' "$version" "$arch"
+}
 
 _cobra_recorded_wheel_record() {
   local wanted="$1" digest record
@@ -488,6 +538,9 @@ _sha256_of_file() {
 # Docker, and it never runs a container.
 COBRA_WHEEL_BASENAME=""
 COBRA_WHEEL_SHA256=""
+# "published" or "harness-fixture" - the word the preamble and the error
+# messages use, so a fixture can never read as a production artifact.
+COBRA_WHEEL_IDENTITY="published"
 COBRA_WHEEL_VERSION=""
 COBRA_WHEEL_ARCH=""
 COBRA_WHEEL_CONTAINER_PATH=""
@@ -545,8 +598,20 @@ if [ -n "${D810_COBRA_WHEEL+x}" ] || [ -n "${D810_COBRA_WHEEL_SHA256+x}" ]; then
     exit 1
   fi
   if ! COBRA_WHEEL_RECORD="$(_cobra_recorded_wheel_record "$D810_COBRA_WHEEL_SHA256")"; then
-    echo "ERROR: D810_COBRA_WHEEL_SHA256 $D810_COBRA_WHEEL_SHA256 is not a recorded d810-cobra wheel; the accepted published wheels live in _gitless/resource/cobra-wheels/0.1.5-published/ (an identical filename does not imply identical bytes)" >&2
-    exit 1
+    # The published wheels are megabytes and live outside git, so the unit
+    # tests would otherwise have to skip every positive wheel-mode case -- and
+    # a skipped test cannot catch the deletion of the directory it needs. This
+    # admits ONE extra identity, named explicitly by the harness, and marks
+    # every artifact of the run as a fixture rather than a published wheel.
+    if [ -n "${D810_COBRA_HARNESS_WHEEL_SHA256:-}" ] \
+      && [ "$D810_COBRA_HARNESS_WHEEL_SHA256" = "$D810_COBRA_WHEEL_SHA256" ]; then
+      COBRA_WHEEL_RECORD="$(_cobra_harness_wheel_record "$D810_COBRA_WHEEL")" || exit 1
+      COBRA_WHEEL_IDENTITY="harness-fixture"
+      echo "WARNING: D810_COBRA_HARNESS_WHEEL_SHA256 accepted $D810_COBRA_WHEEL as a TEST HARNESS fixture; it is not a published d810-cobra artifact and this run must not be treated as one" >&2
+    else
+      echo "ERROR: D810_COBRA_WHEEL_SHA256 $D810_COBRA_WHEEL_SHA256 is not a recorded d810-cobra wheel; the accepted published wheels live in _gitless/resource/cobra-wheels/0.1.5-published/ (an identical filename does not imply identical bytes)" >&2
+      exit 1
+    fi
   fi
   COBRA_WHEEL_VERSION="${COBRA_WHEEL_RECORD%%|*}"
   COBRA_WHEEL_RECORD_TAIL="${COBRA_WHEEL_RECORD#*|}"
@@ -1263,6 +1328,95 @@ _verify_cobra_wheel_engine_arch() {
   fi
 }
 
+# A baked image already carries the published wheel, installed and verified at
+# image build time. Its labels are the claim; the in-container verification
+# below is the proof, and it stays a hard setup precondition either way.
+#
+# Read on the engine that will RUN the container: --remote points DOCKER_HOST
+# at another machine whose image of the same tag may be a different build.
+_cobra_baked_labels() {
+  docker image inspect --format \
+    '{{ index .Config.Labels "org.d810.cobra.version" }}|{{ index .Config.Labels "org.d810.cobra.wheel_sha256" }}|{{ index .Config.Labels "org.d810.cobra.tag_commit" }}|{{ index .Config.Labels "org.d810.cobra.core_commit" }}|{{ index .Config.Labels "org.d810.cobra.parent_commit" }}' \
+    "$DOCKER_IMAGE" 2>/dev/null || true
+}
+
+_detect_baked_cobra() {
+  [ "$COBRA_EXTENSION_ENABLED" = "1" ] || return 0
+  # An explicit wheel or checkout is the operator speaking; it outranks
+  # whatever the image happens to carry.
+  [ "$COBRA_SOURCE_MODE" = "pinned-remote" ] || return 0
+
+  local raw version sha tag core parent index missing=""
+  local -a values names=(version wheel_sha256 tag_commit core_commit parent_commit)
+  raw="$(_cobra_baked_labels)"
+  IFS='|' read -r version sha tag core parent <<< "$raw"
+  values=("$version" "$sha" "$tag" "$core" "$parent")
+  # A missing label prints as an empty string, but a missing Labels map prints
+  # Go's placeholder; neither is a claim.
+  for index in 0 1 2 3 4; do
+    case "${values[$index]}" in "<no value>") values[$index]="" ;; esac
+  done
+  version="${values[0]}" sha="${values[1]}" tag="${values[2]}"
+  core="${values[3]}" parent="${values[4]}"
+
+  if [ -z "$version$sha$tag$core$parent" ]; then
+    # No claim at all: a vanilla image, or one built before the bake existed.
+    return 0
+  fi
+
+  for index in 0 1 2 3 4; do
+    [ -n "${values[$index]}" ] || missing="$missing org.d810.cobra.${names[$index]}"
+  done
+  if [ -n "$missing" ]; then
+    echo "ERROR: $DOCKER_IMAGE claims a baked d810-cobra but its label set is incomplete; missing:$missing" >&2
+    echo "       A partially labelled image is the state in which a run would believe a published wheel is installed when nothing is." >&2
+    echo "       Rebuild it with tools/scripts/build_ida_images.sh, or set D810_COBRA_WHEEL to install a published wheel explicitly." >&2
+    exit 1
+  fi
+
+  local record
+  if ! record="$(_cobra_recorded_wheel_record "$sha")"; then
+    echo "ERROR: $DOCKER_IMAGE declares org.d810.cobra.wheel_sha256 $sha, which is not a published d810-cobra wheel" >&2
+    echo "       The accepted artifacts are the published PyPI wheels; the preflight builds carry the same filenames and sizes and are refused." >&2
+    exit 1
+  fi
+  local record_version record_arch record_tag record_core tail
+  record_version="${record%%|*}"
+  tail="${record#*|}"
+  record_arch="${tail%%|*}"
+  tail="${tail#*|}"
+  record_tag="${tail%%|*}"
+  record_core="${tail#*|}"
+
+  if [ "$version" != "$record_version" ] || [ "$tag" != "$record_tag" ] || [ "$core" != "$record_core" ]; then
+    echo "ERROR: $DOCKER_IMAGE labels disagree with the published record for wheel $sha" >&2
+    echo "       image:     version $version tag $tag core $core" >&2
+    echo "       published: version $record_version tag $record_tag core $record_core" >&2
+    exit 1
+  fi
+
+  # The bake and this script must describe the same upstream code, or a baked
+  # run and a source-built run are not comparable measurements.
+  if [ "$parent" != "$COBRA_SOURCE_REVISION" ]; then
+    echo "ERROR: $DOCKER_IMAGE was baked against d810-cobra parent commit $parent, but this runner pins $COBRA_SOURCE_REVISION" >&2
+    echo "       Rebuild the image from the pinned revision, or update COBRA_SOURCE_REVISION with the bake." >&2
+    exit 1
+  fi
+
+  COBRA_SOURCE_MODE="baked"
+  COBRA_BAKED_VERSION="$version"
+  COBRA_BAKED_WHEEL_SHA256="$sha"
+  COBRA_BAKED_TAG_COMMIT="$tag"
+  COBRA_BAKED_CORE_COMMIT="$core"
+  COBRA_BAKED_PARENT_COMMIT="$parent"
+  # The container-side assertions are shared with wheel mode and read these.
+  COBRA_WHEEL_VERSION="$version"
+  COBRA_WHEEL_ARCH="$record_arch"
+  COBRA_WHEEL_SHA256="$sha"
+  COBRA_PARENT_SOURCE_ID="$tag"
+  COBRA_CORE_SOURCE_ID="$core"
+}
+
 # The volume can exist and still not expose this checkout (wrong share, wrong
 # subpath, unmounted CIFS). Prove reachability read-only before any real work.
 _remote_probe_volume() {
@@ -1317,6 +1471,9 @@ if [ -n "$REMOTE_HOST" ]; then
   # Before the lock and the source archive: a wheel for the wrong engine is a
   # configuration error, not a run to clean up after.
   _verify_cobra_wheel_engine_arch
+  # Same reason, same place: the remote engine's copy of this tag decides
+  # whether anything has to be installed at all.
+  _detect_baked_cobra
   _validate_remote_artifact_dirs
   # The lock still guards the shared read-write .tmp: -o captures, logs, diag
   # SQLite databases and finalized artifact staging all collide between runs.
@@ -1341,6 +1498,7 @@ fi
 
 if [ -z "$REMOTE_HOST" ]; then
   _verify_cobra_wheel_engine_arch
+  _detect_baked_cobra
 fi
 
 # Two consumers key on the image's identity: the provenance receipt below and
@@ -1502,6 +1660,10 @@ if [ "$COBRA_SOURCE_MODE" = "wheel" ]; then
   # wheel, read-only and under its real basename: pip rejects a renamed wheel
   # because the filename is the artifact's version/ABI/platform declaration.
   _add_mount "$D810_COBRA_WHEEL" "$COBRA_WHEEL_CONTAINER_PATH" ro
+elif [ "$COBRA_SOURCE_MODE" = "baked" ]; then
+  # Nothing to mount and nothing to cache: the wheel is already installed in
+  # the image. Only the verification runs.
+  :
 elif [ "$REMOTE_MODE" = "1" ]; then
   # The Linux CoBRA build must not live on the SMB share: its existing files
   # would need per-file ACLs, and a C++ build over CIFS is slow. Keep it in a
@@ -1572,9 +1734,12 @@ if [ "$EGGLOG_EXTENSION_ENABLED" = "1" ]; then
   echo "  extension: d810-egglog (mount ${D810_EGGLOG_ROOT}:/opt/d810-egglog:ro)"
 fi
 if [ "$COBRA_EXTENSION_ENABLED" = "1" ]; then
-  if [ "$COBRA_SOURCE_MODE" = "wheel" ]; then
+  if [ "$COBRA_SOURCE_MODE" = "baked" ]; then
+    echo "  extension: d810-cobra (baked $COBRA_BAKED_VERSION ${COBRA_BAKED_WHEEL_SHA256:0:12} tag ${COBRA_BAKED_TAG_COMMIT:0:7})"
+    echo "  cobra baked: $DOCKER_IMAGE labels published sha256 $COBRA_BAKED_WHEEL_SHA256; d810-cobra $COBRA_BAKED_VERSION tag v$COBRA_BAKED_VERSION $COBRA_BAKED_TAG_COMMIT core $COBRA_BAKED_CORE_COMMIT parent $COBRA_BAKED_PARENT_COMMIT; nothing installed, verification still enforced"
+  elif [ "$COBRA_SOURCE_MODE" = "wheel" ]; then
     echo "  extension: d810-cobra (wheel $COBRA_WHEEL_BASENAME)"
-    echo "  cobra wheel: $D810_COBRA_WHEEL -> $COBRA_WHEEL_CONTAINER_PATH (read-only) published sha256 $COBRA_WHEEL_SHA256; d810-cobra $COBRA_WHEEL_VERSION tag v$COBRA_WHEEL_VERSION $COBRA_PARENT_SOURCE_ID core $COBRA_CORE_SOURCE_ID"
+    echo "  cobra wheel: $D810_COBRA_WHEEL -> $COBRA_WHEEL_CONTAINER_PATH (read-only) $COBRA_WHEEL_IDENTITY sha256 $COBRA_WHEEL_SHA256; d810-cobra $COBRA_WHEEL_VERSION tag v$COBRA_WHEEL_VERSION $COBRA_PARENT_SOURCE_ID core $COBRA_CORE_SOURCE_ID"
   else
     echo "  extension: d810-cobra ($COBRA_SOURCE_MODE $COBRA_SOURCE_REVISION)"
     if [ "$COBRA_SOURCE_MODE" = "mounted-pinned" ]; then
@@ -1615,6 +1780,13 @@ if [ -n "$REMOTE_CLOCK_OFFSET" ]; then
   # against this clock.
   ENV_TEST="$ENV_TEST D810_TEST_ENGINE_CLOCK_OFFSET=$REMOTE_CLOCK_OFFSET"
 fi
+if [ -n "$COBRA_WHEEL_SHA256" ]; then
+  # A receipt has to name the artifact that produced the measurement, and for
+  # a published wheel -- baked or mounted -- the hash and the tag commit are
+  # that identity. The distribution version is not: 0.1.4 shipped a legacy
+  # manifest under the same name.
+  ENV_TEST="$ENV_TEST D810_TEST_COBRA_WHEEL_SHA256=$COBRA_WHEEL_SHA256 D810_TEST_COBRA_TAG_COMMIT=$COBRA_PARENT_SOURCE_ID D810_TEST_COBRA_SOURCE_MODE=$COBRA_SOURCE_MODE"
+fi
 [ -n "${D810_DIAG_SNAPSHOT:-}" ] && ENV_TEST="$ENV_TEST D810_DIAG_SNAPSHOT=$D810_DIAG_SNAPSHOT"
 [ -n "${D810_FACT_LIFECYCLE:-}" ] && ENV_TEST="$ENV_TEST D810_FACT_LIFECYCLE=$D810_FACT_LIFECYCLE"
 [ -n "$ENABLE_DIAG_SNAPSHOT" ] && ENV_TEST="$ENV_TEST D810_DIAG_SNAPSHOT=1"
@@ -1638,7 +1810,7 @@ fi
 # Forward every set D810_* env var to the container via docker -e flags.
 # Wrapper-only vars (those that only affect this script) are excluded.
 _d810_extra_env_flags() {
-  local _skip=" D810_DOCKER_IMAGE D810_DOCKER_MEMORY D810_EGGLOG_ROOT D810_COBRA_ROOT D810_COBRA_WHEEL D810_COBRA_WHEEL_SHA256 D810_REPO_ROOT D810_WORKTREE_ROOT D810_MEMORY_LIMIT_BYTES D810_SYSTEM_BATCH_SIZE D810_REMOTE_DOCKER_HOST D810_REMOTE_VOLUME D810_REMOTE_SMB_SHARE D810_REMOTE_SHARE_ROOT D810_REMOTE_SMB_USER "
+  local _skip=" D810_DOCKER_IMAGE D810_DOCKER_MEMORY D810_EGGLOG_ROOT D810_COBRA_ROOT D810_COBRA_WHEEL D810_COBRA_WHEEL_SHA256 D810_COBRA_HARNESS_WHEEL_SHA256 D810_REPO_ROOT D810_WORKTREE_ROOT D810_MEMORY_LIMIT_BYTES D810_SYSTEM_BATCH_SIZE D810_REMOTE_DOCKER_HOST D810_REMOTE_VOLUME D810_REMOTE_SMB_SHARE D810_REMOTE_SHARE_ROOT D810_REMOTE_SMB_USER "
   local _out=""
   local _var _val
   for _var in ${!D810_@}; do
@@ -1716,13 +1888,25 @@ if [ "$EGGLOG_EXTENSION_ENABLED" = "1" ]; then
   EXTENSION_SETUP="EXTENSION_BUILD_DIR=\$(mktemp -d) && cp -a /opt/d810-egglog/. \"\$EXTENSION_BUILD_DIR/\" && $IDA_VENV_PYTHON -c 'import re, sys, tomllib; project=tomllib.load(open(sys.argv[1], \"rb\"))[\"project\"]; deps=project.get(\"dependencies\", []) + project.get(\"optional-dependencies\", {}).get(\"test\", []); print(\"\\n\".join(dep for dep in deps if re.match(r\"[A-Za-z0-9_.-]+\", dep.strip()).group(0).lower().replace(\"_\", \"-\").replace(\".\", \"-\") != \"d810-ng\"))' \"\$EXTENSION_BUILD_DIR/pyproject.toml\" > \"\$EXTENSION_BUILD_DIR/requirements.txt\" && $IDA_VENV_PIP install \"\$EXTENSION_BUILD_DIR[test]\" --no-deps -q --force-reinstall --no-cache-dir && $IDA_VENV_PIP install -r \"\$EXTENSION_BUILD_DIR/requirements.txt\" -q && $IDA_VENV_PYTHON -c 'import d810_egglog, egglog'"
 fi
 if [ "$COBRA_EXTENSION_ENABLED" = "1" ]; then
-  if [ "$COBRA_SOURCE_MODE" = "wheel" ]; then
+  # One verification for both published-wheel paths: manifest contract,
+  # compiled-extension import, a real known-answer solve with an equivalence
+  # proof, and the identity assertions. Behaviour, not a boolean -- an
+  # importable binding can still be mis-wired, and a pure-Python fallback
+  # satisfies every import in the first clause.
+  COBRA_VERIFY_CMD="$IDA_VENV_PYTHON -c 'import d810_cobra; manifest=d810_cobra.MANIFEST; assert manifest[\"api_version\"] == 1; assert manifest[\"implements\"] == {\"mba-solve\": \"cobra-solve\"}; from d810_cobra.expr import parse_cobra_output; from d810_cobra.prove import ProofResult, prove_equivalent; from d810_cobra.solve import SolveStatus, binding_available, solve_signature; assert binding_available(); tree=parse_cobra_output(\"(x0 | x1) - (x0 & x1)\", [\"a\", \"b\"]); solved=solve_signature(tree, [\"a\", \"b\"], 32); assert solved.status is SolveStatus.SOLVED and solved.tree is not None; assert prove_equivalent(tree, solved.tree, [\"a\", \"b\"], 32) is ProofResult.PROVED; import d810_cobra._cobra; import importlib.metadata, os, sysconfig; assert importlib.metadata.version(\"d810-cobra\") == \"$COBRA_WHEEL_VERSION\"; binary=os.path.realpath(d810_cobra._cobra.__file__); assert \"$COBRA_WHEEL_ARCH\" in os.path.basename(binary), binary; site_dirs=[os.path.realpath(sysconfig.get_paths()[key]) for key in (\"purelib\", \"platlib\")]; assert any(binary.startswith(site + os.sep) for site in site_dirs), binary'"
+  if [ "$COBRA_SOURCE_MODE" = "baked" ]; then
+    # The image already installed and verified this wheel at build time; the
+    # labels are its claim. Re-prove it here anyway, as a hard precondition:
+    # an image can be retagged, and a stale site-packages would otherwise
+    # answer for a run that installed nothing.
+    COBRA_SETUP="echo '[setup] d810-cobra $COBRA_BAKED_VERSION baked in the image (published sha256 $COBRA_BAKED_WHEEL_SHA256, tag $COBRA_BAKED_TAG_COMMIT); verifying, installing nothing' && $COBRA_VERIFY_CMD"
+  elif [ "$COBRA_SOURCE_MODE" = "wheel" ]; then
     # The recorded wheel is re-hashed inside the container before pip sees
     # it, so a mount that does not deliver the verified bytes fails setup
     # instead of installing an unknown artifact. Runtime dependencies come
     # from the installed distribution's own metadata, minus the mounted
     # D810 package and minus every extra, exactly as the source path does.
-    COBRA_SETUP="printf '%s  %s\\n' '$COBRA_WHEEL_SHA256' '$COBRA_WHEEL_CONTAINER_PATH' | sha256sum -c - && $IDA_VENV_PIP install --no-deps --force-reinstall --no-cache-dir -q '$COBRA_WHEEL_CONTAINER_PATH' && COBRA_REQUIREMENTS=\$(mktemp) && $IDA_VENV_PYTHON -c 'import importlib.metadata, re; reqs=importlib.metadata.requires(\"d810-cobra\") or []; keep=[req for req in reqs if not re.search(r\"extra\\s*==\", req) and re.match(r\"[A-Za-z0-9_.-]+\", req.strip()).group(0).lower().replace(\"_\", \"-\").replace(\".\", \"-\") != \"d810-ng\"]; print(\"\\n\".join(keep))' > \"\$COBRA_REQUIREMENTS\" && $IDA_VENV_PIP install -r \"\$COBRA_REQUIREMENTS\" -q && $IDA_VENV_PYTHON -c 'import d810_cobra; manifest=d810_cobra.MANIFEST; assert manifest[\"api_version\"] == 1; assert manifest[\"implements\"] == {\"mba-solve\": \"cobra-solve\"}; from d810_cobra.expr import parse_cobra_output; from d810_cobra.prove import ProofResult, prove_equivalent; from d810_cobra.solve import SolveStatus, binding_available, solve_signature; assert binding_available(); tree=parse_cobra_output(\"(x0 | x1) - (x0 & x1)\", [\"a\", \"b\"]); solved=solve_signature(tree, [\"a\", \"b\"], 32); assert solved.status is SolveStatus.SOLVED and solved.tree is not None; assert prove_equivalent(tree, solved.tree, [\"a\", \"b\"], 32) is ProofResult.PROVED; import d810_cobra._cobra; import importlib.metadata, os, sysconfig; assert importlib.metadata.version(\"d810-cobra\") == \"$COBRA_WHEEL_VERSION\"; binary=os.path.realpath(d810_cobra._cobra.__file__); assert \"$COBRA_WHEEL_ARCH\" in os.path.basename(binary), binary; site_dirs=[os.path.realpath(sysconfig.get_paths()[key]) for key in (\"purelib\", \"platlib\")]; assert any(binary.startswith(site + os.sep) for site in site_dirs), binary'"
+    COBRA_SETUP="printf '%s  %s\\n' '$COBRA_WHEEL_SHA256' '$COBRA_WHEEL_CONTAINER_PATH' | sha256sum -c - && $IDA_VENV_PIP install --no-deps --force-reinstall --no-cache-dir -q '$COBRA_WHEEL_CONTAINER_PATH' && COBRA_REQUIREMENTS=\$(mktemp) && $IDA_VENV_PYTHON -c 'import importlib.metadata, re; reqs=importlib.metadata.requires(\"d810-cobra\") or []; keep=[req for req in reqs if not re.search(r\"extra\\s*==\", req) and re.match(r\"[A-Za-z0-9_.-]+\", req.strip()).group(0).lower().replace(\"_\", \"-\").replace(\".\", \"-\") != \"d810-ng\"]; print(\"\\n\".join(keep))' > \"\$COBRA_REQUIREMENTS\" && $IDA_VENV_PIP install -r \"\$COBRA_REQUIREMENTS\" -q && $COBRA_VERIFY_CMD"
   else
     # CoBRA's test extras are not enough to describe its runtime dependencies;
     # derive the project metadata exactly as for Egglog, while omitting the

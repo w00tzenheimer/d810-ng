@@ -1,0 +1,110 @@
+# ============================================================
+# CoBRA MBA solver (d810-cobra) - BAKED PUBLISHED WHEEL
+# ============================================================
+#
+# This fragment is the reviewable copy of the block inserted into the IDA
+# image Dockerfile (_gitless/resource/Dockerfile.slim), which is outside git
+# because it sits beside the licensed IDA installers.  Keep the two in sync:
+# the fragment is what review sees.
+#
+# Why a wheel and not a source build:
+#
+#  * d810-cobra 0.1.5 publishes cp313 manylinux wheels for BOTH aarch64 and
+#    x86_64, so the reason the image compiled CoBRA from source - no wheel for
+#    this architecture - no longer holds.
+#  * Compiling CoBRA is the single most expensive step in the image (~4 min of
+#    a 55-object C++ build, more under emulation) and it needs apt, which fails
+#    outright when the engine's clock is skewed enough for the repository
+#    signatures to look future-dated.
+#  * A wheel has an identity.  The image records it in its labels, and the test
+#    runner refuses a baked image whose labels are incomplete or name bytes
+#    that were never published, instead of quietly rebuilding.
+#
+# --no-deps is REQUIRED: d810-cobra declares d810-ng>=1.0.0b0, which is not on
+# PyPI and is not present in this image (d810 is mounted at run time, not baked
+# in).  The extension is self-contained; that floor is a compatibility
+# constraint, not a runtime import.  Its OTHER runtime dependencies are read
+# back out of the installed distribution's own metadata and installed, so the
+# baked install is complete rather than merely importable.
+#
+# The staged context directory is produced by
+# docker/cobra-bake/stage_cobra_bake_context.sh and contains exactly one wheel
+# (the one matching this image's architecture), its SHA256SUMS line, and
+# docker/cobra-bake/verify_cobra_install.py.
+
+ARG COBRA_VERSION=""
+ARG COBRA_WHEEL_SHA256=""
+ARG COBRA_TAG_COMMIT=""
+ARG COBRA_CORE_COMMIT=""
+ARG COBRA_PARENT_COMMIT=""
+
+RUN --mount=type=bind,source=cobra-bake,target=/cobra-bake \
+    set -eux; \
+    \
+    if [ "${SPEEDUPS}" = "1" ]; then \
+        \
+        # An empty identity would produce an image that carries a wheel and
+        # claims nothing about it, which the runner cannot distinguish from a
+        # hand-assembled one.
+        test -n "${COBRA_VERSION}"; \
+        test -n "${COBRA_WHEEL_SHA256}"; \
+        test -n "${COBRA_TAG_COMMIT}"; \
+        test -n "${COBRA_CORE_COMMIT}"; \
+        test -n "${COBRA_PARENT_COMMIT}"; \
+        \
+        COBRA_ARCH="$(uname -m)"; \
+        COBRA_WHEEL="$(ls /cobra-bake/d810_cobra-*-cp313-cp313-*.whl)"; \
+        test -f "${COBRA_WHEEL}"; \
+        \
+        # The wheel is native code; a context staged for the other platform
+        # would install and then fail to import at run time.
+        case "$(basename "${COBRA_WHEEL}")" in \
+            *"${COBRA_ARCH}"*) ;; \
+            *) echo "ERROR: staged wheel $(basename "${COBRA_WHEEL}") is not for ${COBRA_ARCH}" >&2; exit 1 ;; \
+        esac; \
+        \
+        # Two independent checks on the same bytes: the staged SHA256SUMS
+        # (which the host wrote from the published record) and the identity
+        # this image is about to LABEL.  An identical filename does not imply
+        # identical bytes - the preflight wheels share both name and size with
+        # the published ones.
+        cd /cobra-bake && sha256sum -c SHA256SUMS; \
+        test "$(cut -d' ' -f1 /cobra-bake/SHA256SUMS)" = "${COBRA_WHEEL_SHA256}"; \
+        cd /; \
+        \
+        /app/ida/.venv/bin/pip install \
+            --no-cache-dir \
+            --no-deps \
+            "${COBRA_WHEEL}"; \
+        \
+        # Runtime dependencies from the installed metadata, minus the mounted
+        # d810 package and minus every extra.
+        /app/ida/.venv/bin/python -c \
+            "import importlib.metadata, re; \
+reqs = importlib.metadata.requires('d810-cobra') or []; \
+keep = [r for r in reqs if not re.search(r'extra\s*==', r) and re.match(r'[A-Za-z0-9_.-]+', r.strip()).group(0).lower().replace('_', '-').replace('.', '-') != 'd810-ng']; \
+print('\n'.join(keep))" > /tmp/cobra-requirements.txt; \
+        /app/ida/.venv/bin/pip install --no-cache-dir -r /tmp/cobra-requirements.txt; \
+        rm -f /tmp/cobra-requirements.txt; \
+        \
+        # A compiled extension can import and still be mis-wired, so this runs
+        # a real known-answer solve rather than reading a boolean.
+        D810_COBRA_EXPECT_VERSION="${COBRA_VERSION}" \
+        D810_COBRA_EXPECT_ARCH="${COBRA_ARCH}" \
+            /app/ida/.venv/bin/python /cobra-bake/verify_cobra_install.py; \
+        \
+    else \
+        \
+        echo "Skipping the d810-cobra bake because SPEEDUPS=${SPEEDUPS}"; \
+        \
+    fi
+
+# LABEL cannot be conditional, so a vanilla image carries these EMPTY.  The
+# runner treats an all-empty set as "no baked CoBRA" and a partially filled one
+# as a hard error: a half-labelled image is the state in which a consumer would
+# believe a published wheel is installed when nothing is.
+LABEL org.d810.cobra.version="${COBRA_VERSION}"
+LABEL org.d810.cobra.wheel_sha256="${COBRA_WHEEL_SHA256}"
+LABEL org.d810.cobra.tag_commit="${COBRA_TAG_COMMIT}"
+LABEL org.d810.cobra.core_commit="${COBRA_CORE_COMMIT}"
+LABEL org.d810.cobra.parent_commit="${COBRA_PARENT_COMMIT}"

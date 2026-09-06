@@ -4,9 +4,12 @@ import os
 import re
 import shutil
 import subprocess
+import zipfile
 from pathlib import Path
 
 import pytest
+
+from d810.core.typing import NamedTuple
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -45,6 +48,11 @@ def _cobra_wheel(directory: str, name: str) -> Path | None:
     the main checkout but not in every worktree, so look upward from this
     checkout instead of hard-coding a host path.
     """
+    if os.environ.get("D810_TEST_HIDE_COBRA_WHEELS"):
+        # Simulate a checkout without the out-of-git wheel directory, which is
+        # what CI sees. Without this there is no way to prove locally that the
+        # fixture fallback is the one exercised there.
+        return None
     for base in (REPO_ROOT, *REPO_ROOT.parents):
         candidate = base / "_gitless" / "resource" / "cobra-wheels" / directory / name
         if candidate.is_file():
@@ -55,6 +63,74 @@ def _cobra_wheel(directory: str, name: str) -> Path | None:
 def _recorded_wheel(name: str) -> Path | None:
     """Return the PUBLISHED wheel, which is the only accepted identity."""
     return _cobra_wheel(COBRA_WHEEL_PUBLISHED_DIR, name)
+
+
+COBRA_FIXTURE_DIR = Path(__file__).resolve().parent / "fixtures" / "cobra-wheel-harness"
+COBRA_FIXTURE_WHEELS = {
+    "aarch64": (
+        "d810_cobra-0.1.5-cp313-cp313-harness_fixture_aarch64.whl",
+        "bd5889898fa82481bdcf1e06c89f2559469bd76308fbcd9729c2e0bbfac4856b",
+    ),
+    "x86_64": (
+        "d810_cobra-0.1.5-cp313-cp313-harness_fixture_x86_64.whl",
+        "43a2d7272d320c75d3212e53b5592a6f914a234a618eccc9932063896f7ee882",
+    ),
+}
+COBRA_PUBLISHED_WHEELS = {
+    "aarch64": (COBRA_WHEEL_AARCH64_NAME, COBRA_WHEEL_AARCH64_SHA256),
+    "x86_64": (COBRA_WHEEL_X86_64_NAME, COBRA_WHEEL_X86_64_SHA256),
+}
+
+
+class WheelUnderTest(NamedTuple):
+    """A wheel the runner will accept, and the environment that names it."""
+
+    path: Path
+    name: str
+    sha256: str
+    #: The word the runner prints for this identity: a fixture must never read
+    #: as a published artifact.
+    identity: str
+    env: dict[str, str]
+
+
+def _wheel_under_test(arch: str = "aarch64") -> WheelUnderTest:
+    """The published wheel when it is present, else the committed fixture.
+
+    The published wheels are megabytes and live outside git, so on a checkout
+    without them every positive wheel-mode test used to skip - and a skipped
+    test cannot notice that the directory it needs has been deleted. The
+    fixture is a real, valid .whl with a recorded hash; the runner accepts it
+    only when D810_COBRA_HARNESS_WHEEL_SHA256 names it, and says loudly that
+    it is not a production artifact.
+    """
+    name, sha256 = COBRA_PUBLISHED_WHEELS[arch]
+    published = _recorded_wheel(name)
+    if published is not None:
+        return WheelUnderTest(
+            path=published,
+            name=name,
+            sha256=sha256,
+            identity="published",
+            env={
+                "D810_COBRA_WHEEL": str(published),
+                "D810_COBRA_WHEEL_SHA256": sha256,
+            },
+        )
+    name, sha256 = COBRA_FIXTURE_WHEELS[arch]
+    fixture = COBRA_FIXTURE_DIR / name
+    assert fixture.is_file(), fixture
+    return WheelUnderTest(
+        path=fixture,
+        name=name,
+        sha256=sha256,
+        identity="harness-fixture",
+        env={
+            "D810_COBRA_WHEEL": str(fixture),
+            "D810_COBRA_WHEEL_SHA256": sha256,
+            "D810_COBRA_HARNESS_WHEEL_SHA256": sha256,
+        },
+    )
 MANIFEST_ALLOWLIST = REPO_ROOT / "tools" / "scripts" / "remote_manifest_extra.txt"
 
 
@@ -119,6 +195,16 @@ if [ "${1:-}" = image ] && [ "${2:-}" = inspect ]; then
         exit 1
       fi
       printf '%s\\n' "${MOCK_DOCKER_IMAGE_ID-@FAKE_IMAGE_ID@}"
+      exit 0
+      ;;
+    *'org.d810.cobra.version'*)
+      # The baked-CoBRA labels are read in ONE inspect, as a |-joined row, and
+      # a remote engine is a different machine with its own copy of the tag.
+      if [ -n "${DOCKER_HOST:-}" ]; then
+        printf '%s\\n' "${MOCK_DOCKER_REMOTE_COBRA_LABELS-${MOCK_DOCKER_COBRA_LABELS:-||||}}"
+      else
+        printf '%s\\n' "${MOCK_DOCKER_COBRA_LABELS:-||||}"
+      fi
       exit 0
       ;;
   esac
@@ -666,21 +752,10 @@ def test_recorded_cobra_wheel_replaces_the_in_container_source_build(
     tmp_path: Path,
 ) -> None:
     """A verified recorded wheel installs directly; nothing is compiled."""
-    wheel = _recorded_wheel(COBRA_WHEEL_AARCH64_NAME)
-    if wheel is None:
-        pytest.skip(f"recorded wheel {COBRA_WHEEL_AARCH64_NAME} is unavailable")
-    container_path = f"{COBRA_WHEEL_CONTAINER_DIR}/{COBRA_WHEEL_AARCH64_NAME}"
+    under_test = _wheel_under_test()
+    container_path = f"{COBRA_WHEEL_CONTAINER_DIR}/{under_test.name}"
 
-    result, calls = _run(
-        tmp_path,
-        "exec",
-        "--",
-        "true",
-        extra_env={
-            "D810_COBRA_WHEEL": str(wheel),
-            "D810_COBRA_WHEEL_SHA256": COBRA_WHEEL_AARCH64_SHA256,
-        },
-    )
+    result, calls = _run(tmp_path, "exec", "--", "true", extra_env=under_test.env)
 
     assert result.returncode == 0, result.stderr
     command = _container_run(calls)
@@ -689,7 +764,7 @@ def test_recorded_cobra_wheel_replaces_the_in_container_source_build(
         f"--no-cache-dir -q '{container_path}'"
     ) in command
     assert "sha256sum -c -" in command
-    assert COBRA_WHEEL_AARCH64_SHA256 in command
+    assert under_test.sha256 in command
     assert '"implements"] == {"mba-solve": "cobra-solve"}' in command
     assert (
         f'importlib.metadata.version("d810-cobra") == "{COBRA_WHEEL_VERSION}"'
@@ -697,7 +772,7 @@ def test_recorded_cobra_wheel_replaces_the_in_container_source_build(
     )
     for compiled in ("git clone", "submodule update", "build_cobra.py", "cmake"):
         assert compiled not in command
-    assert any(call == f"run-arg {wheel}:{container_path}:ro" for call in calls)
+    assert any(call == f"run-arg {under_test.path}:{container_path}:ro" for call in calls)
     assert "/opt/d810-cobra-source" not in command
     assert "/opt/d810-cobra-cache" not in command
     assert "D810_COBRA_WHEEL=" not in command
@@ -708,31 +783,27 @@ def test_recorded_cobra_wheel_replaces_the_in_container_source_build(
 def test_recorded_cobra_wheel_reports_its_verified_provenance(
     tmp_path: Path,
 ) -> None:
-    wheel = _recorded_wheel(COBRA_WHEEL_AARCH64_NAME)
-    if wheel is None:
-        pytest.skip(f"recorded wheel {COBRA_WHEEL_AARCH64_NAME} is unavailable")
+    under_test = _wheel_under_test()
 
-    result, _ = _run(
-        tmp_path,
-        "exec",
-        "--",
-        "true",
-        extra_env={
-            "D810_COBRA_WHEEL": str(wheel),
-            "D810_COBRA_WHEEL_SHA256": COBRA_WHEEL_AARCH64_SHA256,
-        },
-    )
+    result, _ = _run(tmp_path, "exec", "--", "true", extra_env=under_test.env)
 
     assert result.returncode == 0, result.stderr
-    assert f"extension: d810-cobra (wheel {COBRA_WHEEL_AARCH64_NAME})" in result.stdout
+    assert f"extension: d810-cobra (wheel {under_test.name})" in result.stdout
     assert (
-        f"cobra wheel: {wheel} -> {COBRA_WHEEL_CONTAINER_DIR}/"
-        f"{COBRA_WHEEL_AARCH64_NAME} (read-only) published sha256 "
-        f"{COBRA_WHEEL_AARCH64_SHA256}; d810-cobra {COBRA_WHEEL_VERSION} tag "
-        f"v{COBRA_WHEEL_VERSION} {COBRA_WHEEL_TAG_COMMIT} core "
-        f"{COBRA_WHEEL_CORE_COMMIT}"
+        f"cobra wheel: {under_test.path} -> {COBRA_WHEEL_CONTAINER_DIR}/"
+        f"{under_test.name} (read-only) {under_test.identity} sha256 "
+        f"{under_test.sha256}; d810-cobra {COBRA_WHEEL_VERSION} tag "
+        f"v{COBRA_WHEEL_VERSION} "
     ) in result.stdout
     assert "cobra cache:" not in result.stdout
+    if under_test.identity == "published":
+        assert (
+            f"{COBRA_WHEEL_TAG_COMMIT} core {COBRA_WHEEL_CORE_COMMIT}"
+        ) in result.stdout
+    else:
+        # A fixture names no release, and must not borrow one.
+        assert "harness-fixture" in result.stdout
+        assert COBRA_WHEEL_TAG_COMMIT not in result.stdout
 
 
 def test_cobra_wheel_without_its_hash_fails_before_docker(tmp_path: Path) -> None:
@@ -1008,20 +1079,14 @@ def test_cobra_wheel_architecture_must_match_the_docker_engine(
     tmp_path: Path,
 ) -> None:
     """A native wheel for the wrong engine must never reach a container."""
-    wheel = _recorded_wheel(COBRA_WHEEL_AARCH64_NAME)
-    if wheel is None:
-        pytest.skip(f"recorded wheel {COBRA_WHEEL_AARCH64_NAME} is unavailable")
+    under_test = _wheel_under_test()
 
     result, calls = _run(
         tmp_path,
         "exec",
         "--",
         "true",
-        extra_env={
-            "D810_COBRA_WHEEL": str(wheel),
-            "D810_COBRA_WHEEL_SHA256": COBRA_WHEEL_AARCH64_SHA256,
-            "MOCK_DOCKER_SERVER_ARCH": "amd64",
-        },
+        extra_env={**under_test.env, "MOCK_DOCKER_SERVER_ARCH": "amd64"},
     )
 
     assert result.returncode != 0
@@ -1032,20 +1097,14 @@ def test_cobra_wheel_architecture_must_match_the_docker_engine(
 def test_unknown_docker_engine_architecture_rejects_the_cobra_wheel(
     tmp_path: Path,
 ) -> None:
-    wheel = _recorded_wheel(COBRA_WHEEL_AARCH64_NAME)
-    if wheel is None:
-        pytest.skip(f"recorded wheel {COBRA_WHEEL_AARCH64_NAME} is unavailable")
+    under_test = _wheel_under_test()
 
     result, calls = _run(
         tmp_path,
         "exec",
         "--",
         "true",
-        extra_env={
-            "D810_COBRA_WHEEL": str(wheel),
-            "D810_COBRA_WHEEL_SHA256": COBRA_WHEEL_AARCH64_SHA256,
-            "MOCK_DOCKER_SERVER_ARCH": "riscv64",
-        },
+        extra_env={**under_test.env, "MOCK_DOCKER_SERVER_ARCH": "riscv64"},
     )
 
     assert result.returncode != 0
@@ -2148,19 +2207,19 @@ fi
     assert "run-arg -v" not in calls
 
 
-def _wheel_on_share(share: Path, name: str) -> Path | None:
-    """Copy a recorded wheel under the share root, byte-for-byte.
+def _wheel_on_share(share: Path, under_test: WheelUnderTest) -> WheelUnderTest:
+    """Copy the wheel under test into the share root, byte-for-byte.
 
     Remote mode refuses any mount outside the share, so the wheel a remote run
     installs has to live there; the sha256 gate then still applies.
     """
-    wheel = _recorded_wheel(name)
-    if wheel is None:
-        return None
-    destination = share / "wheels" / name
+    destination = share / "wheels" / under_test.name
     destination.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(wheel, destination)
-    return destination
+    shutil.copy2(under_test.path, destination)
+    return under_test._replace(
+        path=destination,
+        env={**under_test.env, "D810_COBRA_WHEEL": str(destination)},
+    )
 
 
 def test_remote_mode_checks_the_cobra_wheel_against_the_remote_engine(
@@ -2172,9 +2231,7 @@ def test_remote_mode_checks_the_cobra_wheel_against_the_remote_engine(
     the correct choice for an amd64 remote engine even on an arm64 Mac.
     """
     share, repo = _share_layout(tmp_path)
-    wheel = _wheel_on_share(share, COBRA_WHEEL_X86_64_NAME)
-    if wheel is None:
-        pytest.skip(f"recorded wheel {COBRA_WHEEL_X86_64_NAME} is unavailable")
+    under_test = _wheel_on_share(share, _wheel_under_test("x86_64"))
 
     result, calls = _run(
         tmp_path,
@@ -2186,8 +2243,7 @@ def test_remote_mode_checks_the_cobra_wheel_against_the_remote_engine(
         repo_root=repo,
         extra_env=_remote_env(
             share,
-            D810_COBRA_WHEEL=str(wheel),
-            D810_COBRA_WHEEL_SHA256=COBRA_WHEEL_X86_64_SHA256,
+            **under_test.env,
             MOCK_DOCKER_SERVER_ARCH="arm64",
             MOCK_DOCKER_REMOTE_SERVER_ARCH="amd64",
         ),
@@ -2212,9 +2268,7 @@ def test_remote_mode_rejects_a_wheel_that_only_matches_the_local_engine(
 ) -> None:
     """An aarch64 wheel is wrong for an amd64 remote engine, Mac or not."""
     share, repo = _share_layout(tmp_path)
-    wheel = _wheel_on_share(share, COBRA_WHEEL_AARCH64_NAME)
-    if wheel is None:
-        pytest.skip(f"recorded wheel {COBRA_WHEEL_AARCH64_NAME} is unavailable")
+    under_test = _wheel_on_share(share, _wheel_under_test("aarch64"))
 
     result, calls = _run(
         tmp_path,
@@ -2226,8 +2280,7 @@ def test_remote_mode_rejects_a_wheel_that_only_matches_the_local_engine(
         repo_root=repo,
         extra_env=_remote_env(
             share,
-            D810_COBRA_WHEEL=str(wheel),
-            D810_COBRA_WHEEL_SHA256=COBRA_WHEEL_AARCH64_SHA256,
+            **under_test.env,
             MOCK_DOCKER_SERVER_ARCH="arm64",
             MOCK_DOCKER_REMOTE_SERVER_ARCH="amd64",
         ),
@@ -3486,17 +3539,15 @@ def test_remote_mode_mounts_the_published_wheel_through_the_volume(
     tmp_path: Path,
 ) -> None:
     """Wheel mode and remote mode compose: same gates, remote-shaped mount."""
-    published = _recorded_wheel(COBRA_WHEEL_AARCH64_NAME)
-    if published is None:
-        pytest.skip(f"published wheel {COBRA_WHEEL_AARCH64_NAME} is unavailable")
+    under_test = _wheel_under_test()
 
     share, repo = _share_layout(tmp_path)
     # The wheel has to live under the share root: remote mounts address bytes
     # through the volume, and nothing outside the share is reachable there.
     wheel_dir = share / "_gitless" / "resource" / "cobra-wheels" / "0.1.5-published"
     wheel_dir.mkdir(parents=True)
-    wheel = wheel_dir / COBRA_WHEEL_AARCH64_NAME
-    shutil.copy2(published, wheel)
+    wheel = wheel_dir / under_test.name
+    shutil.copy2(under_test.path, wheel)
 
     result, calls = _run(
         tmp_path,
@@ -3508,15 +3559,14 @@ def test_remote_mode_mounts_the_published_wheel_through_the_volume(
         repo_root=repo,
         extra_env=_remote_env(
             share,
-            D810_COBRA_WHEEL=str(wheel),
-            D810_COBRA_WHEEL_SHA256=COBRA_WHEEL_AARCH64_SHA256,
+            **{**under_test.env, "D810_COBRA_WHEEL": str(wheel)},
             MOCK_DOCKER_SERVER_ARCH="arm64",
         ),
     )
 
     assert result.returncode == 0, result.stderr
 
-    container_path = f"{COBRA_WHEEL_CONTAINER_DIR}/{COBRA_WHEEL_AARCH64_NAME}"
+    container_path = f"{COBRA_WHEEL_CONTAINER_DIR}/{under_test.name}"
     relative = wheel.relative_to(share)
     wheel_mounts = [
         call
@@ -3536,7 +3586,7 @@ def test_remote_mode_mounts_the_published_wheel_through_the_volume(
     # Every published-wheel gate still runs inside the container.
     command = _remote_container_run(calls)
     assert (
-        f"printf '%s  %s\\n' '{COBRA_WHEEL_AARCH64_SHA256}' "
+        f"printf '%s  %s\\n' '{under_test.sha256}' "
         f"'{container_path}' | sha256sum -c -"
     ) in command
     assert f"pip install --no-deps --force-reinstall --no-cache-dir -q '{container_path}'" in command
@@ -3549,17 +3599,15 @@ def test_remote_mode_mounts_the_published_wheel_through_the_volume(
 
 def test_remote_mode_refuses_a_symlinked_wheel(tmp_path: Path) -> None:
     """A link could name share bytes while pointing somewhere the engine cannot see."""
-    published = _recorded_wheel(COBRA_WHEEL_AARCH64_NAME)
-    if published is None:
-        pytest.skip(f"published wheel {COBRA_WHEEL_AARCH64_NAME} is unavailable")
+    under_test = _wheel_under_test()
 
     share, repo = _share_layout(tmp_path)
-    real = tmp_path / "outside" / COBRA_WHEEL_AARCH64_NAME
+    real = tmp_path / "outside" / under_test.name
     real.parent.mkdir()
-    shutil.copy2(published, real)
+    shutil.copy2(under_test.path, real)
     link_dir = share / "wheels"
     link_dir.mkdir()
-    link = link_dir / COBRA_WHEEL_AARCH64_NAME
+    link = link_dir / under_test.name
     link.symlink_to(real)
 
     result, calls = _run(
@@ -3572,8 +3620,7 @@ def test_remote_mode_refuses_a_symlinked_wheel(tmp_path: Path) -> None:
         repo_root=repo,
         extra_env=_remote_env(
             share,
-            D810_COBRA_WHEEL=str(link),
-            D810_COBRA_WHEEL_SHA256=COBRA_WHEEL_AARCH64_SHA256,
+            **{**under_test.env, "D810_COBRA_WHEEL": str(link)},
             MOCK_DOCKER_SERVER_ARCH="arm64",
         ),
     )
@@ -3584,15 +3631,13 @@ def test_remote_mode_refuses_a_symlinked_wheel(tmp_path: Path) -> None:
 
 
 def test_remote_mode_refuses_a_wheel_outside_the_share(tmp_path: Path) -> None:
-    published = _recorded_wheel(COBRA_WHEEL_AARCH64_NAME)
-    if published is None:
-        pytest.skip(f"published wheel {COBRA_WHEEL_AARCH64_NAME} is unavailable")
+    under_test = _wheel_under_test()
 
     share, repo = _share_layout(tmp_path)
     outside = tmp_path / "outside"
     outside.mkdir()
-    wheel = outside / COBRA_WHEEL_AARCH64_NAME
-    shutil.copy2(published, wheel)
+    wheel = outside / under_test.name
+    shutil.copy2(under_test.path, wheel)
 
     result, _ = _run(
         tmp_path,
@@ -3604,8 +3649,7 @@ def test_remote_mode_refuses_a_wheel_outside_the_share(tmp_path: Path) -> None:
         repo_root=repo,
         extra_env=_remote_env(
             share,
-            D810_COBRA_WHEEL=str(wheel),
-            D810_COBRA_WHEEL_SHA256=COBRA_WHEEL_AARCH64_SHA256,
+            **{**under_test.env, "D810_COBRA_WHEEL": str(wheel)},
             MOCK_DOCKER_SERVER_ARCH="arm64",
         ),
     )
@@ -4457,3 +4501,421 @@ def test_run_retention_defaults_to_twenty(tmp_path: Path) -> None:
 
     assert result.returncode == 0, result.stderr
     assert "__runs_keep=20;" in _remote_container_run(calls)
+
+
+# ---------------------------------------------------------------------------
+# Baked CoBRA: the image already carries the published wheel
+# ---------------------------------------------------------------------------
+COBRA_PARENT_PIN = "3b3c406270f1efd8e222f0b05040ae4e074b27d5"
+
+
+def _baked_labels(
+    version: str = COBRA_WHEEL_VERSION,
+    sha256: str = COBRA_WHEEL_AARCH64_SHA256,
+    tag: str = COBRA_WHEEL_TAG_COMMIT,
+    core: str = COBRA_WHEEL_CORE_COMMIT,
+    parent: str = COBRA_PARENT_PIN,
+) -> str:
+    """The org.d810.cobra.* row the runner reads in one `image inspect`."""
+    return "|".join((version, sha256, tag, core, parent))
+
+
+def test_baked_cobra_image_installs_nothing_and_still_proves_the_backend(
+    tmp_path: Path,
+) -> None:
+    """The labels are the image's claim; the known-answer solve is the proof."""
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--",
+        "true",
+        extra_env={"MOCK_DOCKER_COBRA_LABELS": _baked_labels()},
+    )
+
+    assert result.returncode == 0, result.stderr
+    command = _container_run(calls)
+    # Nothing is installed, cloned, compiled or hashed on the way in.
+    for installed in (
+        "pip install --no-deps --force-reinstall",
+        "sha256sum -c -",
+        "git clone",
+        "build_cobra.py",
+        "cmake",
+        "/opt/d810-cobra-wheel",
+        "/opt/d810-cobra-source",
+        "/opt/d810-cobra-cache",
+    ):
+        assert installed not in command, installed
+    # ... but the full contract is still proven inside the container.
+    assert '"implements"] == {"mba-solve": "cobra-solve"}' in command
+    assert "import d810_cobra._cobra" in command
+    assert "prove_equivalent(tree, solved.tree" in command
+    assert (
+        f'importlib.metadata.version("d810-cobra") == "{COBRA_WHEEL_VERSION}"' in command
+    )
+    assert not (tmp_path / ".tmp" / "cobra-linux").exists()
+
+
+def test_baked_cobra_verification_is_a_hard_setup_precondition(
+    tmp_path: Path,
+) -> None:
+    """A failed verification must stop the run, not hand over to pytest."""
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--",
+        "true",
+        extra_env={"MOCK_DOCKER_COBRA_LABELS": _baked_labels()},
+    )
+
+    assert result.returncode == 0, result.stderr
+    command = _container_run(calls)
+    assert "stage extensions failed" in command
+    assert "; pytest" not in command
+
+
+def test_baked_cobra_is_named_in_the_preamble(tmp_path: Path) -> None:
+    result, _calls = _run(
+        tmp_path,
+        "exec",
+        "--",
+        "true",
+        extra_env={"MOCK_DOCKER_COBRA_LABELS": _baked_labels()},
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert (
+        "extension: d810-cobra (baked "
+        f"{COBRA_WHEEL_VERSION} {COBRA_WHEEL_AARCH64_SHA256[:12]} "
+        f"tag {COBRA_WHEEL_TAG_COMMIT[:7]})"
+    ) in result.stdout
+    assert COBRA_WHEEL_AARCH64_SHA256 in result.stdout
+    assert COBRA_WHEEL_TAG_COMMIT in result.stdout
+    assert "nothing installed, verification still enforced" in result.stdout
+
+
+def test_baked_cobra_identity_reaches_the_provenance_receipt(
+    tmp_path: Path,
+) -> None:
+    """A receipt has to name the artifact its measurements were produced by."""
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--",
+        "true",
+        extra_env={"MOCK_DOCKER_COBRA_LABELS": _baked_labels()},
+    )
+
+    assert result.returncode == 0, result.stderr
+    command = _container_run(calls)
+    assert f"D810_TEST_COBRA_WHEEL_SHA256={COBRA_WHEEL_AARCH64_SHA256}" in command
+    assert f"D810_TEST_COBRA_TAG_COMMIT={COBRA_WHEEL_TAG_COMMIT}" in command
+    assert "D810_TEST_COBRA_SOURCE_MODE=baked" in command
+
+
+def test_source_built_cobra_records_no_published_identity(tmp_path: Path) -> None:
+    """A compiled backend has no published hash; the receipt must not invent one."""
+    result, calls = _run(tmp_path, "exec", "--", "true")
+
+    assert result.returncode == 0, result.stderr
+    command = _container_run(calls)
+    assert "D810_TEST_COBRA_WHEEL_SHA256" not in command
+    assert "D810_TEST_COBRA_TAG_COMMIT" not in command
+
+
+def test_incomplete_baked_labels_are_an_error_not_a_rebuild(tmp_path: Path) -> None:
+    """Half a claim is the state that would hide an install that never happened."""
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--",
+        "true",
+        extra_env={
+            "MOCK_DOCKER_COBRA_LABELS": _baked_labels(sha256="", core=""),
+        },
+    )
+
+    assert result.returncode != 0
+    assert "label set is incomplete" in result.stderr
+    assert "org.d810.cobra.wheel_sha256" in result.stderr
+    assert "org.d810.cobra.core_commit" in result.stderr
+    assert _workload_runs(calls) == []
+
+
+def test_unpublished_baked_wheel_hash_is_refused(tmp_path: Path) -> None:
+    """The preflight wheels share the published filenames, not their bytes."""
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--",
+        "true",
+        extra_env={
+            "MOCK_DOCKER_COBRA_LABELS": _baked_labels(
+                sha256=COBRA_WHEEL_PREFLIGHT_AARCH64_SHA256
+            ),
+        },
+    )
+
+    assert result.returncode != 0
+    assert COBRA_WHEEL_PREFLIGHT_AARCH64_SHA256 in result.stderr
+    assert "not a published d810-cobra wheel" in result.stderr
+    assert _workload_runs(calls) == []
+
+
+def test_baked_labels_must_agree_with_the_published_record(tmp_path: Path) -> None:
+    """A label set can be complete and still describe the wrong release."""
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--",
+        "true",
+        extra_env={"MOCK_DOCKER_COBRA_LABELS": _baked_labels(tag="0" * 40)},
+    )
+
+    assert result.returncode != 0
+    assert "labels disagree with the published record" in result.stderr
+    assert _workload_runs(calls) == []
+
+
+def test_baked_parent_commit_must_equal_the_runner_pin(tmp_path: Path) -> None:
+    """A baked run and a source run must describe the same upstream code."""
+    stale_parent = "1" * 40
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--",
+        "true",
+        extra_env={"MOCK_DOCKER_COBRA_LABELS": _baked_labels(parent=stale_parent)},
+    )
+
+    assert result.returncode != 0
+    assert stale_parent in result.stderr
+    assert COBRA_PARENT_PIN in result.stderr
+    assert "this runner pins" in result.stderr
+    assert _workload_runs(calls) == []
+
+
+def test_explicit_wheel_outranks_a_baked_image(tmp_path: Path) -> None:
+    """An operator naming a wheel means it, whatever the image carries."""
+    under_test = _wheel_under_test()
+
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--",
+        "true",
+        extra_env={**under_test.env, "MOCK_DOCKER_COBRA_LABELS": _baked_labels()},
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert f"extension: d810-cobra (wheel {under_test.name})" in result.stdout
+    assert "baked" not in result.stdout
+    command = _container_run(calls)
+    assert "sha256sum -c -" in command
+
+
+def test_explicit_cobra_root_outranks_a_baked_image(tmp_path: Path) -> None:
+    """The mounted-pinned development path must not be silently discarded."""
+    result, _calls = _run(
+        tmp_path,
+        "exec",
+        "--",
+        "true",
+        extra_env={
+            "D810_COBRA_ROOT": str(tmp_path / "absent-cobra-checkout"),
+            "MOCK_DOCKER_COBRA_LABELS": _baked_labels(),
+        },
+    )
+
+    # It fails on the checkout, which proves the baked image never took over.
+    assert result.returncode != 0
+    assert "D810_COBRA_ROOT must be an absolute existing directory" in result.stderr
+
+
+def test_remote_mode_reads_the_baked_labels_from_the_remote_engine(
+    tmp_path: Path,
+) -> None:
+    """--remote runs on another machine, whose copy of the tag may differ."""
+    share, repo = _share_layout(tmp_path)
+
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--remote",
+        REMOTE_HOST,
+        "--",
+        "true",
+        repo_root=repo,
+        extra_env=_remote_env(
+            share,
+            MOCK_DOCKER_COBRA_LABELS="||||",
+            MOCK_DOCKER_REMOTE_COBRA_LABELS=_baked_labels(
+                sha256=COBRA_WHEEL_X86_64_SHA256
+            ),
+        ),
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert (
+        f"extension: d810-cobra (baked {COBRA_WHEEL_VERSION} "
+        f"{COBRA_WHEEL_X86_64_SHA256[:12]}"
+    ) in result.stdout
+    command = _remote_container_run(calls)
+    assert "git clone" not in command
+    # Every label inspect has to be addressed to the engine that will run it.
+    hosts = _docker_hosts(calls)
+    inspects = [
+        index
+        for index, call in enumerate(_docker_calls(calls))
+        if "org.d810.cobra.version" in call
+    ]
+    assert inspects, calls
+    assert all(hosts[index] == f"ssh://{REMOTE_HOST}" for index in inspects), calls
+
+
+def test_remote_mode_ignores_a_baked_label_set_that_only_exists_locally(
+    tmp_path: Path,
+) -> None:
+    """The Mac's image of the same tag says nothing about the remote engine's."""
+    share, repo = _share_layout(tmp_path)
+
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--remote",
+        REMOTE_HOST,
+        "--",
+        "true",
+        repo_root=repo,
+        extra_env=_remote_env(
+            share,
+            MOCK_DOCKER_COBRA_LABELS=_baked_labels(),
+            MOCK_DOCKER_REMOTE_COBRA_LABELS="||||",
+        ),
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "baked" not in result.stdout
+    assert "git clone" in _remote_container_run(calls)
+
+
+# ---------------------------------------------------------------------------
+# The harness fixture wheel
+# ---------------------------------------------------------------------------
+def test_the_fixture_wheels_are_the_recorded_bytes() -> None:
+    """A fixture whose hash drifts silently stops testing the hash gate."""
+    for arch, (name, sha256) in COBRA_FIXTURE_WHEELS.items():
+        path = COBRA_FIXTURE_DIR / name
+        assert path.is_file(), path
+        assert hashlib.sha256(path.read_bytes()).hexdigest() == sha256, arch
+
+
+def test_the_fixture_wheels_are_valid_wheels_that_say_they_are_fixtures() -> None:
+    """pip reads the basename and the dist-info; a reader must see the notice."""
+    for name, _sha256 in COBRA_FIXTURE_WHEELS.values():
+        with zipfile.ZipFile(COBRA_FIXTURE_DIR / name) as archive:
+            assert archive.testzip() is None
+            members = set(archive.namelist())
+            assert "d810_cobra-0.1.5.dist-info/METADATA" in members
+            assert "d810_cobra-0.1.5.dist-info/HARNESS-FIXTURE.txt" in members
+            notice = archive.read(
+                "d810_cobra-0.1.5.dist-info/HARNESS-FIXTURE.txt"
+            ).decode()
+        assert "not a d810-cobra release artifact" in notice
+        assert "harness_fixture" in name
+
+
+def test_the_fixture_wheel_is_refused_without_the_harness_variable(
+    tmp_path: Path,
+) -> None:
+    """The fixture is not an identity the runner carries; it has to be named."""
+    name, sha256 = COBRA_FIXTURE_WHEELS["aarch64"]
+
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--",
+        "true",
+        extra_env={
+            "D810_COBRA_WHEEL": str(COBRA_FIXTURE_DIR / name),
+            "D810_COBRA_WHEEL_SHA256": sha256,
+        },
+    )
+
+    assert result.returncode != 0
+    assert calls == []
+    assert "not a recorded d810-cobra wheel" in result.stderr
+
+
+def test_the_harness_variable_admits_only_the_hash_it_names(tmp_path: Path) -> None:
+    """It is one extra identity, not an escape hatch for any wheel."""
+    name, sha256 = COBRA_FIXTURE_WHEELS["aarch64"]
+    other = COBRA_FIXTURE_WHEELS["x86_64"][1]
+
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--",
+        "true",
+        extra_env={
+            "D810_COBRA_WHEEL": str(COBRA_FIXTURE_DIR / name),
+            "D810_COBRA_WHEEL_SHA256": sha256,
+            "D810_COBRA_HARNESS_WHEEL_SHA256": other,
+        },
+    )
+
+    assert result.returncode != 0
+    assert calls == []
+    assert "not a recorded d810-cobra wheel" in result.stderr
+
+
+def test_a_harness_fixture_run_never_reads_as_a_published_one(
+    tmp_path: Path,
+) -> None:
+    """The word in the preamble is the whole point of the fixture identity."""
+    name, sha256 = COBRA_FIXTURE_WHEELS["aarch64"]
+
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--",
+        "true",
+        extra_env={
+            "D810_COBRA_WHEEL": str(COBRA_FIXTURE_DIR / name),
+            "D810_COBRA_WHEEL_SHA256": sha256,
+            "D810_COBRA_HARNESS_WHEEL_SHA256": sha256,
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "TEST HARNESS fixture" in result.stderr
+    assert f"(read-only) harness-fixture sha256 {sha256}" in result.stdout
+    assert "published sha256" not in result.stdout
+    # It borrows no release identity.
+    assert COBRA_WHEEL_TAG_COMMIT not in result.stdout
+    assert "harness-fixture" in result.stdout
+    command = _container_run(calls)
+    # The wheel still goes through every container-side gate.
+    assert sha256 in command
+    assert "sha256sum -c -" in command
+    assert "git clone" not in command
+    # A wrapper-only variable must not reach the workload.
+    assert "D810_COBRA_HARNESS_WHEEL_SHA256" not in command
+
+
+def test_the_wheel_under_test_falls_back_to_the_fixture(tmp_path: Path) -> None:
+    """On a checkout without the out-of-git wheels, wheel mode still runs."""
+    os.environ["D810_TEST_HIDE_COBRA_WHEELS"] = "1"
+    try:
+        under_test = _wheel_under_test()
+    finally:
+        del os.environ["D810_TEST_HIDE_COBRA_WHEELS"]
+
+    assert under_test.identity == "harness-fixture"
+    assert under_test.path.is_file()
+
+    result, calls = _run(tmp_path, "exec", "--", "true", extra_env=under_test.env)
+
+    assert result.returncode == 0, result.stderr
+    assert f"extension: d810-cobra (wheel {under_test.name})" in result.stdout
+    assert under_test.sha256 in _container_run(calls)
