@@ -28,6 +28,8 @@ from d810.core.typing import Any
 
 import pytest
 
+from tests.runtime_provenance import runtime_provenance
+
 _RUNTIME_DIR = Path(__file__).resolve().parents[1]
 if str(_RUNTIME_DIR) not in sys.path:
     sys.path.insert(0, str(_RUNTIME_DIR))
@@ -1726,10 +1728,7 @@ class TestSccpCachePerformance:
                     "cython_profile": os.environ.get("D810_CYTHON_PROFILE", "0"),
                     "native_profile": os.environ.get("D810_NATIVE_PROFILE", "0"),
                     "profiling_controller": controller_mode,
-                    "runtime_image": os.environ.get("D810_TEST_RUNTIME_IMAGE", ""),
-                    "runtime_image_id": os.environ.get(
-                        "D810_TEST_RUNTIME_IMAGE_ID", ""
-                    ),
+                    **runtime_provenance(),
                     "pid": os.getpid(),
                 }
                 (output_dir / "metadata.json").write_text(
