@@ -113,6 +113,13 @@
 #                          An identical filename does NOT imply identical bytes: the
 #                          preflight builds in ../0.1.5-preflight/ carry the same names
 #                          and sizes as the published wheels and are deliberately refused.
+#   D810_COBRA_HARNESS_WHEEL_SHA256  TEST HARNESS ONLY. One extra accepted wheel
+#                          identity, so the unit tests can exercise wheel mode with a
+#                          committed fixture instead of a multi-megabyte artifact that
+#                          lives outside git. A run using it says so on stderr and in
+#                          its preamble, and its receipt records the fixture hash,
+#                          which matches no published artifact. Never set it to run
+#                          real work.
 #
 #   CoBRA source precedence: an explicit D810_COBRA_WHEEL / D810_COBRA_ROOT wins;
 #                          otherwise a BAKED image is used (one carrying the
@@ -478,6 +485,29 @@ COBRA_BAKED_PARENT_COMMIT=""
 COBRA_RECORDED_WHEELS="2c85ffe14a1f3c1d2b750790332a7c0a5e911b35f7fc041ebedcd6532382c63c 0.1.5|aarch64|73b405c106d78e1fdc7576b217de39b7dcd0ddb3|72f616f822f538a0cfbea3c880f9d1e68bb9a8f1
 352133fd4f91227518714735b463b978760650b5f30c71f5276c0bccb90cb72c 0.1.5|x86_64|73b405c106d78e1fdc7576b217de39b7dcd0ddb3|72f616f822f538a0cfbea3c880f9d1e68bb9a8f1"
 
+# A harness fixture has no release behind it, so its record names none: the
+# version and architecture come from the filename pip will read, and the
+# commit columns say what the artifact is instead of naming a real revision.
+_cobra_harness_wheel_record() {
+  local basename version platform arch
+  basename="$(basename "$1")"
+  if [[ ! "$basename" =~ ^d810_cobra-([0-9A-Za-z.]+)-cp313-cp313-([0-9A-Za-z._]+)\.whl$ ]]; then
+    echo "ERROR: D810_COBRA_HARNESS_WHEEL_SHA256 needs a d810_cobra-<version>-cp313-cp313-<platform>.whl basename: $basename" >&2
+    return 1
+  fi
+  version="${BASH_REMATCH[1]}"
+  platform="${BASH_REMATCH[2]}"
+  case "$platform" in
+    *aarch64*) arch="aarch64" ;;
+    *x86_64*)  arch="x86_64" ;;
+    *)
+      echo "ERROR: harness fixture platform tag $platform names neither aarch64 nor x86_64: $basename" >&2
+      return 1
+      ;;
+  esac
+  printf '%s|%s|harness-fixture|harness-fixture' "$version" "$arch"
+}
+
 _cobra_recorded_wheel_record() {
   local wanted="$1" digest record
   while read -r digest record; do
@@ -508,6 +538,9 @@ _sha256_of_file() {
 # Docker, and it never runs a container.
 COBRA_WHEEL_BASENAME=""
 COBRA_WHEEL_SHA256=""
+# "published" or "harness-fixture" - the word the preamble and the error
+# messages use, so a fixture can never read as a production artifact.
+COBRA_WHEEL_IDENTITY="published"
 COBRA_WHEEL_VERSION=""
 COBRA_WHEEL_ARCH=""
 COBRA_WHEEL_CONTAINER_PATH=""
@@ -565,8 +598,20 @@ if [ -n "${D810_COBRA_WHEEL+x}" ] || [ -n "${D810_COBRA_WHEEL_SHA256+x}" ]; then
     exit 1
   fi
   if ! COBRA_WHEEL_RECORD="$(_cobra_recorded_wheel_record "$D810_COBRA_WHEEL_SHA256")"; then
-    echo "ERROR: D810_COBRA_WHEEL_SHA256 $D810_COBRA_WHEEL_SHA256 is not a recorded d810-cobra wheel; the accepted published wheels live in _gitless/resource/cobra-wheels/0.1.5-published/ (an identical filename does not imply identical bytes)" >&2
-    exit 1
+    # The published wheels are megabytes and live outside git, so the unit
+    # tests would otherwise have to skip every positive wheel-mode case -- and
+    # a skipped test cannot catch the deletion of the directory it needs. This
+    # admits ONE extra identity, named explicitly by the harness, and marks
+    # every artifact of the run as a fixture rather than a published wheel.
+    if [ -n "${D810_COBRA_HARNESS_WHEEL_SHA256:-}" ] \
+      && [ "$D810_COBRA_HARNESS_WHEEL_SHA256" = "$D810_COBRA_WHEEL_SHA256" ]; then
+      COBRA_WHEEL_RECORD="$(_cobra_harness_wheel_record "$D810_COBRA_WHEEL")" || exit 1
+      COBRA_WHEEL_IDENTITY="harness-fixture"
+      echo "WARNING: D810_COBRA_HARNESS_WHEEL_SHA256 accepted $D810_COBRA_WHEEL as a TEST HARNESS fixture; it is not a published d810-cobra artifact and this run must not be treated as one" >&2
+    else
+      echo "ERROR: D810_COBRA_WHEEL_SHA256 $D810_COBRA_WHEEL_SHA256 is not a recorded d810-cobra wheel; the accepted published wheels live in _gitless/resource/cobra-wheels/0.1.5-published/ (an identical filename does not imply identical bytes)" >&2
+      exit 1
+    fi
   fi
   COBRA_WHEEL_VERSION="${COBRA_WHEEL_RECORD%%|*}"
   COBRA_WHEEL_RECORD_TAIL="${COBRA_WHEEL_RECORD#*|}"
@@ -1694,7 +1739,7 @@ if [ "$COBRA_EXTENSION_ENABLED" = "1" ]; then
     echo "  cobra baked: $DOCKER_IMAGE labels published sha256 $COBRA_BAKED_WHEEL_SHA256; d810-cobra $COBRA_BAKED_VERSION tag v$COBRA_BAKED_VERSION $COBRA_BAKED_TAG_COMMIT core $COBRA_BAKED_CORE_COMMIT parent $COBRA_BAKED_PARENT_COMMIT; nothing installed, verification still enforced"
   elif [ "$COBRA_SOURCE_MODE" = "wheel" ]; then
     echo "  extension: d810-cobra (wheel $COBRA_WHEEL_BASENAME)"
-    echo "  cobra wheel: $D810_COBRA_WHEEL -> $COBRA_WHEEL_CONTAINER_PATH (read-only) published sha256 $COBRA_WHEEL_SHA256; d810-cobra $COBRA_WHEEL_VERSION tag v$COBRA_WHEEL_VERSION $COBRA_PARENT_SOURCE_ID core $COBRA_CORE_SOURCE_ID"
+    echo "  cobra wheel: $D810_COBRA_WHEEL -> $COBRA_WHEEL_CONTAINER_PATH (read-only) $COBRA_WHEEL_IDENTITY sha256 $COBRA_WHEEL_SHA256; d810-cobra $COBRA_WHEEL_VERSION tag v$COBRA_WHEEL_VERSION $COBRA_PARENT_SOURCE_ID core $COBRA_CORE_SOURCE_ID"
   else
     echo "  extension: d810-cobra ($COBRA_SOURCE_MODE $COBRA_SOURCE_REVISION)"
     if [ "$COBRA_SOURCE_MODE" = "mounted-pinned" ]; then
@@ -1765,7 +1810,7 @@ fi
 # Forward every set D810_* env var to the container via docker -e flags.
 # Wrapper-only vars (those that only affect this script) are excluded.
 _d810_extra_env_flags() {
-  local _skip=" D810_DOCKER_IMAGE D810_DOCKER_MEMORY D810_EGGLOG_ROOT D810_COBRA_ROOT D810_COBRA_WHEEL D810_COBRA_WHEEL_SHA256 D810_REPO_ROOT D810_WORKTREE_ROOT D810_MEMORY_LIMIT_BYTES D810_SYSTEM_BATCH_SIZE D810_REMOTE_DOCKER_HOST D810_REMOTE_VOLUME D810_REMOTE_SMB_SHARE D810_REMOTE_SHARE_ROOT D810_REMOTE_SMB_USER "
+  local _skip=" D810_DOCKER_IMAGE D810_DOCKER_MEMORY D810_EGGLOG_ROOT D810_COBRA_ROOT D810_COBRA_WHEEL D810_COBRA_WHEEL_SHA256 D810_COBRA_HARNESS_WHEEL_SHA256 D810_REPO_ROOT D810_WORKTREE_ROOT D810_MEMORY_LIMIT_BYTES D810_SYSTEM_BATCH_SIZE D810_REMOTE_DOCKER_HOST D810_REMOTE_VOLUME D810_REMOTE_SMB_SHARE D810_REMOTE_SHARE_ROOT D810_REMOTE_SMB_USER "
   local _out=""
   local _var _val
   for _var in ${!D810_@}; do
