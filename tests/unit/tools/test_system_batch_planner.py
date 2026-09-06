@@ -481,7 +481,10 @@ def test_plan_lane_batches_can_split_an_oversized_fast_lane() -> None:
     assert {batch.lane for batch in batches} == {"fast"}
 
 
-def test_assign_lane_shards_reserves_shard_zero_for_the_fast_lane() -> None:
+def test_a_single_fast_batch_still_gets_a_shard_to_itself() -> None:
+    """No reservation is needed: with one fast batch it is the largest item, so
+    plain LPT hands it its own shard anyway. Removing the special case is what
+    lets --fast-lanes chunks pack against the slow lane."""
     planner = _module()
     batches = (
         planner.PlannedBatch(("fast",), 1500.0, 1, "fast"),
@@ -489,40 +492,132 @@ def test_assign_lane_shards_reserves_shard_zero_for_the_fast_lane() -> None:
         planner.PlannedBatch(("s2",), 160.0, 1, "slow"),
         planner.PlannedBatch(("s3",), 124.0, 1, "slow"),
     )
-    assignment = planner.assign_lane_shards(batches, 3)
+    assignment = planner.assign_shards(batches, 3)
     assert assignment[0] == (0,)
     assert sorted(index for shard in assignment[1:] for index in shard) == [1, 2, 3]
 
 
-def test_assign_lane_shards_balances_the_slow_lane_by_lpt() -> None:
-    planner = _module()
-    batches = (planner.PlannedBatch(("fast",), 10.0, 1, "fast"),) + tuple(
-        planner.PlannedBatch((f"s{index}",), value, 1, "slow")
-        for index, value in enumerate([334.0, 160.0, 124.0, 113.0])
-    )
-    assignment = planner.assign_lane_shards(batches, 3)
-    loads = planner.shard_loads(batches, assignment)
-    assert loads[0] == pytest.approx(10.0)
-    # 334 | 160+124+113: LPT's makespan on 2 machines, against an ideal of
-    # 365.5. The 334 s test is the floor; no assignment beats it.
-    assert sorted(loads[1:]) == pytest.approx([334.0, 397.0])
-
-
-def test_assign_lane_shards_with_one_shard_runs_everything_in_order() -> None:
+def test_one_shard_runs_every_lane_batch_in_plan_order() -> None:
     planner = _module()
     batches = (
         planner.PlannedBatch(("fast",), 10.0, 1, "fast"),
         planner.PlannedBatch(("s1",), 334.0, 1, "slow"),
     )
-    assert planner.assign_lane_shards(batches, 1) == ((0, 1),)
+    assert planner.assign_shards(batches, 1) == ((0, 1),)
+# --------------------------------------------------------------------------
+# Fast-lane chunking
+#
+# One fast interpreter bounds the whole run's critical path at the fast lane's
+# own cost (20.27 min on the 2026-09-06 ledger). Splitting it into K chunks
+# small enough to interleave with the slow lane is what lets LPT reach the
+# balance floor. A chunk never splits a FILE.
+# --------------------------------------------------------------------------
 
 
-def test_assign_lane_shards_falls_back_to_plain_lpt_without_a_fast_lane() -> None:
+def test_file_key_is_the_module_not_the_class() -> None:
+    planner = _module()
+    assert (
+        planner.file_key("tests/system/e2e/test_a.py::TestC::test_x[p1]")
+        == "tests/system/e2e/test_a.py"
+    )
+    assert (
+        planner.file_key("tests/system/e2e/test_a.py::test_x")
+        == "tests/system/e2e/test_a.py"
+    )
+    assert planner.file_key("weird-nodeid") == "weird-nodeid"
+
+
+def test_pack_fast_lane_returns_one_chunk_when_the_budget_fits() -> None:
+    planner = _module()
+    nodeids = tuple(f"a.py::T::test_{index}" for index in range(10))
+    costs = planner.CostTable({}, 1.0, (), 0)
+    chunks = planner.pack_fast_lane(nodeids, costs=costs, budget_seconds=600.0)
+    assert chunks == (nodeids,)
+
+
+def test_pack_fast_lane_splits_until_every_chunk_fits_the_budget() -> None:
+    planner = _module()
+    nodeids = tuple(f"f{index}.py::T::test_a" for index in range(10))
+    costs = planner.CostTable({}, 100.0, (), 0)  # 1000 s total
+    chunks = planner.pack_fast_lane(nodeids, costs=costs, budget_seconds=300.0)
+    assert len(chunks) == 4  # ceil(1000/300)
+    for chunk in chunks:
+        assert sum(costs.cost_of(nodeid) for nodeid in chunk) <= 300.0
+
+
+def test_pack_fast_lane_never_splits_a_file() -> None:
+    planner = _module()
+    nodeids = tuple(f"a.py::T{index // 5}::test_a" for index in range(20)) + tuple(
+        f"b.py::T::test_{index}" for index in range(20)
+    )
+    costs = planner.CostTable({}, 10.0, (), 0)
+    chunks = planner.pack_fast_lane(nodeids, costs=costs, budget_seconds=100.0)
+    for chunk in chunks:
+        assert len({planner.file_key(nodeid) for nodeid in chunk}) == 1
+
+
+def test_pack_fast_lane_lets_one_oversized_file_exceed_the_budget() -> None:
+    planner = _module()
+    nodeids = tuple(f"big.py::T::test_{index}" for index in range(10))
+    costs = planner.CostTable({}, 100.0, (), 0)
+    chunks = planner.pack_fast_lane(nodeids, costs=costs, budget_seconds=100.0)
+    assert chunks == (nodeids,)
+
+
+def test_pack_fast_lane_honours_an_explicit_lane_count() -> None:
+    planner = _module()
+    nodeids = tuple(f"f{index}.py::T::test_a" for index in range(8))
+    costs = planner.CostTable({}, 10.0, (), 0)
+    chunks = planner.pack_fast_lane(nodeids, costs=costs, budget_seconds=1e9, lanes=2)
+    assert len(chunks) == 2
+    assert sorted(nodeid for chunk in chunks for nodeid in chunk) == sorted(nodeids)
+
+
+def test_pack_fast_lane_loses_nothing_and_duplicates_nothing() -> None:
+    planner = _module()
+    nodeids = tuple(f"f{index % 6}.py::T{index % 3}::test_{index}" for index in range(97))
+    costs = planner.CostTable({}, 7.0, (), 0)
+    chunks = planner.pack_fast_lane(nodeids, costs=costs, budget_seconds=50.0)
+    flattened = [nodeid for chunk in chunks for nodeid in chunk]
+    assert sorted(flattened) == sorted(nodeids)
+    assert len(flattened) == len(set(flattened))
+
+
+def test_plan_lane_batches_emits_one_fast_batch_per_chunk() -> None:
+    planner = _module()
+    nodeids = tuple(f"f{index}.py::T::test_a" for index in range(6))
+    costs = planner.CostTable({}, 100.0, (), 0)
+    batches = planner.plan_lane_batches(
+        nodeids, costs=costs, threshold_seconds=1e9, fast_lane_budget_seconds=200.0
+    )
+    assert [batch.lane for batch in batches] == ["fast"] * 3
+    assert [len(batch.nodeids) for batch in batches] == [2, 2, 2]
+
+
+def test_lane_shard_assignment_interleaves_fast_chunks_with_slow_tests() -> None:
+    """With one 20-minute fast batch LPT already gives it its own shard, because
+    it is the largest item. With K chunks it can pack them against the slow
+    lane, which is the whole point of --fast-lanes."""
     planner = _module()
     batches = tuple(
+        planner.PlannedBatch((f"fast{index}",), 608.4, 1, "fast") for index in range(2)
+    ) + tuple(
         planner.PlannedBatch((f"s{index}",), value, 1, "slow")
-        for index, value in enumerate([5.0, 5.0, 5.0])
+        for index, value in enumerate(
+            [333.5, 124.3, 113.0, 111.5, 105.0, 104.3, 88.7, 86.3, 84.8, 80.5]
+        )
     )
-    assignment = planner.assign_lane_shards(batches, 3)
-    assert sorted(index for shard in assignment for index in shard) == [0, 1, 2]
-    assert planner.shard_loads(batches, assignment) == pytest.approx([5.0, 5.0, 5.0])
+    loads = planner.shard_loads(batches, planner.assign_shards(batches, 3))
+    total = sum(batch.estimated_seconds for batch in batches)
+    assert max(loads) < total / 3 * 1.12
+
+
+def test_the_fast_lane_is_one_interpreter_by_default() -> None:
+    """User ruling 2026-09-06: keep the fast lane as ONE interpreter, ~20 min is
+    acceptable. --fast-lanes / a finite budget are opt-in, never the default."""
+    planner = _module()
+    nodeids = tuple(f"f{index}.py::T::test_a" for index in range(50))
+    costs = planner.CostTable({}, 100.0, (), 0)  # 5000 s of fast lane
+    batches = planner.plan_lane_batches(nodeids, costs=costs, threshold_seconds=1e9)
+    assert len(batches) == 1
+    assert batches[0].nodeids == nodeids

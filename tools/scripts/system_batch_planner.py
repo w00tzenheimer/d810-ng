@@ -39,6 +39,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
 import json
+import math
 import os
 from typing import NamedTuple
 
@@ -63,6 +64,13 @@ DEFAULT_MAX_TESTS = 400
 #: seconds on the 2026-09-06 ledger while leaving 649 of 667 measured tests
 #: (and every unmeasured one) in a single interpreter.
 DEFAULT_LANE_THRESHOLD_SECONDS = 30.0
+
+#: No budget by default: user ruling 2026-09-06 is that the fast lane stays ONE
+#: interpreter and ~20 min is acceptable. Splitting it is available (pass a
+#: finite budget, or an explicit lane count) because chunking is what would let
+#: shard assignment interleave the fast lane with the slow tests and approach
+#: the balance floor -- but it is opt-in, never the default.
+DEFAULT_FAST_LANE_BUDGET_SECONDS = math.inf
 
 
 class CostTable(NamedTuple):
@@ -113,6 +121,25 @@ def group_key(nodeid: str) -> str:
     'tests/system/e2e/test_a.py'
     """
     separator = nodeid.rfind("::")
+    if separator == -1:
+        return nodeid
+    return nodeid[:separator]
+
+
+def file_key(nodeid: str) -> str:
+    """Return the test file a node id belongs to.
+
+    Fast-lane chunks are packed by file, never by class: a file is the unit
+    module-level state, module-scoped fixtures and import side effects are
+    cached at, so splitting one across two interpreters pays for its imports
+    twice and can change what the tests see.
+
+    >>> file_key("tests/system/e2e/test_a.py::TestC::test_x[p1]")
+    'tests/system/e2e/test_a.py'
+    >>> file_key("tests/system/e2e/test_a.py::test_x")
+    'tests/system/e2e/test_a.py'
+    """
+    separator = nodeid.find("::")
     if separator == -1:
         return nodeid
     return nodeid[:separator]
@@ -355,6 +382,8 @@ def plan_lane_batches(
     threshold_seconds: float = DEFAULT_LANE_THRESHOLD_SECONDS,
     isolated: frozenset[str] = frozenset(),
     fast_max_tests: int | None = None,
+    fast_lanes: int | None = None,
+    fast_lane_budget_seconds: float = DEFAULT_FAST_LANE_BUDGET_SECONDS,
 ) -> tuple[PlannedBatch, ...]:
     """Plan one fast interpreter plus one interpreter per slow test.
 
@@ -376,9 +405,20 @@ def plan_lane_batches(
     )
     batches: list[PlannedBatch] = []
     if fast:
-        chunk = len(fast) if fast_max_tests is None else max(1, fast_max_tests)
-        for start in range(0, len(fast), chunk):
-            piece = fast[start : start + chunk]
+        chunks = pack_fast_lane(
+            fast,
+            costs=costs,
+            budget_seconds=fast_lane_budget_seconds,
+            lanes=fast_lanes,
+        )
+        if fast_max_tests is not None:
+            bound = max(1, fast_max_tests)
+            chunks = tuple(
+                chunk[start : start + bound]
+                for chunk in chunks
+                for start in range(0, len(chunk), bound)
+            )
+        for piece in chunks:
             batches.append(
                 PlannedBatch(
                     nodeids=piece,
@@ -399,33 +439,70 @@ def plan_lane_batches(
     return tuple(batches)
 
 
-def assign_lane_shards(
-    batches: Sequence[PlannedBatch], shard_count: int
-) -> tuple[tuple[int, ...], ...]:
-    """Assign lane batches to shards: shard 0 is the fast lane, 1..N-1 the slow.
+def pack_fast_lane(
+    nodeids: Sequence[str],
+    *,
+    costs: CostTable,
+    budget_seconds: float = DEFAULT_FAST_LANE_BUDGET_SECONDS,
+    lanes: int | None = None,
+) -> tuple[tuple[str, ...], ...]:
+    """Split the fast lane into chunks of at most *budget_seconds*, by file.
 
-    The fast lane is one long-running container; the slow tests are spread over
-    the remaining N-1 by LPT. Mixing them would make a slow test wait behind
-    the fast lane's whole run, which is exactly the serialisation this is meant
-    to remove.
+    A single fast interpreter makes the fast lane's own cost the floor on the
+    whole run's critical path, however many shards there are. Chunking it lets
+    ``assign_shards`` interleave the pieces with the slow lane and approach the
+    balance floor instead.
 
-    With ``shard_count == 1`` everything runs in one shard in plan order, so a
-    single-container lane run stays a straight sequential run.
+    With *lanes* unset the chunk count is the smallest K that fits the budget,
+    starting from ``ceil(total / budget)`` and growing only while a chunk is
+    still over budget and there are files left to separate. A file is never
+    split, so a single file costing more than the budget simply exceeds it --
+    that is a fact about the file, and splitting it would cost its imports
+    twice without fixing anything.
     """
-    if shard_count < 1:
-        raise ValueError("shard_count must be positive")
-    fast_indices = tuple(
-        index for index, batch in enumerate(batches) if batch.lane == "fast"
-    )
-    slow_indices = tuple(
-        index for index, batch in enumerate(batches) if batch.lane != "fast"
-    )
-    if shard_count == 1 or not fast_indices:
-        return assign_shards(batches, shard_count)
+    if not nodeids:
+        return ()
+    files: list[str] = []
+    members: dict[str, list[str]] = {}
+    for nodeid in nodeids:
+        key = file_key(nodeid)
+        if key not in members:
+            members[key] = []
+            files.append(key)
+        members[key].append(nodeid)
+    weights = {
+        key: sum(costs.cost_of(nodeid) for nodeid in group)
+        for key, group in members.items()
+    }
+    total = sum(weights.values())
 
-    slow_batches = tuple(batches[index] for index in slow_indices)
-    slow_assignment = assign_shards(slow_batches, shard_count - 1)
-    buckets = [fast_indices]
-    for bucket in slow_assignment:
-        buckets.append(tuple(slow_indices[position] for position in bucket))
-    return tuple(buckets)
+    def _pack(count: int) -> tuple[tuple[str, ...], ...]:
+        buckets: list[list[str]] = [[] for _ in range(count)]
+        loads = [0.0] * count
+        for key in sorted(files, key=lambda name: (-weights[name], files.index(name))):
+            target = min(range(count), key=lambda index: (loads[index], index))
+            buckets[target].append(key)
+            loads[target] += weights[key]
+        packed = []
+        for bucket in buckets:
+            ordered = [key for key in files if key in set(bucket)]
+            packed.append(tuple(nodeid for key in ordered for nodeid in members[key]))
+        return tuple(chunk for chunk in packed if chunk)
+
+    if lanes is not None:
+        if lanes < 1:
+            raise ValueError("lanes must be positive")
+        return _pack(min(lanes, len(files)))
+
+    if budget_seconds <= 0.0:
+        raise ValueError("budget_seconds must be positive")
+    count = max(1, math.ceil(total / budget_seconds))
+    count = min(count, len(files))
+    while True:
+        chunks = _pack(count)
+        over = max(
+            sum(costs.cost_of(nodeid) for nodeid in chunk) for chunk in chunks
+        )
+        if over <= budget_seconds or count >= len(files):
+            return chunks
+        count += 1
