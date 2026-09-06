@@ -199,10 +199,16 @@ def load_cost_table(
             except (TypeError, ValueError):
                 continue
             unmeasured = test_count - len(per_nodeid)
-            residual = wall - sum(per_nodeid.values()) - batch_overhead_seconds
-            if unmeasured > 0 and residual > 0.0:
-                residual_total += residual
+            if unmeasured > 0:
+                # Every unmeasured test belongs in the denominator, including
+                # the ones in batches whose measured phases already account for
+                # the whole wall -- those are precisely the cheapest tests, and
+                # dropping them prices the rest as if they carried the entire
+                # suite's unattributed time.
                 unmeasured_total += unmeasured
+                residual_total += max(
+                    0.0, wall - sum(per_nodeid.values()) - batch_overhead_seconds
+                )
 
     if unmeasured_total > 0:
         default_seconds = residual_total / unmeasured_total

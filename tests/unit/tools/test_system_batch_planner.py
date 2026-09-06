@@ -621,3 +621,40 @@ def test_the_fast_lane_is_one_interpreter_by_default() -> None:
     batches = planner.plan_lane_batches(nodeids, costs=costs, threshold_seconds=1e9)
     assert len(batches) == 1
     assert batches[0].nodeids == nodeids
+
+
+def test_unmeasured_default_counts_tests_in_batches_with_no_residual(tmp_path) -> None:
+    """A batch whose measured phases already account for its whole wall still
+    contains unmeasured tests, and they are cheap. Dropping those batches from
+    the denominator prices every unmeasured test as if it belonged only to the
+    slow batches, which on the real ledger inflated the estimate 30x
+    (0.665 s/test against a true 0.021 s/test)."""
+    planner = _module()
+    ledger = tmp_path / "system_batches.jsonl"
+    _write_ledger(
+        ledger,
+        [
+            # Fully accounted for: 10 s of wall, 10 s measured, 19 unmeasured
+            # tests that together cost about nothing.
+            {
+                "batch_index": 1,
+                "test_count": 20,
+                "wall_seconds": 12.0,
+                "durations": [
+                    {"nodeid": "t.py::A::a", "phase": "call", "seconds": 10.0}
+                ],
+            },
+            # One with a real residual: 5 s over 19 unmeasured tests.
+            {
+                "batch_index": 2,
+                "test_count": 20,
+                "wall_seconds": 17.0,
+                "durations": [
+                    {"nodeid": "t.py::B::b", "phase": "call", "seconds": 10.0}
+                ],
+            },
+        ],
+    )
+    table = planner.load_cost_table([str(ledger)], batch_overhead_seconds=2.0)
+    # residual: batch 1 -> 0 (clamped), batch 2 -> 5; unmeasured: 19 + 19 = 38
+    assert table.default_seconds == pytest.approx(5.0 / 38.0)
