@@ -22,6 +22,7 @@ from d810.hexrays.hooks.callback_mutation_diagnostics import (
 from d810.hexrays.hooks.hexrays_hooks import HexraysDecompilationHook
 from d810.hexrays.hooks.optblock_adapter import BlockOptimizerManager
 from d810.hexrays.hooks.optinsn_adapter import InstructionOptimizerManager
+from d810.hexrays.hooks.safe_point_coordinator import HexRaysSafePointCoordinator
 from d810.optimizers.microcode.flow.context import FlowMaturityContext
 
 
@@ -354,6 +355,7 @@ def test_optblock_callback_exception_logs_typed_context_and_returns_zero(
 
     class _FailingManager:
         _pipeline_just_fired = False
+        _safe_point_coordinator = HexRaysSafePointCoordinator()
 
         @staticmethod
         def _func(_blk):
@@ -424,6 +426,7 @@ def test_optblock_callback_damaged_start_clears_unpaired_block_serial(
 
     class _FailingManager:
         _pipeline_just_fired = False
+        _safe_point_coordinator = HexRaysSafePointCoordinator()
 
         @staticmethod
         def _func(_blk):
@@ -466,6 +469,7 @@ def test_optblock_callback_diagnostic_failure_still_returns_zero(
 
     class _FailingManager:
         _pipeline_just_fired = False
+        _safe_point_coordinator = HexRaysSafePointCoordinator()
 
         @staticmethod
         def _func(_blk):
