@@ -53,7 +53,11 @@ from d810.mba.provider_outcome import (
     MbaProviderKind,
     ProviderOutcomeStatus,
 )
-from d810.mba.native_corpus_capture import capture_native_provider_histories
+from d810.mba.native_corpus_capture import (
+    capture_native_provider_histories,
+    observe_native_provider_histories,
+    native_provider_outcomes,
+)
 from d810.optimizers.microcode.instructions.pattern_matching.engine import (
     get_engine_info,
 )
@@ -1517,34 +1521,12 @@ class TestCompilerShapeCatalogueNative:
                 state.start_d810()
                 handler_startup_ms = (time.monotonic() - handler_started) * 1000.0
                 for function, _ in _CATALOGUE_CASES:
-                    outcome_cursors = tuple(
-                        (
-                            adapter,
-                            (
-                                adapter.provider_outcome_cursor()
-                                if callable(
-                                    getattr(adapter, "provider_outcome_cursor", None)
-                                )
-                                else len(adapter.provider_outcomes())
-                            ),
+                    with observe_native_provider_histories(adapters) as observation:
+                        after = idaapi.decompile(
+                            function_eas[function], flags=idaapi.DECOMP_NO_CACHE
                         )
-                        for adapter in adapters
-                    )
-                    after = idaapi.decompile(
-                        function_eas[function], flags=idaapi.DECOMP_NO_CACHE
-                    )
-                    assert after is not None
-                    new_outcomes = tuple(
-                        outcome
-                        for adapter, cursor in outcome_cursors
-                        for outcome in (
-                            adapter.provider_outcomes_since(cursor)
-                            if callable(
-                                getattr(adapter, "provider_outcomes_since", None)
-                            )
-                            else adapter.provider_outcomes()[cursor:]
-                        )
-                    )
+                        assert after is not None
+                        new_outcomes = native_provider_outcomes(adapters, observation)
                     observed_catalogue_by_function[function] = tuple(
                         outcome
                         for outcome in new_outcomes

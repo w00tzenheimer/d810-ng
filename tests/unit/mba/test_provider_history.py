@@ -36,6 +36,33 @@ def test_history_replaces_the_current_attempt_without_consuming_capacity() -> No
     assert history.outcomes() == ("applied",)
 
 
+def test_observer_retains_complete_capture_and_finalization_after_eviction() -> None:
+    history = ProviderOutcomeHistory[str](capacity=2)
+    history.append("before")
+    with history.observe() as observed:
+        first = history.append("pending")
+        for index in range(633):
+            history.append(str(index))
+        history.replace(first, "applied")
+        assert tuple(observed.values()) == ("applied", *(str(i) for i in range(633)))
+        assert history.outcomes() == ("631", "632")
+    history.append("after")
+    assert len(observed) == 634
+
+
+def test_nested_observers_unregister_on_exception() -> None:
+    history = ProviderOutcomeHistory[str](capacity=1)
+    with history.observe() as outer:
+        with pytest.raises(RuntimeError):
+            with history.observe() as inner:
+                history.append("both")
+                raise RuntimeError("capture failed")
+        history.append("outer")
+    history.append("neither")
+    assert tuple(inner.values()) == ("both",)
+    assert tuple(outer.values()) == ("both", "outer")
+
+
 def test_default_capture_window_holds_one_dense_native_function() -> None:
     """Capture storage stays bounded but exceeds the observed 64 callbacks."""
 
