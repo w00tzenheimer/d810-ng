@@ -347,12 +347,25 @@ def _run(
     env.pop("D810_REMOTE_SHARE_ROOT", None)
     env.pop("D810_REMOTE_SMB_USER", None)
     env.pop("DOCKER_HOST", None)
+    # A Docker-hosted pytest already carries its outer runner's receipts.
+    # The harness must derive new receipts from its own mocked engine.
+    for receipt_key in (
+        "D810_TEST_RUNTIME_IMAGE",
+        "D810_TEST_RUNTIME_IMAGE_ID",
+        "D810_TEST_COBRA_SOURCE_MODE",
+        "D810_TEST_COBRA_TAG_COMMIT",
+        "D810_TEST_COBRA_WHEEL_SHA256",
+        "D810_TEST_ENGINE_CLOCK_OFFSET",
+    ):
+        env.pop(receipt_key, None)
     env.update(
         {
             "PATH": f"{tmp_path / 'bin'}:{env['PATH']}",
             "DOCKER_LOG": str(docker_log),
             "CHMOD_LOG": str(tmp_path / "chmod.log"),
             "MOCK_DOCKER_LABEL": label,
+            # Model the macOS share host even when pytest runs in Linux Docker.
+            "MOCK_UNAME_S": "Darwin",
             "D810_REPO_ROOT": str(root),
             "D810_NO_CYTHON": no_cython,
         }

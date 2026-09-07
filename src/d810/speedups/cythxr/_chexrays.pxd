@@ -19,6 +19,7 @@ from libcpp.map cimport map
 from libcpp.unordered_map cimport unordered_map
 from libcpp.memory cimport shared_ptr
 from cpython cimport PyObject, PyObject_GetAttrString
+from d810.hexrays.ir.native_pointer import swig_pointer_type
 from cython.operator cimport dereference as deref
 
 # =============================================================================
@@ -431,8 +432,17 @@ cdef extern from "swigpyobject.h":
 
 ctypedef SwigPyObject* SwigPyObjectPtr
 
-cdef inline void* _swig_ptr(object obj):
+cdef inline void* _swig_ptr(object obj, object expected_type) except NULL:
+    if not isinstance(obj, expected_type):
+        raise TypeError("native pointer access requires the matching SWIG wrapper")
     addr = PyObject_GetAttrString(obj, "this")
+    # Resolve only on native access: constructing even an empty mop before
+    # Hex-Rays initialization is unsafe. A live native wrapper establishes
+    # that boundary; type identity cannot be spoofed with a Python class name.
+    if type(addr) is not swig_pointer_type():
+        raise TypeError("native pointer access requires a SWIG pointer")
+    if (<SwigPyObjectPtr>addr).ptr == NULL:
+        raise ValueError("native pointer access requires a non-null pointer")
     return (<SwigPyObjectPtr>addr).ptr
 
 

@@ -30,6 +30,10 @@ from ._chexrays cimport (
 )
 
 import ida_hexrays
+from d810.hexrays.ir.native_pointer import swig_pointer_type
+from dataclasses import fields
+from d810.core.native_dispatch import supports_native_pointer
+from d810.hexrays.ir.p_mop_snapshot import MopSnapshot as PythonMopSnapshot
 
 
 # === Duck-typing layer: proxy classes for sub-object access ===
@@ -162,7 +166,13 @@ cdef class MopSnapshot:
         Returns:
             MopSnapshot instance with captured values
         """
-        cdef const mop_t* op = <const mop_t*> _swig_ptr(py_mop)
+        if not supports_native_pointer(py_mop, ida_hexrays.mop_t):
+            scalar = PythonMopSnapshot.from_mop(py_mop)
+            return MopSnapshot(**{
+                field.name: getattr(scalar, field.name)
+                for field in fields(PythonMopSnapshot)
+            })
+        cdef const mop_t* op = <const mop_t*> _swig_ptr(py_mop, ida_hexrays.mop_t)
         cdef int t = <int>op.t
         cdef int sz = <int>op.size
         cdef int vnum = <int>op.valnum if op.valnum != 0 else 0

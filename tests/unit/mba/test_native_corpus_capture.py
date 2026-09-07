@@ -402,3 +402,47 @@ def test_native_capture_without_residuals_is_byte_compatible_with_direct_report(
         capture_metadata=metadata,
     )
     assert capture.report().to_json() == direct.to_json()
+
+
+def test_manifest_runner_observes_every_attempt_before_bounded_history_eviction():
+    profile = _profile()
+
+    class Provider:
+        def __init__(self):
+            self.provider_outcome_history = ProviderOutcomeHistory(capacity=2)
+
+        def provider_outcomes(self):
+            return self.provider_outcome_history.outcomes()
+
+        def provider_outcome_cursor(self):
+            return self.provider_outcome_history.cursor
+
+        def provider_outcomes_since(self, cursor):
+            return self.provider_outcome_history.since(cursor)
+
+    provider = Provider()
+
+    def run_case(case, snapshot):
+        first = provider.provider_outcome_history.append(
+            _outcome(MbaProviderKind.CATALOGUE, ProviderOutcomeStatus.APPLIED, profile)
+        )
+        for _ in range(633):
+            provider.provider_outcome_history.append(
+                _outcome(
+                    MbaProviderKind.CATALOGUE, ProviderOutcomeStatus.UNCHANGED, profile
+                )
+            )
+        observed = snapshot.observed_by_rule_id[id(provider)]
+        assert len(observed) == 634
+        assert observed[first].status is ProviderOutcomeStatus.APPLIED
+        return profile
+
+    captured = capture_manifest_native_cases(
+        capture=NativeMbaCorpusCapture("manifest", {"runtime": "python"}),
+        cases=(ManifestNativeCaptureCase("dense", "catalogue"),),
+        rules=(provider,),
+        expected_providers=(MbaProviderKind.CATALOGUE,),
+        run_case=run_case,
+    )
+    assert captured[0].outcomes[0].status is ProviderOutcomeStatus.APPLIED
+    assert len(provider.provider_outcomes()) == 2

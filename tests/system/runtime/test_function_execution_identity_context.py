@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import contextlib
+from dataclasses import replace
 import gc
+import weakref
 
 import ida_hexrays
 import idaapi
@@ -62,7 +64,7 @@ class TestFunctionExecutionIdentityContext:
         monkeypatch,
     ) -> None:
         del ida_database, configure_hexrays, setup_libobfuscated_funcs
-        MbaObservationContext, PluginIdentity = _current_identity_types()
+        _, PluginIdentity = _current_identity_types()
         assert idaapi.init_hexrays_plugin()
         function_ea = get_func_ea("test_function_ollvm_fla_bcf_sub")
         assert function_ea != idaapi.BADADDR
@@ -91,6 +93,8 @@ class TestFunctionExecutionIdentityContext:
             assert instruction is not None
             plugin = PluginIdentity("cobra", "d810-cobra", "1.0", "runtime")
             observed: list[dict[str, object]] = []
+            observed_refs = []
+            unrelated_contexts = []
 
             def observe_callback(callback_block, callback_instruction):
                 callback_context = (
@@ -99,6 +103,9 @@ class TestFunctionExecutionIdentityContext:
                     )
                 )
                 assert callback_context is not None
+                observed_refs.append(weakref.ref(callback_context))
+                # Another consumer may legitimately keep its own observation.
+                unrelated_contexts.append(replace(callback_context))
                 observed.append(callback_context.to_dict())
                 return False
 
@@ -131,9 +138,9 @@ class TestFunctionExecutionIdentityContext:
             finally:
                 lifecycle.finish_hexrays_session()
             gc.collect()
-            assert not any(
-                isinstance(value, MbaObservationContext) for value in gc.get_objects()
-            )
+            assert len(observed_refs) == 1
+            assert observed_refs[0]() is None
+            assert len(unrelated_contexts) == 1
 
     def test_real_anchor_fallback_and_abstention_restore_mba(
         self,

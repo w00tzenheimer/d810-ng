@@ -5,6 +5,9 @@ from libcpp.pair cimport pair
 from cython.operator cimport dereference as deref
 from libc.stdint cimport uintptr_t
 
+import ida_hexrays
+from d810.hexrays.ir.native_pointer import swig_pointer_type
+
 from ._chexrays cimport (
     mop_t,
     ea_t,
@@ -129,7 +132,7 @@ cpdef uint64 hash_mop(object py_mop, uint64 func_entry_ea=0):
     The hash is salted with the function entry EA to distinguish stack/local
     references across functions. If unknown, pass 0.
     """
-    cdef const mop_t* op = <const mop_t*> _swig_ptr(py_mop)
+    cdef const mop_t* op = <const mop_t*> _swig_ptr(py_mop, ida_hexrays.mop_t)
     cdef unordered_map[uintptr_t, uint64] memo
     return _hash_mop_ptr(op, <ea_t>func_entry_ea, &memo, 0)
 
@@ -144,7 +147,7 @@ cpdef uint64 hash_minsn(object py_ins, uint64 func_entry_ea=0):
     The hash is salted with the function entry EA to distinguish stack/local
     references across functions. If unknown, pass 0.
     """
-    cdef const minsn_t* ins = <const minsn_t*> _swig_ptr(py_ins)
+    cdef const minsn_t* ins = <const minsn_t*> _swig_ptr(py_ins, ida_hexrays.minsn_t)
     cdef unordered_map[uintptr_t, uint64] memo
     cdef uint64 h
 
@@ -157,7 +160,7 @@ cpdef uint64 hash_minsn(object py_ins, uint64 func_entry_ea=0):
 
 cpdef tuple snapshot_stkpnts(object py_stkpnts):
     """Return the transient Hex-Rays stack points as ``(ea, spd)`` rows."""
-    cdef stkpnts_t* points = <stkpnts_t*>_swig_ptr(py_stkpnts)
+    cdef stkpnts_t* points = <stkpnts_t*>_swig_ptr(py_stkpnts, ida_hexrays.stkpnts_t)
     cdef size_t index
     cdef list rows = []
 
@@ -182,9 +185,9 @@ cpdef bint copy_mcallinfo(object py_destination, object py_source):
     from ``hxe_build_callinfo`` without reconstructing its internal vectors.
     """
     cdef mcallinfo_t* destination = (
-        <mcallinfo_t*>_swig_ptr(py_destination)
+        <mcallinfo_t*>_swig_ptr(py_destination, ida_hexrays.mcallinfo_t)
     )
-    cdef const mcallinfo_t* source = <const mcallinfo_t*>_swig_ptr(py_source)
+    cdef const mcallinfo_t* source = <const mcallinfo_t*>_swig_ptr(py_source, ida_hexrays.mcallinfo_t)
 
     if destination == NULL or source == NULL:
         return False
@@ -236,7 +239,7 @@ cpdef str get_stack_or_reg_name(object py_mop):
     For stack operands with a frame: locals => "%var_%X.<size>", args => "arg_%X.<size>".
     Appends SSA valnum as "{n}".
     """
-    cdef mop_t* op = <mop_t*> _swig_ptr(py_mop)
+    cdef mop_t* op = <mop_t*> _swig_ptr(py_mop, ida_hexrays.mop_t)
     return stack_var_name(op).c_str().decode('utf-8')
     # cdef qstring name
     # cdef bytes b

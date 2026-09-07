@@ -9,9 +9,9 @@ an incomplete decompilation as complete evidence.
 from __future__ import annotations
 
 from collections import deque
+from contextlib import contextmanager
 
 from d810.core.typing import Generic, TypeVar
-
 
 T = TypeVar("T")
 
@@ -38,6 +38,21 @@ class ProviderOutcomeHistory(Generic[T]):
         self._capacity = capacity
         self._entries: deque[tuple[int, T]] = deque()
         self._next_cursor = 0
+        self._observers: list[dict[int, T]] = []
+
+    @contextmanager
+    def observe(self):
+        """Collect a complete caller-owned window, including finalizations.
+
+        Registration precedes the operation being measured. Storage lasts only
+        for this explicit capture; the session history remains bounded.
+        """
+        observed: dict[int, T] = {}
+        self._observers.append(observed)
+        try:
+            yield observed
+        finally:
+            self._observers = [item for item in self._observers if item is not observed]
 
     @property
     def cursor(self) -> int:
@@ -56,6 +71,8 @@ class ProviderOutcomeHistory(Generic[T]):
         cursor = self._next_cursor
         self._next_cursor += 1
         self._entries.append((cursor, outcome))
+        for observed in self._observers:
+            observed[cursor] = outcome
         if len(self._entries) > self._capacity:
             self._entries.popleft()
         return cursor
@@ -63,10 +80,17 @@ class ProviderOutcomeHistory(Generic[T]):
     def replace(self, cursor: int, outcome: T) -> None:
         """Replace the finalization state for one still-retained attempt."""
 
+        observed_attempt = False
+        for observed in self._observers:
+            if cursor in observed:
+                observed[cursor] = outcome
+                observed_attempt = True
         for index, (entry_cursor, _entry) in enumerate(self._entries):
             if entry_cursor == cursor:
                 self._entries[index] = (cursor, outcome)
                 return
+        if observed_attempt:
+            return
         raise ProviderOutcomeHistoryTruncated(
             "provider outcome was evicted before mutation finalization"
         )

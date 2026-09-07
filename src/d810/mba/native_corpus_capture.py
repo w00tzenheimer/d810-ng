@@ -9,7 +9,7 @@ for providers that did not run.
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field
 import hashlib
 import json
@@ -26,6 +26,7 @@ from d810.mba.provider_outcome import (
     MbaProviderOutcome,
     ProviderOutcomeStatus,
 )
+from d810.mba.provider_history import ProviderOutcomeHistory
 from d810.mba.residual_corpus import (
     LEGACY_RESIDUAL_CORPUS_METADATA_KEY,
     RESIDUAL_CORPUS_METADATA_KEY,
@@ -59,6 +60,9 @@ class NativeProviderHistorySnapshot:
     """Per-rule history lengths captured immediately before one decompilation."""
 
     outcome_counts_by_rule_id: Mapping[int, int]
+    observed_by_rule_id: Mapping[int, Mapping[int, MbaProviderOutcome]] = field(
+        default_factory=dict
+    )
 
 
 @dataclass(frozen=True)
@@ -262,6 +266,11 @@ def _history_for_provider(
     rule: object,
     snapshot: NativeProviderHistorySnapshot | None = None,
 ) -> tuple[MbaProviderOutcome, ...]:
+    if snapshot is not None and id(rule) in snapshot.observed_by_rule_id:
+        outcomes = tuple(snapshot.observed_by_rule_id[id(rule)].values())
+        if any(not isinstance(outcome, MbaProviderOutcome) for outcome in outcomes):
+            raise ValueError("provider outcomes must be MbaProviderOutcome objects")
+        return outcomes
     method = getattr(rule, "provider_outcomes", None)
     if not callable(method):
         return ()
@@ -298,6 +307,29 @@ def snapshot_native_provider_histories(
         outcome_counts_by_rule_id={
             id(rule): cursor(rule) for rule in selected
         }
+    )
+
+
+@contextmanager
+def observe_native_provider_histories(rules: Iterable[object]):
+    """Register complete per-operation evidence before native callbacks run."""
+    selected = tuple(rules)
+    snapshot = snapshot_native_provider_histories(selected)
+    with ExitStack() as stack:
+        observed = {}
+        for rule in selected:
+            history = getattr(rule, "provider_outcome_history", None)
+            if isinstance(history, ProviderOutcomeHistory):
+                observed[id(rule)] = stack.enter_context(history.observe())
+        yield NativeProviderHistorySnapshot(
+            snapshot.outcome_counts_by_rule_id, observed
+        )
+
+
+def native_provider_outcomes(rules, snapshot):
+    """Read the outcomes belonging to an explicitly observed operation."""
+    return tuple(
+        outcome for rule in rules for outcome in _history_for_provider(rule, snapshot)
     )
 
 
@@ -608,10 +640,11 @@ def capture_manifest_native_cases(
     captured: list[MbaCorpusCaseReport] = []
     for case in declared_cases:
         # Provider adapters are session-long objects.  Each function gets its
-        # own bounded retention window so a prior case cannot consume the
-        # current case's fixed-capacity evidence budget.
-        with capture_native_provider_histories(selected_rules):
-            snapshot = snapshot_native_provider_histories(selected_rules)
+        # own observer so the complete operation survives bounded-history eviction.
+        with (
+            capture_native_provider_histories(selected_rules),
+            observe_native_provider_histories(selected_rules) as snapshot,
+        ):
             selected = run_case(case, snapshot)
             selection = (
                 selected
@@ -646,6 +679,8 @@ __all__ = [
     "capture_manifest_native_cases",
     "capture_native_provider_case",
     "capture_native_provider_histories",
+    "observe_native_provider_histories",
+    "native_provider_outcomes",
     "native_profile_from_outcome",
     "native_profile_metadata",
     "profiles_from_native_provider_histories",

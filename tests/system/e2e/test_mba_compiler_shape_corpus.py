@@ -22,7 +22,6 @@ import statistics
 import subprocess
 import sys
 import time
-import tracemalloc
 from collections.abc import Mapping
 from dataclasses import replace
 from pathlib import Path
@@ -30,6 +29,8 @@ from pathlib import Path
 import idapro
 import idaapi
 import pytest
+
+from tests.system.helpers.callback_allocation_probe import BoundedAllocationProbe
 
 from d810.core.config import ProjectConfiguration
 from d810.backends.mba import ida as ida_backend
@@ -53,7 +54,11 @@ from d810.mba.provider_outcome import (
     MbaProviderKind,
     ProviderOutcomeStatus,
 )
-from d810.mba.native_corpus_capture import capture_native_provider_histories
+from d810.mba.native_corpus_capture import (
+    capture_native_provider_histories,
+    observe_native_provider_histories,
+    native_provider_outcomes,
+)
 from d810.optimizers.microcode.instructions.pattern_matching.engine import (
     get_engine_info,
 )
@@ -1301,7 +1306,7 @@ class TestCompilerShapeCatalogueNative:
             real_profiled_proof_count = 0
             real_replacement_count = 0
             real_success_callback_count = 0
-            real_callback_allocation_count = 0
+            allocation_probe = BoundedAllocationProbe(limit=2)
             real_root_records: list[dict[str, object]] = []
             active_root_record: dict[str, object] | None = None
             real_clear_events: list[str] = []
@@ -1378,27 +1383,20 @@ class TestCompilerShapeCatalogueNative:
                 nonlocal real_profile_active, real_profile_completed
                 nonlocal real_replacement_count
                 nonlocal real_fallback_callback_active, real_success_callback_count
-                nonlocal real_callback_allocation_count
                 real_fallback_callback_count += 1
                 real_fallback_callback_active = True
                 if active_root_record is not None:
                     active_root_record["callbacks"] += 1
-                gc.collect()
-                tracemalloc.start()
-                allocation_before = tracemalloc.get_traced_memory()[0]
-                result = original_match(*args, **kwargs)
-                gc.collect()
-                allocation_after, allocation_peak = tracemalloc.get_traced_memory()
-                tracemalloc.stop()
-                retained = allocation_after - allocation_before
-                real_callback_allocation_count += 1
-                if real_callback_allocation_count == 1:
-                    real_allocation_before = allocation_before
-                    real_first_current = retained
-                    real_first_peak = allocation_peak
-                elif real_callback_allocation_count == 2:
-                    real_second_current = retained
-                    real_second_peak = allocation_peak
+                result = allocation_probe.measure(original_match, *args, **kwargs)
+                if len(allocation_probe.samples) == 1:
+                    sample = allocation_probe.samples[0]
+                    real_allocation_before = sample.before
+                    real_first_current = sample.retained
+                    real_first_peak = sample.peak
+                elif len(allocation_probe.samples) == 2:
+                    sample = allocation_probe.samples[1]
+                    real_second_current = sample.retained
+                    real_second_peak = sample.peak
                 real_replacement_count += result is not None
                 if result is not None:
                     real_success_callback_count += 1
@@ -1512,39 +1510,18 @@ class TestCompilerShapeCatalogueNative:
             accepted_catalogue_by_function: dict[str, tuple[object, ...]] = {}
             observed_catalogue_by_function: dict[str, tuple[object, ...]] = {}
             fallback_capture_outcomes: list[object] = []
+            fallback_observations = {}
             with capture_native_provider_histories(adapters):
                 handler_started = time.monotonic()
                 state.start_d810()
                 handler_startup_ms = (time.monotonic() - handler_started) * 1000.0
                 for function, _ in _CATALOGUE_CASES:
-                    outcome_cursors = tuple(
-                        (
-                            adapter,
-                            (
-                                adapter.provider_outcome_cursor()
-                                if callable(
-                                    getattr(adapter, "provider_outcome_cursor", None)
-                                )
-                                else len(adapter.provider_outcomes())
-                            ),
+                    with observe_native_provider_histories(adapters) as observation:
+                        after = idaapi.decompile(
+                            function_eas[function], flags=idaapi.DECOMP_NO_CACHE
                         )
-                        for adapter in adapters
-                    )
-                    after = idaapi.decompile(
-                        function_eas[function], flags=idaapi.DECOMP_NO_CACHE
-                    )
-                    assert after is not None
-                    new_outcomes = tuple(
-                        outcome
-                        for adapter, cursor in outcome_cursors
-                        for outcome in (
-                            adapter.provider_outcomes_since(cursor)
-                            if callable(
-                                getattr(adapter, "provider_outcomes_since", None)
-                            )
-                            else adapter.provider_outcomes()[cursor:]
-                        )
-                    )
+                        assert after is not None
+                        new_outcomes = native_provider_outcomes(adapters, observation)
                     observed_catalogue_by_function[function] = tuple(
                         outcome
                         for outcome in new_outcomes
@@ -1563,6 +1540,8 @@ class TestCompilerShapeCatalogueNative:
                         if outcome.matcher is not None
                         and outcome.matcher.selection is MatcherSelection.CANONICAL_FALLBACK
                     )
+                    for outcome in accepted:
+                        fallback_observations[id(outcome)] = observation
                 state.stop_d810()
             assert real_fallback_callback_count >= 2
             # The per-root records are authoritative.  Global counters are
@@ -1657,14 +1636,20 @@ class TestCompilerShapeCatalogueNative:
                 for adapter in adapters
                 if adapter.name == fallback_capture_outcome.metadata["rule_name"]
             )
-            fallback_history = fallback_adapter.provider_outcomes()
-            fallback_outcome_index = next(
-                index
-                for index, outcome in enumerate(fallback_history)
-                if outcome is fallback_capture_outcome
-            )
+            fallback_observation = fallback_observations[id(fallback_capture_outcome)]
+            # The session tail can evict this attempt after its function ends.
+            # Keep the actual cursor and finalized outcome from its observer.
             fallback_capture_snapshot = NativeProviderHistorySnapshot(
-                {id(fallback_adapter): fallback_outcome_index}
+                fallback_observation.outcome_counts_by_rule_id,
+                {
+                    id(fallback_adapter): {
+                        cursor: outcome
+                        for cursor, outcome in fallback_observation.observed_by_rule_id[
+                            id(fallback_adapter)
+                        ].items()
+                        if outcome is fallback_capture_outcome
+                    }
+                },
             )
             semantic_capture = NativeMbaCorpusCapture(
                 corpus_identity="mba-compiler-shapes-native",
