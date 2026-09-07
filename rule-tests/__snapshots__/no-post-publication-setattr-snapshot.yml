@@ -1,6 +1,26 @@
 id: no-post-publication-setattr
 snapshots:
   ? |
+    class BoundEntryEndpointLivenessAllowance:
+        def _validate_fields(self):
+            object.__setattr__(self, "source_owner_successors", successors)
+  : labels:
+    - source: object.__setattr__(self, "source_owner_successors", successors)
+      style: primary
+      start: 83
+      end: 146
+    - source: BoundEntryEndpointLivenessAllowance
+      style: secondary
+      start: 6
+      end: 41
+    - source: |-
+        class BoundEntryEndpointLivenessAllowance:
+            def _validate_fields(self):
+                object.__setattr__(self, "source_owner_successors", successors)
+      style: secondary
+      start: 0
+      end: 146
+  ? |
     class Claim:
         def normalize(self) -> None:
             object.__setattr__(self, "claims", claims)
@@ -9,6 +29,95 @@ snapshots:
       style: primary
       start: 54
       end: 96
+  ? |
+    class EntryEndpointLivenessAllowance:
+        def __post_init__(self):
+            object.__setattr__(self, "exit_path_refs", exits)
+  : labels:
+    - source: object.__setattr__(self, "exit_path_refs", exits)
+      style: primary
+      start: 75
+      end: 124
+    - source: EntryEndpointLivenessAllowance
+      style: secondary
+      start: 6
+      end: 36
+    - source: |-
+        class EntryEndpointLivenessAllowance:
+            def __post_init__(self):
+                object.__setattr__(self, "exit_path_refs", exits)
+      style: secondary
+      start: 0
+      end: 124
+  ? |
+    class EntryEndpointLivenessForecast:
+        def __post_init__(self):
+            ids.stage_unpublished_fields(self, values)
+  : labels:
+    - source: ids.stage_unpublished_fields(self, values)
+      style: primary
+      start: 74
+      end: 116
+    - source: EntryEndpointLivenessForecast
+      style: secondary
+      start: 6
+      end: 35
+    - source: |-
+        class EntryEndpointLivenessForecast:
+            def __post_init__(self):
+                ids.stage_unpublished_fields(self, values)
+      style: secondary
+      start: 0
+      end: 116
+  ? |
+    class PatchStepEvidencePayload:
+        def __post_init__(self):
+            stage_unpublished_field(self, "host_ea", self.host_ea)
+  : labels:
+    - source: stage_unpublished_field(self, "host_ea", self.host_ea)
+      style: primary
+      start: 69
+      end: 123
+    - source: PatchStepEvidencePayload
+      style: secondary
+      start: 6
+      end: 30
+    - source: |-
+        class PatchStepEvidencePayload:
+            def __post_init__(self):
+                stage_unpublished_field(self, "host_ea", self.host_ea)
+      style: secondary
+      start: 0
+      end: 123
+  ? |
+    class ProposedUnflattenContract:
+        def __post_init__(self):
+            object.__setattr__(self, "claims", claims)
+  : labels:
+    - source: object.__setattr__(self, "claims", claims)
+      style: primary
+      start: 70
+      end: 112
+    - source: ProposedUnflattenContract
+      style: secondary
+      start: 6
+      end: 31
+    - source: |-
+        class ProposedUnflattenContract:
+            def __post_init__(self):
+                object.__setattr__(self, "claims", claims)
+      style: secondary
+      start: 0
+      end: 112
+  ? |
+    class Receipt:
+        def _validate_fields(self) -> None:
+            object.__setattr__(self, "_content_seal", seal)
+  : labels:
+    - source: object.__setattr__(self, "_content_seal", seal)
+      style: primary
+      start: 63
+      end: 110
   ? |
     def _bind(value, derived):
         object.__setattr__(value, "derived", derived)

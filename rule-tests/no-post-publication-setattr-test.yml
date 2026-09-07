@@ -6,10 +6,6 @@ valid:
           def __post_init__(self) -> None:
               object.__setattr__(self, "members", members)
   - |
-      class Receipt:
-          def _validate_fields(self) -> None:
-              object.__setattr__(self, "_content_seal", seal)
-  - |
       def stage_unpublished_field(value, name, item):
           object.__setattr__(value, name, item)
   - |
@@ -28,6 +24,10 @@ valid:
 
 invalid:
   - |
+      class Receipt:
+          def _validate_fields(self) -> None:
+              object.__setattr__(self, "_content_seal", seal)
+  - |
       def _bind(value, derived):
           object.__setattr__(value, "derived", derived)
   - |
@@ -38,3 +38,23 @@ invalid:
       class Claim:
           def normalize(self) -> None:
               object.__setattr__(self, "claims", claims)
+  - |
+      class ProposedUnflattenContract:
+          def __post_init__(self):
+              object.__setattr__(self, "claims", claims)
+  - |
+      class EntryEndpointLivenessAllowance:
+          def __post_init__(self):
+              object.__setattr__(self, "exit_path_refs", exits)
+  - |
+      class BoundEntryEndpointLivenessAllowance:
+          def _validate_fields(self):
+              object.__setattr__(self, "source_owner_successors", successors)
+  - |
+      class PatchStepEvidencePayload:
+          def __post_init__(self):
+              stage_unpublished_field(self, "host_ea", self.host_ea)
+  - |
+      class EntryEndpointLivenessForecast:
+          def __post_init__(self):
+              ids.stage_unpublished_fields(self, values)

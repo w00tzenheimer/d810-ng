@@ -23,8 +23,8 @@ message: |
 
   The only places this call may appear are:
 
-    * `__post_init__` / `_validate_fields`, where the record is validating
-      itself and has not been published yet -- and even there, prefer
+    * construction-only `__post_init__` on records outside the closed
+      validation-only claim/allowance set below -- and even there, prefer
       `_strict_tuple` / `canonical_model_order` over rewriting the field;
     * `ids.stage_unpublished_field` / `ids.stage_unpublished_fields`, the named
       construction primitives a minting kernel uses to fill a record it just
@@ -32,24 +32,48 @@ message: |
     * `ids._lazy_identity_getattr`, which fills the record's declared-empty
       identity slot with a pure function of its own frozen content.
 
+  The listed claim/allowance records are re-entered after publication. They
+  have NO construction-method exception, and cannot call staging helpers.
+  `_validate_fields` is always read-only.
+
   Normalisation belongs BEFORE the frozen record exists: build the canonical
   value with `model.canonical_model_order(...)` in the producer and let
   `__post_init__` refuse anything else.
 
 rule:
-  pattern: object.__setattr__($$$)
-  not:
-    inside:
-      kind: function_definition
-      stopBy: end
-      has:
-        field: name
-        regex: "^(__post_init__|_validate_fields|stage_unpublished_field|stage_unpublished_fields|_lazy_identity_getattr)$"
+  any:
+    # These records are re-entered by authority consumers. Their complete
+    # methods, including __post_init__, are validation-only: no exemption.
+    - all:
+        - any:
+            - pattern: object.__setattr__($$$)
+            - pattern: stage_unpublished_field($$$)
+            - pattern: stage_unpublished_fields($$$)
+            - pattern: $MODULE.stage_unpublished_field($$$)
+            - pattern: $MODULE.stage_unpublished_fields($$$)
+        - inside:
+            kind: class_definition
+            stopBy: end
+            has:
+              field: name
+              regex: "^(EquivalentSemanticRouteClaim|ProposedUnflattenContract|LocalAliasEffectScalarizationClaim|RetiredDispatcherInfrastructureClaim|TerminalCycleBreakClaim|EntryEndpointLivenessForecast|EntryEndpointLivenessAllowance|BoundEntryEndpointLivenessAllowance|PatchStepEvidencePayload)$"
+    - all:
+        - pattern: object.__setattr__($$$)
+        - not:
+            inside:
+              kind: function_definition
+              stopBy: end
+              has:
+                field: name
+                regex: "^(__post_init__|stage_unpublished_field|stage_unpublished_fields|_lazy_identity_getattr)$"
 
 note: |
   Measured baseline (one OLLVM decompile, `.tmp/coordination/phase3/report.md`):
   9,492,919 field writes, of which 4 were post-publication content mutations --
   `ProposedUnflattenContract.claims` and `.entry_endpoint_liveness_allowances`,
   rewritten by a `__post_init__` re-entered as a revalidation on a proposal
-  whose content ID had already been minted.  This rule is what stops that
-  shape from coming back.
+  whose content ID had already been minted. The validation-only class arm
+  prevents that shape for the converted
+  claim/allowance closure, including calls to staging helpers. The fallback
+  method-name check is a syntax constraint only; it does not prove publication
+  safety for every other record in the package.

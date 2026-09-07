@@ -283,6 +283,21 @@ def _canonical_cfg_ref_tuple(
     return tuple(sorted(refs, key=canonical_bytes))
 
 
+def canonical_cfg_ref_order(values: Iterable[object], label: str) -> tuple:
+    """Canonicalize producer-owned block sets before constructing a record."""
+    return _canonical_cfg_ref_tuple(values, label)
+
+
+def _strict_cfg_ref_tuple(values: object, label: str) -> tuple:
+    """Validate a published block set without rewriting or coercing it."""
+    if type(values) is not tuple:
+        raise TypeError(f"{label} must be an exact tuple")
+    canonical = _canonical_cfg_ref_tuple(values, label)
+    if values != canonical:
+        raise ValueError(f"{label} must already be in canonical order")
+    return values
+
+
 def _canonical_source_coordinates(
     values: Iterable[object],
 ) -> tuple[tuple[CfgBlockRef, int], ...]:
@@ -3428,7 +3443,7 @@ class PatchStepEvidencePayload:
         for name in ("host_ea",):
             value = getattr(self, name)
             if value is not None:
-                object.__setattr__(self, name, _ea(value, name))
+                _ea(value, name)
         for name in ("host_opcode", "value_size"):
             value = getattr(self, name)
             if value is not None:
@@ -4057,18 +4072,17 @@ class EntryEndpointLivenessForecast:
             self.state_write_instruction_ea
         ):
             raise ValueError("entry liveness write EA is outside source identity")
-        exits = _canonical_cfg_ref_tuple(self.exit_path_refs, "exit_path_refs")
+        exits = _strict_cfg_ref_tuple(self.exit_path_refs, "exit_path_refs")
         if not exits or self.dispatcher_ref not in exits:
             raise ValueError("entry liveness forecast exit path must include dispatcher")
         if self.dispatcher_ref == self.replacement_ref:
             raise ValueError("entry liveness forecast must replace dispatcher")
         if type(self.cut_exit_path_uses) is not bool:
             raise TypeError("cut_exit_path_uses must be bool")
-        object.__setattr__(self, "exit_path_refs", exits)
         # A delivery corridor is ordered evidence, unlike a block set.  Do not
         # canonical-sort it: doing so destroys the W -> ... -> D relation the
         # transaction must later rebind.
-        path = tuple(self.delivery_path_refs)
+        path = _strict_tuple(self.delivery_path_refs, "delivery_path_refs")
         if len(set(path)) != len(path):
             raise ValueError("entry liveness forecast corridor must not repeat refs")
         for ref in path:
@@ -4087,7 +4101,6 @@ class EntryEndpointLivenessForecast:
             )
         if path and tuple(self.delivery_path_edges) != tuple((index, index + 1) for index in range(len(path) - 1)):
             raise ValueError("entry liveness forecast corridor edges must be exact adjacent indices")
-        object.__setattr__(self, "delivery_path_refs", path)
 
 
 @dataclass(frozen=True, slots=True)
@@ -4115,22 +4128,11 @@ class EntryEndpointLivenessAllowance:
     cut_exit_path_uses: bool = False
 
     def __post_init__(self) -> None:
-        # Compatibility for pre-corridor positional construction: its final
-        # bool occupied the slot now used by ``delivery_path_refs``.
-        legacy_positional = (
-            type(self.delivery_path_refs) is bool
-            and self.delivery_path_edges == ()
-            and self.cut_exit_path_uses is False
-        )
-        if legacy_positional:
-            legacy_cut_exit_path_uses = bool(self.delivery_path_refs)
-            object.__setattr__(self, "delivery_path_refs", ())
-            object.__setattr__(self, "cut_exit_path_uses", legacy_cut_exit_path_uses)
         _id(self.allowance_id, "allowance_id")
         _enum(self.reason, EntryEndpointLivenessReason, "reason")
         _nonnegative(self.normalized_state, "normalized_state")
         _id(self.route_proof_id, "route_proof_id")
-        owners = _canonical_cfg_ref_tuple(
+        owners = _strict_cfg_ref_tuple(
             self.entry_predecessor_owner_refs, "entry_predecessor_owner_refs",
         )
         if not owners:
@@ -4149,7 +4151,7 @@ class EntryEndpointLivenessAllowance:
             raise ValueError("entry liveness allowance write EA is outside source identity")
         if self.dispatcher_old_target_ref == self.replacement_endpoint_ref:
             raise ValueError("entry liveness allowance must replace the dispatcher target")
-        exits = _canonical_cfg_ref_tuple(self.exit_path_refs, "exit_path_refs")
+        exits = _strict_cfg_ref_tuple(self.exit_path_refs, "exit_path_refs")
         if not exits or self.dispatcher_old_target_ref not in exits:
             raise ValueError("entry liveness allowance exit path must include dispatcher target")
         _nonnegative(self.patch_step_index, "patch_step_index")
@@ -4163,10 +4165,8 @@ class EntryEndpointLivenessAllowance:
             self.replacement_endpoint_ref, self.exit_path_refs,
             self.patch_step_index, self.patch_step_digest,
             self.state_write_source_ref, self.state_write_instruction_ea,
-            *((self.cut_exit_path_uses,) if legacy_positional else (
-                self.delivery_path_refs, self.delivery_path_edges,
-                self.cut_exit_path_uses,
-            )),
+            self.delivery_path_refs, self.delivery_path_edges,
+            self.cut_exit_path_uses,
         ))
         # Existing sealed receipts without a delivery corridor retain their
         # v1 identity.  A non-empty corridor is always covered by the new
@@ -4186,10 +4186,8 @@ class EntryEndpointLivenessAllowance:
             and self.allowance_id == legacy_empty_expected
         ):
             raise ValueError("entry liveness allowance ID does not match content")
-        object.__setattr__(self, "entry_predecessor_owner_refs", owners)
-        object.__setattr__(self, "exit_path_refs", exits)
         # Preserve producer corridor order for the same reason as the forecast.
-        path = tuple(self.delivery_path_refs)
+        path = _strict_tuple(self.delivery_path_refs, "delivery_path_refs")
         if len(set(path)) != len(path):
             raise ValueError("entry liveness allowance corridor must not repeat refs")
         for ref in path:
@@ -4206,7 +4204,6 @@ class EntryEndpointLivenessAllowance:
             raise ValueError(
                 "entry liveness allowance corridor must end at redirect owner"
             )
-        object.__setattr__(self, "delivery_path_refs", path)
 
 
 @dataclass(frozen=True, slots=True)
@@ -4252,10 +4249,10 @@ class BoundEntryEndpointLivenessAllowance:
             or self.patch_step_fact.owner_ref not in self.allowance.entry_predecessor_owner_refs
         ):
             raise ValueError("entry liveness binding patch fact differs from allowance")
-        source_successors = _canonical_cfg_ref_tuple(
+        source_successors = _strict_cfg_ref_tuple(
             self.source_owner_successors, "source_owner_successors",
         )
-        projected_successors = _canonical_cfg_ref_tuple(
+        projected_successors = _strict_cfg_ref_tuple(
             self.projected_owner_successors, "projected_owner_successors",
         )
         if self.allowance.dispatcher_old_target_ref not in source_successors:
@@ -4266,8 +4263,6 @@ class BoundEntryEndpointLivenessAllowance:
             raise ValueError("entry liveness receipt projected realization retains dispatcher")
         if self.source_liveness_safe is not True or self.projected_redirect_realized is not True:
             raise ValueError("entry liveness receipt must seal accepted liveness and realization")
-        object.__setattr__(self, "source_owner_successors", source_successors)
-        object.__setattr__(self, "projected_owner_successors", projected_successors)
         expected = authority_id((
             "unflatten.entry-endpoint-liveness-binding.v1",
             self.allowance, self.route_proof_id, self.patch_step_fact,
@@ -9983,5 +9978,5 @@ ProjectedRouteRealizationResult: TypeAlias = ProjectedRouteRealizationAccepted |
 __all__ = [
     name for name, value in tuple(globals().items())
     if (isinstance(value, type) and (getattr(value, "__module__", None) == __name__))
-    or name in {"canonical_model_order", "SemanticSubjectLocator", "AuthorityEvidencePayload", "ProducerUnflattenClaim", "TransactionDerivedUnflattenClaim", "UnflattenClaim", "CorridorCoverageForecastAuthority", "CorridorCoveragePhaseResultAuthority", "corridor_base_forecast", "corridor_base_phase_result", "CLONED_SEMANTIC_OBSERVATION_SCHEMA", "CLONED_SEMANTIC_ORIGIN_SCHEMA", "CLONED_SEMANTIC_PREFIX_SCHEMA", "cloned_semantic_observation_digest", "cloned_semantic_instruction_origin_id", "cloned_semantic_prefix_id"}
+    or name in {"canonical_cfg_ref_order", "canonical_model_order", "SemanticSubjectLocator", "AuthorityEvidencePayload", "ProducerUnflattenClaim", "TransactionDerivedUnflattenClaim", "UnflattenClaim", "CorridorCoverageForecastAuthority", "CorridorCoveragePhaseResultAuthority", "corridor_base_forecast", "corridor_base_phase_result", "CLONED_SEMANTIC_OBSERVATION_SCHEMA", "CLONED_SEMANTIC_ORIGIN_SCHEMA", "CLONED_SEMANTIC_PREFIX_SCHEMA", "cloned_semantic_observation_digest", "cloned_semantic_instruction_origin_id", "cloned_semantic_prefix_id"}
 ]

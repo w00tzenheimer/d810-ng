@@ -270,6 +270,7 @@ from d810.transforms.unflatten_authority.proposal import (
 from d810.transforms.unflatten_authority.model import (
     EntryEndpointLivenessForecast,
     EntryEndpointLivenessReason,
+    canonical_cfg_ref_order,
 )
 
 logger = logging.getLogger("d810.transforms.minimal_unflatten_emit")
@@ -15195,7 +15196,7 @@ def emit_minimal_unflatten(
                         int(held_entry_fact.source_instruction_ea),
                         dispatcher_ref,
                         target_ref,
-                        tuple(exit_refs),
+                        canonical_cfg_ref_order(exit_refs, "exit_path_refs"),
                         tuple(witness_path_refs),
                         tuple((index, index + 1) for index in range(len(witness_path_refs) - 1)),
                         bool(carrier.cut_exit_path_uses),

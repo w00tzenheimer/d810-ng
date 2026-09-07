@@ -223,3 +223,47 @@ def test_canonical_model_order_is_the_order_the_records_demand() -> None:
     ordered = model.canonical_model_order((member1, member0), "member_subjects")
     assert ordered == model.canonical_model_order(ordered, "member_subjects")
     assert set(ordered) == {member0, member1}
+
+
+def test_entry_liveness_revalidation_does_not_write_published_descendants(monkeypatch):
+    """Exercise real proposal/binding/admission reentry, including nested records."""
+    from .test_transaction_api import (
+        test_binds_no_provider_entry_endpoint_liveness_to_its_exact_redirect_fact,
+        test_closed_entry_forecast_flows_from_canonical_proof_to_transaction_binding,
+    )
+
+    published = {}  # Retain the objects: id reuse cannot invent publication.
+    writes = []
+    reentered = set()
+
+    class PublishedSlot(_CountingSlot):
+        def __set__(self, inst, value):
+            if id(inst) in published:
+                self.log.append((type(inst).__name__, self.name))
+            self.orig.__set__(inst, value)
+
+    classes = (
+        model.EntryEndpointLivenessForecast,
+        model.EntryEndpointLivenessAllowance,
+        model.BoundEntryEndpointLivenessAllowance,
+        model.PatchStepEvidencePayload,
+    )
+    for cls in classes:
+        for name in cls.__slots__:
+            original_slot = cls.__dict__.get(name)
+            if type(original_slot).__name__ == "member_descriptor":
+                monkeypatch.setattr(cls, name, PublishedSlot(original_slot, name, writes))
+        original_post_init = cls.__post_init__
+
+        def post_init(self, original=original_post_init):
+            if id(self) in published:
+                reentered.add(type(self))
+            original(self)
+            published[id(self)] = self
+
+        monkeypatch.setattr(cls, "__post_init__", post_init)
+
+    test_binds_no_provider_entry_endpoint_liveness_to_its_exact_redirect_fact()
+    test_closed_entry_forecast_flows_from_canonical_proof_to_transaction_binding()
+    assert set(classes) <= reentered
+    assert writes == []
