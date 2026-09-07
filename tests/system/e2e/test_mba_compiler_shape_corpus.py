@@ -22,7 +22,6 @@ import statistics
 import subprocess
 import sys
 import time
-import tracemalloc
 from collections.abc import Mapping
 from dataclasses import replace
 from pathlib import Path
@@ -30,6 +29,8 @@ from pathlib import Path
 import idapro
 import idaapi
 import pytest
+
+from tests.system.helpers.callback_allocation_probe import BoundedAllocationProbe
 
 from d810.core.config import ProjectConfiguration
 from d810.backends.mba import ida as ida_backend
@@ -1305,7 +1306,7 @@ class TestCompilerShapeCatalogueNative:
             real_profiled_proof_count = 0
             real_replacement_count = 0
             real_success_callback_count = 0
-            real_callback_allocation_count = 0
+            allocation_probe = BoundedAllocationProbe(limit=2)
             real_root_records: list[dict[str, object]] = []
             active_root_record: dict[str, object] | None = None
             real_clear_events: list[str] = []
@@ -1382,27 +1383,20 @@ class TestCompilerShapeCatalogueNative:
                 nonlocal real_profile_active, real_profile_completed
                 nonlocal real_replacement_count
                 nonlocal real_fallback_callback_active, real_success_callback_count
-                nonlocal real_callback_allocation_count
                 real_fallback_callback_count += 1
                 real_fallback_callback_active = True
                 if active_root_record is not None:
                     active_root_record["callbacks"] += 1
-                gc.collect()
-                tracemalloc.start()
-                allocation_before = tracemalloc.get_traced_memory()[0]
-                result = original_match(*args, **kwargs)
-                gc.collect()
-                allocation_after, allocation_peak = tracemalloc.get_traced_memory()
-                tracemalloc.stop()
-                retained = allocation_after - allocation_before
-                real_callback_allocation_count += 1
-                if real_callback_allocation_count == 1:
-                    real_allocation_before = allocation_before
-                    real_first_current = retained
-                    real_first_peak = allocation_peak
-                elif real_callback_allocation_count == 2:
-                    real_second_current = retained
-                    real_second_peak = allocation_peak
+                result = allocation_probe.measure(original_match, *args, **kwargs)
+                if len(allocation_probe.samples) == 1:
+                    sample = allocation_probe.samples[0]
+                    real_allocation_before = sample.before
+                    real_first_current = sample.retained
+                    real_first_peak = sample.peak
+                elif len(allocation_probe.samples) == 2:
+                    sample = allocation_probe.samples[1]
+                    real_second_current = sample.retained
+                    real_second_peak = sample.peak
                 real_replacement_count += result is not None
                 if result is not None:
                     real_success_callback_count += 1
