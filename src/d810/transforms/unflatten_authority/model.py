@@ -298,6 +298,22 @@ def _strict_cfg_ref_tuple(values: object, label: str) -> tuple:
     return values
 
 
+def _validate_delivery_path_edges(path: tuple, edges: object) -> None:
+    """Validate an immutable ordered corridor without retaining mutable aliases."""
+    if type(edges) is not tuple:
+        raise TypeError("delivery_path_edges must be an exact tuple")
+    for edge in edges:
+        if type(edge) is not tuple:
+            raise TypeError("delivery_path_edges items must be exact tuples")
+        if len(edge) != 2:
+            raise ValueError("delivery_path_edges items must be index pairs")
+        if any(type(index) is not int for index in edge):
+            raise TypeError("delivery_path_edges indices must be exact integers")
+    expected = tuple((index, index + 1) for index in range(len(path) - 1))
+    if edges != expected:
+        raise ValueError("delivery_path_edges must be exact adjacent indices")
+
+
 def _canonical_source_coordinates(
     values: Iterable[object],
 ) -> tuple[tuple[CfgBlockRef, int], ...]:
@@ -4083,6 +4099,7 @@ class EntryEndpointLivenessForecast:
         # canonical-sort it: doing so destroys the W -> ... -> D relation the
         # transaction must later rebind.
         path = _strict_tuple(self.delivery_path_refs, "delivery_path_refs")
+        _validate_delivery_path_edges(path, self.delivery_path_edges)
         if len(set(path)) != len(path):
             raise ValueError("entry liveness forecast corridor must not repeat refs")
         for ref in path:
@@ -4099,8 +4116,6 @@ class EntryEndpointLivenessForecast:
             raise ValueError(
                 "entry liveness forecast corridor must end at redirect owner"
             )
-        if path and tuple(self.delivery_path_edges) != tuple((index, index + 1) for index in range(len(path) - 1)):
-            raise ValueError("entry liveness forecast corridor edges must be exact adjacent indices")
 
 
 @dataclass(frozen=True, slots=True)
@@ -4158,6 +4173,8 @@ class EntryEndpointLivenessAllowance:
         _id(self.patch_step_digest, "patch_step_digest")
         if type(self.cut_exit_path_uses) is not bool:
             raise TypeError("cut_exit_path_uses must be bool")
+        path = _strict_tuple(self.delivery_path_refs, "delivery_path_refs")
+        _validate_delivery_path_edges(path, self.delivery_path_edges)
         expected = authority_id((
             "unflatten.entry-endpoint-liveness-allowance.v1",
             self.reason, self.normalized_state, self.route_proof_id,
@@ -4187,7 +4204,6 @@ class EntryEndpointLivenessAllowance:
         ):
             raise ValueError("entry liveness allowance ID does not match content")
         # Preserve producer corridor order for the same reason as the forecast.
-        path = _strict_tuple(self.delivery_path_refs, "delivery_path_refs")
         if len(set(path)) != len(path):
             raise ValueError("entry liveness allowance corridor must not repeat refs")
         for ref in path:
@@ -4198,7 +4214,7 @@ class EntryEndpointLivenessAllowance:
             )
         if path and (path[0] != self.state_write_source_ref or path[-1] != self.dispatcher_old_target_ref):
             raise ValueError("entry liveness allowance requires exact write-to-dispatcher corridor")
-        if path and (owners[0] not in path or tuple(self.delivery_path_edges) != tuple((i, i + 1) for i in range(len(path) - 1))):
+        if path and owners[0] not in path:
             raise ValueError("entry liveness allowance corridor is invalid")
         if path and (len(path) < 2 or path[-2] != owners[0]):
             raise ValueError(
