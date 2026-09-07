@@ -84,6 +84,110 @@ DIGEST_FIXTURE_SCHEMA = "digest-fixture.v1"
 CLONED_SEMANTIC_OBSERVATION_SCHEMA = "unflatten.cloned-semantic-observation.v1"
 CLONED_SEMANTIC_ORIGIN_SCHEMA = "unflatten.cloned-semantic-origin.v1"
 CLONED_SEMANTIC_PREFIX_SCHEMA = "unflatten.cloned-semantic-prefix.v1"
+#: ``record type -> {identity field name: derivation}``.  A record registers
+#: here through :func:`lazy_identity`; the entry is what
+#: :func:`_lazy_identity_getattr` dispatches on.  This is a *class* table, not
+#: a value cache: the derived identity lives in the record's own empty slot and
+#: nowhere else, so it is bounded by the object's lifetime and there is nothing
+#: to invalidate, seal, stamp or evict.
+_LAZY_IDENTITY: dict[type[object], dict[str, object]] = {}
+
+
+def _lazy_identity_getattr(self: object, name: str) -> object:
+    """Derive a record's content identity the first time it is demanded.
+
+    Reached only through ``__getattr__``, i.e. only when the identity slot is
+    still empty.  ``slots=True`` plus a field declared ``init=False`` and
+    without a default is what leaves it empty: the generated ``__init__``
+    never writes it, so construction performs no hashing at all.
+    """
+
+    derivations = _LAZY_IDENTITY.get(type(self))
+    derive = None if derivations is None else derivations.get(name)
+    if derive is None:
+        raise AttributeError(
+            f"{type(self).__name__!r} object has no attribute {name!r}"
+        )
+    try:
+        value = derive(self)
+    except AttributeError as exc:
+        # A derivation that reads an unset slot must not be swallowed by a
+        # ``getattr(record, name, None)`` in an encoder: that would silently
+        # encode ``None`` where the identity belongs and move the bytes.
+        raise RuntimeError(
+            f"lazy identity {type(self).__name__}.{name} derivation failed"
+        ) from exc
+    object.__setattr__(self, name, value)
+    return value
+
+
+def lazy_identity(**derivations: object) -> object:
+    """Class decorator: derive the named identity fields on first demand.
+
+    Each name must be a field of the decorated frozen record declared
+    ``init=False, compare=False`` and *without* a default, so that
+
+    * no producer can supply the identity (constraint: constructors stop
+      taking it),
+    * dataclass ``__eq__``/``__hash__`` cannot force a mint (record equality
+      is structural over the remaining fields, which is equivalent by
+      construction: same content <=> same ID), and
+    * the slot starts empty, which is what makes ``__getattr__`` fire once.
+
+    The field itself stays in ``fields()`` and therefore in the canonical wire
+    schema, so a *parent* record embedding this one still encodes the child's
+    identity string in exactly the position and form it always did.
+    """
+
+    def decorate(cls: type[object]) -> type[object]:
+        if not is_dataclass(cls):
+            raise TypeError("lazy_identity requires a dataclass record")
+        declared = {field.name: field for field in fields(cls)}
+        for name in derivations:
+            field = declared.get(name)
+            if field is None:
+                raise TypeError(
+                    f"{cls.__name__} has no field {name!r} to derive lazily"
+                )
+            if field.init:
+                raise TypeError(
+                    f"{cls.__name__}.{name} must be declared init=False"
+                )
+            if field.compare:
+                raise TypeError(
+                    f"{cls.__name__}.{name} must be declared compare=False"
+                )
+            if field.default is not MISSING or field.default_factory is not MISSING:
+                raise TypeError(
+                    f"{cls.__name__}.{name} must not declare a default"
+                )
+        _LAZY_IDENTITY[cls] = dict(derivations)
+        cls.__getattr__ = _lazy_identity_getattr  # type: ignore[attr-defined]
+        return cls
+
+    return decorate
+
+
+def lazy_identity_is_pending(record: object, name: str) -> bool:
+    """Return whether ``record``'s lazy identity ``name`` is still underived.
+
+    Diagnostic/test helper.  It reads the slot descriptor directly so that
+    asking the question does not answer it.
+    """
+
+    derivations = _LAZY_IDENTITY.get(type(record))
+    if derivations is None or name not in derivations:
+        raise TypeError(f"{type(record).__name__}.{name} is not a lazy identity")
+    slot = getattr(type(record), name, None)
+    if slot is None:
+        raise TypeError(f"{type(record).__name__}.{name} has no slot descriptor")
+    try:
+        slot.__get__(record, type(record))
+    except AttributeError:
+        return True
+    return False
+
+
 _REGISTRIES_READY = False
 _ENUM_TYPES: set[type[Enum]] = set()
 _RECORD_TYPES: set[type[object]] = set()
