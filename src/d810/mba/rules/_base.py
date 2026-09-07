@@ -31,6 +31,7 @@ from d810.core.typing import TYPE_CHECKING, Any, Dict, List, Self
 from d810.core import getLogger
 from d810.core.registry import Registrant
 from d810.mba.dsl import SymbolicExpression, SymbolicExpressionProtocol
+from d810.ir.expr.constraints import bind_runtime_width
 
 # Import types only for type checking to avoid circular imports and IDA dependencies
 if TYPE_CHECKING:
@@ -379,6 +380,13 @@ class VerifiableRule(SymbolicRule, Registrant):
             # No constraints to check, pattern match is sufficient
             return True
 
+        if getattr(self, "CONSTRAINTS", None):
+            try:
+                bind_runtime_width(candidate, match_context)
+            except (ValueError, TypeError, AttributeError) as error:
+                logger.debug("Constraint width rejected for %s: %s", self.name, error)
+                return False
+
         # CRITICAL: Add the candidate itself so constraints/providers can inspect it
         # This enables context-aware constraints like when.dst.is_high_half
         match_context["_candidate"] = candidate
@@ -479,7 +487,9 @@ class VerifiableRule(SymbolicRule, Registrant):
                         import importlib
 
                         _ast_mod = importlib.import_module("d810.hexrays.expr.ast")
-                        match_context[var_name] = _ast_mod.AstConstant(var_name, value)
+                        match_context[var_name] = _ast_mod.AstConstant(
+                            var_name, value, match_context["_width"] // 8
+                        )
                     else:
                         # This is a checking constraint - verify it holds
                         if not constraint.check(match_context):
@@ -488,7 +498,7 @@ class VerifiableRule(SymbolicRule, Registrant):
                     # Legacy callable constraint
                     if not constraint(match_context):
                         return False
-            except (KeyError, AttributeError, TypeError) as e:
+            except (KeyError, AttributeError, TypeError, ValueError) as e:
                 logger.debug(f"Constraint check failed for {self.name}: {e}")
                 return False
 

@@ -22,10 +22,58 @@ To convert constraints to Z3 for verification:
 from __future__ import annotations
 
 from dataclasses import dataclass
+from d810.core import getLogger
 from d810.core.typing import Any, Protocol, runtime_checkable
 
 from .dsl import SymbolicExpression, SymbolicExpressionProtocol
 from .mop_ops import get_mop_ops
+
+logger = getLogger(__name__)
+
+
+def runtime_operand_size(operand: Any) -> int:
+    """Read a concrete operand's byte size without inventing a default.
+
+    Unmaterialized computed constants carry expected_size. Live AST nodes and
+    binding carriers carry a mop or a size; multiple declarations must agree.
+    Zero is the AST sentinel for an absent mop, not a usable byte width.
+    """
+    declarations = (
+        getattr(operand, "size", None),
+        getattr(operand, "expected_size", None),
+        getattr(getattr(operand, "mop", None), "size", None),
+    )
+    sizes = [size for size in declarations if size is not None and size != 0]
+    if not sizes or any(
+        type(size) is not int or size not in (1, 2, 4, 8, 16) for size in sizes
+    ):
+        raise ValueError("Runtime operand has no valid byte width")
+    if len(set(sizes)) != 1:
+        raise ValueError("Runtime operand byte widths disagree")
+    return sizes[0]
+
+
+def bind_runtime_width(candidate: Any, context: dict[str, Any]) -> int:
+    """Bind the matched expression's result width, checking every declaration."""
+    declarations = (
+        getattr(candidate, "size", None),
+        getattr(candidate, "dest_size", None),
+        getattr(getattr(candidate, "dst_mop", None), "size", None),
+    )
+    sizes = [size for size in declarations if size is not None and size != 0]
+    if not sizes or any(
+        type(size) is not int or size not in (1, 2, 4, 8, 16) for size in sizes
+    ):
+        raise ValueError("Matched expression has no valid result width")
+    if len(set(sizes)) != 1:
+        raise ValueError("Matched expression result widths disagree")
+    width = sizes[0] * 8
+    if "_width" in context and (
+        type(context["_width"]) is not int or context["_width"] != width
+    ):
+        raise ValueError("Constraint width conflicts with matched expression")
+    context["_width"] = width
+    return width
 
 
 # =============================================================================
@@ -374,14 +422,25 @@ class EqualityConstraint(ConstraintExpr):
     def _eval_symbolic_expr(self, expr, candidate: dict[str, Any]) -> int:
         """Evaluate a pure SymbolicExpression with concrete values."""
 
-        # Get width for masking (default 32-bit)
-        width = candidate.get("_width", 32)
+        # Concrete evaluation must use the same bit-vector width as the match.
+        width = candidate.get("_width")
+        if type(width) is not int or width not in (8, 16, 32, 64, 128):
+            raise ValueError(
+                "Concrete constraint evaluation requires an explicit width"
+            )
         mask = (1 << width) - 1
 
         # Leaf node
         if expr.is_leaf():
             if expr.name in candidate:
                 value = candidate[expr.name]
+                if (
+                    not isinstance(value, int)
+                    and runtime_operand_size(value) * 8 != width
+                ):
+                    raise ValueError(
+                        "Constraint operand width differs from expression width"
+                    )
                 raw = value.value if hasattr(value, "value") else value
                 # Canonicalize to unsigned width representation (Z3 BitVec semantics)
                 return raw & mask if isinstance(raw, int) else raw
@@ -394,8 +453,19 @@ class EqualityConstraint(ConstraintExpr):
 
         # Operation node - evaluate recursively
         left_val = self._eval_symbolic_expr(expr.left, candidate) if expr.left else None
+        right_context = candidate
+        if expr.operation in ("shl", "shr", "sar") and expr.right is not None:
+            # Hex-Rays shift counts may be narrower than the data operand.
+            # Only a typed leaf gives us an independent count width; compound
+            # count expressions retain the enclosing width and fail on mismatch.
+            if expr.right.is_leaf() and expr.right.name in candidate:
+                count = candidate[expr.right.name]
+                if not isinstance(count, int):
+                    right_context = dict(
+                        candidate, _width=runtime_operand_size(count) * 8
+                    )
         right_val = (
-            self._eval_symbolic_expr(expr.right, candidate) if expr.right else None
+            self._eval_symbolic_expr(expr.right, right_context) if expr.right else None
         )
 
         match expr.operation:
