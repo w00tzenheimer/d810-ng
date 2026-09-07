@@ -25,6 +25,16 @@ class SafePointDisposition(str, Enum):
     MUTATED = "mutated"
 
 
+class _ClaimState(str, Enum):
+    CLAIMED = "claimed"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+class FailedSafePointError(RuntimeError):
+    """An owned stage failed against this native epoch; consumers must stop."""
+
+
 @dataclass(frozen=True, slots=True)
 class OwnedStageOutcome:
     """The only outcome a D-810-owned stage may report to the coordinator.
@@ -200,18 +210,23 @@ class SafePointResult:
 class HexRaysSafePointCoordinator:
     """Claim exact safe points and classify detached pipeline outcomes.
 
-    The set contains immutable keys only.  It is reset by the owning adapter
-    at decompilation start.  There is intentionally no generation handshake or
+    Claims retain their completion state under immutable native-epoch keys.
+    They are reset by the owning adapter at decompilation start. There is no generation handshake or
     automatic unbarrier: when a pipeline mutates, the caller must install its
     existing maturity-wide ``_pipeline_just_fired`` fence.
     """
 
     def __init__(self) -> None:
-        self._claimed: set[SafePointKey] = set()
+        self._claimed: dict[SafePointKey, _ClaimState] = {}
 
     def reset(self) -> None:
         """Discard claims at a new top-level decompilation boundary."""
         self._claimed.clear()
+
+    @property
+    def has_failed_claims(self) -> bool:
+        """Whether callback entry needs an epoch check, derived from its owner."""
+        return _ClaimState.FAILED in self._claimed.values()
 
     def claim(self, key: SafePointKey) -> bool:
         """Claim *key* once, returning false for an already-seen epoch."""
@@ -219,8 +234,23 @@ class HexRaysSafePointCoordinator:
             raise TypeError("safe-point claim requires a SafePointKey")
         if key in self._claimed:
             return False
-        self._claimed.add(key)
+        self._claimed[key] = _ClaimState.CLAIMED
         return True
+
+    def require_usable(self, key: SafePointKey) -> None:
+        """Reject a failed native epoch before any callback consumer runs.
+
+        A claimed stage that failed is not an abstention. Maturity setup may
+        itself have been interrupted, so adapter counters cannot own this
+        decision. The claim survives until its owner resets the session; a
+        different native identity, generation or maturity is a different key.
+        """
+        if not isinstance(key, SafePointKey):
+            raise TypeError("safe-point usability requires a SafePointKey")
+        if self._claimed.get(key) is _ClaimState.FAILED:
+            raise FailedSafePointError(
+                f"owned stage {key.stage_id!r} failed for this native epoch"
+            )
 
     def run(
         self,
@@ -229,22 +259,28 @@ class HexRaysSafePointCoordinator:
     ) -> SafePointResult:
         """Claim *key* and record the operation's own stated outcome.
 
-        A duplicate is an abstention and does not call ``operation``.  An
+        A completed duplicate is an abstention and does not call ``operation``. An
         operation exception -- including the :class:`TypeError` raised for an
         outcome that is not an :class:`OwnedStageOutcome` -- is deliberately
         propagated to the adapter's existing exception boundary; the claim is
-        retained so a failing callback cannot retry the same native epoch
-        indefinitely.
+        retained as failed so later consumers cannot resume that native epoch.
         """
         if not callable(operation):
             raise TypeError("safe-point operation must be callable")
+        self.require_usable(key)
         if not self.claim(key):
             return SafePointResult(
                 key=key,
                 disposition=SafePointDisposition.ABSTAINED,
                 claimed=False,
             )
-        return self._result_for(key, operation())
+        try:
+            result = self._result_for(key, operation())
+        except BaseException:
+            self._claimed[key] = _ClaimState.FAILED
+            raise
+        self._claimed[key] = _ClaimState.COMPLETED
+        return result
 
     @staticmethod
     def _result_for(
@@ -272,6 +308,7 @@ class HexRaysSafePointCoordinator:
 
 
 __all__ = [
+    "FailedSafePointError",
     "HexRaysSafePointCoordinator",
     "OwnedStageOutcome",
     "SafePointDisposition",

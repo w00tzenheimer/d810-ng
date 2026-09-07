@@ -214,6 +214,45 @@ def test_rejected_outcome_still_retains_the_claim() -> None:
     assert coordinator.claim(key) is False
 
 
+def test_failed_claim_cannot_be_read_as_a_successful_abstention() -> None:
+    coordinator = HexRaysSafePointCoordinator()
+    key = _key()
+    assert coordinator.has_failed_claims is False
+    with pytest.raises(TypeError):
+        coordinator.run(key, lambda: None)
+    assert coordinator.has_failed_claims is True
+
+    with pytest.raises(RuntimeError, match="failed"):
+        coordinator.require_usable(key)
+    with pytest.raises(RuntimeError, match="failed"):
+        coordinator.run(key, OwnedStageOutcome.abstained)
+
+    coordinator.reset()
+    assert coordinator.has_failed_claims is False
+    coordinator.require_usable(key)
+    assert coordinator.run(key, OwnedStageOutcome.abstained).claimed
+
+
+@pytest.mark.parametrize("changed", ["session_id", "mba", "maturity", "generation"])
+def test_failed_claim_is_scoped_to_its_native_epoch(changed) -> None:
+    coordinator = HexRaysSafePointCoordinator()
+    mba = SimpleNamespace(this=0x1000)
+    kwargs = dict(session_id="s", mba=mba, maturity=5, generation=0)
+    failed_key = _key(**kwargs)
+    with pytest.raises(TypeError):
+        coordinator.run(failed_key, lambda: None)
+
+    kwargs[changed] = {
+        "session_id": "new-session",
+        "mba": SimpleNamespace(this=0x2000),
+        "maturity": 6,
+        "generation": 1,
+    }[changed]
+    new_key = _key(**kwargs)
+    coordinator.require_usable(new_key)
+    assert coordinator.run(new_key, OwnedStageOutcome.abstained).claimed
+
+
 def test_owned_stage_outcome_from_applied_count() -> None:
     assert OwnedStageOutcome.from_applied_count(0) == OwnedStageOutcome.abstained()
     assert OwnedStageOutcome.from_applied_count(3) == OwnedStageOutcome.mutated(3)

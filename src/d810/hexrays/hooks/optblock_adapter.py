@@ -563,14 +563,8 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
             for pass_ in passes
         )
 
-    def _run_pass_pipeline_once(
-        self,
-        mba: ida_hexrays.mbl_array_t,
-        *,
-        phase_label: str,
-    ) -> None:
-        if self._pass_pipeline is None:
-            return
+    def _pipeline_safe_point_key(self, mba: object) -> SafePointKey:
+        """Use the live native epoch even before maturity setup completes."""
         function_ea = int(getattr(mba, "entry_ea", 0) or 0)
         lifecycle = self._decompilation_lifecycle
         session_id: object = "unbound"
@@ -599,7 +593,7 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
         )
         if maturity is None:
             maturity = -1
-        key = SafePointKey.from_mba(
+        return SafePointKey.from_mba(
             session_id=session_id,
             function_ea=function_ea,
             mba=mba,
@@ -607,6 +601,16 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
             generation=generation,
             stage_id="d810.pass_pipeline",
         )
+
+    def _run_pass_pipeline_once(
+        self,
+        mba: ida_hexrays.mbl_array_t,
+        *,
+        phase_label: str,
+    ) -> None:
+        if self._pass_pipeline is None:
+            return
+        key = self._pipeline_safe_point_key(mba)
         result = self._safe_point_coordinator.run(
             key,
             lambda: self._execute_pass_pipeline_once(
@@ -783,6 +787,10 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
                 boundary=NativeMutationBoundary.OPTBLOCK,
             ):
                 return 0
+            if mba is not None and self._safe_point_coordinator.has_failed_claims:
+                self._safe_point_coordinator.require_usable(
+                    self._pipeline_safe_point_key(mba)
+                )
             result = self._func(blk)
             if (
                 int(result) == 0
