@@ -305,7 +305,7 @@ class FunctionExecutionIdentity:
         return json.dumps(self.to_dict(), sort_keys=True, separators=(",", ":"))
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, weakref_slot=True)
 class MbaObservationContext:
     """Callback-local, immutable context for one MBA instruction observation."""
 
