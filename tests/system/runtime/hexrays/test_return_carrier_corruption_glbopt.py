@@ -137,6 +137,29 @@ def _site(module, mba, *, block: int = 1, ea: int = 0x180018F75):
     )
 
 
+def _apply(module, mba):
+    snapshot = module.ReturnRegisterConsumptionSnapshot(
+        mba.entry_ea,
+        native_object_identity(mba),
+        module.ida_hexrays.MMAT_GLBOPT1,
+        (CarrierDefinition(1, 0x180018F75),),
+        "test-session",
+        0,
+    )
+    lifecycle = SimpleNamespace(
+        current_session=lambda _ea: SimpleNamespace(identity_key="test-session"),
+        current_mba_generation=lambda **_: 0,
+        native_mutation_quarantined=False,
+        quarantine_native_mutation=lambda **_: None,
+    )
+    return module.apply_return_const_corruption_cleanup(
+        mba,
+        prefold_snapshot=snapshot,
+        lifecycle_authority=lifecycle,
+        return_consumption_reader=lambda _ea: snapshot,
+    )
+
+
 def test_cleanup_rejects_proof_shaped_object(glbopt_module, monkeypatch):
     """A reason string and site coordinates are not semantic permission."""
     insn = _Insn(0x180018F75)
@@ -150,7 +173,7 @@ def test_cleanup_rejects_proof_shaped_object(glbopt_module, monkeypatch):
             )
         ],
     )
-    assert glbopt_module.apply_return_const_corruption_cleanup(mba) == 0
+    assert _apply(glbopt_module, mba) == 0
     assert insn.opcode == 99
     assert mba.mark_chains_dirty_calls == 0
 
@@ -178,7 +201,7 @@ def test_return_const_corruption_cleanup_dry_run_does_not_mutate(
         lambda _mba, **_kw: [_site(glbopt_module, mba)],
     )
 
-    assert glbopt_module.apply_return_const_corruption_cleanup(mba) == 0
+    assert _apply(glbopt_module, mba) == 0
     assert insn.opcode == 99
     assert not insn.l.erased
     assert not insn.r.erased
@@ -199,7 +222,7 @@ def test_return_const_corruption_cleanup_apply_nops_and_marks_chains_dirty(
         lambda _mba, **_kw: [_site(glbopt_module, mba)],
     )
 
-    assert glbopt_module.apply_return_const_corruption_cleanup(mba) == 1
+    assert _apply(glbopt_module, mba) == 1
     assert insn.opcode == glbopt_module.ida_hexrays.m_nop
     assert insn.l.erased
     assert insn.r.erased
@@ -222,7 +245,7 @@ def test_return_const_corruption_cleanup_only_runs_at_global_opt_maturities(
         fail_if_called,
     )
 
-    assert glbopt_module.apply_return_const_corruption_cleanup(mba) == 0
+    assert _apply(glbopt_module, mba) == 0
 
 
 def test_return_const_corruption_cleanup_runs_at_glbopt2(
@@ -238,7 +261,7 @@ def test_return_const_corruption_cleanup_runs_at_glbopt2(
         lambda _mba, **_kw: [_site(glbopt_module, mba)],
     )
 
-    assert glbopt_module.apply_return_const_corruption_cleanup(mba) == 1
+    assert _apply(glbopt_module, mba) == 1
     assert insn.opcode == glbopt_module.ida_hexrays.m_nop
 
 
@@ -264,7 +287,7 @@ def test_cleanup_rejects_stale_or_ambiguous_site(glbopt_module, monkeypatch, cha
     monkeypatch.setattr(
         glbopt_module, "find_droppable_return_const_corruptions", collect
     )
-    assert glbopt_module.apply_return_const_corruption_cleanup(mba) == 0
+    assert _apply(glbopt_module, mba) == 0
     assert insn.opcode == 99
     assert mba.mark_chains_dirty_calls == 0
 

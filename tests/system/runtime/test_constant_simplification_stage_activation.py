@@ -1088,3 +1088,13 @@ def test_actual_adapter_restore_failure_runs_full_manager_cleanup(
             state.manager._runtime_invalidated = False
             state.load_project(original_index)
             state.manager._started = False
+
+
+@pytest.mark.ida_required
+def test_new_decompilation_releases_prefold_consumption_evidence(d810_state):
+    with d810_state() as state:
+        _prepare_actual_started_manager(state)
+        block = state.manager.block_optimizer
+        block._prefold_rccc_by_func[0x401000] = object()
+        block.reset_pipeline_tracker()
+        assert block.prefold_return_reg_consumption_for(0x401000) is None

@@ -412,6 +412,9 @@ class HexRaysInstructionCommitter:
         producer_cycle_quarantine: Callable[..., object] | None = None,
         native_failure_quarantine: Callable[[BaseException], object] | None = None,
         lifecycle_authority: object | None = None,
+        return_consumption_reader: (
+            Callable[[int], ReturnRegisterConsumptionSnapshot | None] | None
+        ) = None,
     ) -> None:
         self._hash = hash_minsn
         self._count = count_minsn_nodes
@@ -422,6 +425,7 @@ class HexRaysInstructionCommitter:
         self._cycle_quarantine = producer_cycle_quarantine
         self._native_failure_quarantine = native_failure_quarantine
         self._lifecycle_authority = lifecycle_authority
+        self._return_consumption_reader = return_consumption_reader
 
     @staticmethod
     def _rejected(
@@ -502,10 +506,35 @@ class HexRaysInstructionCommitter:
         current MBA must still have the same exact anchored definition and
         premises. The normal commit path owns the swap, rollback and receipt.
         """
-        if type(site) is not CandidateSite or context.block is None:
+        if (
+            type(site) is not CandidateSite
+            or context.block is None
+            or type(prefold_snapshot) is not ReturnRegisterConsumptionSnapshot
+            or self._lifecycle_authority is None
+            or self._return_consumption_reader is None
+        ):
             return None
         try:
             site.__post_init__()
+            prefold_snapshot.__post_init__()
+            # Only the record published by the configured adapter owner is
+            # admissible. Matching coordinates cannot self-authenticate a
+            # caller-constructed or decoded historical-consumption claim.
+            if (
+                self._return_consumption_reader(site.function_ea)
+                is not prefold_snapshot
+            ):
+                return None
+            session = self._lifecycle_authority.current_session(site.function_ea)
+            generation = self._lifecycle_authority.current_mba_generation(
+                function_ea=site.function_ea
+            )
+            if (
+                prefold_snapshot.session_id != session.identity_key
+                or prefold_snapshot.generation != generation
+                or context.epoch.generation != generation
+            ):
+                return None
             mba = context.block.mba
             if (
                 native_object_identity(mba) != site.mba_identity

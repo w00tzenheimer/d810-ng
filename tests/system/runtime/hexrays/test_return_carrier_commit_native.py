@@ -3,6 +3,7 @@
 import ida_hexrays
 import pytest
 from dataclasses import replace
+from types import SimpleNamespace
 
 from d810.hexrays.hooks.glbopt_diagnostics import apply_return_const_corruption_cleanup
 from d810.hexrays.mutation.return_carrier_corruption import (
@@ -51,7 +52,17 @@ class TestReturnCarrierNativeCommit:
         consumer.l.valnum = 151
         consumer.d.make_reg(rax + 8, 1)
         target_block.insert_into_block(consumer, target)
-        prefold = snapshot_return_reg_consumption(mba)
+        lifecycle = SimpleNamespace(
+            current_session=lambda _ea: SimpleNamespace(
+                identity_key="native-test-session"
+            ),
+            current_mba_generation=lambda **_: 7,
+            native_mutation_quarantined=False,
+            quarantine_native_mutation=lambda **_: None,
+        )
+        prefold = snapshot_return_reg_consumption(
+            mba, session_id="native-test-session", generation=7
+        )
         assert target_ea in [
             definition.ea for definition in prefold.consumed_definitions
         ]
@@ -79,8 +90,54 @@ class TestReturnCarrierNativeCommit:
             == []
         )
 
+        assert apply_return_const_corruption_cleanup(mba, prefold_snapshot=prefold) == 0
+        assert (
+            apply_return_const_corruption_cleanup(
+                mba,
+                prefold_snapshot=replace(prefold, session_id="previous-session"),
+                lifecycle_authority=lifecycle,
+                return_consumption_reader=lambda _ea: prefold,
+            )
+            == 0
+        )
+        assert (
+            apply_return_const_corruption_cleanup(
+                mba,
+                prefold_snapshot=replace(prefold, generation=6),
+                lifecycle_authority=lifecycle,
+                return_consumption_reader=lambda _ea: prefold,
+            )
+            == 0
+        )
+
+        assert (
+            apply_return_const_corruption_cleanup(
+                mba,
+                prefold_snapshot=replace(prefold),
+                lifecycle_authority=lifecycle,
+                return_consumption_reader=lambda _ea: prefold,
+            )
+            == 0
+        ), "matching fields do not authenticate a caller-constructed snapshot"
+
         sites = find_droppable_return_const_corruptions(mba, prefold_snapshot=prefold)
         assert len([site for site in sites if site.insn_ea == target_ea]) == 1
-        assert apply_return_const_corruption_cleanup(mba, prefold_snapshot=prefold) == 1
+        assert (
+            apply_return_const_corruption_cleanup(
+                mba,
+                prefold_snapshot=prefold,
+                lifecycle_authority=lifecycle,
+                return_consumption_reader=lambda _ea: prefold,
+            )
+            == 1
+        )
         assert target.opcode == ida_hexrays.m_nop
-        assert apply_return_const_corruption_cleanup(mba, prefold_snapshot=prefold) == 0
+        assert (
+            apply_return_const_corruption_cleanup(
+                mba,
+                prefold_snapshot=prefold,
+                lifecycle_authority=lifecycle,
+                return_consumption_reader=lambda _ea: prefold,
+            )
+            == 0
+        )

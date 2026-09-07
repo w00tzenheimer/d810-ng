@@ -466,6 +466,7 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
         self._post_d810_pipeline_last_maturity = -1
         self._pipeline_just_fired = False
         self._safe_point_coordinator.reset()
+        self._prefold_rccc_by_func.clear()
         self._impossible_return_artifact_rewrite_applied.clear()
         self._terminal_zero_literal_rewrite_applied.clear()
         self._terminal_tail_cascade_egress_applied.clear()
@@ -1291,7 +1292,13 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
                 # the cleanup simply fails closed (no severance evidence captured ->
                 # nothing dropped).
                 try:
-                    snapshot = snapshot_return_reg_consumption(mba)
+                    snapshot = snapshot_return_reg_consumption(
+                        mba,
+                        session_id=_lifecycle_diag_session_id(
+                            lifecycle, int(mba.entry_ea)
+                        ),
+                        generation=current_mba_generation,
+                    )
                     if snapshot is None:
                         self._prefold_rccc_by_func.pop(int(mba.entry_ea), None)
                     else:

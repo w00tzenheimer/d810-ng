@@ -65,6 +65,10 @@ def apply_return_const_corruption_cleanup(
     mba: ida_hexrays.mbl_array_t,
     *,
     prefold_snapshot: ReturnRegisterConsumptionSnapshot | None = None,
+    lifecycle_authority: object | None = None,
+    return_consumption_reader: (
+        typing.Callable[[int], ReturnRegisterConsumptionSnapshot | None] | None
+    ) = None,
 ) -> int:
     """NOP proven return-register constant corruptions after GLBOPT folding.
 
@@ -73,6 +77,11 @@ def apply_return_const_corruption_cleanup(
     actually severed are dropped.
     """
     if mba is None or int(mba.maturity) not in _RCCC_MATURITIES:
+        return 0
+    if (
+        type(prefold_snapshot) is not ReturnRegisterConsumptionSnapshot
+        or lifecycle_authority is None
+    ):
         return 0
 
     sites = find_droppable_return_const_corruptions(
@@ -88,7 +97,18 @@ def apply_return_const_corruption_cleanup(
     )
 
     applied = 0
-    committer = HexRaysInstructionCommitter()
+
+    def quarantine(error: BaseException) -> None:
+        lifecycle_authority.quarantine_native_mutation(
+            function_ea=int(mba.entry_ea),
+            reason=f"return-carrier commit failed: {error}",
+        )
+
+    committer = HexRaysInstructionCommitter(
+        lifecycle_authority=lifecycle_authority,
+        native_failure_quarantine=quarantine,
+        return_consumption_reader=return_consumption_reader,
+    )
     for site in sites:
         if type(site) is not CandidateSite:
             continue
@@ -105,7 +125,11 @@ def apply_return_const_corruption_cleanup(
             )
             continue
         receipt = committer.commit_return_carrier_cleanup(
-            InstructionCommitContext.from_live(insn, mba.get_mblock(site.block_serial)),
+            InstructionCommitContext.from_live(
+                insn,
+                mba.get_mblock(site.block_serial),
+                generation=prefold_snapshot.generation,
+            ),
             site,
             _nop_replacement(insn),
             prefold_snapshot=prefold_snapshot,

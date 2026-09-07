@@ -64,6 +64,8 @@ class ReturnRegisterConsumptionSnapshot:
     mba_identity: NativeIdentity
     capture_maturity: int
     consumed_definitions: tuple[CarrierDefinition, ...]
+    session_id: str
+    generation: int
 
     def __post_init__(self) -> None:
         if type(self.function_ea) is not int or self.function_ea <= 0:
@@ -72,6 +74,10 @@ class ReturnRegisterConsumptionSnapshot:
             raise TypeError("consumption snapshot requires native MBA identity")
         if type(self.capture_maturity) is not int:
             raise TypeError("consumption snapshot requires capture maturity")
+        if type(self.session_id) is not str or not self.session_id:
+            raise TypeError("consumption snapshot requires its owning session")
+        if type(self.generation) is not int or self.generation < 0:
+            raise TypeError("consumption snapshot requires its owning generation")
         if type(self.consumed_definitions) is not tuple:
             raise TypeError("consumption definitions must be an immutable tuple")
         for definition in self.consumed_definitions:
@@ -184,7 +190,12 @@ def _count_valnum_uses(mba, rax_mreg: int, valnum: int, def_ea: int) -> int:
     return uses
 
 
-def snapshot_return_reg_consumption(mba) -> ReturnRegisterConsumptionSnapshot | None:
+def snapshot_return_reg_consumption(
+    mba,
+    *,
+    session_id: str | None = None,
+    generation: int = 0,
+) -> ReturnRegisterConsumptionSnapshot | None:
     """Pre-fold snapshot (ticket d81-fzlo): effective addresses of rax-family
     DEFs whose value has at least one real operand *use* in *mba*.
 
@@ -200,7 +211,7 @@ def snapshot_return_reg_consumption(mba) -> ReturnRegisterConsumptionSnapshot | 
 
     Read-only.
     """
-    if not IDA_AVAILABLE or mba is None:
+    if not IDA_AVAILABLE or mba is None or session_id is None:
         return None
     rax = _rax_mreg()
     if rax is None:
@@ -235,6 +246,8 @@ def snapshot_return_reg_consumption(mba) -> ReturnRegisterConsumptionSnapshot | 
         native_object_identity(mba),
         int(mba.maturity),
         tuple(sorted(consumer_definitions)),
+        session_id,
+        generation,
     )
 
 
