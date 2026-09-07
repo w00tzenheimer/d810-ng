@@ -68,6 +68,7 @@ from .ids import (
     authority_id as canonical_authority_id,
     patch_step_fact_id,
     patch_step_fact_id as _canonical_patch_step_fact_id,
+    stage_unpublished_field,
 )
 from .ids import OccurrenceDigest, _occurrence_stamp
 
@@ -341,7 +342,7 @@ def _mint_derived_transaction_claim_inventory(
     value = object.__new__(_DerivedTransactionClaimInventory)
     for name, item in locals().copy().items():
         if name != "value":
-            object.__setattr__(value, name, item)
+            stage_unpublished_field(value, name, item)
     _validate_derived_transaction_claim_inventory_fields(value)
     key = id(value)
     token = _derived_transaction_claim_inventory_token(value)
@@ -928,11 +929,11 @@ def _site_mint(
 ) -> object:
     value = object.__new__(cls)
     for name, item in values.items():
-        object.__setattr__(value, name, item)
+        stage_unpublished_field(value, name, item)
     if identity_name is not None:
-        object.__setattr__(value, identity_name, "sha256:" + "0" * 64)
+        stage_unpublished_field(value, identity_name, "sha256:" + "0" * 64)
     if cls is model.RawEffectGatePhaseFact:
-        object.__setattr__(value, "fact_id", raw_effect_gate_phase_fact_id(value))
+        stage_unpublished_field(value, "fact_id", raw_effect_gate_phase_fact_id(value))
     value.__post_init__()
     identity = getattr(value, identity_name) if identity_name is not None else (
         effect_site_coordinate_id(value) if cls is model.EffectSiteCoordinate
@@ -1001,9 +1002,9 @@ def _site_binding_mint(
 ) -> object:
     value = object.__new__(cls)
     for name, item in values.items():
-        object.__setattr__(value, name, item)
-    object.__setattr__(value, identity_name, "sha256:" + "0" * 64)
-    object.__setattr__(value, identity_name, _site_binding_identity(value))
+        stage_unpublished_field(value, name, item)
+    stage_unpublished_field(value, identity_name, "sha256:" + "0" * 64)
+    stage_unpublished_field(value, identity_name, _site_binding_identity(value))
     value.__post_init__()
     identity = getattr(value, identity_name)
     if _batch is not None:
@@ -3309,7 +3310,7 @@ def _detached_canonical_copy(value: object, memo: dict[int, object]) -> object:
                 # the original's live arena, and the reading properties on the
                 # record tolerate the unset slot exactly for this case.
                 continue
-            object.__setattr__(
+            stage_unpublished_field(
                 clone, item.name,
                 _detached_canonical_copy(
                     _stored_dataclass_field(value, item.name), memo,
@@ -3617,7 +3618,7 @@ def _route_mint(
 ) -> object:
     value = object.__new__(cls)
     for name, item in values.items():
-        object.__setattr__(value, name, item)
+        stage_unpublished_field(value, name, item)
     value.__post_init__()
     identity = getattr(value, identity_name)
     if _batch is not None:
@@ -3642,7 +3643,7 @@ def _route_failure(*, claim_id: str | None, proof_id: str | None, route_subject_
     )
     failure = object.__new__(model.RouteRealizationFailure)
     for name, item in values.items():
-        object.__setattr__(failure, name, item)
+        stage_unpublished_field(failure, name, item)
     model.RouteRealizationFailure.__post_init__(failure)
     return _register(failure, _route_failure_identity(failure))
 
@@ -3655,7 +3656,7 @@ def _route_result(
 ) -> object:
     result = object.__new__(cls)
     for name, item in values.items():
-        object.__setattr__(result, name, item)
+        stage_unpublished_field(result, name, item)
     result.__post_init__()
     identity = (
         getattr(result, identity_name) if identity_name is not None
@@ -7493,7 +7494,7 @@ def _make_route_kernels():
             """Construct one call-local structural value without publishing it."""
             value = object.__new__(cls)
             for name, item in values.items():
-                object.__setattr__(value, name, item)
+                stage_unpublished_field(value, name, item)
             value.__post_init__()
             route_publications.append((value, getattr(value, identity_name)))
             return value
@@ -8810,10 +8811,10 @@ def _make_route_kernels():
         projected_inventory: model.SemanticGraphInventory,
     ) -> _TransactionProjectedClaimInventory:
         value = object.__new__(_TransactionProjectedClaimInventory)
-        object.__setattr__(value, "derived", derived)
-        object.__setattr__(value, "source_authority", source_authority)
-        object.__setattr__(value, "attempt_id", attempt_id)
-        object.__setattr__(value, "projected_inventory", projected_inventory)
+        stage_unpublished_field(value, "derived", derived)
+        stage_unpublished_field(value, "source_authority", source_authority)
+        stage_unpublished_field(value, "attempt_id", attempt_id)
+        stage_unpublished_field(value, "projected_inventory", projected_inventory)
         validate_transaction_projected_claim_inventory_fields(value)
         key = id(value)
         token = projected_claim_inventory_token(value)
@@ -9445,7 +9446,7 @@ def _build_retirement_phase_result(
             "source_binding": source,
             "candidate_binding": candidate,
         }.items():
-            object.__setattr__(phase_member, name, value)
+            stage_unpublished_field(phase_member, name, value)
         phase_member.__post_init__()
         rows.append(phase_member)
     result_id = authority_id((
@@ -9466,7 +9467,7 @@ def _build_retirement_phase_result(
         "candidate_generation": projected_inventory.generation,
         "members": tuple(sorted(rows, key=canonical_bytes)),
     }.items():
-        object.__setattr__(phase_result, name, value)
+        stage_unpublished_field(phase_result, name, value)
     phase_result.__post_init__()
     return phase_result
 
@@ -10061,8 +10062,8 @@ def _classify_terminal_cycle_break_claim(
         "projected_generation": candidate_inventory.generation,
         "phase_result": phase_result,
     }.items():
-        object.__setattr__(result, name, value)
-    object.__setattr__(result, "_content_seal", _terminal_cycle_binding_seal(result))
+        stage_unpublished_field(result, name, value)
+    stage_unpublished_field(result, "_content_seal", _terminal_cycle_binding_seal(result))
     result._validate_fields()
     return result
 
@@ -10177,7 +10178,7 @@ def _revalidate_observed_terminal_cycle_break(
         "terminal_subject_ref": projected_result.terminal_subject_ref,
     }
     result = object.__new__(model.TerminalCyclePhaseResult)
-    object.__setattr__(result, "result_id", authority_id((
+    stage_unpublished_field(result, "result_id", authority_id((
         "unflatten.terminal-cycle-phase.v1", values["claim_id"], values["terminal_route_proof_id"],
         values["phase"], values["source_fingerprint"], values["candidate_fingerprint"],
         values["source_generation"], values["candidate_generation"], values["bound_subject_ids"],
@@ -10186,7 +10187,7 @@ def _revalidate_observed_terminal_cycle_break(
         values["cleanup_source_ref"], values["terminal_carrier_ref"], values["terminal_route_refs"],
         values["terminal_subject_id"], values["terminal_subject_ref"],
     )))
-    for name, value in values.items(): object.__setattr__(result, name, value)
+    for name, value in values.items(): stage_unpublished_field(result, name, value)
     result.__post_init__()
     return result
 
@@ -11222,7 +11223,7 @@ def _make_detached_binding_entrypoint(
     def mint_source(**values: object) -> model.DetachedDeadHandlerComponentSourceResult:
         result = object.__new__(model.DetachedDeadHandlerComponentSourceResult)
         for name, value in values.items():
-            object.__setattr__(result, name, value)
+            stage_unpublished_field(result, name, value)
         result.__post_init__()
         identity = id(result)
         seal = authority_id(("unflatten.detached-source-object-seal.v1", result))
@@ -11241,7 +11242,7 @@ def _make_detached_binding_entrypoint(
     def mint_phase(**values: object) -> model.DetachedDeadHandlerComponentPhaseResult:
         result = object.__new__(model.DetachedDeadHandlerComponentPhaseResult)
         for name, value in values.items():
-            object.__setattr__(result, name, value)
+            stage_unpublished_field(result, name, value)
         result.__post_init__()
         identity = id(result)
         seal = authority_id(("unflatten.detached-phase-object-seal.v1", result))
@@ -11953,8 +11954,8 @@ def _classify_retired_dispatcher_infrastructure_claim(
         "projected_bindings": projected_bindings,
         "generation": generation,
     }.items():
-        object.__setattr__(result, name, value)
-    object.__setattr__(
+        stage_unpublished_field(result, name, value)
+    stage_unpublished_field(
         result, "phase_result",
         _build_retirement_phase_result(
             claim=claim, proposal=proposal,
@@ -11962,7 +11963,7 @@ def _classify_retired_dispatcher_infrastructure_claim(
             projected_inventory=projected_inventory, phase=phase,
         ),
     )
-    object.__setattr__(result, "_content_seal", _retirement_binding_seal(result))
+    stage_unpublished_field(result, "_content_seal", _retirement_binding_seal(result))
     result._validate_fields()
     return result
 
@@ -12099,7 +12100,7 @@ def _revalidate_observed_retired_dispatcher_infrastructure(
             "candidate_reachable": (candidate.serial in observed_inventory.reachable_serials if candidate.status is model.SubjectBindingStatus.UNIQUE and candidate.serial is not None else None),
             "reason": reason, "source_binding": source, "candidate_binding": candidate,
         }.items():
-            object.__setattr__(member, name, value)
+            stage_unpublished_field(member, name, value)
         member.__post_init__()
         members.append(member)
     members = tuple(sorted(members, key=canonical_bytes))
@@ -12112,13 +12113,13 @@ def _revalidate_observed_retired_dispatcher_infrastructure(
         "source_generation": source_inventory.generation,
         "candidate_generation": observed_inventory.generation, "members": members,
     }
-    object.__setattr__(result, "result_id", authority_id((
+    stage_unpublished_field(result, "result_id", authority_id((
         "unflatten.dispatcher-retirement-phase.v1", values["catalog_id"],
         values["claim_id"], values["phase"], values["source_fingerprint"],
         values["candidate_fingerprint"], values["source_generation"],
         values["candidate_generation"], members,
     )))
-    for name, value in values.items(): object.__setattr__(result, name, value)
+    for name, value in values.items(): stage_unpublished_field(result, name, value)
     result.__post_init__()
     return result
 

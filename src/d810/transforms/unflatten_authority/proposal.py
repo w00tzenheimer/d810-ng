@@ -89,6 +89,7 @@ from .model import (
     UnflattenAuthorityReason,
     ProposalValidationStage,
     UnflattenPlanRoute,
+    canonical_model_order,
 )
 from .producer_api import build_unflatten_plan_input_catalog
 from . import producer_api
@@ -1353,7 +1354,7 @@ def claims_from_dispatcher_removal_forecast(
             RetiredDispatcherInfrastructureClaim,
             kind=UnflattenClaimKind.RETIRED_DISPATCHER_INFRASTRUCTURE,
             infrastructure_subject=infrastructure, corridor_subject=corridor,
-            member_subjects=member_subjects,
+            member_subjects=canonical_model_order(member_subjects, "member_subjects"),
             candidate_evidence_ids=tuple(sorted({
                 evidence_id
                 for candidate in candidate_catalog.candidates
@@ -2054,7 +2055,9 @@ def attach_typed_proposal(
             ))
         proposal = replace(
             proposal,
-            entry_endpoint_liveness_allowances=tuple(allowances),
+            entry_endpoint_liveness_allowances=canonical_model_order(
+                allowances, "entry_endpoint_liveness_allowances",
+            ),
         )
     producer_api._catalog_ref_by_serial(
         source, proposal.source_identity_catalog, source_refs_by_serial,

@@ -1567,9 +1567,8 @@ def _decode_wire(value: object, *, allow_index: bool = False) -> object:
                 # canonical replay must still reconstruct and revalidate
                 # the exact sealed value carried by a safety case.
                 result = record_type.__new__(record_type)
-                for name, item in kwargs.items():
-                    object.__setattr__(result, name, item)
-                object.__setattr__(result, "_minted", True)
+                stage_unpublished_fields(result, kwargs)
+                stage_unpublished_field(result, "_minted", True)
                 record_type.__post_init__(result)
             elif record_type.__name__ == "SourceBoundRouteAuthority":
                 # Re-enter the binder's closed minting kernel so replay keeps
@@ -1587,6 +1586,15 @@ def _decode_wire(value: object, *, allow_index: bool = False) -> object:
                 if mint is None:
                     raise ValueError("source authority minting kernel is unavailable")
                 result = mint(record_type, kwargs, "source_authority_id")
+                # The boundary-local half of the recheck that used to sit in
+                # ``SourceBoundRouteAuthority.__post_init__`` (d81-h8va).  This
+                # is the only path on which the ID is *supplied* rather than
+                # derived, and the canonical round-trip below cannot see a
+                # forged one because it re-encodes the supplied string.
+                if result.source_authority_id != result.canonical_content_id():
+                    raise ValueError(
+                        "source_authority_id does not match canonical content"
+                    )
             elif record_type.__name__ in {
                 "EffectSiteCoordinate", "TerminalSiteCoordinate", "RawEffectGatePhaseFact",
                 "ScalarizedInstructionCoordinate", "ExactEffectBindingResult",
@@ -2179,6 +2187,34 @@ def _subject_id_from_record(value: object) -> str:
     return subject_id(value.kind, value.role, value.locator)
 
 
+def stage_unpublished_field(value: object, name: str, item: object) -> None:
+    """Write one field of a record that has not been published yet.
+
+    This is the *only* sanctioned way for a construction kernel to fill a
+    frozen record it allocated with ``object.__new__``.  The record is not
+    published: no consumer can reach it, its ``__post_init__`` has not run, and
+    its content identity has not been demanded.  Naming the operation is what
+    lets the repository ban raw ``object.__setattr__`` in the binder and the
+    phase modules outright (rule ``no-authority-setattr-in-phase-modules``),
+    instead of leaving 31 indistinguishable pokes that a reader has to classify
+    by hand.
+
+    It deliberately does **not** validate: the caller is mid-construction and
+    the record's own ``__post_init__`` is the validator.  What it does buy is
+    that every remaining raw ``object.__setattr__`` in the package is either a
+    record validating itself or the lazy-identity slot fill.
+    """
+
+    object.__setattr__(value, name, item)
+
+
+def stage_unpublished_fields(value: object, values: Mapping[str, object]) -> None:
+    """Fill an unpublished record's fields from ``values``, in iteration order."""
+
+    for name, item in values.items():
+        object.__setattr__(value, name, item)
+
+
 def _subject_factory(
     cls: type[object], *, decoded: bool = False, **kwargs: object,
 ) -> object:
@@ -2428,6 +2464,7 @@ __all__ = [
     "bound_unflatten_binding_id",
     "semantic_graph_fingerprint", "semantic_graph_fingerprint_cached",
     "semantic_graph_inventory_digest", "subject_id",
+    "stage_unpublished_field", "stage_unpublished_fields",
     "CLONED_SEMANTIC_OBSERVATION_SCHEMA", "CLONED_SEMANTIC_ORIGIN_SCHEMA",
     "CLONED_SEMANTIC_PREFIX_SCHEMA", "cloned_semantic_observation_digest",
     "cloned_semantic_instruction_origin_id", "cloned_semantic_prefix_id",

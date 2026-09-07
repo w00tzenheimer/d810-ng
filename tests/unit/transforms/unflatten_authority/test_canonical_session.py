@@ -327,13 +327,18 @@ def test_deep_authority_roundtrip_repeats_work_for_one_exact_occurrence() -> Non
     assert decoded == authority
     assert metrics.roundtrip_decodes == 1
     # The outer helper encodes once, `canonical_decode` re-encodes the decoded
-    # graph, and reconstruction replays nested records' content IDs.  Two
-    # encodes of the root therefore cost thirteen deep validations over the
-    # same exact occurrence.  This is the frozen Task 1 baseline: it should
-    # fall once phase-local reuse lands, and any change to it must be a
-    # deliberate, measured one.
-    assert metrics.deep_validations == 13
-    assert metrics.wire_encodes == 14
+    # graph, and reconstruction replays nested records' content IDs.  This is
+    # the frozen Task 1 baseline: it should fall as reuse lands, and any change
+    # to it must be a deliberate, measured one.
+    #
+    # d81-h8va moved it 13 -> 12 and 14 -> 13, deliberately and downward:
+    # ``SourceBoundRouteAuthority.__post_init__`` no longer re-derives
+    # ``source_authority_id`` on every construction (that recheck could only
+    # detect a post-publication mutation), so one deep validation and one wire
+    # encode of the root disappear.  The supplied ID is still checked, once,
+    # at the decode boundary where it actually arrives from outside.
+    assert metrics.deep_validations == 12
+    assert metrics.wire_encodes == 13
     assert metrics.canonical_bytes_reuses == 0
     assert metrics.content_id_reuses == 0
 

@@ -7529,6 +7529,7 @@ def _route_claim_with_members(
         )
         for ref, anchor_ea in destination_pairs
     )
+    destinations = model.canonical_model_order(destinations, "destination_subjects")
     route_subject = _subject_factory(
         model.SemanticSubjectRef,
         kind=model.SemanticSubjectKind.ROUTE,
@@ -9501,7 +9502,9 @@ def _terminal_cycle_fixture():
         atomic_group_id,
         3,
     )
-    values["claims"] = (equivalent_route, claim)
+    values["claims"] = model.canonical_model_order(
+        (equivalent_route, claim), "claims",
+    )
     return model.ProposedUnflattenContract(**values), claim
 
 
@@ -9527,9 +9530,12 @@ def test_terminal_cycle_subjects_admit_exact_claim_owned_logical_exit() -> None:
     )
     proposal = replace(
         proposal,
-        claims=tuple(
-            logical_claim if item is native_claim else item
-            for item in proposal.claims
+        claims=model.canonical_model_order(
+            (
+                logical_claim if item is native_claim else item
+                for item in proposal.claims
+            ),
+            "claims",
         ),
     )
 
@@ -25052,9 +25058,12 @@ def test_task_15_exact_claim_coordinate_drift_rebinds_then_rejects_publicly(
     )
     rebound_proposal = replace(
         proposal,
-        claims=tuple(
-            rebound_claim if item is exact_claim else item
-            for item in proposal.claims
+        claims=model.canonical_model_order(
+            (
+                rebound_claim if item is exact_claim else item
+                for item in proposal.claims
+            ),
+            "claims",
         ),
     )
     rebound_plan = replace(plan, unflatten_proposal=rebound_proposal)
