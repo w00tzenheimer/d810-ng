@@ -240,8 +240,8 @@ def test_unresolvable_stack_store_makes_the_receipt_incomplete():
                     _insn(
                         _VOCABULARY.m_stx,
                         left=_num(_SECOND_STATE),
-                        right=_addr_of(_reg(4)),
-                        dest=_num(4),
+                        right=_num(4),
+                        dest=_addr_of(_reg(4)),
                     ),
                 )
             ]

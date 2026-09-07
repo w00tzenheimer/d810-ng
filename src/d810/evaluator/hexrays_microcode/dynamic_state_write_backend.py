@@ -167,8 +167,8 @@ def _mop_matches_state_var(
         if state_var_lvar_idx is not None:
             return int(idx) == int(state_var_lvar_idx)
         try:
-            lvar = mba.vars[idx]
-            return int(lvar.location.stkoff()) == int(state_var_stkoff)
+            offset = _computed_operand_lvar_stkoff(mba, idx)
+            return offset is not None and offset == int(state_var_stkoff)
         except Exception:
             return False
 
@@ -1012,6 +1012,33 @@ def _block_call_opcodes() -> frozenset:
     return frozenset({ida_hexrays.m_call, ida_hexrays.m_icall})
 
 
+def _storage_write_destination(insn) -> tuple[StorageKey | None, int | None, bool]:
+    """Capture SDK store destinations: stx l=data, r=segment, d=address."""
+    destination = getattr(insn, "d", None)
+    indirect = getattr(insn, "opcode", None) == ida_hexrays.m_stx
+    size = getattr(destination, "size", None)
+    if indirect:
+        size = getattr(getattr(insn, "l", None), "size", None)
+        destination = (
+            getattr(destination, "a", None)
+            if getattr(destination, "t", None) == ida_hexrays.mop_a
+            else None
+        )
+    return _mop_storage_key(destination), size, indirect
+
+
+def _computed_operand_lvar_stkoff(mba, index: int) -> int | None:
+    try:
+        if int(mba.maturity) < int(ida_hexrays.MMAT_LVARS):
+            return None
+        location = mba.vars[index].location
+        if not location.is_stkoff():
+            return None
+        return int(location.stkoff())
+    except Exception:
+        return None
+
+
 def _read_storage_definition(
     *, mba, block_serial: int, storage: StorageKey, before=None
 ) -> StorageDefinition:
@@ -1027,12 +1054,15 @@ def _read_storage_definition(
     insn = getattr(blk, "head", None)
     while insn is not None and insn is not before:
         opcode = getattr(insn, "opcode", None)
-        if storage.kind == "r" and opcode in calls:
+        destination, destination_size, indirect = _storage_write_destination(insn)
+        if storage.kind in {"r", "l"} and opcode in calls:
             result = StorageDefinition(written=True)
         elif overlaps_state_operand(
             storage,
-            _mop_storage_key(getattr(insn, "d", None)),
-            getattr(getattr(insn, "d", None), "size", None),
+            destination,
+            destination_size,
+            lvar_stkoff=lambda index: _computed_operand_lvar_stkoff(mba, index),
+            indirect=indirect,
         ):
             value = None
             if opcode == ida_hexrays.m_mov:

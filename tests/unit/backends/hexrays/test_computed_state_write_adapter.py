@@ -29,6 +29,7 @@ from d810.backends.hexrays import condition_chain_runtime
 from d810.backends.hexrays.evidence import condition_chain_analysis as cca
 
 _VOCABULARY = SimpleNamespace(
+    MMAT_LVARS=9,
     m_mov=4,
     m_stx=62,
     m_add=28,
@@ -103,6 +104,7 @@ class _Mba:
         self._blocks = dict(blocks)
         self.qty = (max(self._blocks) + 1) if self._blocks else 0
         self.vars = []
+        self.maturity = 9
 
     def get_mblock(self, serial):
         return self._blocks.get(int(serial))
@@ -474,3 +476,75 @@ def test_overlapping_partial_register_write_kills_the_full_binding():
         ),
     }
     assert not _resolve(_Mba(blocks), 2).resolved
+
+
+@pytest.mark.parametrize("barrier", ["partial-register", "call", "stack-alias", "indirect-store"])
+def test_in_block_state_receipt_cannot_revive_arithmetic_before_a_clobber(barrier):
+    lvar = SimpleNamespace(t=_VOCABULARY.mop_l, l=SimpleNamespace(idx=0), size=4)
+    operand = lvar if barrier in {"stack-alias", "indirect-store"} else _reg(_ECX)
+    if barrier == "partial-register":
+        overwrite = _insn(_VOCABULARY.m_mov, _num(0xAA, size=1), None, _reg(_ECX + 1, size=1))
+    elif barrier == "call":
+        overwrite = _insn(_VOCABULARY.m_call)
+    elif barrier == "stack-alias":
+        overwrite = _insn(_VOCABULARY.m_mov, _reg(_EDX), None, _stk(80))
+    else:
+        overwrite = _insn(_VOCABULARY.m_stx, _reg(_EDX), _reg(100, size=2), _reg(64, size=8))
+    mba = _Mba({0: _block(
+        _insn(_VOCABULARY.m_xor, _num(0x100), _num(1), operand),
+        overwrite,
+        _insn(_VOCABULARY.m_mov, operand, None, _stk(_STATE_STKOFF)),
+    )})
+    mba.vars = [SimpleNamespace(location=SimpleNamespace(is_stkoff=lambda: True, stkoff=lambda: 80))]
+
+    receipt = cca._collect_written_state_set(mba, _STATE_STKOFF)
+
+    assert not receipt.complete
+    assert 0x101 not in receipt.constants
+
+
+def test_in_block_state_receipt_preserves_unclobbered_arithmetic():
+    mba = _Mba({0: _block(
+        _insn(_VOCABULARY.m_xor, _num(0x100), _num(1), _reg(_ECX)),
+        _insn(_VOCABULARY.m_mov, _num(0xAA), None, _reg(_EDX)),
+        _insn(_VOCABULARY.m_mov, _reg(_ECX), None, _stk(_STATE_STKOFF)),
+    )})
+
+    receipt = cca._collect_written_state_set(mba, _STATE_STKOFF)
+
+    assert receipt.complete
+    assert receipt.constants == frozenset({0x101})
+
+
+@pytest.mark.parametrize("barrier", ["register-write", "call"])
+def test_unmapped_lvar_operand_cannot_survive_register_clobbers(barrier):
+    local = SimpleNamespace(t=_VOCABULARY.mop_l, l=SimpleNamespace(idx=0), size=4)
+    kill = (_insn(_VOCABULARY.m_call) if barrier == "call"
+            else _insn(_VOCABULARY.m_mov, _reg(_EDX), None, _reg(_ECX)))
+    mba = _Mba({
+        0: _block(_insn(_VOCABULARY.m_mov, _num(0x100), None, local), kill),
+        1: _block(_insn(_VOCABULARY.m_xor, local, _num(1), _stk(_STATE_STKOFF)), preds=(0,)),
+    })
+    assert not _resolve(mba, 1).resolved
+
+
+def test_lvar_stack_mapping_requires_sdk_location_and_maturity_guards():
+    invalid_accesses = []
+    location = SimpleNamespace(is_stkoff=lambda: False,
+                               stkoff=lambda: invalid_accesses.append("stkoff") or 80)
+    mba = SimpleNamespace(maturity=9, vars=[SimpleNamespace(location=location)])
+    assert cca._lvar_stkoff(mba, 0) is None
+    local = SimpleNamespace(t=_VOCABULARY.mop_l, l=SimpleNamespace(idx=0), size=4)
+    assert not cca._mop_matches_stkoff(local, 80, mba=mba)
+    assert not invalid_accesses
+
+    class EarlyMba:
+        maturity = 0
+
+        @property
+        def vars(self):
+            invalid_accesses.append("vars")
+            return []
+
+    assert cca._lvar_stkoff(EarlyMba(), 0) is None
+    assert not invalid_accesses

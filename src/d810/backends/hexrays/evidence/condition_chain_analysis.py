@@ -1176,8 +1176,9 @@ def _mop_matches_stkoff(
                 # Fallback: resolve stkoff via mba.vars when lvar_idx unknown
                 if mba is not None:
                     try:
-                        lvar = mba.vars[idx]
-                        off = lvar.location.stkoff()
+                        off = _lvar_stkoff(mba, idx)
+                        if off is None:
+                            return False
                         match = off == state_var_stkoff
                         if diag_lines is not None:
                             diag_lines.append(
@@ -1300,8 +1301,25 @@ def _block_predecessors(blk: object) -> Tuple[int, ...]:
         return ()
 
 
+def _storage_write_destination(
+    insn: object,
+) -> tuple[Optional[StorageKey], Optional[int], bool]:
+    """Capture SDK store destinations: stx l=data, r=segment, d=address."""
+    destination = getattr(insn, "d", None)
+    indirect = getattr(insn, "opcode", None) == _opcode_value("m_stx", None)
+    size = getattr(destination, "size", None)
+    if indirect:
+        size = getattr(getattr(insn, "l", None), "size", None)
+        destination = (
+            getattr(destination, "a", None)
+            if getattr(destination, "t", None) == _mop_type_value("mop_a", None)
+            else None
+        )
+    return _mop_storage_key(destination), size, indirect
+
+
 def _read_storage_definition(
-    blk: object, storage: StorageKey, *, before: object = None
+    blk: object, storage: StorageKey, *, before: object = None, mba: object = None
 ) -> StorageDefinition:
     """Read the last definition, preserving unknown writes as terminal kills."""
     if blk is None:
@@ -1315,12 +1333,15 @@ def _read_storage_definition(
     insn = getattr(blk, "head", None)
     while insn is not None and insn is not before:
         opcode = getattr(insn, "opcode", None)
-        if storage.kind == "r" and opcode in calls:
+        destination, destination_size, indirect = _storage_write_destination(insn)
+        if storage.kind in {"r", "l"} and opcode in calls:
             result = StorageDefinition(written=True)
         elif overlaps_state_operand(
             storage,
-            _mop_storage_key(getattr(insn, "d", None)),
-            getattr(getattr(insn, "d", None), "size", None),
+            destination,
+            destination_size,
+            lvar_stkoff=lambda index: _lvar_stkoff(mba, index),
+            indirect=indirect,
         ):
             value = None
             if opcode == m_mov:
@@ -1364,7 +1385,7 @@ def _storage_const_on_path_back(
             return None
         if blk is None:
             return None
-        definition = _read_storage_definition(blk, storage)
+        definition = _read_storage_definition(blk, storage, mba=mba)
         if definition.written:
             return definition.value
         preds = _block_predecessors(blk)
@@ -1466,7 +1487,7 @@ def _resolve_computed_state_write_in_block(
         )
     leaves = _collect_operand_storage_leaves(state_write_insn)
     if any(
-        _read_storage_definition(blk, leaf, before=state_write_insn).written
+        _read_storage_definition(blk, leaf, before=state_write_insn, mba=mba).written
         for leaf in leaves
     ):
         return ComputedWriteResolution(
@@ -1487,6 +1508,8 @@ def _resolve_mop_value_in_block(
     blk: object,
     insn_before: object,
     max_depth: int = 2,
+    *,
+    mba: object = None,
 ) -> Optional[int]:
     """Backward-scan *blk* for the instruction that defines *mop* and fold it.
 
@@ -1503,7 +1526,7 @@ def _resolve_mop_value_in_block(
     Returns:
         The folded integer value (masked to 32 bits), or None if resolution failed.
     """
-    if max_depth <= 0:
+    if max_depth <= 0 or getattr(mop, "size", None) != 4:
         return None
 
     _init_constants()
@@ -1528,17 +1551,10 @@ def _resolve_mop_value_in_block(
     m_xor = _opcode_value("m_xor", 31)
     binary_ops = {m_add, m_sub, m_and, m_or, m_xor}
 
-    def _mops_match(a: object, b: object) -> bool:
-        """Return True when two mops refer to the same register or lvar."""
-        at = getattr(a, "t", None)
-        bt = getattr(b, "t", None)
-        if at != bt:
-            return False
-        if at == mop_r_type:
-            return getattr(a, "r", None) == getattr(b, "r", None)
-        if at == mop_l_type:
-            return getattr(a, "l", None) == getattr(b, "l", None)
-        return False
+    storage = _mop_storage_key(mop)
+    if storage is None:
+        return None
+    calls = {_opcode_value("m_call", None), _opcode_value("m_icall", None)} - {None}
 
     # Collect instructions before insn_before, in order.
     insns_before: List[object] = []
@@ -1549,19 +1565,27 @@ def _resolve_mop_value_in_block(
 
     # Scan backward for the instruction whose destination matches *mop*.
     for definer in reversed(insns_before):
-        d = getattr(definer, "d", None)
-        if d is None:
-            continue
-        if not _mops_match(d, mop):
-            continue
-        # Found the defining instruction — must be a binary op.
         op = getattr(definer, "opcode", None)
+        if storage.kind in {"r", "l"} and op in calls:
+            return None
+        destination, size, indirect = _storage_write_destination(definer)
+        if not overlaps_state_operand(
+            storage,
+            destination,
+            size,
+            lvar_stkoff=lambda index: _lvar_stkoff(mba, index),
+            indirect=indirect,
+        ):
+            continue
+        # An overlapping or aliased definition cannot revive an older value.
+        if indirect or destination != storage or size != 4:
+            return None
         if op not in binary_ops:
             return None
         l_op = getattr(definer, "l", None)
         r_op = getattr(definer, "r", None)
-        lv = _resolve_mop_value_in_block(l_op, blk, definer, max_depth - 1)
-        rv = _resolve_mop_value_in_block(r_op, blk, definer, max_depth - 1)
+        lv = _resolve_mop_value_in_block(l_op, blk, definer, max_depth - 1, mba=mba)
+        rv = _resolve_mop_value_in_block(r_op, blk, definer, max_depth - 1, mba=mba)
         if lv is None or rv is None:
             return None
         if op == m_xor:
@@ -1609,7 +1633,7 @@ _EVAL_SEAMS = state_write.MicrocodeEvalSeams(
     opcode_value=_opcode_value,
     opcode_name=_opcode_name,
     fetch_stable_global_value=_fetch_stable_global_value,
-    lvar_stkoff=lambda mba, idx: mba.vars[idx].location.stkoff(),
+    lvar_stkoff=lambda mba, idx: _lvar_stkoff(mba, idx),
 )
 
 
@@ -1722,7 +1746,13 @@ def _lvar_stkoff(mba: Optional[object], idx: Optional[int]) -> Optional[int]:
     if mba is None or idx is None:
         return None
     try:
-        return int(mba.vars[int(idx)].location.stkoff())
+        lvars_maturity = _opcode_value("MMAT_LVARS", None)
+        if lvars_maturity is None or int(mba.maturity) < int(lvars_maturity):
+            return None
+        location = mba.vars[int(idx)].location
+        if not location.is_stkoff():
+            return None
+        return int(location.stkoff())
     except Exception:
         return None
 
@@ -1819,8 +1849,8 @@ def _store_address_is_undecidable(
     mop_S_type = _mop_type_value("mop_S", None)
     mop_a_type = _mop_type_value("mop_a", None)
     if mop_type == mop_S_type:
-        # A direct stack operand always carries a concrete offset.
-        return getattr(getattr(mop, "s", None), "off", None) is None
+        # The slot contains a pointer; its value is not its own address.
+        return True
     if mop_type == mop_a_type:
         inner = getattr(mop, "a", None)
         if inner is not None and getattr(inner, "t", None) == mop_S_type:
@@ -1862,17 +1892,35 @@ def _classify_state_write(
     m_mov_opcode = _opcode_value("m_mov", None)
     m_stx_opcode = _opcode_value("m_stx", None)
     l_mop = getattr(insn, "l", None)
-    r_mop = getattr(insn, "r", None)
     d_mop = getattr(insn, "d", None)
+    state_storage = (
+        StorageKey("r", state_var_reg)
+        if state_var_reg is not None
+        else StorageKey("S", state_var_stkoff)
+        if state_var_stkoff is not None
+        else StorageKey("l", state_var_lvar_idx)
+        if state_var_lvar_idx is not None
+        else None
+    )
 
-    def _matches(mop: object) -> bool:
-        return _mop_matches_stkoff(
+    def _access(mop: object, size: Optional[int]) -> tuple[bool, bool]:
+        destination = _mop_storage_key(mop)
+        if state_storage is None or destination is None:
+            return False, False
+        overlaps = overlaps_state_operand(
+            state_storage,
+            destination,
+            size,
+            lvar_stkoff=lambda index: _lvar_stkoff(mba, index),
+        )
+        full = size == 4 and _mop_matches_stkoff(
             mop,
             state_var_stkoff,
             state_var_lvar_idx=state_var_lvar_idx,
             mba=mba,
             state_var_reg=state_var_reg,
         )
+        return overlaps, full
 
     def _observe(kind: StateWriteKind, value: Optional[int] = None, detail: str = ""):
         return StateWriteObservation(
@@ -1886,31 +1934,42 @@ def _classify_state_write(
     def _value(source: object, detail: str) -> StateWriteObservation:
         value = _get_mop_const_value(source)
         if value is None:
-            value = _resolve_mop_value_in_block(source, blk, insn)
+            value = _resolve_mop_value_in_block(source, blk, insn, mba=mba)
         if value is None:
             return _observe(StateWriteKind.NONCONSTANT, detail=detail)
         return _observe(StateWriteKind.CONSTANT, value=int(value), detail=detail)
 
-    if m_mov_opcode is not None and opcode == m_mov_opcode:
-        if _matches(d_mop):
-            return _value(l_mop, "m_mov")
-        if _dest_alias_is_undecidable(
-            d_mop, state_var_stkoff, state_var_lvar_idx=state_var_lvar_idx, mba=mba
-        ):
-            return _observe(StateWriteKind.UNSUPPORTED_ALIAS, detail="m_mov")
-        return None
-
     if m_stx_opcode is not None and opcode == m_stx_opcode:
-        if _matches(r_mop):
+        # SDK stx l=data, r=segment, d=address. Only address-of storage
+        # identifies the destination itself; a bare stack operand holds a pointer.
+        target = (
+            getattr(d_mop, "a", None)
+            if getattr(d_mop, "t", None) == _mop_type_value("mop_a", None)
+            else None
+        )
+        overlaps, full = _access(target, getattr(l_mop, "size", None))
+        if overlaps:
+            if not full:
+                return _observe(
+                    StateWriteKind.UNSUPPORTED_ALIAS, detail="partial m_stx"
+                )
             return _value(l_mop, "m_stx")
-        if _store_address_is_undecidable(r_mop, state_var_stkoff):
+        if _store_address_is_undecidable(d_mop, state_var_stkoff):
             return _observe(StateWriteKind.UNRESOLVED, detail="m_stx")
         return None
 
-    # Any other opcode that writes the state slot directly produces a COMPUTED
-    # value (m_add/m_ldx/...), which the folding path above cannot recover from
-    # the destination alone.
-    if _matches(d_mop):
+    overlaps, full = _access(d_mop, getattr(d_mop, "size", None))
+    if overlaps:
+        if not full:
+            return _observe(
+                StateWriteKind.UNSUPPORTED_ALIAS, detail="partial state write"
+            )
+        if m_mov_opcode is not None and opcode == m_mov_opcode:
+            if getattr(l_mop, "size", None) != 4:
+                return _observe(
+                    StateWriteKind.UNSUPPORTED_ALIAS, detail="partial m_mov"
+                )
+            return _value(l_mop, "m_mov")
         return _observe(StateWriteKind.NONCONSTANT)
     if _dest_alias_is_undecidable(
         d_mop, state_var_stkoff, state_var_lvar_idx=state_var_lvar_idx, mba=mba
@@ -2684,9 +2743,9 @@ def _detect_state_var_stkoff(
                     diag_lines.append(f"_detect_stkoff: mop_l lvar idx={idx}")
                 if idx is not None:
                     try:
-                        lvar = mba.vars[idx]
-                        loc = lvar.location
-                        off = loc.stkoff()
+                        off = _lvar_stkoff(mba, idx)
+                        if off is None:
+                            return None, None
                         if diag_lines is not None:
                             diag_lines.append(
                                 f"_detect_stkoff: mop_l lvar[{idx}] location.stkoff()=0x{off:x}"

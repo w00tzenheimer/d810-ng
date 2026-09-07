@@ -138,19 +138,37 @@ class StorageKey:
 
 
 def overlaps_state_operand(
-    operand: StorageKey, destination: StorageKey | None, destination_size: int | None
+    operand: StorageKey,
+    destination: StorageKey | None,
+    destination_size: int | None,
+    *,
+    lvar_stkoff: Callable[[int], int | None] | None = None,
+    indirect: bool = False,
 ) -> bool:
-    """Whether a destination overlaps the four-byte operand being recovered.
+    """Conservatively decide whether a write overlaps a four-byte operand.
 
-    Stack offsets and microregister identities address bytes. A write to a
-    subrange kills the full binding even if its first byte has a different key.
-    Lvar keys identify whole variables. Unknown widths conservatively kill any
-    binding in the same storage space.
+    Microregister and stack keys address bytes. Lvars are mapped to their
+    physical stack locations when known; an unmapped lvar cannot establish
+    disjointness from either memory or registers. An unresolved indirect store may change
+    memory operands, but does not write a register value.
     """
-    if destination is None or operand.kind != destination.kind:
-        return False
+
+    def physical(storage: StorageKey) -> StorageKey:
+        if storage.kind == "l" and lvar_stkoff is not None:
+            offset = lvar_stkoff(storage.key)
+            if offset is not None:
+                return StorageKey("S", int(offset))
+        return storage
+
+    operand = physical(operand)
+    if destination is None:
+        return indirect and operand.kind in {"S", "l"}
+    destination = physical(destination)
+    if operand.kind != destination.kind:
+        return "l" in {operand.kind, destination.kind}
     if operand.kind == "l":
-        return operand.key == destination.key
+        # Without physical bounds two lvar identities cannot prove disjointness.
+        return True
     if destination_size is None or destination_size <= 0:
         return True
     return (
