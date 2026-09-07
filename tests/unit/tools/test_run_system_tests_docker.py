@@ -353,6 +353,8 @@ def _run(
             "DOCKER_LOG": str(docker_log),
             "CHMOD_LOG": str(tmp_path / "chmod.log"),
             "MOCK_DOCKER_LABEL": label,
+            # Model the macOS share host even when pytest runs in Linux Docker.
+            "MOCK_UNAME_S": "Darwin",
             "D810_REPO_ROOT": str(root),
             "D810_NO_CYTHON": no_cython,
         }
