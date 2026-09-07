@@ -11,6 +11,7 @@ d81-k5ku, P1-1).
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import ida_hexrays
@@ -42,106 +43,114 @@ def _key(mba: object) -> SafePointKey:
     )
 
 
-@pytest.mark.ida_required
-def test_two_live_proxies_for_one_mba_share_one_safe_point_key(
-    libobfuscated_setup,
-) -> None:
-    func_ea = get_func_ea("test_cst_simplification")
-    mba = gen_microcode_at_maturity(func_ea, ida_hexrays.MMAT_PREOPTIMIZED)
-    assert mba is not None
-    mba.build_graph()
-    block = mba.get_mblock(0)
-    assert block is not None
+class TestSafePointNativeIdentity:
+    # ida_database resolves its input from request.cls.binary_name.
+    binary_name = os.environ.get("D810_TEST_BINARY", "libobfuscated.dll")
 
-    # ``mblock_t.mba`` is the second proxy over the same native object.
-    proxy_a = block.mba
-    proxy_b = block.mba
-    assert proxy_a is not proxy_b
-    assert id(proxy_a) != id(proxy_b)
+    @pytest.mark.ida_required
+    def test_two_live_proxies_for_one_mba_share_one_safe_point_key(
+        self,
+        libobfuscated_setup,
+    ) -> None:
+        func_ea = get_func_ea("test_cst_simplification")
+        mba = gen_microcode_at_maturity(func_ea, ida_hexrays.MMAT_PREOPTIMIZED)
+        assert mba is not None
+        mba.build_graph()
+        block = mba.get_mblock(0)
+        assert block is not None
 
-    identity_a = native_object_identity(proxy_a)
-    identity_b = native_object_identity(proxy_b)
-    assert identity_a.kind is NativeIdentityKind.NATIVE_POINTER
-    assert identity_a == identity_b
-    assert identity_a.value not in {id(proxy_a), id(proxy_b)}
+        # ``mblock_t.mba`` is the second proxy over the same native object.
+        proxy_a = block.mba
+        proxy_b = block.mba
+        assert proxy_a is not proxy_b
+        assert id(proxy_a) != id(proxy_b)
 
-    key_a = _key(proxy_a)
-    key_b = _key(proxy_b)
-    assert key_a == key_b
-    assert hash(key_a) == hash(key_b)
+        identity_a = native_object_identity(proxy_a)
+        identity_b = native_object_identity(proxy_b)
+        assert identity_a.kind is NativeIdentityKind.NATIVE_POINTER
+        assert identity_a == identity_b
+        assert identity_a.value not in {id(proxy_a), id(proxy_b)}
 
+        key_a = _key(proxy_a)
+        key_b = _key(proxy_b)
+        assert key_a == key_b
+        assert hash(key_a) == hash(key_b)
 
-@pytest.mark.ida_required
-def test_second_live_proxy_cannot_reclaim_one_native_safe_point(
-    libobfuscated_setup,
-) -> None:
-    func_ea = get_func_ea("test_cst_simplification")
-    mba = gen_microcode_at_maturity(func_ea, ida_hexrays.MMAT_PREOPTIMIZED)
-    assert mba is not None
-    mba.build_graph()
-    block = mba.get_mblock(0)
-    assert block is not None
+    @pytest.mark.ida_required
+    def test_second_live_proxy_cannot_reclaim_one_native_safe_point(
+        self,
+        libobfuscated_setup,
+    ) -> None:
+        func_ea = get_func_ea("test_cst_simplification")
+        mba = gen_microcode_at_maturity(func_ea, ida_hexrays.MMAT_PREOPTIMIZED)
+        assert mba is not None
+        mba.build_graph()
+        block = mba.get_mblock(0)
+        assert block is not None
 
-    coordinator = HexRaysSafePointCoordinator()
-    calls: list[str] = []
+        coordinator = HexRaysSafePointCoordinator()
+        calls: list[str] = []
 
-    first = coordinator.run(
-        _key(block.mba),
-        lambda: calls.append("first") or OwnedStageOutcome.mutated(1),
-    )
-    second = coordinator.run(
-        _key(block.mba),
-        lambda: calls.append("second") or OwnedStageOutcome.mutated(1),
-    )
+        first = coordinator.run(
+            _key(block.mba),
+            lambda: calls.append("first") or OwnedStageOutcome.mutated(1),
+        )
+        second = coordinator.run(
+            _key(block.mba),
+            lambda: calls.append("second") or OwnedStageOutcome.mutated(1),
+        )
 
-    assert first.claimed is True
-    assert first.requires_stale_pointer_barrier is True
-    assert second.claimed is False
-    assert calls == ["first"]
+        assert first.claimed is True
+        assert first.requires_stale_pointer_barrier is True
+        assert second.claimed is False
+        assert calls == ["first"]
 
+    @pytest.mark.ida_required
+    def test_two_live_proxies_for_one_mba_share_one_flow_context_key(
+        self,
+        libobfuscated_setup,
+    ) -> None:
+        """The adapter's flow-context cache is keyed the same way (residual 1).
 
-@pytest.mark.ida_required
-def test_two_live_proxies_for_one_mba_share_one_flow_context_key(
-    libobfuscated_setup,
-) -> None:
-    """The adapter's flow-context cache is keyed the same way (residual 1).
+        ``block.mba`` mints a fresh proxy per access, so an ``id``-keyed cache
+        rebuilt the context on every callback -- and, once an address was
+        recycled, could instead reuse a context built over a dead MBA.
+        """
 
-    ``block.mba`` mints a fresh proxy per access, so an ``id``-keyed cache
-    rebuilt the context on every callback -- and, once an address was
-    recycled, could instead reuse a context built over a dead MBA.
-    """
+        func_ea = get_func_ea("test_cst_simplification")
+        mba = gen_microcode_at_maturity(func_ea, ida_hexrays.MMAT_PREOPTIMIZED)
+        assert mba is not None
+        mba.build_graph()
 
-    func_ea = get_func_ea("test_cst_simplification")
-    mba = gen_microcode_at_maturity(func_ea, ida_hexrays.MMAT_PREOPTIMIZED)
-    assert mba is not None
-    mba.build_graph()
+        manager = BlockOptimizerManager(
+            OptimizationStatistics(), Path("."), ctx_cls=FlowMaturityContext
+        )
+        manager.current_maturity = int(ida_hexrays.MMAT_PREOPTIMIZED)
 
-    manager = BlockOptimizerManager(
-        OptimizationStatistics(), Path("."), ctx_cls=FlowMaturityContext
-    )
-    manager.current_maturity = int(ida_hexrays.MMAT_PREOPTIMIZED)
+        first_block = mba.get_mblock(0)
+        second_block = mba.get_mblock(0)
+        assert first_block is not None and second_block is not None
+        first_proxy = first_block.mba
+        second_proxy = second_block.mba
+        assert first_proxy is not second_proxy
+        assert id(first_proxy) != id(second_proxy)
 
-    first_block = mba.get_mblock(0)
-    second_block = mba.get_mblock(0)
-    assert first_block is not None and second_block is not None
-    assert id(first_block.mba) != id(second_block.mba)
+        context = manager._get_or_create_flow_context(
+            first_block,
+            phase_priority=0,
+            phase_index=0,
+            phase_rules=(),
+        )
+        assert context is not None
+        first_key = manager._flow_context_key
+        assert first_key is not None
 
-    context = manager._get_or_create_flow_context(
-        first_block,
-        phase_priority=0,
-        phase_index=0,
-        phase_rules=(),
-    )
-    assert context is not None
-    first_key = manager._flow_context_key
-    assert first_key is not None
+        again = manager._get_or_create_flow_context(
+            second_block,
+            phase_priority=0,
+            phase_index=0,
+            phase_rules=(),
+        )
 
-    again = manager._get_or_create_flow_context(
-        second_block,
-        phase_priority=0,
-        phase_index=0,
-        phase_rules=(),
-    )
-
-    assert manager._flow_context_key == first_key
-    assert again is context
+        assert manager._flow_context_key == first_key
+        assert again is context

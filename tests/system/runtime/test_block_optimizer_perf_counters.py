@@ -500,6 +500,46 @@ def test_block_optimizer_safe_point_claim_installs_existing_stale_pointer_fence(
     assert manager._pipeline_just_fired is True
 
 
+@pytest.mark.parametrize(
+    ("pipeline_result", "error_type"),
+    [
+        (None, TypeError),
+        (True, TypeError),
+        (SimpleNamespace(applied_count=1), TypeError),
+        (-1, ValueError),
+    ],
+)
+def test_pass_pipeline_invalid_outcome_is_rejected_without_releasing_claim(
+    pipeline_result, error_type
+) -> None:
+    manager = BlockOptimizerManager(
+        OptimizationStatistics(), Path("."), ctx_cls=FlowMaturityContext
+    )
+    manager.current_maturity = ida_hexrays.MMAT_GLBOPT2
+    manager._flow_context = SimpleNamespace(
+        execution_attempt_context=lambda: (None, None, None),
+    )
+
+    class InvalidOutcomePipeline(_RecordingPassPipeline):
+        def run(self, backend_state, **kwargs):
+            self.calls.append((backend_state, kwargs))
+            return pipeline_result
+
+    pipeline = InvalidOutcomePipeline()
+    manager.configure(
+        decompilation_lifecycle=_MutationGatewayLifecycle(object(), object()),
+        pass_pipeline=pipeline,
+    )
+    mba = _make_block(maturity=ida_hexrays.MMAT_GLBOPT2).mba
+
+    with pytest.raises(error_type):
+        manager._run_pass_pipeline_once(mba, phase_label="MMAT_GLBOPT2")
+
+    # The rejected result must not let the same native epoch execute again.
+    manager._run_pass_pipeline_once(mba, phase_label="MMAT_GLBOPT2")
+    assert len(pipeline.calls) == 1
+
+
 def test_block_optimizer_records_rule_and_mba_mutation_attempts(tmp_path) -> None:
     journal = ExecutionJournalStore(
         tmp_path / "execution.sqlite", callback_detail="full"

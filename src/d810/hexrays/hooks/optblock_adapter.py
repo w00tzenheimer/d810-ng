@@ -685,38 +685,42 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
                 mba,
                 **pipeline_kwargs,
             )
-            # ``PatchPlanRuntime`` pipelines return the count of applied
-            # modifications.  Anything else is a broken contract, not a
-            # zero: accepting it would drop the stale-pointer fence.
-            if isinstance(applied_count, bool) or not isinstance(applied_count, int):
-                raise TypeError(
-                    "pass pipeline must return an applied-modification count, "
-                    f"not {type(applied_count).__name__}"
-                )
-            outcome = OwnedStageOutcome.from_applied_count(applied_count)
-            if outcome.mutation_count:
-                optimizer_logger.info(
-                    "PassPipeline: applied %d total modification(s) on function %s at %s",
-                    outcome.mutation_count,
-                    func_ea_hex,
-                    phase_label,
-                )
-            else:
-                optimizer_logger.debug(
-                    "PassPipeline: no modifications applied on function %s at %s",
-                    func_ea_hex,
-                    phase_label,
-                )
-            return outcome
         except Exception:
             optimizer_logger.exception(
                 "PassPipeline: error during %s processing",
                 phase_label,
             )
-        # The pipeline raised before any commit could be observed here.  The
-        # committed-mutation path returns above, so this is an abstention,
-        # not a suppressed mutation.
-        return OwnedStageOutcome.abstained()
+            # Preserve the existing pipeline-exception policy. Whether a
+            # pipeline committed before raising is a separate recovery concern;
+            # an exception here does not prove that no mutation occurred.
+            return OwnedStageOutcome.abstained()
+
+        # Validate returned outcomes outside the pipeline exception handler:
+        # a broken contract must reach the callback boundary, not become an
+        # apparently successful abstention that permits the hosted lane.
+        # ``PatchPlanRuntime`` pipelines return the count of applied
+        # modifications.  Anything else is a broken contract, not a
+        # zero: accepting it would drop the stale-pointer fence.
+        if isinstance(applied_count, bool) or not isinstance(applied_count, int):
+            raise TypeError(
+                "pass pipeline must return an applied-modification count, "
+                f"not {type(applied_count).__name__}"
+            )
+        outcome = OwnedStageOutcome.from_applied_count(applied_count)
+        if outcome.mutation_count:
+            optimizer_logger.info(
+                "PassPipeline: applied %d total modification(s) on function %s at %s",
+                outcome.mutation_count,
+                func_ea_hex,
+                phase_label,
+            )
+        else:
+            optimizer_logger.debug(
+                "PassPipeline: no modifications applied on function %s at %s",
+                func_ea_hex,
+                phase_label,
+            )
+        return outcome
 
     def _invalidate_flow_context(self, reason: str = "") -> None:
         if self._flow_context is not None and reason:
