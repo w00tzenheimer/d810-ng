@@ -95,15 +95,17 @@ from .canonical_session import CanonicalValidationSession, active_canonical_sess
 class TransactionSubjectRecord:
     """The immutable record one subject reference names inside a session.
 
-    A reference names a record, and a semantic subject is *identified* by its
-    canonical ``subject_id`` -- a fingerprint of ``(kind, role, locator)``.
-    That fingerprint is therefore what the arena stores: it is complete before
-    the mint, it is never touched again, and it keeps the arena free of a
-    strong reference to the subject record itself, so nothing here can keep a
-    record graph alive past the session.
+    A reference names a record, and a semantic subject is *identified* by
+    ``(kind, role, locator)``.  That triple is therefore what the arena
+    stores.  It used to store the ``subject_id`` fingerprint *of* the triple,
+    which answered exactly the same question at the cost of a SHA-256 per
+    subject the transaction reconstructed; the triple is complete before the
+    mint, it is never touched again, and -- like the fingerprint -- it keeps
+    the arena free of a strong reference to the subject record itself, so
+    nothing here can keep a record graph alive past the session.
     """
 
-    subject_id: str
+    content_key: tuple[object, ...]
 
 
 def transaction_authority_session() -> CanonicalValidationSession:
@@ -215,8 +217,14 @@ def _transaction_rebind(
     return rebind
 
 
-def transaction_subject_ref(subject_id: str) -> RuntimeAuthorityRef | None:
-    """Return the reference this transaction names ``subject_id`` by, if any.
+def transaction_subject_ref(content_key: tuple[object, ...]) -> RuntimeAuthorityRef | None:
+    """Return the reference this transaction names this subject by, if any.
+
+    ``content_key`` is the subject's ``(kind, role, locator)`` triple -- the
+    exact content ``subject_id`` fingerprints.  Interning on the triple rather
+    than on its hash is what lets a subject be constructed without minting a
+    content ID; the scope guarantee is unchanged, because the triple and its
+    fingerprint answer the same question inside one session.
 
     ``None`` is the honest answer outside a transaction session, and it is the
     normal answer: the producer builds semantic subjects too -- inside the
@@ -226,15 +234,15 @@ def transaction_subject_ref(subject_id: str) -> RuntimeAuthorityRef | None:
     refuse them rather than invent an authority for them.
     """
 
-    if type(subject_id) is not str:
-        raise TypeError("a subject reference requires an exact subject id")
+    if type(content_key) is not tuple:
+        raise TypeError("a subject reference requires an exact subject content key")
     session = active_canonical_session()
     if session is None or session.closed:
         return None
     return session.interned_ref(
-        subject_id,
+        content_key,
         RuntimeAuthorityKind.SUBJECT,
-        TransactionSubjectRecord(subject_id),
+        TransactionSubjectRecord(content_key),
     )
 
 

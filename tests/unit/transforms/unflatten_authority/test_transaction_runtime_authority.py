@@ -438,7 +438,9 @@ def test_a_subject_minted_in_a_transaction_carries_that_transactions_reference()
         assert ref is subject.runtime_ref
         assert ref.kind is RuntimeAuthorityKind.SUBJECT
         assert session.route_arena.owns(ref)
-        assert session.route_arena.get(ref).subject_id == subject.subject_id
+        assert session.route_arena.get(ref).content_key == (
+            subject.kind, subject.role, subject.locator,
+        )
 
 
 def test_the_same_subject_reconstructed_in_one_session_gets_one_reference() -> None:
@@ -514,17 +516,12 @@ def test_a_subject_sidecar_of_the_wrong_kind_is_a_construction_error() -> None:
         CanonicalSessionPhase.PROJECTED_PREPARATION,
     ) as session:
         foreign = session.route_arena.mint(
-            RuntimeAuthorityKind.CLAIM, TransactionSubjectRecord("sha256:" + "0" * 64),
+            RuntimeAuthorityKind.CLAIM, TransactionSubjectRecord(("foreign",)),
         )
         with pytest.raises(TypeError, match="must be a subject reference"):
             model.SemanticSubjectRef(
                 kind=model.SemanticSubjectKind.BLOCK,
                 role=model.SemanticSubjectRole.PLANNED_HELPER,
-                subject_id=authority_ids.subject_id(
-                    model.SemanticSubjectKind.BLOCK,
-                    model.SemanticSubjectRole.PLANNED_HELPER,
-                    model.BlockSubjectLocator(SUBJECT_REF, 0x1200),
-                ),
                 block_ref=SUBJECT_REF,
                 anchor_ea=0x1200,
                 locator=model.BlockSubjectLocator(SUBJECT_REF, 0x1200),
@@ -757,7 +754,9 @@ def test_a_decoded_subject_can_still_be_rebound_by_asking() -> None:
             locator=model.BlockSubjectLocator(SUBJECT_REF, 0x1200),
         )
 
-        rebound = transaction_subject_ref(from_payload.subject_id)
+        rebound = transaction_subject_ref(
+            (from_payload.kind, from_payload.role, from_payload.locator)
+        )
 
         assert rebound is subject_join_ref(live)
 

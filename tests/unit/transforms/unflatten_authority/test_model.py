@@ -25,6 +25,7 @@ from .helpers import import_authority_model, realize_projected_routes_for_test
 from .helpers import authority_id, block_ref, edge_role, state_identity
 from d810.transforms.cfg_transaction import LogicalBlockRef, NativeBlockRef, PlanBlockRef, PatchStepKind
 from d810.transforms.unflatten_authority.ids import _subject_factory, _claim_factory, _evidence_factory, subject_id, authority_id as canonical_authority_id, canonical_bytes, canonical_decode, receipt_id
+from d810.transforms.unflatten_authority import ids as authority_ids
 
 model = import_authority_model()
 
@@ -436,7 +437,7 @@ def _minimal_corridor_forecast(model, proposal):
         model.CorridorPathDisposition.STRUCTURALLY_COVERED, (),
     ))
     path = model.CorridorCoveragePath(
-        path_id, nodes, None, model.CorridorPathDisposition.STRUCTURALLY_COVERED, (),
+        nodes, None, model.CorridorPathDisposition.STRUCTURALLY_COVERED, (),
     )
     forecast_id = canonical_authority_id((
         "unflatten.corridor-coverage-forecast.v1", proposal.plan_id,
@@ -522,10 +523,6 @@ def test_default_gap_authority_requires_exact_path_and_phase_linkage() -> None:
             covered_base_forecast, (path,), ((exclusion.exclusion_id, exclusion.digest),), (exclusion,),
         )
     residual_legacy_path = model.CorridorCoveragePath(
-        canonical_authority_id((
-            "unflatten.corridor-coverage-path.v1", legacy_path.nodes, legacy_path.state_merge,
-            model.CorridorPathDisposition.RESIDUAL, (),
-        )),
         legacy_path.nodes, legacy_path.state_merge, model.CorridorPathDisposition.RESIDUAL, (),
     )
     base_content = (
@@ -654,10 +651,6 @@ def _default_gap_wrapper(model, covered_forecast, *, token="union"):
     """Make one nominal extension over an otherwise ordinary legacy forecast."""
     legacy_path = covered_forecast.paths[0]
     residual_path = model.CorridorCoveragePath(
-        canonical_authority_id((
-            "unflatten.corridor-coverage-path.v1", legacy_path.nodes,
-            legacy_path.state_merge, model.CorridorPathDisposition.RESIDUAL, (),
-        )),
         legacy_path.nodes, legacy_path.state_merge,
         model.CorridorPathDisposition.RESIDUAL, (),
     )
@@ -946,7 +939,7 @@ def test_subject_kind_role_locator_matrix_is_closed() -> None:
         anchor = anchor if anchor is not None else getattr(locator, "owner_anchor_ea", None)
         anchor = anchor if anchor is not None else getattr(locator, "entry_anchor_ea", None)
         subject = model.SemanticSubjectRef(
-            kind=kind, role=role, subject_id=subject_id(kind, role, locator),
+            kind=kind, role=role,
             block_ref=None if kind is model.SemanticSubjectKind.VALUE_FLOW else owner,
             anchor_ea=None if kind is model.SemanticSubjectKind.VALUE_FLOW else anchor,
             locator=locator,
@@ -957,7 +950,7 @@ def test_subject_kind_role_locator_matrix_is_closed() -> None:
         model.SemanticSubjectRef(
             kind=model.SemanticSubjectKind.EFFECT,
             role=model.SemanticSubjectRole.AUTHORITATIVE_HANDLER,
-            subject_id=authority_id("z"), block_ref=b0, anchor_ea=0x1000,
+            block_ref=b0, anchor_ea=0x1000,
             locator=model.EffectSubjectLocator(b0, 0x1000, 0x1004, model.EffectSiteKind.STORE),
         )
 
@@ -976,7 +969,6 @@ def test_physical_catalog_and_planned_helper_reference_families_are_disjoint() -
             model.SemanticSubjectRef(
                 kind=model.SemanticSubjectKind.BLOCK,
                 role=role,
-                subject_id=subject_id(model.SemanticSubjectKind.BLOCK, role, locator),
                 block_ref=ref,
                 anchor_ea=0x1000,
                 locator=locator,
@@ -1329,7 +1321,7 @@ def test_phase_binding_requires_serial_and_ea_together() -> None:
     b0 = block_ref("b0")
     subject = model.SemanticSubjectRef(
         model.SemanticSubjectKind.BLOCK, model.SemanticSubjectRole.SOURCE_ENTRY,
-        subject_id(model.SemanticSubjectKind.BLOCK, model.SemanticSubjectRole.SOURCE_ENTRY, model.BlockSubjectLocator(b0, 0x1000)), b0, 0x1000, model.BlockSubjectLocator(b0, 0x1000),
+        b0, 0x1000, model.BlockSubjectLocator(b0, 0x1000),
     )
     base = dict(subject=subject, phase=model.UnflattenAuthorityPhase.PRODUCER_FORECAST,
                 block_ref=b0, graph_fingerprint=authority_id("g"), generation=0,
@@ -1347,7 +1339,7 @@ def test_nonunique_phase_binding_has_no_serial_or_anchor() -> None:
     b0 = block_ref("b0")
     subject = model.SemanticSubjectRef(
         model.SemanticSubjectKind.BLOCK, model.SemanticSubjectRole.SOURCE_ENTRY,
-        subject_id(model.SemanticSubjectKind.BLOCK, model.SemanticSubjectRole.SOURCE_ENTRY, model.BlockSubjectLocator(b0, 0x1000)), b0, 0x1000, model.BlockSubjectLocator(b0, 0x1000),
+        b0, 0x1000, model.BlockSubjectLocator(b0, 0x1000),
     )
     with pytest.raises(ValueError):
         model.PhaseSubjectBinding(
@@ -1649,8 +1641,11 @@ def test_every_evidence_kind_accepts_only_its_exact_payload_class() -> None:
             model.UnflattenAuthorityPhase.PRODUCER_FORECAST, payload,
         )
         assert evidence.payload is payload
-        with pytest.raises(ValueError):
+        # A forged identity is now unrepresentable rather than rejected:
+        # ``evidence_id`` is derived, not accepted (ticket d81-cxzv).
+        with pytest.raises(TypeError, match="init=False"):
             replace(evidence, evidence_id="sha256:" + "0" * 64)
+        assert evidence.evidence_id == authority_ids.evidence_id(evidence)
         for other_kind, other_payload in payloads.items():
             if other_kind is not kind:
                 with pytest.raises(TypeError):
@@ -1728,8 +1723,9 @@ def test_claim_fields_use_the_closed_15_1_rows() -> None:
     ]
     assert all(claim for claim in claims)
     for claim in claims:
-        with pytest.raises(ValueError):
+        with pytest.raises(TypeError, match="init=False"):
             replace(claim, claim_id="sha256:" + "0" * 64)
+        assert claim.claim_id == authority_ids.claim_id(claim)
     bad_subject = source
     with pytest.raises(ValueError):
         _claim_factory(model.RetiredDispatcherInfrastructureClaim,
@@ -1936,8 +1932,9 @@ def test_closed_unions_reject_local_alias_and_subclass_smuggling() -> None:
                  model.BlockSubjectLocator(owner.block_ref, 0x1000)),
         0, 0x1000, 1, "alias", "base", None, None, authority_id("step"), 3,
     )
-    with pytest.raises(ValueError):
+    with pytest.raises(TypeError, match="init=False"):
         replace(alias, claim_id="sha256:" + "0" * 64)
+    assert alias.claim_id == authority_ids.claim_id(alias)
     with pytest.raises(TypeError):
         model.ProposedUnflattenContract(**{**valid, "claims": (alias,)})
 

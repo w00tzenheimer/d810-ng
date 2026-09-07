@@ -231,8 +231,15 @@ def test_record_equality_and_canonical_bytes_agree_for_subjects() -> None:
         for item in fields(model.SemanticSubjectRef)
         if not item.compare
     )
-    assert schema == compared
-    assert all(name.startswith("_") for name in excluded)
+    # ``subject_id`` is the one canonical-schema field outside the comparison
+    # set, and deliberately so: it is derived from the compared fields, so
+    # including it could only ever agree with them -- while comparing it would
+    # force every ``==`` to mint a SHA-256 (ticket d81-cxzv).
+    assert tuple(name for name in schema if name != "subject_id") == compared
+    assert "subject_id" in schema
+    assert set(excluded) - {"subject_id"} == {
+        name for name in excluded if name.startswith("_")
+    }
 
 
 def _tampered_subject(original, **overrides):
@@ -335,14 +342,20 @@ def _sealed_subject():
     }
 
 
-def test_live_validation_alone_cannot_see_a_corrupted_seal() -> None:
-    """The exact strength difference the two binders must compensate for.
+def test_a_corrupted_seal_is_refused_at_the_canonical_boundary() -> None:
+    """What replaces the construction-time seal recheck (ticket d81-cxzv).
 
-    ``validate_canonical_roundtrip`` decoded the record, and decoding re-ran
-    ``__post_init__``, so a ``subject_id`` corrupted after construction was
-    refused.  ``validate_live_semantic_fields`` walks fields and cannot see
-    that.  Written down as a test rather than as a claim, because it is the
-    reason both binders re-seal before validating.
+    ``subject_id`` is no longer supplied and no longer rechecked while the
+    record seals: it is derived from ``(kind, role, locator)`` the first time
+    anything demands it, so the *only* way to put a wrong value in the slot is
+    to write it directly, which no production path does.
+
+    A slot written that way is still refused where it matters -- the canonical
+    boundary.  ``validate_canonical_roundtrip`` re-encodes the record, the
+    encoder reads the (now poisoned) slot, and the round trip no longer
+    reproduces the canonical bytes.  The live validator still accepts it,
+    exactly as before, because it deliberately reaches no canonical
+    representation at all.
     """
 
     subject, _kwargs = _sealed_subject()
@@ -350,39 +363,43 @@ def test_live_validation_alone_cannot_see_a_corrupted_seal() -> None:
 
     object.__setattr__(subject, "subject_id", "sha256:" + "b" * 64)
 
-    # The decode refuses it.  The message is the decoder's wrapper, not the
-    # seal's own text, because ``_decode_wire`` rebuilds the record and
-    # rewrites the seal's ``ValueError``; the refusal is the point.
-    with pytest.raises(ValueError, match="^invalid record value$"):
+    with pytest.raises(ValueError, match="non-canonical wire encoding"):
         authority_ids.validate_canonical_roundtrip(subject, model.SemanticSubjectRef)
     # The live validator accepts it -- this is the gap, stated exactly.
     assert authority_ids.validate_live_semantic_fields(
         subject, model.SemanticSubjectRef,
     ) is None
-    # And this is what closes it at the two binders.
-    with pytest.raises(
-        ValueError, match="subject_id does not match canonical subject content",
-    ):
-        subject.__post_init__()
+
+
+def test_a_rebuilt_subject_derives_the_same_identity_as_the_eager_algorithm() -> None:
+    """The differential replacement for the seal recheck.
+
+    The recheck asserted ``self.subject_id == subject_id(self)``.  With the
+    field derived rather than supplied that is true by construction, so the
+    thing worth testing is that the derived value is the value the eager code
+    produced: ``content_id`` over exactly ``(kind, role, locator)``.
+    """
+
+    subject, _kwargs = _sealed_subject()
+    assert subject.subject_id == authority_ids.subject_id(
+        subject.kind, subject.role, subject.locator,
+    )
 
 
 @pytest.mark.parametrize("binder", ("bind_subjects", "bind_projected_subjects"))
-def test_a_subject_with_a_corrupted_seal_is_refused_by_both_binders(
+def test_both_binders_accept_a_subject_whose_identity_was_never_demanded(
     binder: str,
 ) -> None:
-    """The tamper test for the re-seal: it fails if the re-seal is removed."""
+    """Binding must not depend on the identity having been minted already."""
 
     subject, kwargs = _sealed_subject()
     bind_call = getattr(bind, binder)
 
     bound = bind_call((subject,), **kwargs)
     assert bound[0].subject is subject
-
-    object.__setattr__(subject, "subject_id", "sha256:" + "b" * 64)
-    with pytest.raises(
-        ValueError, match="subject_id does not match canonical subject content",
-    ):
-        bind_call((subject,), **kwargs)
+    assert bound[0].subject.subject_id == authority_ids.subject_id(
+        subject.kind, subject.role, subject.locator,
+    )
 
 
 def test_debug_logging_and_diagnostics_add_no_canonical_work(monkeypatch) -> None:

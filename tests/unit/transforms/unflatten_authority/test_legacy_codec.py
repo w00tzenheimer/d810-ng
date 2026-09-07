@@ -412,7 +412,6 @@ def test_legacy_corridor_path_identity_changes_for_each_authoritative_component(
     ).paths[0]
     def mint(nodes, state_merge, disposition):
         return model.CorridorCoveragePath(
-            authority_id(("unflatten.corridor-coverage-path.v1", nodes, state_merge, disposition, ())),
             nodes, state_merge, disposition, (),
         )
 

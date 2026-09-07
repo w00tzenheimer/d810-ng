@@ -6146,7 +6146,7 @@ def test_derived_detached_authority_reuses_projected_source_across_observation()
         model.CorridorPathDisposition.STRUCTURALLY_COVERED, (),
     ))
     path = model.CorridorCoveragePath(
-        path_id, path_nodes, None,
+        path_nodes, None,
         model.CorridorPathDisposition.STRUCTURALLY_COVERED, (),
     )
     forecast_id = authority_id((

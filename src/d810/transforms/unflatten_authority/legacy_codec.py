@@ -616,12 +616,8 @@ def corridor_coverage_forecast_from_legacy_metadata(
             block_refs_by_serial[anchor(raw["state_merge"], "corridor state merge")[0]],
             anchor(raw["state_merge"], "corridor state merge")[1],
         )
-        path_id = authority_id((
-            "unflatten.corridor-coverage-path.v1", nodes, state_merge,
-            actual_disposition, exclusions,
-        ))
         return CorridorCoveragePath(
-            path_id, nodes, state_merge, actual_disposition, exclusions,
+            nodes, state_merge, actual_disposition, exclusions,
         )
 
     covered_paths = tuple(
