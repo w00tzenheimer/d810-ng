@@ -1,0 +1,28 @@
+id: no-post-publication-setattr
+snapshots:
+  ? |
+    class Claim:
+        def normalize(self) -> None:
+            object.__setattr__(self, "claims", claims)
+  : labels:
+    - source: object.__setattr__(self, "claims", claims)
+      style: primary
+      start: 54
+      end: 96
+  ? |
+    def _bind(value, derived):
+        object.__setattr__(value, "derived", derived)
+  : labels:
+    - source: object.__setattr__(value, "derived", derived)
+      style: primary
+      start: 31
+      end: 76
+  ? |
+    def _revalidate(result, values):
+        for name, value in values.items():
+            object.__setattr__(result, name, value)
+  : labels:
+    - source: object.__setattr__(result, name, value)
+      style: primary
+      start: 80
+      end: 119

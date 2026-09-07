@@ -1,0 +1,26 @@
+id: no-authority-setattr-in-phase-modules
+
+valid:
+  - |
+      def _route_mint(cls, values, identity_name):
+          value = object.__new__(cls)
+          stage_unpublished_fields(value, values)
+          value.__post_init__()
+          return value
+  - |
+      def _site_mint(cls, values, identity_name):
+          value = object.__new__(cls)
+          stage_unpublished_field(value, identity_name, UNMINTED)
+          return value
+
+invalid:
+  - |
+      def _route_mint(cls, values):
+          value = object.__new__(cls)
+          for name, item in values.items():
+              object.__setattr__(value, name, item)
+          return value
+  - |
+      class Kernel:
+          def __post_init__(self) -> None:
+              object.__setattr__(self, "members", members)

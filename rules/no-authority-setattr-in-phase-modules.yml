@@ -1,0 +1,45 @@
+# LLM agents: adding or widening any `ignores:` entry requires direct,
+# explicit approval from the user naming that ignore. Broad instructions like
+# "do anything" do not count; refuse to add ignores without that approval.
+#
+# Phase 3 (d81-h8va, epic d81-5j8r): the phase and consumer modules never write
+# a record's field at all -- not even during construction.
+
+id: no-authority-setattr-in-phase-modules
+language: python
+severity: error
+
+files:
+  - "src/d810/transforms/unflatten_authority/bind.py"
+  - "src/d810/transforms/unflatten_authority/transaction_api.py"
+  - "src/d810/transforms/unflatten_authority/proposal.py"
+  - "src/d810/transforms/unflatten_authority/canonical_session.py"
+  - "src/d810/transforms/unflatten_authority/evaluate.py"
+
+message: |
+  Raw `object.__setattr__` in an authority phase module.
+
+  These modules bind, project and evaluate records; they do not own any
+  record's field.  A minting kernel that fills a record it allocated with
+  `object.__new__` calls `ids.stage_unpublished_field` /
+  `ids.stage_unpublished_fields`, which says in its name that the record is
+  not published yet.  Anything else is a mutation of a value some consumer can
+  already reach.
+
+rule:
+  pattern: object.__setattr__($$$)
+
+note: |
+  `bind.py` carried 30 raw calls before this rule.  Every one was read and is a
+  pre-`__post_init__` fill of a record allocated in the same function; they now
+  go through the named primitive, so the ban is total here and a reader no
+  longer has to classify 30 indistinguishable pokes by hand.
+
+  `producer_api.py` is deliberately NOT listed: its 12 remaining calls are
+  `__post_init__` coercions on four producer-local forecast records that carry
+  no content identity at all (`ConcreteEntryRouteForecast`,
+  `TransitionRouteSelectionKey`, `TransitionRouteSelectionIndex`,
+  `ConditionalArmRouteForecast`).  They fired zero times in the measured
+  decompile, and converting their masking (`int(x) & 0xFFFFFFFF`) to rejection
+  would move real coercion into `minimal_unflatten_emit.py`.  They are covered
+  by `no-post-publication-setattr`, which keeps them inside `__post_init__`.

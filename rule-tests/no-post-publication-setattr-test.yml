@@ -1,0 +1,40 @@
+id: no-post-publication-setattr
+
+valid:
+  - |
+      class Claim:
+          def __post_init__(self) -> None:
+              object.__setattr__(self, "members", members)
+  - |
+      class Receipt:
+          def _validate_fields(self) -> None:
+              object.__setattr__(self, "_content_seal", seal)
+  - |
+      def stage_unpublished_field(value, name, item):
+          object.__setattr__(value, name, item)
+  - |
+      def stage_unpublished_fields(value, values):
+          for name, item in values.items():
+              object.__setattr__(value, name, item)
+  - |
+      def _lazy_identity_getattr(self, name):
+          object.__setattr__(self, name, value)
+  - |
+      def _route_mint(cls, values, identity_name):
+          value = object.__new__(cls)
+          stage_unpublished_fields(value, values)
+          value.__post_init__()
+          return value
+
+invalid:
+  - |
+      def _bind(value, derived):
+          object.__setattr__(value, "derived", derived)
+  - |
+      def _revalidate(result, values):
+          for name, value in values.items():
+              object.__setattr__(result, name, value)
+  - |
+      class Claim:
+          def normalize(self) -> None:
+              object.__setattr__(self, "claims", claims)

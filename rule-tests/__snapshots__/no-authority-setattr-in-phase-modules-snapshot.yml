@@ -1,0 +1,22 @@
+id: no-authority-setattr-in-phase-modules
+snapshots:
+  ? |
+    class Kernel:
+        def __post_init__(self) -> None:
+            object.__setattr__(self, "members", members)
+  : labels:
+    - source: object.__setattr__(self, "members", members)
+      style: primary
+      start: 59
+      end: 103
+  ? |
+    def _route_mint(cls, values):
+        value = object.__new__(cls)
+        for name, item in values.items():
+            object.__setattr__(value, name, item)
+        return value
+  : labels:
+    - source: object.__setattr__(value, name, item)
+      style: primary
+      start: 108
+      end: 145
