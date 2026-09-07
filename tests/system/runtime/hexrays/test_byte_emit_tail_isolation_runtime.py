@@ -153,6 +153,34 @@ def test_live_adapter_uses_fresh_transactions_over_an_injected_gateway_index():
     assert modifier.mutation_gateway.identity_index is gateway.identity_index
 
 
+def test_deferred_modifier_owns_kreg_allocation_and_release_port():
+    from d810.hexrays.mutation.deferred_modifier import DeferredGraphModifier
+
+    class _AllocationMba:
+        entry_ea = 0x401000
+
+        def __init__(self):
+            self.allocations = []
+            self.freed = []
+
+        def alloc_kreg(self, size, check_size):
+            self.allocations.append((size, check_size))
+            return 90 + len(self.allocations)
+
+        def free_kreg(self, register, size):
+            self.freed.append((register, size))
+
+    mba = _AllocationMba()
+    modifier = DeferredGraphModifier(mba)
+
+    assert modifier.allocate_kreg(8) == 91
+    assert mba.allocations == [(8, True)]
+
+    modifier.release_allocated_kregs()
+
+    assert mba.freed == [(91, 8)]
+
+
 def test_source_byte_family_key_requires_structural_identity_not_dstr():
     import d810.hexrays.mutation.byte_emit_tail_isolation_runtime as runtime
 

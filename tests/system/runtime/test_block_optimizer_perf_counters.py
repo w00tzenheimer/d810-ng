@@ -181,6 +181,14 @@ class _RecordingPassPipeline:
         return 0
 
 
+class _MutatingPassPipeline(_RecordingPassPipeline):
+    passes: tuple[object, ...] = ()
+
+    def run(self, backend_state: object, **kwargs: object) -> int:
+        self.calls.append((backend_state, kwargs))
+        return 1
+
+
 def _make_block(func_ea: int = 0x401000, maturity=None):
     mba = SimpleNamespace(entry_ea=func_ea, qty=1)
     if maturity is not None:
@@ -457,6 +465,39 @@ def test_pass_pipeline_runs_once_per_maturity_and_resets_per_session() -> None:
     manager.current_maturity = None
     manager.log_info_on_input(_make_block(maturity=ida_hexrays.MMAT_GLBOPT2))
     assert len(pipeline.calls) == 2
+
+
+def test_block_optimizer_safe_point_claim_installs_existing_stale_pointer_fence():
+    manager = BlockOptimizerManager(
+        OptimizationStatistics(), Path("."), ctx_cls=FlowMaturityContext
+    )
+    manager.current_maturity = ida_hexrays.MMAT_GLBOPT2
+    manager._flow_context = SimpleNamespace(
+        execution_attempt_context=lambda: (None, None, None),
+    )
+    pipeline = _MutatingPassPipeline()
+    # Mutation authority comes from the lifecycle coordinator, never from the
+    # flow context; without one the pipeline abstains before it can claim a
+    # safe point and this test would assert nothing.
+    manager.configure(
+        decompilation_lifecycle=_MutationGatewayLifecycle(object(), object()),
+        pass_pipeline=pipeline,
+    )
+    mba = _make_block(maturity=ida_hexrays.MMAT_GLBOPT2).mba
+
+    manager._run_pass_pipeline_once(mba, phase_label="MMAT_GLBOPT2")
+    manager._run_pass_pipeline_once(mba, phase_label="MMAT_GLBOPT2")
+
+    assert len(pipeline.calls) == 1
+    assert manager._pipeline_just_fired is True
+
+    # A new native MBA identity is a new coordinator key, but the existing
+    # maturity-wide fence remains set until the callback observes a maturity
+    # transition and receives fresh block pointers from Hex-Rays.
+    replacement_mba = _make_block(maturity=ida_hexrays.MMAT_GLBOPT2).mba
+    manager._run_pass_pipeline_once(replacement_mba, phase_label="MMAT_GLBOPT2")
+    assert len(pipeline.calls) == 2
+    assert manager._pipeline_just_fired is True
 
 
 def test_block_optimizer_records_rule_and_mba_mutation_attempts(tmp_path) -> None:

@@ -2,19 +2,35 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import ida_hexrays
 
 from d810.core import typing
 from d810.hexrays.ir_maturity import ir_maturity_to_ida
+from d810.hexrays.ir.mop_snapshot import MopSnapshot
+from d810.hexrays.mutation.block_instruction_commit import (
+    BlockInstructionAnchor,
+    BlockInstructionBatchCandidate,
+    BlockInstructionEditIntent,
+    BlockInstructionMaterializationContext,
+    MaterializedBlockInstructionEdit,
+)
 from d810.hexrays.utils.hexrays_helpers import dup_mop, structural_mop_hash
+from d810.hexrays.mutation.instruction_commit import (
+    NativeEpoch,
+    fingerprint_minsn,
+)
 from d810.backends.mba.native_rotate_helper import (
     make_rol8_helper_call as _make_rol8_helper_call,
 )
 from d810.ir.maturity import IRMaturity
+from d810.optimizers.microcode.instructions.block_handler import (
+    HostedBlockInstructionRule,
+)
 from d810.optimizers.microcode.instructions.peephole.handler import (
     PeepholeSimplificationRule,
 )
-from d810.optimizers.microcode.flow.handler import FlowOptimizationRule
 from d810.optimizers.microcode.instructions.peephole.rotate_idiom_recovery import (
     Binary,
     Constant,
@@ -183,15 +199,120 @@ def _helper_call_from_match(
     )
 
 
-def _fresh_kreg_output(
-    block: ida_hexrays.mblock_t,
-    size: int = 8,
-) -> ida_hexrays.mop_t | None:
-    """Allocate a typed temporary for one helper result."""
+@dataclass(frozen=True, slots=True)
+class _DetachedRotateRoot:
+    """Callback-local rotate evidence with no borrowed native source object."""
+
+    path: tuple[str, ...] | None
+    base: MopSnapshot
+    rotation: int
+    instruction_ea: int
+
+
+def _detached_rotate_root(
+    *,
+    path: tuple[str, ...] | None,
+    match: RotateIdiomMatch,
+    base_mop: ida_hexrays.mop_t,
+    instruction_ea: int,
+) -> _DetachedRotateRoot | None:
+    """Capture the exact native helper input before the callback returns."""
 
     try:
-        kreg = block.mba.alloc_kreg(size, True)
-        if kreg == ida_hexrays.mr_none:
+        base = MopSnapshot.from_mop(base_mop)
+    except Exception:
+        return None
+    return _DetachedRotateRoot(
+        path=path,
+        base=base,
+        rotation=int(match.rotation),
+        instruction_ea=int(instruction_ea),
+    )
+
+
+def _nested_rotate_roots(
+    mop: ida_hexrays.mop_t | None,
+    *,
+    path: tuple[str, ...],
+    instruction_ea: int,
+) -> tuple[_DetachedRotateRoot, ...]:
+    """Find exact rotate values below one instruction without native writes."""
+
+    if mop is None or mop.t != ida_hexrays.mop_d or mop.d is None:
+        return ()
+    candidate = _validated_native_match(_expression_from_mop(mop))
+    if candidate is not None:
+        match, base_mop = candidate
+        root = _detached_rotate_root(
+            path=path,
+            match=match,
+            base_mop=base_mop,
+            instruction_ea=instruction_ea,
+        )
+        return () if root is None else (root,)
+
+    nested: list[_DetachedRotateRoot] = []
+    nested.extend(
+        _nested_rotate_roots(
+            mop.d.l,
+            path=path + ("d", "l"),
+            instruction_ea=instruction_ea,
+        )
+    )
+    nested.extend(
+        _nested_rotate_roots(
+            mop.d.r,
+            path=path + ("d", "r"),
+            instruction_ea=instruction_ea,
+        )
+    )
+    return tuple(nested)
+
+
+def _rotate_roots_for_instruction(
+    instruction: ida_hexrays.minsn_t,
+) -> tuple[_DetachedRotateRoot, ...]:
+    """Collect one instruction's direct or nested rotate roots."""
+
+    instruction_ea = int(instruction.ea)
+    direct = _validated_native_match(_expression_from_instruction(instruction))
+    if direct is not None:
+        match, base_mop = direct
+        root = _detached_rotate_root(
+            path=None,
+            match=match,
+            base_mop=base_mop,
+            instruction_ea=instruction_ea,
+        )
+        return () if root is None else (root,)
+
+    roots: list[_DetachedRotateRoot] = []
+    roots.extend(
+        _nested_rotate_roots(
+            instruction.l,
+            path=("l",),
+            instruction_ea=instruction_ea,
+        )
+    )
+    roots.extend(
+        _nested_rotate_roots(
+            instruction.r,
+            path=("r",),
+            instruction_ea=instruction_ea,
+        )
+    )
+    return tuple(roots)
+
+
+def _fresh_kreg_output_from_context(
+    context: BlockInstructionMaterializationContext,
+    size: int = 8,
+) -> ida_hexrays.mop_t | None:
+    """Allocate a helper result through the backend-owned ledger port."""
+
+    try:
+        kreg = context.alloc_kreg(size)
+        if kreg is None or kreg == ida_hexrays.mr_none:
             return None
         result = ida_hexrays.mop_t()
         result.make_reg(kreg, size)
@@ -200,53 +321,100 @@ def _fresh_kreg_output(
         return None
 
 
-def _recover_nested_value_mop(
+def _helper_call_from_detached_root(
     block: ida_hexrays.mblock_t,
     *,
-    ea: int,
-    mop: ida_hexrays.mop_t,
-) -> tuple[ida_hexrays.mop_t, tuple[ida_hexrays.minsn_t, ...]]:
-    """Clone ``mop`` and materialize exact nested rotates into fresh kregs.
+    root: _DetachedRotateRoot,
+    output: ida_hexrays.mop_t,
+) -> ida_hexrays.minsn_t | None:
+    """Materialize a helper from snapshots, never from proposal-time mops."""
 
-    Hex-Rays accepts helper calls in the established value-producing form
-    ``mov call !__ROL8__(...), kreg``.  A raw ``m_call`` nested beneath an
-    arithmetic ``mop_d`` is printable, but fails ``mba.verify()``.  Keep calls
-    as sibling instructions and let the rebuilt SSA expression consume their
-    value registers instead.
-    """
-
-    if mop.t != ida_hexrays.mop_d or mop.d is None:
-        return dup_mop(mop), ()
-    expression = _expression_from_mop(mop)
-    # Allocating a kreg changes the MBA allocator state even when no rewrite
-    # follows. The walker visits every nested value in a block, so allocation
-    # must be strictly behind the exact structural/effect-free gate.
-    candidate = _validated_native_match(expression)
-    output = _fresh_kreg_output(block) if candidate is not None else None
-    helper = (
-        _helper_call_from_validated_match(
-            block,
-            ea=ea,
-            match=candidate[0],
-            base_mop=candidate[1],
-            output=output,
-        )
-        if output is not None
-        else None
+    try:
+        base = root.base.to_mop(getattr(block, "mba", None))
+    except Exception:
+        return None
+    return make_rol8_helper_call(
+        block,
+        ea=root.instruction_ea,
+        base=base,
+        rotation=root.rotation,
+        output=output,
     )
-    if helper is not None:
-        return dup_mop(output), (helper,)
 
-    nested = ida_hexrays.minsn_t(mop.d)
-    left, left_helpers = _recover_nested_value_mop(block, ea=ea, mop=nested.l)
-    right, right_helpers = _recover_nested_value_mop(block, ea=ea, mop=nested.r)
-    if not left_helpers and not right_helpers:
-        return dup_mop(mop), ()
-    nested.l = left
-    nested.r = right
-    result = ida_hexrays.mop_t()
-    result.create_from_insn(nested)
-    return result, left_helpers + right_helpers
+
+def _replace_mop_at_path(
+    instruction: ida_hexrays.minsn_t,
+    path: tuple[str, ...],
+    replacement: ida_hexrays.mop_t,
+) -> bool:
+    """Replace one nested operand in a detached instruction copy."""
+
+    if not path:
+        return False
+    owner: object = instruction
+    try:
+        for attribute in path[:-1]:
+            owner = getattr(owner, attribute)
+        setattr(owner, path[-1], replacement)
+    except Exception:
+        return False
+    return True
+
+
+@dataclass(frozen=True, slots=True)
+class _RotateInstructionMaterializer:
+    """Backend-owned materializer for all rotate roots in one source instruction."""
+
+    roots: tuple[_DetachedRotateRoot, ...]
+
+    def materialize(
+        self,
+        context: BlockInstructionMaterializationContext,
+    ) -> MaterializedBlockInstructionEdit | None:
+        if not self.roots:
+            return None
+        instruction = context.instruction
+        block = context.block
+        if any(root.path is None for root in self.roots):
+            if len(self.roots) != 1 or self.roots[0].path is not None:
+                return None
+            root = self.roots[0]
+            replacement = _helper_call_from_detached_root(
+                block,
+                root=root,
+                output=instruction.d,
+            )
+            if replacement is None:
+                return None
+            return MaterializedBlockInstructionEdit(replacement=replacement)
+
+        try:
+            replacement = ida_hexrays.minsn_t(instruction)
+        except Exception:
+            return None
+        helpers: list[ida_hexrays.minsn_t] = []
+        for root in self.roots:
+            if root.path is None:
+                return None
+            output = _fresh_kreg_output_from_context(context)
+            if output is None:
+                return None
+            helper = _helper_call_from_detached_root(
+                block,
+                root=root,
+                output=output,
+            )
+            if helper is None or not _replace_mop_at_path(
+                replacement,
+                root.path,
+                dup_mop(output),
+            ):
+                return None
+            helpers.append(helper)
+        return MaterializedBlockInstructionEdit(
+            replacement=replacement,
+            insert_before=tuple(helpers),
+        )
 
 
 class RotateIdiomRecoveryRule(PeepholeSimplificationRule):
@@ -293,17 +461,14 @@ class RotateIdiomRecoveryRule(PeepholeSimplificationRule):
         return None
 
 
-class RotateIdiomRecoveryBlockRule(FlowOptimizationRule):
-    """Visit every GLBOPT2 instruction so nested value expressions are seen."""
+class RotateIdiomRecoveryBlockRule(HostedBlockInstructionRule):
+    """Propose hosted edits for every GLBOPT2 instruction with a rotate root."""
 
     DESCRIPTION = "Recover exact 64-bit multiply/shift rotate idioms as __ROL8__"
 
     def __init__(self) -> None:
         super().__init__()
         self.maturities = [ida_hexrays.MMAT_GLBOPT2]
-        self._rewriter = RotateIdiomRecoveryRule()
-        self._active_mba_scope: tuple[int, int] | None = None
-        self._applied_instruction_eas: set[int] = set()
 
     def configure(self, kwargs) -> None:
         config = dict(kwargs or {})
@@ -319,61 +484,59 @@ class RotateIdiomRecoveryBlockRule(FlowOptimizationRule):
                     "RotateIdiomRecoveryBlockRule maturities must be IRMaturity names"
                 ) from exc
 
-    def optimize(self, block: ida_hexrays.mblock_t) -> int:
-        if block is None:
-            return 0
-        mba = block.mba
-        if mba is None:
-            return 0
-        try:
-            scope = (int(mba.this), int(mba.maturity))
-        except (AttributeError, TypeError, ValueError):
-            # A missing native identity is not a reason to risk repeated
-            # value materialization in an optblock callback.
-            return 0
-        if scope != self._active_mba_scope:
-            self._active_mba_scope = scope
-            self._applied_instruction_eas.clear()
-        changed = 0
-        instruction = block.head
-        while instruction is not None:
-            next_instruction = instruction.next
-            if int(instruction.ea) in self._applied_instruction_eas:
-                instruction = next_instruction
-                continue
-            replacement = self._rewriter.check_and_replace(block, instruction)
-            if replacement is not None:
-                instruction.swap(replacement)
-                changed += 1
-                self._applied_instruction_eas.add(int(instruction.ea))
-            else:
-                replacement = ida_hexrays.minsn_t(instruction)
-                left, left_helpers = _recover_nested_value_mop(
-                    block,
-                    ea=instruction.ea,
-                    mop=instruction.l,
+    def propose_instruction_batch(
+        self,
+        block: ida_hexrays.mblock_t,
+        *,
+        epoch: NativeEpoch,
+    ) -> BlockInstructionBatchCandidate | None:
+        """Capture a complete block proposal without allocating or mutating."""
+
+        if block is None or getattr(block, "mba", None) is None:
+            return None
+        if not isinstance(epoch, NativeEpoch):
+            return None
+
+        edits: list[BlockInstructionEditIntent] = []
+        instruction = getattr(block, "head", None)
+        ordinal = 0
+        seen: set[int] = set()
+        while instruction is not None and id(instruction) not in seen:
+            seen.add(id(instruction))
+            roots = _rotate_roots_for_instruction(instruction)
+            if roots:
+                try:
+                    anchor = BlockInstructionAnchor(
+                        block_serial=int(block.serial),
+                        block_start_ea=int(block.start),
+                        ordinal=ordinal,
+                        instruction_ea=int(instruction.ea),
+                        opcode=int(instruction.opcode),
+                        before_fingerprint=fingerprint_minsn(
+                            instruction,
+                            epoch.function_ea,
+                        ),
+                    )
+                except (AttributeError, TypeError, ValueError):
+                    return None
+                edits.append(
+                    BlockInstructionEditIntent(
+                        anchor=anchor,
+                        materializer=_RotateInstructionMaterializer(roots),
+                        description="recover 64-bit rotate idiom",
+                    )
                 )
-                right, right_helpers = _recover_nested_value_mop(
-                    block,
-                    ea=instruction.ea,
-                    mop=instruction.r,
-                )
-                helpers = left_helpers + right_helpers
-                if helpers:
-                    replacement.l = left
-                    replacement.r = right
-                    anchor = instruction.prev
-                    for helper in helpers:
-                        block.insert_into_block(helper, anchor)
-                        anchor = helper
-                    instruction.swap(replacement)
-                    changed += len(helpers)
-                    self._applied_instruction_eas.add(int(instruction.ea))
-            instruction = next_instruction
-        # Even though this rule rewrites values only, the def/use lists belong
-        # to the enclosing block.  Leaving them stale after an optblock-level
-        # swap can make the following global-optimization iteration reject the
-        # MBA without reporting a Python exception.
-        if changed:
-            block.mark_lists_dirty()
-        return changed
+            if instruction is getattr(block, "tail", None):
+                break
+            instruction = getattr(instruction, "next", None)
+            ordinal += 1
+
+        if not edits:
+            return None
+        return BlockInstructionBatchCandidate(
+            edits=tuple(edits),
+            epoch_before=epoch,
+            pass_id="rotate-idiom-recovery",
+            stage_id="rotate-idiom-recovery",
+            rule_id=self.name,
+        )

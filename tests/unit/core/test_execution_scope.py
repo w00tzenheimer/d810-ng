@@ -14,7 +14,13 @@ from d810.core.execution_scope import (
     FunctionExecutionMetadata,
 )
 from d810.core.maturity_labels import IDA_MMAT_CALLS, IDA_MMAT_GLBOPT1, IDA_MMAT_GLBOPT2
-from d810.passes.execution_stages import ExecutionPipeline, ExecutionStageDescriptor
+from d810.passes.execution_stages import (
+    ExecutionHost,
+    ExecutionOwnership,
+    ExecutionPipeline,
+    ExecutionStageDescriptor,
+    IRScope,
+)
 from d810.passes.pass_pipeline import FunctionTarget
 
 
@@ -89,6 +95,21 @@ def test_execution_and_diagnostics_share_one_evaluator() -> None:
         next(item for item in report.decisions if item.stage_id == "excluded").reason
         == "ea-excluded"
     )
+    included_decision = next(
+        item for item in report.decisions if item.stage_id == "included"
+    )
+    assert included_decision.pipeline is ExecutionPipeline.FLOW
+    assert included_decision.ownership is ExecutionOwnership.HEXRAYS_HOSTED
+    assert included_decision.host is ExecutionHost.HEXRAYS_OPTBLOCK
+    assert included_decision.scope is IRScope.BLOCK
+
+
+def test_expanded_stage_exposes_descriptor_execution_metadata() -> None:
+    stage = _stage("pass", "stage")
+
+    assert stage.ownership is ExecutionOwnership.HEXRAYS_HOSTED
+    assert stage.host is ExecutionHost.HEXRAYS_OPTBLOCK
+    assert stage.scope is IRScope.BLOCK
 
 
 def test_wrong_maturity_and_hint_suppression_use_stable_stage_ids() -> None:

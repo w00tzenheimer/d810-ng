@@ -927,6 +927,22 @@ class PassResult:
         """Whether this result supplied a result-level preservation policy."""
         return self._preserved_explicit
 
+    @property
+    def mutation_forms(self) -> tuple[str, ...]:
+        """Return the non-empty portable mutation forms in this result.
+
+        This is derived from the canonical result fields rather than stored as
+        a second mutation flag.  The portable driver uses it to enforce
+        boundary contracts before handing a plan to a backend; callback-hosted
+        instruction receipts do not pass through :class:`PassResult`.
+        """
+        forms: list[str] = []
+        if self.rewrite_plan.steps or self.rewrite_plan.new_blocks:
+            forms.append("rewrite_plan")
+        if self.fragment_plan is not None:
+            forms.append("fragment_plan")
+        return tuple(forms)
+
 
 @dataclass(frozen=True)
 class PassFact:
@@ -948,7 +964,10 @@ class PassSpec:
     """Declarative registration of a pass: how to build it + its policies."""
 
     name: str
-    pass_factory: Callable[..., PipelinePass]
+    # ``None`` denotes a callback-hosted descriptor-only stage.  Such stages
+    # remain visible to config/editor/catalog consumers but are never sent to
+    # the portable pipeline driver.
+    pass_factory: Callable[..., PipelinePass] | None
     requirements: CapabilityPolicy
     safety_policy: SafetyPolicy
     maturity_gates: frozenset[IRMaturity] = frozenset()

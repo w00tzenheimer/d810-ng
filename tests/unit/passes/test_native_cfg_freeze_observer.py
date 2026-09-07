@@ -26,6 +26,7 @@ from d810.passes.pass_pipeline import (
     BackendRoute,
     PassResult,
     PassSpec,
+    PreservedAnalyses,
     default,
     no_caps,
 )
@@ -223,13 +224,17 @@ class _Pass:
         return PassResult(
             rewrite_plan=_plan(),
             native_cfg_edge_contracts=(_edge_contract(),),
+            preserved=PreservedAnalyses.none(),
         )
 
 
 class _NoContractPass:
     def run(self, ctx) -> PassResult:
         del ctx
-        return PassResult(rewrite_plan=_plan())
+        return PassResult(
+            rewrite_plan=_plan(),
+            preserved=PreservedAnalyses.none(),
+        )
 
 
 class _FragmentPass:
@@ -238,6 +243,7 @@ class _FragmentPass:
         return PassResult(
             fragment_plan=_fragment_plan(),
             native_cfg_edge_contracts=(_edge_contract(),),
+            preserved=PreservedAnalyses.none(),
         )
 
 

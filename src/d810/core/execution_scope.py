@@ -81,6 +81,18 @@ class ExpandedExecutionStage:
     def pipeline(self) -> object:
         return self.descriptor.pipeline
 
+    @property
+    def ownership(self) -> object:
+        return self.descriptor.ownership
+
+    @property
+    def host(self) -> object:
+        return self.descriptor.host
+
+    @property
+    def scope(self) -> object:
+        return self.descriptor.scope
+
 
 @dataclass(frozen=True, slots=True)
 class ExecutionStageIdentity:
@@ -130,6 +142,9 @@ class EffectiveExecutionDecision:
     active: bool
     reason: str
     detail: str
+    ownership: object = field(default=None, kw_only=True)
+    host: object = field(default=None, kw_only=True)
+    scope: object = field(default=None, kw_only=True)
 
 
 @dataclass(frozen=True, slots=True)
@@ -473,6 +488,9 @@ class ExecutionScopeService:
                     active=evaluation.active,
                     reason=evaluation.reason,
                     detail=evaluation.detail,
+                    ownership=stage.ownership,
+                    host=stage.host,
+                    scope=stage.scope,
                 )
             )
         known_passes = {stage.pass_id for stage in self._stages}

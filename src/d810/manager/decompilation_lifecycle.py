@@ -882,6 +882,15 @@ class DecompilationLifecycleCoordinator:
             and session.native_preanalysis.native_mutation_quarantined
         )
 
+    def quarantine_native_mutation(self, *, function_ea: int, reason: str) -> bool:
+        """Poison the active native generation after an unrecoverable mutation failure."""
+        session = self.current_session(int(function_ea))
+        if session is None:
+            return False
+        return session.native_preanalysis.request_poisoned_generation_restart(
+            reason=str(reason)
+        )
+
     def observe_native_mutation_quarantine(
         self,
         *,
