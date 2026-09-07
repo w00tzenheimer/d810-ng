@@ -46,7 +46,8 @@ from d810.hexrays.observability import observe_optblock_callback_exception
 from d810.hexrays.ir.native_identity import NativeIdentity, native_object_identity
 from d810.hexrays.ir_maturity import ida_maturity_to_ir
 from d810.hexrays.mutation.return_carrier_corruption import (
-    snapshot_return_reg_consumer_def_eas,
+    snapshot_return_reg_consumption,
+    ReturnRegisterConsumptionSnapshot,
 )
 from d810.hexrays.mutation.block_retention import synchronize_explicit_goto_flag
 from d810.hexrays.mutation.block_instruction_commit import (
@@ -334,7 +335,7 @@ class BlockOptimizerRuntimeState:
     flow_gate_outcome_callback: object
     decompilation_lifecycle: object
     prefold_rccc_store: object
-    prefold_rccc_by_func: dict[int, frozenset[int]]
+    prefold_rccc_by_func: dict[int, ReturnRegisterConsumptionSnapshot]
     function_priors_provider: object
     dispatcher_artifact_planner: object
     pass_pipeline: object
@@ -409,7 +410,7 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
         # the capture (GLBOPT1 optblock) survives the GLBOPT1->GLBOPT2 maturity
         # boundary to the glbopt() consume (which fires at GLBOPT2). The per-maturity
         # flow_context is invalidated across that boundary and cannot carry it.
-        self._prefold_rccc_by_func: dict[int, frozenset[int]] = {}
+        self._prefold_rccc_by_func: dict[int, ReturnRegisterConsumptionSnapshot] = {}
         self._function_priors_provider = None
         self._dispatcher_artifact_planner = None
         # Optional PassPipeline - set via configure(pass_pipeline=...). None
@@ -732,11 +733,9 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
         self._flow_context = None
         self._flow_context_key = None
 
-    def prefold_return_reg_consumer_def_eas_for(self, func_ea: int) -> frozenset[int]:
-        """GLBOPT1 pre-fold rax-family consumer DEF EAs captured for *func_ea*
-        (empty if none); function-keyed so it survives to the GLBOPT2 glbopt()
-        consume (ticket d81-fzlo)."""
-        return self._prefold_rccc_by_func.get(int(func_ea), frozenset())
+    def prefold_return_reg_consumption_for(self, func_ea: int) -> ReturnRegisterConsumptionSnapshot | None:
+        """Return typed GLBOPT1 evidence; its native scope is checked at consume."""
+        return self._prefold_rccc_by_func.get(int(func_ea))
 
     def reset_perf_counters(self) -> None:
         for key in self._perf_counters:
@@ -1292,10 +1291,13 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
                 # the cleanup simply fails closed (no severance evidence captured ->
                 # nothing dropped).
                 try:
-                    self._prefold_rccc_by_func[int(mba.entry_ea)] = frozenset(
-                        snapshot_return_reg_consumer_def_eas(mba)
-                    )
+                    snapshot = snapshot_return_reg_consumption(mba)
+                    if snapshot is None:
+                        self._prefold_rccc_by_func.pop(int(mba.entry_ea), None)
+                    else:
+                        self._prefold_rccc_by_func[int(mba.entry_ea)] = snapshot
                 except Exception:  # noqa: BLE001 -- capture is best-effort
+                    self._prefold_rccc_by_func.pop(int(mba.entry_ea), None)
                     optimizer_logger.debug(
                         "RCCC pre-fold capture skipped", exc_info=True
                     )
@@ -2874,8 +2876,8 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
             decompilation_lifecycle=self._decompilation_lifecycle,
             prefold_rccc_store=prefold_rccc_store,
             prefold_rccc_by_func={
-                int(func_ea): frozenset(def_eas)
-                for func_ea, def_eas in prefold_rccc_store.items()
+                int(func_ea): consumption
+                for func_ea, consumption in prefold_rccc_store.items()
             },
             function_priors_provider=self._function_priors_provider,
             dispatcher_artifact_planner=self._dispatcher_artifact_planner,
@@ -2950,8 +2952,8 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
         snapshot.prefold_rccc_store.clear()
         snapshot.prefold_rccc_store.update(
             {
-                func_ea: frozenset(def_eas)
-                for func_ea, def_eas in snapshot.prefold_rccc_by_func.items()
+                func_ea: consumption
+                for func_ea, consumption in snapshot.prefold_rccc_by_func.items()
             }
         )
         self._function_priors_provider = snapshot.function_priors_provider

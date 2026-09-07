@@ -17,8 +17,11 @@ would otherwise pass -- closing the false-drop the static v1 proof was exposed t
 
 from __future__ import annotations
 
+import pytest
+
 from d810.analyses.value_flow.return_carrier_corruption import (
     CarrierCorruptionProof,
+    CarrierDefinition,
     KeepReason,
     ReturnRegDef,
     prove_return_const_droppable,
@@ -29,6 +32,55 @@ from d810.analyses.value_flow.return_carrier_corruption import (
 SUB7FFD_CARRIER_BLOCKS = frozenset({4, 31, 49})
 # Strict dominators of the two corruptor blocks include the counter carrier blk4.
 SUB7FFD_CASCADE_DOMINATORS = frozenset({0, 1, 4, 5, 31, 49})
+
+
+@pytest.mark.parametrize("consumed", ["false", "true", 1, [], object()])
+def test_severance_rejects_non_boolean_provenance(consumed):
+    target = ReturnRegDef(7, 0x1007, 5, True, False, 1)
+    with pytest.raises(TypeError):
+        prove_return_const_droppable(
+            target,
+            was_consumed_prefold=consumed,
+            du_chain_uses=0,
+            carrier_definitions=_carriers({4}),
+            strict_dominators={4},
+        )
+
+
+@pytest.mark.parametrize("uses", [False, 0.0, "0"])
+def test_use_count_rejects_non_integer_premise(uses):
+    target = ReturnRegDef(7, 0x1007, 5, True, False, 1)
+    with pytest.raises(TypeError):
+        prove_return_const_droppable(
+            target,
+            was_consumed_prefold=True,
+            du_chain_uses=uses,
+            carrier_definitions=_carriers({4}),
+            strict_dominators={4},
+        )
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("block", True),
+        ("ea", -1),
+        ("ssa", False),
+        ("is_const", "true"),
+        ("is_partial", 1),
+    ],
+)
+def test_return_definition_rejects_malformed_coordinates(field, value):
+    fields = dict(
+        block=7, ea=0x1007, ssa=5, is_const=True, is_partial=False, const_value=1
+    )
+    fields[field] = value
+    with pytest.raises((TypeError, ValueError)):
+        ReturnRegDef(**fields)
+
+
+def _carriers(blocks):
+    return tuple(CarrierDefinition(block, 0x4000 + block) for block in sorted(blocks))
 
 
 def test_0xB5_partial_corruption_is_droppable():
@@ -45,7 +97,7 @@ def test_0xB5_partial_corruption_is_droppable():
         target,
         was_consumed_prefold=True,
         du_chain_uses=0,
-        carrier_blocks=SUB7FFD_CARRIER_BLOCKS,
+        carrier_definitions=_carriers(SUB7FFD_CARRIER_BLOCKS),
         strict_dominators=SUB7FFD_CASCADE_DOMINATORS,
     )
     assert isinstance(proof, CarrierCorruptionProof)
@@ -67,7 +119,7 @@ def test_0x4F40_full_corruption_is_droppable():
         target,
         was_consumed_prefold=True,
         du_chain_uses=0,
-        carrier_blocks=SUB7FFD_CARRIER_BLOCKS,
+        carrier_definitions=_carriers(SUB7FFD_CARRIER_BLOCKS),
         strict_dominators=SUB7FFD_CASCADE_DOMINATORS,
     )
     assert isinstance(proof, CarrierCorruptionProof)
@@ -94,7 +146,7 @@ def test_legit_partial_return_not_severed_is_kept():
         target,
         was_consumed_prefold=False,  # never consumed -> not a fold victim
         du_chain_uses=0,  # P1 would pass
-        carrier_blocks=SUB7FFD_CARRIER_BLOCKS,
+        carrier_definitions=_carriers(SUB7FFD_CARRIER_BLOCKS),
         strict_dominators=SUB7FFD_CASCADE_DOMINATORS,  # P2 would pass
     )
     assert result == (None, KeepReason.NOT_SEVERED)
@@ -114,7 +166,7 @@ def test_severance_gate_precedes_uses_pillar():
         target,
         was_consumed_prefold=False,
         du_chain_uses=2,  # would be HAS_USES if reached
-        carrier_blocks=SUB7FFD_CARRIER_BLOCKS,
+        carrier_definitions=_carriers(SUB7FFD_CARRIER_BLOCKS),
         strict_dominators=SUB7FFD_CASCADE_DOMINATORS,
     )
     assert result == (None, KeepReason.NOT_SEVERED)
@@ -136,7 +188,7 @@ def test_0x5644_sentinel_return_is_kept():
         du_chain_uses=0,
         # blk16/blk62 carriers *reach* blk9 by cross-path bleed but do NOT
         # strictly dominate it -- the dominance test must exclude them.
-        carrier_blocks=frozenset({16, 62}),
+        carrier_definitions=_carriers(frozenset({16, 62})),
         strict_dominators=frozenset({0, 1}),
     )
     assert result == (None, KeepReason.NO_DOMINATING_CARRIER)
@@ -149,7 +201,7 @@ def test_def_with_surviving_use_is_kept():
         target,
         was_consumed_prefold=True,
         du_chain_uses=2,
-        carrier_blocks=frozenset({4}),
+        carrier_definitions=_carriers(frozenset({4})),
         strict_dominators=frozenset({4}),
     )
     assert result == (None, KeepReason.HAS_USES)
@@ -162,7 +214,7 @@ def test_untagged_return_def_is_kept():
         target,
         was_consumed_prefold=True,
         du_chain_uses=0,
-        carrier_blocks=frozenset({4}),
+        carrier_definitions=_carriers(frozenset({4})),
         strict_dominators=frozenset({4}),
     )
     assert result == (None, KeepReason.UNTAGGED_DEF)
@@ -175,7 +227,7 @@ def test_non_const_def_is_out_of_scope():
         target,
         was_consumed_prefold=True,
         du_chain_uses=0,
-        carrier_blocks=frozenset({4}),
+        carrier_definitions=_carriers(frozenset({4})),
         strict_dominators=frozenset({4}),
     )
     assert result == (None, KeepReason.NOT_CONST)
@@ -189,7 +241,7 @@ def test_self_block_carrier_does_not_count_as_dominator():
         target,
         was_consumed_prefold=True,
         du_chain_uses=0,
-        carrier_blocks=frozenset({37}),
+        carrier_definitions=_carriers(frozenset({37})),
         strict_dominators=frozenset({0, 1}),
     )
     assert result == (None, KeepReason.NO_DOMINATING_CARRIER)

@@ -6,10 +6,16 @@ from dataclasses import dataclass
 from enum import Enum
 
 from d810.core.typing import Any, Callable, MutableMapping
+from d810.hexrays.ir.native_identity import native_object_identity
+from d810.hexrays.mutation.return_carrier_corruption import (
+    CandidateSite,
+    ReturnRegisterConsumptionSnapshot,
+    find_droppable_return_const_corruptions,
+    is_empty_nop,
+)
 from d810.hexrays.mutation.fragment_publication_lifecycle import (
     NativeMutationQuarantined,
 )
-
 
 REASON_COMMITTED = "committed"
 REASON_STALE_EPOCH = "stale-epoch"
@@ -482,6 +488,83 @@ class HexRaysInstructionCommitter:
                 except TypeError:
                     return
 
+    def commit_return_carrier_cleanup(
+        self,
+        context: InstructionCommitContext,
+        site: CandidateSite,
+        replacement: object,
+        *,
+        prefold_snapshot: ReturnRegisterConsumptionSnapshot | None,
+    ) -> InstructionRewriteReceipt | None:
+        """Revalidate typed value-flow evidence before normal native admission.
+
+        A producer's successful analysis is a candidate, not permission. The
+        current MBA must still have the same exact anchored definition and
+        premises. The normal commit path owns the swap, rollback and receipt.
+        """
+        if type(site) is not CandidateSite or context.block is None:
+            return None
+        try:
+            site.__post_init__()
+            mba = context.block.mba
+            if (
+                native_object_identity(mba) != site.mba_identity
+                or int(mba.entry_ea) != site.function_ea
+                or int(mba.maturity) != site.maturity
+                or NativeEpoch.from_mba(mba, generation=context.epoch.generation)
+                != context.epoch
+                or int(context.block.serial) != site.block_serial
+                or int(context.instruction.ea) != site.insn_ea
+                or not is_empty_nop(replacement)
+            ):
+                return None
+            # A duplicated EA in this block cannot identify one instruction.
+            matches = []
+            insn = context.block.head
+            while insn is not None:
+                if int(insn.ea) == site.insn_ea:
+                    matches.append(insn)
+                insn = insn.next
+            if len(matches) != 1 or native_object_identity(
+                matches[0]
+            ) != native_object_identity(context.instruction):
+                return None
+            observed = find_droppable_return_const_corruptions(
+                mba,
+                prefold_snapshot=prefold_snapshot,
+            )
+            if (
+                sum(
+                    type(current) is CandidateSite and current == site
+                    for current in observed
+                )
+                != 1
+            ):
+                return None
+            fingerprint = int(
+                _invoke(self._hash, context.instruction, context.epoch.function_ea)
+            )
+        except (AttributeError, TypeError, ValueError, IndexError):
+            return None
+        return self.commit(
+            context,
+            InstructionRewriteCandidate(
+                replacement=replacement,
+                before_fingerprint=fingerprint,
+                mode=RewriteMode.SIMPLIFY,
+                cost_before=RewriteCost(node_count=1),
+                cost_after=RewriteCost(),
+                pass_id="return-carrier-cleanup",
+                stage_id="glbopt",
+                rule_id="return-constant-corruption",
+                proof_required=True,
+                proof=site.proof,
+                may_mark_lists_dirty=True,
+                optimize_solo=False,
+                epoch_before=context.epoch,
+            ),
+        )
+
     def commit(
         self,
         context: InstructionCommitContext,
@@ -593,7 +676,9 @@ class HexRaysInstructionCommitter:
             before_key = candidate.cost_before.key()
             after_key = candidate.cost_after.key()
             if candidate.mode is RewriteMode.SIMPLIFY and not after_key < before_key:
-                return self._rejected(context, candidate, REASON_COST_REJECTED, fingerprint)
+                return self._rejected(
+                    context, candidate, REASON_COST_REJECTED, fingerprint
+                )
             if candidate.mode is RewriteMode.RECOVER:
                 if candidate.semantic_rank_after <= candidate.semantic_rank_before:
                     return self._rejected(
@@ -604,7 +689,9 @@ class HexRaysInstructionCommitter:
                         context, candidate, REASON_COST_REJECTED, fingerprint
                     )
             if candidate.mode is RewriteMode.SOLVE and after_key > before_key:
-                return self._rejected(context, candidate, REASON_COST_REJECTED, fingerprint)
+                return self._rejected(
+                    context, candidate, REASON_COST_REJECTED, fingerprint
+                )
 
         try:
             _invoke(getattr(instruction, "swap"), candidate.replacement)

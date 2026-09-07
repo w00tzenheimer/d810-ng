@@ -5,8 +5,13 @@ from collections import deque
 import ida_hexrays
 
 from d810.core import getLogger, typing
+from d810.hexrays.mutation.instruction_commit import (
+    HexRaysInstructionCommitter,
+    InstructionCommitContext,
+)
 from d810.hexrays.mutation.return_carrier_corruption import (
     CandidateSite,
+    ReturnRegisterConsumptionSnapshot,
     find_droppable_return_const_corruptions,
 )
 from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
@@ -34,28 +39,36 @@ def _iter_block_insns(blk: ida_hexrays.mblock_t):
 
 
 def _find_site_insn(mba: ida_hexrays.mbl_array_t, site: CandidateSite):
+    if type(site) is not CandidateSite:
+        return None
     blk = mba.get_mblock(int(site.block_serial))
     if blk is None:
         return None
-    for insn in _iter_block_insns(blk):
-        if int(getattr(insn, "ea", -1)) == int(site.insn_ea):
-            return insn
-    return None
+    matches = tuple(
+        insn
+        for insn in _iter_block_insns(blk)
+        if int(getattr(insn, "ea", -1)) == int(site.insn_ea)
+    )
+    return matches[0] if len(matches) == 1 else None
 
 
-def _make_nop(insn) -> None:
-    insn.opcode = ida_hexrays.m_nop
-    insn.l.erase()
-    insn.r.erase()
-    insn.d.erase()
+def _nop_replacement(insn):
+    replacement = ida_hexrays.minsn_t(insn)
+    replacement.opcode = ida_hexrays.m_nop
+    replacement.l.erase()
+    replacement.r.erase()
+    replacement.d.erase()
+    return replacement
 
 
 def apply_return_const_corruption_cleanup(
-    mba: ida_hexrays.mbl_array_t, *, prefold_def_eas: frozenset[int] = frozenset()
+    mba: ida_hexrays.mbl_array_t,
+    *,
+    prefold_snapshot: ReturnRegisterConsumptionSnapshot | None = None,
 ) -> int:
     """NOP proven return-register constant corruptions after GLBOPT folding.
 
-    *prefold_def_eas* is the GLBOPT1 pre-fold severance snapshot (ticket d81-fzlo,
+    *prefold_snapshot* is the GLBOPT1 pre-fold severance snapshot (ticket d81-fzlo,
     function-keyed on the block optimizer); only defs whose consumer the fold
     actually severed are dropped.
     """
@@ -63,7 +76,7 @@ def apply_return_const_corruption_cleanup(
         return 0
 
     sites = find_droppable_return_const_corruptions(
-        mba, prefold_def_eas=prefold_def_eas
+        mba, prefold_snapshot=prefold_snapshot
     )
     if not sites:
         return 0
@@ -75,7 +88,10 @@ def apply_return_const_corruption_cleanup(
     )
 
     applied = 0
+    committer = HexRaysInstructionCommitter()
     for site in sites:
+        if type(site) is not CandidateSite:
+            continue
         main_logger.debug("ReturnCarrierCorruption[glbopt]: %s", site.proof.reason)
         if not _RCCC_APPLY:
             continue
@@ -88,8 +104,14 @@ def apply_return_const_corruption_cleanup(
                 site.insn_ea,
             )
             continue
-        _make_nop(insn)
-        applied += 1
+        receipt = committer.commit_return_carrier_cleanup(
+            InstructionCommitContext.from_live(insn, mba.get_mblock(site.block_serial)),
+            site,
+            _nop_replacement(insn),
+            prefold_snapshot=prefold_snapshot,
+        )
+        if receipt is not None:
+            applied += receipt.applied_count
 
     if applied:
         mba.mark_chains_dirty()

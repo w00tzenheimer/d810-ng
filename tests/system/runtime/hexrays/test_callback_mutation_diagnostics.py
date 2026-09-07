@@ -109,7 +109,7 @@ class _GlboptNopProbe:
         self.reports = []
         self.inventories = []
 
-    def prefold_return_reg_consumer_def_eas_for(self, _function_ea: int):
+    def prefold_return_reg_consumption_for(self, _function_ea: int):
         return frozenset()
 
     def _capture_callback_nop_sites(self, mba):

@@ -3,17 +3,27 @@ from __future__ import annotations
 import importlib
 import inspect
 import sys
+import copy
 from types import SimpleNamespace
 
 import pytest
+
+from d810.analyses.value_flow.return_carrier_corruption import (
+    CarrierCorruptionProof,
+    CarrierDefinition,
+    ReturnRegDef,
+)
+from d810.hexrays.ir.native_identity import native_object_identity
 
 
 class _Operand:
     def __init__(self) -> None:
         self.erased = False
+        self.t = 1
 
     def erase(self) -> None:
         self.erased = True
+        self.t = 0
 
 
 class _Insn:
@@ -25,12 +35,26 @@ class _Insn:
         self.d = _Operand()
         self.next = None
 
+    def _print(self):
+        return f"{self.opcode}:{self.l.t}:{self.r.t}:{self.d.t}"
+
+    def swap(self, other):
+        for name in ("opcode", "l", "r", "d"):
+            mine = getattr(self, name)
+            setattr(self, name, getattr(other, name))
+            setattr(other, name, mine)
+
 
 class _Block:
     def __init__(self, *insns: _Insn) -> None:
         for left, right in zip(insns, insns[1:]):
             left.next = right
         self.head = insns[0] if insns else None
+        self.serial = 1
+        self.dirty_count = 0
+
+    def mark_lists_dirty(self):
+        self.dirty_count += 1
 
 
 class _Mba:
@@ -38,6 +62,7 @@ class _Mba:
         self.entry_ea = 0x180014BE0
         self.maturity = maturity
         self._block = block
+        block.mba = self
         self.mark_chains_dirty_calls = 0
 
     def get_mblock(self, serial: int) -> _Block | None:
@@ -51,10 +76,18 @@ class _Mba:
 
 @pytest.fixture()
 def glbopt_module(monkeypatch):
+    module_names = (
+        "d810.hexrays.hooks.glbopt_diagnostics",
+        "d810.hexrays.mutation.instruction_commit",
+        "d810.hexrays.mutation.return_carrier_corruption",
+    )
+    original_modules = {name: sys.modules.get(name) for name in module_names}
     fake_hexrays = SimpleNamespace(
         MMAT_GLBOPT1=14,
         MMAT_GLBOPT2=15,
         m_nop=0,
+        mop_z=0,
+        minsn_t=copy.deepcopy,
         mbl_array_t=object,
         mblock_t=object,
         mop_a=1,
@@ -68,21 +101,58 @@ def glbopt_module(monkeypatch):
         reg2mreg=lambda _reg: 0,
     )
     monkeypatch.setitem(sys.modules, "ida_hexrays", fake_hexrays)
+    sys.modules.pop("d810.hexrays.mutation.instruction_commit", None)
     sys.modules.pop("d810.hexrays.hooks.glbopt_diagnostics", None)
     sys.modules.pop("d810.hexrays.mutation.return_carrier_corruption", None)
     try:
-        yield importlib.import_module("d810.hexrays.hooks.glbopt_diagnostics")
+        module = importlib.import_module("d810.hexrays.hooks.glbopt_diagnostics")
+        committer_module = sys.modules["d810.hexrays.mutation.instruction_commit"]
+        monkeypatch.setattr(
+            committer_module,
+            "find_droppable_return_const_corruptions",
+            lambda mba, **kw: module.find_droppable_return_const_corruptions(mba, **kw),
+        )
+        yield module
     finally:
-        sys.modules.pop("d810.hexrays.hooks.glbopt_diagnostics", None)
-        sys.modules.pop("d810.hexrays.mutation.return_carrier_corruption", None)
+        for name, original in original_modules.items():
+            if original is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = original
 
 
-def _site(module, *, block: int = 1, ea: int = 0x180018F75):
+def _site(module, mba, *, block: int = 1, ea: int = 0x180018F75):
     return module.CandidateSite(
         block_serial=block,
         insn_ea=ea,
-        proof=SimpleNamespace(reason="drop #0xb5 @blk1"),
+        proof=CarrierCorruptionProof(
+            ReturnRegDef(block, ea, 151, True, True, 0xB5),
+            0,
+            (CarrierDefinition(0, 0x180014BE0),),
+            True,
+        ),
+        function_ea=mba.entry_ea,
+        mba_identity=native_object_identity(mba),
+        maturity=mba.maturity,
     )
+
+
+def test_cleanup_rejects_proof_shaped_object(glbopt_module, monkeypatch):
+    """A reason string and site coordinates are not semantic permission."""
+    insn = _Insn(0x180018F75)
+    mba = _Mba(_Block(insn))
+    monkeypatch.setattr(
+        glbopt_module,
+        "find_droppable_return_const_corruptions",
+        lambda *_args, **_kwargs: [
+            SimpleNamespace(
+                block_serial=1, insn_ea=insn.ea, proof=SimpleNamespace(reason="fake")
+            )
+        ],
+    )
+    assert glbopt_module.apply_return_const_corruption_cleanup(mba) == 0
+    assert insn.opcode == 99
+    assert mba.mark_chains_dirty_calls == 0
 
 
 def test_condition_chain_rebinding_has_no_local_ea_to_serial_authority(
@@ -105,7 +175,7 @@ def test_return_const_corruption_cleanup_dry_run_does_not_mutate(
     monkeypatch.setattr(
         glbopt_module,
         "find_droppable_return_const_corruptions",
-        lambda _mba, **_kw: [_site(glbopt_module)],
+        lambda _mba, **_kw: [_site(glbopt_module, mba)],
     )
 
     assert glbopt_module.apply_return_const_corruption_cleanup(mba) == 0
@@ -126,7 +196,7 @@ def test_return_const_corruption_cleanup_apply_nops_and_marks_chains_dirty(
     monkeypatch.setattr(
         glbopt_module,
         "find_droppable_return_const_corruptions",
-        lambda _mba, **_kw: [_site(glbopt_module)],
+        lambda _mba, **_kw: [_site(glbopt_module, mba)],
     )
 
     assert glbopt_module.apply_return_const_corruption_cleanup(mba) == 1
@@ -165,11 +235,38 @@ def test_return_const_corruption_cleanup_runs_at_glbopt2(
     monkeypatch.setattr(
         glbopt_module,
         "find_droppable_return_const_corruptions",
-        lambda _mba, **_kw: [_site(glbopt_module)],
+        lambda _mba, **_kw: [_site(glbopt_module, mba)],
     )
 
     assert glbopt_module.apply_return_const_corruption_cleanup(mba) == 1
     assert insn.opcode == glbopt_module.ida_hexrays.m_nop
+
+
+@pytest.mark.parametrize(
+    "change", ["native_identity", "maturity", "definition", "duplicate_ea"]
+)
+def test_cleanup_rejects_stale_or_ambiguous_site(glbopt_module, monkeypatch, change):
+    insn = _Insn(0x180018F75)
+    mba = _Mba(_Block(insn))
+    site = _site(glbopt_module, mba)
+    if change == "native_identity":
+        mba = _Mba(_Block(insn))
+    elif change == "maturity":
+        mba.maturity = glbopt_module.ida_hexrays.MMAT_GLBOPT2
+    elif change == "duplicate_ea":
+        insn.next = _Insn(insn.ea)
+    calls = []
+
+    def collect(*_args, **_kwargs):
+        calls.append(True)
+        return [] if change == "definition" and len(calls) > 1 else [site]
+
+    monkeypatch.setattr(
+        glbopt_module, "find_droppable_return_const_corruptions", collect
+    )
+    assert glbopt_module.apply_return_const_corruption_cleanup(mba) == 0
+    assert insn.opcode == 99
+    assert mba.mark_chains_dirty_calls == 0
 
 
 def test_value_use_count_excludes_def_destination_even_with_fresh_swig_proxy(

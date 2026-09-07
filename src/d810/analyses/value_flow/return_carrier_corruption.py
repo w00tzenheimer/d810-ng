@@ -53,11 +53,31 @@ from dataclasses import dataclass
 from d810.core.typing import Collection, Optional
 
 __all__ = [
+    "CarrierDefinition",
     "ReturnRegDef",
     "KeepReason",
     "CarrierCorruptionProof",
     "prove_return_const_droppable",
 ]
+
+
+def _coordinate(value: int, name: str, *, native_ea: bool = False) -> None:
+    if type(value) is not int:
+        raise TypeError(f"{name} must be an integer")
+    if value < (1 if native_ea else 0) or (native_ea and value >= 0xFFFFFFFFFFFFFFFF):
+        raise ValueError(f"invalid {name}")
+
+
+@dataclass(frozen=True, slots=True, order=True)
+class CarrierDefinition:
+    """Snapshot-local block coordinate paired with its exact definition EA."""
+
+    block: int
+    ea: int
+
+    def __post_init__(self) -> None:
+        _coordinate(self.block, "carrier block")
+        _coordinate(self.ea, "carrier EA", native_ea=True)
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,6 +103,16 @@ class ReturnRegDef:
     is_const: bool
     is_partial: bool
     const_value: Optional[int] = None
+
+    def __post_init__(self) -> None:
+        _coordinate(self.block, "target block")
+        _coordinate(self.ea, "target EA", native_ea=True)
+        if self.ssa is not None:
+            _coordinate(self.ssa, "SSA version")
+        if type(self.is_const) is not bool or type(self.is_partial) is not bool:
+            raise TypeError("definition flags must be bools")
+        if self.const_value is not None and type(self.const_value) is not int:
+            raise TypeError("constant value must be an integer")
 
 
 class KeepReason(str, enum.Enum):
@@ -127,18 +157,45 @@ class CarrierCorruptionProof:
 
     target: ReturnRegDef
     du_chain_uses: int
-    dominating_carrier_blocks: tuple[int, ...]
+    dominating_carriers: tuple[CarrierDefinition, ...]
+    was_consumed_prefold: bool
+
+    def __post_init__(self) -> None:
+        if type(self.target) is not ReturnRegDef:
+            raise TypeError("proof target must be a ReturnRegDef")
+        self.target.__post_init__()
+        if self.target.is_const is not True or self.target.ssa is None:
+            raise ValueError("corruption proof requires a tagged constant definition")
+        if self.was_consumed_prefold is not True:
+            raise ValueError("corruption proof requires observed pre-fold consumption")
+        if type(self.du_chain_uses) is not int or self.du_chain_uses != 0:
+            raise ValueError("corruption proof requires exactly zero uses")
+        if type(self.dominating_carriers) is not tuple or not self.dominating_carriers:
+            raise ValueError("corruption proof requires anchored carrier definitions")
+        for carrier in self.dominating_carriers:
+            if type(carrier) is not CarrierDefinition:
+                raise TypeError("carrier must be a CarrierDefinition")
+            carrier.__post_init__()
+            if carrier.block == self.target.block:
+                raise ValueError("carrier must strictly dominate the target block")
+        if tuple(sorted(set(self.dominating_carriers))) != self.dominating_carriers:
+            raise ValueError("carrier definitions must be unique and ordered")
+
+    @property
+    def dominating_carrier_blocks(self) -> tuple[int, ...]:
+        """Diagnostic projection; block numbers alone are not proof evidence."""
+        return tuple(sorted({carrier.block for carrier in self.dominating_carriers}))
 
     @property
     def reason(self) -> str:
-        carriers = ",".join(str(b) for b in self.dominating_carrier_blocks)
+        carriers = ",".join(f"blk{c.block}@{c.ea:#x}" for c in self.dominating_carriers)
         val = (
             "" if self.target.const_value is None else f"#{self.target.const_value:#x} "
         )
         return (
             f"drop {val}@blk{self.target.block} ea={self.target.ea:#x}: "
             f"ssa{{{self.target.ssa}}} has 0 uses; "
-            f"carrier blk[{carriers}] strictly dominates"
+            f"carrier [{carriers}] strictly dominates"
         )
 
 
@@ -147,7 +204,7 @@ def prove_return_const_droppable(
     *,
     was_consumed_prefold: bool,
     du_chain_uses: int,
-    carrier_blocks: Collection[int],
+    carrier_definitions: Collection[CarrierDefinition],
     strict_dominators: Collection[int],
 ) -> CarrierCorruptionProof | tuple[None, KeepReason]:
     """Decide whether ``target`` is a droppable carrier corruption.
@@ -163,8 +220,8 @@ def prove_return_const_droppable(
             genuine constant return that never had a consumer.
         du_chain_uses: Number of explicit operand uses of ``target.ssa``
             (the empty-DU-chain query result). Pillar 1 requires ``0``.
-        carrier_blocks: Blocks that contain a full-width return-carrier
-            definition (stack-slot / arg-derived return value).
+        carrier_definitions: Exact full-width carrier definitions, including
+            both snapshot-local block and native instruction EA.
         strict_dominators: The *strict* dominators of ``target.block``
             (excluding the block itself).
 
@@ -174,60 +231,15 @@ def prove_return_const_droppable(
         return type forces call sites to handle the keep case explicitly and
         makes the gate fail-closed.
 
-    Examples:
-        Corruptor -- const, no uses, carrier dominates -> droppable:
-
-        Corruptor -- severed (had a consumer pre-fold), no uses now, carrier
-        dominates -> droppable:
-
-        >>> d = ReturnRegDef(block=61, ea=0x180018f75, ssa=151, is_const=True,
-        ...                  is_partial=True, const_value=0xB5)
-        >>> p = prove_return_const_droppable(
-        ...     d, was_consumed_prefold=True, du_chain_uses=0,
-        ...     carrier_blocks={4, 16, 21, 49, 56, 62},
-        ...     strict_dominators={0, 1, 4, 5, 49})
-        >>> isinstance(p, CarrierCorruptionProof), p.dominating_carrier_blocks
-        (True, (4, 49))
-
-        A genuine partial return that was NEVER consumed (the fold did not sever
-        it) is kept even though both pillars would otherwise pass -- this is the
-        false-drop the severance gate closes (ticket d81-fzlo):
-
-        >>> prove_return_const_droppable(
-        ...     ReturnRegDef(block=70, ea=0x1800a0, ssa=300, is_const=True,
-        ...                  is_partial=True, const_value=0x5),
-        ...     was_consumed_prefold=False, du_chain_uses=0,
-        ...     carrier_blocks={4, 49}, strict_dominators={0, 1, 4, 49})[1]
-        <KeepReason.NOT_SEVERED: 'not_severed'>
-
-        The genuine ``0x5644...`` sentinel return is *untagged* in the real
-        sub_7FFD microcode (blk9 -- no SSA version), kept before any other check:
-
-        >>> prove_return_const_droppable(
-        ...     ReturnRegDef(block=9, ea=0x180015569, ssa=None, is_const=True,
-        ...                  is_partial=False, const_value=0x5644FD01B1049C4B),
-        ...     was_consumed_prefold=True, du_chain_uses=0,
-        ...     carrier_blocks={4, 49}, strict_dominators={0, 1})[1]
-        <KeepReason.UNTAGGED_DEF: 'untagged_def'>
-
-        A *tagged* severed constant with no dominating carrier is the
-        genuine-return case Pillar 2 guards (blk13, ``0xc5fb...``):
-
-        >>> prove_return_const_droppable(
-        ...     ReturnRegDef(block=13, ea=0x180015896, ssa=36, is_const=True,
-        ...                  is_partial=False, const_value=0xC5FB34A1D9A6E315),
-        ...     was_consumed_prefold=True, du_chain_uses=0,
-        ...     carrier_blocks={4, 49}, strict_dominators={0, 1})[1]
-        <KeepReason.NO_DOMINATING_CARRIER: 'no_dominating_carrier'>
-
-        A def with a surviving use is never dropped:
-
-        >>> prove_return_const_droppable(
-        ...     ReturnRegDef(7, 0x7, 5, True, False, 0x1),
-        ...     was_consumed_prefold=True, du_chain_uses=2,
-        ...     carrier_blocks={4}, strict_dominators={4})[1]
-        <KeepReason.HAS_USES: 'has_uses'>
     """
+    if type(target) is not ReturnRegDef:
+        raise TypeError("target must be a ReturnRegDef")
+    if type(was_consumed_prefold) is not bool:
+        raise TypeError("was_consumed_prefold must be a bool")
+    if type(du_chain_uses) is not int:
+        raise TypeError("du_chain_uses must be an integer")
+    if du_chain_uses < 0:
+        raise ValueError("du_chain_uses must be non-negative")
     if not target.is_const:
         return (None, KeepReason.NOT_CONST)
     if target.ssa is None:
@@ -236,11 +248,26 @@ def prove_return_const_droppable(
         return (None, KeepReason.NOT_SEVERED)
     if du_chain_uses != 0:
         return (None, KeepReason.HAS_USES)
-    dominating = tuple(sorted(set(carrier_blocks) & set(strict_dominators)))
+    for serial in strict_dominators:
+        _coordinate(serial, "strict dominator")
+    for carrier in carrier_definitions:
+        if type(carrier) is not CarrierDefinition:
+            raise TypeError("carrier definitions must be anchored records")
+        carrier.__post_init__()
+    dominating = tuple(
+        sorted(
+            {
+                carrier
+                for carrier in carrier_definitions
+                if carrier.block in strict_dominators and carrier.block != target.block
+            }
+        )
+    )
     if not dominating:
         return (None, KeepReason.NO_DOMINATING_CARRIER)
     return CarrierCorruptionProof(
         target=target,
         du_chain_uses=du_chain_uses,
-        dominating_carrier_blocks=dominating,
+        dominating_carriers=dominating,
+        was_consumed_prefold=was_consumed_prefold,
     )

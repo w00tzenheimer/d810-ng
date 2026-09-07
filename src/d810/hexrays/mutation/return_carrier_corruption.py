@@ -30,12 +30,14 @@ from dataclasses import dataclass
 
 from d810.analyses.control_flow.dominator import compute_dom_tree
 from d810.analyses.value_flow.return_carrier_corruption import (
+    CarrierDefinition,
     CarrierCorruptionProof,
     KeepReason,
     ReturnRegDef,
     prove_return_const_droppable,
 )
 from d810.core.logging import getLogger
+from d810.hexrays.ir.native_identity import NativeIdentity, native_object_identity
 
 logger = getLogger("d810.return_carrier_corruption")
 
@@ -48,18 +50,82 @@ except ImportError:  # pragma: no cover - unit envs have no IDA
 
 __all__ = [
     "CandidateSite",
+    "ReturnRegisterConsumptionSnapshot",
     "find_droppable_return_const_corruptions",
-    "snapshot_return_reg_consumer_def_eas",
+    "snapshot_return_reg_consumption",
 ]
 
 
 @dataclass(frozen=True, slots=True)
+class ReturnRegisterConsumptionSnapshot:
+    """Observed consumers owned by the existing block-adapter lifecycle store."""
+
+    function_ea: int
+    mba_identity: NativeIdentity
+    capture_maturity: int
+    consumed_definitions: tuple[CarrierDefinition, ...]
+
+    def __post_init__(self) -> None:
+        if type(self.function_ea) is not int or self.function_ea <= 0:
+            raise TypeError("consumption snapshot requires a function EA")
+        if type(self.mba_identity) is not NativeIdentity:
+            raise TypeError("consumption snapshot requires native MBA identity")
+        if type(self.capture_maturity) is not int:
+            raise TypeError("consumption snapshot requires capture maturity")
+        if type(self.consumed_definitions) is not tuple:
+            raise TypeError("consumption definitions must be an immutable tuple")
+        for definition in self.consumed_definitions:
+            if type(definition) is not CarrierDefinition:
+                raise TypeError("consumption definitions must have native anchors")
+            definition.__post_init__()
+
+    def matches(self, mba: object) -> bool:
+        return bool(
+            self.function_ea == int(mba.entry_ea)
+            and self.mba_identity == native_object_identity(mba)
+            and self.capture_maturity == ida_hexrays.MMAT_GLBOPT1
+            and int(mba.maturity)
+            in (ida_hexrays.MMAT_GLBOPT1, ida_hexrays.MMAT_GLBOPT2)
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class CandidateSite:
-    """A proven-droppable return-register constant write."""
+    """Candidate evidence bound to one live MBA; only the committer may grant."""
 
     block_serial: int
     insn_ea: int
     proof: CarrierCorruptionProof
+    function_ea: int
+    mba_identity: NativeIdentity
+    maturity: int
+
+    def __post_init__(self) -> None:
+        if type(self.proof) is not CarrierCorruptionProof:
+            raise TypeError("candidate requires typed carrier corruption evidence")
+        self.proof.__post_init__()
+        if type(self.mba_identity) is not NativeIdentity:
+            raise TypeError("candidate requires native MBA identity")
+        for value in (self.block_serial, self.insn_ea, self.function_ea, self.maturity):
+            if type(value) is not int or value < 0:
+                raise TypeError("candidate coordinates must be non-negative integers")
+        if (self.block_serial, self.insn_ea) != (
+            self.proof.target.block,
+            self.proof.target.ea,
+        ):
+            raise ValueError("candidate location differs from its proof target")
+
+
+def is_empty_nop(instruction: object) -> bool:
+    """Check the detached replacement shape at the vendor evidence boundary."""
+    return bool(
+        IDA_AVAILABLE
+        and instruction.opcode == ida_hexrays.m_nop
+        and all(
+            mop.t == ida_hexrays.mop_z
+            for mop in (instruction.l, instruction.r, instruction.d)
+        )
+    )
 
 
 def _rax_mreg() -> int | None:
@@ -118,14 +184,13 @@ def _count_valnum_uses(mba, rax_mreg: int, valnum: int, def_ea: int) -> int:
     return uses
 
 
-def snapshot_return_reg_consumer_def_eas(mba) -> set[int]:
+def snapshot_return_reg_consumption(mba) -> ReturnRegisterConsumptionSnapshot | None:
     """Pre-fold snapshot (ticket d81-fzlo): effective addresses of rax-family
     DEFs whose value has at least one real operand *use* in *mba*.
 
-    Keyed by DEF EA, NOT SSA value number: value numbers are pass-local and IDA
-    reassigns them across the unflattener's ``MERR_LOOP`` re-lifts, so a valnum
-    captured here would not match the post-fold candidate. The defining
-    instruction's EA is stable across re-lifts and the ``optimize_global`` fold.
+    Retains exact definition EAs because SSA versions change across maturity
+    boundaries. Native MBA identity bounds this evidence: a re-lift must obtain
+    its own GLBOPT1 capture instead of borrowing an older function-keyed set.
 
     Captured at GLBOPT1 entry, while the obfuscation intermediates are still
     expression trees. The post-fold severance diff then admits a folded
@@ -136,10 +201,10 @@ def snapshot_return_reg_consumer_def_eas(mba) -> set[int]:
     Read-only.
     """
     if not IDA_AVAILABLE or mba is None:
-        return set()
+        return None
     rax = _rax_mreg()
     if rax is None:
-        return set()
+        return None
     # pass 1: rax-family value numbers that appear as a real (non-dest) use
     consumed_valnums: set[int] = set()
     for bi in range(mba.qty):
@@ -152,7 +217,7 @@ def snapshot_return_reg_consumer_def_eas(mba) -> set[int]:
                         consumed_valnums.add(valnum)
             ins = ins.next
     # pass 2: EAs of rax-family DEFs whose value is in the consumed set
-    consumer_def_eas: set[int] = set()
+    consumer_definitions: set[CarrierDefinition] = set()
     for bi in range(mba.qty):
         ins = mba.get_mblock(bi).head
         while ins is not None:
@@ -163,9 +228,14 @@ def snapshot_return_reg_consumer_def_eas(mba) -> set[int]:
                 and dest.r == rax
                 and int(dest.valnum) in consumed_valnums
             ):
-                consumer_def_eas.add(int(ins.ea))
+                consumer_definitions.add(CarrierDefinition(bi, int(ins.ea)))
             ins = ins.next
-    return consumer_def_eas
+    return ReturnRegisterConsumptionSnapshot(
+        int(mba.entry_ea),
+        native_object_identity(mba),
+        int(mba.maturity),
+        tuple(sorted(consumer_definitions)),
+    )
 
 
 def _is_literal_operand(mop) -> bool:
@@ -208,7 +278,7 @@ def _is_carrier_source(insn) -> bool:
 
 
 def find_droppable_return_const_corruptions(
-    mba, *, prefold_def_eas: frozenset[int] = frozenset()
+    mba, *, prefold_snapshot: ReturnRegisterConsumptionSnapshot | None = None
 ) -> list[CandidateSite]:
     """Return the proven-droppable ``mov #imm, <rax>`` corruptions in *mba*.
 
@@ -217,21 +287,26 @@ def find_droppable_return_const_corruptions(
     sites that are proven corruption victims.
 
     The severance gate is the primary trigger: a candidate is admitted only when
-    the def at its EA had a real consumer in the GLBOPT1 *prefold_def_eas* snapshot
-    and has none now -- i.e. the fold actually severed it. When *prefold_def_eas*
-    is empty nothing is dropped (fail-closed: act only where the severance is
+    the def at its EA had a real consumer in the GLBOPT1 *prefold_snapshot*
+    and has none now -- i.e. the fold actually severed it. When *prefold_snapshot*
+    is absent nothing is dropped (fail-closed: act only where the severance is
     proven). The dominating-carrier pillar then remains as a secondary "do not
     strand the return" safety check. EAs are used (not SSA value numbers) because
     value numbers are pass-local and reassigned across the unflattener re-lifts.
     """
     if not IDA_AVAILABLE or mba is None:
         return []
+    if type(prefold_snapshot) is not ReturnRegisterConsumptionSnapshot:
+        return []
+    prefold_snapshot.__post_init__()
+    if not prefold_snapshot.matches(mba):
+        return []
     rax = _rax_mreg()
     if rax is None:
         return []
 
     # --- carrier blocks: full-rax defs sourced from a stack/arg value ---
-    carrier_blocks: set[int] = set()
+    carrier_definitions: set[CarrierDefinition] = set()
     candidates: list[tuple[ReturnRegDef, int]] = []  # (def, insn_ea)
     reg_defs = 0
     const_reg_defs = 0
@@ -253,7 +328,7 @@ def find_droppable_return_const_corruptions(
             if d is not None and d.t == ida_hexrays.mop_r and d.r == rax:
                 full = d.size == 8
                 if full and _is_carrier_source(ins):
-                    carrier_blocks.add(bi)
+                    carrier_definitions.add(CarrierDefinition(bi, int(ins.ea)))
                 if (
                     ins.opcode == ida_hexrays.m_mov
                     and ins.l is not None
@@ -284,7 +359,7 @@ def find_droppable_return_const_corruptions(
             reg_defs,
             const_reg_defs,
             len(candidates),
-            sorted(carrier_blocks),
+            tuple(f"blk{c.block}@{c.ea:#x}" for c in sorted(carrier_definitions)),
             sorted(seen_regs),
         )
 
@@ -307,7 +382,13 @@ def find_droppable_return_const_corruptions(
     for target, insn_ea in candidates:
         if target.ssa is None:
             continue
-        severed = int(insn_ea) in prefold_def_eas
+        severed = (
+            sum(
+                definition.ea == int(insn_ea)
+                for definition in prefold_snapshot.consumed_definitions
+            )
+            == 1
+        )
         uses = _count_valnum_uses(mba, rax, target.ssa, insn_ea)
         strict = dom.dominators_of(target.block) - {target.block}
         result = prove_return_const_droppable(
@@ -318,15 +399,28 @@ def find_droppable_return_const_corruptions(
             # fail-closed.
             was_consumed_prefold=severed,
             du_chain_uses=uses,
-            carrier_blocks=carrier_blocks,
+            carrier_definitions=carrier_definitions,
             strict_dominators=strict,
         )
         if isinstance(result, CarrierCorruptionProof):
-            sites.append(CandidateSite(target.block, insn_ea, result))
+            sites.append(
+                CandidateSite(
+                    target.block,
+                    int(insn_ea),
+                    result,
+                    int(mba.entry_ea),
+                    native_object_identity(mba),
+                    int(mba.maturity),
+                )
+            )
             logger.info("return-carrier corruption proven droppable: %s", result.reason)
         elif logger.debug_on:
             _, reason = result  # type: ignore[misc]
             logger.debug(
-                "keep %#x @blk%d: %s", target.const_value, target.block, reason.value
+                "keep %#x @blk%d@%#x: %s",
+                target.const_value,
+                target.block,
+                target.ea,
+                reason.value,
             )
     return sites
