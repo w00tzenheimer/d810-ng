@@ -19,6 +19,9 @@ Usage:
     preds = get_pred_serials(py_blk)  # Tuple of predecessor serial numbers
 """
 
+import ida_hexrays
+from d810.hexrays.ir.native_pointer import swig_pointer_type
+
 from ._chexrays cimport mblock_t, mba_t, _swig_ptr
 
 
@@ -60,7 +63,7 @@ cpdef int get_block_serial(object py_blk):
     Returns:
         The block's serial number (int)
     """
-    cdef const mblock_t* blk = <const mblock_t*> _swig_ptr(py_blk)
+    cdef const mblock_t* blk = <const mblock_t*> _swig_ptr(py_blk, ida_hexrays.mblock_t)
     return _get_serial(blk)
 
 
@@ -76,7 +79,7 @@ cpdef tuple get_block_info(object py_blk):
     Returns:
         Tuple of (serial, npred, nsucc)
     """
-    cdef const mblock_t* blk = <const mblock_t*> _swig_ptr(py_blk)
+    cdef const mblock_t* blk = <const mblock_t*> _swig_ptr(py_blk, ida_hexrays.mblock_t)
     return (_get_serial(blk), _get_npred(blk), _get_nsucc(blk))
 
 
@@ -89,7 +92,7 @@ cpdef tuple get_pred_serials(object py_blk):
     Returns:
         Tuple of predecessor block serial numbers
     """
-    cdef const mblock_t* blk = <const mblock_t*> _swig_ptr(py_blk)
+    cdef const mblock_t* blk = <const mblock_t*> _swig_ptr(py_blk, ida_hexrays.mblock_t)
     cdef int n = _get_npred(blk)
     cdef int i
     cdef list preds = []
@@ -107,7 +110,7 @@ cpdef tuple get_succ_serials(object py_blk):
     Returns:
         Tuple of successor block serial numbers
     """
-    cdef const mblock_t* blk = <const mblock_t*> _swig_ptr(py_blk)
+    cdef const mblock_t* blk = <const mblock_t*> _swig_ptr(py_blk, ida_hexrays.mblock_t)
     cdef int n = _get_nsucc(blk)
     cdef int i
     cdef list succs = []
@@ -127,7 +130,7 @@ cpdef frozenset get_pred_serial_set(object py_blk):
     Returns:
         Frozenset of predecessor block serial numbers
     """
-    cdef const mblock_t* blk = <const mblock_t*> _swig_ptr(py_blk)
+    cdef const mblock_t* blk = <const mblock_t*> _swig_ptr(py_blk, ida_hexrays.mblock_t)
     cdef int n = _get_npred(blk)
     cdef int i
     cdef set preds = set()
@@ -147,7 +150,7 @@ cpdef frozenset get_succ_serial_set(object py_blk):
     Returns:
         Frozenset of successor block serial numbers
     """
-    cdef const mblock_t* blk = <const mblock_t*> _swig_ptr(py_blk)
+    cdef const mblock_t* blk = <const mblock_t*> _swig_ptr(py_blk, ida_hexrays.mblock_t)
     cdef int n = _get_nsucc(blk)
     cdef int i
     cdef set succs = set()
@@ -168,7 +171,7 @@ cpdef bint block_has_predecessor(object py_blk, int pred_serial):
     Returns:
         True if pred_serial is a predecessor of the block
     """
-    cdef const mblock_t* blk = <const mblock_t*> _swig_ptr(py_blk)
+    cdef const mblock_t* blk = <const mblock_t*> _swig_ptr(py_blk, ida_hexrays.mblock_t)
     cdef int n = _get_npred(blk)
     cdef int i
     for i in range(n):
@@ -189,7 +192,7 @@ cpdef bint block_has_successor(object py_blk, int succ_serial):
     Returns:
         True if succ_serial is a successor of the block
     """
-    cdef const mblock_t* blk = <const mblock_t*> _swig_ptr(py_blk)
+    cdef const mblock_t* blk = <const mblock_t*> _swig_ptr(py_blk, ida_hexrays.mblock_t)
     cdef int n = _get_nsucc(blk)
     cdef int i
     for i in range(n):

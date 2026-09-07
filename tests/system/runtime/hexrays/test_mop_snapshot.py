@@ -1,13 +1,52 @@
 """Tests for MopSnapshot - requires IDA runtime for module import."""
 
 import pytest
+from types import SimpleNamespace
+
+import ida_hexrays
 
 from d810.hexrays.ir.mop_snapshot import MopSnapshot
+from d810.hexrays.expr.ast import AstLeaf
+from d810.core.cymode import CythonMode
 
 
 @pytest.mark.ida_required
 class TestMopSnapshot:
     """Test MopSnapshot dataclass behavior."""
+
+    binary_name = "libobfuscated.dll"
+
+    def test_scalar_double_keeps_selected_snapshot_and_ast_leaf_contract(self):
+        if CythonMode().is_enabled():
+            assert MopSnapshot.__module__ == "d810.speedups.cythxr.mop_snapshot"
+        operand = SimpleNamespace(
+            t=ida_hexrays.mop_n, size=4, valnum=7,
+            nnn=SimpleNamespace(value=42),
+        )
+        snapshot = MopSnapshot.from_mop(operand)
+        assert isinstance(snapshot, MopSnapshot)
+        assert snapshot == MopSnapshot(t=ida_hexrays.mop_n, size=4, valnum=7, value=42)
+        leaf = AstLeaf("scalar")
+        leaf.mop = snapshot
+        assert leaf.size == 4
+        assert leaf.value == 42
+        leaf.dst_mop = SimpleNamespace(t=ida_hexrays.mop_r, size=4, valnum=7, r=16)
+        assert isinstance(leaf.mop, MopSnapshot)
+        assert leaf.mop.reg == 16
+        assert leaf.mop.owned_mop is None
+        assert leaf.size == 4
+
+    def test_counterfeit_swig_pointer_is_rejected(self, ida_database):
+        assert ida_hexrays.init_hexrays_plugin()
+        operand = ida_hexrays.mop_t()
+        assert MopSnapshot.from_mop(operand).t == ida_hexrays.mop_z
+        pointer = operand.this
+        try:
+            operand.this = type("SwigPyObject", (), {})()
+            with pytest.raises(TypeError):
+                MopSnapshot.from_mop(operand)
+        finally:
+            operand.this = pointer
 
     def test_frozen_immutable(self):
         snap = MopSnapshot(t=2, size=4, value=42)
