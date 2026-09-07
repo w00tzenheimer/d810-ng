@@ -1334,7 +1334,7 @@ def _read_storage_definition(
     while insn is not None and insn is not before:
         opcode = getattr(insn, "opcode", None)
         destination, destination_size, indirect = _storage_write_destination(insn)
-        if storage.kind in {"r", "l"} and opcode in calls:
+        if opcode in calls:
             result = StorageDefinition(written=True)
         elif overlaps_state_operand(
             storage,

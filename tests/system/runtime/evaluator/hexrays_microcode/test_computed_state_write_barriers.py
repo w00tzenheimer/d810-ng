@@ -234,3 +234,32 @@ def test_lvar_mapping_checks_sdk_preconditions_before_union_access():
 
     assert _computed_operand_lvar_stkoff(EarlyMba(), 0) is None
     assert not invalid_accesses
+
+
+def test_unknown_call_invalidates_computed_stack_operands():
+    from d810.evaluator.hexrays_microcode.dynamic_state_write_backend import (
+        resolve_computed_state_write,
+    )
+
+    mba = _mba(
+        {
+            0: _block(
+                _insn(ida_hexrays.m_mov, l=_mop_n(0x100), d=_mop_S(0x80)),
+                _insn(ida_hexrays.m_mov, l=_mop_n(1), d=_mop_S(0x90)),
+                _insn(ida_hexrays.m_call),
+            ),
+            1: _block(
+                _insn(
+                    ida_hexrays.m_xor,
+                    l=_mop_S(0x80),
+                    r=_mop_S(0x90),
+                    d=_mop_S(_STATE_OFF),
+                ),
+                predset=(0,),
+            ),
+        }
+    )
+    result = resolve_computed_state_write(
+        mba=mba, block_serial=1, state_var_stkoff=_STATE_OFF
+    )
+    assert not result.resolved

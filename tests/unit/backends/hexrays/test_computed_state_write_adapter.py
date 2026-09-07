@@ -313,7 +313,7 @@ def test_a_call_before_the_definition_does_not_clobber_it():
     assert res.values == frozenset({0x62127A6B})
 
 
-def test_a_call_does_not_clobber_a_stack_binding():
+def test_a_call_cannot_preserve_a_stack_binding_without_effect_evidence():
     blocks = {
         2: _block(
             _insn(_VOCABULARY.m_mov, _stk(0x80), None, _stk(_STATE_STKOFF)),
@@ -325,7 +325,8 @@ def test_a_call_does_not_clobber_a_stack_binding():
         ),
     }
     res = _resolve(_Mba(blocks), 2)
-    assert res.values == frozenset({0x62127A6B})
+    assert not res.resolved
+    assert res.reason == AbstainReason.UNRESOLVED_OPERAND
 
 
 def test_a_fork_on_the_way_back_abstains_rather_than_guessing():
@@ -548,3 +549,14 @@ def test_lvar_stack_mapping_requires_sdk_location_and_maturity_guards():
 
     assert cca._lvar_stkoff(EarlyMba(), 0) is None
     assert not invalid_accesses
+
+
+def test_unknown_call_invalidates_computed_stack_operand():
+    # Arbitrary computed operands do not inherit the state slot's no-escape
+    # assumption: the callee may receive an address of this stack storage.
+    mba = _Mba({
+        0: _block(_insn(_VOCABULARY.m_mov, _num(0x100), None, _stk(80)),
+                  _insn(_VOCABULARY.m_call)),
+        1: _block(_insn(_VOCABULARY.m_xor, _stk(80), _num(1), _stk(_STATE_STKOFF)), preds=(0,)),
+    })
+    assert not _resolve(mba, 1).resolved
