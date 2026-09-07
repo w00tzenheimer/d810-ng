@@ -1516,6 +1516,7 @@ class TestCompilerShapeCatalogueNative:
             accepted_catalogue_by_function: dict[str, tuple[object, ...]] = {}
             observed_catalogue_by_function: dict[str, tuple[object, ...]] = {}
             fallback_capture_outcomes: list[object] = []
+            fallback_observations = {}
             with capture_native_provider_histories(adapters):
                 handler_started = time.monotonic()
                 state.start_d810()
@@ -1545,6 +1546,8 @@ class TestCompilerShapeCatalogueNative:
                         if outcome.matcher is not None
                         and outcome.matcher.selection is MatcherSelection.CANONICAL_FALLBACK
                     )
+                    for outcome in accepted:
+                        fallback_observations[id(outcome)] = observation
                 state.stop_d810()
             assert real_fallback_callback_count >= 2
             # The per-root records are authoritative.  Global counters are
@@ -1639,14 +1642,20 @@ class TestCompilerShapeCatalogueNative:
                 for adapter in adapters
                 if adapter.name == fallback_capture_outcome.metadata["rule_name"]
             )
-            fallback_history = fallback_adapter.provider_outcomes()
-            fallback_outcome_index = next(
-                index
-                for index, outcome in enumerate(fallback_history)
-                if outcome is fallback_capture_outcome
-            )
+            fallback_observation = fallback_observations[id(fallback_capture_outcome)]
+            # The session tail can evict this attempt after its function ends.
+            # Keep the actual cursor and finalized outcome from its observer.
             fallback_capture_snapshot = NativeProviderHistorySnapshot(
-                {id(fallback_adapter): fallback_outcome_index}
+                fallback_observation.outcome_counts_by_rule_id,
+                {
+                    id(fallback_adapter): {
+                        cursor: outcome
+                        for cursor, outcome in fallback_observation.observed_by_rule_id[
+                            id(fallback_adapter)
+                        ].items()
+                        if outcome is fallback_capture_outcome
+                    }
+                },
             )
             semantic_capture = NativeMbaCorpusCapture(
                 corpus_identity="mba-compiler-shapes-native",
