@@ -311,6 +311,7 @@ def _facts_for_body(
     return (
         _unresolved_fact(
             dispatch_map=dispatch_map,
+            registrar=registrar,
             state=state,
             case_entry_block=entry_block,
             reason="case_body_state_write_count_unresolved",

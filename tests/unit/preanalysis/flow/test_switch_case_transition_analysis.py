@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
-from d810.analyses.control_flow.branch_ownership import BranchOwnershipProofKind
+import pytest
+
+from d810.analyses.control_flow.branch_ownership import (
+    BranchOwnershipProducerRegistration,
+    BranchOwnershipProofKind,
+)
 from d810.capabilities.dispatcher import RouterKind
 from d810.analyses.control_flow.dispatcher_resolution import (
     StateDispatcherMap,
@@ -269,3 +274,24 @@ def test_alias_self_loop_and_default_rows_are_diagnostics() -> None:
         fact.proof is None or not fact.proof.authorizes_nonsemantic_branch_rewrite
         for fact in facts
     )
+
+
+@pytest.mark.parametrize("state_writes", [(), (4, 9, 13)])
+def test_unresolved_write_count_keeps_registered_diagnostic_proof(
+    state_writes: tuple[int, ...],
+) -> None:
+    fact = collect_switch_case_transition_facts(
+        dispatch_map=_dispatch_map(states=(4,)),
+        case_bodies=(
+            SwitchCaseBody(state=4, entry_block=104, state_writes=state_writes),
+        ),
+    )[0]
+
+    assert fact.transition_kind is SwitchCaseTransitionKind.UNRESOLVED
+    assert fact.reason == "case_body_state_write_count_unresolved"
+    assert fact.proof is not None
+    assert fact.proof.producer_registration is (
+        BranchOwnershipProducerRegistration.REGISTERED
+    )
+    assert fact.proof.authorizes_semantic_branch_bridge is False
+    assert fact.proof.authorizes_nonsemantic_branch_rewrite is False
