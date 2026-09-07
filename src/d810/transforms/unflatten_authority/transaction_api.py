@@ -3940,13 +3940,15 @@ def _derive_patch_lineage_facts(
     # stored or keyed.  The refusal semantics are unchanged -- a malformed plan
     # preimage still fails every step, and a step the descriptor vocabulary
     # omits still fails only itself.
+    descriptor_error: Exception | None = None
     try:
         descriptors_by_index = {
             descriptor.step_index: descriptor
             for descriptor in canonical_patch_step_descriptors(plan)
         }
-    except (TypeError, ValueError):
+    except (TypeError, ValueError) as exc:
         descriptors_by_index = None
+        descriptor_error = exc
     for step_index, step in enumerate(plan.steps):
         descriptor = (
             None if descriptors_by_index is None
@@ -3966,7 +3968,14 @@ def _derive_patch_lineage_facts(
                 PatchRedirectGoto, PatchRedirectBranch,
                 PatchEdgeSplitTrampoline, PatchEdgeSplitCorridor,
             }:
-                raise
+                # Same two refusals the per-step call raised: the plan's own
+                # canonical error when the whole derivation failed, and the
+                # vocabulary error when only this step is missing.
+                if descriptor_error is not None:
+                    raise descriptor_error
+                raise ValueError(
+                    "plan step is outside the canonical descriptor vocabulary"
+                )
             continue
         step_type = type(step).__name__
         owners = descriptor.owner_refs
