@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from types import SimpleNamespace
+
+import pytest
 
 from d810.analyses.control_flow.branch_ownership import (
     BranchOwnershipOracleKind,
@@ -37,6 +40,39 @@ def _edge(
         ),
         target_entry_anchor=target_entry,
     )
+
+
+@pytest.mark.parametrize("unregistered_input", ["opaque", "terminal"])
+def test_terminal_selector_promotion_refuses_unregistered_evidence(unregistered_input):
+    registrar = branch_ownership_registration_authority()
+
+    def refine(proof, edge):
+        is_opaque = proof.target_state == 0x20
+        kind = (
+            BranchOwnershipProofKind.OPAQUE_ALWAYS_TRUE
+            if is_opaque
+            else BranchOwnershipProofKind.TERMINAL_RETURN_FRONTIER
+        )
+        refined = registrar.bind(
+            replace(proof, proof_kind=kind, trusted=True),
+            registrar.producer(BranchOwnershipOracleKind.MOPTRACKER),
+        )
+        if ("opaque" if is_opaque else "terminal") == unregistered_input:
+            return replace(refined, registration=None)
+        return refined
+
+    proofs = collect_branch_ownership_proofs(
+        dag=SimpleNamespace(
+            edges=(
+                _edge(source=0x10, target=0x20, arm=1),
+                _edge(source=0x10, target=0x30, arm=0),
+                _edge(source=0x20, target=0x10, kind="TRANSITION", block=20),
+            )
+        ),
+        proof_refiner=refine,
+    )
+
+    assert not any(proof.authorizes_nonsemantic_branch_rewrite for proof in proofs)
 
 
 def test_collect_branch_ownership_defaults_unresolved() -> None:

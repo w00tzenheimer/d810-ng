@@ -276,6 +276,20 @@ class BranchOwnershipProof:
         )
 
     @property
+    def has_registered_trust(self) -> bool:
+        """Whether a registered producer supplied a well-formed trusted row.
+
+        This validates provenance only. Diagnostic predicate and terminal rows
+        still grant no rewrite permission themselves; a producer combining
+        them into a stronger proof must check this before using their claims.
+        """
+        return (
+            self.trusted
+            and self.trust_provenance is BranchOwnershipTrustProvenance.WELL_FORMED
+            and self.producer_registration is not ProducerRegistration.UNKNOWN
+        )
+
+    @property
     def authority(self) -> BranchOwnershipAuthority:
         """What this row permits, as one typed verdict.
 
@@ -306,7 +320,7 @@ class BranchOwnershipProof:
             verdict = BranchOwnershipAuthority.NONSEMANTIC_REWRITE
         else:
             return BranchOwnershipAuthority.DIAGNOSTIC_ONLY
-        if self.producer_registration is BranchOwnershipProducerRegistration.UNKNOWN:
+        if not self.has_registered_trust:
             return BranchOwnershipAuthority.UNRESOLVED_PROVENANCE
         return verdict
 
@@ -768,7 +782,7 @@ def _append_terminal_selector_backedge_residue_proofs(
             existing
             for existing in proofs
             if (
-                existing.trusted
+                existing.has_registered_trust
                 and existing.source_state == source_state
                 and existing.proof_kind_name
                 == BranchOwnershipProofKind.TERMINAL_RETURN_FRONTIER.value
@@ -948,7 +962,7 @@ def _append_terminal_selector_backedge_residue_proofs(
 
 
 def _is_opaque_selected_arm_proof(proof: BranchOwnershipProof) -> bool:
-    if not proof.trusted:
+    if not proof.has_registered_trust:
         return False
     return proof.proof_kind_name in {
         BranchOwnershipProofKind.OPAQUE_ALWAYS_TRUE.value,
