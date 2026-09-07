@@ -2127,9 +2127,9 @@ def attach_typed_proposal(
             )
             proposal = replace(
                 proposal,
-                claims=tuple(sorted(
-                    (*proposal.claims, *attached_claims), key=lambda item: item.claim_id,
-                )),
+                claims=canonical_model_order(
+                    (*proposal.claims, *attached_claims), "claims",
+                ),
                 retirement_candidate_catalog=(
                     candidate_catalog if full_dispatcher_retirement else None
                 ),

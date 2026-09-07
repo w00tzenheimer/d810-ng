@@ -1921,7 +1921,10 @@ def decode_legacy_unflatten_contract(
                 key=reserved[0],
                 block_refs_by_serial=refs_by_serial,
             )
-            proposal = replace(proposal, claims=tuple(matched_claims))
+            proposal = replace(
+                proposal,
+                claims=canonical_model_order(matched_claims, "claims"),
+            )
         except Exception:
             return LegacyUnflattenRejected(
                 UnflattenAuthorityReason.MALFORMED_PROPOSAL,
