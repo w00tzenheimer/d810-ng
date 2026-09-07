@@ -417,9 +417,15 @@ def test_a_direct_mutation_is_still_refused_after_a_warm_memo() -> None:
         original = authority.source_authority_id
         object.__setattr__(authority, "source_authority_id", forged)
         try:
+            # d81-h8va: the refusal moved, it did not weaken.  The
+            # construction-time re-derivation of ``source_authority_id`` is
+            # gone (it could only detect a post-publication mutation, which the
+            # phase-3 invariant forbids by construction), so the forged record
+            # is now refused by the registry content seal -- the guard that
+            # actually owns "this value is not the one that was minted".
             with pytest.raises(
                 ValueError,
-                match="source_authority_id does not match canonical content",
+                match="route authority content seal does not match",
             ):
                 bind.validate_source_route_authority(authority)
         finally:

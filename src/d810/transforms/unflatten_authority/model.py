@@ -57,6 +57,8 @@ from .ids import (
     bound_unflatten_binding_id,
     lazy_identity,
     canonical_bytes,
+    stage_unpublished_field,
+    stage_unpublished_fields,
     validate_live_semantic_fields,
     case_id,
     claim_id,
@@ -150,6 +152,37 @@ def _tuple(values: Iterable[object], label: str, *, sort: bool = False) -> tuple
     if sort:
         result = tuple(sorted(result, key=_structural_key))
     return result
+
+
+def _strict_tuple(values: object, label: str, *, sort: bool = False) -> tuple:
+    """Validate an already-canonical model tuple without rewriting the field.
+
+    The coercing counterpart is :func:`_tuple`.  A record's ``__post_init__``
+    must not call that one: rewriting a field after the record exists is a
+    mutation of a value the caller may already have named, and the census
+    (d81-h8va) found it happening on records whose content ID had been minted.
+    Producers call :func:`canonical_model_order` *before* the frozen record
+    exists; the record then only checks, and refuses anything else.
+    """
+
+    if type(values) is not tuple:
+        raise TypeError(f"{label} must be an exact tuple")
+    if len(set(values)) != len(values):
+        raise ValueError(f"{label} must not contain duplicates")
+    if sort and tuple(sorted(values, key=_structural_key)) != values:
+        raise ValueError(f"{label} must already be in canonical order")
+    return values
+
+
+def canonical_model_order(values: Iterable[object], label: str) -> tuple:
+    """Return ``values`` in the canonical order a closed model field requires.
+
+    This is the producer-side half of :func:`_strict_tuple`: it is the *only*
+    supported way to build an unordered model field, and by construction the
+    order it produces is exactly the one the record's validation demands.
+    """
+
+    return _tuple(values, label, sort=True)
 
 
 def _paired_tuples(
@@ -248,6 +281,37 @@ def _canonical_cfg_ref_tuple(
     for ref in refs:
         _cfg_ref(ref, f"{label} item")
     return tuple(sorted(refs, key=canonical_bytes))
+
+
+def canonical_cfg_ref_order(values: Iterable[object], label: str) -> tuple:
+    """Canonicalize producer-owned block sets before constructing a record."""
+    return _canonical_cfg_ref_tuple(values, label)
+
+
+def _strict_cfg_ref_tuple(values: object, label: str) -> tuple:
+    """Validate a published block set without rewriting or coercing it."""
+    if type(values) is not tuple:
+        raise TypeError(f"{label} must be an exact tuple")
+    canonical = _canonical_cfg_ref_tuple(values, label)
+    if values != canonical:
+        raise ValueError(f"{label} must already be in canonical order")
+    return values
+
+
+def _validate_delivery_path_edges(path: tuple, edges: object) -> None:
+    """Validate an immutable ordered corridor without retaining mutable aliases."""
+    if type(edges) is not tuple:
+        raise TypeError("delivery_path_edges must be an exact tuple")
+    for edge in edges:
+        if type(edge) is not tuple:
+            raise TypeError("delivery_path_edges items must be exact tuples")
+        if len(edge) != 2:
+            raise ValueError("delivery_path_edges items must be index pairs")
+        if any(type(index) is not int for index in edge):
+            raise TypeError("delivery_path_edges indices must be exact integers")
+    expected = tuple((index, index + 1) for index in range(len(path) - 1))
+    if edges != expected:
+        raise ValueError("delivery_path_edges must be exact adjacent indices")
 
 
 def _canonical_source_coordinates(
@@ -550,7 +614,7 @@ class BlockSubjectLocator:
 
     def __post_init__(self) -> None:
         _cfg_ref(self.block_ref)
-        object.__setattr__(self, "anchor_ea", _ea(self.anchor_ea, "anchor_ea"))
+        _ea(self.anchor_ea, "anchor_ea")
 
 
 @dataclass(frozen=True, slots=True)
@@ -698,8 +762,8 @@ class EdgeSubjectLocator:
     def __post_init__(self) -> None:
         _cfg_ref(self.source_ref, "source_ref")
         _cfg_ref(self.target_ref, "target_ref")
-        object.__setattr__(self, "source_anchor_ea", _ea(self.source_anchor_ea, "source_anchor_ea"))
-        object.__setattr__(self, "target_anchor_ea", _ea(self.target_anchor_ea, "target_anchor_ea"))
+        _ea(self.source_anchor_ea, "source_anchor_ea")
+        _ea(self.target_anchor_ea, "target_anchor_ea")
         _enum(self.edge_role, SemanticEdgeRole, "edge_role")
 
 
@@ -716,7 +780,7 @@ class RouteSubjectLocator:
         _id(self.proof_id, "proof_id")
         _id(self.atomic_group_id, "atomic_group_id")
         _cfg_ref(self.source_ref, "source_ref")
-        object.__setattr__(self, "source_anchor_ea", _ea(self.source_anchor_ea, "source_anchor_ea"))
+        _ea(self.source_anchor_ea, "source_anchor_ea")
         destinations = _tuple(
             self.destination_locators, "destination_locators", sort=True,
         )
@@ -754,8 +818,8 @@ class EffectSubjectLocator:
 
     def __post_init__(self) -> None:
         _cfg_ref(self.owner_ref, "owner_ref")
-        object.__setattr__(self, "owner_anchor_ea", _ea(self.owner_anchor_ea, "owner_anchor_ea"))
-        object.__setattr__(self, "instruction_ea", _ea(self.instruction_ea, "instruction_ea"))
+        _ea(self.owner_anchor_ea, "owner_anchor_ea")
+        _ea(self.instruction_ea, "instruction_ea")
         _enum(self.effect_kind, EffectSiteKind, "effect_kind")
 
 
@@ -768,7 +832,7 @@ class HandlerSubjectLocator:
     def __post_init__(self) -> None:
         if type(self.block_ref) is not NativeBlockRef:
             raise TypeError("authoritative handler requires a NativeBlockRef")
-        object.__setattr__(self, "anchor_ea", _ea(self.anchor_ea, "anchor_ea"))
+        _ea(self.anchor_ea, "anchor_ea")
         states = _tuple(self.normalized_states, "normalized_states", sort=True)
         for state in states:
             _nonnegative(state, "normalized state")
@@ -784,8 +848,8 @@ class TerminalSubjectLocator:
 
     def __post_init__(self) -> None:
         _cfg_ref(self.block_ref)
-        object.__setattr__(self, "anchor_ea", _ea(self.anchor_ea, "anchor_ea"))
-        object.__setattr__(self, "instruction_ea", _ea(self.instruction_ea, "instruction_ea"))
+        _ea(self.anchor_ea, "anchor_ea")
+        _ea(self.instruction_ea, "instruction_ea")
         _enum(self.terminal_kind, TerminalKind, "terminal_kind")
 
 
@@ -816,7 +880,7 @@ class CorridorSubjectLocator:
     def __post_init__(self) -> None:
         _id(self.corridor_id, "corridor_id")
         _cfg_ref(self.entry_ref, "entry_ref")
-        object.__setattr__(self, "entry_anchor_ea", _ea(self.entry_anchor_ea, "entry_anchor_ea"))
+        _ea(self.entry_anchor_ea, "entry_anchor_ea")
         raw_pairs = _paired_tuples(
             self.member_refs, self.member_anchor_eas,
             "member_refs", "member_anchor_eas",
@@ -845,7 +909,7 @@ class CorridorCoveragePathNode:
 
     def __post_init__(self) -> None:
         _authority_ref(self.block_ref)
-        object.__setattr__(self, "anchor_ea", _ea(self.anchor_ea, "anchor_ea"))
+        _ea(self.anchor_ea, "anchor_ea")
 
 
 @dataclass(frozen=True, slots=True)
@@ -1120,12 +1184,12 @@ class CorridorCoverageForecast:
     def __post_init__(self) -> None:
         _id(self.forecast_id, "forecast_id")
         _id(self.plan_id, "plan_id")
-        object.__setattr__(self, "function_ea", _ea(self.function_ea, "function_ea"))
+        _ea(self.function_ea, "function_ea")
         if type(self.source_native_key) is not NativePreanalysisKey:
             raise TypeError("source_native_key must be a NativePreanalysisKey")
         _generation(self.source_generation, "source_generation")
         _authority_ref(self.dispatcher_ref, "dispatcher_ref")
-        object.__setattr__(self, "dispatcher_anchor_ea", _ea(self.dispatcher_anchor_ea, "dispatcher_anchor_ea"))
+        _ea(self.dispatcher_anchor_ea, "dispatcher_anchor_ea")
         if type(self.paths) is not tuple:
             raise TypeError("corridor forecast paths must be an exact tuple")
         if any(type(path) is not CorridorCoveragePath for path in self.paths):
@@ -3277,7 +3341,7 @@ class EffectSiteEvidencePayload:
     def __post_init__(self) -> None:
         _id(self.effect_subject_id, "effect_subject_id")
         _enum(self.effect_kind, EffectSiteKind, "effect_kind")
-        object.__setattr__(self, "instruction_ea", _ea(self.instruction_ea, "instruction_ea"))
+        _ea(self.instruction_ea, "instruction_ea")
         _nonnegative(self.opcode, "opcode")
         if self.width is not None and self.width <= 0:
             raise ValueError("width must be positive")
@@ -3395,7 +3459,7 @@ class PatchStepEvidencePayload:
         for name in ("host_ea",):
             value = getattr(self, name)
             if value is not None:
-                object.__setattr__(self, name, _ea(value, name))
+                _ea(value, name)
         for name in ("host_opcode", "value_size"):
             value = getattr(self, name)
             if value is not None:
@@ -3647,7 +3711,7 @@ class RetiredDispatcherInfrastructureClaim:
         _claim_common(self.kind, UnflattenClaimKind.RETIRED_DISPATCHER_INFRASTRUCTURE, self.source_generation)
         _claim_subject(self.infrastructure_subject, SemanticSubjectKind.BLOCK, SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE, BlockSubjectLocator, "infrastructure_subject")
         _claim_subject(self.corridor_subject, SemanticSubjectKind.CORRIDOR, SemanticSubjectRole.DISPATCHER_CORRIDOR, CorridorSubjectLocator, "corridor_subject")
-        members = _tuple(self.member_subjects, "member_subjects", sort=True)
+        members = _strict_tuple(self.member_subjects, "member_subjects", sort=True)
         for member in members:
             _claim_subject(member, SemanticSubjectKind.BLOCK, SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE, BlockSubjectLocator, "member_subject")
         evidence_ids = _strict_id_tuple(
@@ -3655,8 +3719,6 @@ class RetiredDispatcherInfrastructureClaim:
         )
         if not evidence_ids:
             raise ValueError("retirement claim requires candidate evidence")
-        object.__setattr__(self, "member_subjects", members)
-        object.__setattr__(self, "candidate_evidence_ids", evidence_ids)
         expected_members = tuple(
             zip(self.corridor_subject.locator.member_refs,
                 self.corridor_subject.locator.member_anchor_eas)
@@ -3789,7 +3851,7 @@ class EquivalentSemanticRouteClaim:
         for name in ("retired_route_subject", "replacement_route_subject"):
             _claim_subject(getattr(self, name), SemanticSubjectKind.ROUTE, SemanticSubjectRole.SEMANTIC_ROUTE_SOURCE, RouteSubjectLocator, name)
         _claim_subject(self.source_subject, SemanticSubjectKind.BLOCK, SemanticSubjectRole.SEMANTIC_ROUTE_SOURCE, BlockSubjectLocator, "source_subject")
-        destinations = _tuple(self.destination_subjects, "destination_subjects", sort=True)
+        destinations = _strict_tuple(self.destination_subjects, "destination_subjects", sort=True)
         for subject in destinations:
             if (
                 type(subject) is not SemanticSubjectRef
@@ -3798,7 +3860,7 @@ class EquivalentSemanticRouteClaim:
                 or type(subject.locator) is not BlockSubjectLocator
             ):
                 raise ValueError("destination_subject has an unsupported route destination locator")
-        dag_endpoints = _tuple(self.dag_endpoint_subjects, "dag_endpoint_subjects", sort=True)
+        dag_endpoints = _strict_tuple(self.dag_endpoint_subjects, "dag_endpoint_subjects", sort=True)
         for subject in dag_endpoints:
             if (
                 type(subject) is not SemanticSubjectRef
@@ -3807,15 +3869,12 @@ class EquivalentSemanticRouteClaim:
                 or type(subject.locator) is not LogicalFunctionExitSubjectLocator
             ):
                 raise ValueError("dag_endpoint_subject has an unsupported logical endpoint locator")
-        proofs = _tuple(self.route_proof_ids, "route_proof_ids", sort=True)
+        proofs = _strict_tuple(self.route_proof_ids, "route_proof_ids", sort=True)
         for proof in proofs:
             _id(proof, "route_proof_ids item")
         if len(proofs) != 1:
             raise ValueError("equivalent route claim must select exactly one proof")
         _id(self.atomic_group_id, "atomic_group_id")
-        object.__setattr__(self, "destination_subjects", destinations)
-        object.__setattr__(self, "dag_endpoint_subjects", dag_endpoints)
-        object.__setattr__(self, "route_proof_ids", proofs)
         source_pair = _subject_block_pair(self.source_subject)
         destination_locators = tuple(
             _route_destination_locator(subject) for subject in destinations
@@ -3940,7 +3999,7 @@ class LocalAliasEffectScalarizationClaim:
         _claim_common(self.kind, UnflattenClaimKind.LOCAL_ALIAS_EFFECT_SCALARIZATION, self.source_generation)
         _claim_subject(self.owner_subject, SemanticSubjectKind.BLOCK, SemanticSubjectRole.EFFECT_SITE, BlockSubjectLocator, "owner_subject")
         _nonnegative(self.step_index, "step_index")
-        object.__setattr__(self, "host_ea", _ea(self.host_ea, "host_ea"))
+        _ea(self.host_ea, "host_ea")
         _nonnegative(self.host_opcode, "host_opcode")
         _text(self.alias_token, "alias_token")
         _text(self.base_token, "base_token")
@@ -3974,14 +4033,13 @@ class TerminalCycleBreakClaim:
             (TerminalSubjectLocator, LogicalFunctionExitSubjectLocator),
             "terminal_subject",
         )
-        proofs = _tuple(self.terminal_route_proof_ids, "terminal_route_proof_ids", sort=True)
+        proofs = _strict_tuple(self.terminal_route_proof_ids, "terminal_route_proof_ids", sort=True)
         for proof in proofs:
             _id(proof, "terminal_route_proof_ids item")
         if len(proofs) != 1:
             raise ValueError(
                 "terminal route proof selection must contain exactly one proof"
             )
-        object.__setattr__(self, "terminal_route_proof_ids", proofs)
 
 
 ProducerUnflattenClaim: TypeAlias = (
@@ -4030,18 +4088,18 @@ class EntryEndpointLivenessForecast:
             self.state_write_instruction_ea
         ):
             raise ValueError("entry liveness write EA is outside source identity")
-        exits = _canonical_cfg_ref_tuple(self.exit_path_refs, "exit_path_refs")
+        exits = _strict_cfg_ref_tuple(self.exit_path_refs, "exit_path_refs")
         if not exits or self.dispatcher_ref not in exits:
             raise ValueError("entry liveness forecast exit path must include dispatcher")
         if self.dispatcher_ref == self.replacement_ref:
             raise ValueError("entry liveness forecast must replace dispatcher")
         if type(self.cut_exit_path_uses) is not bool:
             raise TypeError("cut_exit_path_uses must be bool")
-        object.__setattr__(self, "exit_path_refs", exits)
         # A delivery corridor is ordered evidence, unlike a block set.  Do not
         # canonical-sort it: doing so destroys the W -> ... -> D relation the
         # transaction must later rebind.
-        path = tuple(self.delivery_path_refs)
+        path = _strict_tuple(self.delivery_path_refs, "delivery_path_refs")
+        _validate_delivery_path_edges(path, self.delivery_path_edges)
         if len(set(path)) != len(path):
             raise ValueError("entry liveness forecast corridor must not repeat refs")
         for ref in path:
@@ -4058,9 +4116,6 @@ class EntryEndpointLivenessForecast:
             raise ValueError(
                 "entry liveness forecast corridor must end at redirect owner"
             )
-        if path and tuple(self.delivery_path_edges) != tuple((index, index + 1) for index in range(len(path) - 1)):
-            raise ValueError("entry liveness forecast corridor edges must be exact adjacent indices")
-        object.__setattr__(self, "delivery_path_refs", path)
 
 
 @dataclass(frozen=True, slots=True)
@@ -4088,22 +4143,11 @@ class EntryEndpointLivenessAllowance:
     cut_exit_path_uses: bool = False
 
     def __post_init__(self) -> None:
-        # Compatibility for pre-corridor positional construction: its final
-        # bool occupied the slot now used by ``delivery_path_refs``.
-        legacy_positional = (
-            type(self.delivery_path_refs) is bool
-            and self.delivery_path_edges == ()
-            and self.cut_exit_path_uses is False
-        )
-        if legacy_positional:
-            legacy_cut_exit_path_uses = bool(self.delivery_path_refs)
-            object.__setattr__(self, "delivery_path_refs", ())
-            object.__setattr__(self, "cut_exit_path_uses", legacy_cut_exit_path_uses)
         _id(self.allowance_id, "allowance_id")
         _enum(self.reason, EntryEndpointLivenessReason, "reason")
         _nonnegative(self.normalized_state, "normalized_state")
         _id(self.route_proof_id, "route_proof_id")
-        owners = _canonical_cfg_ref_tuple(
+        owners = _strict_cfg_ref_tuple(
             self.entry_predecessor_owner_refs, "entry_predecessor_owner_refs",
         )
         if not owners:
@@ -4122,13 +4166,15 @@ class EntryEndpointLivenessAllowance:
             raise ValueError("entry liveness allowance write EA is outside source identity")
         if self.dispatcher_old_target_ref == self.replacement_endpoint_ref:
             raise ValueError("entry liveness allowance must replace the dispatcher target")
-        exits = _canonical_cfg_ref_tuple(self.exit_path_refs, "exit_path_refs")
+        exits = _strict_cfg_ref_tuple(self.exit_path_refs, "exit_path_refs")
         if not exits or self.dispatcher_old_target_ref not in exits:
             raise ValueError("entry liveness allowance exit path must include dispatcher target")
         _nonnegative(self.patch_step_index, "patch_step_index")
         _id(self.patch_step_digest, "patch_step_digest")
         if type(self.cut_exit_path_uses) is not bool:
             raise TypeError("cut_exit_path_uses must be bool")
+        path = _strict_tuple(self.delivery_path_refs, "delivery_path_refs")
+        _validate_delivery_path_edges(path, self.delivery_path_edges)
         expected = authority_id((
             "unflatten.entry-endpoint-liveness-allowance.v1",
             self.reason, self.normalized_state, self.route_proof_id,
@@ -4136,10 +4182,8 @@ class EntryEndpointLivenessAllowance:
             self.replacement_endpoint_ref, self.exit_path_refs,
             self.patch_step_index, self.patch_step_digest,
             self.state_write_source_ref, self.state_write_instruction_ea,
-            *((self.cut_exit_path_uses,) if legacy_positional else (
-                self.delivery_path_refs, self.delivery_path_edges,
-                self.cut_exit_path_uses,
-            )),
+            self.delivery_path_refs, self.delivery_path_edges,
+            self.cut_exit_path_uses,
         ))
         # Existing sealed receipts without a delivery corridor retain their
         # v1 identity.  A non-empty corridor is always covered by the new
@@ -4159,10 +4203,7 @@ class EntryEndpointLivenessAllowance:
             and self.allowance_id == legacy_empty_expected
         ):
             raise ValueError("entry liveness allowance ID does not match content")
-        object.__setattr__(self, "entry_predecessor_owner_refs", owners)
-        object.__setattr__(self, "exit_path_refs", exits)
         # Preserve producer corridor order for the same reason as the forecast.
-        path = tuple(self.delivery_path_refs)
         if len(set(path)) != len(path):
             raise ValueError("entry liveness allowance corridor must not repeat refs")
         for ref in path:
@@ -4173,13 +4214,12 @@ class EntryEndpointLivenessAllowance:
             )
         if path and (path[0] != self.state_write_source_ref or path[-1] != self.dispatcher_old_target_ref):
             raise ValueError("entry liveness allowance requires exact write-to-dispatcher corridor")
-        if path and (owners[0] not in path or tuple(self.delivery_path_edges) != tuple((i, i + 1) for i in range(len(path) - 1))):
+        if path and owners[0] not in path:
             raise ValueError("entry liveness allowance corridor is invalid")
         if path and (len(path) < 2 or path[-2] != owners[0]):
             raise ValueError(
                 "entry liveness allowance corridor must end at redirect owner"
             )
-        object.__setattr__(self, "delivery_path_refs", path)
 
 
 @dataclass(frozen=True, slots=True)
@@ -4225,10 +4265,10 @@ class BoundEntryEndpointLivenessAllowance:
             or self.patch_step_fact.owner_ref not in self.allowance.entry_predecessor_owner_refs
         ):
             raise ValueError("entry liveness binding patch fact differs from allowance")
-        source_successors = _canonical_cfg_ref_tuple(
+        source_successors = _strict_cfg_ref_tuple(
             self.source_owner_successors, "source_owner_successors",
         )
-        projected_successors = _canonical_cfg_ref_tuple(
+        projected_successors = _strict_cfg_ref_tuple(
             self.projected_owner_successors, "projected_owner_successors",
         )
         if self.allowance.dispatcher_old_target_ref not in source_successors:
@@ -4239,8 +4279,6 @@ class BoundEntryEndpointLivenessAllowance:
             raise ValueError("entry liveness receipt projected realization retains dispatcher")
         if self.source_liveness_safe is not True or self.projected_redirect_realized is not True:
             raise ValueError("entry liveness receipt must seal accepted liveness and realization")
-        object.__setattr__(self, "source_owner_successors", source_successors)
-        object.__setattr__(self, "projected_owner_successors", projected_successors)
         expected = authority_id((
             "unflatten.entry-endpoint-liveness-binding.v1",
             self.allowance, self.route_proof_id, self.patch_step_fact,
@@ -4360,7 +4398,7 @@ class SourceBlockIdentityWitness:
 
     def __post_init__(self) -> None:
         _authority_ref(self.block_ref)
-        object.__setattr__(self, "anchor_ea", _ea(self.anchor_ea, "anchor_ea"))
+        _ea(self.anchor_ea, "anchor_ea")
         eas = _tuple(self.native_instruction_eas, "native_instruction_eas", sort=True)
         for ea in eas:
             _ea(ea, "native_instruction_eas item")
@@ -4662,7 +4700,7 @@ class AuthoritativeHandlerInput:
     def __post_init__(self) -> None:
         if type(self.block_ref) is not NativeBlockRef:
             raise TypeError("authoritative handler requires a NativeBlockRef")
-        object.__setattr__(self, "anchor_ea", _ea(self.anchor_ea, "anchor_ea"))
+        _ea(self.anchor_ea, "anchor_ea")
         states = _tuple(self.normalized_states, "normalized_states", sort=True)
         for state in states:
             _nonnegative(state, "normalized state")
@@ -4805,7 +4843,7 @@ class ProposedUnflattenContract:
                 witness = source_by_ref.get(member.block_ref)
                 if witness is None or witness.anchor_ea != member.anchor_ea or witness.native_instruction_eas != member.native_instruction_eas:
                     raise ValueError("retirement candidate member identity drifted")
-        allowances = _tuple(
+        allowances = _strict_tuple(
             self.entry_endpoint_liveness_allowances,
             "entry_endpoint_liveness_allowances",
             sort=True,
@@ -4833,7 +4871,6 @@ class ProposedUnflattenContract:
             step_scopes.add(allowance.patch_step_index)
             owner_scopes.add(owner)
             edge_scopes.add(edge)
-        object.__setattr__(self, "entry_endpoint_liveness_allowances", allowances)
         if self.corridor_coverage_forecast is not None:
             if type(self.corridor_coverage_forecast) not in (CorridorCoverageForecast, DefaultGapInfeasibilityForecast):
                 raise TypeError("corridor_coverage_forecast must be a closed corridor forecast or None")
@@ -4886,7 +4923,7 @@ class ProposedUnflattenContract:
             or self.use_def_witness.violation_ids
         ):
             raise ValueError("proposal requires a clean executed use-def witness")
-        claims = _tuple(self.claims, "claims", sort=True)
+        claims = _strict_tuple(self.claims, "claims", sort=True)
         if not claims:
             raise ValueError("proposal requires at least one claim")
         for claim in claims:
@@ -4894,7 +4931,6 @@ class ProposedUnflattenContract:
                 raise TypeError("claims must contain producer claims only")
         if len({claim.claim_id for claim in claims}) != len(claims):
             raise ValueError("claims must not contain duplicate IDs")
-        object.__setattr__(self, "claims", claims)
         requires_corridor_forecast = (
             self.retirement_candidate_catalog is not None
             or any(type(claim) is RetiredDispatcherInfrastructureClaim for claim in claims)
@@ -6861,9 +6897,8 @@ class PreparationAuthorityReceipt:
         if set(values) != required:
             raise TypeError("mint requires the complete preparation receipt inputs")
         instance = cls.__new__(cls)
-        for name, value in values.items():
-            object.__setattr__(instance, name, value)
-        object.__setattr__(instance, "_minted", True)
+        stage_unpublished_fields(instance, values)
+        stage_unpublished_field(instance, "_minted", True)
         cls.__post_init__(instance)
         return instance
 
@@ -8947,12 +8982,25 @@ class SourceBoundRouteAuthority:
             raise ValueError("source authority must cover the complete route claim set")
         if len(self.bound_evidence.routes) != len(proof_ids) or tuple(sorted(route.evidence.proof_id for route in self.bound_evidence.routes)) != proof_ids:
             raise ValueError("bound evidence must contain every proof exactly once")
-        expected = source_route_authority_id((self.phase, self.proposal_id, self.plan_id,
+    def canonical_content_id(self) -> str:
+        """Derive the content ID this authority's own fields require.
+
+        d81-h8va: the comparison against a *supplied* ``source_authority_id``
+        used to live in ``__post_init__``, where it re-derived the ID on every
+        construction to detect a mutation that genuine immutability makes
+        impossible.  Unlike the two projected-realization rechecks it could not
+        simply be deleted: ``ids._decode_wire`` reconstructs this type from
+        canonical bytes and hands the wire's own ``source_authority_id`` to the
+        binder's minting kernel, and the decode's ``_wire(result) != value``
+        round-trip cannot catch a forged ID because the re-encode carries that
+        same supplied string.  So the check moved to the decode boundary, which
+        is the one place an identity arrives from outside.
+        """
+
+        return source_route_authority_id((self.phase, self.proposal_id, self.plan_id,
             self.source_native_key, self.source_fingerprint, self.source_inventory_digest,
             self.source_generation, self.evidence_id, self.bound_evidence,
             self.covered_proof_ids, self.covered_claim_ids))
-        if self.source_authority_id != expected:
-            raise ValueError("source_authority_id does not match canonical content")
 
     __copy__ = _reject_route_copy
     __deepcopy__ = _reject_route_copy
@@ -9584,11 +9632,14 @@ class ProjectedRouteRealizationRow:
         _nonnegative(self.plan_step_index, "plan_step_index"); _enum(self.plan_step_type, PatchStepKind, "plan_step_type"); _id(self.plan_step_digest, "plan_step_digest")
         _id(self.source_fingerprint, "source_fingerprint"); _id(self.projected_fingerprint, "projected_fingerprint")
         _generation(self.source_generation); _generation(self.projected_generation)
-        expected = projected_route_realization_row_id((self.claim_id, self.proof_id, self.route_subject_id,
-            self.relation, self.plan_step_index, self.plan_step_type, self.plan_step_digest,
-            self.source_fingerprint, self.projected_fingerprint,
-            self.source_generation, self.projected_generation, self.site_preservation))
-        if self.row_id != expected: raise ValueError("row_id does not match canonical content")
+        # d81-h8va: the mutation-detection recheck that used to re-derive
+        # ``row_id`` here is gone.  It could only ever fire if this record's
+        # content changed after its ID was computed, and under the phase-3
+        # invariant that cannot happen; there is also no path that supplies the
+        # ID from outside -- ``ids._decode_wire`` refuses this type outright
+        # ("route realization authority records are encode-only"), and the one
+        # producer is ``bind.py``'s realization kernel, which derives the ID
+        # from the same tuple immediately before constructing the row.
     __copy__ = _reject_route_copy; __deepcopy__ = _reject_route_copy; __reduce__ = _reject_route_copy
 
     @property
@@ -9831,10 +9882,10 @@ class ProjectedRouteRealization:
                 if type(ref) is PlanBlockRef and ref.plan_id != self.plan_id:
                     raise ValueError("projected row plan reference uses a foreign plan")
         _id(self.projected_inventory_digest, "projected_inventory_digest"); _id(self.projected_fingerprint, "projected_fingerprint"); _generation(self.projected_generation)
-        expected = projected_route_realization_id((self.source_authority.source_authority_id,
-            self.attempt_id, self.plan_id, rows, self.projected_inventory_digest,
-            self.projected_fingerprint, self.projected_generation, self.site_phase_result))
-        if self.realization_id != expected: raise ValueError("realization_id does not match canonical content")
+        # d81-h8va: same as ``ProjectedRouteRealizationRow.row_id`` -- the
+        # re-derivation recheck is removed.  ``ids._decode_wire`` refuses this
+        # type ("route realization authority records are encode-only"), so no
+        # ``realization_id`` ever arrives from outside the process.
     __copy__ = _reject_route_copy; __deepcopy__ = _reject_route_copy; __reduce__ = _reject_route_copy
 
 
@@ -9943,5 +9994,5 @@ ProjectedRouteRealizationResult: TypeAlias = ProjectedRouteRealizationAccepted |
 __all__ = [
     name for name, value in tuple(globals().items())
     if (isinstance(value, type) and (getattr(value, "__module__", None) == __name__))
-    or name in {"SemanticSubjectLocator", "AuthorityEvidencePayload", "ProducerUnflattenClaim", "TransactionDerivedUnflattenClaim", "UnflattenClaim", "CorridorCoverageForecastAuthority", "CorridorCoveragePhaseResultAuthority", "corridor_base_forecast", "corridor_base_phase_result", "CLONED_SEMANTIC_OBSERVATION_SCHEMA", "CLONED_SEMANTIC_ORIGIN_SCHEMA", "CLONED_SEMANTIC_PREFIX_SCHEMA", "cloned_semantic_observation_digest", "cloned_semantic_instruction_origin_id", "cloned_semantic_prefix_id"}
+    or name in {"canonical_cfg_ref_order", "canonical_model_order", "SemanticSubjectLocator", "AuthorityEvidencePayload", "ProducerUnflattenClaim", "TransactionDerivedUnflattenClaim", "UnflattenClaim", "CorridorCoverageForecastAuthority", "CorridorCoveragePhaseResultAuthority", "corridor_base_forecast", "corridor_base_phase_result", "CLONED_SEMANTIC_OBSERVATION_SCHEMA", "CLONED_SEMANTIC_ORIGIN_SCHEMA", "CLONED_SEMANTIC_PREFIX_SCHEMA", "cloned_semantic_observation_digest", "cloned_semantic_instruction_origin_id", "cloned_semantic_prefix_id"}
 ]

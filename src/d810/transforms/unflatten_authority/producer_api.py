@@ -79,9 +79,10 @@ from .model import (
     UnflattenClaimKind,
     InventoryEffectSite,
     InventoryInstructionObservation,
-    validate_inventory_control_transfer,
     InventoryTerminalSite,
+    canonical_model_order,
     resolve_inventory_block_sites,
+    validate_inventory_control_transfer,
 )
 from . import model
 from .ids import (
@@ -3126,11 +3127,15 @@ def _equivalent_route_claim(
         retired_route_subject=retired_subject,
         replacement_route_subject=replacement_subject,
         source_subject=source_subject,
-        destination_subjects=destination_subjects,
+        destination_subjects=canonical_model_order(
+            destination_subjects, "destination_subjects",
+        ),
         route_proof_ids=(proof.proof_id,),
         atomic_group_id=proof.atomic_group_id,
         source_generation=route_evidence.generation,
-        dag_endpoint_subjects=tuple(dag_endpoint_subjects),
+        dag_endpoint_subjects=canonical_model_order(
+            dag_endpoint_subjects, "dag_endpoint_subjects",
+        ),
     )
 
 
@@ -3285,7 +3290,7 @@ def build_proposal(
     )
     if not route_claims and not exact_claims:
         raise ValueError("typed proposal requires a semantic route or exact effect claim")
-    claims = tuple(sorted((*exact_claims, *route_claims), key=lambda item: item.claim_id))
+    claims = canonical_model_order((*exact_claims, *route_claims), "claims")
     plan_inputs = build_unflatten_plan_input_catalog(
         source=source,
         source_catalog=source_catalog,

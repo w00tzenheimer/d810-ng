@@ -14,7 +14,7 @@ from . import model
 from . import bind as authority_bind
 from . import gates
 from . import producer_api
-from .ids import _case_factory, _evidence_factory, _justification_factory, authority_id as _authority_id_digest, canonical_bytes, content_id as _content_id_digest
+from .ids import _case_factory, _evidence_factory, _justification_factory, authority_id as _authority_id_digest, canonical_bytes, content_id as _content_id_digest, stage_unpublished_field
 from .proposal import _redirect_owner_sort_key
 
 
@@ -1388,8 +1388,8 @@ def _make_justification(
 
 def _new_index(cells: tuple[model.ObligationEvidenceCell, ...]) -> model.ObligationEvidenceIndex:
     index = object.__new__(model.ObligationEvidenceIndex)
-    object.__setattr__(index, "cells", cells)
-    object.__setattr__(index, "_token", model._OBLIGATION_INDEX_TOKEN)
+    stage_unpublished_field(index, "cells", cells)
+    stage_unpublished_field(index, "_token", model._OBLIGATION_INDEX_TOKEN)
     model.ObligationEvidenceIndex.__post_init__(index)
     return index
 

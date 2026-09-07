@@ -64,6 +64,7 @@ from .model import (
     UnflattenPlanRoute,
     UnflattenPlanInputCatalog,
     UseDefFragmentWitness,
+    canonical_model_order,
 )
 from .ids import (
     _claim_factory,
@@ -891,7 +892,7 @@ def retirement_claim_from_legacy_proof(
         kind=UnflattenClaimKind.RETIRED_DISPATCHER_INFRASTRUCTURE,
         infrastructure_subject=infrastructure,
         corridor_subject=corridor,
-        member_subjects=member_subjects,
+        member_subjects=canonical_model_order(member_subjects, "member_subjects"),
         candidate_evidence_ids=tuple(sorted({
             evidence_id
             for candidate in candidates
@@ -1920,7 +1921,10 @@ def decode_legacy_unflatten_contract(
                 key=reserved[0],
                 block_refs_by_serial=refs_by_serial,
             )
-            proposal = replace(proposal, claims=tuple(matched_claims))
+            proposal = replace(
+                proposal,
+                claims=canonical_model_order(matched_claims, "claims"),
+            )
         except Exception:
             return LegacyUnflattenRejected(
                 UnflattenAuthorityReason.MALFORMED_PROPOSAL,

@@ -745,13 +745,15 @@ def test_entry_liveness_admission_rejects_two_receipts_in_noncanonical_binding_o
         )
         allowances.append(model.EntryEndpointLivenessAllowance(
             authority_id(("unflatten.entry-endpoint-liveness-allowance.v1", *fields)),
-            *fields,
+            *fields[:-1], (), (), fields[-1],
         ))
     plan = replace(
         plan,
         unflatten_proposal=replace(
             plan.unflatten_proposal,
-            entry_endpoint_liveness_allowances=tuple(allowances),
+            entry_endpoint_liveness_allowances=model.canonical_model_order(
+                allowances, "entry_endpoint_liveness_allowances",
+            ),
         ),
     )
     receipts = transaction_api.bind_entry_endpoint_liveness_allowances(
@@ -6304,7 +6306,7 @@ def test_derived_detached_authority_reuses_projected_source_across_observation()
             (entry_ref,),
             authority_id("derived-detached-redirect"), True, True, 0, (),
         ),
-        claims=(route_claim, claim),
+        claims=model.canonical_model_order((route_claim, claim), "claims"),
         plan_inputs=model.UnflattenPlanInputCatalog(
             model.UnflattenPlanShape.PARTIAL_REWRITE,
             entry_ref, dispatcher_ref, (entry_ref, dispatcher_ref),

@@ -1,0 +1,60 @@
+id: no-post-publication-setattr
+
+valid:
+  - |
+      class Claim:
+          def __post_init__(self) -> None:
+              object.__setattr__(self, "members", members)
+  - |
+      def stage_unpublished_field(value, name, item):
+          object.__setattr__(value, name, item)
+  - |
+      def stage_unpublished_fields(value, values):
+          for name, item in values.items():
+              object.__setattr__(value, name, item)
+  - |
+      def _lazy_identity_getattr(self, name):
+          object.__setattr__(self, name, value)
+  - |
+      def _route_mint(cls, values, identity_name):
+          value = object.__new__(cls)
+          stage_unpublished_fields(value, values)
+          value.__post_init__()
+          return value
+
+invalid:
+  - |
+      class Receipt:
+          def _validate_fields(self) -> None:
+              object.__setattr__(self, "_content_seal", seal)
+  - |
+      def _bind(value, derived):
+          object.__setattr__(value, "derived", derived)
+  - |
+      def _revalidate(result, values):
+          for name, value in values.items():
+              object.__setattr__(result, name, value)
+  - |
+      class Claim:
+          def normalize(self) -> None:
+              object.__setattr__(self, "claims", claims)
+  - |
+      class ProposedUnflattenContract:
+          def __post_init__(self):
+              object.__setattr__(self, "claims", claims)
+  - |
+      class EntryEndpointLivenessAllowance:
+          def __post_init__(self):
+              object.__setattr__(self, "exit_path_refs", exits)
+  - |
+      class BoundEntryEndpointLivenessAllowance:
+          def _validate_fields(self):
+              object.__setattr__(self, "source_owner_successors", successors)
+  - |
+      class PatchStepEvidencePayload:
+          def __post_init__(self):
+              stage_unpublished_field(self, "host_ea", self.host_ea)
+  - |
+      class EntryEndpointLivenessForecast:
+          def __post_init__(self):
+              ids.stage_unpublished_fields(self, values)
