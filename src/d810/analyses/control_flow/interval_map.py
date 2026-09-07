@@ -11,7 +11,11 @@ from bisect import bisect_right
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from d810.core.logging import getLogger
-from d810.core.typing import Any, Mapping
+from d810.analyses.control_flow.route_exactness import (
+    WrittenStateSet,
+    coerce_written_state_set,
+)
+from d810.core.typing import Any, Iterable, Mapping
 
 logger = getLogger(__name__)
 
@@ -407,9 +411,19 @@ class IntervalDispatcher:
 
     Args:
         rows: Pre-built list of IntervalRow objects.
+        written_state_constants: The written-state completeness receipt
+            (:class:`~d810.analyses.control_flow.route_exactness.WrittenStateSet`)
+            for the analysed function.  A comparison-tree (BST) dispatcher
+            publishes wide leaf intervals, so interval width alone cannot say
+            whether a row binds one concrete state; carrying the occurring
+            values *and whether that enumeration was exhaustive* alongside the
+            table lets :mod:`d810.analyses.control_flow.route_exactness` decide
+            that (tickets d81-8xhg, d81-pk0f).  A bare collection, or nothing
+            at all, is not a receipt and keeps consumers on the conservative
+            singleton-only behaviour.
     """
 
-    __slots__ = ("_rows", "_starts", "_default_target")
+    __slots__ = ("_rows", "_starts", "_default_target", "_written_states")
 
     def __init__(
         self,
@@ -417,8 +431,12 @@ class IntervalDispatcher:
         *,
         default_target: Any | None = None,
         compute_default: bool = True,
+        written_state_constants: WrittenStateSet | Iterable[Any] | None = None,
     ) -> None:
         self._rows: list[IntervalRow] = sorted(rows)
+        self._written_states: WrittenStateSet = coerce_written_state_set(
+            written_state_constants
+        )
         # Validate no overlaps
         for i in range(len(self._rows) - 1):
             a = self._rows[i]
@@ -474,6 +492,51 @@ class IntervalDispatcher:
     def default_target(self) -> Any | None:
         """Block the dispatcher routes to when no handler state matches (the shared return)."""
         return self._default_target
+
+    @property
+    def written_states(self) -> WrittenStateSet:
+        """Written-state completeness receipt for the analysed function.
+
+        Route exactness over a RANGE row is closed-world reasoning, so it is
+        only admissible when the receipt attests that every write to the state
+        slot was classified.  A table built without a receipt carries an
+        incomplete one and consumers stay on singleton-only exactness
+        (ticket d81-pk0f).
+        """
+        return self._written_states
+
+    @property
+    def written_state_constants(self) -> frozenset[int]:
+        """The receipt's constants only (diagnostics / back-compat view).
+
+        Empty when the table was built without that evidence.  Decisions must
+        read :attr:`written_states` instead so they see completeness.
+        """
+        return self._written_states.constants
+
+    def with_written_state_constants(
+        self,
+        written_state_constants: WrittenStateSet | Iterable[Any] | None,
+    ) -> "IntervalDispatcher":
+        """Return a copy of this table carrying *written_state_constants*.
+
+        Copy-on-write: recovered dispatchers are shared by several consumers,
+        so the written-state evidence is attached by rebinding rather than by
+        mutating a table another analysis may already hold.
+
+        Args:
+            written_state_constants: The written-state receipt (or a bare
+                collection, which is treated as *no* receipt).
+
+        Returns:
+            A new dispatcher with identical rows and default target.
+        """
+        return IntervalDispatcher(
+            list(self._rows),
+            default_target=self._default_target,
+            compute_default=False,
+            written_state_constants=written_state_constants,
+        )
 
     def to_json(self) -> str:
         """Serialize rows as JSON for log diagnostics."""

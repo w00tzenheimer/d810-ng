@@ -99,6 +99,10 @@ from d810.analyses.control_flow.dispatcher_resolution import (
     bind_initial_state_write_witness,
 )
 from d810.analyses.control_flow.interval_map import IntervalDispatcher, IntervalRow
+from d810.analyses.control_flow.route_exactness import (
+    dispatcher_written_state_set,
+    is_exact_route_interval,
+)
 from d810.analyses.control_flow.condition_chain_model import (
     ConditionChainRouteEndpointKind,
     ConditionChainRouteEvidence,
@@ -2877,18 +2881,28 @@ def _explicit_singleton_route_evidence(
     state: int,
     target: int,
 ) -> bool:
-    """Recognize a matching explicit singleton/equality route.
+    """Recognize a matching explicit exact route for one concrete state.
 
     A dispatcher may expose many exact rows, so table-wide cardinality is not
     evidence about the concrete state being queried.  Inspect only the
     matching row (or exact ``StateDispatcherMap`` entry) and require that it
     names the requested target.
+
+    Interval rows are judged by :func:`is_exact_route_interval`, the single
+    owner of the range-vs-singleton decision.  A width-1 row is exact as it
+    always was; a wider comparison-tree (BST) leaf is exact only when the
+    queried state is the sole value the function writes inside that interval
+    (ticket d81-8xhg).  A leaf shared by two or more written constants, one
+    carrying no written-state evidence at all, or one whose written-state
+    receipt is INCOMPLETE (some write to the state slot could not be
+    classified, ticket d81-pk0f) is still refused.
     """
     try:
         normalized = int(state) & 0xFFFFFFFF
         expected_target = int(target)
     except _PROVIDER_SHAPE_ERRORS:
         return False
+    written_states = dispatcher_written_state_set(dispatcher)
     # ``StateDispatcherMap`` exposes exact rows rather than ``lookup_row``.
     for attribute in ("rows", "_rows"):
         try:
@@ -2912,10 +2926,13 @@ def _explicit_singleton_route_evidence(
                 row_target = int(getattr(row, "target"))
                 lo = int(getattr(row, "lo"))
                 hi = int(getattr(row, "hi"))
-                if (
-                    row_target == expected_target
-                    and lo <= normalized < hi
-                    and hi == lo + 1
+                if row_target == expected_target and is_exact_route_interval(
+                    lo=lo,
+                    hi=hi,
+                    state=normalized,
+                    written_states=written_states,
+                    target=row_target,
+                    site="route_evidence",
                 ):
                     return True
         except _PROVIDER_SHAPE_ERRORS:
