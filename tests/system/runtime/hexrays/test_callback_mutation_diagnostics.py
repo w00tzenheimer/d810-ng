@@ -22,6 +22,7 @@ from d810.hexrays.hooks.callback_mutation_diagnostics import (
 from d810.hexrays.hooks.hexrays_hooks import HexraysDecompilationHook
 from d810.hexrays.hooks.optblock_adapter import BlockOptimizerManager
 from d810.hexrays.hooks.optinsn_adapter import InstructionOptimizerManager
+from d810.hexrays.hooks.safe_point_coordinator import HexRaysSafePointCoordinator
 from d810.optimizers.microcode.flow.context import FlowMaturityContext
 
 
@@ -354,6 +355,7 @@ def test_optblock_callback_exception_logs_typed_context_and_returns_zero(
 
     class _FailingManager:
         _pipeline_just_fired = False
+        _safe_point_coordinator = HexRaysSafePointCoordinator()
 
         @staticmethod
         def _func(_blk):
@@ -424,6 +426,7 @@ def test_optblock_callback_damaged_start_clears_unpaired_block_serial(
 
     class _FailingManager:
         _pipeline_just_fired = False
+        _safe_point_coordinator = HexRaysSafePointCoordinator()
 
         @staticmethod
         def _func(_blk):
@@ -466,6 +469,7 @@ def test_optblock_callback_diagnostic_failure_still_returns_zero(
 
     class _FailingManager:
         _pipeline_just_fired = False
+        _safe_point_coordinator = HexRaysSafePointCoordinator()
 
         @staticmethod
         def _func(_blk):
@@ -641,22 +645,15 @@ def test_instruction_optimizer_reports_a_nop_write_that_returns_false() -> None:
 
 def test_instruction_optimizer_records_a_completed_mba_mutation_child(
     tmp_path,
-    monkeypatch,
 ) -> None:
     instruction = _Instruction(ida_hexrays.m_mov, 0x401010)
-    instruction.optimize_solo = lambda: None
     block = _Block(
         serial=9,
         start=0x401000,
         end=0x401020,
         head=instruction,
     )
-    block.mark_lists_dirty = lambda: None
     _Mba((block,))
-    monkeypatch.setattr(
-        "d810.hexrays.hooks.optinsn_adapter.safe_verify",
-        lambda *_args, **_kwargs: None,
-    )
 
     with ExecutionJournalStore(tmp_path / "execution.sqlite") as journal:
         session_id = DecompilationSessionId.new()
@@ -690,9 +687,23 @@ def test_instruction_optimizer_records_a_completed_mba_mutation_child(
             manager,
         )
         manager.log_info_on_input = lambda _blk, _ins: False
-        manager.optimize = lambda _blk, _ins: True
 
-        assert manager.func(block, instruction) is True
+        def optimize(_blk, _ins):
+            manager._last_instruction_receipt = SimpleNamespace(
+                committed=True,
+                applied_count=1,
+                primitive_fields=lambda: {
+                    "committed": True,
+                    "applied_count": 1,
+                    "reason": "committed",
+                    "rule_id": "synthetic_writer",
+                },
+            )
+            return True
+
+        manager.optimize = optimize
+
+        assert InstructionOptimizerManager.func(manager, block, instruction) == 1
 
         hook = journal.only_attempt(
             session_id,
@@ -712,6 +723,9 @@ def test_instruction_optimizer_records_a_completed_mba_mutation_child(
         assert mutation.domain is ExecutionDomain.MUTATION
         assert mutation.parent_attempt_id == hook.attempt_id
         assert mutation.effect_refs[0].kind == "mba_instruction_edit"
+        assert hook.details["applied_count"] == 1
+        assert hook.details["reason"] == "committed"
+        assert "replacement" not in hook.details
 
 
 def test_instruction_optimizer_summarizes_a_noop_callback_by_default(

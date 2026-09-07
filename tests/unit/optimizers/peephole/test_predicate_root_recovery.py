@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+import ast
 import dataclasses
 import importlib
 import importlib.util
+from pathlib import Path
 
 import pytest
 
 
 _MODULE = "d810.optimizers.microcode.instructions.peephole.predicate_root_recovery"
+_NATIVE = Path(__file__).resolve().parents[4] / "src/d810/optimizers/microcode/instructions/peephole/predicate_root_recovery_native.py"
 
 # Derivation of the deterministic Z3 budget used below in place of
 # production's 100 ms wall-clock `timeout_ms` (see
@@ -224,3 +227,74 @@ def test_production_wall_clock_exhaustion_matches_rlimit_exhaustion(
     assert rlimit_exhausted is False
     assert wall_clock_exhausted is False
     assert rlimit_exhausted == wall_clock_exhausted
+
+
+def test_native_rule_uses_the_hosted_proposal_boundary_without_live_mutation() -> None:
+    tree = ast.parse(_NATIVE.read_text(encoding="utf-8"))
+    rule = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.ClassDef)
+        and node.name == "FiniteZeroSetPredicateBlockRule"
+    )
+
+    assert any(
+        isinstance(base, ast.Name) and base.id == "HostedBlockInstructionRule"
+        for base in rule.bases
+    )
+    assert any(
+        isinstance(node, ast.FunctionDef) and node.name == "propose_instruction_batch"
+        for node in rule.body
+    )
+    forbidden = {
+        "free_kreg",
+        "insert_into_block",
+        "remove_from_block",
+        "mark_lists_dirty",
+        "swap",
+    }
+    calls = [
+        node.func.attr
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr in forbidden
+    ]
+    assert calls == []
+    assert "block.mba.alloc_kreg" not in _NATIVE.read_text(encoding="utf-8")
+
+
+def test_no_extension_materialization_does_not_allocate_an_unused_output_kreg() -> None:
+    """The standalone setnz form needs only the two comparison temporaries."""
+    tree = ast.parse(_NATIVE.read_text(encoding="utf-8"))
+    materializer = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == "_FiniteZeroSetMaterializer"
+    )
+    materialize = next(
+        node
+        for node in materializer.body
+        if isinstance(node, ast.FunctionDef) and node.name == "materialize"
+    )
+    no_extension = next(
+        node
+        for node in materialize.body
+        if isinstance(node, ast.If)
+        and isinstance(node.test, ast.Compare)
+        and isinstance(node.test.left, ast.Attribute)
+        and node.test.left.attr == "extension_kind"
+        and isinstance(node.test.comparators[0], ast.Constant)
+        and node.test.comparators[0].value is None
+    )
+    output_assignment = next(
+        node
+        for node in materialize.body
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(target, ast.Name) and target.id == "predicate_output"
+            for target in node.targets
+        )
+    )
+
+    assert materialize.body.index(output_assignment) > materialize.body.index(no_extension)

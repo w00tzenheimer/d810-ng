@@ -7,6 +7,7 @@ import sqlite3
 import time
 import traceback
 from collections import defaultdict
+from dataclasses import replace
 
 import ida_hexrays
 
@@ -42,11 +43,24 @@ from d810.hexrays.hooks.callback_mutation_diagnostics import (
 )
 from d810.hexrays.lifecycle import _emit_flowgraph_ready_event
 from d810.hexrays.observability import observe_optblock_callback_exception
+from d810.hexrays.ir.native_identity import NativeIdentity, native_object_identity
 from d810.hexrays.ir_maturity import ida_maturity_to_ir
 from d810.hexrays.mutation.return_carrier_corruption import (
     snapshot_return_reg_consumer_def_eas,
 )
 from d810.hexrays.mutation.block_retention import synchronize_explicit_goto_flag
+from d810.hexrays.mutation.block_instruction_commit import (
+    BlockInstructionBatchReceipt,
+    HexRaysBlockInstructionCommitter,
+)
+from d810.hexrays.mutation.deferred_modifier import DeferredGraphModifier
+from d810.hexrays.mutation.instruction_commit import NativeEpoch
+from d810.hexrays.hooks.safe_point_coordinator import (
+    HexRaysSafePointCoordinator,
+    OwnedStageOutcome,
+    SafePointDisposition,
+    SafePointKey,
+)
 from d810.hexrays.utils.hexrays_formatters import maturity_to_string
 
 main_logger = getLogger("d810")
@@ -61,14 +75,6 @@ _PROJECT_CONFIG_KEYS = frozenset(
         "router_resolution",
     }
 )
-
-
-def _current_mba_runtime_identity(mba: object) -> int:
-    """Name one live ``mba_t`` for adapter-local cache invalidation only."""
-    try:
-        return int(mba.this)
-    except (AttributeError, TypeError, ValueError):
-        return id(mba)
 
 
 def _safe_callback_int(value: object) -> int | None:
@@ -387,7 +393,9 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
         self._max_passes_current = self._BASE_PASSES_PER_MATURITY
         self._generation: int = 0
         self._flow_context: FlowMaturityContext | None = None
-        self._flow_context_key: tuple[int, int, int, int, int] | None = None
+        self._flow_context_key: (
+            tuple[int, int, int, int, NativeIdentity] | None
+        ) = None
         # Narrow manager-owned evidence and outcome ports.
         self._validated_fact_view_provider = None
         self._fact_consumer_callback = None
@@ -410,6 +418,7 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
         self._pass_pipeline = None  # PassPipeline | None
         self._pipeline_last_maturity: int = -1
         self._post_d810_pipeline_last_maturity: int = -1
+        self._safe_point_coordinator = HexRaysSafePointCoordinator()
         self._impossible_return_artifact_rewrite_applied: set[tuple[int, int]] = set()
         self._terminal_zero_literal_rewrite_applied: set[tuple[int, int]] = set()
         self._terminal_tail_cascade_egress_applied: set[tuple[int, int]] = set()
@@ -455,6 +464,7 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
         self._pipeline_last_maturity = -1
         self._post_d810_pipeline_last_maturity = -1
         self._pipeline_just_fired = False
+        self._safe_point_coordinator.reset()
         self._impossible_return_artifact_rewrite_applied.clear()
         self._terminal_zero_literal_rewrite_applied.clear()
         self._terminal_tail_cascade_egress_applied.clear()
@@ -553,6 +563,45 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
             for pass_ in passes
         )
 
+    def _pipeline_safe_point_key(self, mba: object) -> SafePointKey:
+        """Use the live native epoch even before maturity setup completes."""
+        function_ea = int(getattr(mba, "entry_ea", 0) or 0)
+        lifecycle = self._decompilation_lifecycle
+        session_id: object = "unbound"
+        current_session = getattr(lifecycle, "current_session", None)
+        if callable(current_session):
+            try:
+                session = current_session(function_ea)
+            except Exception:
+                session = None
+            if session is not None:
+                session_id = getattr(session, "session_id", None) or getattr(
+                    session, "identity_key", "unbound"
+                )
+        generation_getter = getattr(lifecycle, "current_mba_generation", None)
+        if callable(generation_getter):
+            try:
+                generation = int(generation_getter(function_ea=function_ea))
+            except Exception:
+                generation = 0
+        else:
+            generation = 0
+        maturity = getattr(
+            mba,
+            "maturity",
+            getattr(self, "current_maturity", None),
+        )
+        if maturity is None:
+            maturity = -1
+        return SafePointKey.from_mba(
+            session_id=session_id,
+            function_ea=function_ea,
+            mba=mba,
+            maturity=int(maturity),
+            generation=generation,
+            stage_id="d810.pass_pipeline",
+        )
+
     def _run_pass_pipeline_once(
         self,
         mba: ida_hexrays.mbl_array_t,
@@ -561,6 +610,32 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
     ) -> None:
         if self._pass_pipeline is None:
             return
+        key = self._pipeline_safe_point_key(mba)
+        result = self._safe_point_coordinator.run(
+            key,
+            lambda: self._execute_pass_pipeline_once(
+                mba,
+                phase_label=phase_label,
+            ),
+        )
+        if result.disposition is SafePointDisposition.MUTATED:
+            # The coordinator does not know the adapter's callback pointers.
+            # Preserve the existing maturity-wide stale-pointer fence here.
+            self._pipeline_just_fired = True
+
+    def _execute_pass_pipeline_once(
+        self,
+        mba: ida_hexrays.mbl_array_t,
+        *,
+        phase_label: str,
+    ) -> OwnedStageOutcome:
+        """Run the already-eligible pipeline and state its detached outcome.
+
+        This is the single committer for the D-810-owned pipeline stage: it
+        is the only place that knows whether live microcode changed, so it
+        states the disposition rather than leaving the coordinator to guess
+        it from whatever fields the returned object happens to carry.
+        """
         try:
             func_ea_hex = hex(int(getattr(mba, "entry_ea", 0) or 0))
             optimizer_logger.info(
@@ -582,7 +657,7 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
                     func_ea_hex,
                     phase_label,
                 )
-                return
+                return OwnedStageOutcome.abstained()
             execution_attempt_context = getattr(
                 self._flow_context,
                 "execution_attempt_context",
@@ -610,29 +685,46 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
                         session_id=session_id,
                         parent_attempt_id=parent_attempt_id,
                     )
-            total = self._pass_pipeline.run(
+            applied_count = self._pass_pipeline.run(
                 mba,
                 **pipeline_kwargs,
             )
-            if total > 0:
-                optimizer_logger.info(
-                    "PassPipeline: applied %d total modification(s) on function %s at %s",
-                    total,
-                    func_ea_hex,
-                    phase_label,
-                )
-                self._pipeline_just_fired = True
-            else:
-                optimizer_logger.debug(
-                    "PassPipeline: no modifications applied on function %s at %s",
-                    func_ea_hex,
-                    phase_label,
-                )
         except Exception:
             optimizer_logger.exception(
                 "PassPipeline: error during %s processing",
                 phase_label,
             )
+            # Preserve the existing pipeline-exception policy. Whether a
+            # pipeline committed before raising is a separate recovery concern;
+            # an exception here does not prove that no mutation occurred.
+            return OwnedStageOutcome.abstained()
+
+        # Validate returned outcomes outside the pipeline exception handler:
+        # a broken contract must reach the callback boundary, not become an
+        # apparently successful abstention that permits the hosted lane.
+        # ``PatchPlanRuntime`` pipelines return the count of applied
+        # modifications.  Anything else is a broken contract, not a
+        # zero: accepting it would drop the stale-pointer fence.
+        if isinstance(applied_count, bool) or not isinstance(applied_count, int):
+            raise TypeError(
+                "pass pipeline must return an applied-modification count, "
+                f"not {type(applied_count).__name__}"
+            )
+        outcome = OwnedStageOutcome.from_applied_count(applied_count)
+        if outcome.mutation_count:
+            optimizer_logger.info(
+                "PassPipeline: applied %d total modification(s) on function %s at %s",
+                outcome.mutation_count,
+                func_ea_hex,
+                phase_label,
+            )
+        else:
+            optimizer_logger.debug(
+                "PassPipeline: no modifications applied on function %s at %s",
+                func_ea_hex,
+                phase_label,
+            )
+        return outcome
 
     def _invalidate_flow_context(self, reason: str = "") -> None:
         if self._flow_context is not None and reason:
@@ -695,6 +787,10 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
                 boundary=NativeMutationBoundary.OPTBLOCK,
             ):
                 return 0
+            if mba is not None and self._safe_point_coordinator.has_failed_claims:
+                self._safe_point_coordinator.require_usable(
+                    self._pipeline_safe_point_key(mba)
+                )
             result = self._func(blk)
             if (
                 int(result) == 0
@@ -1158,7 +1254,11 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
             int(self.current_maturity),
             current_mba_generation,
             current_evidence_generation,
-            _current_mba_runtime_identity(mba),
+            # ``id(mba)`` named the SWIG wrapper, so a fresh proxy over the
+            # same live MBA rebuilt the context needlessly and -- far worse --
+            # a recycled address could make a context built over a dead MBA
+            # compare equal and be reused.
+            native_object_identity(mba),
         )
         if self._flow_context is None or self._flow_context_key != key:
             self._flow_context = self._flow_context_type(
@@ -1675,6 +1775,197 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
             key: value for key, value in kwargs.items() if key in _PROJECT_CONFIG_KEYS
         }
 
+    @staticmethod
+    def _is_hosted_block_instruction_rule(cfg_rule: object) -> bool:
+        """Recognize the explicit optimizer-owned adapter contract."""
+
+        return bool(
+            getattr(
+                type(cfg_rule),
+                "_d810_hosted_block_instruction_rule",
+                False,
+            )
+            is True
+            and callable(getattr(cfg_rule, "propose_instruction_batch", None))
+        )
+
+    def _capture_hosted_block_epoch(
+        self,
+        blk: ida_hexrays.mblock_t,
+        *,
+        mba: object | None = None,
+    ) -> NativeEpoch | None:
+        """Capture the coordinator-owned lifecycle generation for this callback."""
+
+        # ``mblock_t.mba`` can yield a fresh SWIG proxy rather than the
+        # callback's retained ``mbl_array_t`` wrapper.  A hosted proposal and
+        # its DGM must agree on the same live snapshot, so callers that have a
+        # flow context pass its retained MBA explicitly.
+        if mba is None:
+            mba = getattr(blk, "mba", None)
+        lifecycle = getattr(self, "_decompilation_lifecycle", None)
+        generation_getter = getattr(lifecycle, "current_mba_generation", None)
+        if mba is None or not callable(generation_getter):
+            return None
+        try:
+            function_ea = int(getattr(mba, "entry_ea", 0) or 0)
+            generation = int(generation_getter(function_ea=function_ea))
+            return NativeEpoch.from_mba(
+                mba,
+                function_ea=function_ea,
+                maturity=int(getattr(mba, "maturity", self.current_maturity) or 0),
+                generation=generation,
+            )
+        except Exception:
+            optimizer_logger.debug(
+                "hosted block instruction epoch unavailable",
+                exc_info=True,
+            )
+            return None
+
+    def _hosted_stage_identity(
+        self,
+        cfg_rule: object,
+    ) -> ExecutionStageIdentity | None:
+        """Resolve the configured public identity for one hosted rule."""
+
+        service = self._execution_scope_service
+        identity_for_implementation = getattr(
+            service,
+            "identity_for_implementation",
+            None,
+        )
+        if not callable(identity_for_implementation):
+            return None
+        try:
+            identity = identity_for_implementation(
+                cfg_rule,
+                pipeline=ExecutionPipeline.FLOW,
+            )
+        except Exception:
+            optimizer_logger.debug(
+                "hosted block instruction stage identity unavailable",
+                exc_info=True,
+            )
+            return None
+        return identity if isinstance(identity, ExecutionStageIdentity) else None
+
+    def _run_hosted_block_instruction_rule(
+        self,
+        cfg_rule: object,
+        blk: ida_hexrays.mblock_t,
+        flow_context: object | None,
+        *,
+        stage_identity: ExecutionStageIdentity | None,
+    ) -> tuple[int, BlockInstructionBatchReceipt | None, bool]:
+        """Propose and commit one adapter-owned batch.
+
+        The final boolean is true whenever this callback must arbitrate
+        terminally.  Only an explicit ``None`` proposal may fall through.
+        """
+
+        if stage_identity is None:
+            return 0, None, True
+        callback_mba = getattr(flow_context, "mba", None)
+        if callback_mba is None:
+            return 0, None, True
+        epoch = self._capture_hosted_block_epoch(blk, mba=callback_mba)
+        lifecycle = getattr(self, "_decompilation_lifecycle", None)
+        observe_quarantine = getattr(
+            lifecycle,
+            "observe_native_mutation_quarantine",
+            None,
+        )
+        if epoch is None or not callable(observe_quarantine):
+            return 0, None, True
+        try:
+            if observe_quarantine(
+                function_ea=epoch.function_ea,
+                maturity=epoch.maturity,
+                boundary=NativeMutationBoundary.OPTBLOCK,
+            ):
+                return 0, None, True
+        except Exception:
+            optimizer_logger.debug(
+                "hosted block instruction quarantine state unavailable",
+                exc_info=True,
+            )
+            return 0, None, True
+
+        candidate = cfg_rule.propose_instruction_batch(blk, epoch=epoch)
+        if candidate is None:
+            return 0, None, False
+        if (
+            candidate.pass_id != stage_identity.pass_id
+            or candidate.stage_id != stage_identity.stage_id
+        ):
+            optimizer_logger.debug(
+                "normalizing hosted batch provenance for %s: %s/%s -> %s/%s",
+                str(getattr(cfg_rule, "name", type(cfg_rule).__name__)),
+                candidate.pass_id,
+                candidate.stage_id,
+                stage_identity.pass_id,
+                stage_identity.stage_id,
+            )
+            candidate = replace(
+                candidate,
+                pass_id=stage_identity.pass_id,
+                stage_id=stage_identity.stage_id,
+            )
+
+        new_gateway = getattr(flow_context, "new_mba_mutation_gateway", None)
+        if not callable(new_gateway):
+            return 0, None, True
+        try:
+            mutation_gateway = new_gateway()
+        except Exception:
+            optimizer_logger.debug(
+                "hosted block instruction gateway unavailable",
+                exc_info=True,
+            )
+            return 0, None, True
+        if mutation_gateway is None:
+            return 0, None, True
+        lifecycle_authority = getattr(
+            mutation_gateway,
+            "lifecycle_authority",
+            None,
+        )
+        quarantined = getattr(
+            lifecycle_authority,
+            "native_mutation_quarantined",
+            None,
+        )
+        if lifecycle_authority is None or quarantined is None:
+            return 0, None, True
+        try:
+            if bool(quarantined() if callable(quarantined) else quarantined):
+                return 0, None, True
+        except Exception:
+            optimizer_logger.debug(
+                "hosted block instruction lifecycle authority unavailable",
+                exc_info=True,
+            )
+            return 0, None, True
+
+        modifier = DeferredGraphModifier(
+            callback_mba,
+            mutation_gateway=mutation_gateway,
+        )
+        committer = HexRaysBlockInstructionCommitter(
+            lifecycle_authority=lifecycle_authority,
+            epoch_provider=lambda _block: self._capture_hosted_block_epoch(
+                blk,
+                mba=callback_mba,
+            ),
+        )
+        receipt = committer.commit(
+            block=blk,
+            candidate=candidate,
+            modifier=modifier,
+        )
+        return int(receipt.callback_result), receipt, True
+
     def optimize(self, blk: ida_hexrays.mblock_t):
         if d810_optimization_is_suppressed():
             return 0
@@ -1760,6 +2051,17 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
                     except Exception:
                         pass
                     rule_name = str(cfg_rule.name)
+                    hosted_stage_identity = (
+                        self._hosted_stage_identity(cfg_rule)
+                        if self._is_hosted_block_instruction_rule(cfg_rule)
+                        else None
+                    )
+                    public_rule_identity = (
+                        f"{hosted_stage_identity.pass_id}/"
+                        f"{hosted_stage_identity.stage_id}"
+                        if hosted_stage_identity is not None
+                        else rule_name
+                    )
                     journal, session_id, parent_attempt_id = (
                         _flow_rule_execution_context(flow_context)
                     )
@@ -1774,10 +2076,11 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
                         getattr(journal, "callback_detail_is_full", True)
                     )
                     rule_stage = (
-                        f"flow_rule:{rule_name}:maturity={maturity_name}:{block_anchor}"
+                        f"flow_rule:{public_rule_identity}:maturity={maturity_name}:"
+                        f"{block_anchor}"
                     )
                     mutation_stage = (
-                        f"mba_rule_mutation:{rule_name}:maturity={maturity_name}:"
+                        f"mba_rule_mutation:{public_rule_identity}:maturity={maturity_name}:"
                         f"{block_anchor}"
                     )
                     rule_attempt = None
@@ -1841,8 +2144,22 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
                     callback_nop_sites = self._capture_callback_block_nop_sites(blk)
                     callback_result: int | None = None
                     callback_exception_name: str | None = None
+                    hosted_receipt: BlockInstructionBatchReceipt | None = None
+                    hosted_terminal = False
                     try:
-                        callback_result = cfg_rule.optimize(blk)
+                        if self._is_hosted_block_instruction_rule(cfg_rule):
+                            (
+                                callback_result,
+                                hosted_receipt,
+                                hosted_terminal,
+                            ) = self._run_hosted_block_instruction_rule(
+                                cfg_rule,
+                                blk,
+                                flow_context,
+                                stage_identity=hosted_stage_identity,
+                            )
+                        else:
+                            callback_result = cfg_rule.optimize(blk)
                         nb_patch = callback_result
                     except Exception as error:
                         callback_exception_name = type(error).__name__
@@ -1933,21 +2250,33 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
                             "patch_count": patch_count,
                             "maturity": maturity_name,
                         }
+                        if hosted_receipt is not None:
+                            details.update(hosted_receipt.primitive_fields())
                         if block_serial is not None and block_ea is not None:
                             details["block_serial"] = block_serial
                             details["block_ea"] = block_ea
                         effects = ()
                         if mutation_attempt is not None:
-                            effects = (
-                                ExecutionEffectRef(
-                                    kind="mba_rule_edit",
-                                    ref_id=(
-                                        f"{mutation_attempt.attempt_id.session.value}:"
-                                        f"{mutation_attempt.attempt_id.sequence}"
+                            if hosted_receipt is not None:
+                                if hosted_receipt.mutation_batch_id is not None:
+                                    effects = (
+                                        ExecutionEffectRef(
+                                            kind="mutation_receipt",
+                                            ref_id=hosted_receipt.mutation_batch_id,
+                                            detail=details,
+                                        ),
+                                    )
+                            else:
+                                effects = (
+                                    ExecutionEffectRef(
+                                        kind="mba_rule_edit",
+                                        ref_id=(
+                                            f"{mutation_attempt.attempt_id.session.value}:"
+                                            f"{mutation_attempt.attempt_id.sequence}"
+                                        ),
+                                        detail=details,
                                     ),
-                                    detail=details,
-                                ),
-                            )
+                                )
                         _safe_advance_execution_attempt(
                             journal,
                             mutation_attempt,
@@ -1961,14 +2290,29 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
                             and session_id is not None
                         ):
                             try:
-                                summary_effect = ExecutionEffectRef(
-                                    kind="mba_rule_edit",
-                                    ref_id=(
-                                        f"{rule_name}:maturity={maturity_name}:"
-                                        f"{block_anchor}"
-                                    ),
-                                    detail=details,
-                                )
+                                if hosted_receipt is not None:
+                                    summary_effects = ()
+                                    if hosted_receipt.mutation_batch_id is not None:
+                                        summary_effects = (
+                                            ExecutionEffectRef(
+                                                kind="mutation_receipt",
+                                                ref_id=(
+                                                    hosted_receipt.mutation_batch_id
+                                                ),
+                                                detail=details,
+                                            ),
+                                        )
+                                else:
+                                    summary_effects = (
+                                        ExecutionEffectRef(
+                                            kind="mba_rule_edit",
+                                            ref_id=(
+                                                f"{rule_name}:maturity={maturity_name}:"
+                                                f"{block_anchor}"
+                                            ),
+                                            detail=details,
+                                        ),
+                                    )
                                 journal.record_terminal_attempts(
                                     session_id,
                                     parent_attempt_id=parent_attempt_id,
@@ -1977,14 +2321,14 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
                                             stage_id=rule_stage,
                                             domain=ExecutionDomain.HOOK,
                                             status=ExecutionAttemptStatus.COMPLETED,
-                                            effect_refs=(summary_effect,),
+                                            effect_refs=summary_effects,
                                             details=details,
                                         ),
                                         TerminalExecutionAttempt(
                                             stage_id=mutation_stage,
                                             domain=ExecutionDomain.MUTATION,
                                             status=ExecutionAttemptStatus.COMPLETED,
-                                            effect_refs=(summary_effect,),
+                                            effect_refs=summary_effects,
                                             details=details,
                                             parent_record_index=0,
                                         ),
@@ -2022,12 +2366,23 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
                             f"{cfg_rule.name} applied {nb_patch} patch(es)"
                         )
                         return nb_patch
+                    abstention_reason = (
+                        hosted_receipt.reason
+                        if hosted_receipt is not None
+                        else "no_modifications"
+                    )
+                    abstention_details: dict[str, object] = {
+                        "patch_count": 0,
+                        "maturity": maturity_name,
+                    }
+                    if hosted_receipt is not None:
+                        abstention_details.update(hosted_receipt.primitive_fields())
                     _safe_advance_execution_attempt(
                         journal,
                         mutation_attempt,
                         status=ExecutionAttemptStatus.ABSTAINED,
-                        reason_code="no_modifications",
-                        details={"patch_count": 0, "maturity": maturity_name},
+                        reason_code=abstention_reason,
+                        details=abstention_details,
                     )
                     if (
                         not detailed_callback
@@ -2039,9 +2394,9 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
                                 session_id,
                                 parent_attempt_id=parent_attempt_id,
                                 callback_kind="optblock",
-                                stage_id=f"flow_rule:{rule_name}",
+                                stage_id=f"flow_rule:{public_rule_identity}",
                                 maturity=maturity_name,
-                                reason_code="no_modifications",
+                                reason_code=abstention_reason,
                             )
                         except Exception:
                             optimizer_logger.debug(
@@ -2053,9 +2408,11 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
                         journal,
                         rule_attempt,
                         status=ExecutionAttemptStatus.ABSTAINED,
-                        reason_code="no_modifications",
-                        details={"patch_count": 0, "maturity": maturity_name},
+                        reason_code=abstention_reason,
+                        details=abstention_details,
                     )
+                    if hosted_terminal:
+                        return 0
 
         impossible_artifact_patch_count = (
             self._maybe_rewrite_impossible_return_artifact_edges(blk)
@@ -2663,6 +3020,14 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
             self._dispatcher_artifact_planner,
         )
         self._pass_pipeline = kwargs.get("pass_pipeline", self._pass_pipeline)
+        self._safe_point_coordinator = kwargs.get(
+            "safe_point_coordinator",
+            self._safe_point_coordinator,
+        )
+        if not isinstance(self._safe_point_coordinator, HexRaysSafePointCoordinator):
+            raise TypeError(
+                "safe_point_coordinator must be a HexRaysSafePointCoordinator"
+            )
         self._run_later_scheduler = kwargs.get(
             "pass_scheduler",
             self._run_later_scheduler,

@@ -17,6 +17,7 @@ from d810.core.execution_journal import (
 )
 from d810.core.execution_journal_store import ExecutionJournalStore
 from d810.hexrays.hooks.optblock_adapter import BlockOptimizerManager
+from d810.hexrays.hooks.safe_point_coordinator import FailedSafePointError
 from d810.ir.maturity import IRMaturity
 from d810.optimizers.microcode.flow.context import FlowMaturityContext
 from d810.optimizers.microcode.flow.handler import FlowOptimizationRule
@@ -179,6 +180,14 @@ class _RecordingPassPipeline:
     def run(self, backend_state: object, **kwargs: object) -> int:
         self.calls.append((backend_state, kwargs))
         return 0
+
+
+class _MutatingPassPipeline(_RecordingPassPipeline):
+    passes: tuple[object, ...] = ()
+
+    def run(self, backend_state: object, **kwargs: object) -> int:
+        self.calls.append((backend_state, kwargs))
+        return 1
 
 
 def _make_block(func_ea: int = 0x401000, maturity=None):
@@ -457,6 +466,143 @@ def test_pass_pipeline_runs_once_per_maturity_and_resets_per_session() -> None:
     manager.current_maturity = None
     manager.log_info_on_input(_make_block(maturity=ida_hexrays.MMAT_GLBOPT2))
     assert len(pipeline.calls) == 2
+
+
+def test_block_optimizer_safe_point_claim_installs_existing_stale_pointer_fence():
+    manager = BlockOptimizerManager(
+        OptimizationStatistics(), Path("."), ctx_cls=FlowMaturityContext
+    )
+    manager.current_maturity = ida_hexrays.MMAT_GLBOPT2
+    manager._flow_context = SimpleNamespace(
+        execution_attempt_context=lambda: (None, None, None),
+    )
+    pipeline = _MutatingPassPipeline()
+    # Mutation authority comes from the lifecycle coordinator, never from the
+    # flow context; without one the pipeline abstains before it can claim a
+    # safe point and this test would assert nothing.
+    manager.configure(
+        decompilation_lifecycle=_MutationGatewayLifecycle(object(), object()),
+        pass_pipeline=pipeline,
+    )
+    mba = _make_block(maturity=ida_hexrays.MMAT_GLBOPT2).mba
+
+    manager._run_pass_pipeline_once(mba, phase_label="MMAT_GLBOPT2")
+    manager._run_pass_pipeline_once(mba, phase_label="MMAT_GLBOPT2")
+
+    assert len(pipeline.calls) == 1
+    assert manager._pipeline_just_fired is True
+
+    # A new native MBA identity is a new coordinator key, but the existing
+    # maturity-wide fence remains set until the callback observes a maturity
+    # transition and receives fresh block pointers from Hex-Rays.
+    replacement_mba = _make_block(maturity=ida_hexrays.MMAT_GLBOPT2).mba
+    manager._run_pass_pipeline_once(replacement_mba, phase_label="MMAT_GLBOPT2")
+    assert len(pipeline.calls) == 2
+    assert manager._pipeline_just_fired is True
+
+
+@pytest.mark.parametrize(
+    ("pipeline_result", "error_type"),
+    [
+        (None, TypeError),
+        (True, TypeError),
+        (SimpleNamespace(applied_count=1), TypeError),
+        (-1, ValueError),
+    ],
+)
+def test_pass_pipeline_invalid_outcome_is_rejected_without_releasing_claim(
+    pipeline_result, error_type
+) -> None:
+    manager = BlockOptimizerManager(
+        OptimizationStatistics(), Path("."), ctx_cls=FlowMaturityContext
+    )
+    manager.current_maturity = ida_hexrays.MMAT_GLBOPT2
+    manager._flow_context = SimpleNamespace(
+        execution_attempt_context=lambda: (None, None, None),
+    )
+
+    class InvalidOutcomePipeline(_RecordingPassPipeline):
+        def run(self, backend_state, **kwargs):
+            self.calls.append((backend_state, kwargs))
+            return pipeline_result
+
+    pipeline = InvalidOutcomePipeline()
+    manager.configure(
+        decompilation_lifecycle=_MutationGatewayLifecycle(object(), object()),
+        pass_pipeline=pipeline,
+    )
+    mba = _make_block(maturity=ida_hexrays.MMAT_GLBOPT2).mba
+
+    with pytest.raises(error_type):
+        manager._run_pass_pipeline_once(mba, phase_label="MMAT_GLBOPT2")
+
+    # The rejected result must not let the same native epoch execute again.
+    with pytest.raises(FailedSafePointError):
+        manager._run_pass_pipeline_once(mba, phase_label="MMAT_GLBOPT2")
+    assert len(pipeline.calls) == 1
+
+
+def test_failed_post_d810_stage_blocks_second_callback_until_session_reset(
+    monkeypatch,
+) -> None:
+    from d810.hexrays.hooks import optblock_adapter
+
+    effects: list[str] = []
+    errors: list[Exception] = []
+
+    class InvalidPostD810Pipeline(_RecordingPassPipeline):
+        passes = (SimpleNamespace(name="loop_carrier_backedge_refresh"),)
+        result = None
+
+        def run(self, backend_state, **kwargs):
+            self.calls.append((backend_state, kwargs))
+            effects.append("pipeline")
+            return self.result
+
+    manager = BlockOptimizerManager(
+        OptimizationStatistics(), Path("."), ctx_cls=FlowMaturityContext
+    )
+    manager.current_maturity = ida_hexrays.MMAT_GLBOPT1
+    manager._flow_context = SimpleNamespace(
+        execution_attempt_context=lambda: (None, None, None),
+    )
+    lifecycle = _MutationGatewayLifecycle(object(), object())
+    lifecycle.analyze_current_function = lambda **kwargs: None
+    pipeline = InvalidPostD810Pipeline()
+    manager.configure(decompilation_lifecycle=lifecycle, pass_pipeline=pipeline)
+    monkeypatch.setattr(manager, "optimize", lambda blk: effects.append("hosted") or 0)
+    monkeypatch.setattr(
+        manager, "_run_glbopt1_preanalysis_backed_extensions", lambda mba: None
+    )
+    monkeypatch.setattr(
+        optblock_adapter,
+        "_report_optblock_callback_exception",
+        lambda blk, error: errors.append(error),
+    )
+    monkeypatch.setattr(
+        optblock_adapter,
+        "synchronize_explicit_goto_flag",
+        lambda blk: effects.append("goto_sync") or False,
+    )
+    block = _make_block(maturity=ida_hexrays.MMAT_GLBOPT2)
+
+    assert manager.func(block) == 0
+    assert isinstance(errors[0], TypeError)
+    assert manager.current_maturity == ida_hexrays.MMAT_GLBOPT1
+    assert manager.func(block) == 0
+    assert isinstance(errors[1], FailedSafePointError)
+    assert effects == ["pipeline"]
+    assert len(pipeline.calls) == 1
+
+    # The owning decompilation lifecycle resets claims for a fresh session.
+    # A callback-local counter reset alone must never clear the failure.
+    manager.reset_pass_counter()
+    assert manager.func(block) == 0
+    assert effects == ["pipeline"]
+    manager.reset_pipeline_tracker()
+    pipeline.result = 0
+    assert manager.func(block) == 0
+    assert effects == ["pipeline", "pipeline", "hosted", "goto_sync"]
 
 
 def test_block_optimizer_records_rule_and_mba_mutation_attempts(tmp_path) -> None:

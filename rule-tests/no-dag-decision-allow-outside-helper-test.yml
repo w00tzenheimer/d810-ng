@@ -1,0 +1,68 @@
+id: no-dag-decision-allow-outside-helper
+
+valid:
+  - |
+      def _allow_from_dag_edge(self, edge, *, mod_kind):
+          if id(edge) not in self._dag_edge_identities:
+              return DagDecision.refuse("REFUSE:edge_not_in_dag")
+          return DagDecision.allow(
+              target_entry_anchor=int(edge.target_entry_anchor),
+              proof_edge_key=(edge.source_anchor.block_serial, mod_kind),
+          )
+  - |
+      def permits_redirect_goto(self, mod):
+          return self._allow_from_dag_edge(edge, mod_kind="RedirectGoto")
+  - |
+      def permits_zero_state_write(self, mod):
+          return DagDecision.gap("zero_state_write_not_dag_derivable")
+  - |
+      def permits_dead_block_terminator_redirect(self, mod):
+          return DagDecision.refuse("DAG_DISAGREEMENT:dead_block_terminator")
+  - |
+      from d810.transforms.dag_authority import DagAuthority, DagDecision
+  - |
+      def describe(decision):
+          return decision.reason
+  - |
+      def stash(self, decision):
+          self._last = DagDecision.gap("unknown_mod_kind")
+
+invalid:
+  # The original shape.
+  - |
+      def permits_redirect_goto(self, mod):
+          return DagDecision.allow(target_entry_anchor=20)
+  - |
+      def permits_whatever(self, mod):
+          return DagDecision.allow(target_entry_anchor=None, proof_edge_key=())
+  - |
+      def _helper(self, mod):
+          return DagDecision.allow(target_entry_anchor=20)
+  # Evasion 1: alias the bound classmethod, then call the alias.
+  - |
+      def sneaky(self, mod):
+          _A = DagDecision.allow
+          return _A(target_entry_anchor=20)
+  # Evasion 2: rebind the class, then reach allow through the new name.
+  - |
+      def sneaky(self, mod):
+          D = DagDecision
+          return D.allow(target_entry_anchor=20)
+  # Evasion 3: rebind the class at import time.
+  - |
+      from d810.transforms.dag_authority import DagDecision as D
+  # Evasion 4: reach the attribute through the module.
+  - |
+      def sneaky(self, mod):
+          return da.DagDecision.allow(target_entry_anchor=20)
+  # Evasion 5: reach the attribute dynamically.
+  - |
+      def sneaky(self, mod):
+          return getattr(DagDecision, "allow")(target_entry_anchor=20)
+  - |
+      def sneaky(self, mod):
+          return getattr(da.DagDecision, 'allow')(target_entry_anchor=20)
+  # The attribute as a value, without a call.
+  - |
+      def sneaky(self, mod):
+          return DagDecision.allow

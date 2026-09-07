@@ -1,0 +1,83 @@
+id: no-dag-decision-allow-outside-helper
+snapshots:
+  ? |
+    def _helper(self, mod):
+        return DagDecision.allow(target_entry_anchor=20)
+  : labels:
+    - source: DagDecision.allow
+      style: primary
+      start: 35
+      end: 52
+  ? |
+    def permits_redirect_goto(self, mod):
+        return DagDecision.allow(target_entry_anchor=20)
+  : labels:
+    - source: DagDecision.allow
+      style: primary
+      start: 49
+      end: 66
+  ? |
+    def permits_whatever(self, mod):
+        return DagDecision.allow(target_entry_anchor=None, proof_edge_key=())
+  : labels:
+    - source: DagDecision.allow
+      style: primary
+      start: 44
+      end: 61
+  ? |
+    def sneaky(self, mod):
+        D = DagDecision
+        return D.allow(target_entry_anchor=20)
+  : labels:
+    - source: D = DagDecision
+      style: primary
+      start: 27
+      end: 42
+  ? |
+    def sneaky(self, mod):
+        _A = DagDecision.allow
+        return _A(target_entry_anchor=20)
+  : labels:
+    - source: DagDecision.allow
+      style: primary
+      start: 32
+      end: 49
+  ? |
+    def sneaky(self, mod):
+        return DagDecision.allow
+  : labels:
+    - source: DagDecision.allow
+      style: primary
+      start: 34
+      end: 51
+  ? |
+    def sneaky(self, mod):
+        return da.DagDecision.allow(target_entry_anchor=20)
+  : labels:
+    - source: da.DagDecision.allow
+      style: primary
+      start: 34
+      end: 54
+  ? |
+    def sneaky(self, mod):
+        return getattr(DagDecision, "allow")(target_entry_anchor=20)
+  : labels:
+    - source: getattr(DagDecision, "allow")
+      style: primary
+      start: 34
+      end: 63
+  ? |
+    def sneaky(self, mod):
+        return getattr(da.DagDecision, 'allow')(target_entry_anchor=20)
+  : labels:
+    - source: getattr(da.DagDecision, 'allow')
+      style: primary
+      start: 34
+      end: 66
+  ? |
+    from d810.transforms.dag_authority import DagDecision as D
+  : labels:
+    - source: from d810.transforms.dag_authority import DagDecision as D
+      style: primary
+      start: 0
+      end: 58

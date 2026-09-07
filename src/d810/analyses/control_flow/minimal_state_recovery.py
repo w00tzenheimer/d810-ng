@@ -578,6 +578,23 @@ class TransitionProof:
     reason: str = ""
     route_source_kinds: tuple[str, ...] = ()
 
+    def __post_init__(self) -> None:
+        """Refuse a non-boolean trust decision at construction time (d81-9q6e).
+
+        ``trusted`` is read back through ``bool(...)`` by the route-authority
+        predicates below, so a truthy non-boolean stored here would be
+        laundered into a trusted row -- the same defect that let the string
+        ``"false"`` mint semantic-bridge authority in ``branch_ownership``.
+        Every producer of this type is in-tree and already passes a real
+        ``bool``, so this raises rather than abstaining: there is no untyped
+        boundary that would need a degraded verdict instead.
+        """
+        if not isinstance(self.trusted, bool):
+            raise TypeError(
+                "TransitionProof.trusted must be a bool, got "
+                f"{type(self.trusted).__name__!r} ({self.trusted!r})"
+            )
+
 
 @dataclass(frozen=True, slots=True)
 class StateWriteTransition:
