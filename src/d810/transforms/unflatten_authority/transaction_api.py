@@ -3930,10 +3930,29 @@ def _derive_patch_lineage_facts(
     }
     if len(helper_specs) != len(plan.new_blocks):
         raise ValueError("plan helper specifications must have unique block IDs")
+    # The canonical descriptors are a property of the whole plan, not of one
+    # step: ``canonical_patch_step_descriptor`` derives all of them and returns
+    # one.  Asking it once per step therefore re-derived every descriptor's
+    # ``authority_id`` preimage once per step -- quadratic in the step count,
+    # and 5,693 of the 7,027 authority mints in one OLLVM decompile (ticket
+    # d81-cxzv).  Deriving the plan's descriptors once here is a loop-invariant
+    # hoist, not a cache: the tuple lives for this call and is not shared,
+    # stored or keyed.  The refusal semantics are unchanged -- a malformed plan
+    # preimage still fails every step, and a step the descriptor vocabulary
+    # omits still fails only itself.
+    try:
+        descriptors_by_index = {
+            descriptor.step_index: descriptor
+            for descriptor in canonical_patch_step_descriptors(plan)
+        }
+    except (TypeError, ValueError):
+        descriptors_by_index = None
     for step_index, step in enumerate(plan.steps):
-        try:
-            descriptor = canonical_patch_step_descriptor(plan, step_index)
-        except (TypeError, ValueError):
+        descriptor = (
+            None if descriptors_by_index is None
+            else descriptors_by_index.get(step_index)
+        )
+        if descriptor is None:
             # A nominal planner step is authority-owned even when its
             # canonical preimage is malformed.  Do not silently drop such a
             # step and later report an unrelated helper-ownership failure.
