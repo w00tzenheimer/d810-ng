@@ -205,8 +205,12 @@ def edge_role() -> SemanticEdgeRole:
     return SemanticEdgeRole.DIRECT
 
 
-def subject_kwargs(model, *, kind, role, locator, subject_id=None):
-    """Build the common subject fields without hiding model validation."""
+def subject_kwargs(model, *, kind, role, locator):
+    """Build the common subject fields without hiding model validation.
+
+    ``subject_id`` is not among them: it is derived from ``(kind, role,
+    locator)`` on demand and is not a constructor input (ticket d81-cxzv).
+    """
 
     owner = getattr(locator, "block_ref", None)
     if owner is None:
@@ -217,7 +221,6 @@ def subject_kwargs(model, *, kind, role, locator, subject_id=None):
     return dict(
         kind=kind,
         role=role,
-        subject_id=subject_id or authority_id("s"),
         block_ref=owner,
         anchor_ea=anchor,
         locator=locator,

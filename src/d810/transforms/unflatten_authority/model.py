@@ -55,6 +55,7 @@ from .ids import (
     _validate_id,
     authority_id,
     bound_unflatten_binding_id,
+    lazy_identity,
     canonical_bytes,
     validate_live_semantic_fields,
     case_id,
@@ -1046,18 +1047,27 @@ class DefaultGapInfeasibilityForecast:
         object.__setattr__(self, "exclusions", exclusions)
 
 
+def _corridor_coverage_path_id(value: object) -> str:
+    """Derive one corridor path row's serial-free content identity."""
+
+    return authority_id((
+        "unflatten.corridor-coverage-path.v1", value.nodes,
+        value.state_merge, value.disposition, value.semantic_exclusion_ids,
+    ))
+
+
+@lazy_identity(path_id=_corridor_coverage_path_id)
 @dataclass(frozen=True, slots=True)
 class CorridorCoveragePath:
     """A closed path row; no backend serial or live graph object is retained."""
 
-    path_id: str
+    path_id: str = dataclass_field(init=False, compare=False, repr=False)
     nodes: tuple[CorridorCoveragePathNode, ...]
     state_merge: CorridorCoveragePathNode | None
     disposition: CorridorPathDisposition
     semantic_exclusion_ids: tuple[str, ...]
 
     def __post_init__(self) -> None:
-        _id(self.path_id, "path_id")
         if type(self.nodes) is not tuple or len(self.nodes) < 2:
             raise TypeError("corridor path requires at least two exact nodes")
         if any(type(node) is not CorridorCoveragePathNode for node in self.nodes):
@@ -1086,12 +1096,6 @@ class CorridorCoveragePath:
             self.state_merge.block_ref, self.state_merge.anchor_ea
         ) not in node_pairs:
             raise ValueError("state merge must be an exact path node")
-        expected_id = authority_id((
-            "unflatten.corridor-coverage-path.v1", self.nodes,
-            self.state_merge, self.disposition, self.semantic_exclusion_ids,
-        ))
-        if self.path_id != expected_id:
-            raise ValueError("path_id does not match serial-free path content")
 
 
 @dataclass(frozen=True, slots=True)
@@ -2153,11 +2157,16 @@ def _subject_owner(locator: SemanticSubjectLocator) -> tuple[CfgBlockRef | None,
     return None, None
 
 
+@lazy_identity(subject_id=_subject_id_from_record)
 @dataclass(frozen=True, slots=True)
 class SemanticSubjectRef:
     kind: SemanticSubjectKind
     role: SemanticSubjectRole
-    subject_id: str
+    # Derived from (kind, role, locator) on first demand -- see
+    # ``ids.lazy_identity``.  Nothing supplies it and nothing rechecks it:
+    # under genuine immutability the only value it could ever hold is the one
+    # its own content produces.
+    subject_id: str = dataclass_field(init=False, compare=False, repr=False)
     block_ref: CfgBlockRef | None
     anchor_ea: int | None
     locator: SemanticSubjectLocator
@@ -2187,7 +2196,6 @@ class SemanticSubjectRef:
     def __post_init__(self) -> None:
         _enum(self.kind, SemanticSubjectKind, "kind")
         _enum(self.role, SemanticSubjectRole, "role")
-        _id(self.subject_id, "subject_id")
         expected = _SUBJECT_MATRIX.get((self.kind, self.role))
         expected_types = expected if type(expected) is tuple else (expected,)
         if expected is None or type(self.locator) not in expected_types:
@@ -2208,8 +2216,6 @@ class SemanticSubjectRef:
                 raise ValueError("value-flow subjects have no primary owner")
         elif self.block_ref != owner or self.anchor_ea != owner_ea:
             raise ValueError("subject primary owner must match locator")
-        if self.subject_id != _subject_id_from_record(self):
-            raise ValueError("subject_id does not match canonical subject content")
         # O(1), and deliberately here: the sidecar is part of the record's
         # completeness, so it is checked while the record seals rather than
         # trusted afterwards.  A factory that attached it after this ran would
@@ -3441,16 +3447,16 @@ _PAYLOAD_BY_KIND = {
 }
 
 
+@lazy_identity(evidence_id=evidence_id)
 @dataclass(frozen=True, slots=True)
 class AuthorityEvidence:
-    evidence_id: str
+    evidence_id: str = dataclass_field(init=False, compare=False, repr=False)
     kind: AuthorityEvidenceKind
     subject: SemanticSubjectRef
     phase: UnflattenAuthorityPhase
     payload: AuthorityEvidencePayload
 
     def __post_init__(self) -> None:
-        _id(self.evidence_id, "evidence_id")
         _enum(self.kind, AuthorityEvidenceKind, "kind")
         if type(self.subject) is not SemanticSubjectRef:
             raise TypeError("subject must be a SemanticSubjectRef")
@@ -3458,8 +3464,6 @@ class AuthorityEvidence:
         expected = _PAYLOAD_BY_KIND[self.kind]
         if type(self.payload) is not expected:
             raise TypeError("evidence payload type does not match evidence kind")
-        if self.evidence_id != evidence_id(self):
-            raise ValueError("evidence_id does not match canonical evidence content")
 
 
 @dataclass(frozen=True, slots=True)
@@ -3621,16 +3625,16 @@ def _subject_pairs(subject: SemanticSubjectRef) -> tuple[tuple[CfgBlockRef, int 
     raise TypeError("unknown subject locator")
 
 
-def _claim_common(claim_id: object, kind: object, expected: UnflattenClaimKind, generation: object) -> None:
-    _id(claim_id, "claim_id")
+def _claim_common(kind: object, expected: UnflattenClaimKind, generation: object) -> None:
     if kind is not expected:
         raise ValueError("claim kind does not match claim type")
     _generation(generation, "source_generation")
 
 
+@lazy_identity(claim_id=claim_id)
 @dataclass(frozen=True, slots=True)
 class RetiredDispatcherInfrastructureClaim:
-    claim_id: str
+    claim_id: str = dataclass_field(init=False, compare=False, repr=False)
     kind: Literal[UnflattenClaimKind.RETIRED_DISPATCHER_INFRASTRUCTURE]
     infrastructure_subject: SemanticSubjectRef
     corridor_subject: SemanticSubjectRef
@@ -3640,7 +3644,7 @@ class RetiredDispatcherInfrastructureClaim:
     candidate_catalog: RetirementCandidateCatalog
 
     def __post_init__(self) -> None:
-        _claim_common(self.claim_id, self.kind, UnflattenClaimKind.RETIRED_DISPATCHER_INFRASTRUCTURE, self.source_generation)
+        _claim_common(self.kind, UnflattenClaimKind.RETIRED_DISPATCHER_INFRASTRUCTURE, self.source_generation)
         _claim_subject(self.infrastructure_subject, SemanticSubjectKind.BLOCK, SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE, BlockSubjectLocator, "infrastructure_subject")
         _claim_subject(self.corridor_subject, SemanticSubjectKind.CORRIDOR, SemanticSubjectRole.DISPATCHER_CORRIDOR, CorridorSubjectLocator, "corridor_subject")
         members = _tuple(self.member_subjects, "member_subjects", sort=True)
@@ -3681,10 +3685,9 @@ class RetiredDispatcherInfrastructureClaim:
         }))
         if evidence_ids != catalog_evidence_ids:
             raise ValueError("retirement claim evidence IDs must match candidate catalog")
-        if self.claim_id != claim_id(self):
-            raise ValueError("claim_id does not match canonical claim content")
 
 
+@lazy_identity(claim_id=claim_id)
 @dataclass(frozen=True, slots=True)
 class DetachedDeadHandlerComponentClaim:
     """Frozen producer claim for one exact detached dead-handler component.
@@ -3694,7 +3697,7 @@ class DetachedDeadHandlerComponentClaim:
     later by the transaction authority.
     """
 
-    claim_id: str
+    claim_id: str = dataclass_field(init=False, compare=False, repr=False)
     kind: Literal[UnflattenClaimKind.DETACHED_DEAD_HANDLER_COMPONENT]
     dispatcher_subject: SemanticSubjectRef
     dead_handler_subjects: tuple[SemanticSubjectRef, ...]
@@ -3704,7 +3707,7 @@ class DetachedDeadHandlerComponentClaim:
     source_generation: int
 
     def __post_init__(self) -> None:
-        _claim_common(self.claim_id, self.kind, UnflattenClaimKind.DETACHED_DEAD_HANDLER_COMPONENT, self.source_generation)
+        _claim_common(self.kind, UnflattenClaimKind.DETACHED_DEAD_HANDLER_COMPONENT, self.source_generation)
         _claim_subject(self.dispatcher_subject, SemanticSubjectKind.BLOCK, SemanticSubjectRole.DISPATCHER_ENTRY, BlockSubjectLocator, "dispatcher_subject")
         dead = _tuple(self.dead_handler_subjects, "dead_handler_subjects", sort=True)
         retained = _tuple(self.retained_handler_subjects, "retained_handler_subjects", sort=True)
@@ -3745,13 +3748,12 @@ class DetachedDeadHandlerComponentClaim:
             subject.block_ref for subject in comparison
         }:
             raise ValueError("comparison region must contain the dispatcher")
-        if self.claim_id != claim_id(self):
-            raise ValueError("claim_id does not match canonical claim content")
 
 
+@lazy_identity(claim_id=claim_id)
 @dataclass(frozen=True, slots=True)
 class EquivalentSemanticRouteClaim:
-    claim_id: str
+    claim_id: str = dataclass_field(init=False, compare=False, repr=False)
     kind: Literal[UnflattenClaimKind.EQUIVALENT_SEMANTIC_ROUTE]
     retired_route_subject: SemanticSubjectRef
     replacement_route_subject: SemanticSubjectRef
@@ -3783,7 +3785,7 @@ class EquivalentSemanticRouteClaim:
         return getattr(self, "_runtime_refs", None)
 
     def __post_init__(self) -> None:
-        _claim_common(self.claim_id, self.kind, UnflattenClaimKind.EQUIVALENT_SEMANTIC_ROUTE, self.source_generation)
+        _claim_common(self.kind, UnflattenClaimKind.EQUIVALENT_SEMANTIC_ROUTE, self.source_generation)
         for name in ("retired_route_subject", "replacement_route_subject"):
             _claim_subject(getattr(self, name), SemanticSubjectKind.ROUTE, SemanticSubjectRole.SEMANTIC_ROUTE_SOURCE, RouteSubjectLocator, name)
         _claim_subject(self.source_subject, SemanticSubjectKind.BLOCK, SemanticSubjectRole.SEMANTIC_ROUTE_SOURCE, BlockSubjectLocator, "source_subject")
@@ -3856,13 +3858,12 @@ class EquivalentSemanticRouteClaim:
                 or len(runtime_refs.proof_refs) != len(proofs)
             ):
                 raise ValueError("route claim runtime refs name another route group")
-        if self.claim_id != claim_id(self):
-            raise ValueError("claim_id does not match canonical claim content")
 
 
+@lazy_identity(claim_id=claim_id)
 @dataclass(frozen=True, slots=True)
 class ExactInfeasibleEffectClaim:
-    claim_id: str
+    claim_id: str = dataclass_field(init=False, compare=False, repr=False)
     kind: Literal[UnflattenClaimKind.EXACT_INFEASIBLE_EFFECT]
     effect_subject: SemanticSubjectRef
     source_subject: SemanticSubjectRef
@@ -3881,7 +3882,7 @@ class ExactInfeasibleEffectClaim:
     source_generation: int
 
     def __post_init__(self) -> None:
-        _claim_common(self.claim_id, self.kind, UnflattenClaimKind.EXACT_INFEASIBLE_EFFECT, self.source_generation)
+        _claim_common(self.kind, UnflattenClaimKind.EXACT_INFEASIBLE_EFFECT, self.source_generation)
         for name in ("effect_subject", "discarded_effect_subject"):
             _claim_subject(getattr(self, name), SemanticSubjectKind.EFFECT, SemanticSubjectRole.EFFECT_SITE, EffectSubjectLocator, name)
         if self.effect_subject != self.discarded_effect_subject:
@@ -3917,13 +3918,12 @@ class ExactInfeasibleEffectClaim:
             or self.consensus.provider_ids
         ):
             raise ValueError("exact-effect claims do not admit provider consensus")
-        if self.claim_id != claim_id(self):
-            raise ValueError("claim_id does not match canonical claim content")
 
 
+@lazy_identity(claim_id=claim_id)
 @dataclass(frozen=True, slots=True)
 class LocalAliasEffectScalarizationClaim:
-    claim_id: str
+    claim_id: str = dataclass_field(init=False, compare=False, repr=False)
     kind: Literal[UnflattenClaimKind.LOCAL_ALIAS_EFFECT_SCALARIZATION]
     owner_subject: SemanticSubjectRef
     step_index: int
@@ -3937,7 +3937,7 @@ class LocalAliasEffectScalarizationClaim:
     source_generation: int
 
     def __post_init__(self) -> None:
-        _claim_common(self.claim_id, self.kind, UnflattenClaimKind.LOCAL_ALIAS_EFFECT_SCALARIZATION, self.source_generation)
+        _claim_common(self.kind, UnflattenClaimKind.LOCAL_ALIAS_EFFECT_SCALARIZATION, self.source_generation)
         _claim_subject(self.owner_subject, SemanticSubjectKind.BLOCK, SemanticSubjectRole.EFFECT_SITE, BlockSubjectLocator, "owner_subject")
         _nonnegative(self.step_index, "step_index")
         object.__setattr__(self, "host_ea", _ea(self.host_ea, "host_ea"))
@@ -3950,13 +3950,12 @@ class LocalAliasEffectScalarizationClaim:
         if self.value_size is not None:
             _nonnegative(self.value_size, "value_size")
         _id(self.step_digest, "step_digest")
-        if self.claim_id != claim_id(self):
-            raise ValueError("claim_id does not match canonical claim content")
 
 
+@lazy_identity(claim_id=claim_id)
 @dataclass(frozen=True, slots=True)
 class TerminalCycleBreakClaim:
-    claim_id: str
+    claim_id: str = dataclass_field(init=False, compare=False, repr=False)
     kind: Literal[UnflattenClaimKind.TERMINAL_CYCLE_BREAK]
     cycle_subject: SemanticSubjectRef
     cleanup_source_subject: SemanticSubjectRef
@@ -3965,7 +3964,7 @@ class TerminalCycleBreakClaim:
     source_generation: int
 
     def __post_init__(self) -> None:
-        _claim_common(self.claim_id, self.kind, UnflattenClaimKind.TERMINAL_CYCLE_BREAK, self.source_generation)
+        _claim_common(self.kind, UnflattenClaimKind.TERMINAL_CYCLE_BREAK, self.source_generation)
         _claim_subject(self.cycle_subject, SemanticSubjectKind.CORRIDOR, SemanticSubjectRole.DISPATCHER_CORRIDOR, CorridorSubjectLocator, "cycle_subject")
         _claim_subject(self.cleanup_source_subject, SemanticSubjectKind.BLOCK, SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE, BlockSubjectLocator, "cleanup_source_subject")
         _claim_subject(
@@ -3983,8 +3982,6 @@ class TerminalCycleBreakClaim:
                 "terminal route proof selection must contain exactly one proof"
             )
         object.__setattr__(self, "terminal_route_proof_ids", proofs)
-        if self.claim_id != claim_id(self):
-            raise ValueError("claim_id does not match canonical claim content")
 
 
 ProducerUnflattenClaim: TypeAlias = (
@@ -5064,9 +5061,10 @@ class ObligationKey:
         _enum(self.dimension, SafetyDimension, "dimension")
 
 
+@lazy_identity(justification_id=justification_id)
 @dataclass(frozen=True, slots=True)
 class AuthorityJustification:
-    justification_id: str
+    justification_id: str = dataclass_field(init=False, compare=False, repr=False)
     rule: UnflattenJustificationRule
     premise_ids: tuple[str, ...]
     conclusion: ObligationKey
@@ -5075,7 +5073,6 @@ class AuthorityJustification:
     claim_id: str | None = None
 
     def __post_init__(self) -> None:
-        _id(self.justification_id, "justification_id")
         _enum(self.rule, UnflattenJustificationRule, "rule")
         premises = _tuple(self.premise_ids, "premise_ids", sort=True)
         for premise in premises:
@@ -5087,8 +5084,6 @@ class AuthorityJustification:
         _enum(self.phase, UnflattenAuthorityPhase, "phase")
         if self.claim_id is not None:
             _id(self.claim_id, "claim_id")
-        if self.justification_id != justification_id(self):
-            raise ValueError("justification_id does not match canonical content")
 
 
 @dataclass(frozen=True, slots=True)
@@ -6745,9 +6740,10 @@ class ConditionalSubjectRelation:
         _id(self.provenance_id, "provenance_id")
 
 
+@lazy_identity(receipt_id=receipt_id)
 @dataclass(frozen=True, slots=True, init=False)
 class PreparationAuthorityReceipt:
-    receipt_id: str
+    receipt_id: str = dataclass_field(init=False, compare=False, repr=False)
     proposal_id: str
     plan_id: str
     source_fingerprint: str
@@ -6786,7 +6782,7 @@ class PreparationAuthorityReceipt:
         if getattr(self, "_minted", None) is not True:
             raise TypeError("preparation receipts are transaction-owned")
         for name in (
-            "receipt_id", "proposal_id", "plan_id", "source_fingerprint",
+            "proposal_id", "plan_id", "source_fingerprint",
             "candidate_fingerprint", "source_inventory_digest",
             "candidate_inventory_digest", "source_binding_digest",
             "candidate_binding_digest", "route_expansion_digest",
@@ -6826,8 +6822,6 @@ class PreparationAuthorityReceipt:
         if type(self.metrics) is not PreparationBuildMetrics:
             raise TypeError("metrics must be PreparationBuildMetrics")
         validate_preparation_build_metrics(self.metrics)
-        if self.receipt_id != receipt_id(self):
-            raise ValueError("receipt_id does not match canonical receipt content")
 
     @classmethod
     def mint(cls, **values: object) -> "PreparationAuthorityReceipt":
@@ -6835,8 +6829,9 @@ class PreparationAuthorityReceipt:
 
         This is intentionally the only model-level construction hook.  The
         transaction facade is the sole production caller and supplies the
-        complete digest set; ``receipt_id`` and the construction seal are
-        computed here rather than accepted from a caller.
+        complete digest set; the construction seal is set here rather than
+        accepted from a caller, and ``receipt_id`` is derived from the sealed
+        content the first time anything asks for it.
         """
         if "receipt_id" in values or "_minted" in values:
             raise TypeError("receipt ID and construction seal are not caller inputs")
@@ -6868,9 +6863,7 @@ class PreparationAuthorityReceipt:
         instance = cls.__new__(cls)
         for name, value in values.items():
             object.__setattr__(instance, name, value)
-        object.__setattr__(instance, "receipt_id", "sha256:" + "0" * 64)
         object.__setattr__(instance, "_minted", True)
-        object.__setattr__(instance, "receipt_id", receipt_id(instance))
         cls.__post_init__(instance)
         return instance
 
@@ -7232,9 +7225,10 @@ class DerivedUnflattenPreparationInputs:
             raise ValueError("receipt projected topology reference digest does not match reference")
 
 
+@lazy_identity(case_id=case_id)
 @dataclass(frozen=True, slots=True)
 class SemanticSafetyCase:
-    case_id: str
+    case_id: str = dataclass_field(init=False, compare=False, repr=False)
     authority_id: str
     preparation_receipt_id: str
     preparation_receipt: PreparationAuthorityReceipt
@@ -7263,7 +7257,6 @@ class SemanticSafetyCase:
     terminal_cycle_phase_results: tuple[TerminalCyclePhaseResult, ...] = ()
 
     def __post_init__(self) -> None:
-        _id(self.case_id, "case_id")
         _id(self.authority_id, "authority_id")
         _id(self.preparation_receipt_id, "preparation_receipt_id")
         if type(self.preparation_receipt) is not PreparationAuthorityReceipt:
@@ -7588,8 +7581,6 @@ class SemanticSafetyCase:
         object.__setattr__(self, "source_bindings", source_bindings)
         if tuple(cell.key for cell in self.obligation_index.cells) != self.required_obligations:
             raise ValueError("obligation index must exactly cover required obligations")
-        if self.case_id != case_id(self):
-            raise ValueError("case_id does not match canonical case content")
         # Reuse the evaluator's contextual rule validator at the canonical
         # decode/model boundary so forged IDs cannot bypass premise semantics.
         from .evaluate import _validate_justification_graph

@@ -10055,7 +10055,7 @@ def _corridor_inventories(*, candidate_full=False, disposition=None, enumeration
         disposition, (),
     ))
     path = model.CorridorCoveragePath(
-        path_id, nodes, None, disposition, (),
+        nodes, None, disposition, (),
     )
     covered = (path_id,) if disposition is not model.CorridorPathDisposition.RESIDUAL else ()
     residual = (path_id,) if disposition is model.CorridorPathDisposition.RESIDUAL else ()
@@ -10307,7 +10307,7 @@ def _corridor_forecast_variant(proposal, *, state_merge=None, disposition=None, 
         "unflatten.corridor-coverage-path.v1", base.nodes, state_merge,
         disposition, (),
     ))
-    path = model.CorridorCoveragePath(path_id, base.nodes, state_merge, disposition, ())
+    path = model.CorridorCoveragePath(base.nodes, state_merge, disposition, ())
     covered = (path_id,) if disposition is not model.CorridorPathDisposition.RESIDUAL else ()
     residual = (path_id,) if disposition is model.CorridorPathDisposition.RESIDUAL else ()
     forecast_id = authority_id((
@@ -12588,7 +12588,7 @@ def test_bind_corridor_source_path_node_ref_ea_and_order_mutations_reject(mutati
         "unflatten.corridor-coverage-path.v1", nodes, None,
         base.disposition, (),
     ))
-    path = model.CorridorCoveragePath(path_id, nodes, None, base.disposition, ())
+    path = model.CorridorCoveragePath(nodes, None, base.disposition, ())
     forecast_id = authority_id((
         "unflatten.corridor-coverage-forecast.v1", forecast.plan_id,
         forecast.function_ea, forecast.source_native_key, forecast.source_generation,
@@ -12621,7 +12621,7 @@ def test_bind_corridor_state_merge_is_exact_path_minus_three_and_requires_branch
         "unflatten.corridor-coverage-path.v1", base.nodes, merge,
         base.disposition, (),
     ))
-    path = model.CorridorCoveragePath(path_id, base.nodes, merge, base.disposition, ())
+    path = model.CorridorCoveragePath(base.nodes, merge, base.disposition, ())
     forecast_id = authority_id((
         "unflatten.corridor-coverage-forecast.v1", forecast.plan_id,
         forecast.function_ea, forecast.source_native_key, forecast.source_generation,
@@ -12845,7 +12845,7 @@ def test_bind_corridor_semantic_exclusion_requires_one_canonical_route_link() ->
         model.CorridorPathDisposition.SEMANTICALLY_EXCLUDED, (exclusion_id,),
     ))
     path = model.CorridorCoveragePath(
-        path_id, base.nodes, None,
+        base.nodes, None,
         model.CorridorPathDisposition.SEMANTICALLY_EXCLUDED, (exclusion_id,),
     )
     forecast_id = authority_id((
@@ -12971,7 +12971,7 @@ def test_bind_corridor_semantic_exclusion_emits_exact_route_correlation() -> Non
         model.CorridorPathDisposition.SEMANTICALLY_EXCLUDED, (exclusion_id,),
     ))
     path = model.CorridorCoveragePath(
-        path_id, base.nodes, None,
+        base.nodes, None,
         model.CorridorPathDisposition.SEMANTICALLY_EXCLUDED, (exclusion_id,),
     )
     forecast_id = authority_id((
@@ -13096,7 +13096,7 @@ def _default_gap_bound_projected_case(
         model.CorridorPathDisposition.RESIDUAL, (),
     ))
     base_path = model.CorridorCoveragePath(
-        base_path_id, path_nodes, None, model.CorridorPathDisposition.RESIDUAL, (),
+        path_nodes, None, model.CorridorPathDisposition.RESIDUAL, (),
     )
     base_id = authority_id((
         "unflatten.corridor-coverage-forecast.v1", proposal.plan_id,
@@ -13483,7 +13483,7 @@ def test_default_gap_rejects_extension_that_omits_one_base_residual() -> None:
         model.CorridorPathDisposition.RESIDUAL, (),
     ))
     second_path = model.CorridorCoveragePath(
-        second_path_id, second_nodes, None,
+        second_nodes, None,
         model.CorridorPathDisposition.RESIDUAL, (),
     )
     old_base = extension.base_forecast

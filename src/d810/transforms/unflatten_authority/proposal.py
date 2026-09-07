@@ -456,12 +456,8 @@ def corridor_coverage_forecast_from_analysis(
             if path_exclusions
             else disposition
         )
-        path_id = authority_id((
-            "unflatten.corridor-coverage-path.v1", anchors, state_merge,
-            actual_disposition, path_exclusions,
-        ))
         return CorridorCoveragePath(
-            path_id, anchors, state_merge, actual_disposition, path_exclusions,
+            anchors, state_merge, actual_disposition, path_exclusions,
         )
 
     covered = tuple(

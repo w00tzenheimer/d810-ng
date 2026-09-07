@@ -3104,8 +3104,18 @@ _REGISTRY_CANONICAL_ENUM_TYPES = frozenset(authority_ids._ENUM_TYPES)
 
 
 def _stored_dataclass_field(value: object, name: str) -> object:
-    """Read one exact trusted dataclass storage cell without user lookup."""
+    """Read one exact trusted dataclass storage cell without user lookup.
+
+    A lazily derived identity (``ids.lazy_identity``) is the one field whose
+    storage cell is legitimately empty until something demands it.  It is
+    still part of the record's canonical schema -- a structural snapshot and a
+    detached copy both carry it -- so it is *demanded* here rather than read
+    raw.  The derivation is a pure function of this record's own content and
+    goes nowhere near a user lookup hook.
+    """
     value_type = type(value)
+    if name in authority_ids._LAZY_IDENTITY.get(value_type, ()):
+        return getattr(value, name)
     try:
         storage = object.__getattribute__(value, "__dict__")
     except AttributeError:

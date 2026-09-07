@@ -878,9 +878,11 @@ def test_claim_and_evidence_factories_recompute_ids_and_reject_forgery() -> None
     )
     assert claim.claim_id == claim_id(claim)
     assert evidence.evidence_id == evidence_id(evidence)
-    with pytest.raises(ValueError):
+    # Forgery is now unrepresentable rather than rejected: the identity
+    # is derived from content and is not a constructor input at all.
+    with pytest.raises(TypeError, match="init=False"):
         replace(claim, claim_id="sha256:" + "0" * 64)
-    with pytest.raises(ValueError):
+    with pytest.raises(TypeError, match="init=False"):
         replace(evidence, evidence_id="sha256:" + "0" * 64)
 
 
@@ -914,6 +916,9 @@ def test_record_content_id_reuses_the_same_live_claim_occurrence() -> None:
         step_digest="sha256:" + "1" * 64,
         source_generation=0,
     )
+    # Demand the derived identity before the session opens, so the
+    # counters below measure the session's reuse and nothing else.
+    demanded = claim.claim_id
     with _canonical_validation_session(
         CanonicalSessionPhase.PROJECTED_PREPARATION,
     ) as session:
@@ -921,7 +926,7 @@ def test_record_content_id_reuses_the_same_live_claim_occurrence() -> None:
         second = claim_id(claim)
         metrics = session.metrics
 
-    assert first == second == claim.claim_id
+    assert first == second == demanded
     assert metrics.wire_encodes == 1
     assert metrics.content_id_reuses == 1
 

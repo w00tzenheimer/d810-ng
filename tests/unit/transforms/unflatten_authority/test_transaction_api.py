@@ -3458,10 +3458,31 @@ def test_compact_case_boundary_revalidates_every_child_seal() -> None:
         for item in case.justifications
     )))
 
-    for forged in attacks:
+    from d810.transforms.unflatten_authority import ids as authority_ids
+
+    # ``stale`` copies the *original* case's identity onto a body that no
+    # longer produces it.  That is a state no production path can reach any
+    # more -- ``case_id`` is not a constructor input (ticket d81-cxzv) -- so
+    # it is built here the only way a defect could: by writing the slots.
+    structural = []
+    for index, forged in enumerate(attacks):
         assert forged.case_id == case.case_id
-        with pytest.raises((TypeError, ValueError)):
+        try:
             model.SemanticSafetyCase.__post_init__(forged)
+        except (TypeError, ValueError):
+            structural.append(index)
+
+    # Three of the six forgeries are caught by a structural check in
+    # __post_init__ and stay caught.  The other three were caught *only* by
+    # the construction-time case-ID recheck, which is gone; they are caught at
+    # the canonical boundary instead, which is where a forged record has to
+    # pass to reach persistence, replay or a receipt.
+    assert structural == [0, 1, 3], structural
+    for index in (2, 4, 5):
+        with pytest.raises((TypeError, ValueError)):
+            authority_ids.validate_canonical_roundtrip(
+                attacks[index], model.SemanticSafetyCase,
+            )
 
 
 def test_compact_case_boundary_rejects_equal_reminted_detached_results() -> None:
@@ -5225,9 +5246,11 @@ def test_3b3_physical_descriptor_failure_preserves_canonical_error(fixture_name:
 
     authority, plan, source, _projected, _facts, _attempt, *_ = getattr(test_bind, fixture_name)()
     assert authority.proposal.plan_id == plan.plan_id
+    # The derivation asks for the plan's descriptors once, not once per step
+    # (ticket d81-cxzv), so the malformed-preimage failure is injected there.
     with patch.object(
         transaction_api,
-        "canonical_patch_step_descriptor",
+        "canonical_patch_step_descriptors",
         side_effect=ValueError("canonical descriptor coordinates are malformed"),
     ):
         with pytest.raises(ValueError, match="canonical descriptor coordinates"):
@@ -6146,7 +6169,7 @@ def test_derived_detached_authority_reuses_projected_source_across_observation()
         model.CorridorPathDisposition.STRUCTURALLY_COVERED, (),
     ))
     path = model.CorridorCoveragePath(
-        path_id, path_nodes, None,
+        path_nodes, None,
         model.CorridorPathDisposition.STRUCTURALLY_COVERED, (),
     )
     forecast_id = authority_id((

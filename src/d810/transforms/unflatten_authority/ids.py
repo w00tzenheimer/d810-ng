@@ -84,6 +84,110 @@ DIGEST_FIXTURE_SCHEMA = "digest-fixture.v1"
 CLONED_SEMANTIC_OBSERVATION_SCHEMA = "unflatten.cloned-semantic-observation.v1"
 CLONED_SEMANTIC_ORIGIN_SCHEMA = "unflatten.cloned-semantic-origin.v1"
 CLONED_SEMANTIC_PREFIX_SCHEMA = "unflatten.cloned-semantic-prefix.v1"
+#: ``record type -> {identity field name: derivation}``.  A record registers
+#: here through :func:`lazy_identity`; the entry is what
+#: :func:`_lazy_identity_getattr` dispatches on.  This is a *class* table, not
+#: a value cache: the derived identity lives in the record's own empty slot and
+#: nowhere else, so it is bounded by the object's lifetime and there is nothing
+#: to invalidate, seal, stamp or evict.
+_LAZY_IDENTITY: dict[type[object], dict[str, object]] = {}
+
+
+def _lazy_identity_getattr(self: object, name: str) -> object:
+    """Derive a record's content identity the first time it is demanded.
+
+    Reached only through ``__getattr__``, i.e. only when the identity slot is
+    still empty.  ``slots=True`` plus a field declared ``init=False`` and
+    without a default is what leaves it empty: the generated ``__init__``
+    never writes it, so construction performs no hashing at all.
+    """
+
+    derivations = _LAZY_IDENTITY.get(type(self))
+    derive = None if derivations is None else derivations.get(name)
+    if derive is None:
+        raise AttributeError(
+            f"{type(self).__name__!r} object has no attribute {name!r}"
+        )
+    try:
+        value = derive(self)
+    except AttributeError as exc:
+        # A derivation that reads an unset slot must not be swallowed by a
+        # ``getattr(record, name, None)`` in an encoder: that would silently
+        # encode ``None`` where the identity belongs and move the bytes.
+        raise RuntimeError(
+            f"lazy identity {type(self).__name__}.{name} derivation failed"
+        ) from exc
+    object.__setattr__(self, name, value)
+    return value
+
+
+def lazy_identity(**derivations: object) -> object:
+    """Class decorator: derive the named identity fields on first demand.
+
+    Each name must be a field of the decorated frozen record declared
+    ``init=False, compare=False`` and *without* a default, so that
+
+    * no producer can supply the identity (constraint: constructors stop
+      taking it),
+    * dataclass ``__eq__``/``__hash__`` cannot force a mint (record equality
+      is structural over the remaining fields, which is equivalent by
+      construction: same content <=> same ID), and
+    * the slot starts empty, which is what makes ``__getattr__`` fire once.
+
+    The field itself stays in ``fields()`` and therefore in the canonical wire
+    schema, so a *parent* record embedding this one still encodes the child's
+    identity string in exactly the position and form it always did.
+    """
+
+    def decorate(cls: type[object]) -> type[object]:
+        if not is_dataclass(cls):
+            raise TypeError("lazy_identity requires a dataclass record")
+        declared = {field.name: field for field in fields(cls)}
+        for name in derivations:
+            field = declared.get(name)
+            if field is None:
+                raise TypeError(
+                    f"{cls.__name__} has no field {name!r} to derive lazily"
+                )
+            if field.init:
+                raise TypeError(
+                    f"{cls.__name__}.{name} must be declared init=False"
+                )
+            if field.compare:
+                raise TypeError(
+                    f"{cls.__name__}.{name} must be declared compare=False"
+                )
+            if field.default is not MISSING or field.default_factory is not MISSING:
+                raise TypeError(
+                    f"{cls.__name__}.{name} must not declare a default"
+                )
+        _LAZY_IDENTITY[cls] = dict(derivations)
+        cls.__getattr__ = _lazy_identity_getattr  # type: ignore[attr-defined]
+        return cls
+
+    return decorate
+
+
+def lazy_identity_is_pending(record: object, name: str) -> bool:
+    """Return whether ``record``'s lazy identity ``name`` is still underived.
+
+    Diagnostic/test helper.  It reads the slot descriptor directly so that
+    asking the question does not answer it.
+    """
+
+    derivations = _LAZY_IDENTITY.get(type(record))
+    if derivations is None or name not in derivations:
+        raise TypeError(f"{type(record).__name__}.{name} is not a lazy identity")
+    slot = getattr(type(record), name, None)
+    if slot is None:
+        raise TypeError(f"{type(record).__name__}.{name} has no slot descriptor")
+    try:
+        slot.__get__(record, type(record))
+    except AttributeError:
+        return True
+    return False
+
+
 _REGISTRIES_READY = False
 _ENUM_TYPES: set[type[Enum]] = set()
 _RECORD_TYPES: set[type[object]] = set()
@@ -367,8 +471,17 @@ def _validate_canonical_value(value: object, seen: set[int] | None = None) -> No
         if marker in seen:
             raise ValueError("cyclic registered record")
         seen.add(marker)
+        # A lazily derived identity is not walked here.  It is a pure function
+        # of the fields this walk *does* visit, and its value is a
+        # ``sha256:<64 hex>`` string by construction, so there is nothing for a
+        # canonical-representability check to learn from it -- while reading it
+        # would turn the live half of the dual identity into a hashing walk,
+        # which is exactly what it exists not to be.
+        lazy = _LAZY_IDENTITY.get(type(value), ())
         try:
             for name in _RECORD_FIELDS.get(type(value), _EXTERNAL_FIELDS.get(type(value), ())):
+                if name in lazy:
+                    continue
                 item = type(value).SCHEMA_VERSION if type(value).__name__ == "NativePreanalysisKey" and name == "schema_version" else getattr(value, name)
                 if type(value).__name__ in {"PreparationBuildMetrics", "PhaseBuildMetrics"} and name == "inventory_ms":
                     if type(item) not in (int, float) or not math.isfinite(float(item)):
@@ -1165,7 +1278,14 @@ def _feed_occurrence(
             _feed_occurrence_token(hasher, b"r", _occurrence_type_token(type(value)))
             hasher.update(len(names).to_bytes(8, "little"))
             native_key = type(value).__name__ == "NativePreanalysisKey"
+            # A lazily derived identity is skipped, for two reasons.  It adds
+            # no discrimination -- it is a pure function of the fields fed
+            # below -- and reading it here would be circular: the stamp guards
+            # the very content ID whose derivation would be demanded.
+            lazy = _LAZY_IDENTITY.get(type(value), ())
             for name in names:
+                if name in lazy:
+                    continue
                 _feed_occurrence_token(
                     hasher, b"n", name.encode("utf-8", "surrogatepass")
                 )
@@ -1424,6 +1544,15 @@ def _decode_wire(value: object, *, allow_index: bool = False) -> object:
                     and name == "obligation_index"
                 )),
             )
+        # The decode boundary is the one place an identity arrives from
+        # outside, and it is the one place a supplied ID is legitimately
+        # rechecked.  A lazily derived identity is not a constructor argument,
+        # so it is taken out of the kwargs here; it is *not* dropped -- the
+        # canonical re-encode below (``_wire(result) != value``) demands the
+        # derived value and compares it against the bytes that arrived, which
+        # is a byte-exact check of exactly what the supplied ID claimed.
+        for lazy_name in _LAZY_IDENTITY.get(record_type, ()):
+            kwargs.pop(lazy_name, None)
         try:
             if record_type.__name__ == "NativePreanalysisKey":
                 result = record_type.from_dict(kwargs)
@@ -2078,8 +2207,12 @@ def _subject_factory(
     interning mint would hand it the same reference as a live subject of equal
     content.  ``legacy_codec`` passes it at every site.
 
-    ``subject_id`` is minted exactly as before and stays a non-authoritative
-    content fingerprint.
+    ``subject_id`` is no longer minted here: it stays exactly the same
+    non-authoritative content fingerprint of ``(kind, role, locator)``, but it
+    is derived on first demand (``ids.lazy_identity``) rather than hashed for
+    every subject the transaction reconstructs.  The session reference is
+    interned on that same triple, which is what the fingerprint was standing
+    in for, so a subject can be built without hashing anything at all.
     """
 
     _ensure_registries()
@@ -2090,10 +2223,10 @@ def _subject_factory(
     required = {"kind", "role", "block_ref", "anchor_ea", "locator"}
     if set(kwargs) != required:
         raise TypeError("subject factory requires exactly the subject fields")
-    minted = subject_id(kwargs["kind"], kwargs["role"], kwargs["locator"])
-    kwargs["subject_id"] = minted
     kwargs[RUNTIME_SUBJECT_SIDECAR_FIELD] = (
-        None if decoded else transaction_subject_ref(minted)
+        None if decoded else transaction_subject_ref(
+            (kwargs["kind"], kwargs["role"], kwargs["locator"])
+        )
     )
     return cls(**kwargs)
 
@@ -2195,28 +2328,9 @@ def _claim_factory(
                 kwargs.update({name: optional_defaults[name] for name in missing})
             else:
                 raise TypeError("claim factory requires every non-ID field exactly once")
-    raw = object.__new__(cls)
-    for name in payload_names:
-        object.__setattr__(raw, name, kwargs[name])
     if carries_sidecar:
-        object.__setattr__(raw, RUNTIME_CLAIM_SIDECAR_FIELD, runtime_refs)
-    object.__setattr__(raw, "claim_id", "sha256:" + "0" * 64)
-    object.__setattr__(raw, "claim_id", claim_id(raw))
-    try:
-        cls.__post_init__(raw)
-    except (TypeError, ValueError):
-        try:
-            normalized_id = claim_id(raw)
-        except (TypeError, ValueError):
-            raise
-        if normalized_id == raw.claim_id:
-            raise
-        kwargs = {name: getattr(raw, name) for name in payload_names}
-        kwargs["claim_id"] = normalized_id
-        if carries_sidecar:
-            kwargs[RUNTIME_CLAIM_SIDECAR_FIELD] = runtime_refs
-        return cls(**kwargs)
-    return raw
+        kwargs[RUNTIME_CLAIM_SIDECAR_FIELD] = runtime_refs
+    return cls(**kwargs)
 
 
 def _evidence_factory(cls: type[object], *args: object, **kwargs: object) -> object:
@@ -2249,24 +2363,7 @@ def _evidence_factory(cls: type[object], *args: object, **kwargs: object) -> obj
             kwargs.update({name: optional_defaults[name] for name in missing})
         else:
             raise TypeError("evidence factory requires every non-ID field exactly once")
-    raw = object.__new__(cls)
-    for name in payload_names:
-        object.__setattr__(raw, name, kwargs[name])
-    object.__setattr__(raw, "evidence_id", "sha256:" + "0" * 64)
-    object.__setattr__(raw, "evidence_id", evidence_id(raw))
-    try:
-        cls.__post_init__(raw)
-    except (TypeError, ValueError):
-        try:
-            normalized_id = evidence_id(raw)
-        except (TypeError, ValueError):
-            raise
-        if normalized_id == raw.evidence_id:
-            raise
-        kwargs = {name: getattr(raw, name) for name in payload_names}
-        kwargs["evidence_id"] = normalized_id
-        return cls(**kwargs)
-    return raw
+    return cls(**kwargs)
 
 
 def _justification_factory(cls: type[object], **kwargs: object) -> object:
@@ -2277,11 +2374,7 @@ def _justification_factory(cls: type[object], **kwargs: object) -> object:
     payload = {name: kwargs[name] for name in names if name != "justification_id"}
     if set(kwargs) != set(payload):
         raise TypeError("justification factory accepts only non-ID fields")
-    raw = object.__new__(cls)
-    for name, value in payload.items():
-        object.__setattr__(raw, name, value)
-    object.__setattr__(raw, "justification_id", "sha256:" + "0" * 64)
-    return cls(justification_id=justification_id(raw), **payload)
+    return cls(**payload)
 
 
 def _case_factory(cls: type[object], **kwargs: object) -> object:
@@ -2303,11 +2396,7 @@ def _case_factory(cls: type[object], **kwargs: object) -> object:
         else kwargs[name]
         for name in payload_names
     }
-    raw = object.__new__(cls)
-    for name, value in payload.items():
-        object.__setattr__(raw, name, value)
-    object.__setattr__(raw, "case_id", "sha256:" + "0" * 64)
-    return cls(case_id=case_id(raw), **payload)
+    return cls(**payload)
 
 
 def _graph_projection(graph: object, *, blocks: Mapping[int, BlockSnapshot] | None = None) -> object:

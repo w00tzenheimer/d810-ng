@@ -628,11 +628,6 @@ def test_evaluator_rejects_empty_or_incomplete_exclusion_path_correlations() -> 
     )
     paths = tuple(
         model.CorridorCoveragePath(
-            canonical_authority_id((
-                "unflatten.corridor-coverage-path.v1", nodes, None,
-                model.CorridorPathDisposition.SEMANTICALLY_EXCLUDED,
-                (exclusion_id,),
-            )),
             nodes, None, model.CorridorPathDisposition.SEMANTICALLY_EXCLUDED,
             (exclusion_id,),
         )
@@ -843,7 +838,7 @@ def test_corridor_coverage_uses_plan_catalog_without_graph_rescan() -> None:
         model.CorridorPathDisposition.STRUCTURALLY_COVERED, (),
     ))
     path = model.CorridorCoveragePath(
-        path_id, path_nodes, None,
+        path_nodes, None,
         model.CorridorPathDisposition.STRUCTURALLY_COVERED, (),
     )
     forecast_id = canonical_authority_id((
@@ -2654,7 +2649,7 @@ def test_value_flow_unique_binding_requires_exact_owner_premise_set() -> None:
             return any(omit_owner_premise(item) for item in value)
         return False
     assert omit_owner_premise(wire)
-    with pytest.raises(ValueError, match="premise|record|case"):
+    with pytest.raises(ValueError, match="premise|record|case|non-canonical"):
         canonical_decode(json.dumps(wire, sort_keys=True, separators=(",", ":")).encode("ascii"))
     omitted_owner = next(
         subject for subject in case.subjects
@@ -3508,7 +3503,8 @@ def test_case_ids_and_private_index_reject_tampering() -> None:
     )
     with pytest.raises(TypeError):
         model.ObligationEvidenceIndex(case.obligation_index.cells)  # type: ignore[call-arg]
-    with pytest.raises(ValueError):
+    # ``case_id`` is derived, so a forged one cannot even be constructed.
+    with pytest.raises(TypeError, match="init=False"):
         replace(case, case_id=authority_id("forged"))
 
 
@@ -3634,9 +3630,7 @@ def test_justification_foreign_premise_and_cycle_are_rejected() -> None:
     raw = object.__new__(model.AuthorityJustification)
     for name, value in values.items():
         object.__setattr__(raw, name, value)
-    object.__setattr__(raw, "justification_id", "sha256:" + "0" * 64)
-    from d810.transforms.unflatten_authority.ids import justification_id
-    foreign = model.AuthorityJustification(justification_id=justification_id(raw), **values)
+    foreign = model.AuthorityJustification(**values)
     with pytest.raises(ValueError, match="foreign"):
         from d810.transforms.unflatten_authority.evaluate import _validate_justification_graph
         _validate_justification_graph((foreign,), (key,), (), phase)
@@ -3752,7 +3746,7 @@ def test_patch_step_lineage_materializes_one_row_per_exact_owner_role() -> None:
         item.subject_id for item in owner_subjects
     }
     assert canonical_decode(canonical_bytes(case)) == case
-    with pytest.raises(ValueError, match="evidence_id"):
+    with pytest.raises(TypeError, match="init=False"):
         replace(patch_rows[0], evidence_id=authority_id("forged-patch-row"))
     for justification in case.justifications:
         if justification.rule is model.UnflattenJustificationRule.HELPER_OWNER_LINEAGE_PROVEN:
@@ -4166,7 +4160,7 @@ def test_case_decode_rejects_foreign_justification_premise() -> None:
         return False
 
     assert corrupt(wire)
-    with pytest.raises(ValueError, match="premise|record"):
+    with pytest.raises(ValueError, match="premise|record|non-canonical"):
         canonical_decode(json.dumps(wire, sort_keys=True, separators=(",", ":")).encode("ascii"))
 
 
@@ -4192,7 +4186,7 @@ def test_case_decode_rejects_cross_phase_justification() -> None:
         return False
 
     assert corrupt(wire)
-    with pytest.raises(ValueError, match="phase|record"):
+    with pytest.raises(ValueError, match="phase|record|non-canonical"):
         canonical_decode(json.dumps(wire, sort_keys=True, separators=(",", ":")).encode("ascii"))
 
 
