@@ -745,7 +745,7 @@ def test_entry_liveness_admission_rejects_two_receipts_in_noncanonical_binding_o
         )
         allowances.append(model.EntryEndpointLivenessAllowance(
             authority_id(("unflatten.entry-endpoint-liveness-allowance.v1", *fields)),
-            *fields,
+            *fields[:-1], (), (), fields[-1],
         ))
     plan = replace(
         plan,
