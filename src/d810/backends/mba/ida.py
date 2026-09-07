@@ -46,6 +46,7 @@ from d810.mba.constraints import (
     is_constraint_expr,
 )
 from d810.mba.dsl import SymbolicExpression, SymbolicExpressionProtocol
+from d810.ir.expr.constraints import bind_runtime_width, runtime_operand_size
 from d810.mba.extension_api import CanonicalFallbackError
 from d810.mba.provider_history import ProviderOutcomeHistory
 from d810.mba.provider_outcome import (
@@ -251,12 +252,14 @@ class _LeafWrapper:
 class _ShadowBindingCandidate:
     """Read-only structural bindings shaped for the existing emitter."""
 
-    __slots__ = ("leafs_by_name", "ea", "dst_mop", "is_candidate_ok")
+    __slots__ = ("leafs_by_name", "ea", "dst_mop", "dest_size", "size", "is_candidate_ok")
 
     def __init__(self, leafs_by_name: dict[str, Any], source: Any) -> None:
         self.leafs_by_name = leafs_by_name
         self.ea = getattr(source, "ea", None)
         self.dst_mop = getattr(source, "dst_mop", None)
+        self.dest_size = getattr(source, "dest_size", None)
+        self.size = getattr(source, "size", None)
         self.is_candidate_ok = True
 
 
@@ -1463,12 +1466,13 @@ class IDAPatternAdapter:
         bindings = AstNode()
         bindings.leafs_by_name = {
             name: value
-            if hasattr(value, "mop")
+            if name.startswith("_") or hasattr(value, "mop")
             else _BindingMopCarrier(value)
             for name, value in leafs_by_name.items()
         }
         bindings.ea = getattr(candidate, "ea", None)
         bindings.dst_mop = getattr(candidate, "dst_mop", None)
+        bindings.dest_size = getattr(candidate, "dest_size", None)
         bindings.is_candidate_ok = True
         return bindings
 
@@ -2187,6 +2191,18 @@ class IDAPatternAdapter:
                     if hasattr(leaf, "expected_size"):
                         leaf.expected_size = source_mop.size
                     continue
+                # A computed value must retain its evaluation width. Destination
+                # sizing cannot recover high bits discarded during evaluation.
+                try:
+                    source_size = runtime_operand_size(source_leaf)
+                    result_width = bind_runtime_width(candidate, candidate_leafs)
+                except (ValueError, TypeError, AttributeError):
+                    return False
+                if source_size * 8 != result_width or (
+                    size is not None and size != source_size
+                ):
+                    return False
+                size = source_size
                 if value is None:
                     value = getattr(source_leaf, "value", None)
                 if value is None:
@@ -2201,11 +2217,17 @@ class IDAPatternAdapter:
                 size = getattr(leaf, "dest_size", None)
             if size is None and dst_mop is not None:
                 size = getattr(dst_mop, "size", None)
-            if size is None or int(size) <= 0:
-                size = 1
+            if size is None:
+                try:
+                    size = bind_runtime_width(candidate, candidate_leafs) // 8
+                except (ValueError, TypeError, AttributeError):
+                    return False
+            if type(size) is not int or size not in (1, 2, 4, 8, 16):
+                return False
 
             cst_mop = ida_hexrays.mop_t()
-            safe_make_number(cst_mop, int(value), int(size))
+            if not safe_make_number(cst_mop, int(value), size):
+                return False
             leaf.mop = cst_mop
             if hasattr(leaf, "expected_value"):
                 leaf.expected_value = int(value)
@@ -2395,6 +2417,11 @@ class IDAPatternAdapter:
             match_context = candidate.mop_dict
         elif hasattr(candidate, "get_z3_vars"):
             match_context = candidate.get_z3_vars({})
+
+        try:
+            bind_runtime_width(candidate, match_context)
+        except (ValueError, TypeError, AttributeError):
+            return False
 
         # Add candidate itself to context
         match_context["_candidate"] = candidate
