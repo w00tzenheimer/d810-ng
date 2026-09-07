@@ -52,15 +52,6 @@ def _find_site_insn(mba: ida_hexrays.mbl_array_t, site: CandidateSite):
     return matches[0] if len(matches) == 1 else None
 
 
-def _nop_replacement(insn):
-    replacement = ida_hexrays.minsn_t(insn)
-    replacement.opcode = ida_hexrays.m_nop
-    replacement.l.erase()
-    replacement.r.erase()
-    replacement.d.erase()
-    return replacement
-
-
 def apply_return_const_corruption_cleanup(
     mba: ida_hexrays.mbl_array_t,
     *,
@@ -131,7 +122,6 @@ def apply_return_const_corruption_cleanup(
                 generation=prefold_snapshot.generation,
             ),
             site,
-            _nop_replacement(insn),
             prefold_snapshot=prefold_snapshot,
         )
         if receipt is not None:

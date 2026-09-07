@@ -11,7 +11,7 @@ from d810.hexrays.mutation.return_carrier_corruption import (
     CandidateSite,
     ReturnRegisterConsumptionSnapshot,
     find_droppable_return_const_corruptions,
-    is_empty_nop,
+    make_detached_return_carrier_nop,
 )
 from d810.hexrays.mutation.fragment_publication_lifecycle import (
     NativeMutationQuarantined,
@@ -496,7 +496,6 @@ class HexRaysInstructionCommitter:
         self,
         context: InstructionCommitContext,
         site: CandidateSite,
-        replacement: object,
         *,
         prefold_snapshot: ReturnRegisterConsumptionSnapshot | None,
     ) -> InstructionRewriteReceipt | None:
@@ -544,7 +543,6 @@ class HexRaysInstructionCommitter:
                 != context.epoch
                 or int(context.block.serial) != site.block_serial
                 or int(context.instruction.ea) != site.insn_ea
-                or not is_empty_nop(replacement)
             ):
                 return None
             # A duplicated EA in this block cannot identify one instruction.
@@ -575,6 +573,10 @@ class HexRaysInstructionCommitter:
             )
         except (AttributeError, TypeError, ValueError, IndexError):
             return None
+        # A caller-owned instruction may already belong to another live block,
+        # even when both next/prev are null. Allocate our own detached object;
+        # accepting an external NOP would let swap mutate a second live site.
+        replacement = make_detached_return_carrier_nop(context.instruction)
         return self.commit(
             context,
             InstructionRewriteCandidate(

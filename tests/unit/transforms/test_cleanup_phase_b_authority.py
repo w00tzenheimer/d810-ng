@@ -107,3 +107,26 @@ def test_follow_up_proof_cannot_replay_after_native_anchor_changes():
         target_proofs=proofs,
     )
     assert rows[0].proof_state is not CleanupProofState.PROVEN
+
+
+def test_follow_up_proof_cannot_replay_after_cfg_entry_changes():
+    cfg = _cfg()
+    proofs, _ = build_bad_while_loop_follow_up_proofs(
+        cfg,
+        (_row(),),
+        range_intervals=(SimpleNamespace(lo=0, hi=10, target_block=3),),
+        state_constants_by_source={1: 5},
+    )
+    assert proofs[0].scope.matches(cfg)
+    positive = reclassify_bad_while_loop_follow_ups(
+        (_row(),), cfg, target_proofs=proofs
+    )
+    assert positive[0].proof_state is CleanupProofState.PROVEN
+
+    # Keep every block/EA unchanged; entry moves blk1@0x1010 -> blk2@0x1020.
+    changed = replace(cfg, entry_serial=2)
+    assert not proofs[0].scope.matches(changed)
+    rows = reclassify_bad_while_loop_follow_ups(
+        (_row(),), changed, target_proofs=proofs
+    )
+    assert rows[0].proof_state is not CleanupProofState.PROVEN

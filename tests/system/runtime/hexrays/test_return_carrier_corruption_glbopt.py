@@ -374,3 +374,58 @@ def test_carrier_source_rejects_unsupported_stack_mention(glbopt_module) -> None
     )
 
     assert not mutation._is_carrier_source(insn)
+
+
+@pytest.mark.parametrize("single_instruction_block", [False, True])
+def test_carrier_committer_cannot_consume_a_caller_linked_nop(
+    glbopt_module, monkeypatch, single_instruction_block
+):
+    target = _Insn(0x180018F75)
+    linked = _Insn(0x180018F76, glbopt_module.ida_hexrays.m_nop)
+    for operand in (linked.l, linked.r, linked.d):
+        operand.erase()
+    if single_instruction_block:
+        mba = _Mba(_Block(target))
+        other_block = _Block(linked)
+        other_block.serial = 2
+        other_block.mba = mba
+        blocks = {1: mba._block, 2: other_block}
+        monkeypatch.setattr(mba, "get_mblock", blocks.get)
+        assert linked.next is None
+    else:
+        mba = _Mba(_Block(target, linked))
+    site = _site(glbopt_module, mba)
+    snapshot = glbopt_module.ReturnRegisterConsumptionSnapshot(
+        mba.entry_ea, native_object_identity(mba), mba.maturity,
+        (CarrierDefinition(1, target.ea),), "test-session", 0,
+    )
+    lifecycle = SimpleNamespace(
+        current_session=lambda _ea: SimpleNamespace(identity_key="test-session"),
+        current_mba_generation=lambda **_: 0,
+        native_mutation_quarantined=False,
+    )
+    monkeypatch.setattr(
+        glbopt_module, "find_droppable_return_const_corruptions", lambda *a, **k: [site]
+    )
+    commit = sys.modules["d810.hexrays.mutation.instruction_commit"]
+    owner = commit.HexRaysInstructionCommitter(
+        lifecycle_authority=lifecycle, return_consumption_reader=lambda _ea: snapshot
+    )
+    context = commit.InstructionCommitContext.from_live(target, mba._block)
+
+    # The owner must materialize its own NOP. A linked object is not an input.
+    with pytest.raises(TypeError):
+        owner.commit_return_carrier_cleanup(
+            context, site, linked, prefold_snapshot=snapshot
+        )
+    assert target.opcode == 99
+    assert linked.opcode == glbopt_module.ida_hexrays.m_nop
+    assert mba._block.dirty_count == 0
+
+    receipt = owner.commit_return_carrier_cleanup(
+        context, site, prefold_snapshot=snapshot
+    )
+    assert receipt.applied_count == 1
+    assert target.opcode == glbopt_module.ida_hexrays.m_nop
+    assert linked.opcode == glbopt_module.ida_hexrays.m_nop
+    assert mba._block.dirty_count == 1

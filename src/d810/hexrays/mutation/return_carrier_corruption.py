@@ -14,9 +14,9 @@ Builds the three injected facts the backend-neutral proof core
 * **strict dominators** of each candidate's block (Pillar 2, via
   :func:`compute_dom_tree`).
 
-This module is READ-ONLY: it returns the proven-droppable sites. The mutation
-(NOP) is a thin wrapper applied by the GLBOPT hook once a site is proven, so
-the fact-building can be validated independently of any MBA edit.
+This module never mutates a live MBA: it returns candidate evidence and builds
+detached NOP instructions for the existing committer, which owns admission and
+the native edit. Fact-building can be validated independently of any MBA edit.
 
 In IDA microcode ``al`` / ``ax`` / ``eax`` / ``rax`` share one micro-register
 (``mr_rax``) and differ only by ``mop_t.size``; a write with ``size == 8`` is a
@@ -122,16 +122,14 @@ class CandidateSite:
             raise ValueError("candidate location differs from its proof target")
 
 
-def is_empty_nop(instruction: object) -> bool:
-    """Check the detached replacement shape at the vendor evidence boundary."""
-    return bool(
-        IDA_AVAILABLE
-        and instruction.opcode == ida_hexrays.m_nop
-        and all(
-            mop.t == ida_hexrays.mop_z
-            for mop in (instruction.l, instruction.r, instruction.d)
-        )
-    )
+def make_detached_return_carrier_nop(instruction: object) -> object:
+    """Allocate a detached replacement for the committer from its live target."""
+    replacement = ida_hexrays.minsn_t(instruction)
+    replacement.opcode = ida_hexrays.m_nop
+    replacement.l.erase()
+    replacement.r.erase()
+    replacement.d.erase()
+    return replacement
 
 
 def _rax_mreg() -> int | None:

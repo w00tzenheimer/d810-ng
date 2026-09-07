@@ -64,11 +64,16 @@ class CleanupProofScope:
     """Exact portable snapshot evidence, including native anchors and topology."""
 
     function_ea: int
+    entry_serial: int
     blocks: tuple[BlockSnapshot, ...]
 
     @classmethod
     def from_cfg(cls, cfg: FlowGraph) -> CleanupProofScope:
-        return cls(cfg.func_ea, tuple(cfg.blocks[key] for key in sorted(cfg.blocks)))
+        return cls(
+            cfg.func_ea,
+            cfg.entry_serial,
+            tuple(cfg.blocks[key] for key in sorted(cfg.blocks)),
+        )
 
     def matches(self, cfg: FlowGraph | None) -> bool:
         return cfg is not None and self == self.from_cfg(cfg)
