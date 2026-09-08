@@ -27,7 +27,7 @@ from d810.transforms.unflatten_authority.model import (
     SourceBlockIdentityWitness, SourceIdentityCatalog, UseDefFragmentWitness,
     RetiredDispatcherInfrastructureClaim, DetachedDeadHandlerComponentClaim, ExactInfeasibleEffectClaim, HandlerSubjectLocator, EffectSubjectLocator, ProviderConsensusWitness, EffectSiteKind, ProviderConsensusMode, SemanticEdgeRole,
     TerminalCycleBreakClaim, TerminalSubjectLocator, CorridorSubjectLocator, TerminalKind,
-    EquivalentSemanticRouteClaim, SemanticSubjectRef, SemanticSubjectKind,
+    EquivalentSemanticRouteClaim, SemanticSubjectRef, SemanticSubjectKind, ValueFlowSubjectLocator,
     SemanticSubjectRole, UnflattenClaimKind, BlockSubjectLocator,
     RouteSubjectLocator, LogicalFunctionExitSubjectLocator,
     UnflattenPlanInputCatalog, UnflattenPlanShape, AuthoritativeHandlerInput,
@@ -68,6 +68,7 @@ _SOURCE_FIELDS = MappingProxyType({
         "source_generation", "dag_endpoint_subjects",
     ),
     SemanticSubjectRef: ("kind", "role", "subject_id", "block_ref", "anchor_ea", "locator"),
+    ValueFlowSubjectLocator: ("fragment_id", "state_identity", "redirect_owner_refs"),
     BlockSubjectLocator: ("block_ref", "anchor_ea"),
     LogicalFunctionExitSubjectLocator: ("block_ref", "serial"),
     RouteSubjectLocator: (
