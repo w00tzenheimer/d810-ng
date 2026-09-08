@@ -619,7 +619,7 @@ class HexRaysInstructionCommitter:
             else getattr(authority, "native_mutation_quarantined", False)
         )
         if callable(quarantined):
-            quarantined = quarantined()
+            quarantined = quarantined(context.epoch.function_ea)
         if quarantined:
             return self._rejected(
                 context,

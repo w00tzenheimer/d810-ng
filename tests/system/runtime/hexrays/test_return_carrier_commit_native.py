@@ -52,12 +52,19 @@ class TestReturnCarrierNativeCommit:
         consumer.l.valnum = 151
         consumer.d.make_reg(rax + 8, 1)
         target_block.insert_into_block(consumer, target)
+        quarantine_queries = []
+        quarantined_functions = {int(mba.entry_ea)}
+
+        def native_mutation_quarantined(function_ea):
+            quarantine_queries.append(function_ea)
+            return function_ea in quarantined_functions
+
         lifecycle = SimpleNamespace(
             current_session=lambda _ea: SimpleNamespace(
                 identity_key="native-test-session"
             ),
             current_mba_generation=lambda **_: 7,
-            native_mutation_quarantined=False,
+            native_mutation_quarantined=native_mutation_quarantined,
             quarantine_native_mutation=lambda **_: None,
         )
         prefold = snapshot_return_reg_consumption(
@@ -129,9 +136,22 @@ class TestReturnCarrierNativeCommit:
                 lifecycle_authority=lifecycle,
                 return_consumption_reader=lambda _ea: prefold,
             )
+            == 0
+        ), "even proven cleanup must not mutate a quarantined function"
+        assert target.opcode == ida_hexrays.m_mov
+        assert quarantine_queries == [int(mba.entry_ea)]
+        quarantined_functions.clear()
+        assert (
+            apply_return_const_corruption_cleanup(
+                mba,
+                prefold_snapshot=prefold,
+                lifecycle_authority=lifecycle,
+                return_consumption_reader=lambda _ea: prefold,
+            )
             == 1
         )
         assert target.opcode == ida_hexrays.m_nop
+        assert quarantine_queries == [int(mba.entry_ea)] * 2
         assert (
             apply_return_const_corruption_cleanup(
                 mba,

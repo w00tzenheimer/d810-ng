@@ -168,6 +168,7 @@ def _committer(
     quarantine=None,
     native_failure_quarantine=None,
     history=None,
+    lifecycle_authority=None,
 ) -> HexRaysInstructionCommitter:
     return HexRaysInstructionCommitter(
         hash_minsn=lambda instruction, _function_ea=0: instruction.fingerprint,
@@ -181,6 +182,7 @@ def _committer(
         rewrite_history=history if history is not None else {},
         producer_cycle_quarantine=quarantine,
         native_failure_quarantine=native_failure_quarantine,
+        lifecycle_authority=lifecycle_authority,
     )
 
 
@@ -550,3 +552,35 @@ def test_lower_is_rejected_and_solve_requires_proof_and_non_worse_cost() -> None
         ),
     )
     assert solve.committed is True
+
+
+@pytest.mark.parametrize("quarantined", [False, True])
+def test_quarantine_query_uses_the_candidate_function_owner(quarantined):
+    queried = []
+
+    class Lifecycle:
+        def native_mutation_quarantined(self, function_ea):
+            queried.append(function_ea)
+            assert function_ea == 0x402000
+            return quarantined
+
+    instruction = FakeInstruction(fingerprint=1)
+    replacement = FakeInstruction(fingerprint=2)
+    block = FakeBlock(FakeMba())
+    context = _context(
+        instruction,
+        block=block,
+        capabilities=NativeCallbackCapabilities(True, True, True, True),
+    )
+    context = replace(context, epoch=replace(context.epoch, function_ea=0x402000))
+    receipt = _committer(lifecycle_authority=Lifecycle()).commit(
+        context, _candidate(replacement)
+    )
+    assert queried == [0x402000]
+    assert receipt.applied_count == (0 if quarantined else 1)
+    assert receipt.committed is (not quarantined)
+    assert instruction.fingerprint == (1 if quarantined else 2)
+    assert instruction.swap_count == (0 if quarantined else 1)
+    assert block.mark_lists_dirty_count == (0 if quarantined else 1)
+    if quarantined:
+        assert receipt.reason == "native-mutation-quarantined"
