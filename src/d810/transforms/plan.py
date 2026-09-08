@@ -2751,6 +2751,7 @@ def _compile_patch_plan_impl(
         | _PendingReorderBlocks
     ] = []
     new_blocks: list[PatchBlockSpec] = []
+    predecessor_clones: dict[tuple[int, int | None], DuplicateBlock] = {}
 
     for modification in modifications:
         match modification:
@@ -3144,6 +3145,18 @@ def _compile_patch_plan_impl(
                     )
 
             case DuplicateBlock():
+                # Reconcile duplicate requests before allocating any PlanBlockRef.
+                # Once bound, each reservation needs its own actual creation; the
+                # deferred coalescer cannot discard an independently owned clone.
+                owner = (modification.source_block, modification.pred_serial)
+                previous = predecessor_clones.get(owner)
+                if previous is not None:
+                    if previous != modification:
+                        raise ValueError(
+                            f"conflicting predecessor clone requests for {owner}"
+                        )
+                    continue
+                predecessor_clones[owner] = modification
                 if cfg is None:
                     raise ValueError(
                         "compile_patch_plan requires FlowGraph context for DuplicateBlock"

@@ -1378,3 +1378,39 @@ def test_compile_patch_plan_round_trips_legacy_flow_primitives():
     assert isinstance(plan.steps[4], PatchScalarizeLocalAliasAccess)
     assert isinstance(plan.steps[5], PatchRetargetOutputStore)
     assert isinstance(plan.steps[6], PatchPhaseCycleLowering)
+
+
+def test_duplicate_requests_share_one_plan_creation_before_binding():
+    request = DuplicateBlock(source_block=10, target_block=11, pred_serial=9)
+    plan = compile_patch_plan([request, request], _cfg())
+    assert len(plan.steps) == 1
+    assert len(plan.new_blocks) == 1
+    assert plan.steps[0].block_id == plan.new_blocks[0].block_id
+
+
+@pytest.mark.parametrize("second_target", [9, None])
+def test_duplicate_requests_reject_conflicting_shape_before_binding(second_target):
+    with pytest.raises(ValueError, match="conflicting predecessor clone"):
+        compile_patch_plan(
+            [DuplicateBlock(10, 11, 9), DuplicateBlock(10, second_target, 9)],
+            _cfg(),
+        )
+
+
+@pytest.mark.parametrize("targets", [(11, 9), (11, 11)])
+def test_distinct_predecessors_own_distinct_plan_creations(targets):
+    cfg = FlowGraph(
+        blocks={
+            8: _block(8, (10,), ()),
+            9: _block(9, (10,), ()),
+            10: _block(10, (11,), (8, 9)),
+            11: _block(11, (), (10,)),
+        },
+        entry_serial=8,
+        func_ea=0,
+    )
+    plan = compile_patch_plan(
+        [DuplicateBlock(10, targets[0], 8), DuplicateBlock(10, targets[1], 9)], cfg
+    )
+    assert len(plan.steps) == len(plan.new_blocks) == 2
+    assert len({step.block_id for step in plan.steps}) == 2
