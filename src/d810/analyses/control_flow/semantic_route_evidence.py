@@ -11,6 +11,7 @@ import hashlib
 import json
 from types import MappingProxyType
 
+from d810.core.typing import Callable
 from d810.core.logging import getLogger
 from d810.core.native_preanalysis_key import NativePreanalysisKey
 from d810.core.runtime_identity import (
@@ -6705,7 +6706,115 @@ def _canonical_route_proof_id(
     return "sha256:" + hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
+def _owned_canonical_proof_inputs(
+    arena: RuntimeAuthorityArena,
+    proofs: tuple[SemanticRouteProof, ...],
+) -> tuple[tuple[SemanticRouteProof, str], ...]:
+    """Select admitted values by handles; serialize once at the ID boundary.
+
+    Selection and ID assembly read only admitted scalar and child handles.
+    The public boundary retains its original witness occurrences and recursive
+    validation; owning this internal partition does not make those legacy
+    witnesses immutable or reusable as trusted authority.
+    """
+    table = arena.structural
+    source_proofs: dict[StructuralRef, SemanticRouteProof] = {}
+    by_input_id: dict[str, StructuralRef] = {}
+    by_value: dict[StructuralRef, tuple[str, str, tuple[tuple[str, str], ...]]] = {}
+    for proof in proofs:
+        ref = capture_structural_route_proof(table, proof)
+        proof_id = _identifier(proof.proof_id, "semantic route proof id")
+        group_id = _identifier(proof.atomic_group_id, "semantic route group id")
+        provenance = tuple(
+            (_identifier(key, "semantic route provenance key"),
+             _identifier(value, "semantic route provenance value"))
+            for key, value in proof.diagnostic_provenance
+        )
+        prior = by_input_id.setdefault(proof_id, ref)
+        if prior is not ref:
+            previous_children = table.resolve(prior, StructuralNodeKind.ROUTE_PROOF).children
+            current_children = table.resolve(ref, StructuralNodeKind.ROUTE_PROOF).children
+            divergent = tuple(
+                name for name, left, right in zip(
+                    _STABLE_ROUTE_PROOF_FIELDS, previous_children, current_children,
+                ) if left is not right
+            )
+            raise SemanticRouteEvidenceRejected(
+                "canonical semantic input proof id has divergent authoritative "
+                f"payload: proof_id={proof_id!r} fields={divergent!r}"
+            )
+        source_proofs.setdefault(ref, proof)
+        prior_metadata = by_value.get(ref)
+        if prior_metadata is None:
+            by_value[ref] = (proof_id, group_id, provenance)
+        else:
+            by_value[ref] = (
+                prior_metadata[0], prior_metadata[1],
+                tuple(sorted(set((*prior_metadata[2], *provenance)))),
+            )
+    table.publish()
+    projected = []
+    for ref, (proof_id, group_id, provenance) in by_value.items():
+        node = table.resolve(ref, StructuralNodeKind.ROUTE_PROOF)
+        proof = SemanticRouteProof(
+            proof_id=proof_id, atomic_group_id=group_id,
+            diagnostic_provenance=provenance,
+            **{name: _snapshot_owned_route_descendant(table, child)
+               for name, child in zip(_STABLE_ROUTE_PROOF_FIELDS, node.children, strict=True)},
+        )
+        payload = json.dumps(_stable_route_proof_payload(proof), sort_keys=True, separators=(",", ":"))
+        public_proof = replace(source_proofs[ref], diagnostic_provenance=provenance)
+        projected.append((public_proof, payload))
+    return tuple(projected)
+
+
 def canonical_semantic_evidence_from_proofs(
+    native_key: NativePreanalysisKey,
+    generation: int,
+    proofs: tuple[SemanticRouteProof, ...],
+) -> CanonicalSemanticEvidence:
+    """Admit owned proof values and mint unchanged canonical boundary IDs."""
+    proofs = tuple(proofs)
+    arena = RuntimeAuthorityArena(runtime_semantic_route_scope(native_key, generation))
+    try:
+        try:
+            inputs = _owned_canonical_proof_inputs(arena, proofs)
+        except _UnconvertedRouteAttributes:
+            arena.close()
+            return _canonical_evidence_with_unconverted_attributes(
+                native_key, generation, proofs,
+            )
+        group_payload = {
+            "native_key": _fingerprint_value(native_key),
+            "generation": int(generation),
+            "proofs": tuple(sorted(payload for _proof, payload in inputs)),
+        }
+        encoded = json.dumps(group_payload, sort_keys=True, separators=(",", ":"))
+        group_id = "sha256:" + hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+        # The admitted payload is already the exact JSON value used by the
+        # canonical proof schema. Frame it directly without parsing or walking
+        # its descendants again; the constructor independently validates IDs.
+        group_token = json.dumps(group_id)
+        canonical_proofs = tuple(sorted((
+            replace(proof, atomic_group_id=group_id,
+                proof_id="sha256:" + hashlib.sha256((
+                    '{"atomic_group_id":' + group_token + ',"proof":' + payload + '}'
+                ).encode("utf-8")).hexdigest())
+            for proof, payload in inputs
+        ), key=lambda proof: proof.proof_id))
+        return CanonicalSemanticEvidence(
+            native_key=native_key, generation=generation, atomic_group_id=group_id,
+            route_proofs=canonical_proofs,
+            _runtime_binding=_mint_route_binding(arena, own=True,
+                native_key=native_key, generation=generation,
+                atomic_group_id=group_id, route_proofs=canonical_proofs),
+        )
+    except BaseException:
+        arena.close()
+        raise
+
+
+def _canonical_evidence_with_unconverted_attributes(
     native_key: NativePreanalysisKey,
     generation: int,
     proofs: tuple[SemanticRouteProof, ...],
@@ -7232,10 +7341,15 @@ def capture_structural_route_proof(
     return table.intern(StructuralNodeKind.ROUTE_PROOF, None, (), children)
 
 
+class _UnconvertedRouteAttributes(TypeError):
+    """Open instruction attributes outside the explicit structural closure."""
+
+
 def _capture_route_descendant(
     table: StructuralTable,
     value: object,
     active: set[int],
+    *, open_attributes: bool = False,
 ) -> StructuralRef:
     value_type = type(value)
     if value_type in (type(None), bool, int, str):
@@ -7256,7 +7370,12 @@ def _capture_route_descendant(
             if tuple(item.name for item in fields(value_type)) != names:
                 raise TypeError("structural route descendant schema drift")
             children = tuple(
-                _capture_route_descendant(table, getattr(value, name), active)
+                _capture_route_descendant(
+                    table, getattr(value, name), active,
+                    open_attributes=(open_attributes
+                        or (value_type is InsnRecord and name == "opcode_attrs")
+                        or (value_type is Instruction and name == "attrs")),
+                )
                 for name in names
             )
             return table.intern(
@@ -7267,7 +7386,7 @@ def _capture_route_descendant(
             )
         if value_type in (tuple, list):
             children = tuple(
-                _capture_route_descendant(table, child, active) for child in value
+                _capture_route_descendant(table, child, active, open_attributes=open_attributes) for child in value
             )
             return table.intern(
                 StructuralNodeKind.SEQUENCE,
@@ -7279,9 +7398,11 @@ def _capture_route_descendant(
             # The declared route set descendant is exact_instruction_eas.
             # Open attribute sets are admitted only over this same scalar closure.
             if any(type(child) not in (type(None), bool, int, str) for child in value):
-                raise TypeError("structural route sets require exact scalar members")
+                raise (_UnconvertedRouteAttributes if open_attributes else TypeError)(
+                    "structural route sets require exact scalar members"
+                )
             children = tuple(
-                _capture_route_descendant(table, child, active)
+                _capture_route_descendant(table, child, active, open_attributes=open_attributes)
                 for child in sorted(
                     value, key=lambda child: (type(child).__name__, child)
                 )
@@ -7294,14 +7415,16 @@ def _capture_route_descendant(
             )
         if value_type in (dict, MappingProxyType):
             if any(type(key) is not str for key in value):
-                raise TypeError("structural route attributes require exact string keys")
+                raise (_UnconvertedRouteAttributes if open_attributes else TypeError)(
+                    "structural route attributes require exact string keys"
+                )
             children = tuple(
-                _capture_route_descendant(table, item, active)
+                _capture_route_descendant(table, item, active, open_attributes=open_attributes)
                 for key in sorted(value)
                 for item in (key, value[key])
             )
             return table.intern(StructuralNodeKind.MAPPING, None, (), children)
-        raise TypeError(
+        raise (_UnconvertedRouteAttributes if open_attributes else TypeError)(
             f"unsupported structural route descendant: {value_type.__name__}"
         )
     finally:
@@ -7356,7 +7479,41 @@ _ROUTE_STRUCTURAL_ENUM_TYPES = MappingProxyType(
 )
 
 
+def _construct_owned_route_record(record_type: type, values: dict[str, object]) -> object:
+    return record_type(**values)
+
+
+def _copy_owned_route_record(record_type: type, values: dict[str, object]) -> object:
+    """Copy one admitted record's state without changing its validation stage.
+
+    This is a snapshot operation, not a decoder or an authority mint. The
+    caller can only obtain record types from the explicit structural manifest.
+    The canonical factory historically reconstructs the top proof, while its
+    binders validate physical descendant semantics later. Preserve that order:
+    a forged physical descendant must still reach the same rejecting binder.
+    Persistence projection uses _construct_owned_route_record instead.
+    """
+    if record_type not in _ROUTE_STRUCTURAL_FIELDS:
+        raise TypeError("route snapshot requires an explicitly admitted record")
+    if record_type is InsnRecord:
+        values["opcode_attrs"] = MappingProxyType(dict(values["opcode_attrs"]))
+    if record_type is Instruction:
+        values["attrs"] = MappingProxyType(dict(values["attrs"]))
+    value = object.__new__(record_type)
+    for name in _ROUTE_STRUCTURAL_FIELDS[record_type]:
+        object.__setattr__(value, name, values[name])
+    return value
+
+
 def _materialize_route_descendant(table: StructuralTable, ref: StructuralRef) -> object:
+    return _read_owned_route_descendant(table, ref, _construct_owned_route_record)
+
+
+def _snapshot_owned_route_descendant(table: StructuralTable, ref: StructuralRef) -> object:
+    return _read_owned_route_descendant(table, ref, _copy_owned_route_record)
+
+
+def _read_owned_route_descendant(table: StructuralTable, ref: StructuralRef, record_builder: Callable[[type, dict[str, object]], object]) -> object:
     node = table.resolve(ref, ref.kind)
     if node.width is not None:
         raise ValueError("malformed structural route descendant width")
@@ -7382,14 +7539,14 @@ def _materialize_route_descendant(table: StructuralTable, ref: StructuralRef) ->
         names = _ROUTE_STRUCTURAL_FIELDS[record_type]
         if len(node.children) != len(names):
             raise ValueError("malformed structural route record fields")
-        return record_type(
-            **{
-                name: _materialize_route_descendant(table, child)
+        return record_builder(record_type,
+            {
+                name: _read_owned_route_descendant(table, child, record_builder)
                 for name, child in zip(names, node.children, strict=True)
             }
         )
     values = tuple(
-        _materialize_route_descendant(table, child) for child in node.children
+        _read_owned_route_descendant(table, child, record_builder) for child in node.children
     )
     if node.kind is StructuralNodeKind.SEQUENCE:
         if node.payload == ("tuple",):

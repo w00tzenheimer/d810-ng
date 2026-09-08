@@ -1,5 +1,6 @@
 """Owned route terms detach descendants without changing canonical validation."""
 
+from collections import UserDict
 from dataclasses import fields, is_dataclass, replace
 from d810.core.typing import get_args, get_type_hints
 from d810.transforms.unflatten_authority.ids import canonical_bytes, canonical_decode
@@ -276,3 +277,152 @@ def test_group_projection_maps_every_duplicate_payload_and_rejects_ambiguous_ids
         routes.project_owned_route_group(
             arena.structural, 3, "group", (entries[0], entries[0])
         )
+
+
+def test_live_canonical_factory_uses_owned_selection_and_keeps_boundary_validation(monkeypatch):
+    proof = _proof()
+    counts = {"payload": 0, "dedup": 0, "validate": 0}
+    original_payload = routes._stable_route_proof_payload
+    original_dedup = routes._canonical_authoritative_proofs
+    original_validate = routes._validate_content_derived_ids
+
+    def payload(value):
+        counts["payload"] += 1
+        return original_payload(value)
+
+    def dedup(values):
+        counts["dedup"] += 1
+        return original_dedup(values)
+
+    def validate(**values):
+        counts["validate"] += 1
+        return original_validate(**values)
+
+    monkeypatch.setattr(routes, "_stable_route_proof_payload", payload)
+    monkeypatch.setattr(routes, "_canonical_authoritative_proofs", dedup)
+    monkeypatch.setattr(routes, "_validate_content_derived_ids", validate)
+    with routes.route_authority_phase("live-owned-selection"):
+        evidence = routes.canonical_semantic_evidence_from_proofs(proof.native_key, 1, (proof,))
+        assert len(evidence.route_binding.arena.structural) > 0
+    # One boundary ID validation remains. Its canonical group dedup and three
+    # payload encodings are separate from the factory's one admitted payload.
+    assert counts == {"payload": 4, "dedup": 1, "validate": 1}
+
+
+def test_live_factory_owned_inputs_detach_aliases_without_replacing_public_witnesses(monkeypatch):
+    aliases = [1, {"value": 2}]
+    proof = _physical_proof_with_attrs({"custom": aliases})
+    captured = []
+    original_capture = routes.capture_structural_route_proof
+
+    def capture(table, value):
+        ref = original_capture(table, value)
+        captured.append((table, ref))
+        return ref
+
+    monkeypatch.setattr(routes, "capture_structural_route_proof", capture)
+    with routes.route_authority_phase("factory-aliases"):
+        evidence = routes.canonical_semantic_evidence_from_proofs(proof.native_key, 1, (proof,))
+        assert evidence.route_proofs[0].state_write.physical_state_write is proof.state_write.physical_state_write
+        table, ref = captured[0]
+        before = tuple(table.resolve(ref, ref.kind).children)
+        owned_before = repr(tuple(routes._snapshot_owned_route_descendant(table, child) for child in before))
+        aliases[1]["value"] = 9
+        aliases.append(4)
+        assert tuple(table.resolve(ref, ref.kind).children) == before
+        assert repr(tuple(routes._snapshot_owned_route_descendant(table, child) for child in before)) == owned_before
+
+
+@pytest.mark.parametrize("fail", [False, True])
+def test_live_factory_owned_partition_closes_on_return_or_failed_boundary(monkeypatch, fail):
+    captured = []
+    original_capture = routes.capture_structural_route_proof
+
+    def capture(table, proof):
+        ref = original_capture(table, proof)
+        captured.append((table, ref))
+        return ref
+
+    class BoundaryAbort(BaseException):
+        pass
+
+    def abort(_proof):
+        raise BoundaryAbort()
+
+    monkeypatch.setattr(routes, "capture_structural_route_proof", capture)
+    if fail:
+        monkeypatch.setattr(routes, "_stable_route_proof_payload", abort)
+    proof = _proof()
+    with routes.route_authority_phase("factory-partition-lifetime"):
+        if fail:
+            with pytest.raises(BoundaryAbort):
+                routes.canonical_semantic_evidence_from_proofs(proof.native_key, 1, (proof,))
+        else:
+            routes.canonical_semantic_evidence_from_proofs(proof.native_key, 1, (proof,))
+            table, ref = captured[0]
+            assert table.resolve(ref, ref.kind)
+            with pytest.raises(StructuralIdentityError, match="published"):
+                table.intern(ref.kind, None, (), ())
+    assert captured
+    for table, ref in captured:
+        with pytest.raises(StructuralIdentityError, match="closed"):
+            table.resolve(ref, ref.kind)
+
+
+def test_live_factory_does_not_trust_public_witness_after_owned_admission(monkeypatch):
+    aliases = [1, {"value": 2}]
+    proof = _physical_proof_with_attrs({"custom": aliases})
+    original_validate = routes._validate_content_derived_ids
+
+    def validate(**values):
+        aliases[1]["value"] = 9
+        return original_validate(**values)
+
+    monkeypatch.setattr(routes, "_validate_content_derived_ids", validate)
+    with routes.route_authority_phase("factory-public-boundary"):
+        with pytest.raises(routes.SemanticRouteEvidenceRejected, match="content-derived"):
+            routes.canonical_semantic_evidence_from_proofs(proof.native_key, 1, (proof,))
+
+
+@pytest.mark.parametrize(("attribute", "expected_group"), [
+    (0.5, "ca6a857f64d2c65cdeb40e51b83c22b56d99c9aaf8345c35e440e2acc0243ed2"),
+    ({1: 2}, "32026f0ce77ff8b4698aa7564279cb6408806e005b0aa64c7a4c35e25bc098a7"),
+    (UserDict({"value": 2}), "e41dcf8bbfa60c664be6ed3590045e452ddc558099b065ebeccef40e4295cc32"),
+    ({(1, 2), (3, 4)}, "0d071b392ce96644a6c0bd45ebde8f38ce11d16c73815bcf9276f0e1fe55e502"),
+])
+def test_live_factory_preserves_unconverted_open_attribute_boundary(monkeypatch, attribute, expected_group):
+    # Recorded from the pre-conversion canonical factory at a13fe1cbe.
+    captured = []
+    original_capture = routes.capture_structural_route_proof
+
+    def capture(table, value):
+        captured.append(table)
+        return original_capture(table, value)
+
+    monkeypatch.setattr(routes, "capture_structural_route_proof", capture)
+    proof = _physical_proof_with_attrs({"custom": attribute})
+    captured.clear()
+    with routes.route_authority_phase("unconverted-attributes"):
+        evidence = routes.canonical_semantic_evidence_from_proofs(proof.native_key, 1, (proof,))
+        assert evidence.atomic_group_id == "sha256:" + expected_group
+        assert captured
+        for table in captured:
+            with pytest.raises(StructuralIdentityError, match="closed"):
+                table.intern(routes.StructuralNodeKind.VALUE, None, (None,), ())
+        assert evidence.route_proofs[0].state_write.physical_state_write is proof.state_write.physical_state_write
+
+
+
+def test_live_factory_never_routes_closed_schema_drift_through_unconverted_attributes(monkeypatch):
+    proof = _physical_proof_with_attrs({"custom": 0.5})
+    manifest = dict(routes._ROUTE_STRUCTURAL_FIELDS)
+    manifest[routes.InsnRecord] = manifest[routes.InsnRecord][:-1]
+    monkeypatch.setattr(routes, "_ROUTE_STRUCTURAL_FIELDS", manifest)
+
+    def forbidden(*args):
+        raise AssertionError("closed schema failure entered the unconverted path")
+
+    monkeypatch.setattr(routes, "_canonical_evidence_with_unconverted_attributes", forbidden)
+    with routes.route_authority_phase("closed-schema-drift"):
+        with pytest.raises(TypeError, match="schema drift"):
+            routes.canonical_semantic_evidence_from_proofs(proof.native_key, 1, (proof,))
