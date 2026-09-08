@@ -104,6 +104,18 @@ class StructuralTransactionContext:
             raise StructuralIdentityError("structural transaction is closed")
 
     @property
+    def source_arena(self) -> RuntimeAuthorityArena:
+        """Use this source owner for structural values and occurrence origins."""
+        self._require_open()
+        return self._source
+
+    @property
+    def projected_arena(self) -> RuntimeAuthorityArena:
+        """Use the separate projected owner; never substitute an observation."""
+        self._require_open()
+        return self._projected
+
+    @property
     def source(self) -> StructuralTable:
         self._require_open()
         return self._source.structural

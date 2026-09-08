@@ -81,3 +81,42 @@ def test_owned_inventory_enum_payload_does_not_retain_enum_alias() -> None:
             model.validate_semantic_graph_inventory(public)
     finally:
         object.__setattr__(member, "_value_", original)
+
+
+def test_owned_effect_join_uses_same_owner_reference_without_public_reads(monkeypatch) -> None:
+    public = projected_site_fixture().source_inventory
+    row = public.effects[0]
+    table = StructuralTable()
+    root = inventory_inputs.capture_inventory(table, public)
+    owner = inventory_inputs.capture_inventory_reference(table, row.owner_ref)
+    anchor, ea, kind = row.owner_anchor_ea, row.instruction_ea, row.effect_kind.value
+    expected = inventory_values.sequence_children(
+        table, inventory_values.inventory_field(table, root, "effects")
+    )[0]
+    object.__setattr__(row, "instruction_ea", ea + 1)
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("join reconstructed or captured a public value")
+
+    monkeypatch.setattr(StructuralTable, "intern", forbidden)
+    monkeypatch.setattr(inventory_inputs.proposal_inputs, "_materialize", forbidden)
+    assert inventory_values.matching_effect_rows(
+        table, root, owner, anchor, ea, kind
+    ) == (expected,)
+    assert inventory_values.matching_effect_rows(
+        table, root, owner, anchor, ea + 1, kind
+    ) == ()
+
+
+def test_owned_effect_join_rejects_equal_reference_from_foreign_partition() -> None:
+    public = projected_site_fixture().source_inventory
+    row = public.effects[0]
+    source = StructuralTable()
+    projected = StructuralTable()
+    root = inventory_inputs.capture_inventory(source, public)
+    foreign = inventory_inputs.capture_inventory_reference(projected, row.owner_ref)
+    with pytest.raises(StructuralIdentityError):
+        inventory_values.matching_effect_rows(
+            source, root, foreign, row.owner_anchor_ea, row.instruction_ea,
+            row.effect_kind.value,
+        )
