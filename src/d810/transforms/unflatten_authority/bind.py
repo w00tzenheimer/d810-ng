@@ -10402,6 +10402,9 @@ def _make_terminal_cycle_binding_entrypoints(
     def validate_phase(result: model.TerminalCyclePhaseResult) -> None:
         if type(result) is not model.TerminalCyclePhaseResult:
             raise TypeError("terminal-cycle phase result must be closed")
+        owner = active_facts()
+        if owner is not None and owner.registered(phase_registry, result):
+            return
         registered = phase_registry.get(id(result))
         if registered is None or registered[0]() is not result:
             raise ValueError("terminal-cycle phase result was not minted by the transaction binder")
@@ -10415,6 +10418,11 @@ def _make_terminal_cycle_binding_entrypoints(
         if type(result) is not model.TerminalCyclePhaseResult:
             raise TypeError("terminal-cycle phase result must be closed")
         result.__post_init__()
+        owner = active_facts()
+        if owner is not None:
+            if owner.registered(phase_registry, result):
+                raise ValueError("terminal-cycle phase result occurrence was already minted")
+            return owner.issue(phase_registry, result)
         identity = id(result)
         registered = phase_registry.get(identity)
         if registered is not None and registered[0]() is result:
@@ -10435,8 +10443,14 @@ def _make_terminal_cycle_binding_entrypoints(
         validate_phase(result.phase_result)
 
     def entrypoint(**kwargs: object) -> TerminalCycleBindingResult:
+        owner = active_facts()
+        if owner is not None:
+            kwargs = {name: owner.capture(value) for name, value in kwargs.items()}
         result = graph_impl(**kwargs)
-        register_phase(result.phase_result)
+        issued = register_phase(result.phase_result)
+        if issued is not result.phase_result:
+            # The private carrier must publish the final issued occurrence.
+            stage_unpublished_field(result, "phase_result", issued)
         validate_binding(result)
         return result
 
@@ -11399,6 +11413,9 @@ def _make_detached_binding_entrypoint(
     def validate_source(result: model.DetachedDeadHandlerComponentSourceResult) -> None:
         if type(result) is not model.DetachedDeadHandlerComponentSourceResult:
             raise TypeError("detached source result must be closed")
+        owner = active_facts()
+        if owner is not None and owner.registered(source_registry, result):
+            return
         registered = source_registry.get(id(result))
         if registered is None or registered[0]() is not result:
             raise ValueError("detached source result was not minted by the transaction binder")
@@ -11409,6 +11426,9 @@ def _make_detached_binding_entrypoint(
     def validate_phase(result: model.DetachedDeadHandlerComponentPhaseResult) -> None:
         if type(result) is not model.DetachedDeadHandlerComponentPhaseResult:
             raise TypeError("detached phase result must be closed")
+        owner = active_facts()
+        if owner is not None and owner.registered(phase_registry, result):
+            return
         registered = phase_registry.get(id(result))
         if registered is None or registered[0]() is not result:
             raise ValueError("detached phase result was not minted by the transaction binder")
@@ -11421,6 +11441,9 @@ def _make_detached_binding_entrypoint(
         for name, value in values.items():
             stage_unpublished_field(result, name, value)
         result.__post_init__()
+        owner = active_facts()
+        if owner is not None:
+            return owner.issue(source_registry, result)
         identity = id(result)
         seal = authority_id(("unflatten.detached-source-object-seal.v1", result))
 
@@ -11440,6 +11463,9 @@ def _make_detached_binding_entrypoint(
         for name, value in values.items():
             stage_unpublished_field(result, name, value)
         result.__post_init__()
+        owner = active_facts()
+        if owner is not None:
+            return owner.issue(phase_registry, result)
         identity = id(result)
         seal = authority_id(("unflatten.detached-phase-object-seal.v1", result))
 
@@ -11455,6 +11481,9 @@ def _make_detached_binding_entrypoint(
         return result
 
     def entrypoint(**kwargs: object) -> DetachedDeadHandlerComponentBindingResult:
+        owner = active_facts()
+        if owner is not None:
+            kwargs = {name: owner.capture(value) for name, value in kwargs.items()}
         return graph_impl(
             **kwargs,
             _mint_source_result=mint_source,
@@ -11978,6 +12007,9 @@ def _make_default_gap_binding_entrypoints(
     def validate_phase(result: model.DefaultGapInfeasibilityPhaseResult) -> None:
         if type(result) is not model.DefaultGapInfeasibilityPhaseResult:
             raise TypeError("default-gap phase result must be closed")
+        owner = active_facts()
+        if owner is not None and owner.registered(phase_registry, result):
+            return
         registered = phase_registry.get(id(result))
         if registered is None or registered[0]() is not result:
             raise ValueError("default-gap phase result was not minted by the transaction binder")
@@ -11991,6 +12023,11 @@ def _make_default_gap_binding_entrypoints(
         if type(result) is not model.DefaultGapInfeasibilityPhaseResult:
             raise TypeError("default-gap phase result must be closed")
         result.__post_init__()
+        owner = active_facts()
+        if owner is not None:
+            if owner.registered(phase_registry, result):
+                raise ValueError("default-gap phase result occurrence was already minted")
+            return owner.issue(phase_registry, result)
         identity = id(result)
         registered = phase_registry.get(identity)
         if registered is not None and registered[0]() is result:

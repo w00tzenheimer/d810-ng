@@ -417,3 +417,173 @@ def test_owned_observed_occurrence_requires_exact_namespace_issuance(kind):
     finally:
         observed.close()
         projected.close()
+
+
+def _bind_owned_phase_result(kind):
+    from d810.transforms.unflatten_authority import bind, model
+    from . import test_bind
+
+    if kind == "terminal":
+        proposal, claim, fixture, source, candidate, _ = test_bind._terminal_cycle_inventory_fixture()
+        result = bind.bind_terminal_cycle_break_claim(
+            claim=claim, proposal=proposal, source_inventory=source,
+            candidate_inventory=candidate, phase=fixture.phase_build_metrics.phase,
+        )
+        return result.phase_result, bind.validate_terminal_cycle_phase_result
+    if kind in {"detached_source", "detached_phase"}:
+        claim, source, candidate, corridor = test_bind._detached_binding_fixture()
+        result = bind.bind_detached_dead_handler_component_claim(
+            claim=claim, source_inventory=source, candidate_inventory=candidate,
+            corridor_result=corridor, phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        )
+        if kind == "detached_source":
+            return result.source_result, bind.validate_detached_source_result
+        return result.phase_result, bind.validate_detached_phase_result
+    assert kind == "default_gap"
+    proposal, source, candidate, authority = test_bind._default_gap_bound_projected_case()
+    result = bind.bind_default_gap_infeasibility_forecast(
+        proposal=authority.proposal, source_inventory=source, candidate_inventory=candidate,
+        phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT, source_authority=authority,
+    )
+    assert result is not None
+    return result, bind.validate_default_gap_infeasibility_phase_result
+
+
+@pytest.mark.parametrize("kind", ["terminal", "detached_source", "detached_phase", "default_gap"])
+def test_binder_phase_issuance_survives_owned_capture(kind):
+    """Real private issuers must publish the final owned occurrence, not its precursor."""
+    owner = TransactionFacts()
+    try:
+        with fact_scope(owner):
+            issued, validate = _bind_owned_phase_result(kind)
+            validate(issued)
+            captured = owner.capture(issued)
+            assert captured == issued
+            validate(captured)
+            assert captured is issued
+    finally:
+        owner.close()
+
+
+@pytest.mark.parametrize("kind", ["terminal", "detached_source", "detached_phase", "default_gap"])
+def test_owned_phase_issuance_rejects_clones_foreign_closed_and_reverse_partition(kind):
+    from dataclasses import replace
+
+    projected = TransactionFacts()
+    observed = TransactionFacts(parent=projected)
+    foreign = TransactionFacts()
+    try:
+        with fact_scope(observed):
+            issued, validate = _bind_owned_phase_result(kind)
+            validate(issued)
+            with pytest.raises(ValueError, match="not minted"):
+                validate(observed.capture(replace(issued)))
+        for other in (projected, foreign):
+            with fact_scope(other):
+                with pytest.raises(ValueError, match="not minted"):
+                    validate(issued)
+                with pytest.raises(ValueError, match="not minted"):
+                    validate(other.capture(issued))
+        with pytest.raises(ValueError, match="not minted"):
+            validate(issued)
+        observed.close()
+        with pytest.raises(ValueError, match="closed"):
+            with fact_scope(observed):
+                validate(issued)
+    finally:
+        observed.close()
+        projected.close()
+        foreign.close()
+
+
+@pytest.mark.parametrize("kind", ["terminal", "detached_source", "detached_phase", "default_gap"])
+def test_capture_does_not_adopt_external_phase_issuance(kind):
+    issued, validate = _bind_owned_phase_result(kind)
+    validate(issued)
+    owner = TransactionFacts()
+    try:
+        with fact_scope(owner):
+            copied = owner.capture(issued)
+            assert copied is not issued
+            with pytest.raises(ValueError, match="not minted"):
+                validate(copied)
+    finally:
+        owner.close()
+
+
+@pytest.mark.parametrize("kind", ["terminal", "detached", "default_gap"])
+def test_owned_binder_observation_preserves_parent_and_issues_fresh_child(kind):
+    from dataclasses import replace
+    from d810.transforms.unflatten_authority import bind, model
+    from . import test_bind
+
+    parent = TransactionFacts()
+    child = TransactionFacts(parent=parent)
+    projected_phase = model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT
+    observed_phase = model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY
+    try:
+        with fact_scope(parent):
+            if kind == "terminal":
+                proposal, claim, _, source, candidate, _ = test_bind._terminal_cycle_inventory_fixture()
+                proposal, claim, source, candidate = parent.capture((proposal, claim, source, candidate))
+                projected = bind.bind_terminal_cycle_break_claim(
+                    claim=claim, proposal=proposal, source_inventory=source,
+                    candidate_inventory=candidate, phase=projected_phase,
+                ).phase_result
+                observe = bind.revalidate_observed_terminal_cycle_break
+                validate = bind.validate_terminal_cycle_phase_result
+                values = dict(claim=claim, proposal=proposal, source_inventory=source)
+            elif kind == "detached":
+                claim, source, candidate, corridor = parent.capture(test_bind._detached_binding_fixture())
+                projected_binding = bind.bind_detached_dead_handler_component_claim(
+                    claim=claim, source_inventory=source, candidate_inventory=candidate,
+                    corridor_result=corridor, phase=projected_phase,
+                )
+                projected = projected_binding.phase_result
+                validate = bind.validate_detached_phase_result
+                values = dict(claim=claim, source_inventory=source)
+            else:
+                _, source, candidate, authority = test_bind._default_gap_bound_projected_case()
+                proposal = authority.proposal
+                projected = bind.bind_default_gap_infeasibility_forecast(
+                    proposal=proposal, source_inventory=source, candidate_inventory=candidate,
+                    phase=projected_phase, source_authority=authority,
+                )
+                observe = bind.revalidate_observed_default_gap_infeasibility
+                validate = bind.validate_default_gap_infeasibility_phase_result
+                values = dict(proposal=proposal, source_inventory=source, source_authority=authority)
+        with fact_scope(child):
+            validate(projected)
+            assert child.capture(projected) is projected
+            if kind == "detached":
+                _, _, observed_inventory, observed_corridor = test_bind._detached_binding_fixture(
+                    candidate_phase=observed_phase,
+                    candidate_fingerprint=ids.authority_id("owned-detached-observed"),
+                    candidate_generation=5,
+                )
+                observed_binding = bind.bind_detached_dead_handler_component_claim(
+                    **values, candidate_inventory=observed_inventory,
+                    corridor_result=observed_corridor, phase=observed_phase,
+                    source_result=projected_binding.source_result,
+                )
+                assert observed_binding.source_result is projected_binding.source_result
+                observed = observed_binding.phase_result
+            else:
+                observed_inventory = test_bind._inventory_rephase(
+                    candidate, phase=observed_phase,
+                    fingerprint=ids.authority_id("owned-observed-" + kind),
+                    generation=candidate.generation,
+                )
+                with pytest.raises(ValueError, match="not minted"):
+                    observe(**values, projected_result=replace(projected), observed_inventory=observed_inventory)
+                observed = observe(**values, projected_result=projected, observed_inventory=observed_inventory)
+            assert observed.phase is observed_phase
+            validate(observed)
+            assert child.capture(observed) is observed
+        with fact_scope(parent):
+            validate(projected)
+            with pytest.raises(ValueError, match="not minted"):
+                validate(observed)
+    finally:
+        child.close()
+        parent.close()
