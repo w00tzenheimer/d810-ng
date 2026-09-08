@@ -8,6 +8,10 @@ its existing constructors; complete proposal roundtrip checks remain mandatory.
 from dataclasses import fields
 from types import MappingProxyType
 
+from d810.analyses.control_flow.semantic_route_evidence import (
+    CanonicalSemanticEvidence, SemanticRouteProof,
+    capture_canonical_route_proof, materialize_canonical_route_proof,
+)
 from d810.core.native_preanalysis_key import NativePreanalysisKey
 from d810.core.structural_identity import StructuralIdentityError
 from d810.core.structural_identity import StructuralNodeKind as Kind
@@ -19,6 +23,7 @@ from d810.ir.structural_identity import NATIVE_KEY_FIELDS
 from d810.ir.storage_identity import StorageIdentity, StorageIdentityKind
 from d810.transforms.cfg_transaction import LogicalBlockRef, PlanBlockRef
 from d810.transforms.unflatten_authority.model import (
+    ProposedUnflattenContract,
     SourceBlockIdentityWitness, SourceIdentityCatalog, UseDefFragmentWitness,
     RetiredDispatcherInfrastructureClaim, DetachedDeadHandlerComponentClaim, ExactInfeasibleEffectClaim, HandlerSubjectLocator, EffectSubjectLocator, ProviderConsensusWitness, EffectSiteKind, ProviderConsensusMode, SemanticEdgeRole,
     TerminalCycleBreakClaim, TerminalSubjectLocator, CorridorSubjectLocator, TerminalKind,
@@ -36,6 +41,13 @@ from d810.transforms.unflatten_authority.model import (
 
 
 _SOURCE_FIELDS = MappingProxyType({
+    ProposedUnflattenContract: (
+        "schema_version", "rule_set_version", "plan_id", "route_evidence",
+        "source_identity_catalog", "use_def_witness", "claims", "plan_inputs",
+        "corridor_coverage_forecast", "retirement_candidate_catalog",
+        "entry_endpoint_liveness_allowances",
+    ),
+    CanonicalSemanticEvidence: ("native_key", "generation", "atomic_group_id", "route_proofs"),
     RetiredDispatcherInfrastructureClaim: ('claim_id', 'kind', 'infrastructure_subject', 'corridor_subject', 'member_subjects', 'candidate_evidence_ids', 'source_generation', 'candidate_catalog'),
     DetachedDeadHandlerComponentClaim: ('claim_id', 'kind', 'dispatcher_subject', 'dead_handler_subjects', 'retained_handler_subjects', 'component_subjects', 'comparison_region_subjects', 'source_generation'),
     ExactInfeasibleEffectClaim: ('claim_id', 'kind', 'effect_subject', 'source_subject', 'predicate_subject', 'selected_target_subject', 'discarded_effect_subject', 'normalized_state', 'state_identity', 'width', 'source_write_ea', 'predicate_branch_ea', 'discarded_effect_ea', 'selected_edge_role', 'route_proof_ids', 'consensus', 'source_generation'),
@@ -105,7 +117,7 @@ _SOURCE_FIELDS = MappingProxyType({
     SourceBlockIdentityWitness: (
         "block_ref", "anchor_ea", "native_instruction_eas",
     ),
-    NativePreanalysisKey: NATIVE_KEY_FIELDS,
+    NativePreanalysisKey: ("schema_version", *NATIVE_KEY_FIELDS),
     NativeBlockRef: ("identity",),
     LogicalBlockRef: ("session_id", "proxy_token", "version"),
     StableBlockIdentity: ("native_key", "exact_instruction_eas", "native_ranges"),
@@ -153,6 +165,7 @@ _DERIVED_FIELDS = MappingProxyType({
 # These exact fields are also excluded by the canonical codec. They are never
 # read, interned, or restored; reconstruction receives constructor defaults.
 _RUNTIME_FIELDS = MappingProxyType({
+    CanonicalSemanticEvidence: ("_runtime_identity", "_runtime_binding"),
     EquivalentSemanticRouteClaim: ("_runtime_refs",),
     SemanticSubjectRef: ("_runtime_ref",),
 })
@@ -162,6 +175,22 @@ _PRODUCER_CLAIM_TYPES = (
     RetiredDispatcherInfrastructureClaim, DetachedDeadHandlerComponentClaim,
     EquivalentSemanticRouteClaim, ExactInfeasibleEffectClaim, TerminalCycleBreakClaim,
 )
+
+
+def capture_proposal(table: StructuralTable, value: ProposedUnflattenContract) -> StructuralRef:
+    """Own the explicit producer proposal schema without granting validity."""
+    if type(table) is not StructuralTable or type(value) is not ProposedUnflattenContract:
+        raise TypeError("proposal capture requires exact table and proposal")
+    return _capture(table, value, set())
+
+
+def materialize_proposal(table: StructuralTable, ref: StructuralRef) -> ProposedUnflattenContract:
+    if type(table) is not StructuralTable or type(ref) is not StructuralRef:
+        raise TypeError("proposal read requires exact table and handle")
+    node = table.resolve(ref, Kind.SUBJECT)
+    if node.payload != (ProposedUnflattenContract.__module__, ProposedUnflattenContract.__qualname__):
+        raise StructuralIdentityError("handle does not identify a proposal")
+    return _materialize(table, ref)
 
 
 def capture_producer_claim(table: StructuralTable, value: object) -> StructuralRef:
@@ -341,6 +370,8 @@ def capture_source_catalog(
 
 def _capture(table: StructuralTable, value: object, active: set[int]) -> StructuralRef:
     value_type = type(value)
+    if value_type is SemanticRouteProof:
+        return capture_canonical_route_proof(table, value)
     if value_type in (type(None), bool, int, str):
         return table.intern(Kind.VALUE, None, (value,), ())
     if value_type in (StorageIdentityKind, UnflattenPlanShape, CorridorPathDisposition, EntryEndpointLivenessReason, TerminalKind, EffectSiteKind, ProviderConsensusMode, SemanticEdgeRole, SemanticSubjectKind, SemanticSubjectRole, UnflattenClaimKind):
@@ -357,11 +388,15 @@ def _capture(table: StructuralTable, value: object, active: set[int]) -> Structu
     try:
         if value_type in _SOURCE_FIELDS:
             names = _SOURCE_FIELDS[value_type]
-            if tuple(field.name for field in fields(value_type)) != names + _RUNTIME_FIELDS.get(value_type, ()):
+            actual_names = names[1:] if value_type is NativePreanalysisKey else names
+            if tuple(field.name for field in fields(value_type)) != actual_names + _RUNTIME_FIELDS.get(value_type, ()):
                 raise TypeError("source catalog descendant schema drift")
             derived = _DERIVED_FIELDS.get(value_type, ())
             children_by_name = {
-                name: _capture(table, object.__getattribute__(value, name), active)
+                name: _capture(table,
+                    NativePreanalysisKey.SCHEMA_VERSION
+                    if value_type is NativePreanalysisKey and name == "schema_version"
+                    else object.__getattribute__(value, name), active)
                 for name in names if name not in derived
             }
             # Close ordinary descendants before invoking a known lazy accessor.
@@ -430,6 +465,9 @@ def _materialize(table: StructuralTable, ref: StructuralRef) -> object:
         if node.payload == ("frozenset",) and all(type(item) is int for item in values):
             return frozenset(values)
         raise StructuralIdentityError("invalid source sequence term")
+    if (ref.kind is Kind.SUBJECT
+            and node.payload == (SemanticRouteProof.__module__, SemanticRouteProof.__qualname__)):
+        return materialize_canonical_route_proof(table, ref)
     if ref.kind is not Kind.SUBJECT or node.payload not in _SOURCE_TYPES:
         raise StructuralIdentityError("unsupported source record term")
     record_type = _SOURCE_TYPES[node.payload]
@@ -443,7 +481,8 @@ def _materialize(table: StructuralTable, ref: StructuralRef) -> object:
     supplied_ids = {
         name: values.pop(name) for name in _DERIVED_FIELDS.get(record_type, ())
     }
-    result = record_type(**values)
+    result = (NativePreanalysisKey.from_dict(values)
+              if record_type is NativePreanalysisKey else record_type(**values))
     for name, supplied in supplied_ids.items():
         if type(supplied) is not str or getattr(result, name) != supplied:
             raise StructuralIdentityError("proposal descendant derived identity differs")
