@@ -153,3 +153,10 @@ def test_projection_drops_live_claim_authority_even_when_ids_are_unchanged():
             *result.claim.dag_endpoint_subjects,
         )
     )
+
+
+def test_claim_projection_rejects_another_source_generation():
+    claims, group, _expected = projection_fixture()
+    stale = replace(claims[0], source_generation=claims[0].source_generation + 1)
+    with pytest.raises(ValueError, match="generation"):
+        project_equivalent_route_claim(stale, group)

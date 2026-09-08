@@ -31,6 +31,8 @@ def project_equivalent_route_claim(
         raise TypeError("projection requires an exact equivalent route claim")
     if type(projection) is not CanonicalRouteIdProjection:
         raise TypeError("projection requires canonical route ID correspondence")
+    if claim.source_generation != projection.evidence.generation:
+        raise ValueError("claim belongs to another source generation")
     source_group, target_group = projection.group_id_pair
     if claim.atomic_group_id != source_group:
         raise ValueError("claim belongs to another source route group")
