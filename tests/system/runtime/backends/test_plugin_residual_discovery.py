@@ -255,7 +255,9 @@ def _activate_real_provider(
                             "max_operator_nodes": 128,
                             "max_degree": 1,
                             "time_budget_ms": time_budget_ms,
-                            "families": ["add", "and", "bnot", "mul", "or", "sub", "xor"],
+                            # These observation cases exercise one XOR identity
+                            # and candidate refusal, not whole-corpus coverage.
+                            "families": ["xor"],
                         }
                     ),
                 }
