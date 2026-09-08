@@ -46,6 +46,47 @@
 #                           list from the test selection and --batch-size on every run, so the test
 #                           selection (PYTEST_ARGS) and D810_SYSTEM_BATCH_SIZE must be identical to
 #                           the run being resumed or the numbering will not line up.
+#   --plan MODE             (system only) fixed|cost|lane. Default fixed: the historical
+#                           --batch-size split, one fresh interpreter per 20 node ids.
+#                             lane  - ONE interpreter for every test the cost ledger prices under
+#                                     --lane-threshold-seconds (30 s), March-style, plus one
+#                                     interpreter per slow test. This is the shape --shards spreads.
+#                             cost  - cost-aware packing that still bounds database-open groups per
+#                                     interpreter (see tools/scripts/system_batch_planner.py).
+#                           Anything but fixed reads a cost ledger; with no --cost-ledger the
+#                           runner defaults to /root/.idapro/logs/d810_logs/system_batches.jsonl,
+#                           which is the file a previous -l run wrote.
+#   --lane-threshold-seconds N
+#                           (system only) Measured per-test cost at which a test leaves the fast
+#                           lane. Lower it to move more work into the sharded slow lane.
+#   --fast-lanes K          (system only) OPT-IN. Split the fast lane over K interpreters. Off by
+#                           default: the fast lane is ONE interpreter and its ~20 min is accepted.
+#                           Chunks are packed by FILE and a file is never split, so a file's
+#                           imports are never paid twice; there are still no per-20 restarts
+#                           inside a chunk. Splitting is what would let the shard assignment
+#                           interleave the fast lane with the slow tests, if that is ever wanted.
+#   --fast-lane-budget-seconds N
+#                           (system only) OPT-IN. Ledger cost a fast-lane chunk may reach before
+#                           the lane splits again. Unbounded by default.
+#   --cost-ledger PATH      (system only, repeatable) Absolute CONTAINER path to a
+#                           system_batches.jsonl to price tests from. Absent files are ignored and
+#                           the plan degrades to a uniform-cost split.
+#   --shards N              (system only, default 1) Run N concurrent containers over this one
+#                           worktree. A single prewarm container runs the dependency setup first,
+#                           so the shards never race on the remote /work mirror (which begins with
+#                           rm -rf), the editable install's egg-info or the CoBRA cache volume.
+#                           Each shard gets its own D810_RUN_ID, its own
+#                           --log-dir .../d810_logs/shard-K and, with -o, its own shardK- capture.
+#                           With --plan lane, shard 0 is the fast lane and 1..N-1 carry the slow
+#                           tests by longest-processing-time-first. Every shard computes the same
+#                           plan independently from the collected node ids and the ledger; there is
+#                           no coordination between them. A shard stops at its first failing batch;
+#                           the runner waits for all of them and exits non-zero if any failed, then
+#                           merges the per-shard ledgers with merge_system_batch_ledgers.py.
+#                           N containers means N x D810_DOCKER_MEMORY on the engine.
+#   --only-shard K          (system only) Run just shard K of the --shards N plan. This is how a
+#                           sharded run resumes: batch numbers are per shard, so --start-batch is
+#                           refused with --shards unless --only-shard names the shard it applies to.
 #   --enable-debug-logging  Set D810_DEBUG_LOGGING=1 inside the container so getLogger uses DEBUG as
 #                           the default level instead of INFO (explicit caller levels are unaffected).
 #   --enable-diag-snapshot  Set D810_DIAG_SNAPSHOT=1 inside the container.
@@ -784,6 +825,14 @@ ENABLE_LLVM_OPT=""
 DISABLE_FACT_LIFECYCLE=""
 ARTIFACT_RUN=""
 START_BATCH=""
+SYSTEM_SHARDS=1
+ONLY_SHARD=""
+SYSTEM_PLAN="fixed"
+LANE_THRESHOLD=""
+FAST_LANES=""
+FAST_LANE_BUDGET=""
+COST_LEDGERS=()
+DEFAULT_COST_LEDGER="/root/.idapro/logs/d810_logs/system_batches.jsonl"
 EXTRA_PYTEST=()
 EXEC_ARGS=()
 
@@ -868,6 +917,139 @@ while [ $# -gt 0 ]; do
       START_BATCH="$2"
       shift 2
       ;;
+    --shards)
+      # Spliced into loop bounds and the batcher argv, so it is validated to a
+      # bare positive integer before any docker contact, exactly like
+      # --start-batch.
+      if [ $# -lt 2 ]; then
+        echo "ERROR: --shards requires N (positive integer container count)" >&2
+        exit 2
+      fi
+      case "$2" in
+        ''|*[!0-9]*|0*)
+          echo "ERROR: --shards must be a positive integer (e.g. 3), got '$2'" >&2
+          exit 2
+          ;;
+      esac
+      if [ "$CMD" != "system" ]; then
+        echo "ERROR: --shards is only valid with the system command" >&2
+        exit 2
+      fi
+      SYSTEM_SHARDS="$2"
+      shift 2
+      ;;
+    --only-shard)
+      if [ $# -lt 2 ]; then
+        echo "ERROR: --only-shard requires K (0-based shard index)" >&2
+        exit 2
+      fi
+      case "$2" in
+        ''|*[!0-9]*)
+          echo "ERROR: --only-shard must be a non-negative integer, got '$2'" >&2
+          exit 2
+          ;;
+      esac
+      if [ "$CMD" != "system" ]; then
+        echo "ERROR: --only-shard is only valid with the system command" >&2
+        exit 2
+      fi
+      ONLY_SHARD="$2"
+      shift 2
+      ;;
+    --plan)
+      if [ $# -lt 2 ]; then
+        echo "ERROR: --plan requires MODE (fixed|cost|lane)" >&2
+        exit 2
+      fi
+      case "$2" in
+        fixed|cost|lane) ;;
+        *)
+          echo "ERROR: --plan must be one of fixed|cost|lane, got '$2'" >&2
+          exit 2
+          ;;
+      esac
+      if [ "$CMD" != "system" ]; then
+        echo "ERROR: --plan is only valid with the system command" >&2
+        exit 2
+      fi
+      SYSTEM_PLAN="$2"
+      shift 2
+      ;;
+    --fast-lanes)
+      if [ $# -lt 2 ]; then
+        echo "ERROR: --fast-lanes requires N (positive integer interpreter count)" >&2
+        exit 2
+      fi
+      case "$2" in
+        ''|*[!0-9]*|0*)
+          echo "ERROR: --fast-lanes must be a positive integer (e.g. 2), got '$2'" >&2
+          exit 2
+          ;;
+      esac
+      if [ "$CMD" != "system" ]; then
+        echo "ERROR: --fast-lanes is only valid with the system command" >&2
+        exit 2
+      fi
+      FAST_LANES="$2"
+      shift 2
+      ;;
+    --fast-lane-budget-seconds)
+      if [ $# -lt 2 ]; then
+        echo "ERROR: --fast-lane-budget-seconds requires a number of seconds" >&2
+        exit 2
+      fi
+      case "$2" in
+        ''|*[!0-9.]*|.*|*.*.*)
+          echo "ERROR: --fast-lane-budget-seconds must be a positive number, got '$2'" >&2
+          exit 2
+          ;;
+      esac
+      if [ "$CMD" != "system" ]; then
+        echo "ERROR: --fast-lane-budget-seconds is only valid with the system command" >&2
+        exit 2
+      fi
+      FAST_LANE_BUDGET="$2"
+      shift 2
+      ;;
+    --lane-threshold-seconds)
+      if [ $# -lt 2 ]; then
+        echo "ERROR: --lane-threshold-seconds requires a number of seconds" >&2
+        exit 2
+      fi
+      case "$2" in
+        ''|*[!0-9.]*|.*|*.*.*)
+          echo "ERROR: --lane-threshold-seconds must be a non-negative number, got '$2'" >&2
+          exit 2
+          ;;
+      esac
+      if [ "$CMD" != "system" ]; then
+        echo "ERROR: --lane-threshold-seconds is only valid with the system command" >&2
+        exit 2
+      fi
+      LANE_THRESHOLD="$2"
+      shift 2
+      ;;
+    --cost-ledger)
+      if [ $# -lt 2 ] || [ -z "$2" ]; then
+        echo "ERROR: --cost-ledger requires a CONTAINER path to a system_batches.jsonl" >&2
+        exit 2
+      fi
+      if [ "$CMD" != "system" ]; then
+        echo "ERROR: --cost-ledger is only valid with the system command" >&2
+        exit 2
+      fi
+      # The path is read inside the container, so it must be absolute there;
+      # a relative path would resolve against whatever /work happens to hold.
+      case "$2" in
+        /*) ;;
+        *)
+          echo "ERROR: --cost-ledger must be an absolute container path, got '$2'" >&2
+          exit 2
+          ;;
+      esac
+      COST_LEDGERS+=("$2")
+      shift 2
+      ;;
     --remote)
       if [ $# -ge 2 ] && [ -n "$2" ] && [ "${2#-}" = "$2" ]; then
         REMOTE_HOST="$2"
@@ -895,6 +1077,25 @@ while [ $# -gt 0 ]; do
       ;;
   esac
 done
+
+# Shard cross-checks: run before any Docker contact, so a malformed sharded
+# invocation costs nothing (no lock, no /work mirror, no container).
+if [ -n "$ONLY_SHARD" ]; then
+  if [ "$SYSTEM_SHARDS" -le 1 ]; then
+    echo "ERROR: --only-shard names one shard of an N-way plan; pass --shards N too" >&2
+    exit 2
+  fi
+  if [ "$ONLY_SHARD" -ge "$SYSTEM_SHARDS" ]; then
+    echo "ERROR: --only-shard must be 0..$((SYSTEM_SHARDS - 1)) for --shards $SYSTEM_SHARDS, got '$ONLY_SHARD'" >&2
+    exit 2
+  fi
+fi
+if [ -n "$START_BATCH" ] && [ "$SYSTEM_SHARDS" -gt 1 ] && [ -z "$ONLY_SHARD" ]; then
+  # Batch numbers are per shard, so a bare --start-batch would silently mean
+  # "skip N batches in EVERY shard" and drop work from the other N-1.
+  echo "ERROR: --start-batch is per shard; with --shards N also pass --only-shard K" >&2
+  exit 2
+fi
 
 if [ -n "$WORKTREE_REL" ]; then
   WORK_DIR="$REPO_ROOT/$WORKTREE_ROOT/$WORKTREE_REL"
@@ -2184,17 +2385,111 @@ fi
 if [ "$CMD" = "system" ]; then
   SYSTEM_ARGS=()
   [ ${#EXTRA_PYTEST[@]} -gt 0 ] && SYSTEM_ARGS+=("${EXTRA_PYTEST[@]}")
-  SYS_REDIR=""
-  SYS_TRUNCATE=""
-  if [ -n "$DUMP_OUT" ]; then
-    mkdir -p "${WORK_DIR}/.tmp"
-    SYS_LOG="/work/.tmp/${DUMP_OUT}"
-    SYS_LOG_QUOTED="$(_d810_quote_arg "$SYS_LOG")"
-    SYS_TRUNCATE=": > $SYS_LOG_QUOTED && "
-    SYS_REDIR="> $SYS_LOG_QUOTED 2>&1"
+
+  # Batcher flags, in the order the historical command emitted them. With no
+  # plan, no shards and no cost ledger this reproduces the previous string
+  # exactly, which is what keeps an unadorned `system` run unchanged.
+  BATCHER_FLAGS="--python $IDA_VENV_PYTHON --batch-size $SYSTEM_BATCH_SIZE"
+  if [ "$SYSTEM_PLAN" != "fixed" ]; then
+    BATCHER_FLAGS="$BATCHER_FLAGS --plan $SYSTEM_PLAN"
+    [ -n "$LANE_THRESHOLD" ] && BATCHER_FLAGS="$BATCHER_FLAGS --lane-threshold-seconds $LANE_THRESHOLD"
+    [ -n "$FAST_LANES" ] && BATCHER_FLAGS="$BATCHER_FLAGS --fast-lanes $FAST_LANES"
+    [ -n "$FAST_LANE_BUDGET" ] && BATCHER_FLAGS="$BATCHER_FLAGS --fast-lane-budget-seconds $FAST_LANE_BUDGET"
+    # A cost plan with no ledger degrades to a uniform-cost split, which is
+    # silently NOT what was asked for, so default to the ledger the runner
+    # itself writes (present whenever -l mounted a previous run's logs).
+    if [ ${#COST_LEDGERS[@]} -eq 0 ]; then
+      COST_LEDGERS=("$DEFAULT_COST_LEDGER")
+    fi
   fi
-  run_bash "$SETUP_CMD && ${SYS_TRUNCATE}$ENV_TEST $IDA_VENV_PYTHON tools/scripts/run_system_test_batches.py --python $IDA_VENV_PYTHON --batch-size $SYSTEM_BATCH_SIZE${START_BATCH:+ --start-batch $START_BATCH} --log-dir /root/.idapro/logs/d810_logs tests/system -- $(_d810_quote_args "${SYSTEM_ARGS[@]}") $SYS_REDIR"
-  exit 0
+  for _cost_ledger in "${COST_LEDGERS[@]:-}"; do
+    [ -n "$_cost_ledger" ] || continue
+    BATCHER_FLAGS="$BATCHER_FLAGS --cost-ledger $(_d810_quote_arg "$_cost_ledger")"
+  done
+
+  _system_inner() {
+    # $1 batcher flags, $2 log dir, $3 capture path ("" for none)
+    local flags="$1" log_dir="$2" capture="$3"
+    local truncate="" redir="" quoted=""
+    if [ -n "$capture" ]; then
+      quoted="$(_d810_quote_arg "$capture")"
+      truncate=": > $quoted && "
+      redir="> $quoted 2>&1"
+    fi
+    printf '%s' "$SETUP_CMD && ${truncate}$ENV_TEST $IDA_VENV_PYTHON tools/scripts/run_system_test_batches.py $flags --log-dir $log_dir tests/system -- $(_d810_quote_args "${SYSTEM_ARGS[@]}") $redir"
+  }
+
+  if [ "$SYSTEM_SHARDS" -le 1 ]; then
+    SYS_LOG=""
+    if [ -n "$DUMP_OUT" ]; then
+      mkdir -p "${WORK_DIR}/.tmp"
+      SYS_LOG="/work/.tmp/${DUMP_OUT}"
+    fi
+    run_bash "$(_system_inner "$BATCHER_FLAGS${START_BATCH:+ --start-batch $START_BATCH}" /root/.idapro/logs/d810_logs "$SYS_LOG")"
+    exit 0
+  fi
+
+  # ---- N-way sharding -----------------------------------------------------
+  # The shards are concurrent containers over ONE worktree, so everything they
+  # would otherwise race on is done once, first, by a prewarm container that
+  # runs SETUP_CMD and no tests: the remote /work mirror (which starts with
+  # `rm -rf`), the editable install's egg-info, the CoBRA cache volume and any
+  # native build. After it, every shard's SETUP_CMD finds the sync sentinel and
+  # the runtime probe already satisfied and short-circuits.
+  [ -n "$DUMP_OUT" ] && mkdir -p "${WORK_DIR}/.tmp"
+  echo "[shards] $SYSTEM_SHARDS concurrent containers, ${DOCKER_MEMORY} each; plan=$SYSTEM_PLAN"
+  echo "[shards] prewarming dependency setup once (shards-prewarm) before any shard starts"
+  run_bash "$SETUP_CMD && echo '[shards-prewarm] setup complete'"
+
+  SHARD_PIDS=()
+  SHARD_IDS=()
+  SHARD_BASE_RUN_ID="${D810_RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)-$$}"
+  for _shard in $(seq 0 $((SYSTEM_SHARDS - 1))); do
+    if [ -n "$ONLY_SHARD" ] && [ "$_shard" != "$ONLY_SHARD" ]; then
+      continue
+    fi
+    _shard_capture=""
+    if [ -n "$DUMP_OUT" ]; then
+      _shard_capture="/work/.tmp/shard${_shard}-${DUMP_OUT}"
+    fi
+    _shard_flags="$BATCHER_FLAGS --shard-index $_shard --shard-count $SYSTEM_SHARDS${START_BATCH:+ --start-batch $START_BATCH}"
+    _shard_inner="$(_system_inner "$_shard_flags" "/root/.idapro/logs/d810_logs/shard-$_shard" "$_shard_capture")"
+    # Each shard needs its own run id: in remote mode it names the run
+    # directory the live logs and diag databases are written to, which two
+    # containers must not share.
+    D810_RUN_ID="${SHARD_BASE_RUN_ID}-s${_shard}" run_bash "$_shard_inner" &
+    SHARD_PIDS+=("$!")
+    SHARD_IDS+=("$_shard")
+  done
+
+  SHARD_STATUS=0
+  for _index in "${!SHARD_PIDS[@]}"; do
+    if wait "${SHARD_PIDS[$_index]}"; then
+      echo "[shards] shard ${SHARD_IDS[$_index]} completed exit=0"
+    else
+      _shard_exit=$?
+      echo "[shards] shard ${SHARD_IDS[$_index]} FAILED exit=$_shard_exit" >&2
+      SHARD_STATUS=1
+    fi
+  done
+
+  # Merge the per-shard ledgers into one. Local -l runs land under
+  # <work>/.tmp/logs; remote runs stage under <work>/.tmp/logs/<run-id>. Both
+  # are globbed here; when neither is present (no -l), print the command so the
+  # merge can be run against whatever the operator did retain.
+  MERGED_LEDGER="${WORK_DIR}/.tmp/logs/system_batches-merged.jsonl"
+  SHARD_LEDGERS=()
+  while IFS= read -r _ledger; do
+    [ -n "$_ledger" ] && SHARD_LEDGERS+=("$_ledger")
+  done < <(find "${WORK_DIR}/.tmp/logs" -type f -path '*shard-*/system_batches.jsonl' 2>/dev/null | sort)
+  if [ ${#SHARD_LEDGERS[@]} -gt 0 ]; then
+    python3 "$(cd "$(dirname "$0")" && pwd -P)/merge_system_batch_ledgers.py" --out "$MERGED_LEDGER" "${SHARD_LEDGERS[@]}" || true
+    echo "[shards] merged ledger: $MERGED_LEDGER"
+  else
+    echo "[shards] no per-shard ledger reachable on the host (pass -l to mount logs);"
+    echo "[shards] merge manually: python3 $(cd "$(dirname "$0")" && pwd -P)/merge_system_batch_ledgers.py --out MERGED .../shard-*/system_batches.jsonl"
+  fi
+  exit "$SHARD_STATUS"
 fi
 
 if [ "$CMD" = "test" ]; then
