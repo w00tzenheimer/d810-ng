@@ -94,11 +94,12 @@ def test_public_catalogue_preserves_python_cython_semantics_for_terminal_states(
         CompiledMbaRule,
         _enroll_admitted_rule,
         compile_add_rule_catalogue,
-        compile_mba_rule_catalogue,
+        compile_selected_rules_catalogue,
     )
     from d810.backends.mba.native_mba_term_view import NativeMbaTermView
     from d810.mba.dsl import Const, Var
     from d810.mba.rules._base import VerifiableRule
+    from d810.mba.rules.xor import Xor_HackersDelightRule_3
 
     monkeypatch.setattr(VerifiableRule, "registry", dict(VerifiableRule.registry))
 
@@ -110,7 +111,7 @@ def test_public_catalogue_preserves_python_cython_semantics_for_terminal_states(
     assert add_rule is not None
     add_catalogue = CompiledPatternCatalogue.from_rules((add_rule,))
     xor_rule = (
-        compile_mba_rule_catalogue()
+        compile_selected_rules_catalogue({"xor": (Xor_HackersDelightRule_3,)})
         .receipt_for("xor", "Xor_HackersDelightRule_3")
         .compiled_rule
     )
