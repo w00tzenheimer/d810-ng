@@ -688,12 +688,16 @@ class HexRaysPatchTransactionParticipant:
             terminal_reachability,
         )
 
+        self.structural_context.require_scope(
+            self.attempt_id, self.gateway.native_key, self._structural_coordinates(),
+        )
         semantic_timed_result = transaction_api.prepare_unflatten_authority_timed(
             source=snapshot,
             projection=projection,
             plan=self.plan,
             attempt_id=self.attempt_id,
             generic_gates=semantic_gates,
+            structural_context=self.structural_context,
         )
         if isinstance(
             semantic_timed_result, transaction_api.TimedUnflattenAuthorityResult

@@ -128,3 +128,28 @@ def test_inventory_provenance_reuses_exact_existing_partition_owners():
         _ = context.source_arena
     with pytest.raises(StructuralIdentityError):
         _ = context.projected_arena
+
+
+def test_preparation_boundary_rejects_foreign_attempt_snapshot_and_drift():
+    attempt = TransactionAttemptId.new("plan", "gateway", 3)
+    context = StructuralTransactionContext(
+        attempt, native(), StructuralTransactionCoordinates("snapshot", 4, 3, None, 3),
+    )
+    context.require_preparation(attempt, "snapshot")
+    with pytest.raises(StructuralIdentityError):
+        context.require_preparation(replace(attempt), "snapshot")
+    with pytest.raises(StructuralIdentityError):
+        context.require_preparation(attempt, "foreign-snapshot")
+    object.__setattr__(attempt, "generation", 4)
+    with pytest.raises(StructuralIdentityError):
+        context.require_preparation(attempt, "snapshot")
+
+
+def test_preparation_native_input_is_checked_against_available_source_key():
+    attempt = TransactionAttemptId.new("plan", "gateway", 3)
+    context = StructuralTransactionContext(
+        attempt, native(), StructuralTransactionCoordinates("snapshot", 4, 3, None, 3),
+    )
+    context.require_native_input(native())
+    with pytest.raises(StructuralIdentityError):
+        context.require_native_input(replace(native(), input_identity="foreign"))

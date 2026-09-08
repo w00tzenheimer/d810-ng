@@ -132,6 +132,27 @@ class StructuralTransactionContext:
             raise StructuralIdentityError("structural transaction has no observation")
         return self._observed.structural
 
+    def require_preparation(self, attempt: TransactionAttemptId, snapshot_id: str) -> None:
+        """Check the exact attempt at the consuming preparation boundary.
+
+        The native participant separately checks all live gateway coordinates
+        with require_scope immediately before forwarding this owner.
+        """
+        self._require_open()
+        if (attempt is not self._attempt or type(snapshot_id) is not str
+                or snapshot_id != self._coordinates.snapshot_id
+                or not _same_scalars((attempt.plan_id, attempt.session_id,
+                                      attempt.generation, attempt.attempt_id),
+                                     self._attempt_fields)):
+            raise StructuralIdentityError("structural preparation scope differs")
+
+    def require_native_input(self, native: NativePreanalysisKey) -> None:
+        """Check the native input available at the owned consumer boundary."""
+        self._require_open()
+        if (type(native) is not NativePreanalysisKey or not _same_scalars(
+                tuple(getattr(native, name) for name in NATIVE_KEY_FIELDS), self._native)):
+            raise StructuralIdentityError("structural native input differs")
+
     def require_scope(
         self,
         attempt: TransactionAttemptId,

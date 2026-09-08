@@ -28,12 +28,14 @@ from d810.transforms.cfg_transaction import (
 )
 from . import ids as authority_ids
 from . import model, producer_api
+from . import inventory_alias_binding, inventory_publication, inventory_values
 from .canonical_session import (
     CanonicalValidationSession,
     active_canonical_session,
     record_registry_seal,
 )
 from .gates import GenericEffectfulGateFacts
+from .structural_transaction import StructuralTransactionContext
 from .proposal import (
     CanonicalPatchStepDescriptor,
     canonical_patch_step_descriptors,
@@ -1663,7 +1665,7 @@ def _local_alias_has_route_owned_retirement(
     claim: model.LocalAliasEffectScalarizationClaim,
     projected_inventory: model.SemanticGraphInventory,
     drafts: tuple[object, ...],
-    owner_index: object,
+    owner_index: object, _owned_pair=None, _owned_inputs=None,
 ) -> bool:
     """Return whether one exact route relation owns an unreachable alias site.
 
@@ -1677,15 +1679,30 @@ def _local_alias_has_route_owned_retirement(
         claim.owner_subject.block_ref,
         claim.owner_subject.anchor_ea,
     )
-    blocks = tuple(
-        row for row in projected_inventory.blocks
-        if row.block_ref == source_owner.ref
-        and row.anchor_ea == source_owner.anchor_ea
-    )
-    if len(blocks) != 1:
-        return False
-    if blocks[0].serial in projected_inventory.reachable_serials:
-        return False
+    if _owned_pair is None:
+        blocks = tuple(
+            row for row in projected_inventory.blocks
+            if row.block_ref == source_owner.ref
+            and row.anchor_ea == source_owner.anchor_ea
+        )
+        if len(blocks) != 1:
+            return False
+        if blocks[0].serial in projected_inventory.reachable_serials:
+            return False
+    else:
+        table = _owned_pair.projected.structural
+        root = _owned_pair.projected_publication.root
+        blocks = tuple(
+            row for row in inventory_values.sequence_children(table, inventory_values.inventory_field(table, root, "blocks"))
+            if inventory_values.record_field(table, row, "block_ref") is _owned_inputs.projected_owner
+            and inventory_values.scalar_value(table, inventory_values.record_field(table, row, "anchor_ea")) == _owned_inputs.owner_anchor_ea
+        )
+        if len(blocks) != 1:
+            return False
+        serial = inventory_values.scalar_value(table, inventory_values.record_field(table, blocks[0], "serial"))
+        reachable = inventory_values.sequence_children(table, inventory_values.inventory_field(table, root, "reachable_serials"))
+        if any(inventory_values.scalar_value(table, ref) == serial for ref in reachable):
+            return False
     relation_ids = {
         occurrence.relation_id
         for occurrence in getattr(owner_index, "relation_owner_occurrences", ())
@@ -1733,7 +1750,7 @@ def _draft_projected_site_closure(
     claims: tuple[object, ...], patch_step_facts: tuple[model.PatchStepEvidencePayload, ...],
     raw_effect_gate_fact: model.RawEffectGatePhaseFact,
     legacy_effective_gate_facts: object, attempt_id: TransactionAttemptId,
-    drafts: tuple[object, ...], owner_index: object,
+    drafts: tuple[object, ...], owner_index: object, _owned_pair=None,
 ) -> _ProjectedSiteClosureDraft:
     """Discover the site closure without minting any coordinate or result."""
     del authority_id, plan, attempt_id
@@ -1798,17 +1815,26 @@ def _draft_projected_site_closure(
                 scope=model.RouteRealizationFailureScope.STEP, claim=claim,
             )
         try:
+            owned_inputs = None if _owned_pair is None else inventory_publication.publish_local_alias_inputs(
+                _owned_pair.source, _owned_pair.projected, claim, fact,
+            )
             route_owned_retirement = _local_alias_has_route_owned_retirement(
                 claim=claim,
                 projected_inventory=projected_inventory,
                 drafts=drafts,
-                owner_index=owner_index,
+                owner_index=owner_index, _owned_pair=_owned_pair,
+                _owned_inputs=None if owned_inputs is None else owned_inputs.inputs,
             )
-            local_binding_drafts.append(_draft_local_alias_binding(
-                claim=claim, patch_step_fact=fact,
-                source_inventory=source_inventory, projected_inventory=projected_inventory,
-                _allow_route_owned_retirement=route_owned_retirement,
-            ))
+            if _owned_pair is None:
+                local_binding_drafts.append(_draft_local_alias_binding(
+                    claim=claim, patch_step_fact=fact,
+                    source_inventory=source_inventory, projected_inventory=projected_inventory,
+                    _allow_route_owned_retirement=route_owned_retirement,
+                ))
+            else:
+                local_binding_drafts.append(inventory_alias_binding.draft_alias(
+                    _owned_pair, claim, fact, route_owned_retirement, inputs=owned_inputs,
+                ))
         except (TypeError, ValueError) as exc:
             source_row = next(
                 (row for row in source_inventory.effects
@@ -2139,7 +2165,7 @@ def _validate_projected_site_closure_draft(
     raw_effect_gate_fact: model.RawEffectGatePhaseFact,
     legacy_effective_gate_facts: object, attempt_id: TransactionAttemptId,
     drafts: tuple[object, ...], owner_index: object,
-    route_publications: tuple[tuple[object, str], ...],
+    route_publications: tuple[tuple[object, str], ...], _owned_pair=None,
 ) -> None:
     """Reconstruct and validate every draft invariant without minting."""
     if type(draft) is not _ProjectedSiteClosureDraft:
@@ -2300,6 +2326,28 @@ def _validate_projected_site_closure_draft(
             raise _ProjectedSiteDraftViolation("local claim occurrence differs", scope=model.RouteRealizationFailureScope.STEP, claim=canonical or item.claim)
         if item.patch_step_fact not in patch_step_facts or not any(item.patch_step_fact is fact for fact in patch_step_facts):
             raise _ProjectedSiteDraftViolation("local patch fact occurrence differs", scope=model.RouteRealizationFailureScope.STEP, claim=canonical, patch_step_fact=item.patch_step_fact)
+        if type(item) is inventory_alias_binding.OwnedAliasDraft:
+            if _owned_pair is None:
+                raise _ProjectedSiteDraftViolation("owned alias lacks lexical inventory pair", scope=model.RouteRealizationFailureScope.EVIDENCE)
+            try:
+                inventory_alias_binding.replay_alias(
+                    _owned_pair, item, canonical, item.patch_step_fact,
+                    _local_alias_has_route_owned_retirement(
+                        claim=canonical, projected_inventory=projected_inventory,
+                        drafts=drafts, owner_index=owner_index,
+                        _owned_pair=_owned_pair, _owned_inputs=item.inputs.inputs,
+                    ),
+                )
+                inventory_alias_binding.require_alias_occurrences(
+                    _owned_pair, item, source_inventory, projected_inventory,
+                )
+            except (TypeError, ValueError) as exc:
+                raise _ProjectedSiteDraftViolation(
+                    str(exc), scope=model.RouteRealizationFailureScope.STEP,
+                    claim=canonical, patch_step_fact=item.patch_step_fact,
+                ) from exc
+            alias_by_draft_id[canonical.claim_id] = item
+            continue
         try:
             expected = _draft_local_alias_binding(
                 claim=canonical,
@@ -8427,7 +8475,7 @@ def _make_route_kernels():
         raw_effect_gate_fact: model.RawEffectGatePhaseFact,
         legacy_effective_gate_facts: object, attempt_id: TransactionAttemptId,
         drafts: tuple[object, ...], owner_index: object,
-        route_publications: tuple[tuple[object, str], ...],
+        route_publications: tuple[tuple[object, str], ...], _owned_pair=None,
     ) -> model.ProjectedRouteRealizationResult:
         """Mint the accepted closure only after independent draft validation."""
         publication_batch = _AtomicPublicationBatch()
@@ -8436,8 +8484,17 @@ def _make_route_kernels():
         # Replay each complete canonical inventory once before binding its site
         # rows; replaying it again for every row makes closure quadratic while
         # adding no intervening mutation or authority boundary.
-        model.validate_semantic_graph_inventory(source_inventory)
-        model.validate_semantic_graph_inventory(projected_inventory)
+        alias_exports = {}
+        if _owned_pair is None:
+            model.validate_semantic_graph_inventory(source_inventory)
+            model.validate_semantic_graph_inventory(projected_inventory)
+        else:
+            inventory_alias_binding.require_pair_export(_owned_pair, source_inventory, projected_inventory)
+            alias_exports = {
+                id(item): inventory_alias_binding.require_alias_export(
+                    _owned_pair, item, source_inventory, projected_inventory,
+                ) for item in draft.local_binding_drafts
+            }
         source_effect_coordinates = {
             id(row): _bind_effect_site_coordinate(
                 source_inventory, row, _batch=publication_batch,
@@ -8470,17 +8527,36 @@ def _make_route_kernels():
             for row in projected_inventory.terminals
             if row.owner_serial in projected_inventory.reachable_serials
         }
+        def scalarized_fields(item):
+            if type(item) is inventory_alias_binding.OwnedAliasDraft:
+                table = _owned_pair.projected.structural
+                block = item.rows.projected_block
+                observation = item.rows.projected_observation
+                def scalar(row, field):
+                    return inventory_values.scalar_value(table, inventory_values.record_field(table, row, field))
+                owner = model.AnchoredBlockRef(alias_exports[id(item)][2].block_ref, scalar(block, "anchor_ea"))
+                ordinal = scalar(observation, "ordinal")
+                ea = scalar(observation, "instruction_ea")
+                opcode = scalar(observation, "opcode")
+                raw_opcode = scalar(observation, "raw_opcode")
+                width = scalar(observation, "width")
+                display_text = scalar(observation, "display_text")
+            else:
+                owner = model.AnchoredBlockRef(item.projected_block.block_ref, item.projected_block.anchor_ea)
+                ordinal = item.projected_observation.ordinal
+                ea = item.projected_observation.instruction_ea
+                opcode = item.projected_observation.opcode
+                raw_opcode = item.projected_observation.raw_opcode
+                width = item.projected_observation.width
+                display_text = item.projected_observation.display_text
+            return {
+                "owner": owner, "instruction_ordinal": ordinal,
+                "instruction_ea": ea, "instruction_kind": InsnKind.MOV,
+                "opcode": opcode, "raw_opcode": raw_opcode, "width": width,
+                "display_text_digest": canonical_authority_id(("scalarized-display-text", display_text)),
+            }
         scalarized_coordinates = {
-            id(item): _site_mint(model.ScalarizedInstructionCoordinate, {
-                "owner": model.AnchoredBlockRef(item.projected_block.block_ref, item.projected_block.anchor_ea),
-                "instruction_ordinal": item.projected_observation.ordinal,
-                "instruction_ea": item.projected_observation.instruction_ea,
-                "instruction_kind": InsnKind.MOV,
-                "opcode": item.projected_observation.opcode,
-                "raw_opcode": item.projected_observation.raw_opcode,
-                "width": item.projected_observation.width,
-                "display_text_digest": canonical_authority_id(("scalarized-display-text", item.projected_observation.display_text)),
-            }, _batch=publication_batch)
+            id(item): _site_mint(model.ScalarizedInstructionCoordinate, scalarized_fields(item), _batch=publication_batch)
             for item in draft.local_binding_drafts
         }
         exact_bindings = {}
@@ -8520,7 +8596,7 @@ def _make_route_kernels():
                 "authority_id": authority_id, "attempt_id": attempt_id,
                 "phase": model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
                 "claim": claim, "source_subject_id": claim.owner_subject.subject_id,
-                "source_site": source_effect_coordinates[id(item.source_row)],
+                "source_site": source_effect_coordinates[id(alias_exports[id(item)][0] if type(item) is inventory_alias_binding.OwnedAliasDraft else item.source_row)],
                 "scalarized_site": scalarized_coordinates[id(item)],
                 "patch_step_fact": item.patch_step_fact,
                 "patch_step_fact_id": patch_step_fact_id(item.patch_step_fact),
@@ -8689,12 +8765,34 @@ def _make_route_kernels():
         drafts: tuple[object, ...], owner_index: object,
         route_publications: tuple[tuple[object, str], ...],
         claim_inventory: _TransactionProjectedClaimInventory | None = None,
+        structural_context=None,
     ) -> model.ProjectedRouteRealizationResult:
         """Close structural relations and every projected semantic site atomically."""
         if claim_inventory is not None:
             require_registered_transaction_projected_claim_inventory(
                 claim_inventory,
             )
+        owned_pair = None
+        if structural_context is not None:
+            if type(structural_context) is not StructuralTransactionContext:
+                raise TypeError("owned inventory requires exact transaction context")
+            structural_context.require_preparation(attempt_id, plan.snapshot_id)
+            for claim in claims:
+                if type(claim) is model.LocalAliasEffectScalarizationClaim:
+                    subject = claim.owner_subject
+                    if type(subject) is not model.SemanticSubjectRef:
+                        raise TypeError("owned alias requires exact source subject")
+                    owner = subject.block_ref
+                    if type(owner) is NativeBlockRef:
+                        identity = owner.identity
+                        if type(identity) is not StableBlockIdentity:
+                            raise TypeError("owned alias requires exact native identity")
+                        structural_context.require_native_input(identity.native_key)
+            if any(type(claim) is model.LocalAliasEffectScalarizationClaim for claim in claims):
+                owned_pair = inventory_alias_binding.publish_pair(
+                    structural_context.source_arena, structural_context.projected_arena,
+                    source_inventory, projected_inventory,
+                )
         site_draft = _draft_projected_site_closure(
             authority_id=authority_id, source_authority=source_authority, plan=plan,
             source_inventory=source_inventory, projected_inventory=projected_inventory,
@@ -8702,7 +8800,10 @@ def _make_route_kernels():
             raw_effect_gate_fact=raw_effect_gate_fact,
             legacy_effective_gate_facts=legacy_effective_gate_facts,
             attempt_id=attempt_id, drafts=drafts, owner_index=owner_index,
+            _owned_pair=owned_pair,
         )
+        if owned_pair is not None:
+            owned_pair = inventory_alias_binding.release_occurrence_snapshots(owned_pair)
         _validate_projected_site_closure_draft(
             site_draft, source_authority=source_authority, plan=plan,
             source_inventory=source_inventory, projected_inventory=projected_inventory,
@@ -8710,6 +8811,7 @@ def _make_route_kernels():
             raw_effect_gate_fact=raw_effect_gate_fact,
             legacy_effective_gate_facts=legacy_effective_gate_facts,
             attempt_id=attempt_id, drafts=drafts, owner_index=owner_index,
+            _owned_pair=owned_pair,
             route_publications=route_publications,
         )
         if claim_inventory is not None:
@@ -8723,6 +8825,7 @@ def _make_route_kernels():
             raw_effect_gate_fact=raw_effect_gate_fact,
             legacy_effective_gate_facts=legacy_effective_gate_facts,
             attempt_id=attempt_id, drafts=drafts, owner_index=owner_index,
+            _owned_pair=owned_pair,
             route_publications=route_publications,
         )
     source_inventory_pairs: dict[int, tuple[weakref.ReferenceType[object], object]] = {}
@@ -8897,6 +9000,7 @@ def _make_route_kernels():
     def realize_from_claim_inventory(
         *, authority_id, claim_inventory, raw_effect_gate_fact,
         legacy_effective_gate_facts, entry_liveness_receipts=(),
+        structural_context=None,
     ):
         require_registered_transaction_projected_claim_inventory(
             claim_inventory,
@@ -9017,6 +9121,7 @@ def _make_route_kernels():
                 attempt_id=attempt_id, drafts=drafts, owner_index=_owner_index,
                 route_publications=route_publications,
                 claim_inventory=claim_inventory,
+                structural_context=structural_context,
             )
             if type(finalized) is model.ProjectedRouteRealizationAccepted:
                 validate_result(finalized, model.ProjectedRouteRealizationAccepted)

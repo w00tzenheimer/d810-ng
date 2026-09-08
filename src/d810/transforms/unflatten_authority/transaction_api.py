@@ -4844,6 +4844,7 @@ def realize_projected_routes(
     raw_effect_gate_fact: model.RawEffectGatePhaseFact,
     legacy_effective_gate_facts: object,
     entry_liveness_receipts: tuple[model.BoundEntryEndpointLivenessAllowance, ...] = (),
+    structural_context=None,
 ) -> model.ProjectedRouteRealizationResult:
     """Realize the already-derived transaction inventory exactly once.
 
@@ -4863,10 +4864,11 @@ def realize_projected_routes(
         raw_effect_gate_fact=raw_effect_gate_fact,
         legacy_effective_gate_facts=legacy_effective_gate_facts,
         entry_liveness_receipts=entry_liveness_receipts,
+        structural_context=structural_context,
     )
 
 
-def _prepare_unflatten_authority_in_session(*, source, projection, plan, attempt_id, generic_gates, _timings=None):
+def _prepare_unflatten_authority_in_session(*, source, projection, plan, attempt_id, generic_gates, _timings=None, structural_context=None):
     """Prepare one immutable projected authority case before mutation."""
     from .model import (
         UnflattenAuthorityPreparationAccepted,
@@ -5029,6 +5031,7 @@ def _prepare_unflatten_authority_in_session(*, source, projection, plan, attempt
             raw_effect_gate_fact=raw_effect_gate_fact,
             legacy_effective_gate_facts=legacy_effective_comparison,
             entry_liveness_receipts=entry_liveness_receipts,
+            structural_context=structural_context,
         )
         if type(realization_result) is not model.ProjectedRouteRealizationAccepted:
             failure_rows = tuple(
@@ -5393,7 +5396,7 @@ def _prepare_unflatten_authority_in_session(*, source, projection, plan, attempt
         )
 
 
-def _prepare_unflatten_authority(*, source, projection, plan, attempt_id, generic_gates, _timings=None):
+def _prepare_unflatten_authority(*, source, projection, plan, attempt_id, generic_gates, _timings=None, structural_context=None):
     """Run one complete projected preparation in its transaction-owned session."""
 
     with _canonical_validation_session(
@@ -5402,23 +5405,26 @@ def _prepare_unflatten_authority(*, source, projection, plan, attempt_id, generi
         return _prepare_unflatten_authority_in_session(
             source=source, projection=projection, plan=plan,
             attempt_id=attempt_id, generic_gates=generic_gates, _timings=_timings,
+            structural_context=structural_context,
         )
 
 
-def prepare_unflatten_authority(*, source, projection, plan, attempt_id, generic_gates):
+def prepare_unflatten_authority(*, source, projection, plan, attempt_id, generic_gates, structural_context=None):
     return _prepare_unflatten_authority(
         source=source, projection=projection, plan=plan,
         attempt_id=attempt_id, generic_gates=generic_gates,
+        structural_context=structural_context,
     )
 
 
 def prepare_unflatten_authority_timed(
-    *, source, projection, plan, attempt_id, generic_gates,
+    *, source, projection, plan, attempt_id, generic_gates, structural_context=None,
 ) -> TimedUnflattenAuthorityResult:
     recorder = _AuthorityTimingRecorder()
     result = _prepare_unflatten_authority(
         source=source, projection=projection, plan=plan,
         attempt_id=attempt_id, generic_gates=generic_gates,
+        structural_context=structural_context,
         _timings=recorder,
     )
     return TimedUnflattenAuthorityResult(
