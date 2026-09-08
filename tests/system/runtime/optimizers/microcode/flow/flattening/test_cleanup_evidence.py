@@ -794,10 +794,8 @@ def test_bad_while_loop_follow_up_reclassifier_uses_modern_target_evidence() -> 
         _conditional_redirect_cfg(),
         dag_authority=_DagAuthority(),
     )
-    assert dag_rows[0].bucket is (
-        CleanupFollowUpResolutionBucket.NOW_RESOLVABLE_REDIRECT
-    )
-    assert dag_rows[0].proof_sources == ("semantic_dag",)
+    assert dag_rows[0].bucket is CleanupFollowUpResolutionBucket.STILL_EVIDENCE_GAP
+    assert dag_rows[0].proof_sources == ("structured_metadata",)
 
     range_rows = reclassify_bad_while_loop_follow_ups(
         follow_up,
@@ -838,7 +836,8 @@ def test_bad_while_loop_follow_up_proof_builder_feeds_reclassifier() -> None:
     target_proofs, _unused_per_pred = build_bad_while_loop_follow_up_proofs(
         _conditional_redirect_cfg(),
         (direct,),
-        dag_authority=_DagAuthority(),
+        range_intervals=(SimpleNamespace(lo=0x100, hi=0x200, target_block=12),),
+        state_constants_by_source={1: 0x123},
     )
     _unused_target, per_pred_proofs = build_bad_while_loop_follow_up_proofs(
         _duplicate_cfg(),
@@ -850,7 +849,7 @@ def test_bad_while_loop_follow_up_proof_builder_feeds_reclassifier() -> None:
 
     assert len(target_proofs) == 1
     assert target_proofs[0].target_serial == 12
-    assert target_proofs[0].proof_sources == ("semantic_dag",)
+    assert target_proofs[0].proof_sources == ("range_interval_singleton",)
     assert len(per_pred_proofs) == 1
     assert per_pred_proofs[0].per_pred_targets == ((8, 3), (9, 4))
 
@@ -868,7 +867,7 @@ def test_bad_while_loop_follow_up_proof_builder_feeds_reclassifier() -> None:
     assert direct_rows[0].bucket is (
         CleanupFollowUpResolutionBucket.NOW_RESOLVABLE_REDIRECT
     )
-    assert direct_rows[0].proof_sources == ("semantic_dag",)
+    assert direct_rows[0].proof_sources == ("range_interval_singleton",)
     assert duplicate_rows[0].bucket is (
         CleanupFollowUpResolutionBucket.NOW_RESOLVABLE_DUPLICATE_AND_REDIRECT
     )

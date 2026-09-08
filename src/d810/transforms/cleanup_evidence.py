@@ -6,7 +6,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum
 
-from d810.ir.flowgraph import FlowGraph
+from d810.ir.flowgraph import BlockSnapshot, FlowGraph
 from d810.transforms.graph_modification import (
     DuplicateReplayAndRedirect,
     DuplicateReplayEntry,
@@ -34,11 +34,49 @@ class CleanupProofVerdict(str, Enum):
 
 
 class CleanupProofState(str, Enum):
-    """First-class proof state used by runtime cleanup promotion."""
+    """Proposal feasibility only; final permission belongs to the transaction."""
 
     PROVEN = "proven"
     UNPROVEN = "unproven"
     REJECTED = "rejected"
+
+
+class CleanupProofSource(str, Enum):
+    """Observed diagnostic provenance; none grants semantic permission."""
+
+    STRUCTURED_METADATA = "structured_metadata"
+    GRAPH_MODIFICATION_FEASIBLE = "graph_modification_feasible"
+    DEPENDENCY_DIAGNOSTICS = "dependency_diagnostics"
+    TRANSITION_REPORT = "transition_report"
+    RANGE_INTERVAL_SINGLETON = "range_interval_singleton"
+    PER_PRED_TARGET_MAP = "per_pred_target_map"
+
+
+def _typed_sources(sources: tuple[CleanupProofSource, ...]) -> None:
+    if type(sources) is not tuple or any(
+        type(source) is not CleanupProofSource for source in sources
+    ):
+        raise TypeError("cleanup provenance requires typed sources")
+
+
+@dataclass(frozen=True)
+class CleanupProofScope:
+    """Exact portable snapshot evidence, including native anchors and topology."""
+
+    function_ea: int
+    entry_serial: int
+    blocks: tuple[BlockSnapshot, ...]
+
+    @classmethod
+    def from_cfg(cls, cfg: FlowGraph) -> CleanupProofScope:
+        return cls(
+            cfg.func_ea,
+            cfg.entry_serial,
+            tuple(cfg.blocks[key] for key in sorted(cfg.blocks)),
+        )
+
+    def matches(self, cfg: FlowGraph | None) -> bool:
+        return cfg is not None and self == self.from_cfg(cfg)
 
 
 class CleanupExitShape(str, Enum):
@@ -140,6 +178,7 @@ class CleanupConditionalRedirectPromotionProof:
     dispatcher_internal_serials: tuple[int, ...]
     state: CleanupProofState
     reasons: tuple[str, ...]
+    scope: CleanupProofScope
 
 
 @dataclass(frozen=True)
@@ -155,8 +194,11 @@ class CleanupFollowUpReclassification:
     proof_state: CleanupProofState
     target_serial: int | None = None
     fallthrough_target: int | None = None
-    proof_sources: tuple[str, ...] = ()
+    proof_sources: tuple[CleanupProofSource, ...] = ()
     notes: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        _typed_sources(self.proof_sources)
 
 
 @dataclass(frozen=True)
@@ -167,7 +209,13 @@ class CleanupFollowUpTargetProof:
     from_serial: int
     reason: str
     target_serial: int
-    proof_sources: tuple[str, ...] = ()
+    scope: CleanupProofScope
+    proof_sources: tuple[CleanupProofSource, ...] = ()
+
+    def __post_init__(self) -> None:
+        _typed_sources(self.proof_sources)
+        if type(self.scope) is not CleanupProofScope:
+            raise TypeError("cleanup target proof requires a snapshot scope")
 
 
 @dataclass(frozen=True)
@@ -178,7 +226,13 @@ class CleanupFollowUpPerPredTargetProof:
     from_serial: int
     reason: str
     per_pred_targets: tuple[tuple[int, int], ...]
-    proof_sources: tuple[str, ...] = ()
+    scope: CleanupProofScope
+    proof_sources: tuple[CleanupProofSource, ...] = ()
+
+    def __post_init__(self) -> None:
+        _typed_sources(self.proof_sources)
+        if type(self.scope) is not CleanupProofScope:
+            raise TypeError("cleanup predecessor proof requires a snapshot scope")
 
 
 @dataclass(frozen=True)
@@ -673,6 +727,7 @@ def bad_while_loop_conditional_redirect_proof(
         dispatcher_internal_serials=diagnostic.dispatcher_internal_serials,
         state=state,
         reasons=diagnostic.reasons,
+        scope=CleanupProofScope.from_cfg(cfg),
     )
 
 
@@ -752,7 +807,11 @@ def validate_conditional_redirect_cleanup_edit(
 ) -> bool:
     """Return whether a bad-while-loop conditional redirect proof promotes."""
     proof = bad_while_loop_conditional_redirect_proof(legacy_edit, cfg)
-    return proof is not None and proof.state is CleanupProofState.PROVEN
+    return (
+        proof is not None
+        and proof.scope.matches(cfg)
+        and proof.state is CleanupProofState.PROVEN
+    )
 
 
 def bad_while_loop_duplicate_candidate(
@@ -1437,7 +1496,7 @@ def reclassify_bad_while_loop_follow_up(
         bucket: CleanupFollowUpResolutionBucket,
         proof_state: CleanupProofState,
         *,
-        proof_sources: Sequence[str] = (),
+        proof_sources: Sequence[CleanupProofSource] = (),
         notes: Sequence[str] = (),
     ) -> CleanupFollowUpReclassification:
         return CleanupFollowUpReclassification(
@@ -1466,7 +1525,10 @@ def reclassify_bad_while_loop_follow_up(
         return make(
             edit_bucket,
             CleanupProofState.PROVEN,
-            proof_sources=("structured_metadata", "graph_modification_feasible"),
+            proof_sources=(
+                CleanupProofSource.STRUCTURED_METADATA,
+                CleanupProofSource.GRAPH_MODIFICATION_FEASIBLE,
+            ),
         )
 
     replay_bucket = _reclassify_from_replay_candidate(
@@ -1481,7 +1543,10 @@ def reclassify_bad_while_loop_follow_up(
         return make(
             replay_bucket,
             CleanupProofState.PROVEN,
-            proof_sources=("structured_metadata", "graph_modification_feasible"),
+            proof_sources=(
+                CleanupProofSource.STRUCTURED_METADATA,
+                CleanupProofSource.GRAPH_MODIFICATION_FEASIBLE,
+            ),
         )
 
     trampoline_bucket = _reclassify_from_trampoline_candidate(
@@ -1495,7 +1560,10 @@ def reclassify_bad_while_loop_follow_up(
         return make(
             trampoline_bucket,
             CleanupProofState.PROVEN,
-            proof_sources=("structured_metadata", "graph_modification_feasible"),
+            proof_sources=(
+                CleanupProofSource.STRUCTURED_METADATA,
+                CleanupProofSource.GRAPH_MODIFICATION_FEASIBLE,
+            ),
         )
 
     proof = _matching_conditional_redirect_proof(
@@ -1510,20 +1578,23 @@ def reclassify_bad_while_loop_follow_up(
             return make(
                 CleanupFollowUpResolutionBucket.NOW_RESOLVABLE_CONDITIONAL_REDIRECT,
                 CleanupProofState.PROVEN,
-                proof_sources=("structured_metadata", "graph_modification_feasible"),
+                proof_sources=(
+                    CleanupProofSource.STRUCTURED_METADATA,
+                    CleanupProofSource.GRAPH_MODIFICATION_FEASIBLE,
+                ),
                 notes=proof.reasons,
             )
         if proof.verdict is CleanupProofVerdict.PROOF_GAP:
             return make(
                 CleanupFollowUpResolutionBucket.STILL_EVIDENCE_GAP,
                 CleanupProofState.UNPROVEN,
-                proof_sources=("structured_metadata",),
+                proof_sources=(CleanupProofSource.STRUCTURED_METADATA,),
                 notes=proof.reasons,
             )
         return make(
             CleanupFollowUpResolutionBucket.STILL_UNSAFE,
             CleanupProofState.REJECTED,
-            proof_sources=("structured_metadata",),
+            proof_sources=(CleanupProofSource.STRUCTURED_METADATA,),
             notes=proof.reasons,
         )
 
@@ -1532,6 +1603,7 @@ def reclassify_bad_while_loop_follow_up(
         from_serial=from_serial,
         reason=reason,
         proofs=per_pred_target_proofs,
+        cfg=cfg,
     )
     if per_pred_proof is not None:
         if cfg is not None and _per_pred_targets_are_plannable(
@@ -1558,6 +1630,7 @@ def reclassify_bad_while_loop_follow_up(
         reason=reason,
         target_serial=target_serial,
         proofs=target_proofs,
+        cfg=cfg,
     )
     if target_proof is not None:
         if (
@@ -1616,7 +1689,7 @@ def reclassify_bad_while_loop_follow_up(
             return make(
                 CleanupFollowUpResolutionBucket.CALL_ANCHOR_REQUIRED,
                 CleanupProofState.REJECTED,
-                proof_sources=("dependency_diagnostics",),
+                proof_sources=(CleanupProofSource.DEPENDENCY_DIAGNOSTICS,),
                 notes=_diagnostic_notes(diagnostic),
             )
         if final_bucket in {
@@ -1629,14 +1702,14 @@ def reclassify_bad_while_loop_follow_up(
             return make(
                 CleanupFollowUpResolutionBucket.NEEDS_DEPENDENCY_RESCUE,
                 CleanupProofState.UNPROVEN,
-                proof_sources=("dependency_diagnostics",),
+                proof_sources=(CleanupProofSource.DEPENDENCY_DIAGNOSTICS,),
                 notes=_diagnostic_notes(diagnostic),
             )
         if final_bucket in {"memory_or_alias_unknown", "mixed_unknown"}:
             return make(
                 CleanupFollowUpResolutionBucket.STILL_EVIDENCE_GAP,
                 CleanupProofState.UNPROVEN,
-                proof_sources=("dependency_diagnostics",),
+                proof_sources=(CleanupProofSource.DEPENDENCY_DIAGNOSTICS,),
                 notes=_diagnostic_notes(diagnostic),
             )
 
@@ -1644,19 +1717,19 @@ def reclassify_bad_while_loop_follow_up(
         return make(
             CleanupFollowUpResolutionBucket.CALL_ANCHOR_REQUIRED,
             CleanupProofState.REJECTED,
-            proof_sources=("structured_metadata",),
+            proof_sources=(CleanupProofSource.STRUCTURED_METADATA,),
         )
     if "not_dependency_safe" in reason:
         return make(
             CleanupFollowUpResolutionBucket.NEEDS_DEPENDENCY_RESCUE,
             CleanupProofState.UNPROVEN,
-            proof_sources=("structured_metadata",),
+            proof_sources=(CleanupProofSource.STRUCTURED_METADATA,),
         )
     if reason in {"copied_side_effects", "duplicate_group_copied_side_effects"}:
         return make(
             CleanupFollowUpResolutionBucket.NEEDS_INSERTBLOCK_REPLAY,
             CleanupProofState.UNPROVEN,
-            proof_sources=("structured_metadata",),
+            proof_sources=(CleanupProofSource.STRUCTURED_METADATA,),
         )
     if reason in {
         "duplicate_group_requires_trampoline",
@@ -1666,7 +1739,7 @@ def reclassify_bad_while_loop_follow_up(
         return make(
             CleanupFollowUpResolutionBucket.NEEDS_TRAMPOLINE_ISOLATION,
             CleanupProofState.UNPROVEN,
-            proof_sources=("structured_metadata",),
+            proof_sources=(CleanupProofSource.STRUCTURED_METADATA,),
             notes=_branch_or_trampoline_notes(cfg, from_serial, target_serial),
         )
     if reason in {
@@ -1682,12 +1755,12 @@ def reclassify_bad_while_loop_follow_up(
         return make(
             CleanupFollowUpResolutionBucket.STILL_EVIDENCE_GAP,
             CleanupProofState.UNPROVEN,
-            proof_sources=("structured_metadata",),
+            proof_sources=(CleanupProofSource.STRUCTURED_METADATA,),
         )
     return make(
         CleanupFollowUpResolutionBucket.STILL_UNSAFE,
         CleanupProofState.REJECTED,
-        proof_sources=("structured_metadata",),
+        proof_sources=(CleanupProofSource.STRUCTURED_METADATA,),
     )
 
 
@@ -1706,7 +1779,7 @@ def serialize_follow_up_reclassifications(
             "fallthrough_target": row.fallthrough_target,
             "bucket": row.bucket.value,
             "proof_state": row.proof_state.value,
-            "proof_sources": list(row.proof_sources),
+            "proof_sources": [source.value for source in row.proof_sources],
             "notes": list(row.notes),
         }
         for row in reclassifications
@@ -1791,7 +1864,9 @@ def _reclassify_from_structured_edit(
             if candidate is not None and (
                 cfg is None or validate_dispatcher_cleanup_candidate(cfg, candidate)
             ):
-                return CleanupFollowUpResolutionBucket.NOW_RESOLVABLE_DUPLICATE_AND_REDIRECT
+                return (
+                    CleanupFollowUpResolutionBucket.NOW_RESOLVABLE_DUPLICATE_AND_REDIRECT
+                )
         if (
             edit_type == "BadWhileLoopConditionalDuplicate"
             and _coerce_int(getattr(edit, "dispatcher_entry", None)) == dispatcher_entry
@@ -1926,11 +2001,7 @@ def _modern_single_target_source(
         from_serial=from_serial,
     )
     if report_target is not None and _target_matches(target_serial, report_target):
-        return ("transition_report",)
-
-    dag_target = _target_from_dag_authority(dag_authority, from_serial)
-    if dag_target is not None and _target_matches(target_serial, dag_target):
-        return ("semantic_dag",)
+        return (CleanupProofSource.TRANSITION_REPORT,)
 
     state_const = (
         state_constants_by_source.get(from_serial)
@@ -1939,7 +2010,7 @@ def _modern_single_target_source(
     )
     range_target = _target_from_range_intervals(range_intervals, state_const)
     if range_target is not None and _target_matches(target_serial, range_target):
-        return ("range_interval_singleton",)
+        return (CleanupProofSource.RANGE_INTERVAL_SINGLETON,)
     return None
 
 
@@ -2008,8 +2079,13 @@ def _matching_follow_up_target_proof(
     reason: str,
     target_serial: int | None,
     proofs: Sequence[CleanupFollowUpTargetProof],
+    cfg: FlowGraph | None,
 ) -> CleanupFollowUpTargetProof | None:
     for proof in proofs:
+        if type(proof) is not CleanupFollowUpTargetProof or not proof.scope.matches(
+            cfg
+        ):
+            continue
         if (
             proof.dispatcher_entry == dispatcher_entry
             and proof.from_serial == from_serial
@@ -2026,8 +2102,13 @@ def _matching_follow_up_per_pred_target_proof(
     from_serial: int,
     reason: str,
     proofs: Sequence[CleanupFollowUpPerPredTargetProof],
+    cfg: FlowGraph | None,
 ) -> CleanupFollowUpPerPredTargetProof | None:
     for proof in proofs:
+        if type(
+            proof
+        ) is not CleanupFollowUpPerPredTargetProof or not proof.scope.matches(cfg):
+            continue
         if (
             proof.dispatcher_entry == dispatcher_entry
             and proof.from_serial == from_serial
@@ -2063,7 +2144,7 @@ def build_bad_while_loop_follow_up_proofs(
         *,
         key: tuple[int, int, str],
         target: int | None,
-        proof_sources: tuple[str, ...],
+        proof_sources: tuple[CleanupProofSource, ...],
     ) -> None:
         dispatcher_entry, from_serial, reason = key
         if target is None or key in seen_targets:
@@ -2084,6 +2165,7 @@ def build_bad_while_loop_follow_up_proofs(
                 reason=reason,
                 target_serial=target_int,
                 proof_sources=proof_sources,
+                scope=CleanupProofScope.from_cfg(cfg),
             )
         )
 
@@ -2091,7 +2173,7 @@ def build_bad_while_loop_follow_up_proofs(
         *,
         key: tuple[int, int, str],
         per_pred_targets: tuple[tuple[int, int], ...] | None,
-        proof_sources: tuple[str, ...],
+        proof_sources: tuple[CleanupProofSource, ...],
     ) -> None:
         dispatcher_entry, from_serial, reason = key
         if per_pred_targets is None or key in seen_per_pred:
@@ -2114,6 +2196,7 @@ def build_bad_while_loop_follow_up_proofs(
                 reason=reason,
                 per_pred_targets=coerced,
                 proof_sources=proof_sources,
+                scope=CleanupProofScope.from_cfg(cfg),
             )
         )
 
@@ -2134,13 +2217,7 @@ def build_bad_while_loop_follow_up_proofs(
         add_target(
             key=key,
             target=report_target,
-            proof_sources=("transition_report",),
-        )
-
-        add_target(
-            key=key,
-            target=_target_from_dag_authority(dag_authority, from_serial),
-            proof_sources=("semantic_dag",),
+            proof_sources=(CleanupProofSource.TRANSITION_REPORT,),
         )
 
         state_const = (
@@ -2151,14 +2228,14 @@ def build_bad_while_loop_follow_up_proofs(
         add_target(
             key=key,
             target=_target_from_range_intervals(range_intervals, state_const),
-            proof_sources=("range_interval_singleton",),
+            proof_sources=(CleanupProofSource.RANGE_INTERVAL_SINGLETON,),
         )
 
         if per_pred_targets_by_follow_up is not None:
             add_per_pred(
                 key=key,
                 per_pred_targets=per_pred_targets_by_follow_up.get(key),
-                proof_sources=("per_pred_target_map",),
+                proof_sources=(CleanupProofSource.PER_PRED_TARGET_MAP,),
             )
 
     return tuple(target_proofs), tuple(per_pred_proofs)
@@ -2201,27 +2278,6 @@ def _target_from_transition_report(
         if target_int is not None:
             return target_int
     return None
-
-
-def _target_from_dag_authority(
-    authority: object | None, from_serial: int
-) -> int | None:
-    if authority is None:
-        return None
-    conflicts = getattr(authority, "conflicts_for_source", None)
-    if callable(conflicts):
-        try:
-            if conflicts(from_serial, None):
-                return None
-        except Exception:
-            return None
-    getter = getattr(authority, "canonical_target_for", None)
-    if not callable(getter):
-        return None
-    try:
-        return _coerce_int(getter(from_serial, None))
-    except Exception:
-        return None
 
 
 def _target_from_range_intervals(
@@ -2324,7 +2380,11 @@ def _coerce_follow_up_reclassification(
     try:
         bucket = CleanupFollowUpResolutionBucket(bucket_raw)
         proof_state = CleanupProofState(proof_state_raw)
-    except ValueError:
+        raw_sources = raw.get("proof_sources", ())
+        if not isinstance(raw_sources, (tuple, list)):
+            return None
+        sources = tuple(CleanupProofSource(source) for source in raw_sources)
+    except (TypeError, ValueError):
         return None
 
     def str_tuple(value: object) -> tuple[str, ...]:
@@ -2345,7 +2405,7 @@ def _coerce_follow_up_reclassification(
         fallthrough_target=_coerce_optional_int(raw.get("fallthrough_target")),
         bucket=bucket,
         proof_state=proof_state,
-        proof_sources=str_tuple(raw.get("proof_sources", ())),
+        proof_sources=sources,
         notes=str_tuple(raw.get("notes", ())),
     )
 

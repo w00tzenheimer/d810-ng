@@ -434,35 +434,6 @@ def _log_planner_ctx_conflicts(
         )
 
 
-_SUB7FFD3338C040_ENTRY_EA = 0x180012B60
-
-
-def _corridor_seed_data_for_snapshot(snapshot: AnalysisSnapshot) -> tuple:
-    "Return function-specific CorridorSpliceData for the snapshot.\n\n    uee-7wcd seed registry.  Keyed off ``mba.entry_ea``.  Today's only\n    registered corridor is sub_7FFD3338C040's poll-corridor splice\n    (shared_block=45, base_target=126, clone_source=122,\n    clone_target=180).  Returns an empty tuple when the function has\n    no registered corridor.\n\n    Until preanalysis analysis can derive corridor patterns directly, this\n    seed registry is the canonical source of corridor data for the\n    DAG arbiter.\n"
-    from d810.transforms.dag_authority import (
-        CorridorSpliceData,
-    )
-
-    mba = getattr(snapshot, "mba", None)
-    if mba is None:
-        return ()
-    try:
-        entry_ea = int(getattr(mba, "entry_ea", -1))
-    except Exception:
-        return ()
-    if entry_ea == _SUB7FFD3338C040_ENTRY_EA:
-        return (
-            CorridorSpliceData(
-                function_ea=entry_ea,
-                shared_block=45,
-                base_target=126,
-                clone_source=122,
-                clone_target=180,
-            ),
-        )
-    return ()
-
-
 def _build_dag_authority(snapshot: AnalysisSnapshot) -> "DagAuthority | None":
     "Construct the DAG-as-arbiter for this pipeline run, or None.\n\n    Phase 2 of uee-jrgq.  Reads the preanalysis DAG off ``snapshot.discovery``\n    if present; returns ``None`` when no discovery context is available\n    (legacy / non-Hodur families that haven't built a LinearizedStateDag\n    yet).  Built once per ``UnflatteningPlanner.plan()`` call.\n\n    Per the deferral decision (mem_52073043), per-round rederivation is\n    intentionally deferred \u2014 the same authority is threaded through\n    every cumulative-view rebuild within this plan() invocation.\n"
     discovery = getattr(snapshot, "discovery", None)
@@ -478,14 +449,12 @@ def _build_dag_authority(snapshot: AnalysisSnapshot) -> "DagAuthority | None":
         DagAuthority,
     )
 
-    # uee-7wcd: seed function-specific corridor data based on
-    # ``mba.entry_ea``.  Currently only sub_7FFD3338C040 has a
-    # registered corridor; new entries can be added here when other
-    # functions surface the same shape.  Long-term: have preanalysis
-    # analysis derive corridor patterns from the DAG itself.
-    corridor_data = _corridor_seed_data_for_snapshot(snapshot)
+    # aa-v8et: the uee-7wcd per-function CorridorSpliceData seed registry is
+    # gone.  It handed DagAuthority a hardcoded literal for one entry EA and
+    # the arbiter then ALLOWed corridor mods on the strength of it, naming no
+    # DAG edge.  The authority is now built from the DAG and nothing else.
     try:
-        return DagAuthority(dag, corridor_data=corridor_data)
+        return DagAuthority(dag)
     except Exception as exc:
         logger.warning(
             "Failed to build DagAuthority from snapshot.discovery.dag: %s",

@@ -314,7 +314,7 @@ class TestNativeNestedInstructionTraversal:
             )
         )
 
-        assert manager.func(block, owner) is False
+        assert manager.func(block, owner) == 0
 
         nested_calls = [call for call in capture.calls if call[1] is not owner]
         assert nested_calls, capture.calls

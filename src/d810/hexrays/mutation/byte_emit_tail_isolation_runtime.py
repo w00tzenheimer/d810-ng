@@ -1009,8 +1009,6 @@ class LiveMbaAdapter:
                 _dump_mop_tree(insn.r, "r", 0, _ih)
                 _dump_mop_tree(insn.d, "d", 0, _ih)
 
-        from d810.hexrays.mutation.deferred_modifier import DeferredGraphModifier
-
         expected_serial = int(mba.qty) - 1
         modifier = self._new_deferred_modifier()
         modifier.queue_create_and_redirect(
@@ -1214,71 +1212,86 @@ class LiveMbaAdapter:
         successor_serial = int(succ_blk.serial)
         predecessor_serial = int(pred_blk.serial)
 
-        # Allocate a fresh kreg pair for the byte load + zero-extend.
-        safe_ea = int(getattr(mba, "entry_ea", 0) or 0)
-        kreg_id = int(mba.alloc_kreg(8))
-
-        # m_ldx kreg(1) <- [seg : source_addr_operand]
-        # Clone segment operand from any existing m_stx/m_ldx in the mba
-        # since the IDA segment-register constant (mr_ds) is not always
-        # exposed in the Python bindings on every IDA version.
-        seg_template = _find_segment_operand_template(mba, _ih)
-        if seg_template is None:
-            raise RuntimeError(
-                "insert_anchor_block_xor_pair: no m_stx/m_ldx in mba to "
-                "clone segment operand from"
-            )
-        ldx_ins = _ih.minsn_t(safe_ea)
-        ldx_ins.ea = safe_ea
-        ldx_ins.opcode = _ih.m_ldx
-        ldx_ins.l = _ih.mop_t()
-        ldx_ins.l.assign(seg_template)
-        ldx_ins.r = _ih.mop_t()
-        ldx_ins.r.assign(source_addr_operand)
-        ldx_ins.d = _ih.mop_t()
-        ldx_ins.d.make_reg(kreg_id, 1)
-
-        # m_xdu kreg(8) <- kreg(1)
-        xdu_ins = _ih.minsn_t(safe_ea)
-        xdu_ins.ea = safe_ea
-        xdu_ins.opcode = _ih.m_xdu
-        xdu_ins.l = _ih.mop_t()
-        xdu_ins.l.make_reg(kreg_id, 1)
-        xdu_ins.r = _ih.mop_t()
-        xdu_ins.r.erase()
-        xdu_ins.d = _ih.mop_t()
-        xdu_ins.d.make_reg(kreg_id, 8)
-
-        # m_xor stkvar(8) <- stkvar(8) ^ kreg(8)
-        xor_ins = _ih.minsn_t(safe_ea)
-        xor_ins.ea = safe_ea
-        xor_ins.opcode = _ih.m_xor
-        xor_ins.l = _ih.mop_t()
-        xor_ins.l.make_stkvar(mba, int(accumulator_stkoff))
-        xor_ins.l.size = 8
-        xor_ins.r = _ih.mop_t()
-        xor_ins.r.make_reg(kreg_id, 8)
-        xor_ins.d = _ih.mop_t()
-        xor_ins.d.make_stkvar(mba, int(accumulator_stkoff))
-        xor_ins.d.size = 8
-
         from d810.hexrays.mutation.deferred_modifier import DeferredGraphModifier
 
         expected_serial = int(mba.qty) - 1
         modifier = self._new_deferred_modifier()
-        modifier.queue_create_and_redirect(
-            int(predecessor_serial),
-            int(successor_serial),
-            [ldx_ins, xdu_ins, xor_ins],
-            expected_serial=expected_serial,
-            old_target_serial=int(successor_serial),
-            description="byte emit xor-pair anchor",
-        )
-        if modifier.apply(defer_post_apply_maintenance=True) <= 0:
-            raise RuntimeError(
-                "insert_anchor_block_xor_pair: DGM create-and-redirect failed"
+        try:
+            # The DGM owns this allocation and releases it if construction or
+            # the queued block transaction is rejected.  Successful apply
+            # retains the register because the inserted instructions reference
+            # it for their lifetime.
+            kreg_id = modifier.allocate_kreg(8)
+            if kreg_id is None:
+                raise RuntimeError(
+                    "insert_anchor_block_xor_pair: kreg allocation failed"
+                )
+
+            safe_ea = int(getattr(mba, "entry_ea", 0) or 0)
+
+            # m_ldx kreg(1) <- [seg : source_addr_operand]
+            # Clone segment operand from any existing m_stx/m_ldx in the mba
+            # since the IDA segment-register constant (mr_ds) is not always
+            # exposed in the Python bindings on every IDA version.
+            seg_template = _find_segment_operand_template(mba, _ih)
+            if seg_template is None:
+                raise RuntimeError(
+                    "insert_anchor_block_xor_pair: no m_stx/m_ldx in mba to "
+                    "clone segment operand from"
+                )
+            ldx_ins = _ih.minsn_t(safe_ea)
+            ldx_ins.ea = safe_ea
+            ldx_ins.opcode = _ih.m_ldx
+            ldx_ins.l = _ih.mop_t()
+            ldx_ins.l.assign(seg_template)
+            ldx_ins.r = _ih.mop_t()
+            ldx_ins.r.assign(source_addr_operand)
+            ldx_ins.d = _ih.mop_t()
+            ldx_ins.d.make_reg(kreg_id, 1)
+
+            # m_xdu kreg(8) <- kreg(1)
+            xdu_ins = _ih.minsn_t(safe_ea)
+            xdu_ins.ea = safe_ea
+            xdu_ins.opcode = _ih.m_xdu
+            xdu_ins.l = _ih.mop_t()
+            xdu_ins.l.make_reg(kreg_id, 1)
+            xdu_ins.r = _ih.mop_t()
+            xdu_ins.r.erase()
+            xdu_ins.d = _ih.mop_t()
+            xdu_ins.d.make_reg(kreg_id, 8)
+
+            # m_xor stkvar(8) <- stkvar(8) ^ kreg(8)
+            xor_ins = _ih.minsn_t(safe_ea)
+            xor_ins.ea = safe_ea
+            xor_ins.opcode = _ih.m_xor
+            xor_ins.l = _ih.mop_t()
+            xor_ins.l.make_stkvar(mba, int(accumulator_stkoff))
+            xor_ins.l.size = 8
+            xor_ins.r = _ih.mop_t()
+            xor_ins.r.make_reg(kreg_id, 8)
+            xor_ins.d = _ih.mop_t()
+            xor_ins.d.make_stkvar(mba, int(accumulator_stkoff))
+            xor_ins.d.size = 8
+
+            modifier.queue_create_and_redirect(
+                int(predecessor_serial),
+                int(successor_serial),
+                [ldx_ins, xdu_ins, xor_ins],
+                expected_serial=expected_serial,
+                old_target_serial=int(successor_serial),
+                description="byte emit xor-pair anchor",
             )
-        return modifier.current_serial_for_planned(expected_serial)
+            if modifier.apply(defer_post_apply_maintenance=True) <= 0:
+                raise RuntimeError(
+                    "insert_anchor_block_xor_pair: DGM create-and-redirect failed"
+                )
+            return modifier.current_serial_for_planned(expected_serial)
+        except Exception:
+            # ``apply()`` already releases pending allocations on a rejected
+            # transaction; this also covers failures while building the
+            # detached instructions before anything is queued.
+            modifier.release_allocated_kregs()
+            raise
 
 
 def _dump_mop_tree(op, label: str, depth: int, _ih, max_depth: int = 8) -> None:

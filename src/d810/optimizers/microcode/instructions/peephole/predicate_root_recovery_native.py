@@ -2,12 +2,27 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import ida_hexrays
 
+from d810.core.pass_ids import PassId
+from d810.hexrays.mutation.block_instruction_commit import (
+    BlockInstructionAnchor,
+    BlockInstructionBatchCandidate,
+    BlockInstructionEditIntent,
+    BlockInstructionMaterializationContext,
+    MaterializedBlockInstructionEdit,
+    fingerprint_minsn,
+)
 from d810.hexrays.ir_maturity import ir_maturity_to_ida
+from d810.hexrays.ir.mop_snapshot import MopSnapshot
 from d810.hexrays.utils.hexrays_helpers import dup_mop, structural_mop_hash
 from d810.ir.maturity import IRMaturity
-from d810.optimizers.microcode.flow.handler import FlowOptimizationRule
+from d810.hexrays.mutation.instruction_commit import NativeEpoch
+from d810.optimizers.microcode.instructions.block_handler import (
+    HostedBlockInstructionRule,
+)
 from d810.optimizers.microcode.instructions.peephole.predicate_root_recovery import (
     Binary,
     Constant,
@@ -107,9 +122,11 @@ def _effect_free_variable(variable: Variable) -> bool:
         return False
 
 
-def _fresh_byte_kreg(block: ida_hexrays.mblock_t) -> ida_hexrays.mop_t | None:
+def _fresh_byte_kreg(
+    context: BlockInstructionMaterializationContext,
+) -> ida_hexrays.mop_t | None:
     try:
-        register = block.mba.alloc_kreg(1, True)
+        register = context.alloc_kreg(1)
         if register == ida_hexrays.mr_none:
             return None
         output = ida_hexrays.mop_t()
@@ -153,7 +170,105 @@ def _and(
     return result
 
 
-class FiniteZeroSetPredicateBlockRule(FlowOptimizationRule):
+@dataclass(frozen=True, slots=True)
+class _DetachedFiniteZeroSetMatch:
+    source: MopSnapshot
+    excluded_values: tuple[int, int]
+    extension_kind: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class _FiniteZeroSetMaterializer:
+    """Materialize one already-proven finite-zero-set replacement."""
+
+    evidence: _DetachedFiniteZeroSetMatch
+
+    def materialize(
+        self,
+        context: BlockInstructionMaterializationContext,
+    ) -> MaterializedBlockInstructionEdit | None:
+        instruction = context.instruction
+        try:
+            source = self.evidence.source.to_mop(getattr(context.block, "mba", None))
+        except Exception:
+            return None
+        if not isinstance(source, ida_hexrays.mop_t):
+            return None
+        first = _fresh_byte_kreg(context)
+        second = _fresh_byte_kreg(context)
+        if first is None or second is None:
+            return None
+
+        comparisons = (
+            _setnz(
+                instruction.ea,
+                source,
+                self.evidence.excluded_values[0],
+                first,
+            ),
+            _setnz(
+                instruction.ea,
+                source,
+                self.evidence.excluded_values[1],
+                second,
+            ),
+        )
+        if self.evidence.extension_kind is None:
+            replacement = _and(
+                instruction.ea,
+                first,
+                second,
+                instruction.d,
+            )
+            return MaterializedBlockInstructionEdit(
+                replacement=replacement,
+                insert_before=comparisons,
+            )
+
+        if self.evidence.extension_kind == "direct":
+            extension = ida_hexrays.minsn_t(instruction)
+        else:
+            child = getattr(getattr(instruction, "l", None), "d", None)
+            if child is None:
+                return None
+            extension = ida_hexrays.minsn_t(child)
+        predicate_output = _fresh_byte_kreg(context)
+        if predicate_output is None:
+            return None
+        replacement = _and(
+            instruction.ea,
+            first,
+            second,
+            predicate_output,
+        )
+        extension.l = dup_mop(predicate_output)
+        if self.evidence.extension_kind == "direct":
+            root = extension
+        else:
+            wrapped = ida_hexrays.mop_t()
+            wrapped.create_from_insn(extension)
+            root = ida_hexrays.minsn_t(instruction)
+            root.l = wrapped
+        return MaterializedBlockInstructionEdit(
+            replacement=root,
+            insert_before=comparisons + (replacement,),
+        )
+
+
+def _block_instructions(block: ida_hexrays.mblock_t) -> tuple[ida_hexrays.minsn_t, ...]:
+    instructions: list[ida_hexrays.minsn_t] = []
+    instruction = block.head
+    seen: set[int] = set()
+    while instruction is not None and id(instruction) not in seen:
+        seen.add(id(instruction))
+        instructions.append(instruction)
+        if instruction is block.tail:
+            break
+        instruction = instruction.next
+    return tuple(instructions)
+
+
+class FiniteZeroSetPredicateBlockRule(HostedBlockInstructionRule):
     """Lower proven ``E(x) != 0`` into the recovered exclusion predicate."""
 
     DESCRIPTION = "Recover bounded finite-zero-set predicates"
@@ -188,28 +303,32 @@ class FiniteZeroSetPredicateBlockRule(FlowOptimizationRule):
                     "FiniteZeroSetPredicateBlockRule maturities must be IRMaturity names"
                 ) from exc
 
-    def optimize(self, block: ida_hexrays.mblock_t) -> int:
-        if block is None:
-            return 0
-        changed = 0
-        instruction = block.head
-        while instruction is not None:
-            next_instruction = instruction.next
+    def propose_instruction_batch(
+        self,
+        block: ida_hexrays.mblock_t,
+        *,
+        epoch: NativeEpoch,
+    ) -> BlockInstructionBatchCandidate | None:
+        if (
+            block is None
+            or getattr(block, "mba", None) is None
+            or not isinstance(epoch, NativeEpoch)
+        ):
+            return None
+        for ordinal, instruction in enumerate(_block_instructions(block)):
             # At GLBOPT2 this often arrives as
             # `mov xdu(m_setnz(...)), result64`, so identify the comparison
             # under the legal width extension rather than assuming it is a
             # standalone instruction.
-            extension = None
-            direct_extension = False
+            extension_kind: str | None = None
             predicate_instruction = instruction
             if (
                 instruction.opcode == ida_hexrays.m_xdu
                 and instruction.l.t == ida_hexrays.mop_d
                 and instruction.l.d is not None
             ):
-                extension = ida_hexrays.minsn_t(instruction)
-                predicate_instruction = extension.l.d
-                direct_extension = True
+                extension_kind = "direct"
+                predicate_instruction = instruction.l.d
             elif (
                 instruction.opcode == ida_hexrays.m_mov
                 and instruction.l.t == ida_hexrays.mop_d
@@ -218,64 +337,59 @@ class FiniteZeroSetPredicateBlockRule(FlowOptimizationRule):
                 and instruction.l.d.l.t == ida_hexrays.mop_d
                 and instruction.l.d.l.d is not None
             ):
-                extension = ida_hexrays.minsn_t(instruction.l.d)
-                predicate_instruction = extension.l.d
+                extension_kind = "wrapped"
+                predicate_instruction = instruction.l.d.l.d
             predicate = _predicate_from_instruction(predicate_instruction)
-            match = recover_finite_zero_set_predicate(predicate) if predicate is not None else None
+            match = (
+                recover_finite_zero_set_predicate(predicate)
+                if predicate is not None
+                else None
+            )
             if (
                 match is None
                 or len(match.excluded_values) != 2
                 or not _effect_free_variable(match.variable)
                 or not z3_proves_finite_zero_set_predicate(predicate, match)
             ):
-                instruction = next_instruction
                 continue
-            first = _fresh_byte_kreg(block)
-            second = _fresh_byte_kreg(block)
-            predicate_output = _fresh_byte_kreg(block)
-            source = match.variable.source
-            if (
-                first is None
-                or second is None
-                or predicate_output is None
-                or not isinstance(source, ida_hexrays.mop_t)
-            ):
-                instruction = next_instruction
+            source = getattr(match.variable, "source", None)
+            if not isinstance(source, ida_hexrays.mop_t):
                 continue
-            comparisons = (
-                _setnz(instruction.ea, source, match.excluded_values[0], first),
-                _setnz(instruction.ea, source, match.excluded_values[1], second),
+            try:
+                evidence = _DetachedFiniteZeroSetMatch(
+                    source=MopSnapshot.from_mop(source),
+                    excluded_values=tuple(
+                        int(value) for value in match.excluded_values
+                    ),
+                    extension_kind=extension_kind,
+                )
+            except Exception:
+                continue
+            anchor = BlockInstructionAnchor(
+                block_serial=int(block.serial),
+                block_start_ea=int(block.start),
+                ordinal=ordinal,
+                instruction_ea=int(instruction.ea),
+                opcode=int(instruction.opcode),
+                before_fingerprint=fingerprint_minsn(
+                    instruction,
+                    epoch.function_ea,
+                ),
             )
-            replacement = _and(
-                instruction.ea,
-                first,
-                second,
-                predicate_output if extension is not None else instruction.d,
+            return BlockInstructionBatchCandidate(
+                edits=(
+                    BlockInstructionEditIntent(
+                        anchor=anchor,
+                        materializer=_FiniteZeroSetMaterializer(evidence),
+                        description="finite-zero-set predicate recovery",
+                    ),
+                ),
+                epoch_before=epoch,
+                pass_id=PassId.MBA_SIMPLIFY.value,
+                stage_id="finite-zero-set-predicate",
+                rule_id=self.name,
             )
-            anchor = instruction.prev
-            for comparison in comparisons:
-                block.insert_into_block(comparison, anchor)
-                anchor = comparison
-            if extension is not None:
-                block.insert_into_block(replacement, anchor)
-                extension.l = dup_mop(predicate_output)
-                if direct_extension:
-                    instruction.swap(extension)
-                    changed += 1
-                    instruction = next_instruction
-                    continue
-                wrapped = ida_hexrays.mop_t()
-                wrapped.create_from_insn(extension)
-                outer = ida_hexrays.minsn_t(instruction)
-                outer.l = wrapped
-                instruction.swap(outer)
-            else:
-                instruction.swap(replacement)
-            changed += 1
-            instruction = next_instruction
-        if changed:
-            block.mark_lists_dirty()
-        return changed
+        return None
 
 
 __all__ = ["FiniteZeroSetPredicateBlockRule"]

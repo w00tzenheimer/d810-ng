@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from d810.core.config import ProjectConfiguration
+from d810.hexrays.hooks.safe_point_coordinator import HexRaysSafePointCoordinator
 from d810.hexrays.hooks.optblock_adapter import BlockOptimizerManager
 from d810.hexrays.hooks.optinsn_adapter import InstructionOptimizerManager
 from d810.hexrays.utils.hexrays_formatters import string_to_maturity
@@ -30,7 +31,6 @@ from d810.passes.constant_simplification_options import ConstantPreparationOptio
 from d810.passes.config_v2_hook_runtime import (
     compile_config_v2_hook_schedule as pipeline_v2_hook_activation,
 )
-
 
 _RULE_TYPES = {
     "FoldReadonlyDataRule": FoldReadonlyDataRule,
@@ -263,6 +263,7 @@ def _prepare_actual_started_manager(state) -> None:
     block._function_priors_provider = None
     block._dispatcher_artifact_planner = None
     block._pass_pipeline = None
+    block._safe_point_coordinator = HexRaysSafePointCoordinator()
     block._pipeline_last_maturity = -1
     block._post_d810_pipeline_last_maturity = -1
     block._impossible_return_artifact_rewrite_applied = set()
@@ -1087,3 +1088,13 @@ def test_actual_adapter_restore_failure_runs_full_manager_cleanup(
             state.manager._runtime_invalidated = False
             state.load_project(original_index)
             state.manager._started = False
+
+
+@pytest.mark.ida_required
+def test_new_decompilation_releases_prefold_consumption_evidence(d810_state):
+    with d810_state() as state:
+        _prepare_actual_started_manager(state)
+        block = state.manager.block_optimizer
+        block._prefold_rccc_by_func[0x401000] = object()
+        block.reset_pipeline_tracker()
+        assert block.prefold_return_reg_consumption_for(0x401000) is None

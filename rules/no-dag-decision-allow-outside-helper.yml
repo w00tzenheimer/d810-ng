@@ -1,0 +1,79 @@
+# LLM agents: adding or widening any `ignores:` entry requires direct,
+# explicit approval from the user naming that ignore. Broad instructions like
+# "do anything" do not count; refuse to add ignores without that approval.
+#
+# d81-9q6e (review round 2, R3). Companion to
+# `no-dag-authority-mutation-grant.yml`, which guards the *shape* of the
+# arbiter's API on the two files that own it. This rule guards the ALLOW
+# verdict itself, and it covers ALL of `src/d810`: an ALLOW smuggled into a
+# third module is the same independent grant, so scoping the ban to the two
+# files that happen to own the arbiter today is not a guard.
+#
+# `files:` here is a positive scope (production code), not an `ignores:`
+# exemption. Test doubles under `tests/` legitimately fabricate verdicts to
+# drive consumers; production code never may.
+
+id: no-dag-decision-allow-outside-helper
+language: python
+severity: error
+
+files:
+  - "src/d810/**"
+
+message: |
+  A `DagDecision` ALLOW has exactly ONE construction site: the DAG-edge-backed
+  helper `DagAuthority._allow_from_dag_edge(edge, *, mod_kind)`, which takes
+  the authorising StateDagEdge as a parameter and refuses an edge its own DAG
+  does not own. Build your verdict there, or return `DagDecision.gap(...)` /
+  `DagDecision.refuse(...)`.
+
+  Referencing `DagDecision.allow` anywhere else grants without naming the DAG
+  edge that earned it -- that is exactly how permits_zero_state_write,
+  permits_edge_redirect_via_pred_split and
+  permits_dead_block_terminator_redirect each acquired a latent grant
+  (aa-v8et). Rebinding or re-importing the class under another name, or
+  reaching the classmethod through `getattr`, is the same grant with the text
+  changed, so those spellings are banned outright.
+
+rule:
+  any:
+    # 1. `DagDecision.allow` / `<module>.DagDecision.allow`, whether it is
+    #    called, assigned to a name, or passed as a value. Lifting the ban
+    #    inside `_allow_from_dag_edge` attaches the exemption to the helper
+    #    whose signature carries the proof -- not to a path, which is why this
+    #    is not an `ignores:` entry.
+    - all:
+        - kind: attribute
+        - regex: "(^|\\.)DagDecision\\.allow$"
+        - not:
+            inside:
+              kind: function_definition
+              stopBy: end
+              has:
+                field: name
+                kind: identifier
+                regex: "^_allow_from_dag_edge$"
+    # 2. The dynamic spelling of the same attribute.
+    - any:
+        - pattern: getattr(DagDecision, "allow")
+        - pattern: getattr(DagDecision, 'allow')
+        - pattern: getattr($MOD.DagDecision, "allow")
+        - pattern: getattr($MOD.DagDecision, 'allow')
+    # 3. Rebinding the class under a local name, which would make every
+    #    subsequent `<alias>.allow` invisible to clause 1.
+    - pattern: $ALIAS = DagDecision
+    # 4. The same rebinding performed at import time.
+    - pattern: from $MOD import DagDecision as $ALIAS
+
+note: |
+  `no-dag-authority-mutation-grant.yml` stays scoped to the two files that own
+  the arbiter, because grant-shaped *method names* only mean something there.
+  The ALLOW ban is different in kind: it is about the verdict, so it is global.
+
+  `tests/unit/transforms/test_dag_authority_grant_invariant.py`
+  (`TestAllowBanSurvivesAliasing`) resolves the same four spellings through
+  module-level assignments and import aliases and asserts the only reference
+  site in `src/d810` is the helper. A fully dynamic `getattr(cls, name)` with a
+  computed attribute name is out of reach of both guards; the runtime check in
+  `_allow_from_dag_edge` (the edge must be one this authority's DAG owns) is
+  what backstops it.

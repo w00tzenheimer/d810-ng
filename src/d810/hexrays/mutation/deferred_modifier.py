@@ -207,6 +207,13 @@ import idaapi
 
 from d810.core import getLogger
 from d810.hexrays.mutation.block_retention import release_committed_block_retention
+from d810.hexrays.mutation.block_instruction_commit import (
+    AllocatedKreg,
+    BlockInstructionBatchCandidate,
+    BlockInstructionBatchReceipt,
+    BlockInstructionMaterializationContext,
+    MaterializedBlockInstructionEdit,
+)
 from d810.hexrays.mutation.deferred_events import DeferredEvent, EventEmitter
 from d810.hexrays.mutation.guarded_removal_binding import (
     GuardedRemovalBindingOutcome,
@@ -220,6 +227,10 @@ from d810.hexrays.mutation.guarded_removal_binding import (
     decide_post_write_guard_rejection,
 )
 from d810.hexrays.mutation.rollback_outcome import RollbackOutcome
+from d810.hexrays.mutation.fragment_publication_lifecycle import (
+    NativeMutationQuarantined,
+)
+from d810.hexrays.mutation.instruction_commit import NativeEpoch
 from d810.hexrays.mutation.mba_mutation_events import (
     MbaMutationGateway,
     MbaMutationPlanItem,
@@ -1323,6 +1334,26 @@ class DeferredGraphModifier:
         init=False,
         repr=False,
     )
+    _instruction_rewrite_batch: BlockInstructionBatchCandidate | None = field(
+        default=None,
+        init=False,
+        repr=False,
+    )
+    _instruction_batch_lifecycle_authority: object | None = field(
+        default=None,
+        init=False,
+        repr=False,
+    )
+    _instruction_batch_expected_epoch: NativeEpoch | None = field(
+        default=None,
+        init=False,
+        repr=False,
+    )
+    _pending_kreg_allocations: list[AllocatedKreg] = field(
+        default_factory=list,
+        init=False,
+        repr=False,
+    )
 
     def __post_init__(self) -> None:
         if not isinstance(
@@ -1344,6 +1375,7 @@ class DeferredGraphModifier:
 
     def reset(self) -> None:
         """Clear all queued modifications."""
+        self.release_allocated_kregs()
         self.modifications.clear()
         self._applied = False
         if self._mutation_gateway is not None:
@@ -1353,6 +1385,347 @@ class DeferredGraphModifier:
         self.last_apply_phase = None
         self.last_apply_subphase = None
         self.last_stale_serial_scan = None
+        self._instruction_rewrite_batch = None
+        self._instruction_batch_expected_epoch = None
+
+    def allocate_kreg(self, size: int) -> int | None:
+        """Allocate and ledger a kernel register for this DGM transaction.
+
+        Native allocation is deliberately exposed only through the mutation
+        backend.  A caller may use the returned register while constructing a
+        queued native edit; the allocation is retained when ``apply()``
+        succeeds and released by DGM on rejection, failure, or reset.
+        """
+        if isinstance(size, bool) or not isinstance(size, int):
+            raise TypeError("size must be an integer")
+        if size <= 0:
+            raise ValueError("size must be positive")
+        if self._applied:
+            raise RuntimeError("cannot allocate a kreg after DGM apply")
+        alloc_kreg = getattr(self.mba, "alloc_kreg", None)
+        if not callable(alloc_kreg):
+            raise RuntimeError("MBA cannot allocate kregs")
+        allocated = alloc_kreg(int(size), True)
+        if allocated is None:
+            return None
+        register = int(allocated)
+        if register == int(ida_hexrays.mr_none) or register < 0:
+            return None
+        self._pending_kreg_allocations.append(
+            AllocatedKreg(register=register, size=int(size))
+        )
+        return register
+
+    def release_allocated_kregs(self) -> None:
+        """Release DGM-owned allocations that never became live instructions."""
+        if not self._pending_kreg_allocations:
+            return
+        allocations = tuple(reversed(self._pending_kreg_allocations))
+        self._pending_kreg_allocations.clear()
+        free_kreg = getattr(self.mba, "free_kreg", None)
+        if not callable(free_kreg):
+            raise RuntimeError("MBA cannot free allocated kregs")
+        for allocation in allocations:
+            free_kreg(int(allocation.register), int(allocation.size))
+
+    def _retain_allocated_kregs(self) -> None:
+        """Forget the pending ledger after successful native materialization."""
+        self._pending_kreg_allocations.clear()
+
+    def configure_instruction_batch_lifecycle(self, authority: object | None) -> None:
+        """Install the lifecycle-owned native-failure poison port.
+
+        This is deliberately a narrow callback-local configuration point.  The
+        batch candidate and its receipt never retain the authority.
+        """
+
+        self._instruction_batch_lifecycle_authority = authority
+
+    def configure_instruction_batch_epoch(self, epoch: NativeEpoch) -> None:
+        """Install the adapter-captured lifecycle snapshot for one batch."""
+
+        if not isinstance(epoch, NativeEpoch):
+            raise TypeError("epoch must be a NativeEpoch")
+        self._instruction_batch_expected_epoch = epoch
+
+    @staticmethod
+    def _instruction_batch_receipt(
+        candidate: BlockInstructionBatchCandidate,
+        *,
+        committed: bool,
+        reason: str,
+        inserted_instruction_count: int = 0,
+        mutation_batch_id: str | None = None,
+    ) -> BlockInstructionBatchReceipt:
+        return BlockInstructionBatchReceipt(
+            committed=committed,
+            callback_result=1 if committed else 0,
+            applied_edit_count=len(candidate.edits) if committed else 0,
+            inserted_instruction_count=(
+                int(inserted_instruction_count) if committed else 0
+            ),
+            epoch_before=candidate.epoch_before,
+            epoch_after=candidate.epoch_before,
+            reason=reason,
+            pass_id=candidate.pass_id,
+            stage_id=candidate.stage_id,
+            rule_id=candidate.rule_id,
+            mutation_batch_id=mutation_batch_id if committed else None,
+        )
+
+    @staticmethod
+    def _instruction_batch_body(block: object) -> tuple[object, ...]:
+        """Capture a block's current body once, preserving native ordinal."""
+
+        body: list[object] = []
+        instruction = getattr(block, "head", None)
+        seen: set[int] = set()
+        while instruction is not None and id(instruction) not in seen:
+            seen.add(id(instruction))
+            body.append(instruction)
+            if instruction is getattr(block, "tail", None):
+                break
+            instruction = getattr(instruction, "next", None)
+        return tuple(body)
+
+    @staticmethod
+    def _instruction_batch_anchor_matches(
+        *,
+        block: object,
+        instruction: object,
+        ordinal: int,
+        anchor: object,
+    ) -> bool:
+        from d810.hexrays.mutation.instruction_commit import fingerprint_minsn
+
+        return (
+            int(getattr(block, "serial", -1)) == int(anchor.block_serial)
+            and int(getattr(block, "start", -1)) == int(anchor.block_start_ea)
+            and int(ordinal) == int(anchor.ordinal)
+            and int(getattr(instruction, "ea", -1)) == int(anchor.instruction_ea)
+            and int(getattr(instruction, "opcode", -1)) == int(anchor.opcode)
+            and int(
+                fingerprint_minsn(
+                    instruction,
+                    int(getattr(getattr(block, "mba", None), "entry_ea", 0) or 0),
+                )
+            )
+            == int(anchor.before_fingerprint)
+        )
+
+    def _poison_instruction_batch_failure(self, error: BaseException) -> None:
+        authority = self._instruction_batch_lifecycle_authority
+        poison = getattr(authority, "quarantine_native_mutation", None)
+        if not callable(poison):
+            return
+        try:
+            poison(
+                function_ea=int(getattr(self.mba, "entry_ea", 0) or 0),
+                reason=f"hosted optblock instruction batch failure: {error}",
+            )
+        except Exception:
+            logger.exception("failed to poison hosted instruction batch generation")
+
+    @staticmethod
+    def _instruction_batch_free_kregs(mba: object, ledger: list[AllocatedKreg]) -> None:
+        free_kreg = getattr(mba, "free_kreg", None)
+        if not ledger:
+            return
+        if not callable(free_kreg):
+            raise RuntimeError("MBA cannot free allocated kregs")
+        for allocation in reversed(ledger):
+            free_kreg(int(allocation.register), int(allocation.size))
+
+    def queue_instruction_rewrite_batch(
+        self,
+        candidate: BlockInstructionBatchCandidate,
+    ) -> None:
+        """Queue exactly one detached instruction batch, without native work."""
+
+        if not isinstance(candidate, BlockInstructionBatchCandidate):
+            raise TypeError("candidate must be a BlockInstructionBatchCandidate")
+        if self.modifications:
+            raise RuntimeError(
+                "instruction rewrite batches cannot mix with CFG modifications"
+            )
+        if self._instruction_rewrite_batch is not None:
+            raise RuntimeError("only one instruction rewrite batch may be queued")
+        self._instruction_rewrite_batch = candidate
+
+    def apply_instruction_rewrite_batch(self) -> BlockInstructionBatchReceipt:
+        """Preflight then atomically materialize one hosted block rewrite batch."""
+
+        candidate = self._instruction_rewrite_batch
+        self._instruction_rewrite_batch = None
+        if candidate is None:
+            raise RuntimeError("no instruction rewrite batch is queued")
+        if self.modifications:
+            raise RuntimeError(
+                "instruction rewrite batches cannot mix with CFG modifications"
+            )
+
+        # A candidate is callback-local.  Always verify the live identity
+        # components, and when the adapter supplied a lifecycle snapshot also
+        # require its exact generation.  Never invent G -> G+1 here.
+        expected_epoch = self._instruction_batch_expected_epoch
+        self._instruction_batch_expected_epoch = None
+        if expected_epoch is None:
+            return self._instruction_batch_receipt(
+                candidate, committed=False, reason="epoch-context-required"
+            )
+        live_epoch = NativeEpoch.from_mba(
+            self.mba,
+            generation=expected_epoch.generation,
+        )
+        if (
+            live_epoch.function_ea != candidate.epoch_before.function_ea
+            or live_epoch.mba_identity != candidate.epoch_before.mba_identity
+            or live_epoch.maturity != candidate.epoch_before.maturity
+            or expected_epoch != candidate.epoch_before
+        ):
+            return self._instruction_batch_receipt(
+                candidate, committed=False, reason="stale-epoch"
+            )
+        body_by_block: dict[int, dict[int, object]] = {}
+        resolved: list[tuple[object, object]] = []
+        for edit in candidate.edits:
+            anchor = edit.anchor
+            if int(anchor.block_serial) < 0:
+                return self._instruction_batch_receipt(
+                    candidate, committed=False, reason="invalid-anchor"
+                )
+            block = self.mba.get_mblock(int(anchor.block_serial))
+            if block is None:
+                return self._instruction_batch_receipt(
+                    candidate, committed=False, reason="stale-anchor"
+                )
+            body_by_ordinal = body_by_block.setdefault(
+                int(anchor.block_serial),
+                {
+                    ordinal: instruction
+                    for ordinal, instruction in enumerate(self._instruction_batch_body(block))
+                },
+            )
+            instruction = body_by_ordinal.get(int(anchor.ordinal))
+            if instruction is None or not self._instruction_batch_anchor_matches(
+                block=block,
+                instruction=instruction,
+                ordinal=int(anchor.ordinal),
+                anchor=anchor,
+            ):
+                return self._instruction_batch_receipt(
+                    candidate, committed=False, reason="stale-anchor"
+                )
+            resolved.append((block, instruction))
+
+        gateway = self._mutation_gateway
+        if gateway is None:
+            return self._instruction_batch_receipt(
+                candidate, committed=False, reason="mutation-gateway-required"
+            )
+        ledger: list[AllocatedKreg] = []
+        materialized: list[
+            tuple[int, object, object, MaterializedBlockInstructionEdit]
+        ] = []
+        inserted: list[tuple[object, object]] = []
+        swapped: list[tuple[object, object]] = []
+        batch_started = False
+        writes_started = False
+        try:
+            self._begin_mutation_batch(
+                kind=StructuralMutationKind.BLOCK_REPLACE,
+                description="hosted block instruction rewrite batch",
+                planned_operation_count=len(candidate.edits),
+            )
+            batch_started = True
+            for edit, (block, instruction) in zip(candidate.edits, resolved):
+                context = BlockInstructionMaterializationContext(
+                    block=block,
+                    instruction=instruction,
+                    allocate_kreg=lambda size, mba=self.mba: mba.alloc_kreg(size, True),
+                    allocated_kregs=ledger,
+                )
+                replacement = edit.materializer.materialize(context)
+                if replacement is None:
+                    self._instruction_batch_free_kregs(self.mba, ledger)
+                    gateway.abort(reason="hosted instruction materialization rejected")
+                    return self._instruction_batch_receipt(
+                        candidate, committed=False, reason="materialization-rejected"
+                    )
+                materialized.append(
+                    (int(edit.anchor.ordinal), block, instruction, replacement)
+                )
+
+            for _ordinal, block, instruction, replacement in sorted(
+                materialized,
+                key=lambda item: item[0],
+                reverse=True,
+            ):
+                anchor = getattr(instruction, "prev", None)
+                for helper in replacement.insert_before:
+                    # Treat the call itself as a native write boundary.  A
+                    # failing SWIG call can have partially linked a helper,
+                    # so rollback must run even when it raises before we can
+                    # append a local receipt of that insertion.
+                    writes_started = True
+                    inserted.append((block, helper))
+                    block.insert_into_block(helper, anchor)
+                    anchor = helper
+                writes_started = True
+                instruction.swap(replacement.replacement)
+                swapped.append((instruction, replacement.replacement))
+            for block in {
+                id(block): block
+                for _ordinal, block, _instruction, _edit in materialized
+            }.values():
+                block.mark_lists_dirty()
+            safe_verify(self.mba, "hosted block instruction rewrite batch")
+            gateway.record_external_sdk_operations(
+                self.mba,
+                operation_count=len(candidate.edits),
+            )
+            gateway_receipt = gateway.commit()
+            return self._instruction_batch_receipt(
+                candidate,
+                committed=True,
+                reason="committed",
+                inserted_instruction_count=len(inserted),
+                mutation_batch_id=str(gateway_receipt.mutation_batch_id),
+            )
+        except Exception as error:
+            rollback_error: BaseException | None = None
+            if writes_started:
+                try:
+                    for instruction, replacement in reversed(swapped):
+                        instruction.swap(replacement)
+                    for block, helper in reversed(inserted):
+                        block.remove_from_block(helper)
+                    self._instruction_batch_free_kregs(self.mba, ledger)
+                    for block in {
+                        id(block): block
+                        for _ordinal, block, _instruction, _edit in materialized
+                    }.values():
+                        block.mark_lists_dirty()
+                except Exception as rollback_failure:
+                    rollback_error = rollback_failure
+            else:
+                try:
+                    self._instruction_batch_free_kregs(self.mba, ledger)
+                except Exception as rollback_failure:
+                    rollback_error = rollback_failure
+            if batch_started and gateway.active:
+                try:
+                    gateway.abort(reason=f"hosted instruction batch failed: {error}")
+                except Exception as abort_failure:
+                    rollback_error = rollback_error or abort_failure
+            if writes_started or rollback_error is not None:
+                self._poison_instruction_batch_failure(rollback_error or error)
+                raise NativeMutationQuarantined(
+                    "hosted block instruction batch failed"
+                ) from (rollback_error or error)
+            return self._instruction_batch_receipt(
+                candidate, committed=False, reason="materialization-rejected"
+            )
 
     def configure_events(
         self,
@@ -8064,7 +8437,7 @@ class DeferredGraphModifier:
         self.plan_refusal_reason = None
         self.rollback_outcome = None
         try:
-            return self._apply(
+            result = self._apply(
                 run_optimize_local=run_optimize_local,
                 run_deep_cleaning=run_deep_cleaning,
                 verify_each_mod=verify_each_mod,
@@ -8077,8 +8450,25 @@ class DeferredGraphModifier:
                 staged_atomic=staged_atomic,
             )
         except BaseException as exc:
+            try:
+                self.release_allocated_kregs()
+            finally:
+                self._abort_open_mutation_batch(
+                    f"apply raised {type(exc).__name__}: {exc}"
+                )
+            raise
+        try:
+            if result > 0:
+                self._retain_allocated_kregs()
+            else:
+                had_pending_allocations = bool(self._pending_kreg_allocations)
+                self.release_allocated_kregs()
+                if had_pending_allocations:
+                    self._abort_open_mutation_batch("DGM apply rejected pending work")
+        except BaseException as exc:
             self._abort_open_mutation_batch(f"apply raised {type(exc).__name__}: {exc}")
             raise
+        return result
 
     def _abort_open_mutation_batch(self, reason: str) -> None:
         gateway = self._mutation_gateway

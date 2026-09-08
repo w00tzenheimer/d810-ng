@@ -556,10 +556,10 @@ class HexraysDecompilationHook(ida_hexrays.Hexrays_Hooks):
         # on the block optimizer (it survives the GLBOPT1->GLBOPT2 boundary, where
         # glbopt() actually fires; the per-maturity flow_context does not). Empty
         # when no block optimizer is installed -> the cleanup fails closed.
-        prefold_def_eas = (
-            self._block_optimizer.prefold_return_reg_consumer_def_eas_for(function_ea)
+        prefold_snapshot = (
+            self._block_optimizer.prefold_return_reg_consumption_for(function_ea)
             if self._block_optimizer is not None
-            else frozenset()
+            else None
         )
         capture_nop_sites = getattr(
             self._block_optimizer,
@@ -592,7 +592,12 @@ class HexraysDecompilationHook(ida_hexrays.Hexrays_Hooks):
         try:
             applied = apply_return_const_corruption_cleanup(
                 mba,
-                prefold_def_eas=prefold_def_eas,
+                prefold_snapshot=prefold_snapshot,
+                lifecycle_authority=lifecycle,
+                return_consumption_reader=(
+                    self._block_optimizer.prefold_return_reg_consumption_for
+                    if self._block_optimizer is not None else None
+                ),
             )
             loop_requested = bool(applied or terminal_canonicalized)
             if not loop_requested:

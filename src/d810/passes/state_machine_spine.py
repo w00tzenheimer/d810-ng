@@ -36,7 +36,13 @@ from d810.passes.pass_pipeline import (
     no_caps,
 )
 from d810.passes.registry import PassRegistry
-from d810.passes.execution_stages import ExecutionPipeline, ExecutionStageDescriptor
+from d810.passes.execution_stages import (
+    ExecutionHost,
+    ExecutionOwnership,
+    ExecutionPipeline,
+    ExecutionStageDescriptor,
+    IRScope,
+)
 from d810.passes.state_machine_options import (
     StateMachineCffOptions,
     state_machine_cff_options_from_config,
@@ -341,6 +347,9 @@ def register_state_machine_passes(registry: PassRegistry) -> PassRegistry:
                     spec.pass_id,
                     ExecutionPipeline.FLOW,
                     spec.pass_factory.__name__,
+                    ownership=ExecutionOwnership.D810_OWNED,
+                    host=ExecutionHost.D810_PIPELINE,
+                    scope=IRScope.FUNCTION,
                 ),
             ),
             editor_spec=_STATE_MACHINE_EDITOR_SPEC,

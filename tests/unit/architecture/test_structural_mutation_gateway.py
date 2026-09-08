@@ -603,3 +603,28 @@ def test_synthetic_identity_is_nominal_not_derived_from_live_coordinates() -> No
             if any(token in parameter.lower() for token in forbidden):
                 violations.append(f"{name}:{parameter}")
     assert violations == []
+
+
+def test_byte_emit_kreg_allocation_routes_through_deferred_modifier() -> None:
+    """The byte-tail adapter must not allocate native kregs itself."""
+    path = SRC_ROOT / "hexrays/mutation/byte_emit_tail_isolation_runtime.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    direct_allocations: list[str] = []
+    modifier_allocations: list[str] = []
+    for call in ast.walk(tree):
+        if not isinstance(call, ast.Call) or not isinstance(call.func, ast.Attribute):
+            continue
+        if call.func.attr not in {"alloc_kreg", "allocate_kreg"}:
+            continue
+        receiver = call.func.value
+        if isinstance(receiver, ast.Name) and receiver.id == "mba":
+            direct_allocations.append(f"{call.lineno}:mba.alloc_kreg")
+        if (
+            isinstance(receiver, ast.Name)
+            and receiver.id == "modifier"
+            and call.func.attr == "allocate_kreg"
+        ):
+            modifier_allocations.append(f"{call.lineno}:modifier.allocate_kreg")
+
+    assert direct_allocations == []
+    assert modifier_allocations

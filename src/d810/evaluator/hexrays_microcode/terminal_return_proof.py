@@ -1,9 +1,15 @@
-"Layered proof orchestrator for terminal return handlers.\n\nGiven an MBA and a :class:`TerminalReturnAuditReport` from preanalysis, determine\nwhether each terminal handler has a provable return-carrier (rax.8) definition\nusing progressively heavier analysis layers:\n\n1. **Topology** -- consume audit report (no live analysis)\n2. **Single-predecessor walk** -- backward walk through single-pred chain\n3. **Chain-backed merge** -- UD chain query at merge points\n4. **Reaching-def** -- forward dataflow on handler subgraph\n5. **Emulator** -- MopTracker fallback (future)\n\nAll layers are fault-tolerant: if any layer throws, it is logged and the\norchestrator continues to the next layer.\n"
+"""Diagnostic evidence for terminal return handlers.
+
+Observe topology, backward definitions, merge chains and reaching definitions
+without granting mutation permission. Live analysis rebinds audit EAs uniquely;
+block serials from an earlier snapshot are never used as live identities.
+Topology-only observations remain distinct from resolved definitions.
+"""
 
 from __future__ import annotations
 
 import enum
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from d810.analyses.control_flow.terminal_return_audit import (
     TerminalReturnSourceKind,
@@ -11,7 +17,7 @@ from d810.analyses.control_flow.terminal_return_audit import (
     TerminalReturnAuditReport,
 )
 from d810.core.logging import getLogger
-from d810.core.typing import NamedTuple, Optional
+from d810.core.typing import Optional
 
 logger = getLogger(__name__)
 
@@ -60,6 +66,27 @@ class CarrierValueKind(str, enum.Enum):
 
 
 @dataclass(frozen=True)
+class ReturnCarrierRegister:
+    """Typed register coordinate; its display name cannot establish a proof."""
+
+    micro_register: int
+    width: int
+
+    def __post_init__(self) -> None:
+        if type(self.micro_register) is not int or self.micro_register < 0:
+            raise TypeError("carrier register must be a non-negative integer")
+        if type(self.width) is not int or self.width <= 0:
+            raise TypeError("carrier width must be a positive integer")
+
+
+class TerminalReturnProofStatus(str, enum.Enum):
+    TOPOLOGY_OBSERVED = "topology_observed"
+    RESOLVED = "resolved"
+    AMBIGUOUS = "ambiguous"
+    UNRESOLVED = "unresolved"
+
+
+@dataclass(frozen=True)
 class CarrierValueClassification:
     """Classification result for the return-carrier's source operand.
 
@@ -68,7 +95,7 @@ class CarrierValueClassification:
         const_value: Literal constant value if *kind* is ``CONST``.
         source_stkoff: Stack offset if *kind* is ``STACK_SLOT``.
         source_mreg: Micro-register number if *kind* is ``REGISTER``.
-        materializer_serials: Block serials that contain the definition
+        materializer_sites: Exact block and instruction coordinates for the definition
             (relevant for ``EXPRESSION``, ``STACK_SLOT``, ``REGISTER``).
     """
 
@@ -76,7 +103,11 @@ class CarrierValueClassification:
     const_value: int | None = None
     source_stkoff: int | None = None
     source_mreg: int | None = None
-    materializer_serials: tuple[int, ...] = ()
+    materializer_sites: tuple[DefSiteLike, ...] = ()
+
+    @property
+    def materializer_serials(self) -> tuple[int, ...]:
+        return tuple(site.block_serial for site in self.materializer_sites)
 
 
 class ProofLayer(str, enum.Enum):
@@ -101,7 +132,8 @@ class ProofLayer(str, enum.Enum):
     """No layer could prove a return-carrier definition."""
 
 
-class DefSiteLike(NamedTuple):
+@dataclass(frozen=True)
+class DefSiteLike:
     """Lightweight definition site descriptor.
 
     Attributes:
@@ -114,6 +146,14 @@ class DefSiteLike(NamedTuple):
     ins_ea: int
     opcode: Optional[int] = None
 
+    def __post_init__(self) -> None:
+        if type(self.block_serial) is not int or self.block_serial < 0:
+            raise TypeError("definition block must be a non-negative integer")
+        if type(self.ins_ea) is not int or not 0 < self.ins_ea < 0xFFFFFFFFFFFFFFFF:
+            raise ValueError("definition requires a native instruction EA")
+        if self.opcode is not None and type(self.opcode) is not int:
+            raise TypeError("definition opcode must be an integer")
+
 
 @dataclass(frozen=True)
 class TerminalReturnValueProof:
@@ -121,7 +161,7 @@ class TerminalReturnValueProof:
 
     Attributes:
         handler_serial: Entry block serial of the terminal handler.
-        carrier_kind: Description of the carrier, e.g. ``"rax.8"``, ``"stack_slot"``.
+        carrier: Typed return register and byte width.
         def_sites: Where the carrier was defined (empty if unresolved).
         ambiguous: True if multiple conflicting definitions were found.
         topology_kind: The :class:`TerminalReturnSourceKind` value from the audit.
@@ -130,17 +170,63 @@ class TerminalReturnValueProof:
     """
 
     handler_serial: int
-    carrier_kind: str
+    carrier: ReturnCarrierRegister
     def_sites: tuple[DefSiteLike, ...]
     ambiguous: bool
-    topology_kind: str
+    topology_kind: TerminalReturnSourceKind
     proof_layer_used: ProofLayer
     notes: str = ""
     value_kind: CarrierValueKind = CarrierValueKind.UNKNOWN
     const_value: int | None = None
     source_stkoff: int | None = None
     source_mreg: int | None = None
-    materializer_serials: tuple[int, ...] = ()
+    materializer_sites: tuple[DefSiteLike, ...] = ()
+    handler_ea: int | None = None
+
+    def __post_init__(self) -> None:
+        if type(self.carrier) is not ReturnCarrierRegister:
+            raise TypeError("terminal proof requires a typed carrier register")
+        if type(self.topology_kind) is not TerminalReturnSourceKind:
+            raise TypeError("terminal topology must be a typed source kind")
+        if (
+            type(self.proof_layer_used) is not ProofLayer
+            or type(self.ambiguous) is not bool
+        ):
+            raise TypeError(
+                "terminal proof requires a typed layer and boolean ambiguity"
+            )
+        if type(self.value_kind) is not CarrierValueKind:
+            raise TypeError("terminal value kind must be typed")
+        for sites in (self.def_sites, self.materializer_sites):
+            if type(sites) is not tuple or any(
+                type(site) is not DefSiteLike for site in sites
+            ):
+                raise TypeError("terminal definitions require anchored sites")
+            for site in sites:
+                site.__post_init__()
+        if (
+            self.proof_layer_used not in (ProofLayer.UNRESOLVED, ProofLayer.TOPOLOGY)
+            and not self.def_sites
+        ):
+            raise ValueError("a resolved analysis layer requires exact definitions")
+
+    @property
+    def carrier_kind(self) -> str:
+        return f"mreg{self.carrier.micro_register}.{self.carrier.width}"
+
+    @property
+    def materializer_serials(self) -> tuple[int, ...]:
+        return tuple(site.block_serial for site in self.materializer_sites)
+
+    @property
+    def status(self) -> TerminalReturnProofStatus:
+        if self.proof_layer_used is ProofLayer.UNRESOLVED:
+            return TerminalReturnProofStatus.UNRESOLVED
+        if self.ambiguous:
+            return TerminalReturnProofStatus.AMBIGUOUS
+        if self.proof_layer_used is ProofLayer.TOPOLOGY:
+            return TerminalReturnProofStatus.TOPOLOGY_OBSERVED
+        return TerminalReturnProofStatus.RESOLVED
 
 
 @dataclass(frozen=True)
@@ -164,16 +250,20 @@ class TerminalReturnProofReport:
         resolved = 0
         ambiguous = 0
         unresolved = 0
+        topology = 0
         for p in self.proofs:
-            if p.proof_layer_used == ProofLayer.UNRESOLVED:
+            if p.status is TerminalReturnProofStatus.UNRESOLVED:
                 unresolved += 1
-            elif p.ambiguous:
+            elif p.status is TerminalReturnProofStatus.AMBIGUOUS:
                 ambiguous += 1
+            elif p.status is TerminalReturnProofStatus.TOPOLOGY_OBSERVED:
+                topology += 1
             else:
                 resolved += 1
         return (
             f"{len(self.proofs)} handlers: "
-            f"{resolved} resolved, {ambiguous} ambiguous, {unresolved} unresolved"
+            f"{resolved} resolved, {ambiguous} ambiguous, {unresolved} unresolved, "
+            f"{topology} topology-only"
         )
 
 
@@ -502,7 +592,7 @@ def classify_carrier_value(
         return CarrierValueClassification(
             kind=CarrierValueKind.STACK_SLOT,
             source_stkoff=off,
-            materializer_serials=(def_site.block_serial,),
+            materializer_sites=(def_site,),
         )
 
     if src_type == ida_hexrays.mop_r:
@@ -510,13 +600,13 @@ def classify_carrier_value(
         return CarrierValueClassification(
             kind=CarrierValueKind.REGISTER,
             source_mreg=reg,
-            materializer_serials=(def_site.block_serial,),
+            materializer_sites=(def_site,),
         )
 
     # Anything else (mop_d, mop_a, mop_b, etc.) is an expression.
     return CarrierValueClassification(
         kind=CarrierValueKind.EXPRESSION,
-        materializer_serials=(def_site.block_serial,),
+        materializer_sites=(def_site,),
     )
 
 
@@ -541,15 +631,13 @@ def _enrich_proof_with_classification(
     cls = classify_carrier_value(mba, proof)
 
     # Reconstruct with classification fields via dataclass replace.
-    from dataclasses import replace
-
     return replace(
         proof,
         value_kind=cls.kind,
         const_value=cls.const_value,
         source_stkoff=cls.source_stkoff,
         source_mreg=cls.source_mreg,
-        materializer_serials=cls.materializer_serials,
+        materializer_sites=cls.materializer_sites,
     )
 
 
@@ -562,6 +650,26 @@ def _enrich_proof_with_classification(
 _DEFAULT_CARRIER_MREG: int = 0
 
 
+def _rebind_audit_site(
+    mba: object, site: TerminalReturnSiteAudit
+) -> TerminalReturnSiteAudit | None:
+    """Resolve audit anchors uniquely; pre-mutation serials are diagnostics."""
+    if site.handler_ea is None or site.return_ea is None:
+        return None
+    try:
+        by_ea: dict[int, list[int]] = {}
+        for serial in range(int(mba.qty)):
+            block = mba.get_mblock(serial)
+            by_ea.setdefault(int(block.start), []).append(serial)
+        handlers = by_ea.get(site.handler_ea, ())
+        returns = by_ea.get(site.return_ea, ())
+        if len(handlers) != 1 or len(returns) != 1:
+            return None
+        return replace(site, handler_serial=handlers[0], return_block_serial=returns[0])
+    except (AttributeError, IndexError, TypeError, ValueError):
+        return None
+
+
 def prove_terminal_returns(
     mba: object,
     audit_report: TerminalReturnAuditReport,
@@ -570,18 +678,31 @@ def prove_terminal_returns(
     carrier_size: int = 8,
 ) -> TerminalReturnProofReport:
     "Orchestrate layered proof for all terminal return handlers.\n\n    For each site in *audit_report*, run progressively heavier analysis\n    layers until one resolves or all are exhausted.\n\n    Args:\n        mba: An ``ida_hexrays.mba_t`` instance (or ``None`` for topology-only).\n        audit_report: The terminal return audit from preanalysis.\n        carrier_mreg: Micro-register number for the return carrier (default: mr_rax=0).\n        carrier_size: Operand size in bytes for the return carrier (default: 8).\n\n    Returns:\n        A :class:`TerminalReturnProofReport` with per-handler proof results.\n"
-    carrier_kind = f"mreg{carrier_mreg}.{carrier_size}"
+    carrier = ReturnCarrierRegister(carrier_mreg, carrier_size)
     proofs: list[TerminalReturnValueProof] = []
 
     for site in audit_report.sites:
+        current_mba = mba
+        current_site = site
+        if mba is not None:
+            rebound = (
+                _rebind_audit_site(mba, site)
+                if getattr(mba, "entry_ea", None) == audit_report.function_ea
+                else None
+            )
+            if rebound is None:
+                current_mba = None
+            else:
+                current_site = rebound
         proof = _prove_single_site(
-            mba,
-            site,
+            current_mba,
+            current_site,
             carrier_mreg=carrier_mreg,
             carrier_size=carrier_size,
-            carrier_kind=carrier_kind,
+            carrier=carrier,
         )
-        proof = _enrich_proof_with_classification(mba, proof)
+        proof = replace(proof, handler_ea=site.handler_ea)
+        proof = _enrich_proof_with_classification(current_mba, proof)
         proofs.append(proof)
 
     report = TerminalReturnProofReport(
@@ -598,7 +719,7 @@ def _prove_single_site(
     *,
     carrier_mreg: int,
     carrier_size: int,
-    carrier_kind: str,
+    carrier: ReturnCarrierRegister,
 ) -> TerminalReturnValueProof:
     "Run the layered proof for a single terminal handler site.\n\n    Args:\n        mba: An ``ida_hexrays.mba_t`` instance (or ``None`` for topology-only).\n        site: A single audit site from the preanalysis report.\n        carrier_mreg: Micro-register number for the return carrier.\n        carrier_size: Operand size in bytes.\n        carrier_kind: Human-readable carrier description.\n\n    Returns:\n        A :class:`TerminalReturnValueProof` for this handler.\n"
     # --- Layer 1: Topology ---
@@ -609,10 +730,10 @@ def _prove_single_site(
         ):
             return TerminalReturnValueProof(
                 handler_serial=site.handler_serial,
-                carrier_kind=carrier_kind,
+                carrier=carrier,
                 def_sites=(),
                 ambiguous=False,
-                topology_kind=site.source_kind.value,
+                topology_kind=site.source_kind,
                 proof_layer_used=ProofLayer.TOPOLOGY,
                 notes="topology: direct return with rax write confirmed by audit",
             )
@@ -633,12 +754,12 @@ def _prove_single_site(
             if def_site is not None:
                 return TerminalReturnValueProof(
                     handler_serial=site.handler_serial,
-                    carrier_kind=carrier_kind,
+                    carrier=carrier,
                     def_sites=(def_site,),
                     ambiguous=False,
-                    topology_kind=site.source_kind.value,
+                    topology_kind=site.source_kind,
                     proof_layer_used=ProofLayer.SINGLE_PRED_WALK,
-                    notes=f"single-pred walk found def at blk {def_site.block_serial}",
+                    notes=f"single-pred walk found def at blk{def_site.block_serial}@{def_site.ins_ea:#x}",
                 )
         except Exception:
             logger.debug(
@@ -659,10 +780,10 @@ def _prove_single_site(
             if chain_sites:
                 return TerminalReturnValueProof(
                     handler_serial=site.handler_serial,
-                    carrier_kind=carrier_kind,
+                    carrier=carrier,
                     def_sites=chain_sites,
                     ambiguous=chain_ambiguous,
-                    topology_kind=site.source_kind.value,
+                    topology_kind=site.source_kind,
                     proof_layer_used=ProofLayer.CHAIN_BACKED,
                     notes=f"chain-backed: {len(chain_sites)} def(s)",
                 )
@@ -690,10 +811,10 @@ def _prove_single_site(
             if rd_sites:
                 return TerminalReturnValueProof(
                     handler_serial=site.handler_serial,
-                    carrier_kind=carrier_kind,
+                    carrier=carrier,
                     def_sites=rd_sites,
                     ambiguous=rd_ambiguous,
-                    topology_kind=site.source_kind.value,
+                    topology_kind=site.source_kind,
                     proof_layer_used=ProofLayer.REACHING_DEF,
                     notes=f"reaching-def: {len(rd_sites)} def(s)",
                 )
@@ -709,16 +830,18 @@ def _prove_single_site(
 
     return TerminalReturnValueProof(
         handler_serial=site.handler_serial,
-        carrier_kind=carrier_kind,
+        carrier=carrier,
         def_sites=(),
         ambiguous=False,
-        topology_kind=str(site.source_kind),
+        topology_kind=site.source_kind,
         proof_layer_used=ProofLayer.UNRESOLVED,
         notes="no layer could resolve",
     )
 
 
 __all__ = [
+    "ReturnCarrierRegister",
+    "TerminalReturnProofStatus",
     "CarrierValueClassification",
     "CarrierValueKind",
     "DefSiteLike",
