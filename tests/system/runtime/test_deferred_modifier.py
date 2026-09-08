@@ -5675,3 +5675,79 @@ class TestStagedAtomicEaIdentity:
         )
         # Both copies survived (distinct synthetic EAs per _StagedFakeMBA).
         assert len(mba.copied_blocks) == 2
+
+
+@pytest.mark.parametrize("targets", [(96, 339), (96, 96)])
+def test_coalesce_duplicate_block_preserves_distinct_predecessors(targets):
+    modifier = dm.DeferredGraphModifier(None)
+    for pred, target, reserved in zip((450, 451), targets, (646, 647)):
+        modifier.queue_duplicate_block(
+            source_block_serial=455,
+            pred_serial=pred,
+            target_serial=target,
+            expected_serial=reserved,
+        )
+    assert modifier.coalesce() == 0
+    assert [
+        (m.via_pred, m.new_target, m.expected_serial) for m in modifier.modifications
+    ] == [(450, targets[0], 646), (451, targets[1], 647)]
+
+
+@pytest.mark.parametrize("target,reserved", [(339, 646), (96, 647)])
+def test_coalesce_duplicate_block_rejects_conflicting_edge_ownership(target, reserved):
+    modifier = dm.DeferredGraphModifier(None)
+    modifier.queue_duplicate_block(
+        source_block_serial=455, pred_serial=450, target_serial=96, expected_serial=646
+    )
+    modifier.queue_duplicate_block(
+        source_block_serial=455,
+        pred_serial=450,
+        target_serial=target,
+        expected_serial=reserved,
+    )
+    with pytest.raises(ValueError, match="conflicting predecessor clone"):
+        modifier.coalesce()
+    assert len(modifier.modifications) == 2
+
+
+def test_coalesce_duplicate_block_deduplicates_same_owned_creation():
+    modifier = dm.DeferredGraphModifier(None)
+    for _ in range(2):
+        modifier.queue_duplicate_block(
+            source_block_serial=455,
+            pred_serial=450,
+            target_serial=96,
+            expected_serial=646,
+        )
+    assert modifier.coalesce() == 1
+    assert len(modifier.modifications) == 1
+
+
+@pytest.mark.parametrize("other_kind", ["clone", "goto"])
+def test_original_redirect_coalescing_rejects_shared_source_owner(other_kind):
+    modifier = dm.DeferredGraphModifier(None)
+    modifier.queue_duplicate_block(
+        source_block_serial=455, pred_serial=450, target_serial=96,
+        expected_serial=646, original_redirect_target=339,
+    )
+    if other_kind == "clone":
+        modifier.queue_duplicate_block(
+            source_block_serial=455, pred_serial=451, target_serial=96,
+            expected_serial=647,
+        )
+    else:
+        modifier.queue_goto_change(block_serial=455, new_target=362)
+    with pytest.raises(ValueError, match="original-source redirect"):
+        modifier.coalesce()
+    assert len(modifier.modifications) == 2
+
+
+def test_original_redirect_coalescing_accepts_one_owned_source_effect():
+    modifier = dm.DeferredGraphModifier(None)
+    for _ in range(2):
+        modifier.queue_duplicate_block(
+            source_block_serial=455, pred_serial=450, target_serial=96,
+            expected_serial=646, original_redirect_target=339,
+        )
+    assert modifier.coalesce() == 1
+    assert modifier.modifications[0].original_redirect_target == 339
