@@ -76,6 +76,51 @@ def _source_authority() -> object:
     return authority
 
 
+@pytest.mark.parametrize(
+    "make_subject, expected_walks",
+    ((_published_route_result, 4), (_source_authority, 3)),
+)
+def test_route_seal_reuses_the_checked_detached_state(make_subject, expected_walks) -> None:
+    """Stored identities reuse state; result identities retain normalization."""
+    subject = make_subject()
+    if type(subject) is model.SourceBoundRouteAuthority:
+        identity = subject.source_authority_id
+    else:
+        identity = bind._route_result_identity(subject)
+    legacy_seal = bind._canonical_registry_seal_uncached.__defaults__[4]
+    expected = legacy_seal(subject, identity)
+    snapshot = bind._registry_structural_snapshot
+    with patch.object(bind, "_registry_structural_snapshot", wraps=snapshot) as walks:
+        actual = bind._canonical_registry_seal_uncached(subject, _route_registry())
+    assert actual == expected
+    assert walks.call_count == expected_walks
+    assert walks.call_args_list[0].args[0] is subject
+    assert walks.call_args_list[1].args[0] is not subject
+    assert walks.call_args_list[2].args[0] is subject
+
+
+def test_route_seal_rejects_source_drift_during_detached_classification() -> None:
+    subject, registry = _normalized_route_failure()
+    original = subject.anchored_refs
+    snapshot = bind._registry_structural_snapshot
+    calls = 0
+
+    def mutate_after_detached_snapshot(value):
+        nonlocal calls
+        state = snapshot(value)
+        calls += 1
+        if calls == 2:
+            object.__setattr__(subject, "anchored_refs", tuple(reversed(original)))
+        return state
+
+    try:
+        with patch.object(bind, "_registry_structural_snapshot", side_effect=mutate_after_detached_snapshot):
+            with pytest.raises(ValueError, match="candidate changed during classification"):
+                bind._canonical_registry_seal_uncached(subject, registry)
+    finally:
+        object.__setattr__(subject, "anchored_refs", original)
+
+
 # --- R2-F1: byte-identity ------------------------------------------------
 
 
