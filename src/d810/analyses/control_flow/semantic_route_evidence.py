@@ -95,6 +95,37 @@ from d810.analyses.control_flow.switch_table_analysis import (
 )
 
 
+from d810.analyses.control_flow.materialized_indirect_transfer import TerminalReturnCarrierRequest
+from d810.analyses.control_flow.terminal_return_carrier_evidence import TerminalReturnCarrierSource
+from d810.ir.block_identity import NativeEaIntervalSet
+from d810.ir.expressions import Add
+from d810.ir.expressions import And
+from d810.ir.expressions import Const
+from d810.ir.expressions import Load
+from d810.ir.expressions import Move
+from d810.ir.expressions import Mul
+from d810.ir.expressions import Store
+from d810.ir.expressions import Sub
+from d810.ir.instructions import InstructionControl
+from d810.ir.instructions import InstructionEffect
+from d810.ir.instructions import InstructionEffectKind
+from d810.ir.instructions import InstructionMemoryAccess
+from d810.ir.instructions import InstructionMemoryAccessKind
+from d810.ir.instructions import InstructionSwitchCase
+from d810.ir.locations import AggregateLocation
+from d810.ir.locations import MemoryCell
+from d810.ir.locations import RegisterLocation
+from d810.ir.locations import StackSlot
+from d810.ir.locations import WeakStackSlot
+from d810.ir.semantics import CallKind
+from d810.ir.value_refs import DefinitionRef
+from d810.ir.value_refs import InstructionResultRef
+from d810.ir.value_refs import InstructionUseKind
+from d810.ir.value_refs import InstructionUseRef
+from d810.ir.value_refs import SSAValueRef
+from d810.ir.value_refs import TemporaryRef
+from d810.core.structural_identity import StructuralNodeKind, StructuralRef, StructuralTable
+
 _BADADDR = 0xFFFFFFFFFFFFFFFF
 logger = getLogger(__name__)
 
@@ -6766,6 +6797,624 @@ _STABLE_ROUTE_PROOF_FIELDS: tuple[str, ...] = tuple(
 )
 
 
+# Explicit route value closure, not generic dataclass admission. Schema additions
+# fail closed until their fields and descendants are reviewed here. This capture
+# does not establish semantic validity and is not yet a runtime consumer cutover.
+_ROUTE_STRUCTURAL_FIELDS = MappingProxyType(
+    {
+        SemanticRouteProof: (
+            "proof_id",
+            "atomic_group_id",
+            "proof_kind",
+            "shape",
+            "source_identity",
+            "source_anchor_ea",
+            "destinations",
+            "delivery_region",
+            "source_owner_identity",
+            "source_owner_anchor_ea",
+            "state_write",
+            "state_transform",
+            "state_carrier",
+            "state_partition",
+            "state_partition_switch_table",
+            "state_dag",
+            "bootstrap",
+            "predicate",
+            "carriers",
+            "terminal_return_carrier",
+            "terminal_delivery",
+            "diagnostic_provenance",
+        ),
+        StableBlockIdentity: ("native_key", "exact_instruction_eas", "native_ranges"),
+        NativePreanalysisKey: (
+            "input_identity",
+            "processor",
+            "bitness",
+            "function_rva",
+            "function_fingerprint",
+            "profile_fingerprint",
+            "sdk_fingerprint",
+        ),
+        NativeEaIntervalSet: ("intervals",),
+        NativeEaInterval: ("start_ea", "end_ea"),
+        SemanticRouteDestination: (
+            "role",
+            "state_constant",
+            "target_identity",
+            "target_anchor_ea",
+            "terminal",
+        ),
+        SemanticStateWriteProof: (
+            "identity",
+            "instruction_ea",
+            "state_variable",
+            "width",
+            "state_constant",
+            "corridor_instruction_eas",
+            "authority_transfer_ea",
+            "preserved_call_instruction_eas",
+            "delivery_kind",
+            "recovered_state_write",
+            "physical_state_write",
+            "physical_delivery",
+            "guarded_selection",
+        ),
+        StorageIdentity: ("kind", "offset"),
+        SemanticRecoveredStateWriteWitness: (
+            "source_instruction",
+            "state_identity",
+            "width",
+            "recovered_state",
+        ),
+        InsnRecord: (
+            "opcode",
+            "raw_opcode",
+            "kind",
+            "ea",
+            "native_ea",
+            "value_op_kind",
+            "control_transfer_kind",
+            "call_kind",
+            "predicate_kind",
+            "branch_predicate",
+            "compare_width",
+            "is_conditional_jump",
+            "is_unconditional_jump",
+            "is_call",
+            "l",
+            "r",
+            "d",
+            "opcode_attrs",
+            "display_text_sha256",
+        ),
+        MopRecord: (
+            "t",
+            "raw_operand_type",
+            "kind",
+            "size",
+            "value",
+            "stkoff",
+            "reg",
+            "block_ref",
+            "gaddr",
+            "lvar_off",
+            "lvar_stkoff",
+            "switch_cases",
+            "stack_refs",
+            "sub_kind",
+            "sub_value_op_kind",
+            "sub_raw_opcode",
+            "sub_predicate_kind",
+            "sub_l",
+            "sub_r",
+            "args",
+        ),
+        SemanticPhysicalStateWriteWitness: (
+            "source_instruction",
+            "state_identity",
+            "width",
+            "state_constant",
+            "source_serial",
+            "alias_definition_instruction",
+            "alias_definition_serial",
+            "physical_width",
+            "state_lane_offset",
+            "byte_order",
+            "guarded_selection",
+        ),
+        SemanticPhysicalGuardSelectionWitness: (
+            "guard_serial",
+            "comparison_instruction",
+            "state_identity",
+            "width",
+            "constant",
+            "true_target_serial",
+            "false_target_serial",
+            "selected_target_serial",
+        ),
+        SemanticPhysicalDeliveryProof: (
+            "delivery",
+            "delivery_instruction",
+            "target",
+            "members",
+        ),
+        SemanticCorridorPoint: ("identity", "anchor_ea"),
+        SemanticPhysicalDeliveryMember: (
+            "identity",
+            "instruction_ea",
+            "physical_state_write",
+            "alias_definition",
+        ),
+        SemanticGuardedStateSelection: (
+            "guard",
+            "comparison_instruction",
+            "state_identity",
+            "width",
+            "constant",
+            "true_target",
+            "false_target",
+            "selected_target",
+        ),
+        SemanticLogicalDagEndpoint: (
+            "kind",
+            "serial",
+            "session_id",
+            "proxy_token",
+            "version",
+        ),
+        SemanticStateTransformProof: (
+            "operation",
+            "program",
+            "source_bindings",
+            "owner_identity",
+            "owner_anchor_ea",
+            "source_identity",
+            "source_anchor_ea",
+            "feeder_identity",
+            "feeder_anchor_ea",
+            "comparison_entry_identity",
+            "comparison_entry_anchor_ea",
+            "state_feeder_identity",
+            "state_feeder_anchor_ea",
+            "state_identity",
+            "state_constant",
+            "corridor",
+            "corridor_instruction_eas",
+        ),
+        Instruction: (
+            "operation",
+            "inputs",
+            "result",
+            "effects",
+            "control",
+            "memory",
+            "attrs",
+            "input_exprs",
+            "operand_expr_fragments",
+        ),
+        Varnode: ("space", "offset", "size"),
+        InstructionEffect: ("kind", "target", "segment", "value", "args"),
+        InstructionControl: (
+            "transfer",
+            "predicate",
+            "target",
+            "fallthrough",
+            "switch_cases",
+            "indirect_target",
+            "call_kind",
+            "call_target",
+            "call_args",
+            "return_value",
+        ),
+        InstructionSwitchCase: ("values", "target"),
+        InstructionMemoryAccess: ("kind", "target", "segment", "value", "width"),
+        Const: ("value",),
+        Move: ("source",),
+        DefinitionRef: ("location", "version"),
+        StackSlot: ("offset", "size"),
+        RegisterLocation: ("register_id", "size"),
+        MemoryCell: ("address", "size"),
+        WeakStackSlot: ("size",),
+        AggregateLocation: ("members",),
+        SSAValueRef: ("value_id",),
+        TemporaryRef: ("temp_id",),
+        InstructionResultRef: ("insn", "result_index"),
+        InstructionUseRef: ("insn", "operand_index", "kind"),
+        Add: ("left", "right"),
+        Sub: ("left", "right"),
+        And: ("left", "right"),
+        Mul: ("left", "right"),
+        Load: ("address",),
+        Store: ("address", "value"),
+        SemanticStateCarrierProof: (
+            "carrier",
+            "owner_identity",
+            "owner_anchor_ea",
+            "source_identity",
+            "source_anchor_ea",
+            "feeder_identity",
+            "feeder_anchor_ea",
+            "comparison_entry_identity",
+            "comparison_entry_anchor_ea",
+            "state_identity",
+            "state_constant",
+            "requires_feeder_clone",
+            "corridor",
+        ),
+        SemanticStatePartitionProof: (
+            "group_id",
+            "feeder_identity",
+            "feeder_anchor_ea",
+            "feeder_instruction_ea",
+            "state_identity",
+            "members",
+        ),
+        SemanticPartitionMemberProof: (
+            "owner_identity",
+            "owner_anchor_ea",
+            "state_constant",
+            "conditional_edge",
+        ),
+        SemanticPartitionConditionalEdgeProof: (
+            "transfer_instruction_ea",
+            "transfer_instruction",
+            "edge_role",
+            "sibling_identity",
+            "sibling_anchor_ea",
+        ),
+        SemanticStatePartitionSwitchTableProof: (
+            "dispatcher_identity",
+            "dispatcher_anchor_ea",
+            "target_identity",
+            "target_anchor_ea",
+            "state_identity",
+            "state_constant",
+        ),
+        SemanticStateDagProof: (
+            "witness",
+            "source_identity",
+            "source_anchor_ea",
+            "target_identity",
+            "target_anchor_ea",
+            "entry_identity",
+            "entry_anchor_ea",
+            "source_to_entry_corridor",
+            "path",
+            "switch_handoff",
+        ),
+        SemanticDecisionDagWitness: (
+            "state_identity",
+            "state_constant",
+            "entry",
+            "path",
+            "comparisons",
+            "aliases",
+            "bridges",
+        ),
+        SemanticDagComparison: (
+            "node",
+            "operation",
+            "constant",
+            "true_target",
+            "false_target",
+            "state_identity",
+        ),
+        SemanticDagNamespaceBridge: (
+            "node",
+            "instruction_ea",
+            "source_identity",
+            "result_identity",
+            "source_width",
+            "result_width",
+        ),
+        SemanticSwitchTableHandoff: ("dispatcher", "state_identity", "state_constant"),
+        SemanticBootstrapProof: (
+            "entry",
+            "source",
+            "owner",
+            "dispatcher",
+            "corridor",
+            "state_write",
+            "state_dag",
+            "preserved_effect_sites",
+        ),
+        InstructionEffectSite: ("instruction_ea", "kind", "host_instruction_ea"),
+        SemanticPredicateProof: (
+            "kind",
+            "origin",
+            "consumer",
+            "corridor",
+            "storage_identity",
+            "width",
+            "compare_constant",
+            "true_is_taken",
+            "permitted_write_eas",
+        ),
+        SemanticCarrierProof: (
+            "carrier_id",
+            "definition",
+            "consumers",
+            "corridor",
+            "storage_identity",
+            "width",
+            "state_values",
+            "permitted_write_eas",
+        ),
+        TerminalReturnCarrierEvidence: (
+            "request",
+            "capture_identity",
+            "terminal_identity",
+            "state_write_ea",
+            "carrier_ea",
+            "terminal_return_ea",
+            "operation",
+            "source",
+            "return_width",
+            "corridor_instruction_eas",
+        ),
+        TerminalReturnCarrierRequest: (
+            "source_handler_ea",
+            "terminal_target_ea",
+            "state_var_reg",
+            "state_constant",
+        ),
+        TerminalReturnCarrierSource: ("kind", "width", "storage_identity", "constant"),
+        SemanticTerminalDeliveryProof: (
+            "state_write_instruction",
+            "state_identity",
+            "width",
+            "state_constant",
+            "outer_state_dag",
+            "exit_entry",
+            "return_transport",
+        ),
+        SemanticReturnValueTransportProof: (
+            "exit_entry",
+            "move_instruction",
+            "move_source_identity",
+            "move_source_width",
+            "move_destination_identity",
+            "move_destination_width",
+            "carrier",
+            "carrier_instruction",
+            "carrier_source_identity",
+            "carrier_source_width",
+            "carrier_result_width",
+            "logical_exit",
+        ),
+    }
+)
+_ROUTE_STRUCTURAL_ENUMS = (
+    SemanticRouteProofKind,
+    SemanticRouteShape,
+    SemanticEdgeRole,
+    StorageIdentityKind,
+    SemanticStateWriteDeliveryKind,
+    InsnKind,
+    ValueOpKind,
+    ControlTransferKind,
+    CallKind,
+    PredicateKind,
+    OperandKind,
+    SemanticPhysicalWriteByteOrder,
+    SemanticDagEndpointKind,
+    Space,
+    InstructionEffectKind,
+    InstructionMemoryAccessKind,
+    InstructionUseKind,
+    SemanticPredicateKind,
+    TerminalReturnCarrierSourceKind,
+)
+
+
+def capture_structural_route_proof(
+    table: StructuralTable,
+    proof: SemanticRouteProof,
+) -> StructuralRef:
+    """Detach one proof's authoritative value; grant no validation authority.
+
+    The returned term excludes exactly the top-level fields excluded by the
+    canonical route payload. No source object is retained in its descendants.
+    Canonical constructors and boundary identity checks remain mandatory.
+    """
+    if type(proof) is not SemanticRouteProof:
+        raise TypeError("structural route capture requires exact SemanticRouteProof")
+    if (
+        tuple(item.name for item in fields(SemanticRouteProof))
+        != _ROUTE_STRUCTURAL_FIELDS[SemanticRouteProof]
+    ):
+        raise TypeError("structural route proof schema drift")
+    children = tuple(
+        _capture_route_descendant(table, getattr(proof, name), {id(proof)})
+        for name in _STABLE_ROUTE_PROOF_FIELDS
+    )
+    return table.intern(StructuralNodeKind.ROUTE_PROOF, None, (), children)
+
+
+def _capture_route_descendant(
+    table: StructuralTable,
+    value: object,
+    active: set[int],
+) -> StructuralRef:
+    value_type = type(value)
+    if value_type in (type(None), bool, int, str):
+        return table.intern(StructuralNodeKind.VALUE, None, (value,), ())
+    if value_type in _ROUTE_STRUCTURAL_ENUMS:
+        return table.intern(
+            StructuralNodeKind.ENUM,
+            None,
+            (value_type.__module__, value_type.__qualname__, value.name),
+            (),
+        )
+    if id(value) in active:
+        raise ValueError("structural route capture cycle")
+    active.add(id(value))
+    try:
+        if value_type in _ROUTE_STRUCTURAL_FIELDS:
+            names = _ROUTE_STRUCTURAL_FIELDS[value_type]
+            if tuple(item.name for item in fields(value_type)) != names:
+                raise TypeError("structural route descendant schema drift")
+            children = tuple(
+                _capture_route_descendant(table, getattr(value, name), active)
+                for name in names
+            )
+            return table.intern(
+                StructuralNodeKind.SUBJECT,
+                None,
+                (value_type.__module__, value_type.__qualname__),
+                children,
+            )
+        if value_type in (tuple, list):
+            children = tuple(
+                _capture_route_descendant(table, child, active) for child in value
+            )
+            return table.intern(
+                StructuralNodeKind.SEQUENCE,
+                None,
+                (value_type.__name__,),
+                children,
+            )
+        if value_type in (frozenset, set):
+            # The declared route set descendant is exact_instruction_eas.
+            # Open attribute sets are admitted only over this same scalar closure.
+            if any(type(child) not in (type(None), bool, int, str) for child in value):
+                raise TypeError("structural route sets require exact scalar members")
+            children = tuple(
+                _capture_route_descendant(table, child, active)
+                for child in sorted(
+                    value, key=lambda child: (type(child).__name__, child)
+                )
+            )
+            return table.intern(
+                StructuralNodeKind.SEQUENCE,
+                None,
+                (value_type.__name__,),
+                children,
+            )
+        if value_type in (dict, MappingProxyType):
+            if any(type(key) is not str for key in value):
+                raise TypeError("structural route attributes require exact string keys")
+            children = tuple(
+                _capture_route_descendant(table, item, active)
+                for key in sorted(value)
+                for item in (key, value[key])
+            )
+            return table.intern(StructuralNodeKind.MAPPING, None, (), children)
+        raise TypeError(
+            f"unsupported structural route descendant: {value_type.__name__}"
+        )
+    finally:
+        active.remove(id(value))
+
+def materialize_structural_route_proof(
+    table: StructuralTable,
+    ref: StructuralRef,
+    *,
+    proof_id: str,
+    atomic_group_id: str,
+    diagnostic_provenance: tuple[tuple[str, str], ...],
+) -> SemanticRouteProof:
+    """Project owned content through the unchanged proof constructor.
+
+    IDs and diagnostics are supplied separately because they are excluded from
+    structural proof identity. This is only the proof projection: callers must
+    still invoke the canonical group factory and remap enclosing references.
+    It does not mint a route binding or a validation receipt.
+    """
+    node = table.resolve(ref, StructuralNodeKind.ROUTE_PROOF)
+    if (
+        node.width is not None
+        or node.payload
+        or len(node.children) != len(_STABLE_ROUTE_PROOF_FIELDS)
+    ):
+        raise ValueError("malformed structural route proof")
+    return SemanticRouteProof(
+        proof_id=proof_id,
+        atomic_group_id=atomic_group_id,
+        diagnostic_provenance=diagnostic_provenance,
+        **{
+            name: _materialize_route_descendant(table, child)
+            for name, child in zip(
+                _STABLE_ROUTE_PROOF_FIELDS, node.children, strict=True
+            )
+        },
+    )
+
+
+_ROUTE_STRUCTURAL_TYPES = MappingProxyType(
+    {
+        (record.__module__, record.__qualname__): record
+        for record in _ROUTE_STRUCTURAL_FIELDS
+    }
+)
+_ROUTE_STRUCTURAL_ENUM_TYPES = MappingProxyType(
+    {
+        (record.__module__, record.__qualname__): record
+        for record in _ROUTE_STRUCTURAL_ENUMS
+    }
+)
+
+
+def _materialize_route_descendant(table: StructuralTable, ref: StructuralRef) -> object:
+    node = table.resolve(ref, ref.kind)
+    if node.width is not None:
+        raise ValueError("malformed structural route descendant width")
+    if node.kind is StructuralNodeKind.VALUE:
+        if (
+            node.children
+            or len(node.payload) != 1
+            or type(node.payload[0]) not in (type(None), bool, int, str)
+        ):
+            raise ValueError("malformed structural route scalar")
+        return node.payload[0]
+    if node.kind is StructuralNodeKind.ENUM:
+        if node.children or len(node.payload) != 3:
+            raise ValueError("malformed structural route enum")
+        enum_type = _ROUTE_STRUCTURAL_ENUM_TYPES.get(node.payload[:2])
+        if enum_type is None or type(node.payload[2]) is not str:
+            raise ValueError("unknown structural route enum")
+        return enum_type[node.payload[2]]
+    if node.kind is StructuralNodeKind.SUBJECT:
+        record_type = _ROUTE_STRUCTURAL_TYPES.get(node.payload)
+        if record_type is None:
+            raise ValueError("unknown structural route record")
+        names = _ROUTE_STRUCTURAL_FIELDS[record_type]
+        if len(node.children) != len(names):
+            raise ValueError("malformed structural route record fields")
+        return record_type(
+            **{
+                name: _materialize_route_descendant(table, child)
+                for name, child in zip(names, node.children, strict=True)
+            }
+        )
+    values = tuple(
+        _materialize_route_descendant(table, child) for child in node.children
+    )
+    if node.kind is StructuralNodeKind.SEQUENCE:
+        if node.payload == ("tuple",):
+            return values
+        if node.payload == ("list",):
+            return list(values)
+        if node.payload in (("set",), ("frozenset",)):
+            if any(type(value) not in (type(None), bool, int, str) for value in values):
+                raise ValueError("malformed structural route set member")
+            result = set(values)
+            if len(result) != len(values):
+                raise ValueError("duplicate structural route set member")
+            return result if node.payload == ("set",) else frozenset(result)
+    if (
+        node.kind is StructuralNodeKind.MAPPING
+        and not node.payload
+        and len(values) % 2 == 0
+    ):
+        keys = values[::2]
+        if any(type(key) is not str for key in keys) or len(set(keys)) != len(keys):
+            raise ValueError("malformed structural route mapping keys")
+        return dict(zip(keys, values[1::2], strict=True))
+    raise ValueError("malformed structural route container")
+
+
 def _stable_route_proof_key(proof: SemanticRouteProof) -> tuple[object, ...]:
     """Return the exact authoritative field values that binding compares.
 
@@ -10121,6 +10770,8 @@ del _closed_validate_assessment_registry, _install_closed_route_authority
 
 
 __all__ = [
+    "capture_structural_route_proof",
+    "materialize_structural_route_proof",
     "BoundCanonicalSemanticEvidence",
     "BoundSemanticCarrier",
     "BoundSemanticBlock",
