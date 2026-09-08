@@ -168,3 +168,111 @@ def test_owned_projection_keeps_existing_physical_write_constructor_rejection():
             atomic_group_id=proof.atomic_group_id,
             diagnostic_provenance=proof.diagnostic_provenance,
         )
+
+
+def test_owned_group_projection_returns_canonical_bytes_and_complete_id_map():
+    proofs = (_proof(), _storage_choice_proof())
+    arena = RuntimeAuthorityArena(RuntimeAuthorityScope("group-boundary"))
+    entries = tuple(
+        (
+            f"runtime-proof-{index}",
+            routes.capture_structural_route_proof(arena.structural, proof),
+            proof.diagnostic_provenance,
+        )
+        for index, proof in enumerate(proofs)
+    )
+    arena.structural.publish()
+    projection = routes.project_owned_route_group(
+        arena.structural,
+        3,
+        "runtime-group",
+        entries,
+    )
+    expected = routes.canonical_semantic_evidence_from_proofs(
+        proofs[0].source_identity.native_key,
+        3,
+        proofs,
+    )
+    assert canonical_bytes(projection.evidence) == canonical_bytes(expected)
+    assert projection.evidence.route_binding is None
+    assert projection.evidence.runtime_identity is None
+    assert projection.group_id_pair == ("runtime-group", expected.atomic_group_id)
+    assert projection.proof_id_pairs == tuple(
+        (
+            f"runtime-proof-{index}",
+            routes._canonical_route_proof_id(
+                atomic_group_id=expected.atomic_group_id, proof=proof
+            ),
+        )
+        for index, proof in enumerate(proofs)
+    )
+
+
+@pytest.mark.parametrize("fail_after_factory", (False, True))
+def test_group_projection_closes_only_its_temporary_join_arena(
+    monkeypatch, fail_after_factory
+):
+    minted = []
+    mint = routes._mint_route_binding
+    factory = routes.canonical_semantic_evidence_from_proofs
+
+    def record_mint(arena, **kwargs):
+        minted.append(arena)
+        return mint(arena, **kwargs)
+
+    def fail_after_mint(*args, **kwargs):
+        factory(*args, **kwargs)
+        raise ValueError("injected after canonical mint")
+
+    monkeypatch.setattr(routes, "_mint_route_binding", record_mint)
+    if fail_after_factory:
+        monkeypatch.setattr(
+            routes, "canonical_semantic_evidence_from_proofs", fail_after_mint
+        )
+    with routes.route_authority_phase("source-owner") as owner:
+        arena = RuntimeAuthorityArena(RuntimeAuthorityScope("source"))
+        owner.adopt(arena)
+        ref = routes.capture_structural_route_proof(arena.structural, _proof())
+        entries = (("source-proof", ref, ()),)
+        if fail_after_factory:
+            with pytest.raises(ValueError, match="injected after canonical mint"):
+                routes.project_owned_route_group(
+                    arena.structural, 3, "source-group", entries
+                )
+        else:
+            routes.project_owned_route_group(
+                arena.structural, 3, "source-group", entries
+            )
+        assert not arena.is_closed
+        assert len(minted) == 1
+        assert minted[0] is not arena and minted[0].is_closed
+
+
+def test_group_projection_maps_every_duplicate_payload_and_rejects_ambiguous_ids():
+    arena = RuntimeAuthorityArena(RuntimeAuthorityScope("source"))
+    ref = routes.capture_structural_route_proof(arena.structural, _proof())
+    entries = (
+        ("first", ref, (("source", "first"),)),
+        ("second", ref, (("source", "second"),)),
+    )
+    projected = routes.project_owned_route_group(arena.structural, 3, "group", entries)
+    assert len(projected.evidence.route_proofs) == 1
+    canonical_id = projected.evidence.route_proofs[0].proof_id
+    assert projected.proof_id_pairs == (
+        ("first", canonical_id),
+        ("second", canonical_id),
+    )
+    assert projected.evidence.route_proofs[0].diagnostic_provenance == (
+        ("source", "first"),
+        ("source", "second"),
+    )
+    reversed_projection = routes.project_owned_route_group(
+        arena.structural, 3, "group", tuple(reversed(entries))
+    )
+    assert canonical_bytes(reversed_projection.evidence) == canonical_bytes(
+        projected.evidence
+    )
+    with pytest.raises(ValueError, match="duplicate source proof IDs"):
+        routes.project_owned_route_group(
+            arena.structural, 3, "group", (entries[0], entries[0])
+        )

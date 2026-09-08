@@ -7415,6 +7415,74 @@ def _materialize_route_descendant(table: StructuralTable, ref: StructuralRef) ->
     raise ValueError("malformed structural route container")
 
 
+@dataclass(frozen=True, slots=True)
+class CanonicalRouteIdProjection:
+    """Boundary values and exact ID correspondence; carries no join authority."""
+
+    evidence: CanonicalSemanticEvidence
+    group_id_pair: tuple[str, str]
+    proof_id_pairs: tuple[tuple[str, str], ...]
+
+
+def project_owned_route_group(
+    table: StructuralTable,
+    generation: int,
+    source_group_id: str,
+    proof_entries: tuple[tuple[str, StructuralRef, tuple[tuple[str, str], ...]], ...],
+) -> CanonicalRouteIdProjection:
+    """Canonicalize owned proofs before remapping their enclosing references.
+
+    This is an explicit boundary, never a runtime identity shortcut. The
+    unchanged canonical factory owns ordering, duplicate merging and hashes.
+    Its temporary join arena is closed before the unbound value returns.
+    """
+    if type(generation) is not int or generation < 0:
+        raise ValueError("route group projection requires exact generation")
+    if type(source_group_id) is not str or not source_group_id:
+        raise ValueError("route group projection requires a source group ID")
+    if type(proof_entries) is not tuple or not proof_entries:
+        raise TypeError("route group projection requires exact nonempty entries")
+    if any(type(entry) is not tuple or len(entry) != 3 for entry in proof_entries):
+        raise TypeError("route group projection requires explicit proof coordinates")
+    source_ids = tuple(entry[0] for entry in proof_entries)
+    if any(type(value) is not str or not value for value in source_ids):
+        raise TypeError("route group projection requires exact proof IDs")
+    if len(set(source_ids)) != len(source_ids):
+        raise ValueError("route group projection has duplicate source proof IDs")
+    proofs = tuple(
+        materialize_structural_route_proof(
+            table,
+            ref,
+            proof_id=source_id,
+            atomic_group_id=source_group_id,
+            diagnostic_provenance=diagnostics,
+        )
+        for source_id, ref, diagnostics in proof_entries
+    )
+    with route_authority_phase("structural-route-boundary"):
+        canonical = canonical_semantic_evidence_from_proofs(
+            proofs[0].source_identity.native_key,
+            generation,
+            proofs,
+        )
+        pairs = tuple(
+            (
+                source_id,
+                _canonical_route_proof_id(
+                    atomic_group_id=canonical.atomic_group_id,
+                    proof=proof,
+                ),
+            )
+            for source_id, proof in zip(source_ids, proofs, strict=True)
+        )
+        unbound = materialize_route_evidence(canonical)
+    return CanonicalRouteIdProjection(
+        unbound,
+        (source_group_id, canonical.atomic_group_id),
+        pairs,
+    )
+
+
 def _stable_route_proof_key(proof: SemanticRouteProof) -> tuple[object, ...]:
     """Return the exact authoritative field values that binding compares.
 
@@ -10770,6 +10838,8 @@ del _closed_validate_assessment_registry, _install_closed_route_authority
 
 
 __all__ = [
+    "CanonicalRouteIdProjection",
+    "project_owned_route_group",
     "capture_structural_route_proof",
     "materialize_structural_route_proof",
     "BoundCanonicalSemanticEvidence",
