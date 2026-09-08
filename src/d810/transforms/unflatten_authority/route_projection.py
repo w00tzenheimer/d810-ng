@@ -8,8 +8,10 @@ from dataclasses import dataclass, replace
 from d810.analyses.control_flow.semantic_route_evidence import (
     CanonicalRouteIdProjection,
 )
+from d810.transforms.unflatten_authority.ids import authority_id, canonical_bytes
 from d810.transforms.unflatten_authority.model import (
     EquivalentSemanticRouteClaim,
+    DefaultGapInfeasibilityExclusion,
     ExactInfeasibleEffectClaim,
     TerminalCycleBreakClaim,
     RouteSubjectLocator,
@@ -158,4 +160,70 @@ def project_proof_referencing_claim(
         )
     return CanonicalRouteClaimProjection(
         projected, (claim.claim_id, projected.claim_id), ()
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class CanonicalDefaultGapProjection:
+    exclusion: DefaultGapInfeasibilityExclusion
+    exclusion_id_pair: tuple[str, str]
+    digest_pair: tuple[str, str]
+
+
+def project_default_gap_exclusion(
+    exclusion: DefaultGapInfeasibilityExclusion,
+    projection: CanonicalRouteIdProjection,
+) -> CanonicalDefaultGapProjection:
+    """Rebuild proof seeds and the exclusion's two checked canonical identities."""
+    if type(exclusion) is not DefaultGapInfeasibilityExclusion:
+        raise TypeError("projection requires an exact default gap exclusion")
+    if type(projection) is not CanonicalRouteIdProjection:
+        raise TypeError("projection requires canonical route ID correspondence")
+    if projection.group_id_pair[1] != projection.evidence.atomic_group_id:
+        raise ValueError("projection target group does not match its evidence")
+    proof_ids = dict(projection.proof_id_pairs)
+    if len(proof_ids) != len(projection.proof_id_pairs):
+        raise ValueError("projection contains ambiguous source proof IDs")
+    if not set(proof_ids.values()) <= {
+        proof.proof_id for proof in projection.evidence.route_proofs
+    }:
+        raise ValueError("projection names an absent canonical proof")
+    if not set(exclusion.route_proof_ids) <= proof_ids.keys():
+        raise ValueError("projection does not cover the exclusion's proof IDs")
+    seeds = tuple(
+        sorted(
+            (
+                replace(seed, route_proof_id=proof_ids[seed.route_proof_id])
+                for seed in exclusion.initial_state_seeds
+            ),
+            key=canonical_bytes,
+        )
+    )
+    selected = tuple(
+        sorted(proof_ids[proof_id] for proof_id in exclusion.route_proof_ids)
+    )
+    content = (
+        "unflatten.default-gap-infeasibility-exclusion.v2",
+        exclusion.state_width_bytes,
+        exclusion.state_identity,
+        exclusion.dispatcher,
+        exclusion.default_entry,
+        exclusion.residual,
+        seeds,
+        selected,
+        exclusion.normalized_reachable_states,
+    )
+    projected = replace(
+        exclusion,
+        initial_state_seeds=seeds,
+        route_proof_ids=selected,
+        exclusion_id=authority_id(content),
+        digest=authority_id(
+            ("unflatten.default-gap-infeasibility-exclusion-digest.v1", content)
+        ),
+    )
+    return CanonicalDefaultGapProjection(
+        projected,
+        (exclusion.exclusion_id, projected.exclusion_id),
+        (exclusion.digest, projected.digest),
     )

@@ -10,7 +10,7 @@ from d810.analyses.control_flow.semantic_route_evidence import (
     route_authority_phase,
 )
 from d810.core.runtime_identity import RuntimeAuthorityArena, RuntimeAuthorityScope
-from d810.transforms.unflatten_authority.ids import canonical_bytes
+from d810.transforms.unflatten_authority.ids import authority_id, canonical_bytes
 from d810.transforms.unflatten_authority.producer_api import (
     build_equivalent_route_claims,
 )
@@ -19,6 +19,7 @@ from d810.transforms.unflatten_authority.route_projection import (
 )
 from .helpers import exact_fixture
 from .test_bind import _terminal_cycle_fixture
+from .test_proposal import _default_gap_exclusion
 from d810.transforms.unflatten_authority import model, route_projection
 
 
@@ -211,5 +212,46 @@ def test_other_proof_claim_projection_matches_original_bytes(family):
         )
     with pytest.raises(ValueError, match="cover"):
         route_projection.project_proof_referencing_claim(
+            original, replace(group, proof_id_pairs=())
+        )
+
+
+def test_default_gap_projection_rebuilds_seed_exclusion_and_digest_ids():
+    _claims, group, _expected = projection_fixture()
+    _source, proposal, _exclusion, refs = exact_fixture()
+    expected = _default_gap_exclusion(model, proposal, refs, residual_serial=2)
+    inverse = {new: old for old, new in group.proof_id_pairs}
+    seeds = tuple(
+        replace(seed, route_proof_id=inverse[seed.route_proof_id])
+        for seed in expected.initial_state_seeds
+    )
+    proofs = tuple(sorted(inverse[item] for item in expected.route_proof_ids))
+    content = (
+        "unflatten.default-gap-infeasibility-exclusion.v2",
+        expected.state_width_bytes,
+        expected.state_identity,
+        expected.dispatcher,
+        expected.default_entry,
+        expected.residual,
+        seeds,
+        proofs,
+        expected.normalized_reachable_states,
+    )
+    original = replace(
+        expected,
+        initial_state_seeds=seeds,
+        route_proof_ids=proofs,
+        exclusion_id=authority_id(content),
+        digest=authority_id(
+            ("unflatten.default-gap-infeasibility-exclusion-digest.v1", content)
+        ),
+    )
+    result = route_projection.project_default_gap_exclusion(original, group)
+    assert canonical_bytes(result.exclusion) == canonical_bytes(expected)
+    assert result.exclusion_id_pair == (original.exclusion_id, expected.exclusion_id)
+    assert result.digest_pair == (original.digest, expected.digest)
+    assert original.exclusion_id != expected.exclusion_id
+    with pytest.raises(ValueError, match="cover"):
+        route_projection.project_default_gap_exclusion(
             original, replace(group, proof_id_pairs=())
         )
