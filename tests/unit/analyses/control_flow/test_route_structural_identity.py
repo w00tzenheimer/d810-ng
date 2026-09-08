@@ -283,30 +283,30 @@ def test_live_canonical_factory_uses_owned_selection_and_keeps_boundary_validati
     proof = _proof()
     counts = {"payload": 0, "dedup": 0, "validate": 0}
     original_payload = routes._stable_route_proof_payload
-    original_dedup = routes._canonical_authoritative_proofs
+    original_dedup = routes._canonical_authoritative_proof_inputs
     original_validate = routes._validate_content_derived_ids
 
-    def payload(value):
+    def payload(value, **kwargs):
         counts["payload"] += 1
-        return original_payload(value)
+        return original_payload(value, **kwargs)
 
-    def dedup(values):
+    def dedup(values, **kwargs):
         counts["dedup"] += 1
-        return original_dedup(values)
+        return original_dedup(values, **kwargs)
 
     def validate(**values):
         counts["validate"] += 1
         return original_validate(**values)
 
     monkeypatch.setattr(routes, "_stable_route_proof_payload", payload)
-    monkeypatch.setattr(routes, "_canonical_authoritative_proofs", dedup)
+    monkeypatch.setattr(routes, "_canonical_authoritative_proof_inputs", dedup)
     monkeypatch.setattr(routes, "_validate_content_derived_ids", validate)
     with routes.route_authority_phase("live-owned-selection"):
         evidence = routes.canonical_semantic_evidence_from_proofs(proof.native_key, 1, (proof,))
         assert len(evidence.route_binding.arena.structural) > 0
-    # One boundary ID validation remains. Its canonical group dedup and three
-    # payload encodings are separate from the factory's one admitted payload.
-    assert counts == {"payload": 4, "dedup": 1, "validate": 1}
+    # One boundary ID validation remains. It classifies its incoming proof
+    # once, separately from the factory's one admitted payload.
+    assert counts == {"payload": 2, "dedup": 1, "validate": 1}
 
 
 def test_live_factory_owned_inputs_detach_aliases_without_replacing_public_witnesses(monkeypatch):

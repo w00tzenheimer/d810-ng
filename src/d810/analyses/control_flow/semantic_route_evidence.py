@@ -9,6 +9,7 @@ from dataclasses import dataclass, field, fields, is_dataclass, replace
 from enum import Enum
 import hashlib
 import json
+import gc
 from types import MappingProxyType
 
 from d810.core.typing import Callable
@@ -6615,7 +6616,44 @@ def _fingerprint_value(value: object) -> object:
     raise TypeError(f"unsupported route fingerprint value: {type(value).__name__}")
 
 
-def _stable_route_proof_payload(proof: SemanticRouteProof) -> object:
+class _UnconvertedRouteFingerprint(TypeError):
+    """A live payload may execute behavior outside the closed value schema."""
+
+
+def _owned_route_fingerprint_value(value: object) -> object:
+    """Encode closed stored descendants without executing producer callbacks."""
+    value_type = type(value)
+    if value is None or value_type in (bool, int, str, float):
+        return value
+    if value_type in _ROUTE_STRUCTURAL_ENUMS:
+        return ("enum", value_type.__qualname__, value.value)
+    names = _ROUTE_STRUCTURAL_FIELDS.get(value_type)
+    if names is not None:
+        if tuple(item.name for item in fields(value_type)) != names:
+            raise _UnconvertedRouteFingerprint("route record schema changed")
+        return ("record", value_type.__qualname__, tuple(
+            (name, _owned_route_fingerprint_value(object.__getattribute__(value, name)))
+            for name in names if not name.startswith("_")
+        ))
+    if value_type in (dict, MappingProxyType):
+        backing = value
+        if value_type is MappingProxyType:
+            referents = gc.get_referents(value)
+            if len(referents) != 1 or type(referents[0]) is not dict:
+                raise _UnconvertedRouteFingerprint("foreign mappingproxy backing")
+            backing = referents[0]
+        return ("mapping", tuple(sorted(
+            (_owned_route_fingerprint_value(key), _owned_route_fingerprint_value(item))
+            for key, item in dict.items(backing)
+        )))
+    if value_type in (tuple, list):
+        return (value_type.__name__, tuple(_owned_route_fingerprint_value(item) for item in value))
+    if value_type in (frozenset, set):
+        return (value_type.__name__, tuple(sorted(_owned_route_fingerprint_value(item) for item in value)))
+    raise _UnconvertedRouteFingerprint("route descendant is outside the closed schema")
+
+
+def _stable_route_proof_payload(proof: SemanticRouteProof, *, _closed: bool = False) -> object:
     """Serialize only stable proof content for authority identities.
 
     The top-level IDs and diagnostic provenance are deliberately omitted.  The
@@ -6623,7 +6661,8 @@ def _stable_route_proof_payload(proof: SemanticRouteProof) -> object:
     must never become part of canonical route ownership.
     """
 
-    return _fingerprint_value(
+    fingerprint = _owned_route_fingerprint_value if _closed else _fingerprint_value
+    return fingerprint(
         tuple(
             (item.name, getattr(proof, item.name))
             for item in fields(proof)
@@ -6636,15 +6675,38 @@ def _canonical_authoritative_proofs(
     proofs: tuple[SemanticRouteProof, ...],
 ) -> tuple[SemanticRouteProof, ...]:
     """Merge repeated authoritative route payloads before canonical ID minting."""
+    canonical, _payloads = _canonical_authoritative_proof_inputs(proofs)
+    return canonical
+
+
+def _canonical_authoritative_proof_inputs(
+    proofs: tuple[SemanticRouteProof, ...],
+    *, _closed: bool = False,
+) -> tuple[tuple[SemanticRouteProof, ...], tuple[str, ...]]:
+    """Keep the owned JSON payload of every occurrence during classification."""
     by_payload: dict[str, SemanticRouteProof] = {}
     payload_by_input_id: dict[str, str] = {}
     proof_by_input_id: dict[str, SemanticRouteProof] = {}
+    occurrence_payloads = []
     for proof in proofs:
+        if _closed:
+            if type(proof) is not SemanticRouteProof:
+                raise _UnconvertedRouteFingerprint("route proof is not exact")
+            if type(proof.proof_id) is not str or type(proof.atomic_group_id) is not str:
+                raise _UnconvertedRouteFingerprint("route identifiers are not exact")
+            provenance = proof.diagnostic_provenance
+            if type(provenance) is not tuple or any(
+                type(pair) is not tuple or len(pair) != 2
+                or any(type(item) is not str for item in pair)
+                for pair in provenance
+            ):
+                raise _UnconvertedRouteFingerprint("route provenance is not exact")
         payload = json.dumps(
-            _stable_route_proof_payload(proof),
+            _stable_route_proof_payload(proof, _closed=_closed),
             sort_keys=True,
             separators=(",", ":"),
         )
+        occurrence_payloads.append(payload)
         prior_payload = payload_by_input_id.setdefault(proof.proof_id, payload)
         if prior_payload != payload:
             prior_proof = proof_by_input_id[proof.proof_id]
@@ -6669,7 +6731,10 @@ def _canonical_authoritative_proofs(
             (*prior.diagnostic_provenance, *proof.diagnostic_provenance)
         )))
         by_payload[payload] = replace(prior, diagnostic_provenance=provenance)
-    return tuple(by_payload[payload] for payload in sorted(by_payload))
+    return (
+        tuple(by_payload[payload] for payload in sorted(by_payload)),
+        tuple(occurrence_payloads),
+    )
 
 
 def _canonical_route_group_id(
@@ -6865,6 +6930,66 @@ def _canonical_evidence_with_unconverted_attributes(
 
 
 def _validate_content_derived_ids(
+    *,
+    native_key: NativePreanalysisKey,
+    generation: int,
+    atomic_group_id: str,
+    route_proofs: tuple[SemanticRouteProof, ...],
+) -> None:
+    """Reject hash-shaped IDs that do not match their immutable content.
+
+    Every canonical evidence identity must be reproducible from proof content.
+    """
+    # Classification still reads every incoming occurrence and rejects
+    # divergent input IDs. Its JSON strings own the complete stable payload;
+    # reuse them only within this call, without trusting a borrowed descendant
+    # or retaining a validation result for the next invocation.
+    try:
+        if type(generation) is not int or type(atomic_group_id) is not str or type(route_proofs) is not tuple:
+            raise _UnconvertedRouteFingerprint("route validation metadata is not exact")
+        native_payload = _owned_route_fingerprint_value(native_key)
+        canonical, payloads = _canonical_authoritative_proof_inputs(route_proofs, _closed=True)
+    except _UnconvertedRouteFingerprint:
+        return _validate_content_derived_ids_unconverted(
+            native_key=native_key, generation=generation,
+            atomic_group_id=atomic_group_id, route_proofs=route_proofs,
+        )
+    group_payloads = payloads
+    if len(canonical) != len(payloads):
+        # Duplicate provenance merging invokes the proof constructor. Preserve
+        # its normalization in the group ID, including malformed live records
+        # whose top-level containers normalize during that replacement.
+        group_payloads = tuple(
+            json.dumps(_stable_route_proof_payload(proof, _closed=True), sort_keys=True, separators=(",", ":"))
+            for proof in canonical
+        )
+    group_payload = {
+        "native_key": native_payload,
+        "generation": int(generation),
+        "proofs": tuple(sorted(group_payloads)),
+    }
+    encoded = json.dumps(group_payload, sort_keys=True, separators=(",", ":"))
+    expected_group = "sha256:" + hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+    if atomic_group_id != expected_group:
+        raise SemanticRouteEvidenceRejected(
+            "canonical semantic atomic group id is not content-derived"
+        )
+    group_token = json.dumps(expected_group)
+    for proof, payload in zip(route_proofs, payloads, strict=True):
+        if proof.atomic_group_id != expected_group:
+            raise SemanticRouteEvidenceRejected(
+                "canonical semantic proof group id is not content-derived"
+            )
+        expected_proof = "sha256:" + hashlib.sha256((
+            '{"atomic_group_id":' + group_token + ',"proof":' + payload + '}'
+        ).encode("utf-8")).hexdigest()
+        if proof.proof_id != expected_proof:
+            raise SemanticRouteEvidenceRejected(
+                "canonical semantic proof id is not content-derived"
+            )
+
+
+def _validate_content_derived_ids_unconverted(
     *,
     native_key: NativePreanalysisKey,
     generation: int,
