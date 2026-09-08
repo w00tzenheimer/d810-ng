@@ -7382,12 +7382,29 @@ class DeferredGraphModifier:
 
         unique_modifications = []
         predecessor_clones: dict[tuple[int, int | None], tuple] = {}
+        conditional_edges: dict[tuple[int, int | None], tuple] = {}
 
         for mod in self.modifications:
             # Create a key for deduplication
             # For BLOCK_CREATE_WITH_REDIRECT, we key by (type, source_block, target)
             # since multiple redirects to different targets would conflict
-            if mod.mod_type == ModificationType.BLOCK_CREATE_WITH_REDIRECT:
+            if mod.mod_type == ModificationType.BLOCK_TARGET_CHANGE:
+                key = (
+                    mod.mod_type,
+                    mod.block_serial,
+                    mod.old_target,
+                    mod.new_target,
+                    mod.target_ref_kind,
+                    mod.expected_serial,
+                )
+                owner = (mod.block_serial, mod.old_target)
+                previous = conditional_edges.get(owner)
+                if previous is not None and previous != key:
+                    raise ValueError(
+                        f"conflicting conditional edge shape or ownership for {owner}"
+                    )
+                conditional_edges[owner] = key
+            elif mod.mod_type == ModificationType.BLOCK_CREATE_WITH_REDIRECT:
                 key = (
                     mod.mod_type,
                     mod.block_serial,
@@ -7594,6 +7611,18 @@ class DeferredGraphModifier:
                     f"conflicting original-source redirect ownership for block {block_serial}"
                 )
 
+        for block_serial, mods in block_modifications.items():
+            branch_mods = [
+                mod for mod in mods
+                if mod.mod_type == ModificationType.BLOCK_TARGET_CHANGE
+            ]
+            if len(branch_mods) > 1 and any(
+                mod.old_target is None for mod in branch_mods
+            ):
+                raise ValueError(
+                    f"ambiguous conditional edge ownership for block {block_serial}"
+                )
+
         # Detect and resolve conflicting modifications for the same block
         for block_serial, mods in block_modifications.items():
             if len(mods) > 1:
@@ -7767,6 +7796,14 @@ class DeferredGraphModifier:
                 for m in terminal_mods
             ) and len({m.old_target for m in terminal_mods}) == len(terminal_mods):
                 continue
+
+            if any(
+                mod.mod_type == ModificationType.BLOCK_TARGET_CHANGE
+                for mod in terminal_mods
+            ):
+                raise ValueError(
+                    f"conflicting conditional edge and terminal ownership for block {block_serial}"
+                )
 
             winner = max(
                 terminal_mods,
