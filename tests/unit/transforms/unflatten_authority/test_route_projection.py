@@ -6,11 +6,16 @@ import pytest
 
 from d810.analyses.control_flow.semantic_route_evidence import (
     capture_structural_route_proof,
+    canonical_semantic_evidence_from_proofs,
     project_owned_route_group,
     route_authority_phase,
 )
 from d810.core.runtime_identity import RuntimeAuthorityArena, RuntimeAuthorityScope
-from d810.transforms.unflatten_authority.ids import authority_id, canonical_bytes
+from d810.transforms.unflatten_authority.ids import (
+    authority_id,
+    canonical_bytes,
+    canonical_decode,
+)
 from d810.transforms.unflatten_authority.producer_api import (
     build_equivalent_route_claims,
 )
@@ -20,6 +25,7 @@ from d810.transforms.unflatten_authority.route_projection import (
 from .helpers import exact_fixture
 from .test_bind import _terminal_cycle_fixture
 from .test_proposal import _default_gap_exclusion
+from .test_model import _minimal_corridor_forecast, _default_gap_wrapper
 from d810.transforms.unflatten_authority import model, route_projection
 
 
@@ -253,5 +259,110 @@ def test_default_gap_projection_rebuilds_seed_exclusion_and_digest_ids():
     assert original.exclusion_id != expected.exclusion_id
     with pytest.raises(ValueError, match="cover"):
         route_projection.project_default_gap_exclusion(
+            original, replace(group, proof_id_pairs=())
+        )
+
+
+def test_default_gap_wrapper_projection_rebuilds_all_path_and_digest_indexes():
+    _claims, group, _expected = projection_fixture()
+    _source, proposal, _exclusion, _refs = exact_fixture()
+    original, exclusion, path = _default_gap_wrapper(
+        model, _minimal_corridor_forecast(model, proposal)
+    )
+    group = replace(
+        group,
+        proof_id_pairs=(
+            (exclusion.route_proof_ids[0], group.evidence.route_proofs[0].proof_id),
+        ),
+    )
+    expected_exclusion = route_projection.project_default_gap_exclusion(
+        exclusion, group
+    ).exclusion
+    result = route_projection.project_default_gap_forecast(original, group)
+    projected = result.forecast
+    assert projected.base_forecast is original.base_forecast
+    assert projected.exclusions == (expected_exclusion,)
+    assert projected.exclusion_digests == (
+        (expected_exclusion.exclusion_id, expected_exclusion.digest),
+    )
+    assert projected.paths[0].exclusion_id == expected_exclusion.exclusion_id
+    assert projected.paths[0].nodes == path.nodes
+    assert result.path_id_pairs == ((path.path_id, projected.paths[0].path_id),)
+    assert result.extension_id_pair == (original.extension_id, projected.extension_id)
+    assert projected.extension_id != original.extension_id
+    assert projected.paths[0].path_id != path.path_id
+    assert canonical_bytes(
+        canonical_decode(canonical_bytes(projected))
+    ) == canonical_bytes(projected)
+    foreign_evidence = canonical_semantic_evidence_from_proofs(
+        group.evidence.native_key,
+        group.evidence.generation + 1,
+        group.evidence.route_proofs,
+    )
+    with pytest.raises(ValueError, match="generation"):
+        route_projection.project_default_gap_forecast(
+            original,
+            replace(
+                group,
+                evidence=foreign_evidence,
+            ),
+        )
+
+
+def entry_allowance_fixture(proof_id, *, legacy, corridor):
+    _source, proposal, _exclusion, refs = exact_fixture()
+    fields = dict(
+        reason=model.EntryEndpointLivenessReason.NO_PROVIDER_EXIT_PATH_LIVE_SAFE_ENDPOINT,
+        normalized_state=7,
+        route_proof_id=proof_id,
+        entry_predecessor_owner_refs=(refs[0],),
+        dispatcher_old_target_ref=refs[1],
+        replacement_endpoint_ref=refs[2],
+        exit_path_refs=(refs[1],),
+        patch_step_index=0,
+        patch_step_digest=authority_id("entry-step"),
+        state_write_source_ref=refs[0],
+        state_write_instruction_ea=0x1000,
+        delivery_path_refs=(refs[0], refs[1]) if corridor else (),
+        delivery_path_edges=((0, 1),) if corridor else (),
+        cut_exit_path_uses=False,
+    )
+    content = (
+        "unflatten.entry-endpoint-liveness-allowance.v1",
+        fields["reason"],
+        7,
+        proof_id,
+        (refs[0],),
+        refs[1],
+        refs[2],
+        (refs[1],),
+        0,
+        fields["patch_step_digest"],
+        refs[0],
+        0x1000,
+    )
+    if not legacy:
+        content += (fields["delivery_path_refs"], fields["delivery_path_edges"])
+    return model.EntryEndpointLivenessAllowance(
+        allowance_id=authority_id((*content, False)), **fields
+    )
+
+
+@pytest.mark.parametrize(
+    "legacy,corridor", [(True, False), (False, False), (False, True)]
+)
+def test_entry_allowance_projection_preserves_each_accepted_identity_form(
+    legacy, corridor
+):
+    _claims, group, _expected = projection_fixture()
+    old, new = group.proof_id_pairs[0]
+    original = entry_allowance_fixture(old, legacy=legacy, corridor=corridor)
+    expected = entry_allowance_fixture(new, legacy=legacy, corridor=corridor)
+    result = route_projection.project_entry_allowance(original, group)
+    assert canonical_bytes(result.allowance) == canonical_bytes(expected)
+    assert result.allowance_id_pair == (original.allowance_id, expected.allowance_id)
+    assert original.allowance_id != expected.allowance_id
+    with pytest.raises(ValueError, match="cover"):
+        route_projection.project_entry_allowance(
             original, replace(group, proof_id_pairs=())
         )

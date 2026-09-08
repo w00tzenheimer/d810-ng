@@ -11,7 +11,9 @@ from d810.analyses.control_flow.semantic_route_evidence import (
 from d810.transforms.unflatten_authority.ids import authority_id, canonical_bytes
 from d810.transforms.unflatten_authority.model import (
     EquivalentSemanticRouteClaim,
+    EntryEndpointLivenessAllowance,
     DefaultGapInfeasibilityExclusion,
+    DefaultGapInfeasibilityForecast,
     ExactInfeasibleEffectClaim,
     TerminalCycleBreakClaim,
     RouteSubjectLocator,
@@ -226,4 +228,151 @@ def project_default_gap_exclusion(
         projected,
         (exclusion.exclusion_id, projected.exclusion_id),
         (exclusion.digest, projected.digest),
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class CanonicalDefaultGapForecastProjection:
+    forecast: DefaultGapInfeasibilityForecast
+    path_id_pairs: tuple[tuple[str, str], ...]
+    extension_id_pair: tuple[str, str]
+
+
+def project_default_gap_forecast(
+    forecast: DefaultGapInfeasibilityForecast,
+    projection: CanonicalRouteIdProjection,
+) -> CanonicalDefaultGapForecastProjection:
+    """Rebuild the default-gap wrapper's dependent path and digest indexes."""
+    if type(forecast) is not DefaultGapInfeasibilityForecast:
+        raise TypeError("projection requires an exact default gap forecast")
+    if type(projection) is not CanonicalRouteIdProjection:
+        raise TypeError("projection requires canonical route ID correspondence")
+    base = forecast.base_forecast
+    if base.source_generation != projection.evidence.generation:
+        raise ValueError("forecast belongs to another source generation")
+    if base.source_native_key != projection.evidence.native_key:
+        raise ValueError("forecast belongs to another native key")
+    results = tuple(
+        project_default_gap_exclusion(item, projection) for item in forecast.exclusions
+    )
+    exclusion_ids = {
+        item.exclusion_id_pair[0]: item.exclusion_id_pair[1] for item in results
+    }
+    exclusions = tuple(
+        sorted((item.exclusion for item in results), key=lambda item: item.exclusion_id)
+    )
+    paths = []
+    path_pairs = []
+    for path in forecast.paths:
+        if path.exclusion_id not in exclusion_ids:
+            raise ValueError("projection does not cover a forecast path exclusion")
+        exclusion_id = exclusion_ids[path.exclusion_id]
+        projected = replace(
+            path,
+            exclusion_id=exclusion_id,
+            path_id=authority_id(
+                (
+                    "unflatten.default-gap-infeasibility-path.v1",
+                    path.nodes,
+                    path.state_merge,
+                    exclusion_id,
+                )
+            ),
+        )
+        paths.append(projected)
+        path_pairs.append((path.path_id, projected.path_id))
+    ordered_paths = tuple(sorted(paths, key=lambda item: item.path_id))
+    digests = tuple((item.exclusion_id, item.digest) for item in exclusions)
+    projected = replace(
+        forecast,
+        paths=ordered_paths,
+        exclusions=exclusions,
+        exclusion_digests=digests,
+        extension_id=authority_id(
+            (
+                "unflatten.default-gap-infeasibility-forecast.v1",
+                base,
+                ordered_paths,
+                digests,
+                exclusions,
+            )
+        ),
+    )
+    return CanonicalDefaultGapForecastProjection(
+        projected, tuple(path_pairs), (forecast.extension_id, projected.extension_id)
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class CanonicalEntryAllowanceProjection:
+    allowance: EntryEndpointLivenessAllowance
+    allowance_id_pair: tuple[str, str]
+
+
+def _entry_allowance_identity(
+    allowance: EntryEndpointLivenessAllowance, proof_id: str, *, legacy: bool
+) -> str:
+    content = (
+        "unflatten.entry-endpoint-liveness-allowance.v1",
+        allowance.reason,
+        allowance.normalized_state,
+        proof_id,
+        allowance.entry_predecessor_owner_refs,
+        allowance.dispatcher_old_target_ref,
+        allowance.replacement_endpoint_ref,
+        allowance.exit_path_refs,
+        allowance.patch_step_index,
+        allowance.patch_step_digest,
+        allowance.state_write_source_ref,
+        allowance.state_write_instruction_ea,
+    )
+    if not legacy:
+        content += (allowance.delivery_path_refs, allowance.delivery_path_edges)
+    return authority_id((*content, allowance.cut_exit_path_uses))
+
+
+def project_entry_allowance(
+    allowance: EntryEndpointLivenessAllowance,
+    projection: CanonicalRouteIdProjection,
+) -> CanonicalEntryAllowanceProjection:
+    """Preserve the accepted modern or legacy empty-corridor identity form."""
+    if type(allowance) is not EntryEndpointLivenessAllowance:
+        raise TypeError("projection requires an exact entry allowance")
+    if type(projection) is not CanonicalRouteIdProjection:
+        raise TypeError("projection requires canonical route ID correspondence")
+    if projection.group_id_pair[1] != projection.evidence.atomic_group_id:
+        raise ValueError("projection target group does not match its evidence")
+    proof_ids = dict(projection.proof_id_pairs)
+    if len(proof_ids) != len(projection.proof_id_pairs):
+        raise ValueError("projection contains ambiguous source proof IDs")
+    if not set(proof_ids.values()) <= {
+        proof.proof_id for proof in projection.evidence.route_proofs
+    }:
+        raise ValueError("projection names an absent canonical proof")
+    if allowance.route_proof_id not in proof_ids:
+        raise ValueError("projection does not cover the allowance's proof ID")
+    legacy = False
+    if allowance.allowance_id != _entry_allowance_identity(
+        allowance, allowance.route_proof_id, legacy=False
+    ):
+        if (
+            allowance.delivery_path_refs
+            or allowance.delivery_path_edges
+            or allowance.allowance_id
+            != _entry_allowance_identity(
+                allowance, allowance.route_proof_id, legacy=True
+            )
+        ):
+            raise ValueError(
+                "entry allowance source identity does not match its content"
+            )
+        legacy = True
+    proof_id = proof_ids[allowance.route_proof_id]
+    projected = replace(
+        allowance,
+        route_proof_id=proof_id,
+        allowance_id=_entry_allowance_identity(allowance, proof_id, legacy=legacy),
+    )
+    return CanonicalEntryAllowanceProjection(
+        projected, (allowance.allowance_id, projected.allowance_id)
     )
