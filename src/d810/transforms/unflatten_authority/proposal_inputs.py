@@ -1,6 +1,6 @@
 """Explicit owned proposal input values; capture conveys no validation authority.
 
-This family covers source catalogs, use-def witnesses, and plan inputs.
+This family covers explicit non-route proposal input descendants.
 Materialization uses
 its existing constructors; complete proposal roundtrip checks remain mandatory.
 """
@@ -17,15 +17,60 @@ from d810.ir.block_identity import (
 )
 from d810.ir.structural_identity import NATIVE_KEY_FIELDS
 from d810.ir.storage_identity import StorageIdentity, StorageIdentityKind
-from d810.transforms.cfg_transaction import LogicalBlockRef
+from d810.transforms.cfg_transaction import LogicalBlockRef, PlanBlockRef
 from d810.transforms.unflatten_authority.model import (
     SourceBlockIdentityWitness, SourceIdentityCatalog, UseDefFragmentWitness,
     UnflattenPlanInputCatalog, UnflattenPlanShape, AuthoritativeHandlerInput,
+    CorridorCoverageForecast, CorridorCoveragePath, CorridorCoveragePathNode,
+    CorridorSemanticExclusion, CorridorPathDisposition,
+    DefaultGapInfeasibilityForecast, DefaultGapInfeasibilityPath,
+    DefaultGapInfeasibilityExclusion, DefaultGapInitialStateSeed,
+    RetirementCandidateCatalog, RetirementPlanMember, DispatcherRetirementCandidate,
+    EntryEndpointLivenessAllowance, EntryEndpointLivenessReason,
 )
 
 
 _SOURCE_FIELDS = MappingProxyType({
     SourceIdentityCatalog: ("native_key", "generation", "blocks"),
+    RetirementPlanMember: ("block_ref", "anchor_ea", "native_instruction_eas"),
+    DispatcherRetirementCandidate: (
+        "block_ref", "anchor_ea", "role", "evidence_ids", "source_generation", "candidate_id",
+    ),
+    RetirementCandidateCatalog: (
+        "catalog_id", "source_generation", "plan_members", "candidates",
+    ),
+    EntryEndpointLivenessAllowance: (
+        "allowance_id", "reason", "normalized_state", "route_proof_id",
+        "entry_predecessor_owner_refs", "dispatcher_old_target_ref",
+        "replacement_endpoint_ref", "exit_path_refs", "patch_step_index",
+        "patch_step_digest", "state_write_source_ref", "state_write_instruction_ea",
+        "delivery_path_refs", "delivery_path_edges", "cut_exit_path_uses",
+    ),
+    PlanBlockRef: ("plan_id", "local_block_id"),
+    CorridorCoveragePathNode: ("block_ref", "anchor_ea"),
+    DefaultGapInitialStateSeed: ("normalized_state", "route_proof_id"),
+    DefaultGapInfeasibilityPath: ("path_id", "nodes", "state_merge", "exclusion_id"),
+    DefaultGapInfeasibilityExclusion: (
+        "exclusion_id", "digest", "state_width_bytes", "state_identity", "dispatcher",
+        "default_entry", "residual", "initial_state_seeds", "route_proof_ids",
+        "normalized_reachable_states",
+    ),
+    DefaultGapInfeasibilityForecast: (
+        "extension_id", "base_forecast", "paths", "exclusion_digests", "exclusions",
+    ),
+    CorridorCoveragePath: (
+        "path_id", "nodes", "state_merge", "disposition", "semantic_exclusion_ids",
+    ),
+    CorridorSemanticExclusion: (
+        "exclusion_id", "digest", "normalized_state", "state_identity", "source",
+        "feeder", "prefix", "root",
+    ),
+    CorridorCoverageForecast: (
+        "forecast_id", "plan_id", "function_ea", "source_native_key",
+        "source_generation", "dispatcher_ref", "dispatcher_anchor_ea", "paths",
+        "covered_path_ids", "residual_path_ids", "enumeration_complete",
+        "semantic_exclusion_digests", "semantic_exclusions", "semantic_exclusion_path_ids",
+    ),
     SourceBlockIdentityWitness: (
         "block_ref", "anchor_ea", "native_instruction_eas",
     ),
@@ -54,7 +99,91 @@ _SOURCE_TYPES = MappingProxyType({
 _SOURCE_ENUMS = MappingProxyType({
     (StorageIdentityKind.__module__, StorageIdentityKind.__qualname__): StorageIdentityKind,
     (UnflattenPlanShape.__module__, UnflattenPlanShape.__qualname__): UnflattenPlanShape,
+    (CorridorPathDisposition.__module__, CorridorPathDisposition.__qualname__): CorridorPathDisposition,
+    (EntryEndpointLivenessReason.__module__, EntryEndpointLivenessReason.__qualname__): EntryEndpointLivenessReason,
 })
+
+_DERIVED_FIELDS = MappingProxyType({CorridorCoveragePath: ("path_id",)})
+
+
+def capture_retirement_catalog(
+    table: StructuralTable, value: RetirementCandidateCatalog,
+) -> StructuralRef:
+    """Detach exact retirement catalog values without granting authority."""
+    if type(table) is not StructuralTable or type(value) is not RetirementCandidateCatalog:
+        raise TypeError("retirement_catalog capture requires exact table and record")
+    return _capture(table, value, set())
+
+
+def materialize_retirement_catalog(
+    table: StructuralTable, ref: StructuralRef,
+) -> RetirementCandidateCatalog:
+    if type(table) is not StructuralTable or type(ref) is not StructuralRef:
+        raise TypeError("retirement_catalog read requires exact table and handle")
+    node = table.resolve(ref, Kind.SUBJECT)
+    if node.payload != (RetirementCandidateCatalog.__module__, RetirementCandidateCatalog.__qualname__):
+        raise StructuralIdentityError("handle does not identify retirement catalog")
+    return _materialize(table, ref)
+
+
+def capture_entry_allowance(
+    table: StructuralTable, value: EntryEndpointLivenessAllowance,
+) -> StructuralRef:
+    """Detach exact entry allowance values without granting authority."""
+    if type(table) is not StructuralTable or type(value) is not EntryEndpointLivenessAllowance:
+        raise TypeError("entry_allowance capture requires exact table and record")
+    return _capture(table, value, set())
+
+
+def materialize_entry_allowance(
+    table: StructuralTable, ref: StructuralRef,
+) -> EntryEndpointLivenessAllowance:
+    if type(table) is not StructuralTable or type(ref) is not StructuralRef:
+        raise TypeError("entry_allowance read requires exact table and handle")
+    node = table.resolve(ref, Kind.SUBJECT)
+    if node.payload != (EntryEndpointLivenessAllowance.__module__, EntryEndpointLivenessAllowance.__qualname__):
+        raise StructuralIdentityError("handle does not identify entry allowance")
+    return _materialize(table, ref)
+
+
+def capture_default_gap_forecast(
+    table: StructuralTable, value: DefaultGapInfeasibilityForecast,
+) -> StructuralRef:
+    """Detach the exact default-gap forecast and its base forecast."""
+    if type(table) is not StructuralTable or type(value) is not DefaultGapInfeasibilityForecast:
+        raise TypeError("default-gap capture requires exact table and forecast")
+    return _capture(table, value, set())
+
+
+def materialize_default_gap_forecast(
+    table: StructuralTable, ref: StructuralRef,
+) -> DefaultGapInfeasibilityForecast:
+    if type(table) is not StructuralTable or type(ref) is not StructuralRef:
+        raise TypeError("default-gap read requires exact table and handle")
+    node = table.resolve(ref, Kind.SUBJECT)
+    if node.payload != (DefaultGapInfeasibilityForecast.__module__, DefaultGapInfeasibilityForecast.__qualname__):
+        raise StructuralIdentityError("handle does not identify a default-gap forecast")
+    return _materialize(table, ref)
+
+
+def capture_corridor_forecast(
+    table: StructuralTable, value: CorridorCoverageForecast,
+) -> StructuralRef:
+    """Detach a base corridor forecast, retaining its supplied derived IDs."""
+    if type(table) is not StructuralTable or type(value) is not CorridorCoverageForecast:
+        raise TypeError("corridor capture requires exact table and base forecast")
+    return _capture(table, value, set())
+
+
+def materialize_corridor_forecast(
+    table: StructuralTable, ref: StructuralRef,
+) -> CorridorCoverageForecast:
+    if type(table) is not StructuralTable or type(ref) is not StructuralRef:
+        raise TypeError("corridor read requires exact table and handle")
+    node = table.resolve(ref, Kind.SUBJECT)
+    if node.payload != (CorridorCoverageForecast.__module__, CorridorCoverageForecast.__qualname__):
+        raise StructuralIdentityError("handle does not identify a base corridor forecast")
+    return _materialize(table, ref)
 
 
 def capture_plan_inputs(
@@ -110,7 +239,7 @@ def _capture(table: StructuralTable, value: object, active: set[int]) -> Structu
     value_type = type(value)
     if value_type in (type(None), bool, int, str):
         return table.intern(Kind.VALUE, None, (value,), ())
-    if value_type in (StorageIdentityKind, UnflattenPlanShape):
+    if value_type in (StorageIdentityKind, UnflattenPlanShape, CorridorPathDisposition, EntryEndpointLivenessReason):
         name = object.__getattribute__(value, "_name_")
         encoded_value = object.__getattribute__(value, "_value_")
         if (type(name) is not str or type(encoded_value) is not str
@@ -126,10 +255,15 @@ def _capture(table: StructuralTable, value: object, active: set[int]) -> Structu
             names = _SOURCE_FIELDS[value_type]
             if tuple(field.name for field in fields(value_type)) != names:
                 raise TypeError("source catalog descendant schema drift")
-            children = tuple(
-                _capture(table, object.__getattribute__(value, name), active)
-                for name in names
-            )
+            derived = _DERIVED_FIELDS.get(value_type, ())
+            children_by_name = {
+                name: _capture(table, object.__getattribute__(value, name), active)
+                for name in names if name not in derived
+            }
+            # Close ordinary descendants before invoking a known lazy accessor.
+            for name in derived:
+                children_by_name[name] = _capture(table, getattr(value, name), active)
+            children = tuple(children_by_name[name] for name in names)
             return table.intern(
                 Kind.SUBJECT, None,
                 (value_type.__module__, value_type.__qualname__), children,
@@ -202,4 +336,11 @@ def _materialize(table: StructuralTable, ref: StructuralRef) -> object:
         name: _materialize(table, child)
         for name, child in zip(names, node.children)
     }
-    return record_type(**values)
+    supplied_ids = {
+        name: values.pop(name) for name in _DERIVED_FIELDS.get(record_type, ())
+    }
+    result = record_type(**values)
+    for name, supplied in supplied_ids.items():
+        if type(supplied) is not str or getattr(result, name) != supplied:
+            raise StructuralIdentityError("proposal descendant derived identity differs")
+    return result
