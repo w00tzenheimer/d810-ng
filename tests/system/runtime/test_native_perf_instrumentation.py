@@ -647,33 +647,37 @@ class TestNativePerfInstrumentation:
         from d810.core.settings import get_settings, reset_settings
         from d810.manager.state import D810State
 
-        options_path = tmp_path / "options.json"
-        options_path.write_text(
-            json.dumps({"native_perf": True, "nomut_matching": True}),
-            encoding="utf-8",
-        )
-        state = object.__new__(D810State)
-        state.d810_config = D810Configuration(options_path)
+        try:
+            with monkeypatch.context() as env:
+                options_path = tmp_path / "options.json"
+                options_path.write_text(
+                    json.dumps({"native_perf": True, "nomut_matching": True}),
+                    encoding="utf-8",
+                )
+                state = object.__new__(D810State)
+                state.d810_config = D810Configuration(options_path)
 
-        monkeypatch.delenv("D810_NATIVE_PERF", raising=False)
-        monkeypatch.delenv("D810_NOMUT_MATCHING", raising=False)
-        reset_settings()
-        state._apply_runtime_settings_preferences()
-        assert get_settings().native_perf is True
-        assert get_settings().nomut_matching is True
+                env.delenv("D810_NATIVE_PERF", raising=False)
+                env.delenv("D810_NOMUT_MATCHING", raising=False)
+                reset_settings()
+                state._apply_runtime_settings_preferences()
+                assert get_settings().native_perf is True
+                assert get_settings().nomut_matching is True
 
-        options_path.write_text(
-            json.dumps({"native_perf": False, "nomut_matching": False}),
-            encoding="utf-8",
-        )
-        state.d810_config = D810Configuration(options_path)
-        monkeypatch.setenv("D810_NATIVE_PERF", "1")
-        monkeypatch.setenv("D810_NOMUT_MATCHING", "1")
-        reset_settings()
-        state._apply_runtime_settings_preferences()
-        assert get_settings().native_perf is True
-        assert get_settings().nomut_matching is True
-        reset_settings()
+                options_path.write_text(
+                    json.dumps({"native_perf": False, "nomut_matching": False}),
+                    encoding="utf-8",
+                )
+                state.d810_config = D810Configuration(options_path)
+                env.setenv("D810_NATIVE_PERF", "1")
+                env.setenv("D810_NOMUT_MATCHING", "1")
+                reset_settings()
+                state._apply_runtime_settings_preferences()
+                assert get_settings().native_perf is True
+                assert get_settings().nomut_matching is True
+        finally:
+            # Rebuild the singleton after temporary environment overrides exit.
+            reset_settings()
 
     @pytest.mark.ida_required
     @pytest.mark.skipif(
