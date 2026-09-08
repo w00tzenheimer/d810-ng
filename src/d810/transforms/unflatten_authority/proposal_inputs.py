@@ -1,6 +1,6 @@
 """Explicit owned proposal input values; capture conveys no validation authority.
 
-This initial family covers source identity catalogs and use-def witnesses.
+This family covers source catalogs, use-def witnesses, and plan inputs.
 Materialization uses
 its existing constructors; complete proposal roundtrip checks remain mandatory.
 """
@@ -20,6 +20,7 @@ from d810.ir.storage_identity import StorageIdentity, StorageIdentityKind
 from d810.transforms.cfg_transaction import LogicalBlockRef
 from d810.transforms.unflatten_authority.model import (
     SourceBlockIdentityWitness, SourceIdentityCatalog, UseDefFragmentWitness,
+    UnflattenPlanInputCatalog, UnflattenPlanShape, AuthoritativeHandlerInput,
 )
 
 
@@ -35,6 +36,11 @@ _SOURCE_FIELDS = MappingProxyType({
     NativeEaIntervalSet: ("intervals",),
     NativeEaInterval: ("start_ea", "end_ea"),
     StorageIdentity: ("kind", "offset"),
+    UnflattenPlanInputCatalog: (
+        "shape", "source_entry_ref", "dispatcher_entry_ref", "dispatcher_member_refs",
+        "authoritative_handlers", "state_identity",
+    ),
+    AuthoritativeHandlerInput: ("block_ref", "anchor_ea", "normalized_states"),
     UseDefFragmentWitness: (
         "fragment_id", "state_identity", "redirect_owner_refs", "redirect_digest",
         "executed", "fragment_atomic", "actionable_non_state_severance_count",
@@ -47,7 +53,28 @@ _SOURCE_TYPES = MappingProxyType({
 
 _SOURCE_ENUMS = MappingProxyType({
     (StorageIdentityKind.__module__, StorageIdentityKind.__qualname__): StorageIdentityKind,
+    (UnflattenPlanShape.__module__, UnflattenPlanShape.__qualname__): UnflattenPlanShape,
 })
+
+
+def capture_plan_inputs(
+    table: StructuralTable, value: UnflattenPlanInputCatalog,
+) -> StructuralRef:
+    """Detach plan inputs without granting plan or handler authority."""
+    if type(table) is not StructuralTable or type(value) is not UnflattenPlanInputCatalog:
+        raise TypeError("plan input capture requires exact table and catalog")
+    return _capture(table, value, set())
+
+
+def materialize_plan_inputs(
+    table: StructuralTable, ref: StructuralRef,
+) -> UnflattenPlanInputCatalog:
+    if type(table) is not StructuralTable or type(ref) is not StructuralRef:
+        raise TypeError("plan input read requires exact table and handle")
+    node = table.resolve(ref, Kind.SUBJECT)
+    if node.payload != (UnflattenPlanInputCatalog.__module__, UnflattenPlanInputCatalog.__qualname__):
+        raise StructuralIdentityError("handle does not identify plan inputs")
+    return _materialize(table, ref)
 
 
 def capture_use_def_witness(
@@ -83,7 +110,7 @@ def _capture(table: StructuralTable, value: object, active: set[int]) -> Structu
     value_type = type(value)
     if value_type in (type(None), bool, int, str):
         return table.intern(Kind.VALUE, None, (value,), ())
-    if value_type is StorageIdentityKind:
+    if value_type in (StorageIdentityKind, UnflattenPlanShape):
         name = object.__getattribute__(value, "_name_")
         encoded_value = object.__getattribute__(value, "_value_")
         if (type(name) is not str or type(encoded_value) is not str
