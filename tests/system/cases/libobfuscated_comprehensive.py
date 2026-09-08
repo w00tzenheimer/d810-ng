@@ -934,7 +934,7 @@ DAC_MASM_CASES = [
         deobfuscated_regexes=[
             r"case 0x2C:\s+v\d+ = __ROL8__\(v\d+, 0x15\);",
             r"v\d+ = v\d+ \^ 0x71A7EB2DF7C173A2LL;",
-            r"v\d+ = v\d+ \^ 0x3F2E194C0657CB6FLL;",
+            r"v\d+ = v\d+ \^ 0x646A254C0657CB6FLL;",
             r"if \( v\d+ (?:<=|>) v\d+ \)",
         ],
         deobfuscated_not_contains=[
