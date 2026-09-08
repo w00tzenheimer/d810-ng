@@ -33,6 +33,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import IntEnum
 
+from d810.core.structural_identity import StructuralTable
+
 RUNTIME_AUTHORITY_ID_PREFIX = "runtime:"
 """Marker that distinguishes a scope-derived identity from a content-derived one.
 
@@ -348,7 +350,7 @@ class RuntimeAuthorityArena:
     d810.core.runtime_identity.RuntimeAuthorityArenaError: runtime authority arena is closed
     """
 
-    __slots__ = ("_by_kind", "_closed", "_records", "_scope")
+    __slots__ = ("_by_kind", "_closed", "_records", "_scope", "_structural")
 
     def __init__(self, scope: RuntimeAuthorityScope) -> None:
         if type(scope) is not RuntimeAuthorityScope:
@@ -359,6 +361,15 @@ class RuntimeAuthorityArena:
         self._records: dict[RuntimeAuthorityRef, object] = {}
         self._by_kind: dict[RuntimeAuthorityKind, list[RuntimeAuthorityRef]] = {}
         self._closed = False
+        self._structural: StructuralTable | None = None
+
+    @property
+    def structural(self) -> StructuralTable:
+        """Return this arena-owned structural partition, allocated on demand."""
+        self._require_open()
+        if self._structural is None:
+            self._structural = StructuralTable()
+        return self._structural
 
     @property
     def scope(self) -> RuntimeAuthorityScope:
@@ -452,6 +463,8 @@ class RuntimeAuthorityArena:
         """
 
         self._closed = True
+        if self._structural is not None:
+            self._structural.close()
         self._records = {}
         self._by_kind = {}
 
