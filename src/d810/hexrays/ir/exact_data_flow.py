@@ -9,6 +9,12 @@ from __future__ import annotations
 
 import ida_hexrays
 
+from d810.hexrays.ir.graph_readiness import (
+    GraphReadinessUnavailable,
+    ensure_graph_and_lists_ready,
+    require_graph_ready,
+)
+
 from d810.core.logging import getLogger
 from d810.core.typing import Mapping, NamedTuple, Optional
 
@@ -399,7 +405,10 @@ def _chain_block_serials(
     stack_offset: int | None = None,
     size: int,
 ) -> tuple[int, ...]:
-    ensure_graph_and_lists_ready(mba)
+    try:
+        ensure_graph_and_lists_ready(mba)
+    except GraphReadinessUnavailable:
+        return ()
     ud, du = get_ud_du_chains(mba)
     chains = ud if use_def else du
     if chains is None:
@@ -802,40 +811,6 @@ def find_uses_reached_by_stkvar_definition_in_projection(
     )
 
 
-def ensure_graph_and_lists_ready(mba: object) -> None:
-    """Prepare the MBA graph and per-block use/def lists (read-only).
-
-    Calls ``mba.build_graph()`` if the graph is not already built, then
-    iterates all blocks and calls ``blk.make_lists_ready()`` on each.
-
-    This function is READ-ONLY: it materialises cached internal structures
-    but does not mutate instructions, blocks, or CFG edges.
-
-    Args:
-        mba: An ``ida_hexrays.mba_t`` instance (typed as ``object`` to
-            avoid a hard import dependency on IDA).
-    """
-
-    # build_graph is idempotent when the graph is already up-to-date.
-    try:
-        mba.build_graph()  # type: ignore[attr-defined]
-    except Exception:
-        logger.debug(
-            "ensure_graph_and_lists_ready: build_graph() failed or unavailable"
-        )
-
-    qty: int = mba.qty  # type: ignore[attr-defined]
-    for i in range(qty):
-        blk = mba.get_mblock(i)  # type: ignore[attr-defined]
-        try:
-            blk.make_lists_ready()
-        except Exception:
-            logger.debug(
-                "ensure_graph_and_lists_ready: make_lists_ready() failed for block %d",
-                i,
-            )
-
-
 def get_ud_du_chains(
     mba: object,
     gctype: Optional[int] = None,
@@ -863,7 +838,7 @@ def get_ud_du_chains(
         gctype = ida_hexrays.GC_REGS_AND_STKVARS
 
     try:
-        graph = mba.get_graph()  # type: ignore[attr-defined]
+        graph = require_graph_ready(mba)
         ud = graph.get_ud(gctype)
         du = graph.get_du(gctype)
         return (ud, du)

@@ -7,6 +7,8 @@ from collections import Counter
 
 import ida_hexrays
 
+from d810.hexrays.ir.graph_readiness import GraphReadinessUnavailable, require_graph_ready
+
 from d810.core.logging import getLogger
 from d810.analyses.data_flow.exceptions import FixpointDidNotConverge
 
@@ -199,8 +201,8 @@ class HexRaysDeadStoreLivenessBackend:
             )
 
         try:
-            mba.build_graph()
-        except (AttributeError, RuntimeError, TypeError, ValueError):
+            require_graph_ready(mba)
+        except GraphReadinessUnavailable:
             return DeadStoreEvidence(
                 authoritative=True,
                 rejections=(
@@ -209,7 +211,7 @@ class HexRaysDeadStoreLivenessBackend:
                         block_start_ea=0,
                         insn_ea=0,
                         reason=DeadStoreRejectionReason.CHAIN_UNAVAILABLE,
-                        detail="build_graph",
+                        detail="graph_readiness",
                     ),
                 ),
             )

@@ -128,6 +128,8 @@ class _Graph:
 
 
 class _Mba:
+    maturity = ida_hexrays.MMAT_GLBOPT2
+
     def __init__(
         self,
         blocks: tuple[_Block, ...],

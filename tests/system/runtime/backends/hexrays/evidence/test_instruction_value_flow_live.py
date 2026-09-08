@@ -74,9 +74,14 @@ class _FakeBlock:
 
 
 class _FakeMba:
+    maturity = ida_hexrays.MMAT_GLBOPT2
+
     def __init__(self, blocks):
         self._blocks = {block.serial: block for block in blocks}
         self.qty = len(blocks)
+
+    def get_graph(self):
+        return self
 
     def build_graph(self):
         return None

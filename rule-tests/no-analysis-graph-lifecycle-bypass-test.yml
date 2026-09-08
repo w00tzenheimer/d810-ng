@@ -1,0 +1,17 @@
+id: no-analysis-graph-lifecycle-bypass
+valid:
+  - |
+      graph = require_graph_ready(mba)
+  - |
+      ensure_graph_and_lists_ready(mba)
+  - |
+      graph.get_ud(kind)
+invalid:
+  - |
+      mba.build_graph()
+  - |
+      graph = mba.get_graph()
+  - |
+      native_mba.build_graph()
+  - |
+      return native_mba.get_graph()

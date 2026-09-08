@@ -6,6 +6,8 @@ from dataclasses import dataclass
 
 import ida_hexrays
 
+from d810.hexrays.ir.graph_readiness import require_graph_ready
+
 from d810.analyses.value_flow.instruction_value_flow import (
     InstructionAccessFacts,
     InstructionFlowGraph,
@@ -142,7 +144,7 @@ def build_live_instruction_flow(
         for location in tracked
     }
     try:
-        mba.build_graph()
+        require_graph_ready(mba)
         quantity = int(mba.qty)
         blocks = {serial: mba.get_mblock(serial) for serial in range(quantity)}
         if any(block is None for block in blocks.values()):

@@ -190,8 +190,11 @@ class _Mba:
     def get_mblock(self, serial: int) -> _Block:
         return self._blocks[serial]
 
+    def get_graph(self):
+        return self
+
     def build_graph(self) -> None:
-        return None
+        raise AssertionError("analysis must not rebuild the graph")
 
 
 def _reasons(evidence) -> set[DeadStoreRejectionReason]:
