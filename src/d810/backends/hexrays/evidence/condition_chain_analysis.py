@@ -1797,12 +1797,17 @@ def _dest_alias_is_undecidable(
 
 
 def _mop_subtree_references_stack(mop: object, depth: int = 3) -> bool:
-    """Return True when *mop* mentions a stack location anywhere in its subtree."""
-    if mop is None or depth < 0:
+    """Check possible private-state addresses, preserving uncertain subtrees.
+
+    Under the receipt's dispatcher-state no-escape assumption, a load result
+    is an opaque pointer value. Its source address does not describe where
+    that result points. This exemption does not apply to computed operands.
+    """
+    if mop is None:
         return False
     mop_type = getattr(mop, "t", None)
     if mop_type is None:
-        return False
+        return True
     if mop_type in (
         _mop_type_value("mop_S", None),
         _mop_type_value("mop_a", None),
@@ -1811,7 +1816,13 @@ def _mop_subtree_references_stack(mop: object, depth: int = 3) -> bool:
     if mop_type == _mop_type_value("mop_d", None):
         sub = getattr(mop, "d", None)
         if sub is None:
+            return True
+        opcode = getattr(sub, "opcode", None)
+        load_opcode = _opcode_value("m_ldx", None)
+        if load_opcode is not None and opcode == load_opcode:
             return False
+        if opcode is None or depth <= 0:
+            return True
         return any(
             _mop_subtree_references_stack(getattr(sub, name, None), depth - 1)
             for name in ("l", "r", "d")

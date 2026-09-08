@@ -4,6 +4,11 @@ from types import SimpleNamespace
 
 import ida_hexrays
 
+from d810.analyses.control_flow.computed_state_writer import StorageKey
+from d810.evaluator.hexrays_microcode.dynamic_state_write_backend import (
+    _read_storage_definition,
+)
+
 from tests.system.runtime.evaluator.hexrays_microcode.test_resolve_state_write_value_set import (
     _A,
     _STATE_OFF,
@@ -13,6 +18,38 @@ from tests.system.runtime.evaluator.hexrays_microcode.test_resolve_state_write_v
     _mop_n,
     _mop_S,
 )
+
+
+def test_loaded_pointer_store_still_clobbers_arbitrary_computed_operands():
+    # The private dispatcher-state receipt's no-escape assumption must not
+    # exempt the same store when resolving arbitrary stack/lvar values.
+    segment = SimpleNamespace(t=ida_hexrays.mop_r, r=100, size=2)
+    load = SimpleNamespace(
+        t=ida_hexrays.mop_d,
+        d=_insn(ida_hexrays.m_ldx, l=segment, r=_mop_S(552, 8)),
+        size=8,
+    )
+    address = SimpleNamespace(
+        t=ida_hexrays.mop_d,
+        d=_insn(ida_hexrays.m_add, l=load, r=_mop_n(0xF8, 8)),
+        size=8,
+    )
+    lvar = SimpleNamespace(t=ida_hexrays.mop_l, l=SimpleNamespace(idx=0), size=4)
+    for operand, storage in (
+        (_mop_S(80), StorageKey("S", 80)),
+        (lvar, StorageKey("l", 0)),
+    ):
+        mba = _mba(
+            {
+                0: _block(
+                    _insn(ida_hexrays.m_mov, l=_mop_n(0x100), d=operand),
+                    _insn(ida_hexrays.m_stx, l=_mop_n(0x200), r=segment, d=address),
+                )
+            }
+        )
+        definition = _read_storage_definition(mba=mba, block_serial=0, storage=storage)
+        assert definition.written
+        assert definition.value is None
 
 
 def test_partitioned_register_fold_does_not_walk_through_a_clobber():
