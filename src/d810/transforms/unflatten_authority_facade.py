@@ -51,7 +51,7 @@ def phase_observation(
 
 
 def prepare_unflatten_authority_timed(
-    *, source, projection, plan, attempt_id, generic_gates,
+    *, source, projection, plan, attempt_id, generic_gates, structural_context=None,
 ):
     return _transaction_api.prepare_unflatten_authority_timed(
         source=source,
@@ -59,6 +59,7 @@ def prepare_unflatten_authority_timed(
         plan=plan,
         attempt_id=attempt_id,
         generic_gates=generic_gates,
+        structural_context=structural_context,
     )
 
 

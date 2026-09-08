@@ -84,3 +84,28 @@ def test_inventory_publication_replays_exact_canonical_content(phase: str) -> No
     assert canonical_bytes(detached) == before
     assert detached.inventory_digest == public.inventory_digest
     assert inventory_publication.inventory_inputs.capture_inventory(arena.structural, detached) is published.root
+
+
+def test_selected_origin_uses_rows_before_equal_replacement_during_capture(monkeypatch):
+    public = projected_site_fixture().source_inventory
+    original = public.effects[0]
+    arena = RuntimeAuthorityArena(RuntimeAuthorityScope("before-capture"))
+    occurrences = inventory_publication.snapshot_inventory_rows(public)
+    capture = inventory_publication.inventory_inputs.capture_inventory
+    replaced = False
+
+    def replace_during_capture(table, value):
+        nonlocal replaced
+        if value is public and not replaced:
+            object.__setattr__(public, "effects", (replace(original), *public.effects[1:]))
+            replaced = True
+        return capture(table, value)
+
+    monkeypatch.setattr(inventory_publication.inventory_inputs, "capture_inventory", replace_during_capture)
+    publication = inventory_publication.publish_inventory(arena, public)
+    origin = inventory_publication.retain_inventory_position_origin(
+        arena, publication, occurrences, "effects", (0,),
+    )
+    inventory_publication.require_inventory_export(arena, publication, public)
+    with pytest.raises(ValueError, match="occurrence"):
+        inventory_publication.require_inventory_row_origin(arena, origin, public.effects[0])

@@ -11,6 +11,7 @@ from d810.core.structural_identity import StructuralIdentityError
 from d810.hexrays.contracts.cfg_contract import IDACfgContract
 from d810.hexrays.ir.mba_identity_index import MbaBlockIdentityIndex
 from d810.hexrays.mutation.mba_mutation_events import MbaMutationGateway
+from d810.hexrays.mutation import patch_transaction as patch_module
 from d810.hexrays.mutation.patch_transaction import (
     HexRaysPatchTransactionParticipant,
     execute_patch_transaction,
@@ -62,7 +63,7 @@ def test_concrete_ida_contract_does_not_treat_identity_refs_as_live_coordinates(
     assert contract.calls == [("pre", None)]
 
 
-def test_patch_participant_uses_concrete_ida_projection_interface() -> None:
+def test_patch_participant_uses_concrete_ida_projection_interface(monkeypatch) -> None:
     plan = PatchPlan(source_generation=0)
     cfg = FlowGraph(
         blocks={},
@@ -93,8 +94,18 @@ def test_patch_participant_uses_concrete_ida_projection_interface() -> None:
         contract=contract,
     )
 
+    received = []
+    actual_prepare = patch_module.unflatten_authority_api.prepare_unflatten_authority_timed
+
+    def require_actual_owner(**kwargs):
+        assert kwargs["structural_context"] is participant.structural_context
+        received.append(kwargs["structural_context"])
+        return actual_prepare(**kwargs)
+
+    monkeypatch.setattr(patch_module.unflatten_authority_api, "prepare_unflatten_authority_timed", require_actual_owner)
     projection = participant.project(plan, cfg)
     prepared = participant.preflight(projection)
+    assert received == [participant.structural_context]
 
     assert isinstance(prepared, PreparedCfgTransaction)
     assert prepared.projection is projection
@@ -104,7 +115,16 @@ def test_patch_participant_uses_concrete_ida_projection_interface() -> None:
         participant._structural_coordinates().evidence_generation
         == index.evidence_generation
     )
+    drifted = HexRaysPatchTransactionParticipant(
+        gateway=gateway, translator=object(), mba=SimpleNamespace(qty=0),
+        plan=plan, contract=RecordingIDACfgContract(),
+    )
+    drifted_projection = drifted.project(plan, cfg)
     index.evidence_generation += 1
+    with pytest.raises(StructuralIdentityError, match="scope differs"):
+        drifted.preflight(drifted_projection)
+    drifted.close()
+    assert received == [participant.structural_context]
     with pytest.raises(StructuralIdentityError, match="scope differs"):
         participant.structural_context.require_scope(
             participant.attempt_id,
