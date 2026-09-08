@@ -113,3 +113,38 @@ def scalar_value(table: StructuralTable, ref: StructuralRef) -> object:
             or type(node.payload[0]) not in (type(None), bool, int, str)):
         raise StructuralIdentityError("invalid owned inventory scalar")
     return node.payload[0]
+
+
+def matching_effect_rows(
+    table: StructuralTable, inventory: StructuralRef, owner: StructuralRef,
+    anchor_ea: int, instruction_ea: int, effect_kind: str,
+) -> tuple[StructuralRef, ...]:
+    """Join owned effect rows against a key issued by the same partition."""
+    reference = _resolve(table, owner, Kind.SUBJECT)
+    if (reference.width is not None or reference.payload not in (
+        ("d810.ir.block_identity", "NativeBlockRef"),
+        ("d810.transforms.cfg_transaction", "LogicalBlockRef"),
+        ("d810.transforms.cfg_transaction", "PlanBlockRef"),
+    )):
+        raise StructuralIdentityError("effect join requires an owned block reference")
+    if (type(anchor_ea) is not int or type(instruction_ea) is not int
+            or type(effect_kind) is not str):
+        raise TypeError("effect join coordinates require exact scalars")
+    result = []
+    for row in sequence_children(table, inventory_field(table, inventory, "effects")):
+        node = _resolve(table, row, Kind.SUBJECT)
+        if node.payload != (_MODEL_MODULE, "InventoryEffectSite"):
+            raise StructuralIdentityError("inventory effects contain a foreign row")
+        if record_field(table, row, "owner_ref") is not owner:
+            continue
+        if (scalar_value(table, record_field(table, row, "owner_anchor_ea")) != anchor_ea
+                or scalar_value(table, record_field(table, row, "instruction_ea")) != instruction_ea):
+            continue
+        kind = _resolve(table, record_field(table, row, "effect_kind"), Kind.ENUM)
+        if (kind.width is not None or kind.children or len(kind.payload) != 4
+                or kind.payload[:2] != (_MODEL_MODULE, "EffectSiteKind")
+                or type(kind.payload[2]) is not str or type(kind.payload[3]) is not str):
+            raise StructuralIdentityError("effect row kind is outside the owned schema")
+        if kind.payload[3] == effect_kind:
+            result.append(row)
+    return tuple(result)

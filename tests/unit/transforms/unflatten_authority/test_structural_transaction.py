@@ -111,3 +111,20 @@ def test_evidence_generation_is_a_separate_scope_coordinate():
         )
     with pytest.raises(StructuralIdentityError, match="no observation"):
         _ = context.observed
+
+
+def test_inventory_provenance_reuses_exact_existing_partition_owners():
+    attempt = TransactionAttemptId.new("plan", "gateway", 3)
+    coords = StructuralTransactionCoordinates("snapshot", 4, 3, None, 3)
+    context = StructuralTransactionContext(attempt, native(), coords)
+    assert context.source_arena.structural is context.source
+    assert context.projected_arena.structural is context.projected
+    assert context.source_arena is not context.projected_arena
+    source_owner = context.source_arena
+    projected_owner = context.projected_arena
+    context.close()
+    assert source_owner.is_closed and projected_owner.is_closed
+    with pytest.raises(StructuralIdentityError):
+        _ = context.source_arena
+    with pytest.raises(StructuralIdentityError):
+        _ = context.projected_arena
