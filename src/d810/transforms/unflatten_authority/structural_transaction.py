@@ -22,6 +22,7 @@ class StructuralTransactionCoordinates(NamedTuple):
     maturity: int
     gateway_generation: int
     execution_epoch: int | None
+    evidence_generation: int
 
 
 class StructuralTransactionContext:
@@ -55,6 +56,8 @@ class StructuralTransactionContext:
             or not coordinates.snapshot_id
             or type(coordinates.maturity) is not int
             or type(coordinates.gateway_generation) is not int
+            or type(coordinates.evidence_generation) is not int
+            or coordinates.evidence_generation < 0
             or coordinates.gateway_generation != attempt.generation
             or (
                 coordinates.execution_epoch is not None

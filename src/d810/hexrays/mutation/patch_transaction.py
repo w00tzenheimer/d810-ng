@@ -597,6 +597,7 @@ class HexRaysPatchTransactionParticipant:
         return unflatten_authority_api.StructuralTransactionCoordinates(
             self.plan.snapshot_id, int(self.gateway.maturity),
             int(self.gateway.generation), None,
+            self.gateway.identity_index.evidence_generation,
         )
 
     def close(self) -> None:

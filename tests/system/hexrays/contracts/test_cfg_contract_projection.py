@@ -100,6 +100,17 @@ def test_patch_participant_uses_concrete_ida_projection_interface() -> None:
     assert prepared.projection is projection
     assert contract.calls == [("pre", None)]
     assert not gateway.active
+    assert (
+        participant._structural_coordinates().evidence_generation
+        == index.evidence_generation
+    )
+    index.evidence_generation += 1
+    with pytest.raises(StructuralIdentityError, match="scope differs"):
+        participant.structural_context.require_scope(
+            participant.attempt_id,
+            NATIVE_KEY,
+            participant._structural_coordinates(),
+        )
     participant.close()
 
 

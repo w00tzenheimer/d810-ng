@@ -19,7 +19,7 @@ def native():
 
 def test_partitions_and_attempt_lifetime_are_distinct():
     attempt = TransactionAttemptId.new("plan", "gateway", 3)
-    coordinates = StructuralTransactionCoordinates("snapshot", 4, 3, None)
+    coordinates = StructuralTransactionCoordinates("snapshot", 4, 3, None, 3)
     context = StructuralTransactionContext(attempt, native(), coordinates)
     a = context.source.intern(StructuralNodeKind.VALUE, None, (1,), ())
     b = context.projected.intern(StructuralNodeKind.VALUE, None, (1,), ())
@@ -43,7 +43,7 @@ def test_partitions_and_attempt_lifetime_are_distinct():
 
 def test_foreign_attempt_restart_epoch_and_native_are_rejected():
     attempt = TransactionAttemptId.new("plan", "gateway", 3)
-    coords = StructuralTransactionCoordinates("snapshot", 4, 3, None)
+    coords = StructuralTransactionCoordinates("snapshot", 4, 3, None, 3)
     context = StructuralTransactionContext(attempt, native(), coords)
     with pytest.raises(StructuralIdentityError):
         context.require_scope(replace(attempt), native(), coords)
@@ -57,7 +57,7 @@ def test_foreign_attempt_restart_epoch_and_native_are_rejected():
 
 def test_scope_does_not_alias_boolean_and_integer_components():
     attempt = TransactionAttemptId.new("plan", "gateway", 3)
-    coords = StructuralTransactionCoordinates("snapshot", 1, 3, None)
+    coords = StructuralTransactionCoordinates("snapshot", 1, 3, None, 3)
     context = StructuralTransactionContext(attempt, native(), coords)
     corrupted = native()
     object.__setattr__(corrupted, "function_rva", True)
@@ -72,7 +72,9 @@ def test_admission_rejects_mutable_attempt_descendant():
     object.__setattr__(attempt, "plan_id", ["plan"])
     with pytest.raises((TypeError, ValueError)):
         StructuralTransactionContext(
-            attempt, native(), StructuralTransactionCoordinates("snapshot", 1, 3, None)
+            attempt,
+            native(),
+            StructuralTransactionCoordinates("snapshot", 1, 3, None, 3),
         )
 
 
@@ -85,5 +87,27 @@ def test_admission_rejects_native_scalar_subclasses():
     attempt = TransactionAttemptId.new("plan", "gateway", 3)
     with pytest.raises(TypeError):
         StructuralTransactionContext(
-            attempt, value, StructuralTransactionCoordinates("snapshot", 1, 3, None)
+            attempt, value, StructuralTransactionCoordinates("snapshot", 1, 3, None, 3)
         )
+
+
+def test_evidence_generation_is_a_separate_scope_coordinate():
+    attempt = TransactionAttemptId.new("plan", "gateway", 3)
+    coords = StructuralTransactionCoordinates(
+        "snapshot",
+        1,
+        3,
+        None,
+        evidence_generation=9,
+    )
+    context = StructuralTransactionContext(attempt, native(), coords)
+    with pytest.raises(StructuralIdentityError):
+        context.require_scope(
+            attempt, native(), coords._replace(evidence_generation=10)
+        )
+    with pytest.raises(StructuralIdentityError):
+        context.begin_observation(
+            attempt, native(), coords._replace(evidence_generation=10)
+        )
+    with pytest.raises(StructuralIdentityError, match="no observation"):
+        _ = context.observed
