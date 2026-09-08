@@ -4,11 +4,16 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
+from d810.core.structural_identity import StructuralIdentityError
+
 from d810.hexrays.contracts.cfg_contract import IDACfgContract
 from d810.hexrays.ir.mba_identity_index import MbaBlockIdentityIndex
 from d810.hexrays.mutation.mba_mutation_events import MbaMutationGateway
 from d810.hexrays.mutation.patch_transaction import (
     HexRaysPatchTransactionParticipant,
+    execute_patch_transaction,
 )
 from d810.ir.flowgraph import FlowGraph
 from d810.transforms.cfg_transaction import (
@@ -17,6 +22,7 @@ from d810.transforms.cfg_transaction import (
     PlanBlockRef,
     PreparedCfgTransaction,
 )
+from d810.transforms.fragment_to_patch import CfgTransactionCoordinator
 from d810.transforms.plan import PatchPlan
 from tests.native_preanalysis import make_native_key
 
@@ -94,3 +100,90 @@ def test_patch_participant_uses_concrete_ida_projection_interface() -> None:
     assert prepared.projection is projection
     assert contract.calls == [("pre", None)]
     assert not gateway.active
+    participant.close()
+
+
+@pytest.mark.parametrize("phase", ("project", "preflight", "bind"))
+def test_structural_context_closes_when_preparation_raises(monkeypatch, phase) -> None:
+
+    plan = PatchPlan(source_generation=0)
+    cfg = FlowGraph(blocks={}, entry_serial=0, func_ea=0)
+    index = MbaBlockIdentityIndex.from_flow_graph(
+        session_id="structural-lifetime",
+        generation=0,
+        maturity=0,
+        snapshot_id=plan.snapshot_id,
+        native_key=NATIVE_KEY,
+        flow_graph=cfg,
+    )
+    gateway = MbaMutationGateway(
+        session_id=index.session_id,
+        generation=0,
+        native_key=NATIVE_KEY,
+        identity_index=index,
+    )
+    contexts = []
+
+    def rejected(participant, *args):
+        contexts.append(participant.structural_context)
+        raise ValueError("injected projection rejection")
+
+    monkeypatch.setattr(HexRaysPatchTransactionParticipant, phase, rejected)
+    with pytest.raises(ValueError, match="injected projection rejection"):
+        execute_patch_transaction(
+            gateway, object(), plan, SimpleNamespace(qty=0), pre_cfg=cfg
+        )
+    assert len(contexts) == 1
+    with pytest.raises(StructuralIdentityError, match="closed"):
+        _ = contexts[0].source
+
+
+@pytest.mark.parametrize("outcome", ("return", "exception", "interrupt"))
+def test_structural_context_survives_coordinator_then_closes(monkeypatch, outcome):
+    """Exercise the owner boundary, without claiming a native rewrite happened."""
+    plan = PatchPlan(source_generation=0)
+    cfg = FlowGraph(blocks={}, entry_serial=0, func_ea=0)
+    index = MbaBlockIdentityIndex.from_flow_graph(
+        session_id="structural-coordinator-lifetime",
+        generation=0,
+        maturity=0,
+        snapshot_id=plan.snapshot_id,
+        native_key=NATIVE_KEY,
+        flow_graph=cfg,
+    )
+    gateway = MbaMutationGateway(
+        session_id=index.session_id,
+        generation=0,
+        native_key=NATIVE_KEY,
+        identity_index=index,
+    )
+    contexts = []
+    result = object()
+
+    def coordinator_exit(coordinator, participant, patch_plan):
+        context = coordinator.lifecycle.participant.structural_context
+        contexts.append(context)
+        assert context.source is not context.projected
+        if outcome == "exception":
+            raise ValueError("injected coordinator exit")
+        if outcome == "interrupt":
+            raise KeyboardInterrupt("injected coordinator exit")
+        return result
+
+    monkeypatch.setattr(CfgTransactionCoordinator, "execute", coordinator_exit)
+    if outcome == "return":
+        assert (
+            execute_patch_transaction(
+                gateway, object(), plan, SimpleNamespace(qty=0), pre_cfg=cfg
+            )
+            is result
+        )
+    else:
+        error = ValueError if outcome == "exception" else KeyboardInterrupt
+        with pytest.raises(error, match="injected coordinator exit"):
+            execute_patch_transaction(
+                gateway, object(), plan, SimpleNamespace(qty=0), pre_cfg=cfg
+            )
+    assert len(contexts) == 1
+    with pytest.raises(StructuralIdentityError, match="closed"):
+        _ = contexts[0].source

@@ -18,6 +18,10 @@ from d810.transforms.unflatten_authority.transaction_api import (
     UnflattenAuthorityPreparationRejected,
     UnflattenAuthorityVerdict,
 )
+from d810.transforms.unflatten_authority.structural_transaction import (
+    StructuralTransactionContext,
+    StructuralTransactionCoordinates,
+)
 
 
 def bind_prepared_unflatten_authority(*, prepared, patch_binding):
@@ -84,6 +88,8 @@ def validate_observed_commit_authority(authority, verdict, accepted):
     )
 
 __all__ = (
+    "StructuralTransactionContext",
+    "StructuralTransactionCoordinates",
     "GenericCfgGateBundle",
     "PhaseTimings",
     "TimedUnflattenAuthorityResult",
