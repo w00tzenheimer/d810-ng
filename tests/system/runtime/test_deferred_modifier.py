@@ -5675,3 +5675,49 @@ class TestStagedAtomicEaIdentity:
         )
         # Both copies survived (distinct synthetic EAs per _StagedFakeMBA).
         assert len(mba.copied_blocks) == 2
+
+
+@pytest.mark.parametrize("targets", [(96, 339), (96, 96)])
+def test_coalesce_duplicate_block_preserves_distinct_predecessors(targets):
+    modifier = dm.DeferredGraphModifier(None)
+    for pred, target, reserved in zip((450, 451), targets, (646, 647)):
+        modifier.queue_duplicate_block(
+            source_block_serial=455,
+            pred_serial=pred,
+            target_serial=target,
+            expected_serial=reserved,
+        )
+    assert modifier.coalesce() == 0
+    assert [
+        (m.via_pred, m.new_target, m.expected_serial) for m in modifier.modifications
+    ] == [(450, targets[0], 646), (451, targets[1], 647)]
+
+
+@pytest.mark.parametrize("target,reserved", [(339, 646), (96, 647)])
+def test_coalesce_duplicate_block_rejects_conflicting_edge_ownership(target, reserved):
+    modifier = dm.DeferredGraphModifier(None)
+    modifier.queue_duplicate_block(
+        source_block_serial=455, pred_serial=450, target_serial=96, expected_serial=646
+    )
+    modifier.queue_duplicate_block(
+        source_block_serial=455,
+        pred_serial=450,
+        target_serial=target,
+        expected_serial=reserved,
+    )
+    with pytest.raises(ValueError, match="conflicting predecessor clone"):
+        modifier.coalesce()
+    assert len(modifier.modifications) == 2
+
+
+def test_coalesce_duplicate_block_deduplicates_same_owned_creation():
+    modifier = dm.DeferredGraphModifier(None)
+    for _ in range(2):
+        modifier.queue_duplicate_block(
+            source_block_serial=455,
+            pred_serial=450,
+            target_serial=96,
+            expected_serial=646,
+        )
+    assert modifier.coalesce() == 1
+    assert len(modifier.modifications) == 1

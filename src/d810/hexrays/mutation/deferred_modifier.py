@@ -7354,9 +7354,9 @@ class DeferredGraphModifier:
         Coalesce queued modifications to remove duplicates and optimize the queue.
 
         This method:
-        1. Removes exact duplicate modifications (same type, block_serial, new_target)
-        2. Detects and warns about conflicting modifications for the same block
-        3. For BLOCK_CREATE_WITH_REDIRECT: keeps only the first modification per source block
+        1. Removes exact duplicates within each operation kind
+        2. Rejects conflicting predecessor-owned clone shapes or reservations
+        3. Resolves remaining source-owned terminal conflicts by rule priority
 
         Returns:
             Number of modifications removed.
@@ -7381,6 +7381,7 @@ class DeferredGraphModifier:
         block_modifications: dict[int, list[QueuedModification]] = {}
 
         unique_modifications = []
+        predecessor_clones: dict[tuple[int, int | None], tuple] = {}
 
         for mod in self.modifications:
             # Create a key for deduplication
@@ -7415,7 +7416,18 @@ class DeferredGraphModifier:
                     mod.fallthrough_target,
                     mod.expected_serial,
                     mod.expected_secondary_serial,
+                    mod.target_ref_kind,
+                    mod.original_redirect_target,
                 )
+                owner = (mod.block_serial, mod.via_pred)
+                previous = predecessor_clones.get(owner)
+                if previous is not None and previous != key:
+                    # Distinct reservations cannot share a made-up creation
+                    # receipt. Deduplication belongs before plan allocation.
+                    raise ValueError(
+                        f"conflicting predecessor clone shape or ownership for {owner}"
+                    )
+                predecessor_clones[owner] = key
             elif mod.mod_type == ModificationType.BLOCK_DUPLICATE_REPLAY_AND_REDIRECT:
                 replay_key = tuple(
                     (row[0], row[1], row[2], row[3])
@@ -7578,6 +7590,7 @@ class DeferredGraphModifier:
                 # Same type, different targets = conflict - resolve by rule_priority
                 for mod_type in unique_types:
                     if mod_type in (
+                        ModificationType.BLOCK_DUPLICATE_AND_REDIRECT,
                         ModificationType.EDGE_REDIRECT_VIA_PRED_SPLIT,
                         ModificationType.EDGE_SPLIT_TRAMPOLINE,
                         ModificationType.CLONE_CONDITIONAL_AS_GOTO,
@@ -7641,6 +7654,8 @@ class DeferredGraphModifier:
         # is handled by the edge-type-specific pass above.  Including it in the
         # per-block terminal pass would collapse two redirects that share the
         # same src_block but differ only in via_pred — which is legitimate.
+        # BLOCK_DUPLICATE_AND_REDIRECT likewise owns (source, predecessor);
+        # its shape and creation ownership are checked before deduplication.
         terminal_mod_types = {
             ModificationType.BLOCK_GOTO_CHANGE,
             ModificationType.BLOCK_TARGET_CHANGE,
@@ -7648,7 +7663,6 @@ class DeferredGraphModifier:
             ModificationType.MATERIALIZE_ZERO_WAY_GOTO,
             ModificationType.BLOCK_CREATE_WITH_REDIRECT,
             ModificationType.BLOCK_CREATE_WITH_CONDITIONAL_REDIRECT,
-            ModificationType.BLOCK_DUPLICATE_AND_REDIRECT,
             ModificationType.BLOCK_DUPLICATE_REPLAY_AND_REDIRECT,
             ModificationType.LOWER_CONDITIONAL_STATE_TRANSITION,
             ModificationType.NORMALIZE_NWAY_DISPATCHER_EXIT,
@@ -7665,7 +7679,6 @@ class DeferredGraphModifier:
             ModificationType.MATERIALIZE_ZERO_WAY_GOTO: 4,
             ModificationType.BLOCK_CREATE_WITH_REDIRECT: 5,
             ModificationType.BLOCK_CREATE_WITH_CONDITIONAL_REDIRECT: 6,
-            ModificationType.BLOCK_DUPLICATE_AND_REDIRECT: 7,
             ModificationType.BLOCK_DUPLICATE_REPLAY_AND_REDIRECT: 8,
             ModificationType.LOWER_CONDITIONAL_STATE_TRANSITION: 9,
             ModificationType.NORMALIZE_NWAY_DISPATCHER_EXIT: 10,
