@@ -18,6 +18,8 @@ from d810.transforms.unflatten_authority.route_projection import (
     project_equivalent_route_claim,
 )
 from .helpers import exact_fixture
+from .test_bind import _terminal_cycle_fixture
+from d810.transforms.unflatten_authority import model, route_projection
 
 
 def projection_fixture():
@@ -160,3 +162,54 @@ def test_claim_projection_rejects_another_source_generation():
     stale = replace(claims[0], source_generation=claims[0].source_generation + 1)
     with pytest.raises(ValueError, match="generation"):
         project_equivalent_route_claim(stale, group)
+
+
+@pytest.mark.parametrize("family", ["exact_effect", "terminal_cycle"])
+def test_other_proof_claim_projection_matches_original_bytes(family):
+    if family == "exact_effect":
+        _source, proposal, _exclusion, _refs = exact_fixture()
+        expected = next(
+            claim
+            for claim in proposal.claims
+            if type(claim) is model.ExactInfeasibleEffectClaim
+        )
+        field_name = "route_proof_ids"
+    else:
+        proposal, expected = _terminal_cycle_fixture()
+        field_name = "terminal_route_proof_ids"
+    evidence = proposal.route_evidence
+    old_ids = {
+        proof.proof_id: "sha256:" + format(index + 10, "064x")
+        for index, proof in enumerate(evidence.route_proofs)
+    }
+    with route_authority_phase("other-claim-projection") as owner:
+        arena = RuntimeAuthorityArena(RuntimeAuthorityScope("other-owned-proofs"))
+        owner.adopt(arena)
+        group = project_owned_route_group(
+            arena.structural,
+            evidence.generation,
+            "sha256:" + "a" * 64,
+            tuple(
+                (
+                    old_ids[proof.proof_id],
+                    capture_structural_route_proof(arena.structural, proof),
+                    proof.diagnostic_provenance,
+                )
+                for proof in evidence.route_proofs
+            ),
+        )
+    original = replace(
+        expected,
+        **{field_name: tuple(old_ids[item] for item in getattr(expected, field_name))},
+    )
+    result = route_projection.project_proof_referencing_claim(original, group)
+    assert canonical_bytes(result.claim) == canonical_bytes(expected)
+    assert result.claim_id_pair == (original.claim_id, expected.claim_id)
+    with pytest.raises(ValueError, match="generation"):
+        route_projection.project_proof_referencing_claim(
+            replace(original, source_generation=original.source_generation + 1), group
+        )
+    with pytest.raises(ValueError, match="cover"):
+        route_projection.project_proof_referencing_claim(
+            original, replace(group, proof_id_pairs=())
+        )
