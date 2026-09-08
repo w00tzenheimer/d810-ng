@@ -1,6 +1,8 @@
 """Patch-transaction-facing route selection for unflatten authority."""
 
 from __future__ import annotations
+from .transaction_facts import active_facts, captured, construct, fact_scope
+from .structural_transaction import StructuralTransactionContext
 
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
@@ -3370,7 +3372,7 @@ def _build_semantic_graph_inventory(
         observed_route_topology_occurrences,
         observed_lowered_conditional_topology_occurrences,
     )
-    return model.SemanticGraphInventory(
+    return construct(model.SemanticGraphInventory,
         phase, fingerprint, proposal.source_identity_catalog.generation,
         tuple(block_rows), subjects, bindings, effects, terminals, topology, digest,
         reachable_tuple,
@@ -4259,6 +4261,7 @@ def _derive_transaction_facts(
     alias_occurrences, alias_patch_facts, alias_relations = (
         _derive_local_alias_transaction_facts(source_inventory, plan)
     )
+    proposal = captured(plan.unflatten_proposal)
     alias_claims = tuple(item.claim for item in alias_occurrences)
     route_patch_step_facts = _derive_patch_lineage_facts(source_inventory, plan)
     patch_step_facts = tuple(sorted(
@@ -4266,14 +4269,14 @@ def _derive_transaction_facts(
         key=authority_bind.patch_step_fact_id,
     ))
     claims = tuple(sorted(
-        (*plan.unflatten_proposal.claims, *alias_claims),
+        (*proposal.claims, *alias_claims),
         key=lambda item: item.claim_id,
     ))
     return authority_bind._mint_derived_transaction_claim_inventory(
-        proposal=plan.unflatten_proposal,
+        proposal=proposal,
         plan=plan,
         source_inventory=source_inventory,
-        proposal_claims=plan.unflatten_proposal.claims,
+        proposal_claims=proposal.claims,
         local_alias_occurrences=alias_occurrences,
         claims=claims,
         route_patch_step_facts=route_patch_step_facts,
@@ -4810,7 +4813,7 @@ def _derive_inputs(
         patch_step_facts=patch_step_facts,
         _preparation_inputs=preparation_inputs,
     )
-    return model.DerivedUnflattenPreparationInputs(
+    return construct(model.DerivedUnflattenPreparationInputs,
         proposal=proposal,
         claims=claims,
         preparation_receipt=receipt,
@@ -4902,6 +4905,11 @@ def _prepare_unflatten_authority_in_session(*, source, projection, plan, attempt
             )
         return UnflattenAuthorityPreparationRejected(verdict, proposal_failure)
     proposal = route.proposal
+    if structural_context is not None:
+        if type(structural_context) is not StructuralTransactionContext:
+            raise TypeError("preparation requires the exact transaction context")
+        structural_context.require_preparation(attempt_id, plan.snapshot_id)
+        structural_context.require_native_input(proposal.source_identity_catalog.native_key)
     candidate_fingerprint = None
     source_route_authority = None
     projected_route_realization = None
@@ -4919,7 +4927,7 @@ def _prepare_unflatten_authority_in_session(*, source, projection, plan, attempt
         # fingerprint.  A seam refusal is its own stage and says so, exactly as
         # the observed side does.
         route_authority_verification = _record_route_authority_rebind(
-            proposal.route_evidence,
+            plan.unflatten_proposal.route_evidence,
             phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
         )
     except (TypeError, ValueError) as error:
@@ -5399,7 +5407,9 @@ def _prepare_unflatten_authority_in_session(*, source, projection, plan, attempt
 def _prepare_unflatten_authority(*, source, projection, plan, attempt_id, generic_gates, _timings=None, structural_context=None):
     """Run one complete projected preparation in its transaction-owned session."""
 
-    with _canonical_validation_session(
+    if structural_context is not None and type(structural_context) is not StructuralTransactionContext:
+        raise TypeError("preparation requires the exact transaction context")
+    with fact_scope(None if structural_context is None else structural_context.facts), _canonical_validation_session(
         CanonicalSessionPhase.PROJECTED_PREPARATION,
     ):
         return _prepare_unflatten_authority_in_session(
@@ -5438,10 +5448,27 @@ def prepare_unflatten_authority_timed(
     )
 
 
+def _facts_for_prepared(context, prepared, *, observed=False):
+    if type(context) is not StructuralTransactionContext:
+        raise TypeError("authority requires the exact transaction context")
+    if type(prepared) is not model.PreparedUnflattenAuthority:
+        raise TypeError("prepared must be PreparedUnflattenAuthority")
+    context.require_preparation(prepared.preparation_attempt_id, prepared.snapshot_id)
+    context.require_native_input(prepared.proposal.source_identity_catalog.native_key)
+    if not context.facts.contains(prepared.source_inventory):
+        raise ValueError("prepared authority belongs to a foreign fact owner")
+    if observed and context.observed_facts is None:
+        raise ValueError("fresh observation must open its fact partition")
+    return context.observed_facts if observed else context.facts
+
+
 def revalidate_bound_patch_plan_against_prepared(
-    prepared, bound_plan,
+    prepared, bound_plan, *, structural_context=None,
 ) -> BoundPatchPlan:
     """Recheck live plan authority before bind and observed consumption."""
+    if structural_context is not None:
+        with fact_scope(_facts_for_prepared(structural_context, prepared)):
+            return revalidate_bound_patch_plan_against_prepared(prepared, bound_plan)
     if type(prepared) is not model.PreparedUnflattenAuthority:
         raise TypeError("prepared must be PreparedUnflattenAuthority")
     if type(bound_plan) is not BoundPatchPlan:
@@ -5454,7 +5481,10 @@ def revalidate_bound_patch_plan_against_prepared(
     # Preparation sealed the complete claim/lineage inventory.  Binding and
     # observation validate the exact prepared occurrence and exact plan
     # identity; they must never replay planner derivation to obtain equal DTOs.
-    if bound_plan.plan.unflatten_proposal is not prepared.proposal:
+    owner = active_facts()
+    if bound_plan.plan.unflatten_proposal is not prepared.proposal and not (
+        owner is not None and owner.matches_external(prepared.proposal, bound_plan.plan.unflatten_proposal)
+    ):
         raise ValueError("bound patch plan proposal is not the prepared authority object")
     if prepared.preparation_attempt_id is None:
         raise ValueError("prepared authority has no exact preparation attempt")
@@ -5726,8 +5756,11 @@ def _admit_bound_entry_endpoint_liveness(
     return receipts
 
 
-def bind_prepared_unflatten_authority(*, prepared, patch_binding):
+def bind_prepared_unflatten_authority(*, prepared, patch_binding, structural_context=None):
     """Bind prepared authority to the exact result of ``bind_patch_plan``."""
+    if structural_context is not None:
+        with fact_scope(_facts_for_prepared(structural_context, prepared)):
+            return bind_prepared_unflatten_authority(prepared=prepared, patch_binding=patch_binding)
     from .model import UnflattenAuthorityBindingAccepted, UnflattenAuthorityBindingRejected
     if type(prepared) is not model.PreparedUnflattenAuthority:
         raise TypeError("prepared must be PreparedUnflattenAuthority")
@@ -5753,8 +5786,13 @@ def bind_prepared_unflatten_authority(*, prepared, patch_binding):
         return UnflattenAuthorityBindingRejected(verdict)
 
 
-def validate_observed_commit_authority(authority, verdict, accepted) -> None:
+def validate_observed_commit_authority(authority, verdict, accepted, *, structural_context=None) -> None:
     """Reject any tampered observed authority before the mutation receipt closes."""
+    if structural_context is not None:
+        if type(authority) is not model.BoundUnflattenAuthority:
+            raise TypeError("commit requires BoundUnflattenAuthority")
+        with fact_scope(_facts_for_prepared(structural_context, authority.prepared, observed=True)):
+            return validate_observed_commit_authority(authority, verdict, accepted)
     if type(authority) is not model.BoundUnflattenAuthority:
         raise TypeError("commit requires BoundUnflattenAuthority")
     if type(verdict) is not model.UnflattenAuthorityVerdict:
@@ -6157,11 +6195,16 @@ def _revalidate_observed_unflatten_authority_in_session(
 
 def _revalidate_observed_unflatten_authority(
     *, authority, observed, observed_generation, generic_gates,
-    observed_patch_binding, _timings=None,
+    observed_patch_binding, _timings=None, structural_context=None,
 ):
     """Run one observed revalidation in a fresh transaction-owned session."""
 
-    with _canonical_validation_session(
+    owner = None
+    if structural_context is not None:
+        if type(authority) is not model.BoundUnflattenAuthority:
+            return _observed_live_binding_failure("authority_type", TypeError("expected BoundUnflattenAuthority"))
+        owner = _facts_for_prepared(structural_context, authority.prepared, observed=True)
+    with fact_scope(owner), _canonical_validation_session(
         CanonicalSessionPhase.OBSERVED_REVALIDATION,
     ):
         return _revalidate_observed_unflatten_authority_in_session(
@@ -6173,23 +6216,25 @@ def _revalidate_observed_unflatten_authority(
 
 def revalidate_observed_unflatten_authority(
     *, authority, observed, observed_generation, generic_gates,
-    observed_patch_binding,
+    observed_patch_binding, structural_context=None,
 ):
     return _revalidate_observed_unflatten_authority(
         authority=authority, observed=observed,
         observed_generation=observed_generation, generic_gates=generic_gates, observed_patch_binding=observed_patch_binding,
+        structural_context=structural_context,
     )
 
 
 def revalidate_observed_unflatten_authority_timed(
     *, authority, observed, observed_generation, generic_gates,
-    observed_patch_binding,
+    observed_patch_binding, structural_context=None,
 ) -> TimedUnflattenAuthorityResult:
     recorder = _AuthorityTimingRecorder()
     result = _revalidate_observed_unflatten_authority(
         authority=authority, observed=observed,
         observed_generation=observed_generation, generic_gates=generic_gates, observed_patch_binding=observed_patch_binding,
         _timings=recorder,
+        structural_context=structural_context,
     )
     return TimedUnflattenAuthorityResult(
         result,

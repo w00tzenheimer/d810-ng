@@ -856,6 +856,7 @@ class HexRaysPatchTransactionParticipant:
             bind_result = transaction_api.bind_prepared_unflatten_authority(
                 prepared=prepared.unflatten_authority,
                 patch_binding=bound_plan,
+                structural_context=self.structural_context,
             )
             if type(bind_result) not in (
                 transaction_api.UnflattenAuthorityBindingAccepted,
@@ -1037,6 +1038,7 @@ class _PatchTransactionLifecycle:
                 unflatten_authority_api.revalidate_bound_patch_plan_against_prepared(
                     active_unflatten_authority.prepared,
                     self.bound.patch_binding,
+                    structural_context=self.participant.structural_context,
                 )
             except (TypeError, ValueError) as error:
                 raise PatchTransactionPostObservationRejected(
@@ -1091,6 +1093,7 @@ class _PatchTransactionLifecycle:
                 observed_generation=int(self.gateway.generation),
                 generic_gates=semantic_gates,
                 observed_patch_binding=self.participant._observed_patch_binding,
+                structural_context=self.participant.structural_context,
             )
             if not isinstance(
                 semantic_timed_result, transaction_api.TimedUnflattenAuthorityResult
@@ -1212,6 +1215,7 @@ class _PatchTransactionLifecycle:
             try:
                 unflatten_authority_api.validate_observed_commit_authority(
                     authority, observed_verdict, accepted,
+                    structural_context=self.participant.structural_context,
                 )
             except (TypeError, ValueError) as error:
                 raise PatchTransactionPostObservationRejected(

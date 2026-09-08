@@ -37,6 +37,7 @@ from d810.ir.graph_fingerprint import (
     portable_graph_projection,
 )
 from .runtime_authority import transaction_subject_ref
+from .transaction_facts import active_facts, construct, fact_scope
 from .canonical_session import (
     OccurrenceDigest,
     active_canonical_session,
@@ -409,6 +410,9 @@ def _sha256_hex(value: object, label: str) -> None:
 def _validate_canonical_value(value: object, seen: set[int] | None = None) -> None:
     """Validate values reachable from pinned records without coercion."""
 
+    owner = active_facts()
+    if owner is not None and owner.contains(value):
+        return
     seen = set() if seen is None else seen
     if value is None or type(value) in (bool, int, str, bytes):
         return
@@ -500,6 +504,9 @@ def _validate_canonical_value(value: object, seen: set[int] | None = None) -> No
 def _validate_pinned_record(value: object, seen: set[int] | None = None) -> None:
     """Fail-closed runtime schema validators for the five graph wire records."""
 
+    owner = active_facts()
+    if owner is not None and owner.contains(value):
+        return
     seen = set() if seen is None else seen
     marker = id(value)
     if marker in seen:
@@ -1093,6 +1100,20 @@ def _ensure_registries() -> None:
 
 
 def _wire(value: object) -> object:
+    owner = active_facts()
+    if owner is not None and owner.immutable(value):
+        owner.metrics["wire_reads"] += 1
+        cached = owner._wire.get(id(value))
+        if cached is not None and cached[0] is value:
+            return cached[1]
+        encoded = _wire_uncached(value)
+        owner.metrics["wire_builds"] += 1
+        owner._wire[id(value)] = (value, encoded)
+        return encoded
+    return _wire_uncached(value)
+
+
+def _wire_uncached(value: object) -> object:
     _ensure_registries()
     if value is None:
         return {"t": "none"}
@@ -1419,7 +1440,21 @@ def canonical_bytes(
     public function, so a module-attribute wrapper observes every root encode.
     """
 
-    session = active_canonical_session()
+    owner = active_facts()
+    if owner is not None and owner.immutable(value):
+        cached = owner._canonical.get(id(value))
+        if cached is not None and cached[0] is value:
+            owner.metrics["encoding_hits"] += 1
+            record_canonical_bytes_reuse()
+            return cached[1]
+        owner.metrics["encoding_misses"] += 1
+        data = _json_bytes(_wire(value))
+        record_wire_encode()
+        owner._canonical[id(value)] = (value, data)
+        return data
+    # Scratch values have no issuance. Validate and encode them, without
+    # enrolling mutable construction state in a recursively guarded cache.
+    session = active_canonical_session() if owner is None else None
     stamp = None if session is None else _occurrence_guard(session, value)
     if session is not None:
         cached = session.cached_canonical_bytes(value, stamp)
@@ -1660,6 +1695,13 @@ def _decode_wire(value: object, *, allow_index: bool = False) -> object:
 
 
 def canonical_decode(encoded: bytes) -> object:
+    # Decode is an external boundary even if a private transaction is active.
+    # A payload must never acquire issuance as a side effect of reconstruction.
+    with fact_scope(None):
+        return _canonical_decode_strict(encoded)
+
+
+def _canonical_decode_strict(encoded: bytes) -> object:
     if not isinstance(encoded, bytes):
         raise TypeError("canonical encoding must be bytes")
     try:
@@ -1678,8 +1720,9 @@ def canonical_decode(encoded: bytes) -> object:
 def validate_canonical_roundtrip(value: object, expected_type: type[object]) -> object:
     """Require the exact persistence decode and canonical representation."""
 
-    encoded = canonical_bytes(value)
-    decoded = canonical_decode(encoded)
+    with fact_scope(None):
+        encoded = canonical_bytes(value)
+        decoded = canonical_decode(encoded)
     if type(decoded) is not expected_type or decoded != value:
         raise ValueError("canonical roundtrip changed the authority value")
     return decoded
@@ -1758,8 +1801,9 @@ def materialize_for_persistence(
 
     token = _MATERIALIZING.set(_MATERIALIZING.get() + 1)
     try:
-        encoded = canonical_bytes(value)
-        decoded = canonical_decode(encoded)
+        with fact_scope(None):
+            encoded = canonical_bytes(value)
+            decoded = canonical_decode(encoded)
         if type(decoded) is not expected_type or decoded != value:
             raise ValueError("canonical roundtrip changed the authority value")
     finally:
@@ -2270,7 +2314,13 @@ def _subject_factory(
 def _record_content_id(schema: str, value: object, omitted_field: str) -> str:
     if not is_dataclass(value) or isinstance(value, type):
         raise TypeError("content ID factory requires a registered record")
-    session = active_canonical_session()
+    owner = active_facts()
+    owned = owner is not None and owner.contains(value)
+    key = (id(value), schema, omitted_field)
+    if owned and key in owner._digests:
+        record_content_id_reuse()
+        return owner._digests[key]
+    session = active_canonical_session() if owner is None else None
     stamp = None if session is None else _occurrence_guard(session, value)
     if session is not None:
         cached = session.cached_content_id(value, schema, omitted_field, stamp)
@@ -2300,6 +2350,8 @@ def _record_content_id(schema: str, value: object, omitted_field: str) -> str:
     ).hexdigest()
     if session is not None:
         session.store_content_id(value, schema, omitted_field, stamp, result)
+    if owned:
+        owner._digests[key] = result
     return result
 
 
@@ -2366,7 +2418,7 @@ def _claim_factory(
                 raise TypeError("claim factory requires every non-ID field exactly once")
     if carries_sidecar:
         kwargs[RUNTIME_CLAIM_SIDECAR_FIELD] = runtime_refs
-    return cls(**kwargs)
+    return construct(cls, **kwargs)
 
 
 def _evidence_factory(cls: type[object], *args: object, **kwargs: object) -> object:
@@ -2399,7 +2451,7 @@ def _evidence_factory(cls: type[object], *args: object, **kwargs: object) -> obj
             kwargs.update({name: optional_defaults[name] for name in missing})
         else:
             raise TypeError("evidence factory requires every non-ID field exactly once")
-    return cls(**kwargs)
+    return construct(cls, **kwargs)
 
 
 def _justification_factory(cls: type[object], **kwargs: object) -> object:
@@ -2410,7 +2462,7 @@ def _justification_factory(cls: type[object], **kwargs: object) -> object:
     payload = {name: kwargs[name] for name in names if name != "justification_id"}
     if set(kwargs) != set(payload):
         raise TypeError("justification factory accepts only non-ID fields")
-    return cls(**payload)
+    return construct(cls, **payload)
 
 
 def _case_factory(cls: type[object], **kwargs: object) -> object:
@@ -2432,7 +2484,7 @@ def _case_factory(cls: type[object], **kwargs: object) -> object:
         else kwargs[name]
         for name in payload_names
     }
-    return cls(**payload)
+    return construct(cls, **payload)
 
 
 def _graph_projection(graph: object, *, blocks: Mapping[int, BlockSnapshot] | None = None) -> object:

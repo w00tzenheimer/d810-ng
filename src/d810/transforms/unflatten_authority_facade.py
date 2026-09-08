@@ -24,9 +24,10 @@ from d810.transforms.unflatten_authority.structural_transaction import (
 )
 
 
-def bind_prepared_unflatten_authority(*, prepared, patch_binding):
+def bind_prepared_unflatten_authority(*, prepared, patch_binding, structural_context=None):
     return _transaction_api.bind_prepared_unflatten_authority(
         prepared=prepared, patch_binding=patch_binding,
+        structural_context=structural_context,
     )
 
 
@@ -63,15 +64,15 @@ def prepare_unflatten_authority_timed(
     )
 
 
-def revalidate_bound_patch_plan_against_prepared(prepared, bound_plan):
+def revalidate_bound_patch_plan_against_prepared(prepared, bound_plan, *, structural_context=None):
     return _transaction_api.revalidate_bound_patch_plan_against_prepared(
-        prepared, bound_plan,
+        prepared, bound_plan, structural_context=structural_context,
     )
 
 
 def revalidate_observed_unflatten_authority_timed(
     *, authority, observed, observed_generation, generic_gates,
-    observed_patch_binding,
+    observed_patch_binding, structural_context=None,
 ):
     return _transaction_api.revalidate_observed_unflatten_authority_timed(
         authority=authority,
@@ -79,13 +80,14 @@ def revalidate_observed_unflatten_authority_timed(
         observed_generation=observed_generation,
         generic_gates=generic_gates,
         observed_patch_binding=observed_patch_binding,
+        structural_context=structural_context,
     )
 
 
-def validate_observed_commit_authority(authority, verdict, accepted):
+def validate_observed_commit_authority(authority, verdict, accepted, *, structural_context=None):
     """Revalidate the exact observed closure immediately before commit."""
     return _transaction_api.validate_observed_commit_authority(
-        authority, verdict, accepted,
+        authority, verdict, accepted, structural_context=structural_context,
     )
 
 __all__ = (

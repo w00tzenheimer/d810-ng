@@ -92,6 +92,7 @@ from .canonical_session import (
     record_inventory_seal_mint,
 )
 from .legacy_keys import LEGACY_UNFLATTEN_KEYS
+from .transaction_facts import active_facts, same_admitted_input
 from .gates import GenericCfgGateFacts
 
 
@@ -6540,7 +6541,7 @@ class SemanticGraphInventory:
         )
         if self.inventory_digest != expected:
             raise ValueError("inventory_digest does not match inventory content")
-        session = active_canonical_session()
+        session = active_canonical_session() if active_facts() is None else None
         if session is not None:
             session.seal_inventory(self, _occurrence_guard(session, self))
             record_inventory_seal_mint()
@@ -6551,6 +6552,9 @@ def validate_semantic_graph_inventory(value: object) -> SemanticGraphInventory:
 
     if type(value) is not SemanticGraphInventory:
         raise TypeError("inventory must be SemanticGraphInventory")
+    owner = active_facts()
+    if owner is not None and owner.contains(value):
+        return value
     session = active_canonical_session()
     if session is not None:
         sealed = session.inventory_is_sealed(
@@ -8140,7 +8144,7 @@ class BoundUnflattenAuthority:
         validate_bound_patch_plan(self.patch_binding)
         if self.patch_binding.plan is not self.prepared.owning_plan:
             raise ValueError("patch binding plan does not match prepared authority")
-        if self.patch_binding.plan.unflatten_proposal is not self.prepared.proposal:
+        if not same_admitted_input(self.prepared.proposal, self.patch_binding.plan.unflatten_proposal):
             raise ValueError("patch binding proposal does not match prepared authority")
         if self.patch_binding.attempt_id is not self.attempt_id:
             raise ValueError("patch binding attempt does not match authority")

@@ -13,6 +13,7 @@ from d810.core.structural_identity import StructuralIdentityError, StructuralTab
 from d810.core.typing import NamedTuple
 from d810.ir.structural_identity import NATIVE_KEY_FIELDS
 from d810.transforms.cfg_transaction import TransactionAttemptId
+from .transaction_facts import TransactionFacts
 
 
 class StructuralTransactionCoordinates(NamedTuple):
@@ -37,6 +38,8 @@ class StructuralTransactionContext:
         "_projected",
         "_observed",
         "_closed",
+        "facts",
+        "observed_facts",
     )
 
     def __init__(
@@ -98,6 +101,11 @@ class StructuralTransactionContext:
         )
         self._observed: RuntimeAuthorityArena | None = None
         self._closed = False
+        self.facts = TransactionFacts()
+        # Attempt is a frozen scalar coordinate, separately checked at every
+        # participant boundary. Preserve its externally required occurrence.
+        self.facts._remember(attempt, attempt)
+        self.observed_facts = None
 
     def _require_open(self) -> None:
         if self._closed:
@@ -194,11 +202,15 @@ class StructuralTransactionContext:
         self._observed = RuntimeAuthorityArena(
             RuntimeAuthorityScope("structural-observed")
         )
+        self.observed_facts = TransactionFacts(parent=self.facts)
         return self._observed.structural
 
     def close(self) -> None:
         """Close all partitions on every participant exit; safe to repeat."""
         self._closed = True
+        self.facts.close()
+        if self.observed_facts is not None:
+            self.observed_facts.close()
         self._source.close()
         self._projected.close()
         if self._observed is not None:
