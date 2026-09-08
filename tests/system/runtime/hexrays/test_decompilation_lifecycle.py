@@ -649,7 +649,14 @@ def test_live_mba_gateway_is_bound_once_per_flow_context() -> None:
         "_get_or_create_flow_context",
     )
 
-    create_branch = context.split("        else:\n", maxsplit=1)[0]
+    method = ast.parse(context).body[0]
+    create = next(
+        node
+        for node in method.body
+        if isinstance(node, ast.If)
+        and "self._flow_context_key != key" in ast.unparse(node.test)
+    )
+    create_branch = "\n".join(ast.unparse(node) for node in create.body)
     assert "self._bind_resolver_session_state(self._flow_context, mba)" in create_branch
     assert "self._bind_mutation_gateway_port(self._flow_context, mba)" in create_branch
     assert "self._bind_semantic_native_body_materializer_port(" in create_branch

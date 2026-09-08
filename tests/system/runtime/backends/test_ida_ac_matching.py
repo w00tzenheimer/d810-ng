@@ -357,6 +357,77 @@ def test_shadow_reconstruction_uses_the_active_ast_binding_context() -> None:
 class TestShadowReplacementLiteral:
     binary_name = "libobfuscated.dll"
 
+    @pytest.mark.parametrize("proof_timeout", [False, True])
+    def test_live_canonical_candidate_requires_native_proof(
+        self, ida_database, monkeypatch, proof_timeout
+    ) -> None:
+        """Keep actual fallback emission mandatory independently of the benchmark."""
+        import idautils
+        import z3
+
+        x, y = Var("x"), Var("y")
+
+        class Rule:
+            name = "NativeFallbackProofWitness"
+            pattern = Const("two", 2) * (x | y) - (x ^ y)
+            replacement = x + y
+
+        adapter = IDAPatternAdapter(Rule())
+        adapter._structural_matching_enabled = True
+        adapter._shadow_parity_ledger = ShadowMatcherParityLedger()
+        monkeypatch.setenv("D810_SHADOW_DSL_MATCHING", "1")
+        # A byte-wide witness keeps this positive semantic test independent
+        # of the measured 64-bit solver deadline in the performance probe.
+        def leaf(name, register):
+            value = ast_dispatcher.AstLeaf(name)
+            value.mop = MopSnapshot(t=ida_hexrays.mop_r, size=1, reg=register)
+            value.dest_size = 1
+            return value
+
+        constant = ast_dispatcher.AstConstant("two", 2, 1)
+        constant.mop = MopSnapshot(t=ida_hexrays.mop_n, size=1, value=2)
+        constant.dest_size = 1
+        source = ast_dispatcher.AstNode(
+            ida_hexrays.m_sub,
+            ast_dispatcher.AstNode(
+                ida_hexrays.m_mul, constant,
+                ast_dispatcher.AstNode(ida_hexrays.m_or, leaf("x", 56), leaf("y", 64)),
+            ),
+            ast_dispatcher.AstNode(ida_hexrays.m_xor, leaf("x", 56), leaf("y", 64)),
+        )
+        source.dest_size = 1
+        source.ea = next(iter(idautils.Functions()))
+        destination = _raw_register(8, size=1)
+        instruction = source.create_minsn(source.ea, destination)
+        before = instruction._print()
+        candidate = ida_backend.minsn_to_ast(instruction)
+        adapter._attempt_destination_size = 1
+        proof_checks = []
+        if proof_timeout:
+            def timeout(_self):
+                proof_checks.append(True)
+                return z3.unknown
+
+            monkeypatch.setattr(z3.Solver, "check", timeout)
+            monkeypatch.setattr(z3.Solver, "reason_unknown", lambda _self: "timeout")
+        result = adapter.match_structural_and_replace(
+            candidate, bucket_size=1, attempted_rule_count=1, comparison_budget=64
+        )
+        assert instruction._print() == before
+        if proof_timeout:
+            assert result is None
+            assert adapter._shadow_source_ast is None
+            assert adapter._shadow_native_equivalence_verdict is None
+            assert adapter._structural_selection_active is False
+            assert proof_checks == [True]
+            assert adapter._shadow_parity_ledger.new_safe_coverage_refused == 1
+        else:
+            assert result is not None
+            assert result.opcode == ida_hexrays.m_add
+            assert result.l.t == result.r.t == ida_hexrays.mop_r
+            assert {result.l.r, result.r.r} == {56, 64}
+            assert result.d.size == 1
+
     def test_shadow_replacement_materializes_replacement_only_literal(
         self, ida_database
     ) -> None:
@@ -1769,6 +1840,8 @@ def test_adapter_clears_structural_attempt_state_on_context_reset() -> None:
     adapter._shadow_structural_native_paths = {"x": (0,)}
     adapter._shadow_native_path_unavailable = True
     adapter._shadow_structural_refused = True
+    adapter._shadow_native_equivalence_verdict = False
+    adapter._structural_selection_active = True
     adapter.clear_match_context()
 
     assert adapter._shadow_structural_lowering is None
@@ -1778,6 +1851,8 @@ def test_adapter_clears_structural_attempt_state_on_context_reset() -> None:
     assert adapter._shadow_structural_native_paths is None
     assert adapter._shadow_native_path_unavailable is False
     assert adapter._shadow_structural_refused is False
+    assert adapter._shadow_native_equivalence_verdict is None
+    assert adapter._structural_selection_active is False
 
 
 def test_clear_match_context_clears_every_field_when_telemetry_raises(
@@ -1798,6 +1873,8 @@ def test_clear_match_context_clears_every_field_when_telemetry_raises(
     adapter._shadow_source_ast = stale
     adapter._shadow_match_report = stale
     adapter._shadow_structural_native_paths = {"x": (0,)}
+    adapter._shadow_native_equivalence_verdict = False
+    adapter._structural_selection_active = True
     rule._current_blk = stale
     rule._current_ins = stale
     rule._runtime_constant_evaluator = lambda *_args, **_kwargs: 1
@@ -1817,6 +1894,8 @@ def test_clear_match_context_clears_every_field_when_telemetry_raises(
     assert adapter._shadow_lowering is None
     assert adapter._shadow_structural_lowering is None
     assert adapter._shadow_source_ast is None
+    assert adapter._shadow_native_equivalence_verdict is None
+    assert adapter._structural_selection_active is False
     assert adapter._shadow_match_report is None
     assert adapter._shadow_structural_native_paths is None
     assert rule._current_blk is None

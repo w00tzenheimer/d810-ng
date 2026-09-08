@@ -317,6 +317,36 @@ def _manager_for(optimizer, stats):
     return manager
 
 
+def _wire_mutation_fixture(monkeypatch, blk, ins, replacement, *, before=10, after=20):
+    """Model stable reads and a reversible swap through the real committer."""
+    ins._task7_fingerprint = before
+    replacement._task7_fingerprint = after
+    events = []
+
+    def swap(other):
+        ins._task7_fingerprint, other._task7_fingerprint = (
+            other._task7_fingerprint,
+            ins._task7_fingerprint,
+        )
+        events.append("swap")
+
+    ins.swap = swap
+    ins.optimize_solo = lambda: None
+    blk.mark_lists_dirty = lambda: events.append("dirty")
+    blk.mba.verify = lambda *_args: None
+    monkeypatch.setattr(
+        optinsn_adapter,
+        "hash_minsn",
+        lambda candidate, *_: candidate._task7_fingerprint,
+    )
+    monkeypatch.setattr(
+        optinsn_adapter,
+        "safe_verify",
+        lambda *_args, **_kwargs: events.append("verify"),
+    )
+    return events
+
+
 def _manager_stats():
     events = []
     return SimpleNamespace(
@@ -705,9 +735,10 @@ def test_acceptance_hook_error_preserves_mutation_and_statistics():
         monkeypatch.setattr(
             optinsn_adapter, "check_ins_mop_size_are_ok", lambda _x: True
         )
-        hashes = iter((10, 20))
-        monkeypatch.setattr(optinsn_adapter, "hash_minsn", lambda *_args: next(hashes))
+        events = _wire_mutation_fixture(monkeypatch, blk, original, rule.replacement)
         assert manager.optimize(blk, original) is True
+        assert original._task7_fingerprint == 20
+        assert events == ["swap", "dirty", "verify"]
     finally:
         monkeypatch.undo()
     assert rule.accepted == 1
@@ -1079,8 +1110,13 @@ def test_real_manager_outer_veto_updates_and_publishes_provider_outcome(
             "check_ins_mop_size_are_ok",
             lambda _candidate: True,
         )
-        hashes = iter((10, 10) if veto == "rewrite_noop" else (10, 20))
-        monkeypatch.setattr(optinsn_adapter, "hash_minsn", lambda *_args: next(hashes))
+        events = _wire_mutation_fixture(
+            monkeypatch,
+            blk,
+            original,
+            rule.replacement,
+            after=10 if veto == "rewrite_noop" else 20,
+        )
         monkeypatch.setattr(
             optinsn_adapter, "_rewrite_history_key", lambda *_args, **_kwargs: (1, 2, 3)
         )
@@ -1092,6 +1128,9 @@ def test_real_manager_outer_veto_updates_and_publishes_provider_outcome(
     result = manager.optimize(blk, original, contextual_anchor_ins=owner)
     assert result is False
     assert rule.rejected == [reason]
+    if veto in ("rewrite_noop", "rewrite_cycle"):
+        assert original._task7_fingerprint == 10, "rejection must roll back the swap"
+        assert events.count("swap") == 2
     assert len(sink.records) == 1
     assert sink.records[0].outcome.refusal_reason == reason
     assert sink.records[0].context.instruction_ea == owner.ea
@@ -1164,11 +1203,12 @@ def test_real_adapter_acceptance_drains_attempt_captured_inside_callback(
     blk.mark_lists_dirty = lambda: None
     monkeypatch.setattr(optinsn_adapter, "check_ins_mop_size_are_ok", lambda _x: True)
     monkeypatch.setattr(optinsn_adapter, "safe_verify", lambda *_args, **_kwargs: None)
-    hashes = iter((10, 20))
-    monkeypatch.setattr(optinsn_adapter, "hash_minsn", lambda *_args: next(hashes))
+    events = _wire_mutation_fixture(monkeypatch, blk, ins, rule.replacement)
 
     assert rule.pending is None
-    assert manager.func(blk, ins) is True
+    assert manager.func(blk, ins) == 1
+    assert ins._task7_fingerprint == 20
+    assert events == ["swap", "dirty", "verify"]
     assert sink.records == []
     assert rule.accepted == 1
     assert rule.pending is None
@@ -1220,15 +1260,18 @@ def test_real_adapter_sequential_retry_processes_each_fresh_attempt_once(monkeyp
     blk.mark_lists_dirty = lambda: None
     monkeypatch.setattr(optinsn_adapter, "check_ins_mop_size_are_ok", lambda _x: True)
     monkeypatch.setattr(optinsn_adapter, "safe_verify", lambda *_args, **_kwargs: None)
-    hashes = iter((10, 20, 20, 30))
-    monkeypatch.setattr(optinsn_adapter, "hash_minsn", lambda *_args: next(hashes))
+    events = _wire_mutation_fixture(monkeypatch, blk, ins, rule.replacement)
 
-    assert manager.func(blk, ins) is True
+    assert manager.func(blk, ins) == 1
+    assert ins._task7_fingerprint == 20
     assert rule.pending is None
     assert rule.captured_attempt_uuids == [attempt_uuids[0]]
     assert rule.drained_attempt_uuids == [attempt_uuids[0]]
 
-    assert manager.func(blk, ins) is True
+    rule.replacement._task7_fingerprint = 30
+    assert manager.func(blk, ins) == 1
+    assert ins._task7_fingerprint == 30
+    assert events == ["swap", "dirty", "verify"] * 2
     assert rule.pending is None
     assert rule.captured_attempt_uuids == list(attempt_uuids)
     assert rule.drained_attempt_uuids == list(attempt_uuids)
@@ -1336,9 +1379,10 @@ def test_accepted_mutation_preserves_both_statistics_authorities(monkeypatch):
         swap=lambda _other: None,
     )
     monkeypatch.setattr(optinsn_adapter, "check_ins_mop_size_are_ok", lambda _x: True)
-    hashes = iter((10, 20))
-    monkeypatch.setattr(optinsn_adapter, "hash_minsn", lambda *_args: next(hashes))
+    events = _wire_mutation_fixture(monkeypatch, blk, original, rule.replacement)
     assert manager.optimize(blk, original) is True
+    assert original._task7_fingerprint == 20
+    assert events == ["swap", "dirty", "verify"]
     assert rule.accepted == 1
     assert sink.records == []
     assert stats.events == ["rule", "optimizer"]

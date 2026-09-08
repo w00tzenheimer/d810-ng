@@ -11,7 +11,13 @@ import pytest
 from d810.hexrays.contracts.cfg_contract import CfgContractViolationError
 from d810.hexrays.mutation import cfg_mutations
 from d810.hexrays.mutation import semantic_fragment_backend as sfb
+from d810.hexrays.mutation.block_instruction_commit import (
+    BlockInstructionAnchor,
+    BlockInstructionBatchCandidate,
+    BlockInstructionEditIntent,
+)
 from d810.hexrays.ir.mba_identity_index import MbaBlockIdentityIndex
+from d810.hexrays.mutation.instruction_commit import NativeEpoch, fingerprint_minsn
 from d810.hexrays.mutation.mba_mutation_events import (
     MbaMutationGateway,
     StructuralMutationKind,
@@ -31,6 +37,67 @@ from tests.native_preanalysis import make_native_key
 from tests.system.runtime.mutation_gateway import make_mutation_gateway
 
 NATIVE_KEY = make_native_key()
+
+
+class _NeverMaterializeHostedEdit:
+    """Assert stale hosted-batch anchors do not reach materialization."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def materialize(self, _context):
+        self.calls += 1
+        raise AssertionError("stale batch anchor reached materialization")
+
+
+@pytest.mark.ida_required
+def test_hosted_instruction_batch_preflights_full_anchor_before_materialization(
+    libobfuscated_setup,
+) -> None:
+    """A stale opcode is an ordinary rejection, never a live write."""
+
+    func_ea = get_func_ea("test_cst_simplification")
+    mba = gen_microcode_at_maturity(func_ea, ida_hexrays.MMAT_PREOPTIMIZED)
+    assert mba is not None
+    mba.build_graph()
+    block = mba.get_mblock(0)
+    assert block is not None and block.head is not None
+    instruction = block.head
+    materializer = _NeverMaterializeHostedEdit()
+    candidate = BlockInstructionBatchCandidate(
+        edits=(
+            BlockInstructionEditIntent(
+                anchor=BlockInstructionAnchor(
+                    block_serial=int(block.serial),
+                    block_start_ea=int(block.start),
+                    ordinal=0,
+                    instruction_ea=int(instruction.ea),
+                    # Deliberately stale: every other field is current.
+                    opcode=int(instruction.opcode) + 1,
+                    before_fingerprint=fingerprint_minsn(instruction, int(func_ea)),
+                ),
+                materializer=materializer,
+                description="stale preflight regression",
+            ),
+        ),
+        epoch_before=NativeEpoch.from_mba(mba),
+        pass_id="test-pass",
+        stage_id="test-stage",
+        rule_id="test-rule",
+    )
+    modifier = dm.DeferredGraphModifier(
+        mba,
+        mutation_gateway=make_mutation_gateway(mba),
+    )
+    modifier.configure_instruction_batch_epoch(candidate.epoch_before)
+
+    modifier.queue_instruction_rewrite_batch(candidate)
+    receipt = modifier.apply_instruction_rewrite_batch()
+
+    assert not receipt.committed
+    assert receipt.callback_result == 0
+    assert receipt.reason == "stale-anchor"
+    assert materializer.calls == 0
 
 
 def _seed_current_serials(

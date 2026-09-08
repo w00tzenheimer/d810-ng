@@ -3,9 +3,15 @@
 from __future__ import annotations
 
 import pytest
+from types import SimpleNamespace
+from dataclasses import replace
+
+import d810.evaluator.hexrays_microcode.terminal_return_proof as proof_module
 
 from d810.evaluator.hexrays_microcode.terminal_return_proof import (
     DefSiteLike,
+    ReturnCarrierRegister,
+    TerminalReturnProofStatus,
     ProofLayer,
     TerminalReturnProofReport,
     TerminalReturnValueProof,
@@ -16,6 +22,51 @@ from d810.analyses.control_flow.terminal_return_audit import (
     TerminalReturnSiteAudit,
     TerminalReturnAuditReport,
 )
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("proof_layer_used", "made_up"),
+        ("ambiguous", "false"),
+        ("topology_kind", "direct_return"),
+    ],
+)
+def test_terminal_proof_rejects_untyped_evidence(field, value):
+    values = dict(
+        handler_serial=1,
+        carrier=ReturnCarrierRegister(0, 8),
+        def_sites=(),
+        ambiguous=False,
+        topology_kind=TerminalReturnSourceKind.DIRECT_RETURN,
+        proof_layer_used=ProofLayer.TOPOLOGY,
+    )
+    values[field] = value
+    with pytest.raises(TypeError):
+        TerminalReturnValueProof(**values)
+
+
+def test_terminal_live_proof_does_not_reuse_stale_audit_serial(monkeypatch):
+    site = TerminalReturnSiteAudit(
+        handler_serial=0,
+        exit_serial=1,
+        source_kind=TerminalReturnSourceKind.EPILOGUE_CORRIDOR,
+        return_block_serial=1,
+        handler_ea=0x1010,
+        return_ea=0x1020,
+    )
+    audit = TerminalReturnAuditReport(0x1000, 1, 1, (site,))
+    calls = []
+    monkeypatch.setattr(
+        proof_module, "_single_pred_walk_for_carrier", lambda *_: calls.append(True)
+    )
+    mba = SimpleNamespace(
+        entry_ea=0x1000,
+        qty=2,
+        get_mblock=lambda serial: SimpleNamespace(serial=serial, start=0x3000 + serial),
+    )
+    prove_terminal_returns(mba, audit)
+    assert calls == []
 
 
 # ---------------------------------------------------------------------------
@@ -73,10 +124,10 @@ class TestTerminalReturnValueProof:
     def test_terminal_return_value_proof_frozen(self) -> None:
         proof = TerminalReturnValueProof(
             handler_serial=10,
-            carrier_kind="rax.8",
+            carrier=ReturnCarrierRegister(0, 8),
             def_sites=(),
             ambiguous=False,
-            topology_kind="direct_return",
+            topology_kind=TerminalReturnSourceKind.DIRECT_RETURN,
             proof_layer_used=ProofLayer.TOPOLOGY,
             notes="test",
         )
@@ -87,10 +138,10 @@ class TestTerminalReturnValueProof:
     def test_fields_accessible(self) -> None:
         proof = TerminalReturnValueProof(
             handler_serial=7,
-            carrier_kind="mreg0.8",
+            carrier=ReturnCarrierRegister(0, 8),
             def_sites=(DefSiteLike(1, 0x100, 3),),
             ambiguous=True,
-            topology_kind="epilogue_corridor",
+            topology_kind=TerminalReturnSourceKind.EPILOGUE_CORRIDOR,
             proof_layer_used=ProofLayer.CHAIN_BACKED,
             notes="two defs",
         )
@@ -112,33 +163,34 @@ class TestTerminalReturnProofReport:
         proofs = (
             TerminalReturnValueProof(
                 handler_serial=1,
-                carrier_kind="rax.8",
+                carrier=ReturnCarrierRegister(0, 8),
                 def_sites=(),
                 ambiguous=False,
-                topology_kind="direct_return",
+                topology_kind=TerminalReturnSourceKind.DIRECT_RETURN,
                 proof_layer_used=ProofLayer.TOPOLOGY,
             ),
             TerminalReturnValueProof(
                 handler_serial=2,
-                carrier_kind="rax.8",
+                carrier=ReturnCarrierRegister(0, 8),
                 def_sites=(DefSiteLike(3, 0x200), DefSiteLike(4, 0x300)),
                 ambiguous=True,
-                topology_kind="shared_epilogue",
+                topology_kind=TerminalReturnSourceKind.SHARED_EPILOGUE,
                 proof_layer_used=ProofLayer.CHAIN_BACKED,
             ),
             TerminalReturnValueProof(
                 handler_serial=3,
-                carrier_kind="rax.8",
+                carrier=ReturnCarrierRegister(0, 8),
                 def_sites=(),
                 ambiguous=False,
-                topology_kind="unreachable",
+                topology_kind=TerminalReturnSourceKind.UNREACHABLE,
                 proof_layer_used=ProofLayer.UNRESOLVED,
             ),
         )
         report = TerminalReturnProofReport(function_ea=0x401000, proofs=proofs)
         summary = report.summary()
         assert "3 handlers" in summary
-        assert "1 resolved" in summary
+        assert "0 resolved" in summary
+        assert "1 topology-only" in summary
         assert "1 ambiguous" in summary
         assert "1 unresolved" in summary
 

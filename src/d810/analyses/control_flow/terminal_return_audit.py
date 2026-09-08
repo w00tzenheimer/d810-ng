@@ -44,6 +44,16 @@ class TerminalReturnSiteAudit:
     exit_path_length: int = 0
     has_rax_write: bool | None = None
     notes: str = ""
+    handler_ea: int | None = None
+    return_ea: int | None = None
+
+
+def _block_anchor(cfg: FlowGraph, serial: int | None) -> int | None:
+    block = cfg.get_block(serial) if serial is not None else None
+    if block is None:
+        return None
+    ea = block.native_start_ea if block.native_start_ea is not None else block.start_ea
+    return ea if 0 < ea < 0xFFFFFFFFFFFFFFFF else None
 
 
 def _classify_exit(
@@ -225,6 +235,8 @@ def build_terminal_return_audit(
                     exit_path_length=corridor_len,
                     has_rax_write=has_rax_write,
                     notes="; ".join(notes_parts),
+                    handler_ea=_block_anchor(cfg, handler_serial),
+                    return_ea=_block_anchor(cfg, return_serial),
                 )
             )
 
@@ -265,6 +277,8 @@ def to_dict(report: TerminalReturnAuditReport) -> dict:
                 "exit_path_length": s.exit_path_length,
                 "has_rax_write": s.has_rax_write,
                 "notes": s.notes,
+                "handler_ea": s.handler_ea,
+                "return_ea": s.return_ea,
             }
             for s in report.sites
         ],
@@ -289,6 +303,8 @@ def from_dict(data: dict) -> TerminalReturnAuditReport:
             exit_path_length=s["exit_path_length"],
             has_rax_write=s["has_rax_write"],
             notes=s["notes"],
+            handler_ea=s.get("handler_ea"),
+            return_ea=s.get("return_ea"),
         )
         for s in data["sites"]
     )

@@ -47,6 +47,93 @@ from d810.ir.varnode import Varnode
 logger = logging.getLogger("d810.analyses.control_flow.branch_witness")
 
 
+class BranchPredicateKind(str, Enum):
+    """The compare predicate a dispatcher branch tests.
+
+    Was a bare ``str`` documented by an inline ``# "eq" or "ne"`` comment and
+    allowlisted at one call site (:func:`_is_known_predicate`).  Any other
+    string reached :func:`_evaluate_branch` and fell through to ``None``, i.e.
+    a silent abstain rather than a type error.
+
+    Members subclass ``str``, so comparisons against the bare names are
+    unaffected.  Use :func:`predicate_name` where a plain ``str`` is required.
+    """
+
+    EQ = "eq"
+    NE = "ne"
+
+
+class BranchWitnessEvidenceKind(str, Enum):
+    """How a branch-witness row was corroborated.
+
+    The historical default, ``"validated_against_current_cfg"``, is a *claim*
+    that validation happened, carried in a free-form string that any producer
+    could set to anything.  Enumerating the corroborations that actually exist
+    makes the claim checkable.
+    """
+
+    VALIDATED_AGAINST_CURRENT_CFG = "validated_against_current_cfg"
+    LOCAL_INDIRECT_STATE_STORE_COMPARE = "local_indirect_state_store_compare"
+
+
+class BranchWitnessAbstainReason(str, Enum):
+    """Why projection must preserve the original branch or corridor.
+
+    Every abstain reason this module can produce.  They are enumerated because
+    an abstain reason is not merely diagnostic: at least one consumer branches
+    on it by string equality to unlock a fallback
+    (``minimal_unflatten_emit.py:956`` tests for
+    ``SELECTED_SUCCESSOR_NOT_DISPATCHER_ENDPOINT``), which made a typo in a
+    22-value string vocabulary a silent behaviour change.
+
+    The field type stays a union with ``str`` so that callers outside this
+    module -- which construct ``BranchWitnessAbstain`` from dynamic strings --
+    keep working, and members subclass ``str`` so the equality tests that
+    already exist continue to hold.
+    """
+
+    ABSTAIN = "abstain"
+    # Row-vs-request mismatches.
+    WITNESS_STATE_MISMATCH = "witness_state_mismatch"
+    ROW_MISSING_COMPARE_OR_SUCCESSOR = "row_missing_compare_or_successor"
+    ROW_SUCCESSORS_MISMATCH = "row_successors_mismatch"
+    ROW_TARGET_MISMATCHES_ENDPOINT = "row_target_mismatches_endpoint"
+    # Row-vs-current-CFG mismatches.
+    COMPARE_BLOCK_ABSENT = "compare_block_absent"
+    COMPARE_BLOCK_NOT_TWO_WAY = "compare_block_not_two_way"
+    COMPARE_BLOCK_NOT_CONDITIONAL = "compare_block_not_conditional"
+    PREDICATE_MISMATCH = "predicate_mismatch"
+    UNKNOWN_PREDICATE = "unknown_predicate"
+    STATE_CONSTANT_MISMATCH = "state_constant_mismatch"
+    STATE_VARIABLE_MISMATCH = "state_variable_mismatch"
+    SELECTED_SUCCESSOR_NOT_A_SUCCESSOR = "selected_successor_not_a_successor"
+    SELECTED_SUCCESSOR_MISMATCH = "selected_successor_mismatch"
+    SUCCESSOR_PARSE_FAILURE = "successor_parse_failure"
+    # Chain-walk outcomes.
+    STATE_UNCOVERED_BY_DISPATCHER = "state_uncovered_by_dispatcher"
+    BRANCH_WITNESS_MAP_REQUIRED = "branch_witness_map_required"
+    BRANCH_WITNESS_MAP_MISSING_ENTRY = "branch_witness_map_missing_entry"
+    COMPARE_BLOCK_MISSING_WITNESS_ROW = "compare_block_missing_witness_row"
+    COMPARE_CHAIN_CYCLE = "compare_chain_cycle"
+    EMPTY_WITNESS_PATH = "empty_witness_path"
+    SELECTED_SUCCESSOR_NOT_DISPATCHER_ENDPOINT = (
+        "selected_successor_not_dispatcher_endpoint"
+    )
+    WITNESS_PATH_MISMATCHES_ENDPOINT = "witness_path_mismatches_endpoint"
+
+
+def _enum_value(value: object) -> str:
+    """Render an enum member as its value, anything else via ``str``.
+
+    ``str(SomeStrEnum.MEMBER)`` returns ``"SomeStrEnum.MEMBER"``, not the
+    value, so a bare ``str()`` coercion silently corrupts a field the moment a
+    producer switches from a literal to a member.
+    """
+    if isinstance(value, Enum):
+        return str(value.value)
+    return str(value)
+
+
 class BranchWitnessProofKind(str, Enum):
     """Source of an exact branch-arm proof."""
 
@@ -67,13 +154,25 @@ class ExactBranchWitness:
 
     state: int
     compare_block: int
-    predicate: str  # "eq" or "ne"
+    predicate: BranchPredicateKind | str
     selected_successor: int
     rejected_successors: tuple[int, ...]
     target_block: int
     proof_kind: BranchWitnessProofKind
     compare_const: int | None = None
-    evidence: str = "validated_against_current_cfg"
+    evidence: BranchWitnessEvidenceKind | str = (
+        BranchWitnessEvidenceKind.VALIDATED_AGAINST_CURRENT_CFG
+    )
+
+    @property
+    def predicate_name(self) -> str:
+        """The predicate as a plain ``str``, whatever the field holds."""
+        return _enum_value(self.predicate)
+
+    @property
+    def evidence_name(self) -> str:
+        """The corroboration as a plain ``str``, whatever the field holds."""
+        return _enum_value(self.evidence)
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,12 +187,24 @@ class BranchWitnessRow:
 
     state: int
     compare_block: int
-    predicate: str
+    predicate: BranchPredicateKind | str
     compare_const: int
     selected_successor: int
     rejected_successors: tuple[int, ...]
     router_kind: object | None = None
-    evidence: str = "validated_against_current_cfg"
+    evidence: BranchWitnessEvidenceKind | str = (
+        BranchWitnessEvidenceKind.VALIDATED_AGAINST_CURRENT_CFG
+    )
+
+    @property
+    def predicate_name(self) -> str:
+        """The predicate as a plain ``str``, whatever the field holds."""
+        return _enum_value(self.predicate)
+
+    @property
+    def evidence_name(self) -> str:
+        """The corroboration as a plain ``str``, whatever the field holds."""
+        return _enum_value(self.evidence)
 
 
 @dataclass(frozen=True, slots=True)
@@ -123,7 +234,12 @@ class BranchWitnessMap:
 class BranchWitnessAbstain:
     """Projection must preserve the original branch/corridor."""
 
-    reason: str = "abstain"
+    reason: BranchWitnessAbstainReason | str = BranchWitnessAbstainReason.ABSTAIN
+
+    @property
+    def reason_name(self) -> str:
+        """The abstain reason as a plain ``str``, whatever the field holds."""
+        return _enum_value(self.reason)
 
 
 @dataclass(frozen=True, slots=True)
@@ -231,11 +347,16 @@ def _row_predicate_matches_block(row: BranchWitnessRow, block: BlockSnapshot) ->
     predicate = _tail_predicate_value(block)
     if predicate is None:
         return False
-    return predicate == str(row.predicate)
+    return predicate == _enum_value(row.predicate)
 
 
 def _is_known_predicate(branch_kind: str) -> bool:
-    return branch_kind in {"eq", "ne"}
+    """Whether the predicate is one this module can evaluate."""
+    try:
+        BranchPredicateKind(_enum_value(branch_kind))
+    except ValueError:
+        return False
+    return True
 
 
 def _block_compare_operands(
@@ -275,9 +396,9 @@ def _evaluate_branch(
 ) -> tuple[int, tuple[int, ...]] | None:
     state_u = int(state) & 0xFFFFFFFF
     const_u = int(compare_const) & 0xFFFFFFFF
-    if predicate == "eq":
+    if predicate == BranchPredicateKind.EQ:
         selected = int(taken) if state_u == const_u else int(fallthrough)
-    elif predicate == "ne":
+    elif predicate == BranchPredicateKind.NE:
         selected = int(taken) if state_u != const_u else int(fallthrough)
     else:
         return None
@@ -299,30 +420,36 @@ def static_witness_for_state(
     state_u = int(state) & 0xFFFFFFFF
     row_state = _int_or_none(row.state)
     if row_state is None or (row_state & 0xFFFFFFFF) != state_u:
-        return BranchWitnessAbstain("witness_state_mismatch")
+        return BranchWitnessAbstain(BranchWitnessAbstainReason.WITNESS_STATE_MISMATCH)
     compare_serial = _int_or_none(row.compare_block)
     selected_serial = _int_or_none(row.selected_successor)
     if compare_serial is None or selected_serial is None:
-        return BranchWitnessAbstain("row_missing_compare_or_successor")
+        return BranchWitnessAbstain(
+            BranchWitnessAbstainReason.ROW_MISSING_COMPARE_OR_SUCCESSOR
+        )
 
     block = flow_graph.get_block(compare_serial)
     if block is None:
-        return BranchWitnessAbstain("compare_block_absent")
+        return BranchWitnessAbstain(BranchWitnessAbstainReason.COMPARE_BLOCK_ABSENT)
 
     succs = tuple(int(s) for s in block.succs)
     if len(succs) != 2:
-        return BranchWitnessAbstain("compare_block_not_two_way")
+        return BranchWitnessAbstain(
+            BranchWitnessAbstainReason.COMPARE_BLOCK_NOT_TWO_WAY
+        )
 
-    predicate = str(row.predicate)
+    predicate = _enum_value(row.predicate)
     if not _is_known_predicate(predicate):
-        return BranchWitnessAbstain("unknown_predicate")
+        return BranchWitnessAbstain(BranchWitnessAbstainReason.UNKNOWN_PREDICATE)
 
     if not _row_predicate_matches_block(row, block):
-        return BranchWitnessAbstain("predicate_mismatch")
+        return BranchWitnessAbstain(BranchWitnessAbstainReason.PREDICATE_MISMATCH)
 
     tail = _block_tail(block)
     if tail is None or not tail.is_conditional_jump:
-        return BranchWitnessAbstain("compare_block_not_conditional")
+        return BranchWitnessAbstain(
+            BranchWitnessAbstainReason.COMPARE_BLOCK_NOT_CONDITIONAL
+        )
 
     const, state_slot_index = _block_compare_operands(block)
     row_const = _int_or_none(row.compare_const)
@@ -331,31 +458,35 @@ def static_witness_for_state(
         or row_const is None
         or (int(const) & 0xFFFFFFFF) != (row_const & 0xFFFFFFFF)
     ):
-        return BranchWitnessAbstain("state_constant_mismatch")
+        return BranchWitnessAbstain(BranchWitnessAbstainReason.STATE_CONSTANT_MISMATCH)
 
     if (
         state_var_stkoff is not None
         and state_slot_index is not None
         and not _operand_slot_is_state_var(tail, state_slot_index, state_var_stkoff)
     ):
-        return BranchWitnessAbstain("state_variable_mismatch")
+        return BranchWitnessAbstain(BranchWitnessAbstainReason.STATE_VARIABLE_MISMATCH)
 
     row_rejected = tuple(int(s) for s in row.rejected_successors)
     if selected_serial not in succs:
-        return BranchWitnessAbstain("selected_successor_not_a_successor")
+        return BranchWitnessAbstain(
+            BranchWitnessAbstainReason.SELECTED_SUCCESSOR_NOT_A_SUCCESSOR
+        )
     if len(row_rejected) != 1 or set((selected_serial, *row_rejected)) != set(succs):
-        return BranchWitnessAbstain("row_successors_mismatch")
+        return BranchWitnessAbstain(BranchWitnessAbstainReason.ROW_SUCCESSORS_MISMATCH)
 
     taken, fallthrough = _compare_successors(block)
     if taken is None or fallthrough is None:
-        return BranchWitnessAbstain("successor_parse_failure")
+        return BranchWitnessAbstain(BranchWitnessAbstainReason.SUCCESSOR_PARSE_FAILURE)
 
     evaluated = _evaluate_branch(predicate, state_u, row_const, taken, fallthrough)
     if evaluated is None:
-        return BranchWitnessAbstain("unknown_predicate")
+        return BranchWitnessAbstain(BranchWitnessAbstainReason.UNKNOWN_PREDICATE)
     selected, rejected = evaluated
     if selected != selected_serial or rejected != row_rejected:
-        return BranchWitnessAbstain("selected_successor_mismatch")
+        return BranchWitnessAbstain(
+            BranchWitnessAbstainReason.SELECTED_SUCCESSOR_MISMATCH
+        )
 
     return ExactBranchWitness(
         state=state_u,
@@ -366,7 +497,7 @@ def static_witness_for_state(
         target_block=selected,
         proof_kind=BranchWitnessProofKind.STATIC_EQUALITY_CHAIN,
         compare_const=row_const & 0xFFFFFFFF,
-        evidence=str(row.evidence),
+        evidence=row.evidence,
     )
 
 
@@ -449,28 +580,36 @@ def resolve_exact_branch_witness(
     state_u = int(state) & 0xFFFFFFFF
     endpoint = dispatcher.lookup(state_u)
     if endpoint is None:
-        return BranchWitnessAbstain("state_uncovered_by_dispatcher")
+        return BranchWitnessAbstain(
+            BranchWitnessAbstainReason.STATE_UNCOVERED_BY_DISPATCHER
+        )
 
     if branch_witness_map is None:
-        return BranchWitnessAbstain("branch_witness_map_required")
+        return BranchWitnessAbstain(
+            BranchWitnessAbstainReason.BRANCH_WITNESS_MAP_REQUIRED
+        )
 
     dispatcher_blocks = frozenset(
         int(b) for b in branch_witness_map.dispatcher_blocks if b is not None
     )
     current = _int_or_none(branch_witness_map.dispatcher_entry_block)
     if current is None:
-        return BranchWitnessAbstain("branch_witness_map_missing_entry")
+        return BranchWitnessAbstain(
+            BranchWitnessAbstainReason.BRANCH_WITNESS_MAP_MISSING_ENTRY
+        )
 
     path: list[ExactBranchWitness] = []
     visited: set[int] = set()
     while current is not None:
         if current in visited:
-            return BranchWitnessAbstain("compare_chain_cycle")
+            return BranchWitnessAbstain(BranchWitnessAbstainReason.COMPARE_CHAIN_CYCLE)
         visited.add(current)
 
         row = branch_witness_map.row_for_state_compare(state_u, current)
         if row is None:
-            return BranchWitnessAbstain("compare_block_missing_witness_row")
+            return BranchWitnessAbstain(
+                BranchWitnessAbstainReason.COMPARE_BLOCK_MISSING_WITNESS_ROW
+            )
 
         witness = _resolve_row_witness(
             flow_graph, row, state, state_var_stkoff, emu=emu
@@ -483,29 +622,38 @@ def resolve_exact_branch_witness(
         if int(witness.selected_successor) == int(endpoint):
             # Last step must route to the actual endpoint handler.
             if int(witness.target_block) != int(endpoint):
-                return BranchWitnessAbstain("row_target_mismatches_endpoint")
+                return BranchWitnessAbstain(
+                    BranchWitnessAbstainReason.ROW_TARGET_MISMATCHES_ENDPOINT
+                )
             break
 
         if int(witness.selected_successor) not in dispatcher_blocks:
             # Selected successor left the dispatcher without reaching the endpoint.
-            return BranchWitnessAbstain("selected_successor_not_dispatcher_endpoint")
+            return BranchWitnessAbstain(
+                BranchWitnessAbstainReason.SELECTED_SUCCESSOR_NOT_DISPATCHER_ENDPOINT
+            )
 
         current = int(witness.selected_successor)
 
     if not path:
-        return BranchWitnessAbstain("empty_witness_path")
+        return BranchWitnessAbstain(BranchWitnessAbstainReason.EMPTY_WITNESS_PATH)
 
     # Final selected successor must be the endpoint the dispatcher routes to.
     if int(path[-1].selected_successor) != int(endpoint):
-        return BranchWitnessAbstain("witness_path_mismatches_endpoint")
+        return BranchWitnessAbstain(
+            BranchWitnessAbstainReason.WITNESS_PATH_MISMATCHES_ENDPOINT
+        )
 
     endpoint_i = int(endpoint)
     return tuple(replace(witness, target_block=endpoint_i) for witness in path)
 
 
 __all__ = [
+    "BranchPredicateKind",
     "BranchWitnessAbstain",
+    "BranchWitnessAbstainReason",
     "BranchWitnessConflict",
+    "BranchWitnessEvidenceKind",
     "BranchWitnessMap",
     "BranchWitnessProofKind",
     "BranchWitnessRow",

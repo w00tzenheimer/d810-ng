@@ -1,4 +1,4 @@
-'DagAuthority \u2014 preanalysis DAG arbiter for emitted graph modifications.\n\nPhase 1 of the DAG-as-arbiter epic (uee-jrgq).\n\nCurrently every Hodur planner re-derives "what should block X do?" from the\nCFG and emits a graph modification independently. The downstream conflict\nfilter ("first-fragment-wins" in :func:`_drop_conflicting_redirects`) tries\nto reconcile disagreement after the fact. That\'s an architectural inversion:\nthe preanalysis-built :class:`LinearizedStateDag` already encodes the canonical\nanswer, but no consumer queries it as a single source of truth.\n\n:class:`DagAuthority` flips the relationship. It wraps a finalized\n``LinearizedStateDag`` and exposes a queryable interface every planner\nconsults *before* emitting a mod. When the DAG has an answer that disagrees\nwith the planner\'s intent, the mod is *refused*; when the DAG has no answer\n(``DAG_GAP``), the mod is *strictly refused* and a follow-up ticket has to\nclose the gap before the planner can emit there. This is the single conflict\nresolution rule that supersedes Mode 1 / Mode 2 / Mode 3 / Mode 4 per the\nsynthesis at ``.claude/notes/investigations/2026-04-25-uee-dag-phase0-synthesis.md``.\n\nPhase 1 (this module) ships:\n\n* :func:`DagAuthority.canonical_target_for` \u2014 the centralised "what\n  entry-anchor does the DAG commit src/arm to?" lookup. Replaces every\n  ad-hoc scan of ``dag.edges``.\n* :func:`DagAuthority.conflicts_for_source` \u2014 DAG-internal conflict\n  detection (when two DAG edges target different anchors for the same\n  source/arm).\n* :func:`DagAuthority.permits_redirect_goto` and\n  :func:`DagAuthority.permits_convert_to_goto` \u2014 the two arbiter methods\n  whose underlying queries are fully covered by the existing DAG.\n* :func:`DagAuthority.permits_zero_state_write` \u2014 returns ``ALLOW`` for\n  the consolidated zero-state-write emitter added in Phase 4.\n\nPer the deferral decision recorded in semantic memory (mem_52073043),\nthe authority is built **once per pipeline run**. Per-round rederivation\nis more accurate but slower; the build-once choice is deliberate and\nrevisitable when measured drift on real corpus matters. Construction\ncaches all derived indexes so query methods are O(1) lookups.\n\nStrict ``DAG_GAP`` policy: when the DAG cannot answer a question\nauthoritatively, the mod is refused. Callers must NOT permit the mod\nwith a warning \u2014 that would defer the architectural fix and let\nsilent emission errors accumulate. Closing each ``DAG_GAP:<name>``\nrequires the corresponding extension ticket.\n'
+'DagAuthority \u2014 preanalysis DAG arbiter for emitted graph modifications.\n\nPhase 1 of the DAG-as-arbiter epic (uee-jrgq).\n\nCurrently every Hodur planner re-derives "what should block X do?" from the\nCFG and emits a graph modification independently. The downstream conflict\nfilter ("first-fragment-wins" in :func:`_drop_conflicting_redirects`) tries\nto reconcile disagreement after the fact. That\'s an architectural inversion:\nthe preanalysis-built :class:`LinearizedStateDag` already encodes the canonical\nanswer, but no consumer queries it as a single source of truth.\n\n:class:`DagAuthority` flips the relationship. It wraps a finalized\n``LinearizedStateDag`` and exposes a queryable interface every planner\nconsults *before* emitting a mod. When the DAG has an answer that disagrees\nwith the planner\'s intent, the mod is *refused*; when the DAG has no answer\n(``DAG_GAP``), the mod is *strictly refused* and a follow-up ticket has to\nclose the gap before the planner can emit there. This is the single conflict\nresolution rule that supersedes Mode 1 / Mode 2 / Mode 3 / Mode 4 per the\nsynthesis at ``.claude/notes/investigations/2026-04-25-uee-dag-phase0-synthesis.md``.\n\nPhase 1 (this module) ships:\n\n* :func:`DagAuthority.canonical_target_for` \u2014 the centralised "what\n  entry-anchor does the DAG commit src/arm to?" lookup. Replaces every\n  ad-hoc scan of ``dag.edges``.\n* :func:`DagAuthority.conflicts_for_source` \u2014 DAG-internal conflict\n  detection (when two DAG edges target different anchors for the same\n  source/arm).\n* :func:`DagAuthority.permits_redirect_goto` and\n  :func:`DagAuthority.permits_convert_to_goto` \u2014 the two arbiter methods\n  whose underlying queries are fully covered by the existing DAG.\n* :func:`DagAuthority.permits_zero_state_write` \u2014 returns a named\n  ``DAG_GAP``: ZSW legality depends on a state-write def-site index\n  the DAG does not carry (aa-v8et).\n\nPer the deferral decision recorded in semantic memory (mem_52073043),\nthe authority is built **once per pipeline run**. Per-round rederivation\nis more accurate but slower; the build-once choice is deliberate and\nrevisitable when measured drift on real corpus matters. Construction\ncaches all derived indexes so query methods are O(1) lookups.\n\nStrict ``DAG_GAP`` policy: when the DAG cannot answer a question\nauthoritatively, the mod is refused. Callers must NOT permit the mod\nwith a warning \u2014 that would defer the architectural fix and let\nsilent emission errors accumulate. Closing each ``DAG_GAP:<name>``\nrequires the corresponding extension ticket.\n'
 
 from __future__ import annotations
 
@@ -22,21 +22,9 @@ from d810.analyses.control_flow.linearized_state_dag import (
 
 __all__ = (
     "AnchorKey",
-    "CorridorSpliceData",
     "DagAuthority",
     "DagDecision",
 )
-
-
-@dataclass(frozen=True, slots=True)
-class CorridorSpliceData:
-    "Function-specific corridor-clone splice points (uee-7wcd).\n\n    Some lowering decisions cannot today be derived from the preanalysis\n    ``LinearizedStateDag``: e.g., ``sub_7FFD3338C040``'s\n    ``deferred_corridor_clone`` emission requires hand-tuned splice\n    points (shared block, base target, clone source/target) that\n    no current DAG schema field encodes.  R2's emission catalogue\n    flagged this as a DAG_GAP candidate (uee-7wcd in the\n    DAG-as-arbiter epic).\n\n    The closure path is to seed :class:`DagAuthority` with this\n    function-specific data at construction time so the arbiter can\n    authoritatively ALLOW corridor-shaped mods rather than letting\n    them slip through as ``DAG_GAP:edge_redirect_via_pred_split``.\n    The data lives in ``engine`` (family-agnostic) so any future\n    function with a corridor pattern can register without touching\n    Hodur internals.\n\n    Attributes:\n        function_ea: ``mba.entry_ea`` this corridor applies to.  Used\n            to gate registry consultation (don't apply sub_7FFD's\n            corridor to other functions).\n        shared_block: The shared dispatch block being spliced\n            (e.g., 45 for sub_7FFD).\n        base_target: Where the shared block's primary redirect goes\n            (e.g., 126 for sub_7FFD).\n        clone_source: The block whose corridor is cloned per-pred\n            (e.g., 122 for sub_7FFD).\n        clone_target: Where the cloned corridor's tail redirects\n            (e.g., 180 for sub_7FFD).\n"
-
-    function_ea: int
-    shared_block: int
-    base_target: int
-    clone_source: int
-    clone_target: int
 
 
 # Composite key for a redirect anchor: (block_serial, branch_arm).
@@ -143,13 +131,13 @@ class DagAuthority:
 
     __slots__ = (
         "_dag",
+        "_dag_edge_identities",
         "_canonical_by_anchor",
         "_dag_internal_conflicts",
         "_outgoing_by_source_key",
         "_node_by_handler",
         "_node_by_entry_anchor",
         "_planner_scope_edge_kinds",
-        "_corridor_by_shared_block",
     )
 
     # Edge kinds the planner currently emits modifications for.  Other
@@ -160,22 +148,18 @@ class DagAuthority:
         {SemanticEdgeKind.TRANSITION, SemanticEdgeKind.CONDITIONAL_TRANSITION}
     )
 
-    def __init__(
-        self,
-        dag: LinearizedStateDag,
-        *,
-        corridor_data: tuple[CorridorSpliceData, ...] = (),
-    ) -> None:
+    def __init__(self, dag: LinearizedStateDag) -> None:
         self._dag = dag
         self._planner_scope_edge_kinds = self._PLANNER_SCOPE_EDGE_KINDS
-        # Map shared_block -> corridor data for O(1) consultation by
-        # ``permits_edge_redirect_via_pred_split`` and
-        # ``canonical_corridor_splice_for``.  Empty by default; planner
-        # seeds this with function-specific data based on
-        # ``mba.entry_ea`` (uee-7wcd).
-        self._corridor_by_shared_block: dict[int, CorridorSpliceData] = {
-            int(c.shared_block): c for c in corridor_data
-        }
+        # Object identities of the edges this authority arbitrates over.  An
+        # ALLOW must name one of *these* edges, not merely an edge-shaped
+        # value (aa-v8et / d81-9q6e review round 2).  ``self._dag`` keeps every
+        # edge alive for the authority's lifetime, so the ids cannot be reused
+        # by a later object.  Equality is deliberately not used: two DAGs can
+        # hold equal-valued edges, and only this DAG's commitment is evidence.
+        self._dag_edge_identities: frozenset[int] = frozenset(
+            id(edge) for edge in dag.edges
+        )
 
         # Build the (src_block, branch_arm) -> target_entry_anchor index.
         # When two edges in scope agree on a target, collapse them into a
@@ -327,22 +311,30 @@ class DagAuthority:
         )
 
     def permits_zero_state_write(self, mod: ZeroStateWrite) -> DagDecision:
-        "Validate a ZeroStateWrite against the DAG.\n\n        Phase 4 (uee-rjo8) consolidated the three legacy ZSW\n        collectors into a single emitter at\n        :func:`d810.transforms.zero_state_write_emission.collect_zero_state_writes`.\n        The single-emitter invariant \u2014 every ``(block_serial, insn_ea)``\n        ZSW decision has exactly one author per pipeline run \u2014 is the\n        proof of legality this arbiter relied on the missing\n        ``def_sites_for_state`` index for.  With the consolidation in\n        place, a ZSW reaching the arbiter is by construction the\n        canonical owner's emission, so we ALLOW.\n\n        The earlier ``DAG_GAP:zero_state_write_legality`` strict refusal\n        is now redundant: the gap was about *whether* a write site is\n        the unique definer; the consolidation ensures the planner\n        cannot emit two ZSWs for the same site, regardless of how many\n        collectors the preanalysis-side path resolution funnels through.\n\n        Diagnostic auditing: a tracer-driven sub_7FFD e2e shows 0\n        blocks emitting ZSW from multiple call sites\n        (``D810_TRACE_MOD_CONSTRUCTION=1`` ``ZERO_STATE_WRITE_CONSTRUCTED``\n        log line + caller frame, post-Phase 4 invariant).\n"
-        return DagDecision.allow(
-            target_entry_anchor=None,
-            proof_edge_key=(int(mod.block_serial), int(mod.insn_ea), "ZeroStateWrite"),
-        )
+        """Refuse a ZeroStateWrite: its legality is not a DAG fact (aa-v8et).
 
-    def canonical_corridor_splice_for(
-        self, shared_block: int
-    ) -> CorridorSpliceData | None:
-        """Return the corridor splice data for a shared block, or None.
+        Phase 4 (uee-rjo8) consolidated the three legacy ZSW collectors into a
+        single emitter at
+        :func:`d810.transforms.zero_state_write_emission.collect_zero_state_writes`,
+        and this method used to return an unconditional ``ALLOW`` justified by
+        that consolidation's single-emitter invariant.
 
-        uee-7wcd extension.  When seeded by the planner with function-
-        specific corridor data, this query authoritatively answers
-        "is this shared_block a known corridor splice point?"
+        The audit at ``.tmp/audit/2026-09-05-dag-authority-audit.md`` section
+        3.3 rejected that justification: the single-emitter property is real,
+        but it is enforced in a *different* module and ``DagAuthority`` cannot
+        observe it. The ALLOW read no DAG state at all — an authority built
+        over an empty DAG granted it, and the ``proof_edge_key`` was
+        synthesised from the mod's own fields, i.e. the proposal was its own
+        proof. That is an independent grant, which contradicts both this
+        module's strict ``DAG_GAP`` policy and the standing invariant
+        "``DagAuthority`` may restrict which proposals are emitted; it must
+        never independently grant final mutation or semantic-loss permission."
+
+        The verdict is therefore ``DAG_GAP:zero_state_write_not_dag_derivable``.
+        Closing the gap requires the DAG to carry state-write def-sites (the
+        missing ``def_sites_for_state`` index), not a cross-module appeal.
         """
-        return self._corridor_by_shared_block.get(int(shared_block))
+        return DagDecision.gap("zero_state_write_not_dag_derivable")
 
     def permits_edge_redirect_via_pred_split(
         self, mod: EdgeRedirectViaPredSplit
@@ -354,42 +346,43 @@ class DagAuthority:
         ``mod.src_block .. mod.clone_until`` whose tail retargets to
         ``mod.new_target``.
 
-        Decision rules:
+        Evidence policy (aa-v8et)
+        -------------------------
+        This method used to ALLOW when the mod matched a
+        :class:`CorridorSpliceData` record seeded at construction time from a
+        hardcoded per-function registry in the planner. That seed was not
+        DAG-derived — it was a literal (``shared_block=45, base_target=126,
+        clone_source=122, clone_target=180``) registered for one entry EA —
+        and the resulting ``proof_edge_key`` named no DAG edge at all. Both
+        the seed registry and the match branch are gone; the seeding channel
+        went with them so it cannot be re-supplied by a future caller.
 
-        * If ``DagAuthority`` was seeded with corridor data for the
-          shared block (= ``mod.old_target``) and the (clone_source,
-          clone_target) pair matches the recorded splice, ALLOW.
-        * If corridor data is seeded but the (src, target) tuple
-          disagrees with the registered splice points,
-          ``DAG_DISAGREEMENT:corridor_splice@<shared>``.
-        * If no corridor data is seeded for this shared block,
-          ``DAG_GAP:edge_redirect_via_pred_split_seed_missing``.
+        The only evidence the arbiter accepts now is the DAG's own
+        commitment for the corridor source:
+
+        * DAG canonically commits ``mod.src_block`` to ``mod.new_target``
+          → ALLOW, proved by that edge.
+        * DAG commits ``mod.src_block`` somewhere else →
+          ``DAG_DISAGREEMENT``.
+        * DAG has no in-scope edge from ``mod.src_block`` →
+          ``DAG_GAP:edge_redirect_via_pred_split_no_dag_evidence``.
+        * DAG contradicts itself about ``mod.src_block`` →
+          ``DAG_GAP:dag_internal_conflict``.
+
+        The splice *topology* (``via_pred``, ``clone_until``) remains outside
+        anything the DAG models; the ALLOW speaks only to the corridor's
+        destination, which is safe because the verdict can never do more than
+        keep a modification the planner already proposed.
 
         The shared fragment-level filter (``filter_dag_disagreements``)
-        currently only validates RedirectGoto / ConvertToGoto; this
-        method exists to make the validation path *available* for
-        tests + future filter extensions.
+        currently only reaches ``permits()`` for RedirectGoto / ConvertToGoto,
+        so this method has no production consumer today.
         """
-        shared_block = int(mod.old_target)
-        corridor = self._corridor_by_shared_block.get(shared_block)
-        if corridor is None:
-            return DagDecision.gap("edge_redirect_via_pred_split_seed_missing")
-        if int(mod.src_block) == int(corridor.clone_source) and int(
-            mod.new_target
-        ) == int(corridor.clone_target):
-            return DagDecision.allow(
-                target_entry_anchor=int(corridor.clone_target),
-                proof_edge_key=(
-                    "corridor_splice",
-                    int(corridor.shared_block),
-                    int(corridor.clone_source),
-                    int(corridor.clone_target),
-                ),
-            )
-        return DagDecision.refuse(
-            f"DAG_DISAGREEMENT:corridor_splice@{shared_block}->"
-            f"{{planner=({mod.src_block},{mod.new_target}),"
-            f"dag=({corridor.clone_source},{corridor.clone_target})}}"
+        return self._validate_unconditional_redirect(
+            src=int(mod.src_block),
+            proposed_target=int(mod.new_target),
+            mod_kind="EdgeRedirectViaPredSplit",
+            unknown_source_gap="edge_redirect_via_pred_split_no_dag_evidence",
         )
 
     def permits_dead_block_terminator_redirect(
@@ -400,7 +393,7 @@ class DagAuthority:
         dispatcher_serial: int | None = None,
         original_stop_serial: int | None = None,
     ) -> DagDecision:
-        "Validate a dead-block terminator redirect (uee-7snc).\n\n        The dead-dispatcher-root cleanup pass emits ``RedirectGoto``s\n        that retarget orphaned dispatcher-feeders at the function's\n        STOP block.  These mods can't be derived from the preanalysis\n        ``LinearizedStateDag`` directly because they depend on\n        reachability of the *projected post-mod* CFG \u2014 a graph the\n        DAG (built once per pipeline run, mem_52073043) doesn't model.\n\n        Decision rules (when caller supplies the projected graph + the\n        dispatcher / stop serials):\n\n        * ``mod.from_serial`` block must be in the projected graph,\n          have empty predset, have exactly one successor =\n          ``dispatcher_serial``, and ``mod.new_target`` must equal\n          ``original_stop_serial`` \u2192 ALLOW.\n        * Any constraint violation \u2192 ``DAG_DISAGREEMENT:dead_block_terminator``\n          with a per-reason payload (block missing / has preds /\n          succ-not-dispatcher / target-not-stop).\n        * Caller didn't pass projected_flow_graph / serials \u2192\n          ``DAG_GAP:dead_block_terminator_no_projected_graph``.\n\n        Mirrors the predicate ``_collect_dead_dispatcher_root_cleanup_modifications``\n        already uses inline (``linearized_flow_graph.py:1135``); the\n        method exists so the consumer can consult the arbiter and\n        record an audit trail rather than re-deriving the predicate.\n"
+        "Validate a dead-block terminator redirect (uee-7snc).\n\n        The dead-dispatcher-root cleanup pass emits ``RedirectGoto``s\n        that retarget orphaned dispatcher-feeders at the function's\n        STOP block.  These mods can't be derived from the preanalysis\n        ``LinearizedStateDag`` directly because they depend on\n        reachability of the *projected post-mod* CFG \u2014 a graph the\n        DAG (built once per pipeline run, mem_52073043) doesn't model.\n\n        Decision rules (when caller supplies the projected graph + the\n        dispatcher / stop serials):\n\n        * ``mod.from_serial`` block must be in the projected graph,\n          have empty predset, have exactly one successor =\n          ``dispatcher_serial``, and ``mod.new_target`` must equal\n          ``original_stop_serial`` \u2192 ``DAG_GAP:dead_block_terminator_caller_derived``\n          (the predicate held, but on caller-supplied state, not on a DAG\n          edge \u2014 aa-v8et).\n        * Any constraint violation \u2192 ``DAG_DISAGREEMENT:dead_block_terminator``\n          with a per-reason payload (block missing / has preds /\n          succ-not-dispatcher / target-not-stop).\n        * Caller didn't pass projected_flow_graph / serials \u2192\n          ``DAG_GAP:dead_block_terminator_no_projected_graph``.\n\n        Mirrors the predicate ``_collect_dead_dispatcher_root_cleanup_modifications``\n        already uses inline (``linearized_flow_graph.py:1135``); the\n        method exists so the consumer can consult the arbiter and\n        record an audit trail rather than re-deriving the predicate.\n"
         if (
             projected_flow_graph is None
             or dispatcher_serial is None
@@ -443,15 +436,16 @@ class DagAuthority:
             return DagDecision.refuse(
                 f"REFUSE:dead_block_terminator_validation_error:{exc!r}"
             )
-        return DagDecision.allow(
-            target_entry_anchor=int(original_stop_serial),
-            proof_edge_key=(
-                "dead_block_terminator",
-                int(mod.from_serial),
-                int(dispatcher_serial),
-                int(original_stop_serial),
-            ),
-        )
+        # Every refusal branch above is preserved: a malformed shape is still
+        # a hard DAG_DISAGREEMENT.  What cannot survive is the terminal ALLOW.
+        # Its three inputs -- projected_flow_graph, dispatcher_serial and
+        # original_stop_serial -- are all supplied by the caller, and the
+        # projected post-mod CFG is (per this method's own docstring) a graph
+        # the DAG does not model.  Granting on it would make the arbiter
+        # vouch for the consumer's own belief, i.e. an independent grant
+        # (aa-v8et, audit section 3.4).  The conforming shape is therefore a
+        # named gap: the predicate held, but the DAG did not supply it.
+        return DagDecision.gap("dead_block_terminator_caller_derived")
 
     def permits(self, mod: object) -> DagDecision:
         """Dispatch by mod type. Unknown mod types yield DAG_GAP.
@@ -472,10 +466,11 @@ class DagAuthority:
         if kind == "ZeroStateWrite":
             return self.permits_zero_state_write(mod)  # type: ignore[arg-type]
         if kind == "EdgeRedirectViaPredSplit":
-            # uee-7wcd: EdgeRedirectViaPredSplit goes through the
-            # corridor-aware validator.  Without seeded corridor data
-            # this returns DAG_GAP:edge_redirect_via_pred_split_seed_missing,
-            # but the named gap is a strict improvement over the prior
+            # uee-7wcd / aa-v8et: EdgeRedirectViaPredSplit goes through the
+            # DAG-evidence validator.  When the DAG has no in-scope edge from
+            # the corridor source this returns
+            # DAG_GAP:edge_redirect_via_pred_split_no_dag_evidence, which is a
+            # strict improvement over the prior
             # DAG_GAP:unknown_mod_kind:EdgeRedirectViaPredSplit.
             return self.permits_edge_redirect_via_pred_split(mod)  # type: ignore[arg-type]
         return DagDecision.gap(f"unknown_mod_kind:{kind}")
@@ -490,6 +485,7 @@ class DagAuthority:
         src: int,
         proposed_target: int,
         mod_kind: str,
+        unknown_source_gap: str = "unknown_source",
     ) -> DagDecision:
         """Shared validation core for RedirectGoto / ConvertToGoto.
 
@@ -499,20 +495,70 @@ class DagAuthority:
         the block to a 1-way unconditional goto, so the branch arm is
         no longer meaningful at the post-mod CFG).
         """
-        canonical = self.canonical_target_for(src, branch_arm=None)
-        if canonical is None:
+        record = self._canonical_by_anchor.get((int(src), None))
+        if record is None:
             # Distinguish "no DAG edge for this source" (DAG silent) from
             # "DAG has multiple edges disagreeing on target" (internal
             # conflict). Both yield DAG_GAP refusals but with different
             # gap names so diagnostics can route them.
             if self.conflicts_for_source(src, branch_arm=None):
                 return DagDecision.gap("dag_internal_conflict")
-            return DagDecision.gap("unknown_source")
+            return DagDecision.gap(unknown_source_gap)
+        canonical = record.target_entry_anchor
         if proposed_target == canonical:
-            return DagDecision.allow(
-                target_entry_anchor=canonical,
-                proof_edge_key=(src, None, canonical, mod_kind),
-            )
+            # Hand the authorising edge itself to the ALLOW constructor. Every
+            # edge in a canonical record agrees on the target by construction
+            # (see __init__), so any one of them is the proof.
+            return self._allow_from_dag_edge(record.edges[0], mod_kind=mod_kind)
         return DagDecision.refuse(
             f"DAG_DISAGREEMENT:{src}->{{planner={proposed_target},dag={canonical}}}"
+        )
+
+    def _allow_from_dag_edge(
+        self, edge: StateDagEdge, *, mod_kind: str
+    ) -> DagDecision:
+        """The single construction site of an ``ALLOW`` verdict (aa-v8et).
+
+        ``DagAuthority`` may restrict which proposals are emitted; it must
+        never independently grant. The way that invariant is *pinned* -- rather
+        than merely documented -- is that an ALLOW cannot be built without a
+        :class:`StateDagEdge` in hand: the evidence is a parameter, not a
+        convention. ``rules/no-dag-authority-mutation-grant.yml`` statically
+        rejects any other ``DagDecision.allow(...)`` call in this module, and
+        ``tests/unit/transforms/test_dag_authority_grant_invariant.py``
+        discovers every ``permits_*`` method by reflection and asserts it
+        either refuses or routes through here.
+
+        The ``proof_edge_key`` is derived from the edge, so it always names an
+        edge that is really in the DAG -- unlike the three retired grants,
+        whose keys were synthesised from the proposal's own fields, a
+        hardcoded corridor literal, and caller-supplied CFG serials
+        respectively.
+
+        Returns a ``DAG_GAP`` when the edge carries no target entry anchor;
+        such an edge is never indexed as canonical, so this is defence in
+        depth rather than a reachable branch.
+
+        The helper is an *instance* method, not a ``staticmethod``, because
+        holding an edge is not the invariant -- holding **this DAG's** edge is.
+        As a staticmethod it accepted any edge-shaped value and derived the
+        ``proof_edge_key`` from it, so a fabricated edge yielded an ALLOW
+        naming an edge present in no DAG: the same "proposal is its own proof"
+        shape as the three retired grants (d81-9q6e review round 2). An edge
+        this authority does not own is refused outright.
+        """
+        if id(edge) not in self._dag_edge_identities:
+            return DagDecision.refuse(f"REFUSE:{mod_kind}_allow_edge_not_in_dag")
+        target = edge.target_entry_anchor
+        if target is None:
+            return DagDecision.gap(f"{mod_kind}_edge_without_target_anchor")
+        anchor = edge.source_anchor
+        return DagDecision.allow(
+            target_entry_anchor=int(target),
+            proof_edge_key=(
+                int(anchor.block_serial),
+                None if anchor.branch_arm is None else int(anchor.branch_arm),
+                int(target),
+                mod_kind,
+            ),
         )

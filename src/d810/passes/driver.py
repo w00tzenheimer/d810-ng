@@ -621,6 +621,26 @@ def validate_backend_route(spec: PassSpec, result) -> None:
         )
 
 
+def validate_owned_result_preservation(spec: PassSpec, result) -> None:
+    """Require result-level preservation for a portable owned mutation.
+
+    ``PassSpec.pass_factory`` is the portable execution-owner boundary:
+    callback-hosted descriptor-only specs deliberately carry ``None`` and
+    never produce a :class:`PassResult`.  A portable result that changes the
+    graph must state its invalidation policy at the point of mutation.  The
+    spec-level/default policy remains valid for analysis-only results and is
+    still used after an explicit result policy is supplied.
+    """
+    if spec.pass_factory is None or not result.mutation_forms:
+        return
+    if not result.preserved_explicit:
+        forms = ", ".join(result.mutation_forms)
+        raise PassContractError(
+            f"pass {spec.pass_id!r} produced {forms} but must explicitly "
+            "declare explicit preservation before backend application"
+        )
+
+
 def effective_preserved_analyses(spec: PassSpec, result) -> PreservedAnalyses:
     """Return the invalidation hint chosen by result override or spec default."""
     if result.preserved_explicit:
@@ -995,6 +1015,7 @@ def _run_pass_spec(
     parent_attempt_id: ExecutionAttemptId | None = None,
     structural_shape: str = "unclassified",
     native_cfg_observer_state: _NativeCfgObserverRunState | None = None,
+    enforce_owned_preservation: bool = False,
 ) -> FunctionPipelineContext:
     profile_details = {
         "maturity": _maturity_detail(ctx.maturity),
@@ -1030,6 +1051,8 @@ def _run_pass_spec(
         validate_contract_fact_outputs(spec, result)
         validate_contract_evidence_outputs(spec, result)
         validate_backend_route(spec, result)
+        if enforce_owned_preservation:
+            validate_owned_result_preservation(spec, result)
 
         def publish_result_side_effects() -> None:
             if scheduler is not None:
@@ -1355,6 +1378,11 @@ def run_pipeline(
     if observer is not None:
         native_cfg_observer_state = _NativeCfgObserverRunState(observer=observer)
 
+    # The explicit config-v2 pipeline is the migrated D-810-owned portable
+    # lane.  Legacy family-selected specs remain on their compatibility
+    # contract until they receive the same ownership metadata.
+    enforce_owned_preservation = pipeline_v2_specs is not None
+
     for spec in worklist:
         ctx = _run_pass_spec(
             spec=spec,
@@ -1367,6 +1395,7 @@ def run_pipeline(
             parent_attempt_id=parent_attempt_id,
             structural_shape=structural_shape,
             native_cfg_observer_state=native_cfg_observer_state,
+            enforce_owned_preservation=enforce_owned_preservation,
         )
 
     for spec in replay_after_pipeline:
@@ -1381,6 +1410,7 @@ def run_pipeline(
             parent_attempt_id=parent_attempt_id,
             structural_shape=structural_shape,
             native_cfg_observer_state=native_cfg_observer_state,
+            enforce_owned_preservation=enforce_owned_preservation,
         )
 
     _freeze_native_cfg_observer(

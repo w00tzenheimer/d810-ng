@@ -4110,9 +4110,9 @@ def test_backend_rejects_forged_effect_exclusion_before_mutation() -> None:
     forged_claim.__post_init__()
     forged_proposal = replace(
         proposal,
-        claims=tuple(
-            forged_claim if item is claim else item
-            for item in proposal.claims
+        claims=authority_model.canonical_model_order(
+            tuple(forged_claim if item is claim else item for item in proposal.claims),
+            "claims",
         ),
     )
     plan = replace(plan, unflatten_proposal=forged_proposal)

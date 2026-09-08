@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from types import SimpleNamespace
 
+import pytest
+
 from d810.analyses.control_flow.branch_ownership import (
+    BranchOwnershipOracleKind,
     BranchOwnershipProof,
     BranchOwnershipProofKind,
     branch_ownership_proof_from_any,
+    branch_ownership_registration_authority,
     collect_branch_ownership_proofs,
 )
 
@@ -35,6 +40,39 @@ def _edge(
         ),
         target_entry_anchor=target_entry,
     )
+
+
+@pytest.mark.parametrize("unregistered_input", ["opaque", "terminal"])
+def test_terminal_selector_promotion_refuses_unregistered_evidence(unregistered_input):
+    registrar = branch_ownership_registration_authority()
+
+    def refine(proof, edge):
+        is_opaque = proof.target_state == 0x20
+        kind = (
+            BranchOwnershipProofKind.OPAQUE_ALWAYS_TRUE
+            if is_opaque
+            else BranchOwnershipProofKind.TERMINAL_RETURN_FRONTIER
+        )
+        refined = registrar.bind(
+            replace(proof, proof_kind=kind, trusted=True),
+            registrar.producer(BranchOwnershipOracleKind.MOPTRACKER),
+        )
+        if ("opaque" if is_opaque else "terminal") == unregistered_input:
+            return replace(refined, registration=None)
+        return refined
+
+    proofs = collect_branch_ownership_proofs(
+        dag=SimpleNamespace(
+            edges=(
+                _edge(source=0x10, target=0x20, arm=1),
+                _edge(source=0x10, target=0x30, arm=0),
+                _edge(source=0x20, target=0x10, kind="TRANSITION", block=20),
+            )
+        ),
+        proof_refiner=refine,
+    )
+
+    assert not any(proof.authorizes_nonsemantic_branch_rewrite for proof in proofs)
 
 
 def test_collect_branch_ownership_defaults_unresolved() -> None:
@@ -112,6 +150,11 @@ def test_collect_branch_ownership_marks_edges_to_terminal_states_as_frontiers() 
 
 
 def test_branch_ownership_proof_coerces_dict_for_consumers() -> None:
+    # d81-9q6e review round 3: coercion parses, it does not register.  The
+    # consumer that vouches for the producer binds the coerced row through its
+    # own binder; the unbound row is pinned as unregistered in
+    # test_producer_registration_binder.py.
+    registrar = branch_ownership_registration_authority()
     proof = branch_ownership_proof_from_any(
         {
             "proof_id": "p",
@@ -120,21 +163,33 @@ def test_branch_ownership_proof_coerces_dict_for_consumers() -> None:
             "reason": "fixture",
             "source_state": "0x10",
             "target_state": "0x20",
+            # d81-9q6e review round 2: a grant needs a named producer.
+            "oracle_kind": BranchOwnershipOracleKind.MOPTRACKER.value,
         }
     )
 
     assert isinstance(proof, BranchOwnershipProof)
     assert proof.source_state == 0x10
     assert proof.target_state == 0x20
+    proof = registrar.bind(
+        proof, registrar.producer(BranchOwnershipOracleKind.MOPTRACKER)
+    )
     assert proof.authorizes_nonsemantic_branch_rewrite is True
 
 
 def test_real_data_dependent_is_semantic_not_rewrite_authority() -> None:
-    proof = BranchOwnershipProof(
-        proof_id="real",
-        proof_kind=BranchOwnershipProofKind.REAL_DATA_DEPENDENT,
-        trusted=True,
-        reason="input_dependent_branch",
+    # d81-9q6e review round 3: a grant needs a registration minted by a binder,
+    # so this stands in for an oracle that registered its own row.
+    registrar = branch_ownership_registration_authority()
+    proof = registrar.bind(
+        BranchOwnershipProof(
+            proof_id="real",
+            proof_kind=BranchOwnershipProofKind.REAL_DATA_DEPENDENT,
+            trusted=True,
+            reason="input_dependent_branch",
+            oracle_kind=BranchOwnershipOracleKind.MOPTRACKER,
+        ),
+        registrar.producer(BranchOwnershipOracleKind.MOPTRACKER),
     )
 
     assert proof.authorizes_semantic_branch_bridge is True

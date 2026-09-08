@@ -44,6 +44,79 @@ def test_native_lowering_does_not_cache_idb_local_type_handles() -> None:
     ), "IDA tinfo_t handles must be constructed inside the active database"
 
 
+def test_native_block_rule_uses_hosted_batch_proposals() -> None:
+    """The block rule must expose the adapter-owned transaction boundary."""
+
+    module = ast.parse(_NATIVE_MODULE_PATH.read_text(encoding="utf-8"))
+    block_rule = next(
+        node
+        for node in module.body
+        if isinstance(node, ast.ClassDef)
+        and node.name == "RotateIdiomRecoveryBlockRule"
+    )
+
+    assert any(
+        isinstance(base, ast.Name) and base.id == "HostedBlockInstructionRule"
+        for base in block_rule.bases
+    )
+    assert any(
+        isinstance(node, ast.FunctionDef)
+        and node.name == "propose_instruction_batch"
+        for node in block_rule.body
+    )
+    assert not any(
+        isinstance(node, ast.FunctionDef) and node.name == "optimize"
+        for node in block_rule.body
+    )
+
+
+def test_native_block_proposal_contains_detached_batch_contract() -> None:
+    """Proposal code must not retain the old direct native mutation path."""
+
+    module = ast.parse(_NATIVE_MODULE_PATH.read_text(encoding="utf-8"))
+    block_rule = next(
+        node
+        for node in module.body
+        if isinstance(node, ast.ClassDef)
+        and node.name == "RotateIdiomRecoveryBlockRule"
+    )
+    proposal = next(
+        node
+        for node in block_rule.body
+        if isinstance(node, ast.FunctionDef)
+        and node.name == "propose_instruction_batch"
+    )
+    proposal_calls = {
+        node.func.attr
+        for node in ast.walk(proposal)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+    }
+
+    assert "BlockInstructionBatchCandidate" in {
+        node.id
+        for node in ast.walk(proposal)
+        if isinstance(node, ast.Name)
+    }
+    assert "BlockInstructionEditIntent" in {
+        node.id
+        for node in ast.walk(proposal)
+        if isinstance(node, ast.Name)
+    }
+    assert "BlockInstructionAnchor" in {
+        node.id
+        for node in ast.walk(proposal)
+        if isinstance(node, ast.Name)
+    }
+    assert "fingerprint_minsn" in {
+        node.id
+        for node in ast.walk(proposal)
+        if isinstance(node, ast.Name)
+    }
+    assert not proposal_calls.intersection(
+        {"alloc_kreg", "insert_into_block", "mark_lists_dirty", "swap", "verify"}
+    )
+
+
 def _mul(left, right):
     Binary, _, _, _ = _api()
     return Binary("mul", 64, left, right)
