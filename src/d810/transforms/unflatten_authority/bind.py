@@ -3320,8 +3320,8 @@ def _detached_canonical_copy(value: object, memo: dict[int, object]) -> object:
     raise TypeError("registered authority state cannot be detached")
 
 
-def _canonical_record_snapshot(value: object) -> object:
-    """Normalize a detached copy and require identical candidate live state."""
+def _canonical_record_snapshot(value: object) -> tuple[object, object]:
+    """Return the checked detached record and its immutable stored state."""
     candidate_state = _registry_structural_snapshot(value)
     canonical = _detached_canonical_copy(value, {})
     type(canonical).__post_init__(canonical)
@@ -3330,7 +3330,7 @@ def _canonical_record_snapshot(value: object) -> object:
         raise ValueError("registry candidate differs from canonical live state")
     if candidate_state != _registry_structural_snapshot(value):
         raise ValueError("registry candidate changed during classification")
-    return canonical
+    return canonical, canonical_state
 
 
 def _route_failure_identity(value: model.RouteRealizationFailure) -> str:
@@ -3493,7 +3493,7 @@ def _canonical_registry_seal_uncached(
             model.TerminalSiteCoordinate, model.ScalarizedInstructionCoordinate,
         }:
             raise TypeError("semantic site value has an unknown closed type")
-        canonical = _canonical_record_snapshot(value)
+        canonical, _canonical_state = _canonical_record_snapshot(value)
         if type(canonical) is model.RawEffectGatePhaseFact:
             return raw_effect_gate_phase_fact_id(canonical)
         if type(canonical) is model.EffectSiteCoordinate:
@@ -3515,7 +3515,7 @@ def _canonical_registry_seal_uncached(
             model.ProjectedRouteSitePreservation,
         }:
             raise TypeError("semantic site binding has an unknown closed type")
-        canonical = _canonical_record_snapshot(value)
+        canonical, _canonical_state = _canonical_record_snapshot(value)
         return _site_binding_identity(canonical)
 
     if registry is not _route_registry:
@@ -3550,7 +3550,7 @@ def _canonical_registry_seal_uncached(
         and type(value) not in route_result_types
     ):
         raise TypeError("route authority value has an unknown closed type")
-    canonical = _canonical_record_snapshot(value)
+    canonical, canonical_state = _canonical_record_snapshot(value)
     identity_name = route_identity_names.get(type(canonical))
     if identity_name is not None:
         if type(canonical) is model.SourceBoundRouteAuthority:
@@ -3558,6 +3558,12 @@ def _canonical_registry_seal_uncached(
                 canonical.bound_evidence, canonical.proposal.route_evidence,
             )
         identity = getattr(canonical, identity_name)
+        # These closed records carry a stored identity.  The intervening
+        # bound-evidence check only reads the private detached graph, so its
+        # already checked immutable state is still the exact seal payload.
+        # Result/failure identity encoding below can rerun constructors and
+        # deliberately retains the final structural snapshot.
+        return hashlib.sha256(canonical_bytes((identity, canonical_state))).hexdigest()
     elif type(canonical) is model.RouteRealizationFailure:
         identity = _route_failure_identity(canonical)
     elif type(canonical) in route_result_types:
