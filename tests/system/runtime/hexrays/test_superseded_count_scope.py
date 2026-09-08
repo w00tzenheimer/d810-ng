@@ -21,7 +21,11 @@ from d810.hexrays.mutation.deferred_modifier import DeferredGraphModifier
 
 def _bare_modifier() -> DeferredGraphModifier:
     """A modifier with no live MBA - only the tally contract is under test."""
-    return object.__new__(DeferredGraphModifier)
+    modifier = object.__new__(DeferredGraphModifier)
+    # apply() owns the allocation ledger even when this tally-only fixture has
+    # no native allocations or MBA. Preserve that constructor invariant.
+    modifier._pending_kreg_allocations = []
+    return modifier
 
 
 def test_a_modifier_that_never_applied_reports_no_supersessions() -> None:

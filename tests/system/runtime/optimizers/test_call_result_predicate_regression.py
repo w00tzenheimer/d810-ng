@@ -415,12 +415,12 @@ class TestCallResultPredicateRegression:
                     production_rule_outcomes[kind] = callback_result
                     after_text = format_minsn_t(setnz_instruction)
                     if kind in ("zero", "one"):
-                        assert callback_result is True
+                        assert callback_result == 1
                         assert setnz_instruction.opcode == ida_hexrays.m_mov
                         assert setnz_instruction.l.t == ida_hexrays.mop_n
                         assert setnz_instruction.l.nnn.value == (0 if kind == "zero" else 1)
                     else:
-                        assert callback_result is False
+                        assert callback_result == 0
                         assert setnz_instruction.opcode == before_opcode
                         assert after_text == before_text
 
@@ -448,7 +448,7 @@ class TestCallResultPredicateRegression:
                 production_rule_outcomes["empty"] = manager.func(
                     empty_setnz_block, empty_setnz_instruction
                 )
-                assert production_rule_outcomes["empty"] is False
+                assert production_rule_outcomes["empty"] == 0
                 assert empty_setnz_instruction.opcode == empty_before_opcode
                 assert format_minsn_t(empty_setnz_instruction) == empty_before_text
             finally:
@@ -499,11 +499,11 @@ class TestCallResultPredicateRegression:
             )
             print("production_rule_outcomes=" + repr(production_rule_outcomes))
             print("z3_construction_counts=" + repr(z3_construction_counts))
-            assert production_rule_outcomes["none"] is False
-            assert production_rule_outcomes["zero"] is True
-            assert production_rule_outcomes["one"] is True
+            assert production_rule_outcomes["none"] == 0
+            assert production_rule_outcomes["zero"] == 1
+            assert production_rule_outcomes["one"] == 1
             for kind in ("stale", "malformed", "conflicting", "carrier", "empty"):
-                assert production_rule_outcomes[kind] is False
+                assert production_rule_outcomes[kind] == 0
             relevant_refiners = [
                 record
                 for record in production_refiner_calls
