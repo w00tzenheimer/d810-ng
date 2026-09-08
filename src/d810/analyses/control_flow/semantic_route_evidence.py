@@ -7442,6 +7442,23 @@ _ROUTE_STRUCTURAL_ENUMS = (
 )
 
 
+def capture_canonical_route_proof(table: StructuralTable, proof: SemanticRouteProof) -> StructuralRef:
+    """Own all canonical proof fields; carry no validity or runtime authority."""
+    if type(table) is not StructuralTable or type(proof) is not SemanticRouteProof:
+        raise TypeError("canonical proof capture requires exact table and proof")
+    return _capture_route_descendant(table, proof, set(), canonical=True)
+
+
+def materialize_canonical_route_proof(table: StructuralTable, ref: StructuralRef) -> SemanticRouteProof:
+    """Replay constructors; canonical normalization checks remain mandatory."""
+    if type(table) is not StructuralTable or type(ref) is not StructuralRef:
+        raise TypeError("canonical proof read requires exact table and handle")
+    node = table.resolve(ref, StructuralNodeKind.SUBJECT)
+    if node.payload != (SemanticRouteProof.__module__, SemanticRouteProof.__qualname__):
+        raise ValueError("handle does not identify a canonical proof")
+    return _read_owned_route_descendant(table, ref, _construct_owned_route_record, canonical=True)
+
+
 def capture_structural_route_proof(
     table: StructuralTable,
     proof: SemanticRouteProof,
@@ -7474,12 +7491,22 @@ def _capture_route_descendant(
     table: StructuralTable,
     value: object,
     active: set[int],
-    *, open_attributes: bool = False,
+    *, open_attributes: bool = False, canonical: bool = False,
 ) -> StructuralRef:
     value_type = type(value)
+    if canonical and value_type in (InstructionUseRef, InstructionUseKind, set):
+        raise TypeError("stable route value has no canonical wire encoding")
     if value_type in (type(None), bool, int, str):
         return table.intern(StructuralNodeKind.VALUE, None, (value,), ())
     if value_type in _ROUTE_STRUCTURAL_ENUMS:
+        if canonical:
+            name = object.__getattribute__(value, "_name_")
+            encoded_value = object.__getattribute__(value, "_value_")
+            if (type(name) is not str or type(encoded_value) is not str
+                    or value_type.__members__.get(name) is not value):
+                raise TypeError("invalid canonical route enum")
+            return table.intern(StructuralNodeKind.ENUM, None,
+                (value_type.__module__, value_type.__qualname__, name, encoded_value), ())
         return table.intern(
             StructuralNodeKind.ENUM,
             None,
@@ -7494,9 +7521,14 @@ def _capture_route_descendant(
             names = _ROUTE_STRUCTURAL_FIELDS[value_type]
             if tuple(item.name for item in fields(value_type)) != names:
                 raise TypeError("structural route descendant schema drift")
+            if canonical and value_type is NativePreanalysisKey:
+                names = ("schema_version", *names)
             children = tuple(
                 _capture_route_descendant(
-                    table, getattr(value, name), active,
+                    table, (NativePreanalysisKey.SCHEMA_VERSION
+                            if canonical and value_type is NativePreanalysisKey and name == "schema_version"
+                            else object.__getattribute__(value, name) if canonical else getattr(value, name)), active,
+                    canonical=canonical,
                     open_attributes=(open_attributes
                         or (value_type is InsnRecord and name == "opcode_attrs")
                         or (value_type is Instruction and name == "attrs")),
@@ -7511,7 +7543,7 @@ def _capture_route_descendant(
             )
         if value_type in (tuple, list):
             children = tuple(
-                _capture_route_descendant(table, child, active, open_attributes=open_attributes) for child in value
+                _capture_route_descendant(table, child, active, open_attributes=open_attributes, canonical=canonical) for child in value
             )
             return table.intern(
                 StructuralNodeKind.SEQUENCE,
@@ -7527,7 +7559,7 @@ def _capture_route_descendant(
                     "structural route sets require exact scalar members"
                 )
             children = tuple(
-                _capture_route_descendant(table, child, active, open_attributes=open_attributes)
+                _capture_route_descendant(table, child, active, open_attributes=open_attributes, canonical=canonical)
                 for child in sorted(
                     value, key=lambda child: (type(child).__name__, child)
                 )
@@ -7539,14 +7571,20 @@ def _capture_route_descendant(
                 children,
             )
         if value_type in (dict, MappingProxyType):
-            if any(type(key) is not str for key in value):
+            mapping = value
+            if canonical and value_type is MappingProxyType:
+                referents = gc.get_referents(value)
+                if len(referents) != 1 or type(referents[0]) is not dict:
+                    raise TypeError("canonical route mapping requires exact dict backing")
+                mapping = referents[0]
+            if any(type(key) is not str for key in mapping):
                 raise (_UnconvertedRouteAttributes if open_attributes else TypeError)(
                     "structural route attributes require exact string keys"
                 )
             children = tuple(
-                _capture_route_descendant(table, item, active, open_attributes=open_attributes)
-                for key in sorted(value)
-                for item in (key, value[key])
+                _capture_route_descendant(table, item, active, open_attributes=open_attributes, canonical=canonical)
+                for key in sorted(mapping)
+                for item in (key, mapping[key])
             )
             return table.intern(StructuralNodeKind.MAPPING, None, (), children)
         raise (_UnconvertedRouteAttributes if open_attributes else TypeError)(
@@ -7638,7 +7676,7 @@ def _snapshot_owned_route_descendant(table: StructuralTable, ref: StructuralRef)
     return _read_owned_route_descendant(table, ref, _copy_owned_route_record)
 
 
-def _read_owned_route_descendant(table: StructuralTable, ref: StructuralRef, record_builder: Callable[[type, dict[str, object]], object]) -> object:
+def _read_owned_route_descendant(table: StructuralTable, ref: StructuralRef, record_builder: Callable[[type, dict[str, object]], object], *, canonical: bool = False) -> object:
     node = table.resolve(ref, ref.kind)
     if node.width is not None:
         raise ValueError("malformed structural route descendant width")
@@ -7651,6 +7689,23 @@ def _read_owned_route_descendant(table: StructuralTable, ref: StructuralRef, rec
             raise ValueError("malformed structural route scalar")
         return node.payload[0]
     if node.kind is StructuralNodeKind.ENUM:
+        if canonical:
+            if node.children or len(node.payload) != 4:
+                raise ValueError("malformed canonical route enum")
+            enum_type = _ROUTE_STRUCTURAL_ENUM_TYPES.get(node.payload[:2])
+            name, encoded_value = node.payload[2:]
+            if (enum_type is None or enum_type is InstructionUseKind
+                    or type(name) is not str or type(encoded_value) is not str):
+                raise ValueError("unknown canonical route enum")
+            member = enum_type.__members__.get(name)
+            if member is None:
+                raise ValueError("unknown canonical route enum member")
+            current_name = object.__getattribute__(member, "_name_")
+            current_value = object.__getattribute__(member, "_value_")
+            if (type(current_name) is not str or current_name != name
+                    or type(current_value) is not str or current_value != encoded_value):
+                raise ValueError("canonical route enum drift")
+            return member
         if node.children or len(node.payload) != 3:
             raise ValueError("malformed structural route enum")
         enum_type = _ROUTE_STRUCTURAL_ENUM_TYPES.get(node.payload[:2])
@@ -7659,19 +7714,24 @@ def _read_owned_route_descendant(table: StructuralTable, ref: StructuralRef, rec
         return enum_type[node.payload[2]]
     if node.kind is StructuralNodeKind.SUBJECT:
         record_type = _ROUTE_STRUCTURAL_TYPES.get(node.payload)
-        if record_type is None:
+        if record_type is None or (canonical and record_type is InstructionUseRef):
             raise ValueError("unknown structural route record")
         names = _ROUTE_STRUCTURAL_FIELDS[record_type]
+        if canonical and record_type is NativePreanalysisKey:
+            names = ("schema_version", *names)
         if len(node.children) != len(names):
             raise ValueError("malformed structural route record fields")
-        return record_builder(record_type,
-            {
-                name: _read_owned_route_descendant(table, child, record_builder)
+        values = {
+                name: _read_owned_route_descendant(table, child, record_builder, canonical=canonical)
                 for name, child in zip(names, node.children, strict=True)
             }
-        )
+        if canonical and record_type is NativePreanalysisKey:
+            return NativePreanalysisKey.from_dict(values)
+        return record_builder(record_type, values)
+    if canonical and node.kind is StructuralNodeKind.SEQUENCE and node.payload == ("set",):
+        raise ValueError("mutable set has no canonical wire encoding")
     values = tuple(
-        _read_owned_route_descendant(table, child, record_builder) for child in node.children
+        _read_owned_route_descendant(table, child, record_builder, canonical=canonical) for child in node.children
     )
     if node.kind is StructuralNodeKind.SEQUENCE:
         if node.payload == ("tuple",):
