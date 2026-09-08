@@ -20,6 +20,11 @@ from d810.ir.storage_identity import StorageIdentity, StorageIdentityKind
 from d810.transforms.cfg_transaction import LogicalBlockRef, PlanBlockRef
 from d810.transforms.unflatten_authority.model import (
     SourceBlockIdentityWitness, SourceIdentityCatalog, UseDefFragmentWitness,
+    RetiredDispatcherInfrastructureClaim, DetachedDeadHandlerComponentClaim, ExactInfeasibleEffectClaim, HandlerSubjectLocator, EffectSubjectLocator, ProviderConsensusWitness, EffectSiteKind, ProviderConsensusMode, SemanticEdgeRole,
+    TerminalCycleBreakClaim, TerminalSubjectLocator, CorridorSubjectLocator, TerminalKind,
+    EquivalentSemanticRouteClaim, SemanticSubjectRef, SemanticSubjectKind,
+    SemanticSubjectRole, UnflattenClaimKind, BlockSubjectLocator,
+    RouteSubjectLocator, LogicalFunctionExitSubjectLocator,
     UnflattenPlanInputCatalog, UnflattenPlanShape, AuthoritativeHandlerInput,
     CorridorCoverageForecast, CorridorCoveragePath, CorridorCoveragePathNode,
     CorridorSemanticExclusion, CorridorPathDisposition,
@@ -31,6 +36,32 @@ from d810.transforms.unflatten_authority.model import (
 
 
 _SOURCE_FIELDS = MappingProxyType({
+    RetiredDispatcherInfrastructureClaim: ('claim_id', 'kind', 'infrastructure_subject', 'corridor_subject', 'member_subjects', 'candidate_evidence_ids', 'source_generation', 'candidate_catalog'),
+    DetachedDeadHandlerComponentClaim: ('claim_id', 'kind', 'dispatcher_subject', 'dead_handler_subjects', 'retained_handler_subjects', 'component_subjects', 'comparison_region_subjects', 'source_generation'),
+    ExactInfeasibleEffectClaim: ('claim_id', 'kind', 'effect_subject', 'source_subject', 'predicate_subject', 'selected_target_subject', 'discarded_effect_subject', 'normalized_state', 'state_identity', 'width', 'source_write_ea', 'predicate_branch_ea', 'discarded_effect_ea', 'selected_edge_role', 'route_proof_ids', 'consensus', 'source_generation'),
+    HandlerSubjectLocator: ('block_ref', 'anchor_ea', 'normalized_states'),
+    EffectSubjectLocator: ('owner_ref', 'owner_anchor_ea', 'instruction_ea', 'effect_kind'),
+    ProviderConsensusWitness: ('mode', 'provider_ids'),
+    TerminalCycleBreakClaim: (
+        "claim_id", "kind", "cycle_subject", "cleanup_source_subject", "terminal_subject",
+        "terminal_route_proof_ids", "source_generation",
+    ),
+    TerminalSubjectLocator: ("block_ref", "anchor_ea", "terminal_kind", "instruction_ea"),
+    CorridorSubjectLocator: (
+        "corridor_id", "entry_ref", "entry_anchor_ea", "member_refs", "member_anchor_eas",
+    ),
+    EquivalentSemanticRouteClaim: (
+        "claim_id", "kind", "retired_route_subject", "replacement_route_subject",
+        "source_subject", "destination_subjects", "route_proof_ids", "atomic_group_id",
+        "source_generation", "dag_endpoint_subjects",
+    ),
+    SemanticSubjectRef: ("kind", "role", "subject_id", "block_ref", "anchor_ea", "locator"),
+    BlockSubjectLocator: ("block_ref", "anchor_ea"),
+    LogicalFunctionExitSubjectLocator: ("block_ref", "serial"),
+    RouteSubjectLocator: (
+        "proof_id", "atomic_group_id", "source_ref", "source_anchor_ea",
+        "destination_locators", "dag_endpoint_locators",
+    ),
     SourceIdentityCatalog: ("native_key", "generation", "blocks"),
     RetirementPlanMember: ("block_ref", "anchor_ea", "native_instruction_eas"),
     DispatcherRetirementCandidate: (
@@ -97,13 +128,86 @@ _SOURCE_TYPES = MappingProxyType({
 })
 
 _SOURCE_ENUMS = MappingProxyType({
+    (EffectSiteKind.__module__, EffectSiteKind.__qualname__): EffectSiteKind,
+    (ProviderConsensusMode.__module__, ProviderConsensusMode.__qualname__): ProviderConsensusMode,
+    (SemanticEdgeRole.__module__, SemanticEdgeRole.__qualname__): SemanticEdgeRole,
+    (TerminalKind.__module__, TerminalKind.__qualname__): TerminalKind,
+    (SemanticSubjectKind.__module__, SemanticSubjectKind.__qualname__): SemanticSubjectKind,
+    (SemanticSubjectRole.__module__, SemanticSubjectRole.__qualname__): SemanticSubjectRole,
+    (UnflattenClaimKind.__module__, UnflattenClaimKind.__qualname__): UnflattenClaimKind,
     (StorageIdentityKind.__module__, StorageIdentityKind.__qualname__): StorageIdentityKind,
     (UnflattenPlanShape.__module__, UnflattenPlanShape.__qualname__): UnflattenPlanShape,
     (CorridorPathDisposition.__module__, CorridorPathDisposition.__qualname__): CorridorPathDisposition,
     (EntryEndpointLivenessReason.__module__, EntryEndpointLivenessReason.__qualname__): EntryEndpointLivenessReason,
 })
 
-_DERIVED_FIELDS = MappingProxyType({CorridorCoveragePath: ("path_id",)})
+_DERIVED_FIELDS = MappingProxyType({
+    RetiredDispatcherInfrastructureClaim: ("claim_id",),
+    DetachedDeadHandlerComponentClaim: ("claim_id",),
+    ExactInfeasibleEffectClaim: ("claim_id",),
+    CorridorCoveragePath: ("path_id",),
+    TerminalCycleBreakClaim: ("claim_id",),
+    EquivalentSemanticRouteClaim: ("claim_id",),
+    SemanticSubjectRef: ("subject_id",),
+})
+# These exact fields are also excluded by the canonical codec. They are never
+# read, interned, or restored; reconstruction receives constructor defaults.
+_RUNTIME_FIELDS = MappingProxyType({
+    EquivalentSemanticRouteClaim: ("_runtime_refs",),
+    SemanticSubjectRef: ("_runtime_ref",),
+})
+
+
+_PRODUCER_CLAIM_TYPES = (
+    RetiredDispatcherInfrastructureClaim, DetachedDeadHandlerComponentClaim,
+    EquivalentSemanticRouteClaim, ExactInfeasibleEffectClaim, TerminalCycleBreakClaim,
+)
+
+
+def capture_producer_claim(table: StructuralTable, value: object) -> StructuralRef:
+    """Detach only the exact producer union, never transaction-derived claims."""
+    if type(table) is not StructuralTable or type(value) not in _PRODUCER_CLAIM_TYPES:
+        raise TypeError("producer claim capture requires exact table and producer claim")
+    return _capture(table, value, set())
+
+
+def materialize_producer_claim(table: StructuralTable, ref: StructuralRef) -> object:
+    if type(table) is not StructuralTable or type(ref) is not StructuralRef:
+        raise TypeError("producer claim read requires exact table and handle")
+    node = table.resolve(ref, Kind.SUBJECT)
+    if _SOURCE_TYPES.get(node.payload) not in _PRODUCER_CLAIM_TYPES:
+        raise StructuralIdentityError("handle does not identify a producer claim")
+    return _materialize(table, ref)
+
+
+def capture_terminal_claim(table: StructuralTable, value: TerminalCycleBreakClaim) -> StructuralRef:
+    if type(table) is not StructuralTable or type(value) is not TerminalCycleBreakClaim:
+        raise TypeError("terminal claim capture requires exact table and record")
+    return _capture(table, value, set())
+
+
+def materialize_terminal_claim(table: StructuralTable, ref: StructuralRef) -> TerminalCycleBreakClaim:
+    if type(table) is not StructuralTable or type(ref) is not StructuralRef:
+        raise TypeError("terminal claim read requires exact table and handle")
+    node = table.resolve(ref, Kind.SUBJECT)
+    if node.payload != (TerminalCycleBreakClaim.__module__, TerminalCycleBreakClaim.__qualname__):
+        raise StructuralIdentityError("handle does not identify a terminal claim")
+    return _materialize(table, ref)
+
+
+def capture_route_claim(table: StructuralTable, value: EquivalentSemanticRouteClaim) -> StructuralRef:
+    if type(table) is not StructuralTable or type(value) is not EquivalentSemanticRouteClaim:
+        raise TypeError("route claim capture requires exact table and record")
+    return _capture(table, value, set())
+
+
+def materialize_route_claim(table: StructuralTable, ref: StructuralRef) -> EquivalentSemanticRouteClaim:
+    if type(table) is not StructuralTable or type(ref) is not StructuralRef:
+        raise TypeError("route claim read requires exact table and handle")
+    node = table.resolve(ref, Kind.SUBJECT)
+    if node.payload != (EquivalentSemanticRouteClaim.__module__, EquivalentSemanticRouteClaim.__qualname__):
+        raise StructuralIdentityError("handle does not identify a route claim")
+    return _materialize(table, ref)
 
 
 def capture_retirement_catalog(
@@ -239,7 +343,7 @@ def _capture(table: StructuralTable, value: object, active: set[int]) -> Structu
     value_type = type(value)
     if value_type in (type(None), bool, int, str):
         return table.intern(Kind.VALUE, None, (value,), ())
-    if value_type in (StorageIdentityKind, UnflattenPlanShape, CorridorPathDisposition, EntryEndpointLivenessReason):
+    if value_type in (StorageIdentityKind, UnflattenPlanShape, CorridorPathDisposition, EntryEndpointLivenessReason, TerminalKind, EffectSiteKind, ProviderConsensusMode, SemanticEdgeRole, SemanticSubjectKind, SemanticSubjectRole, UnflattenClaimKind):
         name = object.__getattribute__(value, "_name_")
         encoded_value = object.__getattribute__(value, "_value_")
         if (type(name) is not str or type(encoded_value) is not str
@@ -253,7 +357,7 @@ def _capture(table: StructuralTable, value: object, active: set[int]) -> Structu
     try:
         if value_type in _SOURCE_FIELDS:
             names = _SOURCE_FIELDS[value_type]
-            if tuple(field.name for field in fields(value_type)) != names:
+            if tuple(field.name for field in fields(value_type)) != names + _RUNTIME_FIELDS.get(value_type, ()):
                 raise TypeError("source catalog descendant schema drift")
             derived = _DERIVED_FIELDS.get(value_type, ())
             children_by_name = {
