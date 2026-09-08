@@ -8,9 +8,38 @@ from __future__ import annotations
 
 import json
 import time
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass
 from pathlib import Path
 from d810.core.typing import Callable
+
+
+def validate_fallback_probe(
+    *, result, outcome, record, solver_checks, native_unchanged, pending_replacement,
+    fallback_comparisons, stop_reason, proof_results
+) -> str:
+    """Keep a bounded proof refusal distinct from an unexplained callback miss."""
+
+    assert record["lowerings"] == 1
+    assert record["canonical_matches"] >= 1
+    assert record["proofs"] == 1
+    assert record["emitters"] == 1
+    assert type(fallback_comparisons) is int and 1 <= fallback_comparisons <= 64
+    assert len(solver_checks) == 1, solver_checks
+    check = solver_checks[0]
+    if result is None:
+        assert check == {"result": "unknown", "reason_unknown": "timeout"}, check
+        assert len(proof_results) == 1 and proof_results[0] is False
+        assert outcome is None
+        assert stop_reason == "matched", stop_reason
+        assert native_unchanged
+        assert pending_replacement is None
+        return "proof_timeout"
+    assert check == {"result": "unsat", "reason_unknown": None}, check
+    assert len(proof_results) == 1 and proof_results[0] is True
+    assert outcome is not None and outcome.matcher is not None
+    assert outcome.matcher.selection.value == "canonical_fallback"
+    assert 1 <= outcome.matcher.fallback_comparisons <= 64
+    return "proven"
 
 
 @dataclass

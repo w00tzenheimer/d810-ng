@@ -1350,11 +1350,20 @@ class IDAPatternAdapter:
         try:
             shadow = self._shadow_metadata(legacy_match=legacy_match)
             if not legacy_match and bool(shadow["structural_match"]):
-                structural_proven = self._prove_structural_only_candidate()
-                structural_refused = bool(
-                    not structural_proven
-                    and getattr(self, "_shadow_structural_refused", False)
-                )
+                if (
+                    getattr(self, "_structural_selection_active", False)
+                    and getattr(self, "_shadow_native_equivalence_verdict", None) is False
+                ):
+                    # This live attempt already refused its native proof.
+                    # Shadow accounting must not reconstruct and prove it
+                    # again after the bounded callback has made its decision.
+                    structural_refused = True
+                else:
+                    structural_proven = self._prove_structural_only_candidate()
+                    structural_refused = bool(
+                        not structural_proven
+                        and getattr(self, "_shadow_structural_refused", False)
+                    )
         except _REPLACEMENT_BOUNDARY_EXCEPTIONS as exc:
             logger.debug(
                 "Shadow parity recording failed closed for %s: %s", self.name, exc
