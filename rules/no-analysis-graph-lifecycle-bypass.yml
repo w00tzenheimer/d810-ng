@@ -1,0 +1,24 @@
+# Read-only SDK graph readiness belongs to hexrays.ir.graph_readiness.
+# These four analysis consumers must use that owner for graph observation;
+# rebuilding at LOCOPT or later can mutate instructions. Earlier graph-building
+# owners outside this bounded analysis contract are deliberately not matched.
+# Do not add ignores or move a direct call to another analysis helper.
+id: no-analysis-graph-lifecycle-bypass
+language: python
+severity: error
+files:
+  - "src/d810/evaluator/hexrays_microcode/chains.py"
+  - "src/d810/evaluator/hexrays_microcode/dead_store_liveness.py"
+  - "src/d810/backends/hexrays/evidence/instruction_value_flow_live.py"
+  - "src/d810/hexrays/ir/exact_data_flow.py"
+message: |
+  Observe the SDK graph through d810.hexrays.ir.graph_readiness.
+  Direct graph construction or access bypasses its maturity and availability contract.
+note: |
+  graph_readiness owns read-only graph observation and typed unavailability.
+  It never rebuilds a graph. Explicit pre-LOCOPT construction belongs to the
+  caller that owns native microcode generation, not these analysis consumers.
+rule:
+  any:
+    - pattern: $MBA.build_graph($$$)
+    - pattern: $MBA.get_graph($$$)

@@ -1,11 +1,11 @@
 """Read-only chain-backed evaluator helpers for Hex-Rays microcode.
 
-All functions in this module are READ-ONLY: they may call mba.build_graph(),
+All functions in this module are READ-ONLY: they may observe the existing graph,
 mblock_t.make_lists_ready(), and chain inspection APIs, but MUST NOT mutate
 instructions, blocks, or CFG structure.
 
 Allowed:
-    - mba.build_graph(), mba.get_graph()
+    - require_graph_ready(mba)
     - mblock_t.make_lists_ready()
     - mblock_t.build_use_list(), mblock_t.build_def_list()
     - get_ud()/get_du() chain access
@@ -20,6 +20,12 @@ NOT allowed:
 from __future__ import annotations
 
 import ida_hexrays
+
+from d810.hexrays.ir.graph_readiness import (
+    GraphReadinessUnavailable,
+    ensure_graph_and_lists_ready,
+    require_graph_ready,
+)
 
 from d810.core.logging import getLogger
 from d810.core.typing import NamedTuple, Optional
@@ -64,40 +70,6 @@ class UseSite(NamedTuple):
     ins_opcode: int
 
 
-def ensure_graph_and_lists_ready(mba: object) -> None:
-    """Prepare the MBA graph and per-block use/def lists (read-only).
-
-    Calls ``mba.build_graph()`` if the graph is not already built, then
-    iterates all blocks and calls ``blk.make_lists_ready()`` on each.
-
-    This function is READ-ONLY: it materialises cached internal structures
-    but does not mutate instructions, blocks, or CFG edges.
-
-    Args:
-        mba: An ``ida_hexrays.mba_t`` instance (typed as ``object`` to
-            avoid a hard import dependency on IDA).
-    """
-
-    # build_graph is idempotent when the graph is already up-to-date.
-    try:
-        mba.build_graph()  # type: ignore[attr-defined]
-    except Exception:
-        logger.debug(
-            "ensure_graph_and_lists_ready: build_graph() failed or unavailable"
-        )
-
-    qty: int = mba.qty  # type: ignore[attr-defined]
-    for i in range(qty):
-        blk = mba.get_mblock(i)  # type: ignore[attr-defined]
-        try:
-            blk.make_lists_ready()
-        except Exception:
-            logger.debug(
-                "ensure_graph_and_lists_ready: make_lists_ready() failed for block %d",
-                i,
-            )
-
-
 def get_ud_du_chains(
     mba: object,
     gctype: Optional[int] = None,
@@ -125,7 +97,7 @@ def get_ud_du_chains(
         gctype = ida_hexrays.GC_REGS_AND_STKVARS
 
     try:
-        graph = mba.get_graph()  # type: ignore[attr-defined]
+        graph = require_graph_ready(mba)
         ud = graph.get_ud(gctype)
         du = graph.get_du(gctype)
         return (ud, du)
@@ -436,7 +408,10 @@ def find_reaching_defs_for_reg(
         List of :class:`DefSite` entries.  Empty if chains are unavailable.
     """
 
-    ensure_graph_and_lists_ready(mba)
+    try:
+        ensure_graph_and_lists_ready(mba)
+    except GraphReadinessUnavailable:
+        return []
     ud, _ = get_ud_du_chains(mba)
     if ud is None:
         return []
@@ -498,7 +473,10 @@ def find_reaching_defs_for_stkvar(
         List of :class:`DefSite` entries.  Empty if chains are unavailable.
     """
 
-    ensure_graph_and_lists_ready(mba)
+    try:
+        ensure_graph_and_lists_ready(mba)
+    except GraphReadinessUnavailable:
+        return []
     ud, _ = get_ud_du_chains(mba)
     if ud is None:
         return []
@@ -693,7 +671,10 @@ def find_all_uses_of_stkvar(
         List of :class:`UseSite` entries.  Empty if chains are unavailable.
     """
 
-    ensure_graph_and_lists_ready(mba)
+    try:
+        ensure_graph_and_lists_ready(mba)
+    except GraphReadinessUnavailable:
+        return []
     _, du = get_ud_du_chains(mba)
     if du is None:
         return []

@@ -1,0 +1,30 @@
+id: no-analysis-graph-lifecycle-bypass
+snapshots:
+  ? |
+    graph = mba.get_graph()
+  : labels:
+    - source: mba.get_graph()
+      style: primary
+      start: 8
+      end: 23
+  ? |
+    mba.build_graph()
+  : labels:
+    - source: mba.build_graph()
+      style: primary
+      start: 0
+      end: 17
+  ? |
+    native_mba.build_graph()
+  : labels:
+    - source: native_mba.build_graph()
+      style: primary
+      start: 0
+      end: 24
+  ? |
+    return native_mba.get_graph()
+  : labels:
+    - source: native_mba.get_graph()
+      style: primary
+      start: 7
+      end: 29
