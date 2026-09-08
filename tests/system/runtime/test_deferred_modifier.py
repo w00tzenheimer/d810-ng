@@ -5721,3 +5721,33 @@ def test_coalesce_duplicate_block_deduplicates_same_owned_creation():
         )
     assert modifier.coalesce() == 1
     assert len(modifier.modifications) == 1
+
+
+@pytest.mark.parametrize("other_kind", ["clone", "goto"])
+def test_original_redirect_coalescing_rejects_shared_source_owner(other_kind):
+    modifier = dm.DeferredGraphModifier(None)
+    modifier.queue_duplicate_block(
+        source_block_serial=455, pred_serial=450, target_serial=96,
+        expected_serial=646, original_redirect_target=339,
+    )
+    if other_kind == "clone":
+        modifier.queue_duplicate_block(
+            source_block_serial=455, pred_serial=451, target_serial=96,
+            expected_serial=647,
+        )
+    else:
+        modifier.queue_goto_change(block_serial=455, new_target=362)
+    with pytest.raises(ValueError, match="original-source redirect"):
+        modifier.coalesce()
+    assert len(modifier.modifications) == 2
+
+
+def test_original_redirect_coalescing_accepts_one_owned_source_effect():
+    modifier = dm.DeferredGraphModifier(None)
+    for _ in range(2):
+        modifier.queue_duplicate_block(
+            source_block_serial=455, pred_serial=450, target_serial=96,
+            expected_serial=646, original_redirect_target=339,
+        )
+    assert modifier.coalesce() == 1
+    assert modifier.modifications[0].original_redirect_target == 339

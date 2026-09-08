@@ -7581,6 +7581,19 @@ class DeferredGraphModifier:
 
             unique_modifications.append(mod)
 
+        # A clone with an original-source redirect owns both the predecessor
+        # edge and the source successor. It cannot commute with another queued
+        # edit of that source. Reject before any priority pass discards an owner.
+        for block_serial, mods in block_modifications.items():
+            if len(mods) > 1 and any(
+                mod.mod_type == ModificationType.BLOCK_DUPLICATE_AND_REDIRECT
+                and mod.original_redirect_target is not None
+                for mod in mods
+            ):
+                raise ValueError(
+                    f"conflicting original-source redirect ownership for block {block_serial}"
+                )
+
         # Detect and resolve conflicting modifications for the same block
         for block_serial, mods in block_modifications.items():
             if len(mods) > 1:
