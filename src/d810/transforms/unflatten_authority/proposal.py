@@ -99,9 +99,9 @@ from .ids import (
     authority_id,
     canonical_bytes,
     content_id,
-    validate_canonical_roundtrip,
 )
 from .legacy_keys import LEGACY_UNFLATTEN_KEYS
+from .transaction_facts import active_facts, validate_internal
 
 
 def _native_route_destination_subject_for_proof_destination(
@@ -859,7 +859,10 @@ def validate_proposal(
         )
     try:
         try:
-            validate_canonical_roundtrip(proposal, ProposedUnflattenContract)
+            owner = active_facts()
+            if owner is not None and not owner.contains(proposal):
+                proposal = owner.admit_external(proposal, ProposedUnflattenContract)
+            validate_internal(proposal, ProposedUnflattenContract)
         except Exception:
             return ProposalRejected(
                 UnflattenAuthorityReason.MALFORMED_PROPOSAL,
@@ -995,7 +998,7 @@ def _validated_terminal_route_claim(
     if len(selected) != 1:
         raise ValueError("terminal route claim is absent or ambiguous")
     claim = selected[0]
-    validate_canonical_roundtrip(claim, EquivalentSemanticRouteClaim)
+    validate_internal(claim, EquivalentSemanticRouteClaim)
     selected_proof_id = claim.route_proof_ids[0]
     proofs = tuple(
         proof

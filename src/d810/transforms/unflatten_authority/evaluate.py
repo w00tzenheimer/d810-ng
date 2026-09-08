@@ -1,6 +1,7 @@
 """Pure total evaluator for already-derived unflatten authority inputs."""
 
 from __future__ import annotations
+from .transaction_facts import active_facts, captured, construct
 
 from collections import Counter, defaultdict
 from dataclasses import dataclass, replace
@@ -1387,10 +1388,15 @@ def _make_justification(
 
 
 def _new_index(cells: tuple[model.ObligationEvidenceCell, ...]) -> model.ObligationEvidenceIndex:
+    cells = captured(cells)
     index = object.__new__(model.ObligationEvidenceIndex)
     stage_unpublished_field(index, "cells", cells)
     stage_unpublished_field(index, "_token", model._OBLIGATION_INDEX_TOKEN)
     model.ObligationEvidenceIndex.__post_init__(index)
+    owner = active_facts()
+    if owner is not None:
+        owner.metrics["validations"] += 1
+        return owner._remember(index, index)
     return index
 
 
@@ -5537,7 +5543,7 @@ def build_semantic_loss_ledger(
     if verdict.safety_case is not case:
         raise ValueError("semantic ledger verdict must retain exact safety case")
     rows = _semantic_loss_rows(case)
-    return model.SemanticLossLedger(
+    return construct(model.SemanticLossLedger,
         case=case, authority_id=case.authority_id, case_id=case.case_id,
         phase=case.phase, source_fingerprint=case.source_fingerprint,
         candidate_fingerprint=case.candidate_fingerprint,

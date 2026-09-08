@@ -1,6 +1,7 @@
 """Exact source/projected identity binding for typed unflatten subjects."""
 
 from __future__ import annotations
+from .transaction_facts import active_facts, same_admitted_input, validate_internal
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, fields as dataclass_fields, is_dataclass, replace
@@ -46,7 +47,6 @@ from .ids import (
     _subject_factory,
     canonical_bytes,
     semantic_graph_fingerprint,
-    validate_canonical_roundtrip,
     validate_live_semantic_fields,
     authority_id,
     source_route_authority_id,
@@ -154,7 +154,11 @@ def _validate_derived_transaction_claim_inventory_fields(
         raise TypeError("derived transaction claims require the exact private inventory")
     if type(value.proposal) is not model.ProposedUnflattenContract:
         raise TypeError("derived transaction proposal is not closed")
-    if type(value.plan) is not PatchPlan or value.plan.unflatten_proposal is not value.proposal:
+    owner = active_facts()
+    if type(value.plan) is not PatchPlan or (
+        value.plan.unflatten_proposal is not value.proposal
+        and not (owner is not None and owner.linked_external(value.proposal, value.plan.unflatten_proposal))
+    ):
         raise ValueError("derived transaction plan is foreign to its proposal")
     if type(value.source_inventory) is not model.SemanticGraphInventory:
         raise TypeError("derived transaction source inventory is not closed")
@@ -346,6 +350,9 @@ def _mint_derived_transaction_claim_inventory(
         if name != "value":
             stage_unpublished_field(value, name, item)
     _validate_derived_transaction_claim_inventory_fields(value)
+    owner = active_facts()
+    if owner is not None:
+        return owner.publish_private(_DERIVED_TRANSACTION_CLAIM_INVENTORIES, value)
     key = id(value)
     token = _derived_transaction_claim_inventory_token(value)
 
@@ -363,6 +370,9 @@ def _mint_derived_transaction_claim_inventory(
 def _validate_derived_transaction_claim_inventory(
     value: _DerivedTransactionClaimInventory,
 ) -> None:
+    owner = active_facts()
+    if owner is not None and owner.registered(_DERIVED_TRANSACTION_CLAIM_INVENTORIES, value):
+        return
     _validate_derived_transaction_claim_inventory_fields(value)
     with _REGISTRY_PUBLICATION_LOCK:
         row = _DERIVED_TRANSACTION_CLAIM_INVENTORIES.get(id(value))
@@ -703,6 +713,9 @@ def _register_registry_occurrence(
     value: object, seal: str,
     registry: dict[int, tuple[weakref.ReferenceType[object], str]],
 ) -> object:
+    owner = active_facts()
+    if owner is not None:
+        return owner.issue(registry, value)
     key = id(value)
     reference = _registry_reference(value, registry, key)
     # The memo guard is a full recursive walk and a first registration can
@@ -738,6 +751,9 @@ class _AtomicPublicationBatch:
     ) -> object:
         if self._committed:
             raise ValueError("publication batch is already committed")
+        owner = active_facts()
+        if owner is not None:
+            value = owner.capture(value)
         key = id(value)
 
         reference = _registry_reference(value, registry, key)
@@ -746,6 +762,17 @@ class _AtomicPublicationBatch:
 
     def commit(self) -> None:
         """Precheck every exact occurrence before the first registry write."""
+        owner = active_facts()
+        if owner is not None:
+            if self._committed:
+                raise ValueError("publication batch is already committed")
+            pending = tuple((registry, reference()) for registry, _key, reference, _seal in self._entries)
+            if any(value is None or not owner.contains(value) for _registry, value in pending):
+                raise ValueError("publication batch contains a foreign fact")
+            for registry, value in pending:
+                owner.issue(registry, value)
+            self._committed = True
+            return
         # Same hoist as _register_registry_occurrence: every guard walk this
         # batch needs is taken before the global publication lock.
         tickets: dict[int, object] = {}
@@ -957,6 +984,9 @@ def _require_registered_site_occurrence(
         model.RawEffectGatePhaseFact, model.ScalarizedInstructionCoordinate,
     }:
         raise TypeError("semantic site value has an unknown closed type")
+    owner = active_facts()
+    if owner is not None and owner.registered(_registry, value):
+        return
     row = _registry.get(id(value))
     if row is None or row[0]() is not value:
         raise ValueError("semantic site value was not minted by its binder")
@@ -967,6 +997,9 @@ def _validate_registered_site(
     _content_sealed: bool = False,
 ) -> None:
     _require_registered_site_occurrence(value, _registry)
+    owner = active_facts()
+    if owner is not None and owner.registered(_registry, value):
+        return
     if _content_sealed:
         return
     row = _registry[id(value)]
@@ -1031,6 +1064,9 @@ def _require_registered_site_binding_occurrence(value: object) -> None:
         model.ProjectedSemanticSitePhaseResult, model.ProjectedRouteSitePreservation,
     }:
         raise TypeError("semantic site binding has an unknown closed type")
+    owner = active_facts()
+    if owner is not None and owner.registered(_SITE_BINDING_REGISTRY, value):
+        return
     row = _SITE_BINDING_REGISTRY.get(id(value))
     if row is None or row[0]() is not value:
         raise ValueError("semantic site binding was not minted by this binder")
@@ -1040,6 +1076,9 @@ def _validate_site_binding(
     value: object, identity_name: str, *, _content_sealed: bool = False,
 ) -> None:
     _require_registered_site_binding_occurrence(value)
+    owner = active_facts()
+    if owner is not None and owner.registered(_SITE_BINDING_REGISTRY, value):
+        return
     if _content_sealed:
         return
     row = _SITE_BINDING_REGISTRY[id(value)]
@@ -2172,7 +2211,7 @@ def _validate_projected_site_closure_draft(
         raise _ProjectedSiteDraftViolation("projected site draft has an unknown type", scope=model.RouteRealizationFailureScope.EVIDENCE)
     if type(source_authority) is not model.SourceBoundRouteAuthority or type(plan) is not PatchPlan:
         raise _ProjectedSiteDraftViolation("canonical route context is foreign", scope=model.RouteRealizationFailureScope.EVIDENCE)
-    if plan.unflatten_proposal is not source_authority.proposal or type(attempt_id) is not TransactionAttemptId:
+    if not same_admitted_input(source_authority.proposal, plan.unflatten_proposal) or type(attempt_id) is not TransactionAttemptId:
         raise _ProjectedSiteDraftViolation("canonical route context occurrence differs", scope=model.RouteRealizationFailureScope.EVIDENCE)
     attempt_id.__post_init__()
     proposal_claims = source_authority.proposal.claims
@@ -3622,6 +3661,9 @@ def _canonical_registry_seal_uncached(
 
 
 def _register_route(value: object, identity: str, _registry=_ROUTE_REGISTRY, _seal=_route_content_seal) -> object:
+    owner = active_facts()
+    if owner is not None:
+        return owner.issue(_registry, value)
     seal = _seal(value, identity)
     return _register_registry_occurrence(value, seal, _registry)
 
@@ -3646,6 +3688,9 @@ def _require_registered_route_occurrence(
         model.ProjectedRouteRealizationAccepted, model.ProjectedRouteRealizationRejected,
     }:
         raise TypeError("route authority value has an unknown closed type")
+    owner = active_facts()
+    if owner is not None and owner.registered(_registry, value):
+        return
     row = _registry.get(id(value))
     if row is None or row[0]() is not value:
         raise ValueError("route authority value was not minted by its kernel")
@@ -3656,6 +3701,9 @@ def _validate_registered_route(
     _seal=_route_content_seal, *, _content_sealed: bool = False,
 ) -> None:
     _require_registered_route_occurrence(value, _registry)
+    owner = active_facts()
+    if owner is not None and owner.registered(_registry, value):
+        return
     if _content_sealed:
         return
     row = _registry[id(value)]
@@ -3674,6 +3722,11 @@ def _route_mint(
     for name, item in values.items():
         stage_unpublished_field(value, name, item)
     value.__post_init__()
+    owner = active_facts()
+    if owner is not None:
+        if _batch is not None:
+            return _batch.defer(value=value, registry=_registry, seal="owned")
+        return owner.issue(_registry, value)
     identity = getattr(value, identity_name)
     if _batch is not None:
         stored_seal = _seal(value, identity)
@@ -3712,6 +3765,11 @@ def _route_result(
     for name, item in values.items():
         stage_unpublished_field(result, name, item)
     result.__post_init__()
+    owner = active_facts()
+    if owner is not None:
+        if _batch is not None:
+            return _batch.defer(value=result, registry=_registry, seal="owned")
+        return owner.issue(_registry, result)
     identity = (
         getattr(result, identity_name) if identity_name is not None
         else _route_result_identity(result)
@@ -4105,7 +4163,7 @@ def _bind_source_route_authority(*, proposal: model.ProposedUnflattenContract,
         if type(proposal) is not model.ProposedUnflattenContract:
             raise TypeError("source authority requires a closed proposal")
         proposal.__post_init__()
-        validate_canonical_roundtrip(proposal, model.ProposedUnflattenContract)
+        validate_internal(proposal, model.ProposedUnflattenContract)
         if type(source_inventory) is not model.SemanticGraphInventory:
             raise TypeError("source authority requires a closed source inventory")
         model.validate_semantic_graph_inventory(source_inventory)
@@ -5437,7 +5495,7 @@ def _legacy_structural_projected_routes(*, source_authority: model.SourceBoundRo
         if type(plan) is not PatchPlan:
             raise TypeError("projected realization requires a PatchPlan")
         active_stage = model.RouteRealizationFailureStage.ATTEMPT_BINDING
-        if plan.unflatten_proposal is not source_authority.proposal:
+        if not same_admitted_input(source_authority.proposal, plan.unflatten_proposal):
             raise ValueError(
                 "projected realization plan is not bound to source authority proposal"
             )
@@ -7326,6 +7384,9 @@ def _validate_registered_result(value, expected, _registry=_ROUTE_REGISTRY,
                                _seal=_route_content_seal):
     if type(value) is not expected:
         raise TypeError(f"route result has unexpected type {type(value).__name__}")
+    owner = active_facts()
+    if owner is not None and owner.registered(_registry, value):
+        return
     row = _registry.get(id(value))
     if row is None or row[0]() is not value:
         raise ValueError("route result was not minted by the route kernel")
@@ -7625,7 +7686,7 @@ def _make_route_kernels():
         model.validate_semantic_graph_inventory(source_inventory)
         if type(plan) is not PatchPlan:
             raise TypeError("projected relation drafts require a PatchPlan")
-        if plan.unflatten_proposal is not source_authority.proposal:
+        if not same_admitted_input(source_authority.proposal, plan.unflatten_proposal):
             raise ValueError("projected relation draft plan is foreign to authority")
         if type(patch_step_facts) is not tuple:
             raise TypeError("projected relation drafts require exact patch facts")
@@ -8834,6 +8895,10 @@ def _make_route_kernels():
         authority: model.SourceBoundRouteAuthority,
         inventory: model.SemanticGraphInventory,
     ) -> None:
+        owner = active_facts()
+        if owner is not None:
+            owner.link(source_inventory_pairs, authority, inventory)
+            return
         key = id(authority)
 
         def cleanup(reference: weakref.ReferenceType[object]) -> None:
@@ -8848,6 +8913,11 @@ def _make_route_kernels():
     ) -> None:
         if type(authority) is not model.SourceBoundRouteAuthority:
             raise TypeError("projected route requires a registered source authority")
+        owner = active_facts()
+        if owner is not None:
+            if not owner.linked(source_inventory_pairs, authority, inventory):
+                raise ValueError("source inventory is not the authority-paired occurrence")
+            return
         row = source_inventory_pairs.get(id(authority))
         if row is None or row[0]() is not authority:
             raise ValueError("source authority is not paired with a source inventory")
@@ -8925,6 +8995,9 @@ def _make_route_kernels():
         stage_unpublished_field(value, "attempt_id", attempt_id)
         stage_unpublished_field(value, "projected_inventory", projected_inventory)
         validate_transaction_projected_claim_inventory_fields(value)
+        owner = active_facts()
+        if owner is not None:
+            return owner.publish_private(projected_claim_inventories, value)
         key = id(value)
         token = projected_claim_inventory_token(value)
 
@@ -8945,6 +9018,9 @@ def _make_route_kernels():
     ) -> None:
         if type(value) is not _TransactionProjectedClaimInventory:
             raise TypeError("projected transaction claims require the exact private inventory")
+        owner = active_facts()
+        if owner is not None and owner.registered(projected_claim_inventories, value):
+            return
         with _REGISTRY_PUBLICATION_LOCK:
             row = projected_claim_inventories.get(id(value))
             if row is None or row[0]() is not value:
@@ -9029,7 +9105,7 @@ def _make_route_kernels():
         # recomputed envelope ID.
         if type(source_authority) is not model.SourceBoundRouteAuthority:
             return reject_input(model.RouteRealizationFailureStage.SOURCE_AUTHORITY)
-        if type(plan) is not PatchPlan or plan.unflatten_proposal is not source_authority.proposal:
+        if type(plan) is not PatchPlan or not same_admitted_input(source_authority.proposal, plan.unflatten_proposal):
             return reject_input()
         if type(claims) is not tuple:
             return reject_input()
@@ -9192,7 +9268,7 @@ def _make_route_kernels():
         if (
             type(source_authority) is not model.SourceBoundRouteAuthority
             or type(plan) is not PatchPlan
-            or plan.unflatten_proposal is not source_authority.proposal
+            or not same_admitted_input(source_authority.proposal, plan.unflatten_proposal)
             or type(claims) is not tuple
             or claims is not source_authority.proposal.claims
             or type(patch_step_facts) is not tuple
@@ -9347,9 +9423,9 @@ class RetiredInfrastructureBindingResult:
             raise ValueError("retirement projected inventory must be projected preflight")
         if self.source_inventory.generation != self.generation:
             raise ValueError("retirement source inventory generation is stale")
-        validate_canonical_roundtrip(self.claim, model.RetiredDispatcherInfrastructureClaim)
-        validate_canonical_roundtrip(self.proposal, model.ProposedUnflattenContract)
-        validate_canonical_roundtrip(self.source_catalog, model.SourceIdentityCatalog)
+        validate_internal(self.claim, model.RetiredDispatcherInfrastructureClaim)
+        validate_internal(self.proposal, model.ProposedUnflattenContract)
+        validate_internal(self.source_catalog, model.SourceIdentityCatalog)
         if self.claim not in self.proposal.claims:
             raise ValueError("retirement claim is foreign to the proposal")
         if self.generation != self.source_catalog.generation:
@@ -9733,8 +9809,8 @@ class TerminalCycleBindingResult:
             raise TypeError("claim must be a closed terminal-cycle claim")
         if type(self.proposal) is not model.ProposedUnflattenContract:
             raise TypeError("proposal must be a closed proposal")
-        validate_canonical_roundtrip(self.claim, model.TerminalCycleBreakClaim)
-        validate_canonical_roundtrip(self.proposal, model.ProposedUnflattenContract)
+        validate_internal(self.claim, model.TerminalCycleBreakClaim)
+        validate_internal(self.proposal, model.ProposedUnflattenContract)
         if self.claim not in self.proposal.claims:
             raise ValueError("terminal-cycle claim is foreign to the proposal")
         if self.generation != self.proposal.source_identity_catalog.generation:
@@ -12295,7 +12371,7 @@ def bind_subjects(
 
     if type(catalog) is not model.SourceIdentityCatalog:
         raise TypeError("catalog must be a SourceIdentityCatalog")
-    validate_canonical_roundtrip(catalog, model.SourceIdentityCatalog)
+    validate_internal(catalog, model.SourceIdentityCatalog)
     if type(phase) is not model.UnflattenAuthorityPhase:
         raise TypeError("phase must be an UnflattenAuthorityPhase")
     if type(graph_fingerprint) is not str or not graph_fingerprint.startswith("sha256:"):
@@ -12558,7 +12634,7 @@ def bind_projected_subjects(
 
     if type(catalog) is not model.SourceIdentityCatalog:
         raise TypeError("catalog must be a SourceIdentityCatalog")
-    validate_canonical_roundtrip(catalog, model.SourceIdentityCatalog)
+    validate_internal(catalog, model.SourceIdentityCatalog)
     if type(phase) is not model.UnflattenAuthorityPhase:
         raise TypeError("phase must be an UnflattenAuthorityPhase")
     if type(graph_fingerprint) is not str or not graph_fingerprint.startswith("sha256:"):
