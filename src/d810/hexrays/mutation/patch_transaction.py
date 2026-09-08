@@ -523,6 +523,9 @@ class HexRaysPatchTransactionParticipant:
     post_apply_hook: object | None = None
     attempt_authority: TransactionAttemptId | None = None
     attempt_id: TransactionAttemptId = field(init=False)
+    structural_context: unflatten_authority_api.StructuralTransactionContext = field(
+        init=False, repr=False,
+    )
     _projection: CfgProjection | None = field(default=None, init=False, repr=False)
     _snapshot: FlowGraph | None = field(default=None, init=False, repr=False)
     _prepared: PreparedPatchCfgTransaction | None = field(
@@ -584,6 +587,22 @@ class HexRaysPatchTransactionParticipant:
             ):
                 raise ValueError("patch participant attempt authority differs")
             self.attempt_id = attempt_authority
+        self.structural_context = unflatten_authority_api.StructuralTransactionContext(
+            self.attempt_id, self.gateway.native_key, self._structural_coordinates(),
+        )
+
+    def _structural_coordinates(
+        self,
+    ) -> unflatten_authority_api.StructuralTransactionCoordinates:
+        return unflatten_authority_api.StructuralTransactionCoordinates(
+            self.plan.snapshot_id, int(self.gateway.maturity),
+            int(self.gateway.generation), None,
+            self.gateway.identity_index.evidence_generation,
+        )
+
+    def close(self) -> None:
+        """End structural ownership after commit, abort or any exception."""
+        self.structural_context.close()
 
     def project(self, plan: object, snapshot: object) -> CfgProjection:
         if plan is not self.plan:
@@ -930,6 +949,9 @@ class HexRaysPatchTransactionParticipant:
             ),
         )
         self._applied_count = receipt
+        self.structural_context.begin_observation(
+            self.attempt_id, self.gateway.native_key, self._structural_coordinates(),
+        )
         return observed
 
     @property
@@ -1275,42 +1297,45 @@ def execute_patch_transaction(
         post_apply_hook=post_apply_hook,
         attempt_authority=attempt_id,
     )
-    phase = "projection"
     try:
-        _publish_patch_plan_observation(participant, pre_cfg)
-        projected = participant.project(plan, pre_cfg)
-        phase = "preflight"
-        prepared = participant.preflight(projected)
-        phase = "binding"
-        bound = participant.bind(prepared, gateway.identity_index)
-    except Exception as error:
-        reason, obligation = _first_failure(error, phase)
-        if gateway.current_transaction_attempt is not None:
-            gateway._record_clean_cfg_failure(
-                reason=reason,
-                failure_phase=phase,
-                first_failed_obligation=obligation,
-            )
-            gateway.abort(reason=reason)
-        raise
-    if not isinstance(bound, BoundPatchCfgTransaction):
-        raise TypeError("patch participant returned invalid binding authority")
-    from d810.transforms.fragment_to_patch import (
-        CfgTransactionCoordinator,
-        PatchTransactionParticipant,
-    )
+        phase = "projection"
+        try:
+            _publish_patch_plan_observation(participant, pre_cfg)
+            projected = participant.project(plan, pre_cfg)
+            phase = "preflight"
+            prepared = participant.preflight(projected)
+            phase = "binding"
+            bound = participant.bind(prepared, gateway.identity_index)
+        except Exception as error:
+            reason, obligation = _first_failure(error, phase)
+            if gateway.current_transaction_attempt is not None:
+                gateway._record_clean_cfg_failure(
+                    reason=reason,
+                    failure_phase=phase,
+                    first_failed_obligation=obligation,
+                )
+                gateway.abort(reason=reason)
+            raise
+        if not isinstance(bound, BoundPatchCfgTransaction):
+            raise TypeError("patch participant returned invalid binding authority")
+        from d810.transforms.fragment_to_patch import (
+            CfgTransactionCoordinator,
+            PatchTransactionParticipant,
+        )
 
-    lifecycle = _PatchTransactionLifecycle(
-        participant=participant,
-        bound=bound,
-        gateway=gateway,
-        plan=plan,
-        prepared=prepared,
-    )
-    return CfgTransactionCoordinator(lifecycle).execute(
-        PatchTransactionParticipant(),
-        plan,
-    )
+        lifecycle = _PatchTransactionLifecycle(
+            participant=participant,
+            bound=bound,
+            gateway=gateway,
+            plan=plan,
+            prepared=prepared,
+        )
+        return CfgTransactionCoordinator(lifecycle).execute(
+            PatchTransactionParticipant(),
+            plan,
+        )
+    finally:
+        participant.close()
 
 __all__ = [
     "BoundPatchCfgTransaction",
