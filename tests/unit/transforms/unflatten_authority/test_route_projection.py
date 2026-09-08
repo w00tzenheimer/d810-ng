@@ -366,3 +366,89 @@ def test_entry_allowance_projection_preserves_each_accepted_identity_form(
         route_projection.project_entry_allowance(
             original, replace(group, proof_id_pairs=())
         )
+
+
+@pytest.mark.parametrize("shape", ["exact", "terminal", "entry"])
+def test_proposal_projection_preserves_complete_wire_bytes_and_clears_claim_authority(
+    shape,
+):
+    _source, original, _exclusion, _refs = exact_fixture()
+    if shape == "terminal":
+        original, _claim = _terminal_cycle_fixture()
+    elif shape == "entry":
+        original = replace(
+            original,
+            corridor_coverage_forecast=_minimal_corridor_forecast(model, original),
+            entry_endpoint_liveness_allowances=(
+                entry_allowance_fixture(
+                    original.route_evidence.route_proofs[0].proof_id,
+                    legacy=True,
+                    corridor=False,
+                ),
+            ),
+        )
+    with route_authority_phase("proposal-projection") as owner:
+        arena = RuntimeAuthorityArena(RuntimeAuthorityScope("proposal-owned-proofs"))
+        owner.adopt(arena)
+        evidence = original.route_evidence
+        group = project_owned_route_group(
+            arena.structural,
+            evidence.generation,
+            evidence.atomic_group_id,
+            tuple(
+                (
+                    proof.proof_id,
+                    capture_structural_route_proof(arena.structural, proof),
+                    proof.diagnostic_provenance,
+                )
+                for proof in evidence.route_proofs
+            ),
+        )
+    result = route_projection.project_route_proposal(original, group)
+    assert canonical_bytes(result.proposal) == canonical_bytes(original)
+    assert result.proposal_id_pair == (authority_id(original), authority_id(original))
+    assert result.proposal.route_evidence.route_binding is None
+    for claim in result.proposal.claims:
+        if type(claim) is model.EquivalentSemanticRouteClaim:
+            assert claim.runtime_refs is None
+    assert tuple(old for old, _new in result.claim_id_pairs) == tuple(
+        claim.claim_id for claim in original.claims
+    )
+    foreign = replace(
+        group, group_id_pair=("sha256:" + "b" * 64, group.group_id_pair[1])
+    )
+    with pytest.raises(ValueError, match="group"):
+        route_projection.project_route_proposal(original, foreign)
+
+
+@pytest.mark.parametrize(
+    "mutation", ["duplicate", "missing", "wrong_target", "bound_target"]
+)
+def test_proposal_projection_rejects_invalid_complete_group_correspondence(mutation):
+    _source, proposal, _exclusion, _refs = exact_fixture()
+    _claims, group, _expected = projection_fixture()
+    group = replace(
+        group,
+        group_id_pair=(
+            proposal.route_evidence.atomic_group_id,
+            group.evidence.atomic_group_id,
+        ),
+        proof_id_pairs=tuple(
+            (proof.proof_id, proof.proof_id)
+            for proof in proposal.route_evidence.route_proofs
+        ),
+    )
+    if mutation == "duplicate":
+        group = replace(
+            group, proof_id_pairs=group.proof_id_pairs + group.proof_id_pairs[:1]
+        )
+    elif mutation == "missing":
+        group = replace(group, proof_id_pairs=())
+    elif mutation == "wrong_target":
+        group = replace(
+            group, group_id_pair=(group.group_id_pair[0], "sha256:" + "c" * 64)
+        )
+    else:
+        group = replace(group, evidence=proposal.route_evidence)
+    with pytest.raises(ValueError):
+        route_projection.project_route_proposal(proposal, group)

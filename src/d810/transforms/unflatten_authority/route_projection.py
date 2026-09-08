@@ -12,6 +12,12 @@ from d810.transforms.unflatten_authority.ids import authority_id, canonical_byte
 from d810.transforms.unflatten_authority.model import (
     EquivalentSemanticRouteClaim,
     EntryEndpointLivenessAllowance,
+    ProposedUnflattenContract,
+    RetiredDispatcherInfrastructureClaim,
+    DetachedDeadHandlerComponentClaim,
+    CorridorCoverageForecast,
+    ProducerUnflattenClaim,
+    canonical_model_order,
     DefaultGapInfeasibilityExclusion,
     DefaultGapInfeasibilityForecast,
     ExactInfeasibleEffectClaim,
@@ -375,4 +381,131 @@ def project_entry_allowance(
     )
     return CanonicalEntryAllowanceProjection(
         projected, (allowance.allowance_id, projected.allowance_id)
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class CanonicalRouteProposalProjection:
+    proposal: ProposedUnflattenContract
+    proposal_id_pair: tuple[str, str]
+    claim_id_pairs: tuple[tuple[str, str], ...]
+    subject_id_pairs: tuple[tuple[str, str], ...]
+    path_id_pairs: tuple[tuple[str, str], ...]
+    allowance_id_pairs: tuple[tuple[str, str], ...]
+
+
+def _unbound_non_route_claim(claim: ProducerUnflattenClaim) -> ProducerUnflattenClaim:
+    if type(claim) is RetiredDispatcherInfrastructureClaim:
+        return replace(
+            claim,
+            infrastructure_subject=replace(
+                claim.infrastructure_subject, _runtime_ref=None
+            ),
+            corridor_subject=replace(claim.corridor_subject, _runtime_ref=None),
+            member_subjects=tuple(
+                replace(item, _runtime_ref=None) for item in claim.member_subjects
+            ),
+        )
+    if type(claim) is DetachedDeadHandlerComponentClaim:
+        return replace(
+            claim,
+            dispatcher_subject=replace(claim.dispatcher_subject, _runtime_ref=None),
+            dead_handler_subjects=tuple(
+                replace(item, _runtime_ref=None) for item in claim.dead_handler_subjects
+            ),
+            retained_handler_subjects=tuple(
+                replace(item, _runtime_ref=None)
+                for item in claim.retained_handler_subjects
+            ),
+            component_subjects=tuple(
+                replace(item, _runtime_ref=None) for item in claim.component_subjects
+            ),
+            comparison_region_subjects=tuple(
+                replace(item, _runtime_ref=None)
+                for item in claim.comparison_region_subjects
+            ),
+        )
+    raise TypeError("unsupported non-route producer claim family")
+
+
+def project_route_proposal(
+    proposal: ProposedUnflattenContract,
+    projection: CanonicalRouteIdProjection,
+) -> CanonicalRouteProposalProjection:
+    """Project the complete proposal boundary before source authority is minted."""
+    if type(proposal) is not ProposedUnflattenContract:
+        raise TypeError("projection requires an exact unflatten proposal")
+    if type(projection) is not CanonicalRouteIdProjection:
+        raise TypeError("projection requires canonical route ID correspondence")
+    if projection.group_id_pair[1] != projection.evidence.atomic_group_id:
+        raise ValueError("projection target group does not match its evidence")
+    proof_ids = dict(projection.proof_id_pairs)
+    if len(proof_ids) != len(projection.proof_id_pairs):
+        raise ValueError("projection contains ambiguous source proof IDs")
+    if not set(proof_ids.values()) <= {
+        proof.proof_id for proof in projection.evidence.route_proofs
+    }:
+        raise ValueError("projection names an absent canonical proof")
+    if proposal.route_evidence.atomic_group_id != projection.group_id_pair[0]:
+        raise ValueError("proposal belongs to another source route group")
+    if (
+        projection.evidence.route_binding is not None
+        or projection.evidence.runtime_identity is not None
+    ):
+        raise ValueError(
+            "proposal projection requires unbound canonical target evidence"
+        )
+    if (
+        proposal.source_identity_catalog.generation != projection.evidence.generation
+        or proposal.source_identity_catalog.native_key != projection.evidence.native_key
+    ):
+        raise ValueError("proposal source coordinates differ from target evidence")
+    if {old for old, _new in projection.proof_id_pairs} != {
+        item.proof_id for item in proposal.route_evidence.route_proofs
+    }:
+        raise ValueError("projection must cover the complete source proof group")
+    claims = []
+    claim_pairs = []
+    subject_pairs = []
+    for claim in proposal.claims:
+        if type(claim) in (
+            EquivalentSemanticRouteClaim,
+            ExactInfeasibleEffectClaim,
+            TerminalCycleBreakClaim,
+        ):
+            result = project_proof_referencing_claim(claim, projection)
+            projected = result.claim
+            subject_pairs.extend(result.subject_id_pairs)
+        else:
+            projected = _unbound_non_route_claim(claim)
+        claims.append(projected)
+        claim_pairs.append((claim.claim_id, projected.claim_id))
+    forecast = proposal.corridor_coverage_forecast
+    path_pairs = ()
+    if type(forecast) is DefaultGapInfeasibilityForecast:
+        result = project_default_gap_forecast(forecast, projection)
+        forecast = result.forecast
+        path_pairs = result.path_id_pairs
+    elif forecast is not None and type(forecast) is not CorridorCoverageForecast:
+        raise TypeError("unsupported corridor forecast family")
+    allowances = tuple(
+        project_entry_allowance(item, projection)
+        for item in proposal.entry_endpoint_liveness_allowances
+    )
+    projected = replace(
+        proposal,
+        route_evidence=projection.evidence,
+        claims=canonical_model_order(claims, "claims"),
+        corridor_coverage_forecast=forecast,
+        entry_endpoint_liveness_allowances=canonical_model_order(
+            tuple(item.allowance for item in allowances), "entry allowances"
+        ),
+    )
+    return CanonicalRouteProposalProjection(
+        projected,
+        (authority_id(proposal), authority_id(projected)),
+        tuple(claim_pairs),
+        tuple(subject_pairs),
+        path_pairs,
+        tuple(item.allowance_id_pair for item in allowances),
     )
