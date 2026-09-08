@@ -881,6 +881,9 @@ def _validate_observed_logical_endpoint_occurrence(
 ) -> None:
     if type(occurrence) is not model.ObservedLogicalEndpointOccurrence:
         raise TypeError("observed logical endpoint occurrence has unknown type")
+    owner = active_facts()
+    if owner is not None and owner.registered(_OBSERVED_LOGICAL_ENDPOINT_REGISTRY, occurrence):
+        return
     occurrence.__post_init__()
     row = _OBSERVED_LOGICAL_ENDPOINT_REGISTRY.get(id(occurrence))
     if row is None or row[0]() is not occurrence:
@@ -909,6 +912,9 @@ def validate_observed_route_topology_occurrence(
 ) -> None:
     if type(occurrence) is not model.ObservedRouteTopologyOccurrence:
         raise TypeError("observed route topology occurrence has unknown type")
+    owner = active_facts()
+    if owner is not None and owner.registered(_OBSERVED_ROUTE_TOPOLOGY_REGISTRY, occurrence):
+        return
     occurrence.__post_init__()
     row = _OBSERVED_ROUTE_TOPOLOGY_REGISTRY.get(id(occurrence))
     if row is None or row[0]() is not occurrence:
@@ -939,6 +945,9 @@ def validate_observed_lowered_conditional_topology_occurrence(
         raise TypeError(
             "observed lowered conditional topology occurrence has unknown type",
         )
+    owner = active_facts()
+    if owner is not None and owner.registered(_OBSERVED_LOWERED_CONDITIONAL_TOPOLOGY_REGISTRY, occurrence):
+        return
     occurrence.__post_init__()
     row = _OBSERVED_LOWERED_CONDITIONAL_TOPOLOGY_REGISTRY.get(id(occurrence))
     if row is None or row[0]() is not occurrence:
@@ -12173,6 +12182,9 @@ def _make_retirement_binding_entrypoint(
     def validate_phase(result: model.RetirementPhaseResult) -> None:
         if type(result) is not model.RetirementPhaseResult:
             raise TypeError("retirement phase result must be closed")
+        owner = active_facts()
+        if owner is not None and owner.registered(phase_registry, result):
+            return
         registered = phase_registry.get(id(result))
         if registered is None or registered[0]() is not result:
             raise ValueError("retirement phase result was not minted by the transaction binder")
@@ -12186,6 +12198,11 @@ def _make_retirement_binding_entrypoint(
         if type(result) is not model.RetirementPhaseResult:
             raise TypeError("retirement phase result must be closed")
         result.__post_init__()
+        owner = active_facts()
+        if owner is not None:
+            if owner.registered(phase_registry, result):
+                raise ValueError("retirement phase result occurrence was already minted")
+            return owner.issue(phase_registry, result)
         identity = id(result)
         registered = phase_registry.get(identity)
         if registered is not None and registered[0]() is result:
@@ -12202,10 +12219,20 @@ def _make_retirement_binding_entrypoint(
         return result
 
     def entrypoint(**kwargs: object) -> RetiredInfrastructureBindingResult:
+        owner = active_facts()
+        if owner is not None:
+            # Capture the shared inventories before constructing phase members,
+            # so their issued result retains the exact binder row references.
+            kwargs = {name: owner.capture(value) for name, value in kwargs.items()}
         result = graph_impl(**kwargs)
         phase_result = result.phase_result
         assert phase_result is not None
-        register_phase(phase_result)
+        issued = register_phase(phase_result)
+        if issued is not phase_result:
+            # This carrier has not escaped the binder. Publish its owned phase
+            # reference, never grant issuance to arbitrary captured copies.
+            stage_unpublished_field(result, "phase_result", issued)
+            result._validate_fields()
         return result
 
     def observed_entrypoint(**kwargs: object) -> model.RetirementPhaseResult:

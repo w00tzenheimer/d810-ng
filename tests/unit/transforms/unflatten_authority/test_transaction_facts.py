@@ -291,3 +291,129 @@ def test_complete_path_work_inventory():
     assert result["owned"]["legacy"]["validate_canonical_roundtrip"] == 1
     assert result["owned"]["legacy"]["_feed_occurrence"] < result["strict"]["legacy"]["_feed_occurrence"]
     print(json.dumps(result, sort_keys=True))
+
+
+def test_owned_retirement_issuance_survives_fact_capture():
+    """Binder-issued retirement must survive case/input ownership capture."""
+    from d810.transforms.unflatten_authority import bind, model
+    from tests.unit.transforms.unflatten_authority.test_transaction_api import _full_corridor_inputs
+
+    *_, inputs = _full_corridor_inputs()
+    owner = TransactionFacts()
+    try:
+        with fact_scope(owner):
+            result = bind.bind_retired_dispatcher_infrastructure_claim(
+                claim=next(claim for claim in inputs.proposal.claims
+                           if type(claim) is model.RetiredDispatcherInfrastructureClaim),
+                proposal=inputs.proposal,
+                source_inventory=inputs.source_inventory,
+                projected_inventory=inputs.candidate_inventory,
+            )
+            issued = result.phase_result
+            assert issued is not None
+            bind.validate_retirement_phase_result(issued)
+            snapshot = owner.capture(issued)
+            bind.validate_retirement_phase_result(snapshot)
+            assert snapshot is issued
+            # Merely owning a schema-valid copy must not confer issuance.
+            from d810.transforms.unflatten_authority import ids
+            from dataclasses import fields
+            reminted = object.__new__(type(issued))
+            for field in fields(issued):
+                ids.stage_unpublished_field(reminted, field.name, getattr(issued, field.name))
+            forged = owner.capture(reminted)
+            with pytest.raises(ValueError, match="not minted"):
+                bind.validate_retirement_phase_result(forged)
+        foreign = TransactionFacts()
+        try:
+            with fact_scope(foreign):
+                with pytest.raises(ValueError, match="not minted"):
+                    bind.validate_retirement_phase_result(issued)
+                copied = foreign.capture(issued)
+                with pytest.raises(ValueError, match="not minted"):
+                    bind.validate_retirement_phase_result(copied)
+        finally:
+            foreign.close()
+        observed = TransactionFacts(parent=owner)
+        try:
+            with fact_scope(observed):
+                bind.validate_retirement_phase_result(issued)
+                assert observed.capture(issued) is issued
+        finally:
+            observed.close()
+        with pytest.raises(ValueError, match="not minted"):
+            bind.validate_retirement_phase_result(issued)
+    finally:
+        owner.close()
+    with pytest.raises(ValueError, match="closed"):
+        with fact_scope(owner):
+            bind.validate_retirement_phase_result(issued)
+
+
+def test_capture_does_not_adopt_external_retirement_issuance():
+    """A captured external/legacy phase is data, not an owner-issued authority."""
+    from d810.transforms.unflatten_authority import bind
+    from tests.unit.transforms.unflatten_authority.test_transaction_api import _full_corridor_inputs
+
+    *_, inputs = _full_corridor_inputs()
+    original = inputs.retirement_phase_result
+    bind.validate_retirement_phase_result(original)
+    owner = TransactionFacts()
+    try:
+        with fact_scope(owner):
+            copied = owner.capture(original)
+            with pytest.raises(ValueError, match="not minted"):
+                bind.validate_retirement_phase_result(copied)
+    finally:
+        owner.close()
+
+
+@pytest.mark.parametrize("kind", ("logical_endpoint", "route_topology", "lowered_conditional_topology"))
+def test_owned_observed_occurrence_requires_exact_namespace_issuance(kind):
+    """Observed validators must consume owner issuance, never adopt copies."""
+    from dataclasses import replace
+    from d810.transforms.cfg_transaction import LogicalBlockRef
+    from d810.transforms.unflatten_authority import bind, model
+
+    refs = tuple(LogicalBlockRef("observed-session", name, 1)
+                 for name in ("source", "false", "true"))
+    fact = model.PatchStepEvidencePayload(
+        ids.authority_id("plan"), 0, "PatchRedirectEdge", refs[0],
+        ids.authority_id("step"), 0x401000, None, None,
+    )
+    pairs = (model.TopologyEdgeRelation(
+        next(iter(model.SemanticEdgeRole)), ids.authority_id("source-subject"),
+        ids.authority_id("target-subject"), 0x401000,
+    ),)
+    if kind == "logical_endpoint":
+        mint = bind._mint_observed_logical_endpoint_occurrence
+        validate = bind._validate_observed_logical_endpoint_occurrence
+        values = dict(logical_ref=refs[1], projected_serial=4, observed_serial=5,
+                      owner_ref=refs[0], predecessor_refs=(refs[0],))
+    elif kind == "route_topology":
+        mint = bind.mint_observed_route_topology_occurrence
+        validate = bind.validate_observed_route_topology_occurrence
+        values = dict(relation_id=ids.authority_id("relation"), row_id=ids.authority_id("row"),
+                      patch_fact=fact, normalized_pairs=pairs)
+    else:
+        mint = bind.mint_observed_lowered_conditional_topology_occurrence
+        validate = bind.validate_observed_lowered_conditional_topology_occurrence
+        values = dict(patch_fact=fact, source_ref=refs[0], false_target_ref=refs[1],
+                      true_target_ref=refs[2], normalized_pairs=pairs)
+    projected = TransactionFacts()
+    observed = TransactionFacts(parent=projected)
+    try:
+        with fact_scope(observed):
+            issued = mint(**values)
+            validate(issued)
+            validate(observed.capture(issued))
+            with pytest.raises(ValueError, match="not minted"):
+                validate(observed.capture(replace(issued)))
+        with fact_scope(projected):
+            with pytest.raises(ValueError, match="not minted"):
+                validate(issued)
+        with pytest.raises(ValueError, match="not minted"):
+            validate(issued)
+    finally:
+        observed.close()
+        projected.close()
