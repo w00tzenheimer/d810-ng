@@ -1895,6 +1895,38 @@ class TestIDAIntegration:
         assert helper.nsucc() == 1
         assert helper.succ(0) == new_target
 
+    def test_both_conditional_edges_to_common_target_keep_real_helper_receipt(
+        self,
+        libobfuscated_setup,
+    ):
+        mba = _get_real_mba()
+        candidate = _find_fallthrough_redirect_candidate(mba)
+        assert candidate is not None, "fixture must supply a conditional source"
+        source, old_fallthrough, new_target = candidate
+        old_branch = int(mba.get_mblock(source).tail.d.b)
+        backend = IDAIRTranslator()
+        gateway = make_mutation_gateway(mba)
+        plan = _compile_for_gateway(
+            backend,
+            mba,
+            gateway,
+            [
+                RedirectBranch(source, old_fallthrough, new_target),
+                RedirectBranch(source, old_branch, new_target),
+            ],
+        )
+        assert len(plan.steps) == 2
+        assert len(plan.new_blocks) == 1
+        assert _lower_bound(backend, plan, mba, gateway) == 2
+        assert not gateway.generation_poisoned
+        mba.verify(True)
+        helper_serial = _created_serial(gateway, plan.new_blocks[0].block_id)
+        source_block = mba.get_mblock(source)
+        helper = mba.get_mblock(helper_serial)
+        assert helper.nsucc() == 1
+        assert int(source_block.tail.d.b) == int(helper.succ(0))
+        assert helper_serial in set(source_block.succset)
+
     def test_lower_applies_duplicate_block_patch_plan_to_real_mba(
         self, libobfuscated_setup
     ):

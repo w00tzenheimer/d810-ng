@@ -2752,6 +2752,7 @@ def _compile_patch_plan_impl(
     ] = []
     new_blocks: list[PatchBlockSpec] = []
     predecessor_clones: dict[tuple[int, int | None], DuplicateBlock] = {}
+    conditional_redirects: dict[tuple[int, int], RedirectBranch] = {}
 
     for modification in modifications:
         match modification:
@@ -2765,6 +2766,17 @@ def _compile_patch_plan_impl(
                 )
 
             case RedirectBranch(from_serial=src, old_target=old, new_target=new):
+                # Fallthrough redirects may allocate a helper. Reconcile exact
+                # requests before binding so no helper owner loses its receipt.
+                owner = (src, old)
+                previous = conditional_redirects.get(owner)
+                if previous is not None:
+                    if previous != modification:
+                        raise ValueError(
+                            f"conflicting conditional edge requests for {owner}"
+                        )
+                    continue
+                conditional_redirects[owner] = modification
                 if cfg is None:
                     raise ValueError(
                         "RedirectBranch compilation requires source FlowGraph authority"

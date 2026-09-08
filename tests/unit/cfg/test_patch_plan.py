@@ -1414,3 +1414,26 @@ def test_distinct_predecessors_own_distinct_plan_creations(targets):
     )
     assert len(plan.steps) == len(plan.new_blocks) == 2
     assert len({step.block_id for step in plan.steps}) == 2
+
+
+def test_identical_branch_requests_reconcile_helper_before_binding():
+    request = RedirectBranch(10, 11, 9)
+    plan = compile_patch_plan([request, request], _conditional_cfg())
+    assert len(plan.steps) == len(plan.new_blocks) == 1
+    assert plan.steps[0].fallthrough_helper_block_id == plan.new_blocks[0].block_id
+
+
+def test_conflicting_branch_requests_reject_before_binding():
+    with pytest.raises(ValueError, match="conflicting conditional edge"):
+        compile_patch_plan(
+            [RedirectBranch(10, 11, 9), RedirectBranch(10, 11, 12)], _conditional_cfg()
+        )
+
+
+def test_distinct_branch_edges_to_common_target_keep_helper_owner():
+    plan = compile_patch_plan(
+        [RedirectBranch(10, 11, 9), RedirectBranch(10, 14, 9)], _conditional_cfg()
+    )
+    assert len(plan.steps) == 2
+    assert len(plan.new_blocks) == 1
+    assert {step.old_target for step in plan.steps} == {_logical(11), _logical(14)}

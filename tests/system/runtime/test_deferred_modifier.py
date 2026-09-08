@@ -5746,8 +5746,77 @@ def test_original_redirect_coalescing_accepts_one_owned_source_effect():
     modifier = dm.DeferredGraphModifier(None)
     for _ in range(2):
         modifier.queue_duplicate_block(
-            source_block_serial=455, pred_serial=450, target_serial=96,
-            expected_serial=646, original_redirect_target=339,
+            source_block_serial=455,
+            pred_serial=450,
+            target_serial=96,
+            expected_serial=646,
+            original_redirect_target=339,
         )
     assert modifier.coalesce() == 1
     assert modifier.modifications[0].original_redirect_target == 339
+
+
+@pytest.mark.parametrize("targets", [(362, 362), (362, 406)])
+def test_conditional_edge_coalescing_preserves_distinct_old_targets(targets):
+    modifier = dm.DeferredGraphModifier(None)
+    for old_target, new_target in zip((96, 339), targets):
+        modifier.queue_conditional_target_change(455, new_target, old_target=old_target)
+    assert modifier.coalesce() == 0
+    assert [(m.old_target, m.new_target) for m in modifier.modifications] == [
+        (96, targets[0]),
+        (339, targets[1]),
+    ]
+
+
+@pytest.mark.parametrize("new_target,helper", [(406, 646), (362, 647)])
+def test_conditional_edge_coalescing_rejects_conflicting_owner(new_target, helper):
+    modifier = dm.DeferredGraphModifier(None)
+    modifier.queue_conditional_target_change(
+        455, 362, old_target=96, expected_helper_serial=646
+    )
+    modifier.queue_conditional_target_change(
+        455, new_target, old_target=96, expected_helper_serial=helper
+    )
+    with pytest.raises(ValueError, match="conflicting conditional edge"):
+        modifier.coalesce()
+    assert len(modifier.modifications) == 2
+
+
+def test_conditional_edge_coalescing_deduplicates_same_helper_owner():
+    modifier = dm.DeferredGraphModifier(None)
+    for _ in range(2):
+        modifier.queue_conditional_target_change(
+            455, 362, old_target=96, expected_helper_serial=646
+        )
+    assert modifier.coalesce() == 1
+
+
+def test_conditional_edge_coalescing_rejects_implicit_explicit_overlap():
+    modifier = dm.DeferredGraphModifier(None)
+    modifier.queue_conditional_target_change(455, 362)
+    modifier.queue_conditional_target_change(455, 406, old_target=96)
+    with pytest.raises(ValueError, match="conditional edge"):
+        modifier.coalesce()
+
+
+def test_conditional_edge_coalescing_rejects_source_terminal_conflict():
+    modifier = dm.DeferredGraphModifier(None)
+    modifier.queue_conditional_target_change(455, 362, old_target=96)
+    modifier.queue_convert_to_goto(455, 406)
+    with pytest.raises(ValueError, match="conditional edge"):
+        modifier.coalesce()
+
+
+def test_trampoline_coalescing_uses_public_predecessor_owner():
+    modifier = dm.DeferredGraphModifier(None)
+    for pred, target, reserved in ((450, 96, 646), (451, 339, 647)):
+        modifier.queue_edge_split_trampoline(
+            source_block=455,
+            via_pred=pred,
+            old_target=455,
+            new_target=target,
+            expected_serial=reserved,
+        )
+    assert [mod.block_serial for mod in modifier.modifications] == [450, 451]
+    assert modifier.coalesce() == 0
+    assert [mod.via_pred for mod in modifier.modifications] == [450, 451]
