@@ -80,7 +80,7 @@ def test_parse_collected_nodeids_ignores_summary_and_warnings() -> None:
     )
 
 
-def test_run_batches_uses_fresh_pytest_processes_and_stops_on_failure() -> None:
+def test_run_batches_uses_fresh_pytest_processes_and_continues_after_failure() -> None:
     module = _module()
     calls: list[list[str]] = []
 
@@ -115,7 +115,8 @@ def test_run_batches_uses_fresh_pytest_processes_and_stops_on_failure() -> None:
     assert calls[1][3:5] == ["-v", "tests/system/test_x.py::test_0"]
     assert calls[1][-1] == "--durations=25"
     assert calls[2][3:5] == ["-v", "tests/system/test_x.py::test_2"]
-    assert len(calls) == 3
+    assert len(calls) == 4
+    assert calls[3][4] == "tests/system/test_x.py::test_4"
 
 
 def test_run_batches_can_resume_at_a_diagnostic_batch_boundary() -> None:
@@ -1078,3 +1079,37 @@ def test_collection_ignores_caller_verbosity_flags() -> None:
     # The batch command keeps exactly what the caller asked for.
     batch = [call for call in fake_run.calls if "--collect-only" not in call][0]
     assert "-q" in batch and "-vv" in batch
+
+
+@pytest.mark.parametrize("logged", [False, True])
+def test_lane_continues_slow_tests_after_fast_failure(tmp_path, logged):
+    module = _module()
+    nodes = [f"tests/system/test_lane.py::test_{name}" for name in ("fast", "slow_a", "slow_b")]
+    ledger = tmp_path / "cost.jsonl"
+    ledger.write_text(json.dumps({"durations": [
+        {"nodeid": node, "phase": "call", "seconds": seconds}
+        for node, seconds in zip(nodes, (1, 60, 90))
+    ]}) + "\n")
+    commands = []
+    results = iter((1, 3, 0))
+
+    def fake_run(command, **kwargs):
+        if "--collect-only" in command:
+            return subprocess.CompletedProcess(command, 0, stdout="\n".join(nodes), stderr="")
+        commands.append(command)
+        return subprocess.CompletedProcess(command, next(results))
+
+    popen = _fake_popen_factory([("", "", code) for code in (1, 3, 0)])
+    status = module.run_batches(
+        python="python", root="tests/system", pytest_args=(), batch_size=20,
+        plan="lane", cost_ledgers=[str(ledger)], run=fake_run,
+        popen=popen, log_dir=str(tmp_path / "logs") if logged else None,
+    )
+    assert status == 1
+    executed = popen.calls if logged else commands
+    assert len(executed) == 3
+    assert nodes[0] in executed[0]
+    assert all(any(node in command for command in executed[1:]) for node in nodes[1:])
+    if logged:
+        records = [json.loads(line) for line in (tmp_path / "logs/system_batches.jsonl").read_text().splitlines()]
+        assert [row["exit_code"] for row in records] == [1, 3, 0]

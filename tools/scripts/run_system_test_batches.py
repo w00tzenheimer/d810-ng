@@ -5,7 +5,7 @@ IDA and Hex-Rays retain native allocations after database teardown. A single
 pytest process for the complete system suite eventually reaches the container
 memory limit, while ``pytest-forked`` is unsafe after the IDA runtime has been
 initialized. This driver collects node IDs once, then starts a clean Python
-process for each bounded batch and propagates the first failing status.
+process for each bounded batch, runs all batches, and retains the first failing status.
 
 When ``log_dir`` is supplied, each batch also appends one JSON line to
 ``<log_dir>/system_batches.jsonl`` recording wall time, the parsed pytest
@@ -488,6 +488,8 @@ def run_batches(
         selection_dir = os.path.join(log_dir, "selection")
     augmented_pytest_args = _augment_pytest_args_with_durations(pytest_args, durations)
     ran = 0
+    overall_status = 0
+    failed_batches = 0
     for index, planned_batch in enumerate(batches[start_batch - 1 :], start=start_batch):
         batch = planned_batch.nodeids
         global_index = owned[index - 1] + 1
@@ -545,13 +547,16 @@ def run_batches(
                 file=sys.stderr,
                 flush=True,
             )
-            return int(completed.returncode)
+            failed_batches += 1
+            if overall_status == 0:
+                overall_status = int(completed.returncode)
 
     print(
-        f"[system-batch] shard={shard_index}/{shard_count} completed={ran} exit=0",
+        f"[system-batch] shard={shard_index}/{shard_count} completed={ran} "
+        f"failed_batches={failed_batches} exit={overall_status}",
         flush=True,
     )
-    return 0
+    return overall_status
 
 
 def main(argv: Sequence[str] | None = None) -> int:

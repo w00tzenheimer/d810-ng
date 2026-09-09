@@ -80,7 +80,7 @@
 #                           With --plan lane, shard 0 is the fast lane and 1..N-1 carry the slow
 #                           tests by longest-processing-time-first. Every shard computes the same
 #                           plan independently from the collected node ids and the ledger; there is
-#                           no coordination between them. A shard stops at its first failing batch;
+#                           no coordination between them. A shard runs all its batches and retains failure status;
 #                           the runner waits for all of them and exits non-zero if any failed, then
 #                           merges the per-shard ledgers with merge_system_batch_ledgers.py.
 #                           N containers means N x D810_DOCKER_MEMORY on the engine.
@@ -2289,15 +2289,26 @@ _d810_quote_args() {
 }
 
 _run_docker_container() {
-  printf '[docker] starting container; native speedup builds may take several minutes\n'
-  if docker "$@"; then
-    printf '[docker] container completed successfully (exit=0)\n'
-    return 0
-  else
-    local status=$?
-    printf '[docker] container failed with exit status %s\n' "$status" >&2
-    return "$status"
+  local temporary_dir="" status=0
+  local -a temporary_args=()
+  if [ "$REMOTE_MODE" != "1" ]; then
+    # Host-backed storage avoids filling Docker's writable layer. It must be
+    # outside both the host checkout and /work for disposable-IDB isolation.
+    # Each container owns its directory, including concurrently running shards.
+    temporary_dir=$(mktemp -d /tmp/d810-test-tmp.XXXXXX) || return 1
+    temporary_args=(-v "$temporary_dir:/d810-test-tmp" -e TMPDIR=/d810-test-tmp)
   fi
+  printf '[docker] starting container; native speedup builds may take several minutes\n'
+  if docker "$1" "${temporary_args[@]}" "${@:2}"; then
+    printf '[docker] container completed successfully (exit=0)\n'
+  else
+    status=$?
+    printf '[docker] container failed with exit status %s\n' "$status" >&2
+  fi
+  if [ -n "$temporary_dir" ]; then
+    rm -rf -- "$temporary_dir"
+  fi
+  return "$status"
 }
 
 # Artifact listing and retrieval must not pay for the dependency setup.
