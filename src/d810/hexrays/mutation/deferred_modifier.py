@@ -206,6 +206,15 @@ import ida_typeinf
 import idaapi
 
 from d810.core import getLogger
+from d810.hexrays.mutation.native_cfg_snapshot import (
+    BLOCK_FIELDS,
+    BLOCK_LISTS,
+    NativeCfgSnapshot,
+    capture_native_cfg_snapshot,
+    copy_native_list,
+    frame_fingerprint,
+    instruction_fingerprint,
+)
 from d810.hexrays.mutation.block_retention import release_committed_block_retention
 from d810.hexrays.mutation.block_instruction_commit import (
     AllocatedKreg,
@@ -296,7 +305,7 @@ from d810.hexrays.mutation.cfg_verify import safe_verify
 from d810.hexrays.mutation.cfg_verify import snapshot_block_for_capture
 from d810.hexrays.mutation.cfg_mutations import remove_block_edge
 from d810.hexrays.mutation.cfg_mutations import _rewire_edge
-from d810.ir.flowgraph import FlowGraph, InsnSnapshot
+from d810.ir.flowgraph import InsnSnapshot
 from d810.hexrays.mutation.insn_snapshot_materializer import (
     materialize_insn_snapshots,
 )
@@ -1286,7 +1295,7 @@ class DeferredGraphModifier:
     # the gateway; the modifier never closes a transaction it does not own.
     rollback_outcome: RollbackOutcome | None = None
     last_stale_serial_scan: dict | None = None
-    _pre_snapshot: FlowGraph | None = None
+    _pre_snapshot: NativeCfgSnapshot | None = None
     # Optional event emitter; when None, no events are emitted (zero overhead).
     event_emitter: EventEmitter | None = None
     # Session/manager-owned transaction gateway. Structural writes fail closed
@@ -7637,89 +7646,96 @@ class DeferredGraphModifier:
                 )
         return None
 
-    def _restore_from_snapshot(self, snapshot: FlowGraph) -> bool:
-        """Restore MBA topology from a FlowGraph snapshot.
+    def _capture_rollback_snapshot(self) -> NativeCfgSnapshot:
+        if self._mutation_gateway is None:
+            raise ValueError("native rollback requires a mutation identity gateway")
+        return capture_native_cfg_snapshot(self.mba, self._mutation_gateway.identity_index)
 
-        Best-effort restoration of block topology (edges, types, flags).
-        Instruction content restoration is not guaranteed.
+    def _restore_from_snapshot(self, snapshot: NativeCfgSnapshot) -> bool:
+        """Restore surviving originals, remove insertions, and verify exact bodies.
 
-        Note: Blocks created during failed modifications (serials beyond
-        the snapshot) are not removed. Callers should run mba_deep_cleaning()
-        after failed rollback if orphaned blocks are suspected.
-
-        Args:
-            snapshot: Pre-modification snapshot to restore from.
-
-        Returns:
-            True if restoration succeeded and mba.verify() passed.
+        Serial numbers are not identities. Refuse before writing if an original
+        disappeared, originals changed order, or the frame/maturity changed.
+        The caller must poison/regenerate after refusal or native restore failure.
         """
-        if snapshot is None:
-            logger.warning("Cannot restore from None snapshot")
+        if not isinstance(snapshot, NativeCfgSnapshot):
+            logger.error("Native rollback requires an owned native CFG snapshot")
             return False
-
-        logger.info(
-            "Restoring MBA topology from snapshot (nblocks=%d)", snapshot.num_blocks
-        )
-
-        # Restore block topology: iterate over snapshot blocks and rewire edges
-        for serial, snap_blk in snapshot.blocks.items():
-            blk = self.mba.get_mblock(serial)
-            if blk is None:
-                logger.warning("Block %d not found in MBA during restoration", serial)
-                continue
-
-            # Compute what needs to change: old edges (current state) vs new edges (snapshot state)
-            current_succs = [blk.succset[i] for i in range(blk.succset.size())]
-            target_succs = list(snap_blk.succs)
-
-            # Skip if already correct
-            if current_succs == target_succs and blk.type == snap_blk.block_type:
-                continue
-
-            # Compute edges to remove and add
-            old_succs = [s for s in current_succs if s not in target_succs]
-            new_succs = [s for s in target_succs if s not in current_succs]
-
-            if logger.debug_on:
-                logger.debug(
-                    "Restoring block %d: type %d->%d, succs %s->%s",
-                    serial,
-                    blk.type,
-                    snap_blk.block_type,
-                    current_succs,
-                    target_succs,
-                )
-
-            # Restore block type and flags directly (before _rewire_edge)
-            # CRITICAL FIX: _rewire_edge does OR for flags (blk.flags |= new_flags),
-            # but rollback requires full replacement
-            blk.type = snap_blk.block_type
-            blk.flags = snap_blk.flags
-
-            # Use _rewire_edge helper to update topology only
-            try:
-                _rewire_edge(
-                    blk,
-                    old_succs=old_succs,
-                    new_succs=new_succs,
-                    new_block_type=None,  # Already set above
-                    new_flags=None,  # Already set above
-                    verify=False,  # Defer verify until all blocks are restored
-                )
-            except Exception as e:
-                logger.error("Failed to restore block %d: %s", serial, e)
-                return False
-
-        # Mark chains dirty after restoration
-        self.mba.mark_chains_dirty()
-
-        # Verify restoration
         try:
+            if (int(self.mba.this) != snapshot.mba_address
+                    or frame_fingerprint(self.mba) != snapshot.frame):
+                logger.error("Native rollback refused: MBA or frame changed")
+                return False
+            live = [self.mba.get_mblock(i) for i in range(self.mba.qty)]
+            expected = tuple(block.address for block in snapshot.blocks)
+            expected_set = set(expected)
+            current = tuple(int(block.this) for block in live)
+            if (tuple(address for address in current if address in expected_set) != expected
+                    or not current or current[0] != expected[0]
+                    or current[-1] != expected[-1]):
+                logger.error("Native rollback refused: original blocks removed or reordered")
+                return False
+            gateway = self._mutation_gateway
+            if gateway is None or gateway.identity_index is not snapshot.identity_index:
+                logger.error("Native rollback refused: identity authority changed")
+                return False
+            transaction_id = gateway.active_batch_id if gateway.active else None
+            for saved in snapshot.blocks:
+                bound = gateway.identity_index.resolve(saved.handle, transaction_id=transaction_id)
+                if (bound is None or bound.handle != saved.handle
+                        or not 0 <= bound.serial < len(live)
+                        or int(live[bound.serial].this) != saved.address):
+                    logger.error("Native rollback refused: original identity retired or replaced")
+                    return False
+            # Materialize every owned instruction before the first destructive step.
+            bodies = tuple(tuple(ida_hexrays.minsn_t(ins) for ins in block.instructions)
+                           for block in snapshot.blocks)
+            extras = [block.serial for block in live if int(block.this) not in expected_set]
+            # remove_block expects reciprocal edge sets even when the failed
+            # operation left them inconsistent. Rebuild both sets from the snapshot.
+            for block in live:
+                block.succset.clear()
+                block.predset.clear()
+            for serial in reversed(extras):
+                # Its bool result means other blocks became unreachable, not success.
+                self.mba.remove_block(self.mba.get_mblock(serial))
+            if self.mba.qty != snapshot.num_blocks:
+                raise RuntimeError("native rollback did not remove exactly the inserted blocks")
+            for serial, (saved, body) in enumerate(zip(snapshot.blocks, bodies)):
+                block = self.mba.get_mblock(serial)
+                if int(block.this) != saved.address:
+                    raise RuntimeError("native rollback original identity changed during removal")
+                self.replace_all_instructions_now(block, body, mark_dirty=False)
+                for name, value in zip(BLOCK_FIELDS, saved.metadata):
+                    setattr(block, name, value)
+                block.succset.clear()
+                block.predset.clear()
+                for successor in saved.successors:
+                    block.succset.push_back(successor)
+                for predecessor in saved.predecessors:
+                    block.predset.push_back(predecessor)
+                if saved.stop_lists:
+                    # refine_return_type owns STOP's use lists. Dirtying them
+                    # after CALLS is forbidden by the native verifier (51328).
+                    for name, original in zip(BLOCK_LISTS, saved.stop_lists):
+                        getattr(block, name).swap(copy_native_list(original))
+                else:
+                    block.mark_lists_dirty()
+            self.mba.mark_chains_dirty()
             self.mba.verify(True)
-            logger.info("MBA topology restored successfully from snapshot")
+            for serial, saved in enumerate(snapshot.blocks):
+                block = self.mba.get_mblock(serial)
+                if (instruction_fingerprint(block) != saved.fingerprint
+                        or tuple(block.succset) != saved.successors
+                        or tuple(block.predset) != saved.predecessors
+                        or int(block.type) != saved.metadata[0]
+                        or int(block.start) != saved.metadata[2]
+                        or int(block.end) != saved.metadata[3]):
+                    raise RuntimeError("native rollback differs from captured instructions or topology")
+            logger.info("Native CFG snapshot restored and verified (nblocks=%d)", snapshot.num_blocks)
             return True
-        except RuntimeError as e:
-            logger.error("MBA verify failed after snapshot restoration: %s", e)
+        except Exception:
+            logger.exception("Native CFG snapshot restoration failed")
             return False
 
     def coalesce(self) -> int:
@@ -8499,6 +8515,7 @@ class DeferredGraphModifier:
         self._preflight_dropped_instruction_ops = 0
         self.plan_refusal_reason = None
         self.rollback_outcome = None
+        self._pre_snapshot = None
         try:
             result = self._apply(
                 run_optimize_local=run_optimize_local,
@@ -8520,6 +8537,9 @@ class DeferredGraphModifier:
                     f"apply raised {type(exc).__name__}: {exc}"
                 )
             raise
+        finally:
+            # Do not retain SDK-owned instruction copies beyond this apply cycle.
+            self._pre_snapshot = None
         try:
             if result > 0:
                 self._retain_allocated_kregs()
@@ -8636,7 +8656,8 @@ class DeferredGraphModifier:
                 canonicalization first.
             enable_snapshot_rollback: If True, capture a pre-modification snapshot
                 and restore from it on post-apply verify failure. This provides
-                full-topology rollback at the cost of snapshot overhead.
+                native instruction and CFG rollback while originals survive.
+                Removed/replaced originals or a changed frame require regeneration.
             post_apply_hook: Optional callback executed after queued
                 modifications are applied and before cleanup/verify. Use this
                 to run post-apply canonicalization inside the same transactional
@@ -8813,7 +8834,7 @@ class DeferredGraphModifier:
             if logger.debug_on:
                 logger.debug("Capturing pre-modification snapshot for rollback")
             try:
-                self._pre_snapshot = lift(self.mba)
+                self._pre_snapshot = self._capture_rollback_snapshot()
                 logger.debug(
                     "Snapshot captured: %d blocks, entry=%d",
                     self._pre_snapshot.num_blocks,
@@ -8821,12 +8842,9 @@ class DeferredGraphModifier:
                 )
             except Exception as e:
                 logger.error("Failed to capture pre-modification snapshot: %s", e)
-                logger.warning(
-                    "Snapshot rollback disabled: failed to capture snapshot, "
-                    "proceeding without rollback protection"
-                )
-                # Continue without snapshot - best effort
                 self._pre_snapshot = None
+                self.plan_refusal_reason = "native rollback snapshot capture failed"
+                return 0
 
         # Coalesce duplicates and detect conflicts before applying
         self._superseded_count = self.coalesce()
@@ -9207,6 +9225,7 @@ class DeferredGraphModifier:
             )
             self.transaction_complete = (
                 result > 0
+                and not self.verify_failed
                 and staged_failed == 0
                 and staged_successful == len(sorted_mods)
             )
@@ -9598,6 +9617,8 @@ class DeferredGraphModifier:
 
         def _finish(result_count: int) -> int:
             """Shared exit: emit APPLY_FINISHED and mark applied."""
+            if self.verify_failed:
+                self.transaction_complete = False
             self._applied = True
             self._finish_mutation_batch(result_count)
             if self.event_emitter is not None:
@@ -9889,6 +9910,7 @@ class DeferredGraphModifier:
                         return _finish(0)
                     else:
                         logger.error("Snapshot rollback failed, MBA remains corrupted")
+                        return _finish(successful)
 
                 # Best-effort recovery: conservative cleanup + one re-verify
                 # attempt. If this succeeds, callers can safely continue.
@@ -11156,6 +11178,7 @@ class DeferredGraphModifier:
                 )
                 if enable_snapshot_rollback and self._pre_snapshot is not None:
                     if self._restore_from_snapshot(self._pre_snapshot):
+                        self._record_snapshot_rollback("post-apply hook failure")
                         self.verify_failed = False
                         return _finish(0)
                 return _finish(successful)
@@ -11196,8 +11219,10 @@ class DeferredGraphModifier:
 
             if enable_snapshot_rollback and self._pre_snapshot is not None:
                 if self._restore_from_snapshot(self._pre_snapshot):
+                    self._record_snapshot_rollback("post-apply verify failure")
                     self.verify_failed = False
                     return _finish(0)
+                return _finish(successful)
 
             try:
                 mba_deep_cleaning(self.mba, call_mba_combine_block=False)

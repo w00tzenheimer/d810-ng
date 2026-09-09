@@ -1017,7 +1017,12 @@ class _PatchTransactionLifecycle:
         self.failure_phase = "realization"
         if patch_plan is not self.plan or begun is not self.bound:
             raise ValueError("patch realization changed coordinator authority")
-        return self.participant.realize(begun, self.gateway)
+        realized = self.participant.realize(begun, self.gateway)
+        if realized == 0:
+            failure = self.gateway.transaction_failure
+            reason = failure.reason if failure is not None else "PatchPlan applied no operations"
+            raise RuntimeError(reason)
+        return realized
 
     def observe(self, patch_plan: PatchPlan, realized: object) -> FlowGraph:
         self.failure_phase = "observation"
@@ -1257,6 +1262,11 @@ class _PatchTransactionLifecycle:
             failure = self.gateway.transaction_failure
             if failure is not None:
                 _request_poison_restart(self.gateway, failure)
+            return
+        # The translator closes clean rejections and verified snapshot rollbacks.
+        # Preserve that terminal authority instead of observing zero writes or
+        # attempting a second closure through the poison path.
+        if not self.gateway.active and self.gateway.transaction_failure is not None:
             return
         reason, obligation = _first_failure(error, self.failure_phase)
         if getattr(self.gateway, "mutation_started", False):

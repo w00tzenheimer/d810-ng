@@ -1220,7 +1220,7 @@ def test_apply_transactional_rolls_back_when_mid_batch_aborts(monkeypatch):
     monkeypatch.setattr(dm, "safe_verify", lambda *_a, **_k: None)
     monkeypatch.setattr(dm, "mba_deep_cleaning", lambda *_a, **_k: None)
     monkeypatch.setattr(
-        dm, "lift", lambda _m: SimpleNamespace(num_blocks=1, entry_serial=0)
+        modifier, "_capture_rollback_snapshot", lambda: SimpleNamespace(num_blocks=1, entry_serial=0)
     )
 
     applied = modifier.apply(
@@ -1263,7 +1263,7 @@ def test_apply_transactional_returns_full_count_when_all_mods_succeed(monkeypatc
     monkeypatch.setattr(dm, "safe_verify", lambda *_a, **_k: None)
     monkeypatch.setattr(dm, "mba_deep_cleaning", lambda *_a, **_k: None)
     monkeypatch.setattr(
-        dm, "lift", lambda _m: SimpleNamespace(num_blocks=1, entry_serial=0)
+        modifier, "_capture_rollback_snapshot", lambda: SimpleNamespace(num_blocks=1, entry_serial=0)
     )
 
     applied = modifier.apply(
@@ -1307,7 +1307,7 @@ def test_apply_transactional_rejects_batch_with_contradictory_redirects(monkeypa
     monkeypatch.setattr(dm, "safe_verify", lambda *_a, **_k: None)
     monkeypatch.setattr(dm, "mba_deep_cleaning", lambda *_a, **_k: None)
     monkeypatch.setattr(
-        dm, "lift", lambda _m: SimpleNamespace(num_blocks=1, entry_serial=0)
+        modifier, "_capture_rollback_snapshot", lambda: SimpleNamespace(num_blocks=1, entry_serial=0)
     )
 
     applied = modifier.apply(
@@ -1411,7 +1411,7 @@ def test_apply_transactional_marks_verify_failed_when_rollback_itself_fails(
     monkeypatch.setattr(dm, "safe_verify", lambda *_a, **_k: None)
     monkeypatch.setattr(dm, "mba_deep_cleaning", lambda *_a, **_k: None)
     monkeypatch.setattr(
-        dm, "lift", lambda _m: SimpleNamespace(num_blocks=1, entry_serial=0)
+        modifier, "_capture_rollback_snapshot", lambda: SimpleNamespace(num_blocks=1, entry_serial=0)
     )
 
     applied = modifier.apply(
@@ -1467,7 +1467,7 @@ def test_apply_transactional_rolls_back_alias_scalarization_verify_failure(monke
     monkeypatch.setattr(dm, "safe_verify", _safe_verify)
     monkeypatch.setattr(dm, "mba_deep_cleaning", lambda *_a, **_k: None)
     monkeypatch.setattr(
-        dm, "lift", lambda _m: SimpleNamespace(num_blocks=1, entry_serial=0)
+        modifier, "_capture_rollback_snapshot", lambda: SimpleNamespace(num_blocks=1, entry_serial=0)
     )
 
     applied = modifier.apply(
@@ -3468,7 +3468,7 @@ def test_apply_rolls_back_snapshot_after_contract_failure(monkeypatch):
     monkeypatch.setattr(dm, "_format_block_info", lambda _blk: "<blk>")
     monkeypatch.setattr(dm, "capture_failure_artifact", lambda *_a, **_k: None)
     monkeypatch.setattr(
-        dm, "lift", lambda _mba: SimpleNamespace(num_blocks=1, entry_serial=0)
+        modifier, "_capture_rollback_snapshot", lambda: SimpleNamespace(num_blocks=1, entry_serial=0)
     )
     monkeypatch.setattr(
         dm,
@@ -4640,6 +4640,8 @@ class TestStagedAtomicApply:
             mba,
             mutation_gateway=make_mutation_gateway(mba),
         )
+        monkeypatch.setattr(modifier, "_capture_rollback_snapshot",
+                            lambda: SimpleNamespace(num_blocks=mba.qty, entry_serial=0))
         modifier.modifications = [
             dm.QueuedModification(
                 dm.ModificationType.BLOCK_GOTO_CHANGE,
@@ -5926,3 +5928,65 @@ def test_conditional_clone_preserves_terminal_fallthrough(monkeypatch, from_bran
         ok = modifier._apply_clone_conditional_as_goto(**kwargs)
     assert ok
     assert list(terminal.succset) == [exit_block.serial]
+
+
+@pytest.mark.parametrize("mode", ["sequential", "staged_atomic"])
+@pytest.mark.parametrize("restore_succeeds", [False, True])
+@pytest.mark.parametrize("failure_site", ["verify", "hook"])
+def test_snapshot_restore_outcome_is_terminal(
+    monkeypatch, mode, restore_succeeds, failure_site
+):
+    mba = _FakeMBA()
+    modifier = dm.DeferredGraphModifier(
+        mba, mutation_gateway=make_mutation_gateway(mba)
+    )
+    modifier.modifications = [
+        dm.QueuedModification(
+            dm.ModificationType.BLOCK_GOTO_CHANGE, block_serial=0, new_target=1
+        ),
+    ]
+    monkeypatch.setattr(modifier, "_apply_single", lambda _m: True)
+    monkeypatch.setattr(
+        modifier, "_apply_staged_atomic", lambda *_a, **_k: (1, 0)
+    )
+    monkeypatch.setattr(
+        modifier, "_capture_rollback_snapshot",
+        lambda: SimpleNamespace(num_blocks=1, entry_serial=0),
+    )
+    monkeypatch.setattr(
+        modifier, "_restore_from_snapshot", lambda _snap: restore_succeeds
+    )
+    monkeypatch.setattr(dm, "_format_block_info", lambda _blk: "<blk>")
+    monkeypatch.setattr(dm, "capture_failure_artifact", lambda *_a, **_k: None)
+    monkeypatch.setattr(dm, "mba_deep_cleaning", lambda *_a, **_k: None)
+    verify_phases = []
+
+    def verify(_mba, phase, **_kwargs):
+        verify_phases.append(phase)
+        if failure_site == "verify" and phase in {
+            "after deferred modifications", "after staged_atomic modifications"
+        }:
+            raise RuntimeError("post-apply verification failed")
+        # A later recovery verify would pass; it must not erase restore failure.
+
+    def hook():
+        if failure_site == "hook":
+            raise RuntimeError("post-apply hook failed")
+
+    monkeypatch.setattr(dm, "safe_verify", verify)
+    applied = modifier.apply(
+        staged_atomic=mode == "staged_atomic",
+        enable_snapshot_rollback=True,
+        run_optimize_local=False,
+        run_deep_cleaning=False,
+        post_apply_hook=hook,
+    )
+    assert applied == (0 if restore_succeeds else 1)
+    assert modifier.verify_failed is (not restore_succeeds)
+    assert modifier.transaction_complete is False
+    assert not any("recovery" in phase for phase in verify_phases)
+    if restore_succeeds:
+        assert modifier.rollback_outcome is not None
+        assert modifier.rollback_outcome.operation_count == 1
+    else:
+        assert modifier.rollback_outcome is None

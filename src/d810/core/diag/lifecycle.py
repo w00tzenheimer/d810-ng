@@ -1193,6 +1193,10 @@ def persist_mutation_receipt(
             mba_generation_after=event.post_generation,
             correlation_id=event.mutation_batch_id,
             summary=f"{event.mutation_kind}: {event.outcome}",
+            payload={
+                "rollback_attempted": event.rollback_attempted,
+                "rollback_succeeded": event.rollback_succeeded,
+            },
             timestamp=event.timestamp,
         ),
         snapshot_id=None,

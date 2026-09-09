@@ -5415,3 +5415,25 @@ def test_corridor_coverage_drift_is_rejected_by_observed_phase_result():
         and item.state is not authority_model.ObligationState.SATISFIED
         for item in verdict.failed_obligations
     )
+
+
+def test_coordinator_stops_after_clean_rollback_without_observing_zero() -> None:
+    from d810.hexrays.mutation.patch_transaction import _PatchTransactionLifecycle
+    from d810.transforms.fragment_to_patch import (
+        CfgTransactionCoordinator, PatchTransactionParticipant,
+    )
+
+    _fixture, _source, real_participant = _direct_authority_participant()
+    plan = real_participant.plan
+    prepared = object()
+    bound = SimpleNamespace(prepared=prepared)
+    failure = SimpleNamespace(reason="post-apply hook failure")
+    gateway = SimpleNamespace(
+        active=False, transaction_failure=failure, generation_poisoned=False,
+    )
+    participant = SimpleNamespace(realize=lambda *_args: 0)
+    lifecycle = _PatchTransactionLifecycle(participant, bound, gateway, plan, prepared)
+    with pytest.raises(RuntimeError, match="post-apply hook failure"):
+        CfgTransactionCoordinator(lifecycle).execute(PatchTransactionParticipant(), plan)
+    assert lifecycle.failure_phase == "realization"
+    assert gateway.transaction_failure is failure

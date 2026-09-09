@@ -761,6 +761,7 @@ class CfgTransactionAttemptObserved:
             "observed",
             "committed",
             "rejected_clean",
+            "rolled_back_clean",
             "poisoned_restart_required",
         }
         if self.phase not in phases:
@@ -1310,12 +1311,12 @@ class MutationReceiptObserved:
                 raise ValueError(
                     "committed fragment requires passed pre/post validation"
                 )
+        if not has_fragment and self.rollback_attempted and self.outcome != "aborted":
+            raise ValueError("ordinary rollback requires an aborted receipt")
         if not has_fragment and (
             self.fragment_staged
             or self.root_publication_attempted
             or self.root_publication_succeeded
-            or self.rollback_attempted
-            or self.rollback_succeeded is not None
             or self.validation_outcomes
             or self.root_publication_groups
             or self.fragment_failures

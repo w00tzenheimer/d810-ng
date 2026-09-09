@@ -1304,3 +1304,69 @@ def test_fragment_receipt_scope_mismatch_leaves_no_partial_receipt(
         "SELECT event_kind FROM lifecycle_events "
         "WHERE correlation_id='scope-mismatch' ORDER BY event_seq"
     ).fetchall() == [("mutation_plan",)]
+
+
+def test_cfg_transaction_clean_rollback_retains_failure_without_poison(diag_conn) -> None:
+    for phase_index, phase in enumerate(("realizing", "rolled_back_clean")):
+        emit(
+            CfgTransactionAttemptObserved(
+                session_id="s1",
+                func_ea=0x40C8B0,
+                plan_id="rollback-plan",
+                attempt_id="rollback-attempt",
+                phase=phase,
+                phase_index=phase_index,
+                mba_generation=8,
+                evidence_generation=3,
+                mutation_started=True,
+                poisoned=False,
+                first_failure_obligation="native-verify" if phase_index else None,
+                first_failure_phase="realizing" if phase_index else None,
+                first_failure_reason="SDK write diverged" if phase_index else None,
+                interr_code=52719 if phase_index else None,
+            )
+        )
+
+    assert diag_conn.execute(
+        "SELECT current_phase,mutation_started,poisoned,first_failure_obligation,"
+        "first_failure_phase,first_failure_reason,interr_code "
+        "FROM cfg_transaction_attempts WHERE plan_id='rollback-plan'"
+    ).fetchone() == (
+        "rolled_back_clean", 1, 0, "native-verify", "realizing", "SDK write diverged", 52719
+    )
+    assert diag_conn.execute(
+        "SELECT phase,poisoned FROM cfg_transaction_phase_events "
+        "WHERE plan_id='rollback-plan' ORDER BY phase_index"
+    ).fetchall() == [("realizing", 0), ("rolled_back_clean", 0)]
+    assert "rolled_back_clean" in render_timeline(
+        lifecycle_timeline(diag_conn, session_id="s1")
+    )
+
+
+def test_ordinary_snapshot_rollback_receipt_preserves_recovery_evidence(diag_conn):
+    emit(MutationPlanObserved(
+        session_id="s1", func_ea=0x40C8B0, mutation_batch_id="ordinary-rollback",
+        mutation_kind="edge_redirect", planned_operation_count=2,
+        mba_generation=8, evidence_generation=3, maturity="MMAT_GLBOPT2",
+        description="restore snapshot", items=(),
+    ))
+    event = MutationReceiptObserved(
+        session_id="s1", func_ea=0x40C8B0, mutation_batch_id="ordinary-rollback",
+        mutation_kind="edge_redirect", pre_generation=8, post_generation=8,
+        planned_operation_count=2, applied_operation_count=0, evidence_generation=3,
+        maturity="MMAT_GLBOPT2", outcome="aborted", description="restore snapshot",
+        reason="post-apply hook failure", rollback_attempted=True,
+        rollback_succeeded=True,
+    )
+    emit(event)
+    assert diag_conn.execute(
+        "SELECT outcome,applied_operation_count "
+        "FROM mutation_receipts WHERE mutation_batch_id='ordinary-rollback'"
+    ).fetchone() == ("aborted", 0)
+    payload = diag_conn.execute(
+        "SELECT payload_json FROM lifecycle_events "
+        "WHERE event_kind='mutation_receipt' AND correlation_id='ordinary-rollback'"
+    ).fetchone()[0]
+    assert json.loads(payload) == {
+        "rollback_attempted": True, "rollback_succeeded": True,
+    }
