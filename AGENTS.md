@@ -1,5 +1,29 @@
 # Agent Instructions
 
+## Local Environment Instructions
+
+If `AGENTS.local.md` exists beside this file, read it for machine-specific
+endpoints, paths, and workflows. It is intentionally untracked. Never copy
+private environment details into tracked instructions or reports.
+
+## Host and Guest Boundary
+
+Treat the development host, remote hypervisor hosts, and virtual-machine guests
+as distinct systems. An SSH endpoint is not necessarily a guest.
+
+- Resolve the intended execution layer before running commands. Identify the
+  host, OS, exact VM or guest endpoint, and target artifact independently.
+- Access guests only through an explicitly identified guest endpoint or guest
+  operation targeting the exact VM. Host-side transport is not guest execution.
+- Before services, drivers, registry or certificate changes, injection, debugger
+  attachment, or target launch, verify that the action runs in the intended system.
+- Building or reading files on a host does not authorize runtime changes there
+  when the requested target is a guest.
+- Keep host, guest, and console evidence separately labeled. Never present
+  host process or service state as guest state.
+- If target placement is uncertain, stop before mutation and ask. Do not guess
+  or terminate processes to make a check pass.
+
 ## Architecture Boundary Failures
 
 When fixing architecture-sensitive ast-grep or import-linter failures, treat
@@ -135,3 +159,34 @@ Rules:
 - If graphify-out/wiki/index.md exists, use it for broad navigation instead of raw source browsing.
 - Read graphify-out/GRAPH_REPORT.md only for broad architecture review or when query/path/explain do not surface enough context.
 - After modifying code, run `graphify update .` to keep the graph current (AST-only, no API cost).
+
+
+## Performance work: causal evidence before architectural expansion
+
+Follow `docs/retrospectives/2026-09-08-authority-performance.md` for performance tasks.
+Expensive-work evidence does not establish the necessity of a proposed architecture.
+Do not implement a prerequisite before proving it is required for the actual consumer.
+
+Use this loop: measured hotspot -> causal hypothesis -> smallest safe intervention ->
+work-elimination counters -> correctness -> wall measurement -> only then expand.
+Reuse valid existing profiles. Define the consumer's actual correctness requirement,
+expected fraction of work removed, counter denominator, added costs and falsifying
+result. No expansion across representation families until a representative consumer
+completes this experiment, or concrete independently reviewed evidence shows a broader
+dependency prevents it. Implement only that demonstrated prerequisite, then retest.
+
+The 60-minute design/two-hour result targets are reassessment prompts, not decision
+rules. Do not retire an approach merely because two timings are null. Interpret nulls
+using actual work elimination, replacement overhead and noise: removing 5% of a target
+is not equivalent to removing 90%. These are illustrative, not threshold policies.
+
+Before approving expansion, an independent adversarial reviewer must answer:
+"What is the cheapest experiment that could prove this architecture unnecessary?"
+Correctness review alone is insufficient. A local safety failure warrants only the
+stronger invariant it demonstrates, not an assumed global rewrite.
+
+Report causal evidence separately from test totals, patch size and elapsed effort.
+Count all admission/export/guard/allocation/bookkeeping costs. Preserve exact-source,
+exact-metric receipts outside disposable directories. Neither small patches nor large
+architectures are inherently preferred: independent architectural value requires its
+own objective and evidence. Do not allow sunk effort to decide what continues.

@@ -1830,3 +1830,11 @@ tools/equivalence/harness_x86.dSYM/
 # ONLY by a personal global gitignore, so a fresh clone elsewhere saw all 1239
 # as untracked and re-addable.
 .tickets/
+
+# Local cleanup retention policy (inherited by registered worktrees).
+.cleanup-policy.toml
+.cleanup-keep
+
+# Private environment instructions and retained local run/recovery evidence.
+AGENTS.local.md
+/artifacts/
