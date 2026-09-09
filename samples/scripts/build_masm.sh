@@ -145,7 +145,7 @@ fi
 MASM_FUNCS="${MASM_FUNCS:-}"
 MASM_SOURCE_DIR="${MASM_SOURCE_DIR:-src/masm}"
 MASM_INCLUDE_C="${MASM_INCLUDE_C:-1}"
-MASM_LINK_LAST_FUNCS="${MASM_LINK_LAST_FUNCS:-sub_7FF855576B50}"
+MASM_LINK_LAST_FUNCS="${MASM_LINK_LAST_FUNCS:-sub_7FF855576B50 WardenScanModule_DecryptAndDispatchRequest warden_mixed_source warden_v55_index_lookup warden_v55_index_offset warden_v57_value_mba warden_v85_value_mba}"
 BINARY_NAME="${BINARY_NAME:-}"
 
 case "$SELECTOR" in

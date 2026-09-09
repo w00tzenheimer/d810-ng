@@ -300,11 +300,14 @@ ifeq ($(USING_CLANG_CL),1)
     # added MASM object must not sort ahead of an existing function merely
     # because its symbol name compares earlier.  Extend this list explicitly
     # when another fixture is intentionally pinned at the end.
-    MASM_LINK_LAST_FUNCS ?= sub_7FF855576B50
+    MASM_LINK_LAST_FUNCS ?= sub_7FF855576B50 \
+        WardenScanModule_DecryptAndDispatchRequest \
+        warden_mixed_source warden_v55_index_lookup warden_v55_index_offset \
+        warden_v57_value_mba warden_v85_value_mba
     MASM_ASM_DISCOVERED  := $(wildcard src/masm/*.asm)
     MASM_ASM_LINK_LAST   := $(addprefix src/masm/,$(addsuffix .asm,$(MASM_LINK_LAST_FUNCS)))
     MASM_ASM   := $(filter-out $(MASM_ASM_LINK_LAST),$(MASM_ASM_DISCOVERED)) \
-                  $(filter $(MASM_ASM_LINK_LAST),$(MASM_ASM_DISCOVERED))
+                  $(filter $(MASM_ASM_DISCOVERED),$(MASM_ASM_LINK_LAST))
     MASM_FUNCS := $(patsubst src/masm/%.asm,%,$(MASM_ASM))
     MASM_OBJS  := $(MASM_ASM:.asm=.obj)
 else
