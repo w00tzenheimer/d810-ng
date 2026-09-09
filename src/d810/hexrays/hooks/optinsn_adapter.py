@@ -36,7 +36,7 @@ from d810.hexrays.hooks.callback_mutation_diagnostics import (
     capture_block_nop_sites,
 )
 from d810.hexrays.ir.minsn_utils import build_z3_equivalence_proof
-from d810.hexrays.ir.native_identity import native_object_identity
+from d810.hexrays.ir.native_identity import NativeIdentity, native_object_identity
 from d810.hexrays.lifecycle import _emit_flowgraph_ready_event
 from d810.hexrays.ir_maturity import ida_maturity_to_ir
 from d810.hexrays.mutation.cfg_verify import safe_verify
@@ -127,10 +127,13 @@ def _block_ea_anchor(blk: object, ins: object) -> int | None:
 def _external_provider_block_body(blk: object) -> tuple[object, ...] | None:
     instructions: list[tuple[int, int, str]] = []
     instruction = getattr(blk, "head", None)
-    visited: set[int] = set()
+    visited: set[NativeIdentity] = set()
     try:
         while instruction is not None:
-            object_id = id(instruction)
+            # SWIG may recycle a dead wrapper's Python ID, or create a fresh
+            # wrapper for a repeated native node. Key the callback-local guard
+            # on the existing native identity, not the wrapper or instruction EA.
+            object_id = native_object_identity(instruction)
             if object_id in visited:
                 return None
             visited.add(object_id)
