@@ -5,7 +5,8 @@ To build with Cython speedups:
 
     D810_BUILD_SPEEDUPS=1 pip install -e .[speedups]
 
-The IDA SDK will be auto-downloaded from GitHub if not found.
+The installed SDK at ~/.idapro/extras/latest/ida-sdk is reused when available.
+Otherwise, the IDA SDK will be auto-downloaded from GitHub if not found.
 Set IDA_SDK env var to use a custom location.
 
 This setup.py only handles ext_modules; all other config is in pyproject.toml.
@@ -154,13 +155,21 @@ def get_ida_sdk_version(sdk_path: pathlib.Path) -> int:
     return 0
 
 
-def ensure_ida_sdk(sdk_path: pathlib.Path) -> pathlib.Path:
+def ensure_ida_sdk(sdk_path: pathlib.Path | None) -> pathlib.Path:
     """Ensure IDA SDK is available, downloading if necessary."""
     # If SDK exists, use it (GitHub SDK has include under src/,
     # user-provided SDK may have include/ at root)
-    if sdk_path.exists() and _sdk_has_includes(sdk_path):
+    if sdk_path is not None and _sdk_has_includes(sdk_path):
         print(f"Using IDA SDK at: {sdk_path}", file=sys.stderr)
         return sdk_path
+
+    # Discover the installed SDK without depending on shell startup files.
+    # Keep it separate from DEFAULT_SDK_DIR: download cleanup must never
+    # remove or replace the user's shared installation.
+    shared_sdk = pathlib.Path.home() / ".idapro" / "extras" / "latest" / "ida-sdk"
+    if _sdk_has_includes(shared_sdk):
+        print(f"Using shared IDA SDK at: {shared_sdk}", file=sys.stderr)
+        return shared_sdk
 
     # Check cached SDK
     if DEFAULT_SDK_DIR.exists() and _sdk_has_includes(DEFAULT_SDK_DIR):
@@ -291,7 +300,7 @@ def get_ext_modules():
 
     # Get IDA SDK (download if needed)
     sdk_env = os.environ.get("IDA_SDK")
-    sdk_path = pathlib.Path(sdk_env) if sdk_env else DEFAULT_SDK_DIR
+    sdk_path = pathlib.Path(sdk_env) if sdk_env else None
     IDA_SDK = ensure_ida_sdk(sdk_path)
 
     sdk_version = get_ida_sdk_version(IDA_SDK)

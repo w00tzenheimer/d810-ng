@@ -108,3 +108,48 @@ def test_ida_runtime_lib_dir_uses_container_runtime(monkeypatch, tmp_path):
 
     (tmp_path / "libida.so").touch()
     assert runtime_lib_dir() == tmp_path
+
+
+@pytest.mark.parametrize("layout", ["include", "src/include"])
+def test_sdk_reuses_shared_install_before_local_cache(monkeypatch, tmp_path, layout):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("IDA_SDK", raising=False)
+    shared = tmp_path / ".idapro/extras/latest/ida-sdk"
+    (shared / layout).mkdir(parents=True)
+    local = tmp_path / "checkout/.ida-sdk"
+    (local / "include").mkdir(parents=True)
+    helpers = _load_setup_helpers(monkeypatch)
+    ensure_sdk = helpers["ensure_ida_sdk"]
+    monkeypatch.setitem(ensure_sdk.__globals__, "DEFAULT_SDK_DIR", local)
+
+    assert ensure_sdk(None) == shared
+
+
+def test_sdk_explicit_install_precedes_shared(monkeypatch, tmp_path):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    shared = tmp_path / ".idapro/extras/latest/ida-sdk"
+    (shared / "include").mkdir(parents=True)
+    explicit = tmp_path / "explicit"
+    (explicit / "include").mkdir(parents=True)
+    helpers = _load_setup_helpers(monkeypatch)
+
+    assert helpers["ensure_ida_sdk"](explicit) == explicit
+
+
+@pytest.mark.parametrize("shared_state", ["missing", "incomplete", "broken_symlink"])
+def test_sdk_unusable_shared_install_retains_local_cache(monkeypatch, tmp_path, shared_state):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    shared = tmp_path / ".idapro/extras/latest/ida-sdk"
+    shared.parent.mkdir(parents=True)
+    if shared_state == "incomplete":
+        shared.mkdir()
+    elif shared_state == "broken_symlink":
+        shared.symlink_to(tmp_path / "missing")
+    local = tmp_path / "checkout/.ida-sdk"
+    (local / "include").mkdir(parents=True)
+    helpers = _load_setup_helpers(monkeypatch)
+    ensure_sdk = helpers["ensure_ida_sdk"]
+    monkeypatch.setitem(ensure_sdk.__globals__, "DEFAULT_SDK_DIR", local)
+
+    assert ensure_sdk(None) == local
+    assert shared.is_symlink() if shared_state == "broken_symlink" else not shared.is_symlink()
