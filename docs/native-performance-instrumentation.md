@@ -177,15 +177,19 @@ the host proof method before any mutation. Unknown reserved atoms are rejected
 before reconstruction. A failed proof or reconstruction leaves the original
 instruction unchanged.
 
-After report persistence, extract the matching
-`capture_metadata.mba_residual_corpus_v2` (or legacy
-`capture_metadata.mba_residual_corpus_v1`) object and run the offline miner:
+The current offline miner consumes the plugin's SQLite discovery database.
+The corpus metadata formats above describe evidence serialization, not the
+current CLI input. Run from the repository root, substituting the actual
+database path:
 
 ```bash
 PYTHONPATH=src python tools/scripts/mba_residual_rule_miner.py \
-  --input residual-corpus.json \
-  --output-dir mined-rules
+  mine --db /actual/log/directory/d810_mba_discovery.sqlite3 --limit 10
 ```
+
+See [Offline MBA rule synthesis](features/offline-mba-rule-synthesis.md) for
+capture settings, status queries, proposal selection, materialization, and
+explicit catalogue admission. The retired `--input` invocation is unsupported.
 
 Witness signatures and provider outcomes nominate candidates; they are not
 proof. Catalogue admission requires the same source/replacement identity to be

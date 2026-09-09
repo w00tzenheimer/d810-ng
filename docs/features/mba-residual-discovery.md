@@ -1,5 +1,8 @@
 # MBA residual discovery persistence
 
+For the capture, offline mining, certification, and rule-admission workflow,
+see [Offline MBA rule synthesis](offline-mba-rule-synthesis.md).
+
 This document is the tracked source of truth for the D810-owned MBA residual
 discovery store. It describes schema version 1 and its causal lifecycle. The
 database is portable SQLite state; it does not import IDA objects and it is not
