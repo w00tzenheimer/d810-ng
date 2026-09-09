@@ -15310,6 +15310,9 @@ class DeferredGraphModifier:
         try:
             if expected_serial is not None:
                 self._begin_patch_block_creation(expected_serial)
+            # Inserting before STOP must not capture the penultimate block's
+            # implicit exit fallthrough. Stabilize it before serials shift.
+            ensure_last_block_is_goto(self.mba, verify=False)
             cloned_blk = copy_block_keep(self.mba, source_blk, self.mba.qty - 1)
             if cloned_blk is None:
                 logger.warning(
@@ -15426,6 +15429,9 @@ class DeferredGraphModifier:
         try:
             if expected_serial is not None:
                 self._begin_patch_block_creation(expected_serial)
+            # Inserting before STOP must not capture the penultimate block's
+            # implicit exit fallthrough. Stabilize it before serials shift.
+            ensure_last_block_is_goto(self.mba, verify=False)
             cloned_blk = copy_block_keep(self.mba, source_blk, self.mba.qty - 1)
             if cloned_blk is None:
                 logger.warning(

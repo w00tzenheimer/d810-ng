@@ -5887,3 +5887,42 @@ def test_trampoline_coalescing_uses_public_predecessor_owner():
     assert [mod.block_serial for mod in modifier.modifications] == [450, 451]
     assert modifier.coalesce() == 0
     assert [mod.via_pred for mod in modifier.modifications] == [450, 451]
+
+
+@pytest.mark.parametrize("from_branch_arm", [False, True])
+def test_conditional_clone_preserves_terminal_fallthrough(monkeypatch, from_branch_arm):
+    """Insertion before STOP must not capture the original exit fallthrough."""
+    if from_branch_arm:
+        mba, source, pred, clone = _clone_as_goto_from_arm_fixture()
+    else:
+        mba, source, pred, clone = _clone_as_goto_fixture()
+    terminal = _FakeBlock(mba.qty - 2)
+    terminal.succset = _FakeEdgeSet([mba.qty - 1])
+    terminal.tail = SimpleNamespace(opcode=ida_hexrays.m_mov)
+    mba.blocks[terminal.serial] = terminal
+    modifier = dm.DeferredGraphModifier(mba, mutation_gateway=make_mutation_gateway(mba))
+    exit_block = mba.get_mblock(mba.qty - 1)
+
+    def stabilize(actual_mba, *, verify):
+        assert actual_mba is mba
+        assert verify is False
+        terminal.tail = SimpleNamespace(opcode=ida_hexrays.m_goto)
+
+    def copy_with_native_fallthrough_semantics(*_args, **_kwargs):
+        # Explicit references move with STOP; physical fallthrough reaches the copy.
+        if terminal.tail.opcode != ida_hexrays.m_goto:
+            terminal.succset = _FakeEdgeSet([clone.serial])
+        return clone
+
+    monkeypatch.setattr(dm, "ensure_last_block_is_goto", stabilize)
+    monkeypatch.setattr(dm, "copy_block_keep", copy_with_native_fallthrough_semantics)
+    monkeypatch.setattr(dm, "make_2way_block_goto", lambda *_a, **_k: True)
+    monkeypatch.setattr(dm, "change_1way_block_successor", lambda *_a, **_k: True)
+    monkeypatch.setattr(dm, "change_2way_block_conditional_successor", lambda *_a, **_k: True)
+    kwargs = dict(source_blk=source, pred_serial=pred.serial, goto_target_serial=30)
+    if from_branch_arm:
+        ok = modifier._apply_clone_conditional_as_goto_from_branch_arm(**kwargs, pred_arm=1)
+    else:
+        ok = modifier._apply_clone_conditional_as_goto(**kwargs)
+    assert ok
+    assert list(terminal.succset) == [exit_block.serial]
