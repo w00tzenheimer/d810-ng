@@ -174,21 +174,25 @@ class PatternStorage(object):
         # the registered rule tree. Hex-Rays presents the same shapes many
         # thousands of times, so retain the immutable candidate tuple while
         # bounding memory and invalidate it whenever registration changes.
-        self._match_cache: CacheImpl[str, tuple[RulePatternInfo, ...]] = CacheImpl(
-            max_size=4096
-        )
+        # Most trie layers are never queried directly. Allocate only on lookup.
+        self._match_cache: CacheImpl[str, tuple[RulePatternInfo, ...]] | None = None
 
     def add_pattern_for_rule(self, pattern: AstBase, rule: InstructionOptimizationRule):
-        self._match_cache.clear()
+        if self._match_cache is not None:
+            self._match_cache.clear()
         sig_list = pattern.get_depth_signature(self.depth)
         sig_tuple = tuple(sig_list)
-        # Check if signature is all "N" (terminal case)
-        if all(x == "N" for x in sig_tuple):
+        # A registered child already proves this signature is nonterminal.
+        child = self.next_layer_patterns.get(sig_tuple)
+        if child is not None:
+            child.add_pattern_for_rule(pattern, rule)
+        elif sig_tuple.count("N") == len(sig_tuple):
+            # Preserve all([]) while avoiding Python generator resumes.
             self.rule_resolved.append(RulePatternInfo(rule, pattern))
         else:
-            if sig_tuple not in self.next_layer_patterns:
-                self.next_layer_patterns[sig_tuple] = PatternStorage(self.depth + 1)
-            self.next_layer_patterns[sig_tuple].add_pattern_for_rule(pattern, rule)
+            child = PatternStorage(self.depth + 1)
+            self.next_layer_patterns[sig_tuple] = child
+            child.add_pattern_for_rule(pattern, rule)
 
     @staticmethod
     def layer_signature_to_key(sig: list[str]) -> tuple[str, ...]:
@@ -225,11 +229,15 @@ class PatternStorage(object):
         if pattern_search_logger.debug_on:
             pattern_search_logger.debug("Searching for %s", pattern)
         cache_key = pattern.get_pattern()
-        found, cached = self._match_cache.lookup(cache_key)
+        cache = self._match_cache
+        if cache is None:
+            cache = CacheImpl(max_size=4096)
+            self._match_cache = cache
+        found, cached = cache.lookup(cache_key)
         if found:
             return list(cached)
         matches = self.explore_one_level(pattern, 1)
-        self._match_cache[cache_key] = tuple(matches)
+        cache[cache_key] = tuple(matches)
         return matches
 
     def explore_one_level(
