@@ -11,6 +11,7 @@
     "backends/mba/native_z3_proof_template.py",
     "backends/mba/runtime_semantics.py",
     "core/cymode.py",
+    "ir/expr/dsl.py",
     "mba/ac_matching.py",
     "mba/canonical_pattern.py",
     "mba/certified_rule_compiler.py",

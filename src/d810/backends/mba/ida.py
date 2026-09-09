@@ -47,6 +47,7 @@ from d810.mba.constraints import (
 )
 from d810.mba.dsl import SymbolicExpression, SymbolicExpressionProtocol
 from d810.ir.expr.constraints import bind_runtime_width, runtime_operand_size
+from d810.ir.expr.dsl import is_symbolic_expression
 from d810.mba.extension_api import CanonicalFallbackError
 from d810.mba.provider_history import ProviderOutcomeHistory
 from d810.mba.provider_outcome import (
@@ -337,7 +338,7 @@ class IDANodeVisitor:
             return AstConstant(str(expr), expr)
 
         # Use Protocol for structural typing - survives hot reloads
-        if not isinstance(expr, SymbolicExpressionProtocol):
+        if not is_symbolic_expression(expr):
             raise ValueError(f"Expected SymbolicExpression, got {type(expr).__name__}")
 
         if expr.is_leaf():

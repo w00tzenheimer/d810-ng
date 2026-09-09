@@ -34,6 +34,28 @@ class SymbolicExpressionProtocol(Protocol):
     def is_leaf(self) -> bool: ...
 
 
+_EXPRESSION_DATA_FIELDS = frozenset(("operation", "left", "right", "name", "value"))
+
+
+def is_symbolic_expression(value: object) -> bool:
+    """Check the visitor contract without reflection on ordinary DSL nodes.
+
+    Keep the structural fallback for foreign/reloaded classes and malformed
+    instances. Do not cache admission by type: instance fields can be removed.
+    """
+    if type(value) is SymbolicExpression:
+        attributes = value.__dict__
+        if (
+            type(attributes) is dict
+            and _EXPRESSION_DATA_FIELDS <= attributes.keys()
+            and attributes.get(
+                "is_leaf", SymbolicExpression.__dict__.get("is_leaf")
+            ) is not None
+        ):
+            return True
+    return isinstance(value, SymbolicExpressionProtocol)
+
+
 class SymbolicExpression:
     """A pure symbolic expression tree with no backend dependencies.
 
