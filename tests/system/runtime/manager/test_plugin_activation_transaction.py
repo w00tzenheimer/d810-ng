@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -96,6 +97,20 @@ class _InternalOpaqueNameRule(state_module.InstructionOptimizationRule):
 
     def check_and_replace(self, _blk, _ins):
         return None
+
+
+class _MutatingConfigRule(_OpaqueBindingRule):
+    def __init__(self):
+        super().__init__()
+        self.configuration_before_mutation = None
+        self.configuration = None
+
+    def configure(self, config):
+        self.configure_calls += 1
+        self.configuration_before_mutation = deepcopy(config)
+        self.configuration = config
+        config["nested"]["items"].append("plugin mutation")
+        config["nested"]["mapping"]["token"] = "plugin mutation"
 
 
 class _Manager:
@@ -363,14 +378,18 @@ def _patch_activation(
     binding_name="ExternalRule",
     block_binding_name=None,
     configured_pass_ids=("external-pass",),
+    binding_config=None,
 ):
+    binding_config = {} if binding_config is None else binding_config
     instruction_bindings = tuple(
         ConfigV2HookBinding(
             pass_id=pass_id,
             implementation_id=binding_name,
             lane="instruction",
             rule=RuleConfiguration(
-                name=binding_name, is_activated=True, config={}
+                name=binding_name,
+                is_activated=True,
+                config=binding_config,
             ),
         )
         for pass_id in configured_pass_ids
@@ -668,6 +687,51 @@ def test_opaque_external_binding_selects_owned_instance_once(monkeypatch):
             "opaque-implementation-id",
             "instruction",
         ): external_rule
+    }
+
+
+def test_initial_external_configuration_cannot_mutate_restart_recipe(monkeypatch):
+    external_rule = _MutatingConfigRule()
+    registry = _Registry(external_rule, declared_name="opaque-implementation-id")
+    old_activation = _Activation("old")
+    old_project = _project("old.json")
+    old_snapshot = _snapshot(old_project, old_activation, "old-ins")
+    registry.old_activation = old_activation
+    state = _state(registry, old_project, old_snapshot)
+    source = {
+        "nested": {
+            "items": ["stable"],
+            "mapping": {"token": "stable"},
+        }
+    }
+    _patch_activation(
+        monkeypatch,
+        binding_name="opaque-implementation-id",
+        binding_config=source,
+    )
+    new_project = _project("new.json")
+
+    state._activate_project(project_index=1, project=new_project)
+
+    expected = {
+        "nested": {
+            "items": ["stable"],
+            "mapping": {"token": "stable"},
+        },
+        "dump_intermediate_microcode": None,
+    }
+    recipe = (
+        state.current_project_runtime_snapshot
+        .external_implementation_restart_recipes[0]
+    )
+    assert external_rule.configuration_before_mutation == expected
+    assert external_rule.configuration != expected
+    assert recipe.fresh_configuration() == expected
+    assert source == {
+        "nested": {
+            "items": ["stable"],
+            "mapping": {"token": "stable"},
+        }
     }
 
 

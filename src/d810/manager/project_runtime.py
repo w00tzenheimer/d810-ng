@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import dataclasses
 import pathlib
+from copy import deepcopy
+from collections.abc import Mapping
 
 from d810.capabilities.idb_preparation import PreparationScriptDescriptor
 from d810.core.config import ProjectConfiguration
@@ -28,6 +30,50 @@ class ProjectIdentitySnapshot:
     description: str
 
 
+@dataclasses.dataclass(frozen=True, slots=True, init=False)
+class ExternalImplementationRestartRecipe:
+    """Exact external ownership plus an isolated resolved configuration."""
+
+    binding_key: tuple[str, str, str]
+    ownership: ImplementationOwnership
+    _resolved_configuration: dict[str, object] = dataclasses.field(repr=False)
+
+    def __init__(
+        self,
+        *,
+        binding_key: tuple[str, str, str],
+        ownership: ImplementationOwnership,
+        resolved_configuration: Mapping[str, object],
+    ) -> None:
+        normalized_key = tuple(str(value) for value in binding_key)
+        if len(normalized_key) != 3 or not all(normalized_key):
+            raise ValueError(
+                "external restart binding key must contain three non-empty values"
+            )
+        object.__setattr__(self, "binding_key", normalized_key)
+        object.__setattr__(self, "ownership", ownership)
+        object.__setattr__(
+            self,
+            "_resolved_configuration",
+            deepcopy(dict(resolved_configuration)),
+        )
+
+    def fresh_configuration(self) -> dict[str, object]:
+        """Return a copy no plugin callback can use to mutate this recipe."""
+        return deepcopy(self._resolved_configuration)
+
+    def with_ownership(
+        self,
+        ownership: ImplementationOwnership,
+    ) -> ExternalImplementationRestartRecipe:
+        """Carry the isolated configuration into one replacement generation."""
+        return type(self)(
+            binding_key=self.binding_key,
+            ownership=ownership,
+            resolved_configuration=self._resolved_configuration,
+        )
+
+
 @dataclasses.dataclass(frozen=True, slots=True)
 class ProjectRuntimeSnapshot:
     """Immutable identity and compiled pass sequence for one active project."""
@@ -38,6 +84,9 @@ class ProjectRuntimeSnapshot:
     global_const_persistence_enabled: bool = False
     activated_plugins: tuple[object, ...] = ()
     activated_implementations: tuple[ImplementationOwnership, ...] = ()
+    external_implementation_restart_recipes: tuple[
+        ExternalImplementationRestartRecipe, ...
+    ] = ()
 
 
 def _identity(project: ProjectConfiguration) -> ProjectIdentitySnapshot:
@@ -55,6 +104,9 @@ def build_project_runtime_snapshot(
     schedule: ConfigV2HookSchedule,
     activated_plugins: tuple[object, ...] = (),
     activated_implementations: tuple[ImplementationOwnership, ...] = (),
+    external_implementation_restart_recipes: tuple[
+        ExternalImplementationRestartRecipe, ...
+    ] = (),
 ) -> ProjectRuntimeSnapshot:
     """Capture one canonical project and its validated executable schedule."""
     preparation_registry = PreparationScriptRegistry.from_project(
@@ -68,6 +120,9 @@ def build_project_runtime_snapshot(
         global_const_persistence_enabled=schedule.global_const_persistence_enabled,
         activated_plugins=tuple(activated_plugins),
         activated_implementations=tuple(activated_implementations),
+        external_implementation_restart_recipes=tuple(
+            external_implementation_restart_recipes
+        ),
     )
 
 
@@ -95,6 +150,7 @@ def clone_project(
 
 __all__ = [
     "ProjectConfigurationEditError",
+    "ExternalImplementationRestartRecipe",
     "ProjectIdentitySnapshot",
     "ProjectRuntimeSnapshot",
     "build_project_runtime_snapshot",

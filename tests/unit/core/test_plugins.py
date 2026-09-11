@@ -1505,6 +1505,74 @@ class TestActivation(unittest.TestCase):
         self.assertEqual(activation.release_calls, [implementation])
         self.assertNotIn(candidate, reg._implementation_instances)
 
+    def test_exact_implementation_ownership_rejects_a_foreign_same_candidate_instance(self):
+        activation = ReleasingActivation()
+        reg = registry_for(FakePlugin(activation))
+        candidate = reg.require_unique_implementation(
+            "mba-solve", install_hint="example-package"
+        )
+        implementation = reg.activate_implementation(candidate)
+
+        self.assertTrue(
+            reg.owns_implementation(ImplementationOwnership(candidate, implementation))
+        )
+        self.assertFalse(
+            reg.owns_implementation(ImplementationOwnership(candidate, object()))
+        )
+
+        reg.release_implementation_instances(
+            (ImplementationOwnership(candidate, implementation),)
+        )
+        self.assertFalse(
+            reg.owns_implementation(ImplementationOwnership(candidate, implementation))
+        )
+
+    def test_active_activation_snapshot_preserves_exact_existing_identity(self):
+        activation = ReleasingActivation()
+        reg = registry_for(FakePlugin(activation))
+
+        self.assertEqual(reg.active_activations(), ())
+        self.assertIs(reg.activate("example"), activation)
+        self.assertEqual(reg.active_activations(), (activation,))
+
+    def test_exact_ownership_query_waits_for_registry_teardown(self):
+        close_entered = threading.Event()
+        finish_close = threading.Event()
+
+        class BlockingCloseActivation(ReleasingActivation):
+            def close(self):
+                close_entered.set()
+                assert finish_close.wait(timeout=1)
+                super().close()
+
+        activation = BlockingCloseActivation()
+        reg = registry_for(FakePlugin(activation))
+        candidate = reg.require_unique_implementation(
+            "mba-solve", install_hint="example-package"
+        )
+        implementation = reg.activate_implementation(candidate)
+        observations = []
+        closer = threading.Thread(target=reg.close_activations)
+        observer = threading.Thread(
+            target=lambda: observations.append(
+                reg.owns_implementation(
+                    ImplementationOwnership(candidate, implementation)
+                )
+            )
+        )
+
+        closer.start()
+        self.assertTrue(close_entered.wait(timeout=1))
+        observer.start()
+        self.assertTrue(observer.is_alive())
+        finish_close.set()
+        closer.join(timeout=1)
+        observer.join(timeout=1)
+
+        self.assertFalse(closer.is_alive())
+        self.assertFalse(observer.is_alive())
+        self.assertEqual(observations, [False])
+
     def test_concurrent_factories_cannot_publish_same_singleton_twice(self):
         construction_barrier = threading.Barrier(2)
 

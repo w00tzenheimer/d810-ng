@@ -47,6 +47,15 @@ def test_initialize_delegates_to_the_residual_observation_lifecycle() -> None:
     assert "register" not in calls
 
 
+def test_plugin_capability_preparation_is_shared_with_manager_start() -> None:
+    prepare = _method("D810Manager", "_prepare_plugin_host_capabilities")
+    start = _method("D810Manager", "start")
+
+    assert "_initialize_mba_residual_observation" in _calls(prepare)
+    assert "_prepare_plugin_host_capabilities" in _calls(start)
+    assert "_initialize_mba_residual_observation" not in _calls(start)
+
+
 def test_initialize_reuses_the_one_lifecycle_this_manager_already_owns() -> None:
     """d81-mcqr: the relay every issued view names must survive a restart.
 

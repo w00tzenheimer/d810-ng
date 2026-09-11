@@ -1766,6 +1766,19 @@ class BackendRegistry:
         with self._lock:
             return candidate in self._active_implementations
 
+    def owns_implementation(self, ownership: ImplementationOwnership) -> bool:
+        """Whether the registry still owns this exact candidate/object pair."""
+        with self._lock:
+            self._wait_for_lifecycle_locked()
+            instances = self._implementation_instances.get(ownership.candidate, ())
+            return any(instance is ownership.instance for instance in instances)
+
+    def active_activations(self) -> tuple[PluginActivation, ...]:
+        """Snapshot exact active identities after lifecycle teardown settles."""
+        with self._lock:
+            self._wait_for_lifecycle_locked()
+            return tuple(self._activated.values())
+
     def implementation_failure(
         self, candidate: PassImplementationCandidate
     ) -> str | None:

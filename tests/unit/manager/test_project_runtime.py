@@ -7,12 +7,14 @@ from pathlib import Path
 import pytest
 
 from d810.core.config import ProjectConfiguration
+from d810.core.plugins import ImplementationOwnership
 from d810.manager.project_runtime import (
     ProjectConfigurationEditError,
     ProjectRuntimeSnapshot,
     build_project_runtime_snapshot,
     clone_project,
 )
+from d810.manager import project_runtime
 from d810.passes.config_v2_hook_runtime import compile_config_v2_hook_schedule
 
 
@@ -61,6 +63,41 @@ def test_snapshot_is_immutable(tmp_path: Path) -> None:
         snapshot.project = snapshot.project
 
 
+def test_external_restart_recipe_owns_config_and_returns_fresh_copies() -> None:
+    recipe_type = getattr(
+        project_runtime,
+        "ExternalImplementationRestartRecipe",
+        None,
+    )
+    assert recipe_type is not None
+    source = {
+        "nested": {
+            "items": ["stable"],
+            "mapping": {"token": "stable"},
+        }
+    }
+    ownership = ImplementationOwnership(object(), object())
+
+    recipe = recipe_type(
+        binding_key=("owned-pass", "owned-rule", "instruction"),
+        ownership=ownership,
+        resolved_configuration=source,
+    )
+    source["nested"]["items"].append("source mutation")
+    first = recipe.fresh_configuration()
+    first["nested"]["items"].append("plugin mutation")
+    first["nested"]["mapping"]["token"] = "changed"
+
+    assert recipe.ownership is ownership
+    assert recipe.binding_key == ("owned-pass", "owned-rule", "instruction")
+    assert recipe.fresh_configuration() == {
+        "nested": {
+            "items": ["stable"],
+            "mapping": {"token": "stable"},
+        }
+    }
+
+
 def test_clone_project_uses_the_canonical_document(tmp_path: Path) -> None:
     source = _project(tmp_path, name="source.json")
     destination = tmp_path / "clone.json"
@@ -105,6 +142,7 @@ def test_project_runtime_snapshot_type_contains_only_canonical_fields() -> None:
         "global_const_persistence_enabled",
         "activated_plugins",
         "activated_implementations",
+        "external_implementation_restart_recipes",
     )
 
 

@@ -883,6 +883,27 @@ class D810Manager:
         self._mba_residual_observation_sink = lifecycle.sink
         self._mba_residual_observation_lease = lifecycle.lease
 
+    def _prepare_plugin_host_capabilities(self) -> bool:
+        """Publish manager-owned capabilities needed during plugin activation.
+
+        Return whether this call acquired a generation, so a caller that is
+        staging plugin activation can roll back only what it acquired.  An
+        already-published generation is retained byte-for-byte: preparation is
+        deliberately idempotent and never restarts its sink or replaces its
+        lease.
+        """
+
+        sink = self._mba_residual_observation_sink
+        lease = self._mba_residual_observation_lease
+        if sink is not None or lease is not None:
+            if sink is None or lease is None:
+                raise RuntimeError(
+                    "manager-owned plugin capability generation is inconsistent"
+                )
+            return False
+        self._initialize_mba_residual_observation()
+        return True
+
     def _release_mba_residual_observation(self, full_cleanup: bool = False) -> None:
         lifecycle = self._mba_residual_observation_lifecycle
         self._mba_residual_observation_lease = None
@@ -2703,8 +2724,7 @@ class D810Manager:
     def start(self):
         if self._started:
             self.stop()
-        if self._mba_residual_observation_sink is None:
-            self._initialize_mba_residual_observation()
+        self._prepare_plugin_host_capabilities()
         self._runtime_invalidated = False
         logger.debug("Starting manager...")
         load_optimizer_registries()

@@ -59,6 +59,7 @@ from d810.diagnostics.workbench_models import (
 from d810.mba.rules import VerifiableRule
 from d810.mba.certified_catalogue import StructuralMatcherParityExpectation
 from d810.manager.project_runtime import (
+    ExternalImplementationRestartRecipe,
     ProjectRuntimeSnapshot,
     build_project_runtime_snapshot,
     clone_project as clone_project_command,
@@ -554,6 +555,87 @@ class D810State(metaclass=SingletonMeta):
             f"runtime activation rollback failed: {detail}"
         ) from activation_error
 
+    def _stage_external_implementation(
+        self,
+        *,
+        candidate,
+        lane: str,
+        staged_implementations: list[ImplementationOwnership],
+        staged_activations: list[object],
+    ) -> _ExternalImplementationBinding:
+        """Create and bind one external implementation under caller rollback."""
+        backend_registry = self.manager.backend_registry
+        implementation = backend_registry.activate_implementation(candidate)
+        ownership = ImplementationOwnership(candidate, implementation)
+        staged_implementations.append(ownership)
+        expected_type = (
+            InstructionOptimizationRule
+            if lane == "instruction"
+            else FlowOptimizationRule
+        )
+        if not isinstance(implementation, expected_type):
+            raise TypeError(
+                f"plugin implementation {candidate.rule_name!r} must be a "
+                f"{expected_type.__name__}"
+            )
+        services = backend_registry.plugin_rule_services(candidate)
+        implementation.bind_plugin_services(services)
+        activation = backend_registry.activation_for_candidate(candidate)
+        if not any(existing is activation for existing in staged_activations):
+            staged_activations.append(activation)
+        return _ExternalImplementationBinding(ownership=ownership, lane=lane)
+
+    def _configure_rule_for_schedule(
+        self,
+        rule,
+        effective_config: dict[str, object],
+        constant_stages_by_rule: dict[str, object],
+    ) -> None:
+        stage = constant_stages_by_rule.get(rule.name)
+        if stage is None:
+            rule.configure(effective_config)
+            return
+        supported_names = constant_simplification_provider_maturities(
+            stage.supported_maturities
+        )
+        effective_names = constant_simplification_provider_maturities(
+            stage.effective_maturities
+        )
+        supported = tuple(string_to_maturity(name) for name in supported_names)
+        effective = tuple(string_to_maturity(name) for name in effective_names)
+        if any(value is None for value in (*supported, *effective)):
+            raise PipelineConfigError(
+                f"{CONSTANT_SIMPLIFICATION_PASS_ID} stage {stage.stage_id} "
+                f"implementation {stage.implementation_name} has an unknown "
+                "provider maturity spelling"
+            )
+        configure_rule_with_maturity_contract(
+            rule,
+            effective_config,
+            pass_id=CONSTANT_SIMPLIFICATION_PASS_ID,
+            stage_id=stage.stage_id,
+            expected_supported=tuple(
+                value for value in supported if value is not None
+            ),
+            expected_effective=tuple(
+                value for value in effective if value is not None
+            ),
+        )
+
+    def _configure_external_implementation(
+        self,
+        binding: _ExternalImplementationBinding,
+        recipe: ExternalImplementationRestartRecipe,
+        constant_stages_by_rule: dict[str, object],
+    ) -> None:
+        """Configure one generation from a recipe-owned fresh deep copy."""
+        self._configure_rule_for_schedule(
+            binding.instance,
+            recipe.fresh_configuration(),
+            constant_stages_by_rule,
+        )
+        binding.instance.set_log_dir(self.log_dir)
+
     def _activate_project(
         self,
         *,
@@ -659,43 +741,15 @@ class D810State(metaclass=SingletonMeta):
             external_key = (candidate.pass_id, candidate.rule_name, "instruction")
             if external_key not in external_binding_keys:
                 continue
-            implementation = _stage_call(
-                backend_registry.activate_implementation,
-                candidate,
-            )
-            staged_ownership = ImplementationOwnership(candidate, implementation)
-            staged_implementations.append(staged_ownership)
-            if not isinstance(implementation, InstructionOptimizationRule):
-                _stage_call(
-                    _raise,
-                    TypeError(
-                        f"plugin implementation {candidate.rule_name!r} must be "
-                        "an InstructionOptimizationRule"
-                    ),
-                )
-            services = _stage_call(
-                backend_registry.plugin_rule_services,
-                candidate,
-            )
-            _stage_call(implementation.bind_plugin_services, services)
-            external_rules[external_key] = _ExternalImplementationBinding(
-                ownership=staged_ownership,
+            external_binding = _stage_call(
+                self._stage_external_implementation,
+                candidate=candidate,
                 lane="instruction",
+                staged_implementations=staged_implementations,
+                staged_activations=staged_activations,
             )
-            activation = _stage_call(
-                backend_registry.activation_for_candidate, candidate
-            )
-            if not any(existing is activation for existing in staged_activations):
-                staged_activations.append(activation)
-            candidate_known_ins_rules.append(implementation)
-
-        snapshot = _stage_call(
-            build_project_runtime_snapshot,
-            project=project,
-            schedule=schedule,
-            activated_plugins=tuple(staged_activations),
-            activated_implementations=tuple(staged_implementations),
-        )
+            external_rules[external_key] = external_binding
+            candidate_known_ins_rules.append(external_binding.instance)
         _stage_call(
             _require_registered_schedule_bindings,
             schedule,
@@ -717,38 +771,7 @@ class D810State(metaclass=SingletonMeta):
             for stage in (constant_schedule.stages if constant_schedule else ())
             if stage.enabled and stage.implementation_name
         }
-
-        def configure_rule(rule, effective_config) -> None:
-            stage = constant_stages_by_rule.get(rule.name)
-            if stage is None:
-                rule.configure(effective_config)
-                return
-            supported_names = constant_simplification_provider_maturities(
-                stage.supported_maturities
-            )
-            effective_names = constant_simplification_provider_maturities(
-                stage.effective_maturities
-            )
-            supported = tuple(string_to_maturity(name) for name in supported_names)
-            effective = tuple(string_to_maturity(name) for name in effective_names)
-            if any(value is None for value in (*supported, *effective)):
-                raise PipelineConfigError(
-                    f"{CONSTANT_SIMPLIFICATION_PASS_ID} stage {stage.stage_id} "
-                    f"implementation {stage.implementation_name} has an unknown "
-                    "provider maturity spelling"
-                )
-            configure_rule_with_maturity_contract(
-                rule,
-                effective_config,
-                pass_id=CONSTANT_SIMPLIFICATION_PASS_ID,
-                stage_id=stage.stage_id,
-                expected_supported=tuple(
-                    value for value in supported if value is not None
-                ),
-                expected_effective=tuple(
-                    value for value in effective if value is not None
-                ),
-            )
+        external_restart_recipes: list[ExternalImplementationRestartRecipe] = []
 
         # The compiled schedule is authoritative.  Binding order is the
         # declared pipeline order, never registry discovery order.
@@ -772,8 +795,32 @@ class D810State(metaclass=SingletonMeta):
                 effective_config["dump_intermediate_microcode"] = self.d810_config.get(
                     "dump_intermediate_microcode"
                 )
-                _stage_call(configure_rule, rule, effective_config)
-                _stage_call(rule.set_log_dir, self.log_dir)
+                if external_binding is not None:
+                    recipe = _stage_call(
+                        ExternalImplementationRestartRecipe,
+                        binding_key=(
+                            rule_conf.pass_id,
+                            rule_conf.implementation_id,
+                            "instruction",
+                        ),
+                        ownership=external_binding.ownership,
+                        resolved_configuration=effective_config,
+                    )
+                    external_restart_recipes.append(recipe)
+                    _stage_call(
+                        self._configure_external_implementation,
+                        external_binding,
+                        recipe,
+                        constant_stages_by_rule,
+                    )
+                else:
+                    _stage_call(
+                        self._configure_rule_for_schedule,
+                        rule,
+                        effective_config,
+                        constant_stages_by_rule,
+                    )
+                    _stage_call(rule.set_log_dir, self.log_dir)
                 candidate_ins_rules.append(rule)
         logger.debug("Instruction rules configured")
 
@@ -877,10 +924,45 @@ class D810State(metaclass=SingletonMeta):
                 effective_config["dump_intermediate_microcode"] = self.d810_config.get(
                     "dump_intermediate_microcode"
                 )
-                _stage_call(configure_rule, blk_rule, effective_config)
-                _stage_call(blk_rule.set_log_dir, self.log_dir)
+                if external_binding is not None:
+                    recipe = _stage_call(
+                        ExternalImplementationRestartRecipe,
+                        binding_key=(
+                            rule_conf.pass_id,
+                            rule_conf.implementation_id,
+                            "block",
+                        ),
+                        ownership=external_binding.ownership,
+                        resolved_configuration=effective_config,
+                    )
+                    external_restart_recipes.append(recipe)
+                    _stage_call(
+                        self._configure_external_implementation,
+                        external_binding,
+                        recipe,
+                        constant_stages_by_rule,
+                    )
+                else:
+                    _stage_call(
+                        self._configure_rule_for_schedule,
+                        blk_rule,
+                        effective_config,
+                        constant_stages_by_rule,
+                    )
+                    _stage_call(blk_rule.set_log_dir, self.log_dir)
                 candidate_blk_rules.append(blk_rule)
         logger.debug("Block rules configured")
+
+        snapshot = _stage_call(
+            build_project_runtime_snapshot,
+            project=project,
+            schedule=schedule,
+            activated_plugins=tuple(staged_activations),
+            activated_implementations=tuple(staged_implementations),
+            external_implementation_restart_recipes=tuple(
+                external_restart_recipes
+            ),
+        )
 
         cfg = _stage_call(dict, project.additional_configuration)
         cfg["config_v2_native_state_machine_active"] = _stage_call(
@@ -1541,6 +1623,212 @@ class D810State(metaclass=SingletonMeta):
         """Register backend-supplied analysis seams before runtime starts."""
         register_hexrays_backend_providers()
 
+    def _validated_external_restart_recipes(
+        self,
+        snapshot: ProjectRuntimeSnapshot,
+    ) -> tuple[ExternalImplementationRestartRecipe, ...]:
+        """Validate every identity-bearing surface before staging replacements."""
+        recipes = snapshot.external_implementation_restart_recipes
+        owners = snapshot.activated_implementations
+        if not recipes and not owners:
+            return ()
+
+        def _same_owner(left, right) -> bool:
+            return (
+                left.candidate == right.candidate
+                and left.instance is right.instance
+            )
+
+        if len(recipes) != len(owners) or any(
+            sum(_same_owner(recipe.ownership, owner) for owner in owners) != 1
+            for recipe in recipes
+        ):
+            raise RuntimeError(
+                "external restart ownership is inconsistent with the runtime snapshot"
+            )
+        manager_bindings = self.manager._external_implementation_bindings
+        for recipe in recipes:
+            key = recipe.binding_key
+            owner = recipe.ownership
+            candidate = owner.candidate
+            if (
+                key[:2] != (candidate.pass_id, candidate.rule_name)
+                or key[2] not in {"instruction", "block"}
+                or manager_bindings.get(key) is not owner.instance
+            ):
+                raise RuntimeError(
+                    "external restart ownership is inconsistent with manager bindings"
+                )
+            current_rules = (
+                self.current_ins_rules
+                if key[2] == "instruction"
+                else self.current_blk_rules
+            )
+            known_rules = (
+                self.known_ins_rules
+                if key[2] == "instruction"
+                else self.known_blk_rules
+            )
+            if (
+                sum(rule is owner.instance for rule in current_rules) != 1
+                or sum(rule is owner.instance for rule in known_rules) != 1
+            ):
+                raise RuntimeError(
+                    "external restart ownership is inconsistent with rule lists"
+                )
+        return recipes
+
+    def _rebind_retired_external_implementations(self) -> None:
+        """Transactionally replace only external objects retired by manager stop."""
+        snapshot = self.get_project_runtime_snapshot()
+        recipes = self._validated_external_restart_recipes(snapshot)
+        if not recipes:
+            return
+        backend_registry = self.manager.backend_registry
+        retired = tuple(
+            recipe
+            for recipe in recipes
+            if not backend_registry.owns_implementation(recipe.ownership)
+        )
+        if not retired:
+            return
+
+        preexisting_activations = backend_registry.active_activations()
+        staged_implementations: list[ImplementationOwnership] = []
+        staged_activations: list[object] = []
+        replacements: dict[
+            tuple[str, str, str], _ExternalImplementationBinding
+        ] = {}
+        constant_schedule = self.manager._constant_simplification_schedule
+        constant_stages_by_rule = {
+            stage.implementation_name: stage
+            for stage in (constant_schedule.stages if constant_schedule else ())
+            if stage.enabled and stage.implementation_name
+        }
+        try:
+            for recipe in retired:
+                replacement = self._stage_external_implementation(
+                    candidate=recipe.ownership.candidate,
+                    lane=recipe.binding_key[2],
+                    staged_implementations=staged_implementations,
+                    staged_activations=staged_activations,
+                )
+                self._configure_external_implementation(
+                    replacement,
+                    recipe,
+                    constant_stages_by_rule,
+                )
+                replacements[recipe.binding_key] = replacement
+
+            replacement_by_instance = {
+                id(recipe.ownership.instance): replacements[recipe.binding_key]
+                for recipe in retired
+            }
+
+            def _replaced_rules(rules: list) -> list:
+                return [
+                    (
+                        replacement_by_instance[id(rule)].instance
+                        if id(rule) in replacement_by_instance
+                        else rule
+                    )
+                    for rule in rules
+                ]
+
+            candidate_current_ins_rules = _replaced_rules(self.current_ins_rules)
+            candidate_current_blk_rules = _replaced_rules(self.current_blk_rules)
+            candidate_known_ins_rules = _replaced_rules(self.known_ins_rules)
+            candidate_known_blk_rules = _replaced_rules(self.known_blk_rules)
+            candidate_manager_bindings = dict(
+                self.manager._external_implementation_bindings
+            )
+            for key, replacement in replacements.items():
+                candidate_manager_bindings[key] = replacement.instance
+
+            def _replacement_owner(owner: ImplementationOwnership):
+                replacement = replacement_by_instance.get(id(owner.instance))
+                return replacement.ownership if replacement is not None else owner
+
+            candidate_owners = tuple(
+                _replacement_owner(owner)
+                for owner in snapshot.activated_implementations
+            )
+            candidate_recipes = tuple(
+                (
+                    recipe.with_ownership(
+                        replacements[recipe.binding_key].ownership
+                    )
+                    if recipe.binding_key in replacements
+                    else recipe
+                )
+                for recipe in recipes
+            )
+            candidate_activations: list[object] = []
+            for owner in candidate_owners:
+                activation = backend_registry.activation_for_candidate(
+                    owner.candidate
+                )
+                if not any(
+                    existing is activation for existing in candidate_activations
+                ):
+                    candidate_activations.append(activation)
+            candidate_snapshot = dataclasses.replace(
+                snapshot,
+                activated_plugins=tuple(candidate_activations),
+                activated_implementations=candidate_owners,
+                external_implementation_restart_recipes=candidate_recipes,
+            )
+
+            for recipe in retired:
+                old = recipe.ownership.instance
+                replacement = replacements[recipe.binding_key].instance
+                lane_rules = (
+                    (candidate_current_ins_rules, candidate_known_ins_rules)
+                    if recipe.binding_key[2] == "instruction"
+                    else (candidate_current_blk_rules, candidate_known_blk_rules)
+                )
+                if any(
+                    sum(rule is replacement for rule in rules) != 1
+                    or any(rule is old for rule in rules)
+                    for rules in lane_rules
+                ):
+                    raise RuntimeError(
+                        "external restart ownership is inconsistent after replacement"
+                    )
+                if candidate_manager_bindings.get(recipe.binding_key) is not replacement:
+                    raise RuntimeError(
+                        "external restart ownership is inconsistent after map replacement"
+                    )
+
+            self.manager.configure_external_implementation_bindings(
+                candidate_manager_bindings
+            )
+            self.current_ins_rules = candidate_current_ins_rules
+            self.current_blk_rules = candidate_current_blk_rules
+            self.known_ins_rules = candidate_known_ins_rules
+            self.known_blk_rules = candidate_known_blk_rules
+            self.current_project_runtime_snapshot = candidate_snapshot
+            return
+        except BaseException as primary_error:
+            cleanup_errors: list[BaseException] = []
+            try:
+                _release_implementation_instances(
+                    backend_registry,
+                    tuple(staged_implementations),
+                )
+            except BaseException as cleanup_error:
+                cleanup_errors.append(cleanup_error)
+            try:
+                backend_registry.close_activations_except(preexisting_activations)
+            except BaseException as cleanup_error:
+                cleanup_errors.append(cleanup_error)
+            if cleanup_errors:
+                raise BaseExceptionGroup(
+                    "external implementation restart failed during rollback",
+                    (primary_error, *cleanup_errors),
+                )
+            raise
+
     def start_d810(self):
         # Deferred decompiler load: ensure Hex-Rays is loaded + initialized
         # before installing microcode hooks (moved off plugin init / IDB open).
@@ -1548,6 +1836,23 @@ class D810State(metaclass=SingletonMeta):
             logger.error("Cannot start D-810: Hex-Rays decompiler is not available")
             return
         self._register_backend_analysis_providers()
+        if self.manager.started:
+            self.manager.stop()
+        acquired_plugin_capabilities = (
+            self.manager._prepare_plugin_host_capabilities()
+        )
+        try:
+            self._rebind_retired_external_implementations()
+        except BaseException as primary_error:
+            if acquired_plugin_capabilities:
+                try:
+                    self.manager._release_mba_residual_observation()
+                except BaseException as cleanup_error:
+                    raise BaseExceptionGroup(
+                        "external implementation restart and capability rollback failed",
+                        (primary_error, cleanup_error),
+                    )
+            raise
         self.manager.configure_instruction_optimizer(
             [rule for rule in self.current_ins_rules],
             generate_z3_code=self.d810_config.get("generate_z3_code"),
