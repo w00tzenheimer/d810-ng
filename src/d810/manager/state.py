@@ -666,6 +666,7 @@ class D810State(metaclass=SingletonMeta):
         backend_registry = self.manager.backend_registry
         staged_implementations: list[ImplementationOwnership] = []
         rolled_back = False
+        acquired_plugin_capabilities = False
 
         def _rollback_activation(activation_error: BaseException) -> None:
             nonlocal rolled_back
@@ -690,6 +691,11 @@ class D810State(metaclass=SingletonMeta):
                 backend_registry.close_activations_except(previous_activations)
             except BaseException as activation_cleanup_error:
                 rollback_failures.append(activation_cleanup_error)
+            if acquired_plugin_capabilities:
+                try:
+                    self.manager._release_mba_residual_observation()
+                except BaseException as capability_cleanup_error:
+                    rollback_failures.append(capability_cleanup_error)
             if rollback_failures:
                 # Keep the triggering activation error as the first member so
                 # callers can reliably identify the primary failure while all
@@ -709,6 +715,13 @@ class D810State(metaclass=SingletonMeta):
         def _raise(error: BaseException):
             raise error
 
+        # Compilation can probe external implementations before start_d810.
+        # A stopped manager has retired its capability generation; acquire it
+        # here so stop -> load_project -> start remains a valid lifecycle.
+        # Rollback owns only the generation acquired by this activation.
+        acquired_plugin_capabilities = _stage_call(
+            self.manager._prepare_plugin_host_capabilities
+        )
         schedule = _stage_call(compile_config_v2_hook_schedule, project)
         candidate_known_ins_rules = _stage_call(self._build_known_instruction_rules)
         candidate_known_blk_rules = _stage_call(self._build_known_block_rules)

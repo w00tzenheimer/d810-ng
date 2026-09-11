@@ -126,6 +126,19 @@ class _Manager:
         self.execution_scope_service = SimpleNamespace()
         self.instruction_pass_scheduler = SimpleNamespace()
         self.block_pass_scheduler = SimpleNamespace()
+        self.host_capabilities_ready = True
+        self.capability_prepare_calls = 0
+        self.capability_release_calls = 0
+
+    def _prepare_plugin_host_capabilities(self):
+        self.capability_prepare_calls += 1
+        acquired = not self.host_capabilities_ready
+        self.host_capabilities_ready = True
+        return acquired
+
+    def _release_mba_residual_observation(self):
+        self.capability_release_calls += 1
+        self.host_capabilities_ready = False
 
     def function_analysis_priors_for_ea(self, _ea):
         return None
@@ -887,6 +900,57 @@ def test_execution_scope_prefers_exact_external_binding_over_runtime_name(
     manager._compile_execution_scope()
 
     assert [stage.implementation for stage in captured] == [first_rule, second_rule]
+
+
+@pytest.mark.parametrize("initially_ready", [False, True])
+@pytest.mark.parametrize("compile_fails", [False, True])
+def test_project_activation_prepares_capabilities_before_compile(
+    monkeypatch, initially_ready, compile_fails
+):
+    rule = _Rule()
+    registry = _Registry(rule)
+    old_activation = _Activation("old")
+    old_project = _project("old.json")
+    old_snapshot = _snapshot(old_project, old_activation, "old-ins")
+    registry.old_activation = old_activation
+    state = _state(registry, old_project, old_snapshot)
+    state.manager.host_capabilities_ready = initially_ready
+    release_capabilities = state.manager._release_mba_residual_observation
+
+    def release_after_activation_cleanup():
+        assert registry.close_calls == [(old_activation,)]
+        release_capabilities()
+
+    state.manager._release_mba_residual_observation = release_after_activation_cleanup
+    schedule = _patch_activation(monkeypatch)
+    new_project = _project("new.json")
+    new_snapshot = _snapshot(new_project, registry.new_activation, rule)
+    registry.expected_snapshot = new_snapshot
+    monkeypatch.setattr(
+        state_module, "build_project_runtime_snapshot", lambda **_kwargs: new_snapshot
+    )
+
+    def compile_with_required_capability(_project):
+        assert state.manager.host_capabilities_ready
+        if compile_fails:
+            raise PipelineConfigError("deliberate compile failure")
+        return schedule
+
+    monkeypatch.setattr(
+        state_module, "compile_config_v2_hook_schedule", compile_with_required_capability
+    )
+    if compile_fails:
+        with pytest.raises(PipelineConfigError, match="deliberate compile failure"):
+            state._activate_project(project_index=1, project=new_project)
+        assert state.current_project_runtime_snapshot is old_snapshot
+        assert state.manager.host_capabilities_ready is initially_ready
+        assert state.manager.capability_release_calls == int(not initially_ready)
+    else:
+        state._activate_project(project_index=1, project=new_project)
+        assert state.current_project_runtime_snapshot is new_snapshot
+        assert state.manager.host_capabilities_ready
+        assert state.manager.capability_release_calls == 0
+    assert state.manager.capability_prepare_calls == 1
 
 
 def test_success_publishes_before_closing_superseded_activation(monkeypatch):
