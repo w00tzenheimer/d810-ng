@@ -221,7 +221,7 @@ def test_mutable_disassembly_input_is_never_cached(cache):
 
 @pytest.mark.parametrize(
     "setting, enabled",
-    [(None, False), ("0", False), ("1", True), ("true", False), ("invalid", False)],
+    [(None, True), ("0", False), ("1", True), ("true", False), ("invalid", False)],
 )
 def test_fresh_process_mode_is_explicit_and_reload_observes_change(setting, enabled):
     environment = os.environ.copy()

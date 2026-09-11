@@ -317,7 +317,7 @@ def _run(
     tmp_path: Path,
     *args: str,
     label: str = "",
-    no_cython: str = "1",
+    no_cython: str | None = "1",
     image: str | None = "test-runtime-image",
     dotenv: str | None = None,
     extra_env: dict[str, str] | None = None,
@@ -367,9 +367,11 @@ def _run(
             # Model the macOS share host even when pytest runs in Linux Docker.
             "MOCK_UNAME_S": "Darwin",
             "D810_REPO_ROOT": str(root),
-            "D810_NO_CYTHON": no_cython,
         }
     )
+    env.pop("D810_NO_CYTHON", None)
+    if no_cython is not None:
+        env["D810_NO_CYTHON"] = no_cython
     if image is not None:
         env["D810_DOCKER_IMAGE"] = image
     if extra_env is not None:
@@ -1585,10 +1587,12 @@ def test_explicit_empty_image_does_not_fall_back_to_dotenv(tmp_path: Path) -> No
     assert "D810_DOCKER_IMAGE is set but empty" in result.stderr
 
 
+@pytest.mark.parametrize("no_cython", [None, "0"])
 def test_native_speedups_build_cleans_extensions_and_fails_closed(
     tmp_path: Path,
+    no_cython: str | None,
 ) -> None:
-    result, calls = _run(tmp_path, "test", "--", "-q", no_cython="0")
+    result, calls = _run(tmp_path, "test", "--", "-q", no_cython=no_cython)
 
     assert result.returncode == 0, result.stderr
     command = _container_run(calls)
@@ -1597,6 +1601,7 @@ def test_native_speedups_build_cleans_extensions_and_fails_closed(
     assert "-name '*.so'" not in command
     assert "-name '*.pyd'" not in command
     assert "D810_BUILD_SPEEDUPS=1" in command
+    assert "D810_NO_CYTHON=0" in command
     assert "falling back to pure-Python" not in command
     assert "|| echo" not in command
     assert command.index("find src/d810/speedups -type f") < command.index(

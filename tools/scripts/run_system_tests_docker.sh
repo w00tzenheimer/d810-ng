@@ -149,7 +149,7 @@
 #   D810_DOCKER_IMAGE       Docker image (default: idapro-9.4)
 #   D810_REPO_ROOT         Repo root (default: git rev-parse --show-toplevel from cwd)
 #   D810_WORKTREE_ROOT     Dir under repo root for worktrees (default: .worktrees)
-#   D810_NO_CYTHON         Passed into container (default: 1)
+#   D810_NO_CYTHON         Passed into container (default: 0; 1 selects Python fallback)
 #   D810_CYTHON_PROFILE    Test-only Cython trace/profile build (requires D810_NO_CYTHON=0)
 #   D810_NATIVE_PROFILE    Opt-in perf/py-spy tooling plus PERFMON/SYS_PTRACE (default: 0)
 #   D810_TEST_BINARY       Passed into container (default: libobfuscated.dll)
@@ -414,7 +414,7 @@ fi
 
 _trace_default_override D810_DOCKER_IMAGE idapro-9.4
 _trace_default_override D810_DOCKER_MEMORY 4g
-_trace_default_override D810_NO_CYTHON 1
+_trace_default_override D810_NO_CYTHON 0
 _trace_default_override D810_CYTHON_PROFILE 0
 _trace_default_override D810_NATIVE_PROFILE 0
 _trace_default_override D810_TEST_BINARY libobfuscated.dll
@@ -424,7 +424,7 @@ _trace_default_override D810_REMOTE_VOLUME idapro
 
 DOCKER_IMAGE="${D810_DOCKER_IMAGE-idapro-9.4}"
 DOCKER_MEMORY="${D810_DOCKER_MEMORY-4g}"
-NO_CYTHON="${D810_NO_CYTHON-1}"
+NO_CYTHON="${D810_NO_CYTHON-0}"
 CYTHON_PROFILE="${D810_CYTHON_PROFILE-0}"
 NATIVE_PROFILE="${D810_NATIVE_PROFILE-0}"
 TEST_BINARY="${D810_TEST_BINARY-libobfuscated.dll}"
@@ -2130,8 +2130,8 @@ fi
 # prove that pytest, Unicorn, and the isolated Z3 runtime all import before the
 # install step is omitted. A stale runtime is refreshed and then probed again;
 # an unusable solver must fail setup rather than surface as a collection error.
-# Native Cython compilation runs when explicitly enabled and fails closed. The
-# default D810_NO_CYTHON=1 skips this build. Remove ignored Linux extension
+# Native Cython compilation runs by default and fails closed. Explicit
+# D810_NO_CYTHON=1 skips this build. Remove ignored Linux extension
 # artifacts first so a failed rebuild cannot silently import a stale native
 # module. The checkout is a read-write host mount, so cleanup must preserve
 # Darwin extensions and Windows ``.pyd`` files built for the developer host.
@@ -2156,7 +2156,7 @@ elif [ "$CYTHON_PROFILE" = "1" ]; then
   # trace events. Unlike the normal optional speedup build, fail closed here.
   SPEEDUPS_BUILD_CMD="$SPEEDUPS_CLEAN_CMD && DEBUG=1 D810_BUILD_SPEEDUPS=1 $IDA_VENV_PIP install -e .[speedups] -q && $SPEEDUPS_PROBE_REQUIRED"
 elif [ "$NO_CYTHON" = "0" ]; then
-  # An explicit D810_NO_CYTHON=0 is a request, not a preference: a run that
+  # Default or explicit D810_NO_CYTHON=0 is a request, not a preference: a run that
   # silently fell back to Python answers a different question than the one asked.
   SPEEDUPS_BUILD_CMD="$SPEEDUPS_CLEAN_CMD && D810_BUILD_SPEEDUPS=1 $IDA_VENV_PIP install -e .[speedups] -q && $SPEEDUPS_PROBE_REQUIRED"
 else

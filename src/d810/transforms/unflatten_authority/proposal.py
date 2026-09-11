@@ -855,8 +855,11 @@ def validate_proposal_for_publication(
     plan: PatchPlan,
     proposal: object,
 ) -> ProposalValidationResult:
-    """Opt-in producer-only reconstruction; public transaction ingress is strict."""
-    if os.environ.get("D810_PRODUCER_STRUCTURAL_VALIDATION") != "1":
+    """Producer-only reconstruction; set the switch to 0 for strict publication.
+
+    Public transaction ingress remains strict regardless of this switch.
+    """
+    if os.environ.get("D810_PRODUCER_STRUCTURAL_VALIDATION", "1") != "1":
         return validate_proposal(plan, proposal)
     return _validate_proposal(plan, proposal, producer_publication=True)
 

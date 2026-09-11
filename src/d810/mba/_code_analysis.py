@@ -1,7 +1,7 @@
 """Bounded reuse of immutable Python bytecode analysis, never binding values.
 
-Opt in with D810_CODE_ANALYSIS_CACHE=1 in a fresh process. The default strict
-path performs the identical immediate analysis on every request. Neither path
+Reuse is enabled by default. Set D810_CODE_ANALYSIS_CACHE=0 in a fresh process
+for strict, identical immediate analysis on every request. Neither path
 traverses nested code: that remains the consumer's semantic decision.
 """
 
@@ -14,7 +14,7 @@ from threading import RLock
 from types import CodeType
 
 
-CACHE_ENABLED = os.environ.get("D810_CODE_ANALYSIS_CACHE", "0") == "1"
+CACHE_ENABLED = os.environ.get("D810_CODE_ANALYSIS_CACHE", "1") == "1"
 
 
 class CodeAnalysisCache:

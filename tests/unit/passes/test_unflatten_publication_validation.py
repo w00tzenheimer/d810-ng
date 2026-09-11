@@ -20,8 +20,12 @@ from tests.unit.transforms.unflatten_authority.test_proposal import (
 )
 
 
-def test_valid_publication_does_not_serialize_and_parse_proposal(monkeypatch):
-    monkeypatch.setenv("D810_PRODUCER_STRUCTURAL_VALIDATION", "1")
+@pytest.mark.parametrize("mode", [None, "1"])
+def test_valid_publication_does_not_serialize_and_parse_proposal(mode, monkeypatch):
+    if mode is None:
+        monkeypatch.delenv("D810_PRODUCER_STRUCTURAL_VALIDATION", raising=False)
+    else:
+        monkeypatch.setenv("D810_PRODUCER_STRUCTURAL_VALIDATION", mode)
     # Restoring the persistence roundtrip must break this work-elimination test.
     # Route-only fixture isolates publication from the separate exact-effect
     # correlation check, whose persistence check is intentionally unchanged.
@@ -39,8 +43,12 @@ def test_valid_publication_does_not_serialize_and_parse_proposal(monkeypatch):
 
 
 @pytest.mark.parametrize("damage", ["claim_id", "group_id", "block_order"])
-def test_publication_keeps_descendant_rejection_before_returning_edits(damage, monkeypatch):
-    monkeypatch.setenv("D810_PRODUCER_STRUCTURAL_VALIDATION", "1")
+@pytest.mark.parametrize("mode", [None, "1"])
+def test_publication_keeps_descendant_rejection_before_returning_edits(damage, mode, monkeypatch):
+    if mode is None:
+        monkeypatch.delenv("D810_PRODUCER_STRUCTURAL_VALIDATION", raising=False)
+    else:
+        monkeypatch.setenv("D810_PRODUCER_STRUCTURAL_VALIDATION", mode)
     # A live field walker or top-level post-init alone must not admit these.
     plan = _typed_pipeline_plan()
     proposal = plan.unflatten_proposal
@@ -60,12 +68,9 @@ def test_publication_keeps_descendant_rejection_before_returning_edits(damage, m
     assert published.metadata_dict()["unflatten_producer_abstention"] == strict
 
 
-@pytest.mark.parametrize("mode", [None, "0", "unexpected"])
-def test_publication_remains_strict_unless_explicitly_enabled(mode, monkeypatch):
-    if mode is None:
-        monkeypatch.delenv("D810_PRODUCER_STRUCTURAL_VALIDATION", raising=False)
-    else:
-        monkeypatch.setenv("D810_PRODUCER_STRUCTURAL_VALIDATION", mode)
+@pytest.mark.parametrize("mode", ["0", "unexpected"])
+def test_publication_strict_rollback_still_roundtrips(mode, monkeypatch):
+    monkeypatch.setenv("D810_PRODUCER_STRUCTURAL_VALIDATION", mode)
     plan, _ = _typed_plan(_proposal_and_plan_ids()[0])
     original = ids.canonical_decode
     decodes = []
@@ -79,8 +84,12 @@ def test_publication_remains_strict_unless_explicitly_enabled(mode, monkeypatch)
     assert decodes
 
 
-def test_publication_switch_does_not_weaken_public_transaction_validation(monkeypatch):
-    monkeypatch.setenv("D810_PRODUCER_STRUCTURAL_VALIDATION", "1")
+@pytest.mark.parametrize("mode", [None, "1"])
+def test_publication_switch_does_not_weaken_public_transaction_validation(mode, monkeypatch):
+    if mode is None:
+        monkeypatch.delenv("D810_PRODUCER_STRUCTURAL_VALIDATION", raising=False)
+    else:
+        monkeypatch.setenv("D810_PRODUCER_STRUCTURAL_VALIDATION", mode)
     plan, proposal = _typed_plan(_proposal_and_plan_ids()[0])
     original = ids.canonical_decode
     decodes = []
