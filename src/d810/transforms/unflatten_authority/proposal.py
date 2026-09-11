@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, fields, replace
+import os
 from d810.core.typing import Literal, TypeAlias
 from d810.transforms.cfg_transaction import (
     LogicalBlockRef, NativeBlockRef, PlanBlockRef, PatchStepKind,
@@ -99,6 +100,7 @@ from .ids import (
     authority_id,
     canonical_bytes,
     content_id,
+    validate_producer_proposal_structure,
 )
 from .legacy_keys import LEGACY_UNFLATTEN_KEYS
 from .transaction_facts import active_facts, validate_internal
@@ -846,6 +848,25 @@ def validate_proposal(
     proposal: object,
 ) -> ProposalValidationResult:
     """Validate exact proposal type and plan correlation without evaluation."""
+    return _validate_proposal(plan, proposal, producer_publication=False)
+
+
+def validate_proposal_for_publication(
+    plan: PatchPlan,
+    proposal: object,
+) -> ProposalValidationResult:
+    """Opt-in producer-only reconstruction; public transaction ingress is strict."""
+    if os.environ.get("D810_PRODUCER_STRUCTURAL_VALIDATION") != "1":
+        return validate_proposal(plan, proposal)
+    return _validate_proposal(plan, proposal, producer_publication=True)
+
+
+def _validate_proposal(
+    plan: PatchPlan,
+    proposal: object,
+    *,
+    producer_publication: bool,
+) -> ProposalValidationResult:
 
     if type(proposal) is not ProposedUnflattenContract:
         return ProposalRejected(
@@ -859,10 +880,13 @@ def validate_proposal(
         )
     try:
         try:
-            owner = active_facts()
-            if owner is not None and not owner.contains(proposal):
-                proposal = owner.admit_external(proposal, ProposedUnflattenContract)
-            validate_internal(proposal, ProposedUnflattenContract)
+            if producer_publication:
+                validate_producer_proposal_structure(proposal)
+            else:
+                owner = active_facts()
+                if owner is not None and not owner.contains(proposal):
+                    proposal = owner.admit_external(proposal, ProposedUnflattenContract)
+                validate_internal(proposal, ProposedUnflattenContract)
         except Exception:
             return ProposalRejected(
                 UnflattenAuthorityReason.MALFORMED_PROPOSAL,

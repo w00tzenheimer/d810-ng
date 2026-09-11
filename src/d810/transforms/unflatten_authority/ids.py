@@ -1685,6 +1685,16 @@ def _decode_wire(value: object, *, allow_index: bool = False) -> object:
             _validate_pinned_record(result)
     if isinstance(result, _DecodedIndexCells):
         return result
+    # Ordinary sequences preserve their already-checked children exactly.
+    # Re-encoding each ancestor repeats all descendant work. Decimal floats
+    # lack a general wire encoder, and contextual indexes can contain the
+    # unchecked sentinel above; retain the old comparison for both cases.
+    if (
+        tag in {"list", "tuple"}
+        and not allow_index
+        and not any(type(child) is float for child in result)
+    ):
+        return result
     if tag == "decimal":
         canonical_value = {"t": "decimal", "v": result.hex()}
     else:
@@ -1725,6 +1735,23 @@ def validate_canonical_roundtrip(value: object, expected_type: type[object]) -> 
         decoded = canonical_decode(encoded)
     if type(decoded) is not expected_type or decoded != value:
         raise ValueError("canonical roundtrip changed the authority value")
+    return decoded
+
+
+def validate_producer_proposal_structure(value: object) -> object:
+    """Reconstruct a producer proposal without crossing a byte boundary.
+
+    Publication needs descendant constructors, supplied-ID checks and exact
+    value preservation, not JSON. Transaction ingress and persistence retain
+    their independent strict byte roundtrip. No runtime ownership is inherited.
+    """
+    from .model import ProposedUnflattenContract
+
+    with fact_scope(None):
+        validate_live_semantic_fields(value, ProposedUnflattenContract)
+        decoded = _decode_wire(_wire(value))
+        if type(decoded) is not ProposedUnflattenContract or decoded != value:
+            raise ValueError("producer reconstruction changed the authority value")
     return decoded
 
 

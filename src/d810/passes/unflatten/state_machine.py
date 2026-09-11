@@ -166,7 +166,7 @@ from d810.transforms.unflatten_authority.model import UnflattenAuthorityReason
 from d810.transforms.unflatten_authority.proposal import (
     ProposalAccepted,
     ProposalRejected,
-    validate_proposal,
+    validate_proposal_for_publication,
 )
 
 logger = logging.getLogger("d810.passes.unflatten.state_machine")
@@ -220,7 +220,7 @@ def _typed_or_empty_unflatten_plan(plan: PatchPlan) -> PatchPlan:
             "unflatten_proposal_missing",
         )
     else:
-        validation = validate_proposal(plan, proposal)
+        validation = validate_proposal_for_publication(plan, proposal)
         if isinstance(validation, ProposalAccepted):
             return plan
         if not isinstance(validation, ProposalRejected):

@@ -1025,7 +1025,7 @@ def test_lower_state_machine_fails_closed_when_proposal_validation_drifts(
     produced = _typed_pipeline_plan()
     monkeypatch.setattr(
         state_machine_module,
-        "validate_proposal",
+        "validate_proposal_for_publication",
         lambda *_args, **_kwargs: object(),
     )
 
