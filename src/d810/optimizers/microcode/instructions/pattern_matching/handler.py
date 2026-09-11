@@ -8,7 +8,7 @@ from d810.core import typing
 
 import ida_hexrays
 
-from d810.core import CacheImpl, getLogger
+from d810.core import getLogger
 from d810.core.settings import get_settings
 from d810.hexrays.expr.ast import AstBase, AstNode, AstNodeProtocol
 from d810.hexrays.ir.minsn_utils import minsn_to_ast
@@ -175,16 +175,8 @@ class PatternStorage(object):
         # Use tuple keys directly for O(1) lookup without string operations
         self.next_layer_patterns: dict[tuple[str, ...], PatternStorage] = {}
         self.rule_resolved: list[RulePatternInfo] = []
-        # Legacy exploration is a pure function of the candidate AST shape and
-        # the registered rule tree. Hex-Rays presents the same shapes many
-        # thousands of times, so retain the immutable candidate tuple while
-        # bounding memory and invalidate it whenever registration changes.
-        # Most trie layers are never queried directly. Allocate only on lookup.
-        self._match_cache: CacheImpl[str, tuple[RulePatternInfo, ...]] | None = None
 
     def add_pattern_for_rule(self, pattern: AstBase, rule: InstructionOptimizationRule):
-        if self._match_cache is not None:
-            self._match_cache.clear()
         sig_list = pattern.get_depth_signature(self.depth)
         sig_tuple = tuple(sig_list)
         # A registered child already proves this signature is nonterminal.
@@ -233,17 +225,7 @@ class PatternStorage(object):
     def get_matching_rule_pattern_info(self, pattern: AstBase) -> list[RulePatternInfo]:
         if pattern_search_logger.debug_on:
             pattern_search_logger.debug("Searching for %s", pattern)
-        cache_key = pattern.get_pattern()
-        cache = self._match_cache
-        if cache is None:
-            cache = CacheImpl(max_size=4096)
-            self._match_cache = cache
-        found, cached = cache.lookup(cache_key)
-        if found:
-            return list(cached)
-        matches = self.explore_one_level(pattern, 1)
-        cache[cache_key] = tuple(matches)
-        return matches
+        return self.explore_one_level(pattern, 1)
 
     def explore_one_level(
         self, searched_pattern: AstBase, cur_level: int

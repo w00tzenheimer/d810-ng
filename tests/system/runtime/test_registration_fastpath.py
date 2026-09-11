@@ -1,59 +1,134 @@
-"""Native import coverage for lazy pattern registration caches."""
+"""Native runtime coverage for uncached legacy pattern lookup semantics."""
 
-from types import SimpleNamespace
+import ida_hexrays
 
-import pytest
-
-from d810.optimizers.microcode.instructions.pattern_matching.handler import PatternStorage
-
-
-def pattern(signature):
-    return SimpleNamespace(get_depth_signature=signature, get_pattern=lambda: "subject")
+from d810.hexrays.expr.ast import AstConstant, AstLeaf, AstNode
+from d810.optimizers.microcode.instructions.pattern_matching.handler import (
+    PatternStorage,
+    pattern_search_logger,
+)
 
 
-def test_registration_does_not_allocate_matching_caches():
+def _binary(opcode, left=None, right=None):
+    return AstNode(
+        opcode,
+        left if left is not None else AstLeaf("left"),
+        right if right is not None else AstLeaf("right"),
+    )
+
+
+def _constant(name, value):
+    return AstConstant(name, expected_value=value, expected_size=4)
+
+
+def _rules(storage, subject):
+    return [entry.rule for entry in storage.get_matching_rule_pattern_info(subject)]
+
+
+def test_lookup_does_not_render_subject_when_debug_logging_is_disabled(monkeypatch):
     storage = PatternStorage()
-    subject = pattern(lambda depth: ["add"] if depth == 1 else ["N"])
-    first, second = object(), object()
-    storage.add_pattern_for_rule(subject, first)
-    storage.add_pattern_for_rule(subject, second)
-    child = storage.next_layer_patterns[("add",)]
-    assert storage._match_cache is None
-    assert child._match_cache is None
-    assert [entry.rule for entry in child.rule_resolved] == [first, second]
+    subject = _binary(
+        ida_hexrays.m_add,
+        _constant("one", 1),
+        _constant("two", 2),
+    )
+    storage.add_pattern_for_rule(_binary(ida_hexrays.m_add), "add")
+
+    monkeypatch.setattr(pattern_search_logger, "debug_on", False)
+
+    def fail_if_rendered():
+        raise AssertionError("matching must not call AstBase.get_pattern()")
+
+    monkeypatch.setattr(subject, "get_pattern", fail_if_rendered)
+
+    assert _rules(storage, subject) == ["add"]
 
 
-@pytest.mark.parametrize("signature", [[], ["N"], ["N", "N"]])
-def test_terminal_signatures_preserve_registration_order(signature):
+def test_signature_generation_branch_preserves_literal_registration_order():
     storage = PatternStorage()
-    subject = pattern(lambda _depth: signature)
-    first, second = object(), object()
-    storage.add_pattern_for_rule(subject, first)
-    storage.add_pattern_for_rule(subject, second)
-    assert [entry.rule for entry in storage.rule_resolved] == [first, second]
-    assert not storage.next_layer_patterns
+    storage.add_pattern_for_rule(_binary(ida_hexrays.m_add), "add-first")
+    storage.add_pattern_for_rule(_binary(ida_hexrays.m_add), "add-second")
+    storage.add_pattern_for_rule(_binary(ida_hexrays.m_sub), "sub")
+    storage.add_pattern_for_rule(_binary(ida_hexrays.m_xor), "xor")
+
+    subject = _binary(ida_hexrays.m_add, _constant("one", 1), _constant("two", 2))
+
+    # One concrete root has two generated variants, fewer than the three
+    # registered roots, so lookup takes the signature-generation branch.
+    assert _rules(storage, subject) == ["add-first", "add-second"]
 
 
-def test_lookup_allocates_once_and_registration_invalidates(monkeypatch):
+def test_linear_scan_branch_matches_constant_subjects_to_leaf_wildcards_in_order():
     storage = PatternStorage()
-    subject = pattern(lambda _depth: ["N"])
-    calls = []
+    storage.add_pattern_for_rule(_binary(ida_hexrays.m_add), "leaf-wildcard")
+    storage.add_pattern_for_rule(
+        _binary(ida_hexrays.m_add, _constant("left", 7), AstLeaf("right")),
+        "constant-left",
+    )
 
-    def explore(*_args):
-        calls.append(True)
-        return list(storage.rule_resolved)
+    subject = _binary(ida_hexrays.m_add, _constant("one", 1), _constant("two", 2))
 
-    monkeypatch.setattr(storage, "explore_one_level", explore)
-    assert storage.get_matching_rule_pattern_info(subject) == []
-    cache = storage._match_cache
-    assert cache is not None
-    assert storage.get_matching_rule_pattern_info(subject) == []
-    assert len(calls) == 1
-    rule = object()
-    storage.add_pattern_for_rule(subject, rule)
-    result = storage.get_matching_rule_pattern_info(subject)
-    assert [entry.rule for entry in result] == [rule]
-    result.clear()
-    assert len(storage.get_matching_rule_pattern_info(subject)) == 1
-    assert storage._match_cache is cache
-    assert len(calls) == 2
+    # Four generated depth-two variants are not fewer than the two stored
+    # signatures, so lookup takes the linear compatibility-scan branch.
+    assert _rules(storage, subject) == ["leaf-wildcard", "constant-left"]
+
+
+def test_duplicate_registrations_remain_duplicate_candidate_occurrences():
+    storage = PatternStorage()
+    registered = _binary(ida_hexrays.m_add)
+    storage.add_pattern_for_rule(registered, "duplicate")
+    storage.add_pattern_for_rule(registered, "duplicate")
+
+    assert _rules(storage, _binary(ida_hexrays.m_add)) == [
+        "duplicate",
+        "duplicate",
+    ]
+
+
+def test_registration_after_lookup_is_visible_on_the_next_lookup():
+    storage = PatternStorage()
+    subject = _binary(ida_hexrays.m_add)
+    storage.add_pattern_for_rule(_binary(ida_hexrays.m_sub), "sub")
+
+    assert _rules(storage, subject) == []
+
+    storage.add_pattern_for_rule(_binary(ida_hexrays.m_add), "add")
+
+    assert _rules(storage, subject) == ["add"]
+
+
+def test_mutating_a_supported_subject_opcode_changes_the_next_lookup():
+    storage = PatternStorage()
+    storage.add_pattern_for_rule(_binary(ida_hexrays.m_add), "add")
+    storage.add_pattern_for_rule(_binary(ida_hexrays.m_sub), "sub")
+    subject = _binary(ida_hexrays.m_add)
+
+    assert _rules(storage, subject) == ["add"]
+
+    subject.opcode = ida_hexrays.m_sub
+
+    assert _rules(storage, subject) == ["sub"]
+
+
+def test_mutating_a_returned_candidate_list_does_not_change_later_results():
+    storage = PatternStorage()
+    storage.add_pattern_for_rule(_binary(ida_hexrays.m_add), "add")
+    subject = _binary(ida_hexrays.m_add)
+
+    first = storage.get_matching_rule_pattern_info(subject)
+    first.clear()
+
+    assert _rules(storage, subject) == ["add"]
+
+
+def test_repeated_misses_return_independent_empty_lists():
+    storage = PatternStorage()
+    storage.add_pattern_for_rule(_binary(ida_hexrays.m_sub), "sub")
+    subject = _binary(ida_hexrays.m_add)
+
+    first = storage.get_matching_rule_pattern_info(subject)
+    second = storage.get_matching_rule_pattern_info(subject)
+
+    assert first == []
+    assert second == []
+    assert first is not second
