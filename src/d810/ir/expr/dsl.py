@@ -449,9 +449,18 @@ class DynamicConst:
             compute: Callable that takes match context dict and returns int value.
             size_from: Optional variable name to determine operand size.
         """
+        self.operation = "dynamic_const"
+        self.left = None
+        self.right = None
         self.name = name
+        self.value = None
         self.compute = compute
         self.size_from = size_from
+
+    def is_leaf(self) -> bool:
+        """Dynamic constants are explicit operations, not bindable leaves."""
+
+        return False
 
     def __repr__(self) -> str:
         return f"DynamicConst({self.name})"

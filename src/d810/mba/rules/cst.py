@@ -192,7 +192,7 @@ class CstSimplificationRule8(VerifiableRule):
     CONSTRAINTS = [
         c_res == c_1 & ~c_2,  # Remove redundant bits
         # Only apply if we actually simplify (c_res != c_1)
-        lambda ctx: (ctx["c_1"].value & ~ctx["c_2"].value) != ctx["c_1"].value,
+        (c_1 & ~c_2) != c_1,
     ]
 
     PATTERN = (x & c_1) | c_2

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import builtins
-import dis
 import hashlib
 import json
 import weakref
@@ -16,10 +15,16 @@ from types import (
     BuiltinFunctionType,
     BuiltinMethodType,
     CodeType,
+    FunctionType,
     MappingProxyType,
     ModuleType,
 )
 from d810.core.typing import Any, Protocol, TypeAlias
+from d810.mba._code_analysis import immediate_loaded_names
+from d810.ir.expr.constraints import (
+    AndConstraint, ComparisonConstraint, EqualityConstraint, NotConstraint,
+    OrConstraint,
+)
 from d810.mba.certified_rule_compiler import CompiledMbaRule
 from d810.mba.canonical_pattern import (
     CanonicalPatternMalformed,
@@ -759,6 +764,8 @@ class _SemanticFingerprintState:
 
     active_ids: set[int]
     structural_authorizable: bool = True
+    active_functions: dict[int, int] = field(default_factory=dict)
+    next_function_anchor: int = 0
 
     def unavailable(self, value: object, reason: str) -> object:
         self.structural_authorizable = False
@@ -792,11 +799,7 @@ def _referenced_global_names(code: CodeType) -> tuple[str, ...] | None:
     while pending:
         current = pending.pop()
         try:
-            for instruction in dis.get_instructions(current):
-                if instruction.opname in {"LOAD_GLOBAL", "LOAD_NAME"} and isinstance(
-                    instruction.argval, str
-                ):
-                    names.add(instruction.argval)
+            names.update(immediate_loaded_names(current))
         except (TypeError, ValueError):
             # A malformed code object cannot be certified as an authorization
             # input. The caller marks the corresponding callable unavailable.
@@ -872,18 +875,45 @@ def _semantic_value(
         return {"bytes": value.hex()}
     identity = id(value)
     if identity in state.active_ids:
+        if type(value) is FunctionType and identity in state.active_functions:
+            return {"function_backref": state.active_functions[identity]}
         return state.unavailable(value, "cyclic_semantic_input")
     state.active_ids.add(identity)
+    anchor = None
+    if type(value) is FunctionType:
+        anchor = state.next_function_anchor
+        state.next_function_anchor += 1
+        state.active_functions[identity] = anchor
     try:
         try:
-            return _semantic_value_inner(value, state)
+            payload = _semantic_value_inner(value, state)
+            return payload if anchor is None else {
+                "function_anchor": anchor, "semantics": payload,
+            }
         except Exception:
             return state.unavailable(value, "semantic_encoding_error")
     finally:
         state.active_ids.discard(identity)
+        if anchor is not None:
+            state.active_functions.pop(identity, None)
 
 
 def _semantic_value_inner(value: object, state: _SemanticFingerprintState) -> object:
+    # These declarative records are callable only for legacy evaluation
+    # compatibility. Do not mistake them for opaque callable objects. Keep
+    # exact-type admission: unknown subclasses/callables still fail closed.
+    if type(value) in (
+        EqualityConstraint, ComparisonConstraint, AndConstraint, OrConstraint,
+        NotConstraint,
+    ):
+        return {
+            "constraint": f"{type(value).__module__}.{type(value).__qualname__}",
+            "attributes": _semantic_value(vars(value), state),
+            "implementations": tuple(
+                (name, _code_semantic_value(getattr(type(value), name).__code__, state))
+                for name in ("check", "eval_and_define", "__call__")
+            ),
+        }
     if isinstance(value, CodeType):
         return _code_semantic_value(value, state)
     if isinstance(value, property):

@@ -31,7 +31,18 @@ from d810.core.typing import Any, Dict, Optional
 import ida_hexrays
 
 from d810.hexrays.expr.ast import AstLeaf
-from d810.hexrays.utils.hexrays_formatters import format_mop_t
+
+
+_MOP_R = ida_hexrays.mop_r
+_MOP_T = ida_hexrays.mop_t
+
+
+def _has_high_half_display_marker(dst: object) -> bool:
+    try:
+        text = str(dst.dstr()) if hasattr(dst, "dstr") else str(dst)
+    except Exception as exc:
+        text = f"<error logging mop: {exc}>"
+    return "^2" in text
 
 
 class DestinationHelpers:
@@ -62,7 +73,7 @@ class DestinationHelpers:
         dst = candidate.dst_mop
 
         # Must be a register
-        if dst.t != ida_hexrays.mop_r:
+        if dst.t != _MOP_R:
             return False
 
         # Must be 2 bytes (high word of 32-bit register)
@@ -70,8 +81,7 @@ class DestinationHelpers:
             return False
 
         # Check name convention (IDA uses "^2" for high words)
-        name = format_mop_t(dst)
-        return name is not None and "^2" in name
+        return _has_high_half_display_marker(dst)
 
     @staticmethod
     def is_register(ctx: Dict[str, Any]) -> bool:
@@ -139,7 +149,7 @@ class ContextProviders:
         dst = candidate.dst_mop
 
         # Must be a register
-        if dst.t != ida_hexrays.mop_r:
+        if dst.t != _MOP_R:
             return None
 
         # IDA Logic: rX^2 has index (rX + 2)
@@ -147,7 +157,7 @@ class ContextProviders:
         base_reg_idx = dst.r - 2
 
         # Create a new mop_t for the full 32-bit register
-        new_mop = ida_hexrays.mop_t()
+        new_mop = _MOP_T()
         new_mop.make_reg(base_reg_idx, 4)  # 4 bytes = 32-bit
 
         # Create an AstLeaf and attach the mop

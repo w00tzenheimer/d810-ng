@@ -289,6 +289,239 @@ def test_native_binding_resolution_fails_closed_for_duplicate_or_missing_paths()
 
 
 @pytest.mark.parametrize("width", [8, 16, 32, 64])
+def test_xor_hodur_resolution_prefers_shallow_legacy_operand_role(width: int):
+    """Resolve ``~((A ^ B) ^ C)`` as legacy ``x=C, y=A, z=B``."""
+
+    from d810.backends.mba.native_mba_term_view import (
+        NativeMbaTermView,
+        project_canonical_native_paths,
+    )
+    from d810.mba.canonical_pattern import (
+        compile_canonical_pattern,
+        match_canonical_term_pattern,
+        resolve_canonical_match_paths,
+    )
+
+    def native_leaf(name: str) -> NativeMbaTermView:
+        return NativeMbaTermView(None, width, leaf_key=("native", name))
+
+    def native_constant(value: int) -> NativeMbaTermView:
+        return NativeMbaTermView(None, width, constant_value=value)
+
+    def native_node(operation: str, *children: NativeMbaTermView) -> NativeMbaTermView:
+        return NativeMbaTermView(operation, width, children=children)
+
+    rule = _catalogue_rule("hodur", "Xor_Hodur_1")
+    compiled = compile_canonical_pattern(rule, width=width, declaration_index=0)
+    a = native_leaf("A")
+    b = native_leaf("B")
+    constant_value = 0x8654A2C4DA7F0260 & ((1 << width) - 1)
+    c = native_constant(constant_value)
+    raw_candidate = native_node(
+        "bnot",
+        native_node("xor", native_node("xor", a, b), c),
+    )
+    projection = project_canonical_native_paths(raw_candidate)
+    structural = match_canonical_term_pattern(
+        compiled,
+        projection.canonical_view.canonical_term,
+        comparison_budget=256,
+    )
+
+    assert len(structural.matches) == 6
+    resolved = resolve_canonical_match_paths(
+        structural.matches,
+        canonical_to_raw_paths=projection.canonical_to_raw_paths,
+        placeholder_order=(name for _kind, name in compiled.terminal_kinds),
+    )
+
+    assert len(resolved) == 6
+    assert resolved[0].bindings.candidate_paths == {
+        "x": (0, 1),
+        "y": (0, 0, 0),
+        "z": (0, 0, 1),
+    }
+    assert resolved[0].bindings.terms == {
+        "x": _constant(constant_value, width),
+        "y": TypedBvTerm(None, width, leaf_key=("native", "A")),
+        "z": TypedBvTerm(None, width, leaf_key=("native", "B")),
+    }
+
+    missing_provenance = dict(projection.canonical_to_raw_paths)
+    missing_provenance.pop(
+        structural.matches[0].bindings.candidate_paths["x"]
+    )
+    assert resolve_canonical_match_paths(
+        structural.matches,
+        canonical_to_raw_paths=missing_provenance,
+        placeholder_order=(name for _kind, name in compiled.terminal_kinds),
+    ) == ()
+
+
+def test_bnot_xor_constraints_keep_legacy_involution_roles_and_raw_order():
+    """The canonical fallback must preserve native ``value == ~~value`` roles."""
+
+    from d810.backends.mba.native_mba_term_view import (
+        NativeMbaTermView,
+        project_canonical_native_paths,
+    )
+    from d810.mba.canonical_pattern import (
+        CanonicalFixedBindings,
+        CanonicalPatternMatch,
+        compile_canonical_pattern,
+        evaluate_frozen_constraints,
+        match_canonical_term_pattern,
+        resolve_canonical_match_paths,
+    )
+
+    def native_leaf(name: str) -> NativeMbaTermView:
+        return NativeMbaTermView(None, 32, leaf_key=("native", name))
+
+    def native_constant(value: int) -> NativeMbaTermView:
+        return NativeMbaTermView(None, 32, constant_value=value)
+
+    def native_node(operation: str, *children: NativeMbaTermView) -> NativeMbaTermView:
+        return NativeMbaTermView(operation, 32, children=children)
+
+    rule = _catalogue_rule("bnot", "BnotXor_Rule_1")
+    assert rule is not None
+    compiled = compile_canonical_pattern(rule, width=32, declaration_index=0)
+    leaf = native_leaf("leaf")
+    constant = native_constant(0x173063C1)
+    complement = native_constant(0xE8CF9C3E)
+    raw_candidate = native_node(
+        "or",
+        native_node("and", native_node("bnot", leaf), constant),
+        native_node("and", leaf, complement),
+    )
+    projection = project_canonical_native_paths(raw_candidate)
+    structural = match_canonical_term_pattern(
+        compiled,
+        projection.canonical_view.canonical_term,
+        comparison_budget=256,
+    )
+    assert len(structural.matches) == 8
+
+    constrained = []
+    for match in structural.matches:
+        terms = dict(match.bindings.terms)
+        if not evaluate_frozen_constraints(compiled.constraints, terms, width=32):
+            continue
+        constrained.append(
+            CanonicalPatternMatch(
+                match.compiled_pattern,
+                CanonicalFixedBindings(
+                    terms,
+                    match.bindings.candidate_paths,
+                    32,
+                ),
+            )
+        )
+
+    assert len(constrained) == 4
+    resolved = resolve_canonical_match_paths(
+        constrained,
+        canonical_to_raw_paths=projection.canonical_to_raw_paths,
+        placeholder_order=(name for _kind, name in compiled.terminal_kinds),
+    )
+    assert resolved[0].bindings.candidate_paths == {
+        "x_0": (0, 0),
+        "x_1": (0, 1),
+        "bnot_x_0": (1, 0),
+        "bnot_x_1": (1, 1),
+    }
+    typed_leaf = TypedBvTerm(None, 32, leaf_key=("native", "leaf"))
+    assert resolved[0].bindings.terms == {
+        "x_0": _node("bnot", 32, typed_leaf),
+        "x_1": _constant(0x173063C1, 32),
+        "bnot_x_0": typed_leaf,
+        "bnot_x_1": _constant(0xE8CF9C3E, 32),
+    }
+
+
+@pytest.mark.parametrize("width", [8, 16, 32, 64])
+def test_bnot_xor_constraints_keep_legacy_involution_roles(width: int):
+    from d810.mba.canonical_pattern import (
+        compile_canonical_pattern,
+        evaluate_frozen_constraints,
+    )
+
+    rule = _catalogue_rule("bnot", "BnotXor_Rule_1")
+    assert rule is not None
+    compiled = compile_canonical_pattern(rule, width=width, declaration_index=0)
+    mask = (1 << width) - 1
+    leaf = _leaf("leaf", width)
+    constant = 0x173063C1 & mask
+    bindings = {
+        "x_0": _node("bnot", width, leaf),
+        "x_1": _constant(constant, width),
+        "bnot_x_0": leaf,
+        "bnot_x_1": _constant((~constant) & mask, width),
+    }
+
+    assert evaluate_frozen_constraints(compiled.constraints, bindings, width=width)
+
+
+@pytest.mark.parametrize("width", [8, 16, 32, 64])
+def test_frozen_equality_reduces_one_exact_width_bnot_involution(width: int):
+    from d810.mba.canonical_pattern import (
+        compile_canonical_pattern,
+        evaluate_frozen_constraints,
+    )
+
+    left, right = Var("left"), Var("right")
+    rule = _TestRule(left, left, constraints=(left == right,), proof_widths=(width,))
+    compiled = compile_canonical_pattern(rule, width=width, declaration_index=0)
+    leaf = _leaf("leaf", width)
+    bindings = {
+        "left": leaf,
+        "right": _node("bnot", width, _node("bnot", width, leaf)),
+    }
+
+    assert evaluate_frozen_constraints(compiled.constraints, bindings, width=width)
+
+
+def test_bnot_xor_constraints_reject_noncomplement_binding():
+    from d810.mba.canonical_pattern import (
+        compile_canonical_pattern,
+        evaluate_frozen_constraints,
+    )
+
+    rule = _catalogue_rule("bnot", "BnotXor_Rule_1")
+    assert rule is not None
+    compiled = compile_canonical_pattern(rule, width=32, declaration_index=0)
+    leaf = _leaf("leaf", 32)
+    bindings = {
+        "x_0": _node("bnot", 32, leaf),
+        "x_1": _constant(0x173063C1, 32),
+        "bnot_x_0": leaf,
+        "bnot_x_1": _constant(0xE8CF9C3F, 32),
+    }
+
+    assert not evaluate_frozen_constraints(compiled.constraints, bindings, width=32)
+
+
+def test_bnot_xor_constraints_reject_binding_width_mismatch():
+    from d810.mba.canonical_pattern import (
+        compile_canonical_pattern,
+        evaluate_frozen_constraints,
+    )
+
+    rule = _catalogue_rule("bnot", "BnotXor_Rule_1")
+    assert rule is not None
+    compiled = compile_canonical_pattern(rule, width=32, declaration_index=0)
+    leaf = _leaf("leaf", 16)
+    bindings = {
+        "x_0": _node("bnot", 16, leaf),
+        "x_1": _constant(0x63C1, 16),
+        "bnot_x_0": leaf,
+        "bnot_x_1": _constant(0x9C3E, 16),
+    }
+
+    assert not evaluate_frozen_constraints(compiled.constraints, bindings, width=32)
+
+
+@pytest.mark.parametrize("width", [8, 16, 32, 64])
 def test_pattern_literals_are_masked_at_every_supported_width(width: int):
     from d810.mba.canonical_pattern import lower_symbolic_template
 

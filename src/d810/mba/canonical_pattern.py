@@ -11,7 +11,6 @@ immutable semantic description for bounded matching.
 from __future__ import annotations
 
 import hashlib
-import dis
 import json
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field, replace
@@ -19,6 +18,7 @@ from types import MappingProxyType
 from d810.core.typing import TYPE_CHECKING
 
 from d810.mba.ac_matching import AcMatchStopReason
+from d810.mba._code_analysis import immediate_loaded_names
 from d810.mba.dsl import SymbolicExpressionProtocol
 from d810.mba.semantic_canonicalization import (
     CANONICALIZER_SCHEMA_VERSION,
@@ -255,9 +255,10 @@ def resolve_canonical_match_paths(
     Canonical AC matching may produce several valid bindings after operand
     normalization.  Native reconstruction must use the exact source-order
     node for each binding; a canonical path without one unique raw provenance
-    is therefore discarded.  Surviving alternatives are ordered by their raw
-    paths in the declaration order captured by ``terminal_kinds`` so callers
-    can select one deterministically without changing canonical matching.
+    is therefore discarded.  Surviving alternatives prefer the shallowest raw
+    node for each placeholder, then its path, in the declaration order captured
+    by ``terminal_kinds``.  This retains source-tree operand roles without
+    changing canonical matching or enumerating more alternatives.
     """
 
     ordered_names = tuple(placeholder_order)
@@ -288,12 +289,12 @@ def resolve_canonical_match_paths(
         )
         resolved_match = replace(match, bindings=resolved_bindings)
         score = tuple(
-            raw_paths[name]
+            (len(raw_paths[name]), raw_paths[name])
             for name in ordered_names
             if name in raw_paths
         )
         score += tuple(
-            raw_paths[name]
+            (len(raw_paths[name]), raw_paths[name])
             for name in sorted(raw_paths)
             if name not in ordered_names
         )
@@ -557,21 +558,27 @@ def _jsonable_semantics(value: object, active: set[int] | None = None) -> object
     active.add(identity)
     try:
         if isinstance(value, SymbolicExpressionProtocol):
-            return {
-                "dsl": {
-                    "operation": value.operation,
-                    "name": value.name,
-                    "value": value.value,
-                    "pattern_constant": bool(
-                        getattr(value, "is_pattern_constant", False)
-                    ),
-                    "left": _jsonable_semantics(value.left, active),
-                    "right": _jsonable_semantics(value.right, active),
-                    "constraint": _jsonable_semantics(
-                        getattr(value, "constraint", None), active
-                    ),
-                }
+            semantics = {
+                "operation": value.operation,
+                "name": value.name,
+                "value": value.value,
+                "pattern_constant": bool(
+                    getattr(value, "is_pattern_constant", False)
+                ),
+                "left": _jsonable_semantics(value.left, active),
+                "right": _jsonable_semantics(value.right, active),
+                "constraint": _jsonable_semantics(
+                    getattr(value, "constraint", None), active
+                ),
             }
+            if value.operation == "dynamic_const":
+                semantics["compute"] = _jsonable_semantics(
+                    getattr(value, "compute", None), active
+                )
+                semantics["size_from"] = _jsonable_semantics(
+                    getattr(value, "size_from", None), active
+                )
+            return {"dsl": semantics}
         if isinstance(value, property):
             return {
                 "property": {
@@ -613,14 +620,8 @@ def _jsonable_semantics(value: object, active: set[int] | None = None) -> object
                     "opaque": "callable_without_code",
                 }
             globals_map = getattr(function, "__globals__", {})
-            loaded_names: set[str] = set()
             try:
-                loaded_names = {
-                    instruction.argval
-                    for instruction in disassemble(code)
-                    if instruction.opname in {"LOAD_GLOBAL", "LOAD_NAME"}
-                    and isinstance(instruction.argval, str)
-                }
+                loaded_names = immediate_loaded_names(code)
             except (TypeError, ValueError):
                 return {"callable": "opaque_code"}
             referenced = {
@@ -667,12 +668,6 @@ def _is_operational_d810_logger(value: object) -> bool:
         value_type.__module__ == "d810.core.logging"
         and value_type.__qualname__ == "D810Logger"
     )
-
-
-def disassemble(code):
-    """Small indirection that keeps callable fingerprinting testable."""
-
-    return dis.get_instructions(code)
 
 
 def _jsonable_property_accessor(
@@ -929,6 +924,22 @@ def _unsigned_frozen_constraint_value(
     return int(term.value) & ((1 << width) - 1)
 
 
+def _reduce_frozen_bnot_involution(
+    term: TypedBvTerm,
+    *,
+    width: int,
+) -> TypedBvTerm:
+    """Reduce one exact-width root ``~~value`` for legacy BNOT parity."""
+
+    if term.width != width or term.operation != "bnot" or len(term.children) != 1:
+        return term
+    inner = term.children[0]
+    if inner.width != width or inner.operation != "bnot" or len(inner.children) != 1:
+        return term
+    value = inner.children[0]
+    return value if value.width == width else term
+
+
 def _compare_frozen_constraint_terms(
     operation: str,
     left: TypedBvTerm,
@@ -937,7 +948,9 @@ def _compare_frozen_constraint_terms(
     width: int,
 ) -> bool:
     if operation == "eq":
-        return left == right
+        return _reduce_frozen_bnot_involution(
+            left, width=width
+        ) == _reduce_frozen_bnot_involution(right, width=width)
     if operation == "ne":
         left_value = _unsigned_frozen_constraint_value(left, width=width)
         right_value = _unsigned_frozen_constraint_value(right, width=width)
