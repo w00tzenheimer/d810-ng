@@ -292,12 +292,33 @@ class _InsertionOrderedRuleSet(typing.Generic[T_Rule]):
 
     def __init__(self) -> None:
         self._rules: dict[T_Rule, None] = {}
+        self._provider_rules: dict[T_Rule, None] = {}
 
     def add(self, rule: T_Rule) -> None:
+        registered = rule in self._rules
         self._rules.setdefault(rule, None)
+        # Registration owns capability discovery. Re-register after adding a
+        # provider hook to a previously non-provider rule. Do not retain bound
+        # hooks: replacement/removal of an existing hook remains visible.
+        if callable(getattr(rule, "finalize_provider_observation", None)):
+            self._provider_rules.setdefault(rule, None)
+            if registered:
+                # Capability changes must not move this rule behind providers
+                # registered later. Normal first registration stays O(1).
+                self._provider_rules = {
+                    candidate: None
+                    for candidate in self._rules
+                    if candidate in self._provider_rules
+                }
+        else:
+            self._provider_rules.pop(rule, None)
+
+    def provider_rules(self) -> typing.Iterator[T_Rule]:
+        return iter(self._provider_rules)
 
     def clear(self) -> None:
         self._rules.clear()
+        self._provider_rules.clear()
 
     def __contains__(self, rule: object) -> bool:
         return rule in self._rules
@@ -682,7 +703,7 @@ class InstructionOptimizer(Registrant, typing.Generic[T_Rule]):
         selected_rule = self._pending_replacement_rule
         try:
             self.record_mutation_rejected("callback_cleanup")
-            for rule in self.rules:
+            for rule in self.rules.provider_rules():
                 if (
                     rule is not selected_rule
                     and id(rule) not in self._provider_finalized_rules

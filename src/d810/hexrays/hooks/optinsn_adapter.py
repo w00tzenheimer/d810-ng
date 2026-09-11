@@ -643,6 +643,7 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
         self._validated_fact_view_provider = None
 
         self.instruction_optimizers = []
+        self._optimizer_context_capabilities: dict[int, tuple] = {}
         self._active_optimizers: list = []
         # usage tracking moved to centralized statistics object
         ChainOptimizer: type[ChainOptimizer] = self._instruction_optimizer_type.get(
@@ -713,8 +714,54 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
         set_run_later_callback = getattr(optimizer, "set_run_later_callback", None)
         if callable(set_run_later_callback):
             set_run_later_callback(self._record_run_later_requests)
+        self._optimizer_supports_observation_context(
+            optimizer, optimizer.get_optimized_instruction, refresh=True
+        )
         self.instruction_optimizers.append(optimizer)
         self._invalidate_residual_admission_cache()
+
+    def _optimizer_supports_observation_context(
+        self, optimizer: object, callback: object, *, refresh: bool = False
+    ) -> bool:
+        """Bind dispatch capability to this manager's optimizer catalogue.
+
+        Attribute lookup creates fresh bound-method objects, so compare their
+        function and receiver identities. Replacing the callable or its explicit
+        signature refreshes the capability. Re-register after other in-place
+        callable metadata changes (for example, modifying a wrapper chain).
+        """
+        function = getattr(callback, "__func__", callback)
+        receiver = getattr(callback, "__self__", None)
+        try:
+            signature = getattr(function, "__signature__", None)
+        except (TypeError, ValueError):
+            signature = None
+        cache = getattr(self, "_optimizer_context_capabilities", None)
+        if cache is None:
+            cache = self._optimizer_context_capabilities = {}
+        entry = cache.get(id(optimizer))
+        if (
+            not refresh
+            and entry is not None
+            and entry[0] is optimizer
+            and entry[1] is function
+            and entry[2] is receiver
+            and entry[3] is signature
+        ):
+            return entry[4]
+        try:
+            parameters = inspect.signature(callback).parameters
+        except (TypeError, ValueError):
+            supports_context = True
+        else:
+            supports_context = "observation_context_factory" in parameters or any(
+                parameter.kind is inspect.Parameter.VAR_KEYWORD
+                for parameter in parameters.values()
+            )
+        cache[id(optimizer)] = (
+            optimizer, function, receiver, signature, supports_context
+        )
+        return supports_context
 
     def run_external_provider_block_cycle(
         self,
@@ -1210,8 +1257,11 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
                 rule_clear(None)
         if getattr(optimizer, "rules", None) is not rules_store:
             optimizer.rules = rules_store
-        rules_by_object.clear()
-        rules_by_object.update({rule: None for rule in snapshot.rules})
+        # Rebuild through registration so derived dispatch participants match
+        # the restored catalogue, including provider cleanup capabilities.
+        rules_store.clear()
+        for rule in snapshot.rules:
+            rules_store.add(rule)
 
         if snapshot.pattern_storage_present != hasattr(optimizer, "pattern_storage"):
             raise RuntimeError("instruction child pattern storage shape changed")
@@ -1301,6 +1351,7 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
 
         self.instruction_optimizers = snapshot.instruction_optimizers_store
         self.instruction_optimizers[:] = snapshot.instruction_optimizers
+        self._optimizer_context_capabilities = {}
         self._active_optimizers = snapshot.active_optimizers_store
         self._active_optimizers[:] = snapshot.active_optimizers
         self.analyzer = snapshot.analyzer
@@ -2786,13 +2837,8 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
                 blk,
             )
             get_optimized_instruction = ins_optimizer.get_optimized_instruction
-            try:
-                parameters = inspect.signature(get_optimized_instruction).parameters
-            except (TypeError, ValueError):
-                parameters = {"observation_context_factory": None}
-            supports_context = "observation_context_factory" in parameters or any(
-                parameter.kind is inspect.Parameter.VAR_KEYWORD
-                for parameter in parameters.values()
+            supports_context = self._optimizer_supports_observation_context(
+                ins_optimizer, get_optimized_instruction
             )
             optimizer_kwargs = {
                 "contextual_anchor_ins": contextual_anchor_ins,

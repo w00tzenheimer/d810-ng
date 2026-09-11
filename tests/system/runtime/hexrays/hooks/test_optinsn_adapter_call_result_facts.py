@@ -6,6 +6,7 @@ import pytest
 import ida_hexrays
 
 from d810.hexrays.hooks.optinsn_adapter import InstructionOptimizerManager
+from d810.optimizers.microcode.instructions.handler import _InsertionOrderedRuleSet
 
 
 class _RecordingOptimizer:
@@ -13,7 +14,7 @@ class _RecordingOptimizer:
         self.bound = []
         self.validated_fact_view = current
         self.fail = fail
-        self.rules = SimpleNamespace(_rules={})
+        self.rules = _InsertionOrderedRuleSet()
 
     def bind_validated_fact_view(self, view) -> None:
         if self.fail:
@@ -776,7 +777,7 @@ def test_hot_replacement_clears_detached_rules_and_inherits_live_view():
 
 def test_snapshot_restore_clears_removed_and_restored_rule_views():
     old = _RecordingOptimizer()
-    old.rules = SimpleNamespace(_rules={old: None})
+    old.rules.add(old)
     manager = _snapshot_manager()
     manager.instruction_optimizers = [old]
     manager.analyzer = old
