@@ -1,0 +1,47 @@
+# Frozen canonical constraints must not decide semantic equality by comparing
+# the raw ``TypedBvTerm`` operands.  BNOT bindings can legitimately present
+# ``value == ~~value`` after a canonical AC match, so direct dataclass equality
+# discards legacy-valid alternatives before source-path resolution.
+#
+# This rule deliberately pins only the exact regression shape inside the
+# frozen comparison function's equality branch.  Structural term equality is
+# valid elsewhere, and a package-wide prohibition would create false positives.
+
+id: no-raw-frozen-term-equality
+language: python
+severity: error
+
+files:
+  - "src/d810/mba/canonical_pattern.py"
+
+message: |
+  Frozen semantic equality must compare normalized, exact-width terms.
+  Do not compare the raw `left` and `right` TypedBvTerm operands directly in
+  `_compare_frozen_constraint_terms`'s `operation == "eq"` branch.
+
+rule:
+  all:
+    - any:
+        - pattern: left == right
+        - pattern: right == left
+    - inside:
+        pattern: |
+          if operation == "eq":
+            $$$IF_BODY
+        stopBy: end
+    - inside:
+        pattern: |
+          def _compare_frozen_constraint_terms($$$ARGS):
+            $$$FN_BODY
+        stopBy: end
+
+note: |
+  This is a syntactic regression pin, not a proof of frozen equality semantics.
+  It catches direct raw equality in either operand order, including a nested
+  expression such as `bool(left == right)`.  It intentionally permits equality
+  after named normalization and comparisons of derived exact-width values.
+
+  Aliasing the operands, calling `operator.eq`, renaming or restructuring the
+  equality branch, or moving the comparison to another helper can evade this
+  rule.  The real constrained-rule and width-control unit tests remain the
+  authoritative semantic protection.

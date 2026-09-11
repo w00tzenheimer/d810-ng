@@ -44,6 +44,8 @@ def bare_pattern_optimizer(**overrides: object) -> PatternOptimizer:
         "_use_legacy_storage": False,
         "_run_later_callback": None,
         "_pending_replacement_rule": None,
+        "_rule_registration_order": {},
+        "_canonical_fallback_registration_order": [],
         "_rule_match_aggregate": RuleMatchAggregator(),
     }
     attributes.update(overrides)

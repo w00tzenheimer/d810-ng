@@ -9,6 +9,7 @@ from __future__ import annotations
 import enum
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
+from functools import cache
 from types import MappingProxyType
 
 from d810.core.typing import TYPE_CHECKING
@@ -56,6 +57,32 @@ class AcMatchReport:
     commuted_branches: int
     flattened_nodes: int
     stop_reason: AcMatchStopReason
+
+
+@dataclass(frozen=True)
+class CanonicalCandidateFacts:
+    """Invocation-local facts for one immutable lowered candidate root."""
+
+    root: TypedBvTerm
+    ac_operands: tuple[TypedBvTerm, ...] | None
+
+
+@dataclass(frozen=True)
+class CanonicalTemplateFacts:
+    """Template-occurrence facts bounded by its owning snapshot lifecycle."""
+
+    root: TypedBvTerm
+    ac_requirements: tuple[TypedBvTerm, ...] | None
+    root_is_placeholder: bool
+
+
+@dataclass(frozen=True)
+class CanonicalFeasibilityReport:
+    """Work receipt for a weak necessary condition, never a match proof."""
+
+    known: bool
+    survives: bool
+    predicate_comparisons: int
 
 
 @dataclass
@@ -156,6 +183,84 @@ def _candidate_matches_rigid_root(
             value & ((1 << getattr(candidate, "width")) - 1)
         )
     return adapter.candidate_operation(candidate) == operation
+
+
+def prepare_canonical_candidate_facts(
+    candidate: object,
+) -> CanonicalCandidateFacts | None:
+    """Build facts once for one lowered-root invocation.
+
+    Unsupported candidates remain unknown so this pre-check can never become a
+    new lowering or scheduling veto.
+    """
+
+    if not isinstance(candidate, TypedBvTerm):
+        return None
+    operands = None
+    if candidate.operation in AC_OPERATIONS:
+        operands = tuple(
+            item[0]
+            for item in _flatten_candidate(
+                candidate,
+                (),
+                candidate.operation,
+                _State(1),
+                _canonical_feasibility_adapter(),
+            )
+        )
+    return CanonicalCandidateFacts(candidate, operands)
+
+
+def prepare_canonical_template_facts(
+    compiled_pattern: object,
+) -> CanonicalTemplateFacts | None:
+    """Build facts for one frozen template occurrence without retaining owners."""
+
+    pattern = getattr(compiled_pattern, "pattern_term", None)
+    if not isinstance(pattern, TypedBvTerm):
+        return None
+    adapter = _canonical_feasibility_adapter()
+    root_is_placeholder = adapter.pattern_placeholder(pattern) is not None
+    requirements = None
+    if not root_is_placeholder and pattern.operation in AC_OPERATIONS:
+        requirements = tuple(_flatten_pattern(pattern, pattern.operation, adapter))
+    return CanonicalTemplateFacts(pattern, requirements, root_is_placeholder)
+
+
+def check_canonical_feasibility(
+    template: CanonicalTemplateFacts | None,
+    candidate: CanonicalCandidateFacts | None,
+) -> CanonicalFeasibilityReport:
+    """Reject only roots that fail the reviewed weak necessary condition.
+
+    AC requirements are existential: one candidate operand may satisfy several
+    requirements. This function intentionally performs no binding, assignment,
+    cardinality, or repeated-variable reasoning.
+    """
+
+    if template is None or candidate is None:
+        return CanonicalFeasibilityReport(False, True, 0)
+    if template.root_is_placeholder:
+        return CanonicalFeasibilityReport(True, True, 0)
+    adapter = _canonical_feasibility_adapter()
+    comparisons = 1
+    if not _candidate_matches_rigid_root(template.root, candidate.root, adapter):
+        return CanonicalFeasibilityReport(True, False, comparisons)
+    if template.ac_requirements is None:
+        return CanonicalFeasibilityReport(True, True, comparisons)
+    operands = candidate.ac_operands
+    if operands is None:
+        return CanonicalFeasibilityReport(False, True, comparisons)
+    for requirement in template.ac_requirements:
+        compatible = False
+        for operand in operands:
+            comparisons += 1
+            if _candidate_matches_rigid_root(requirement, operand, adapter):
+                compatible = True
+                break
+        if not compatible:
+            return CanonicalFeasibilityReport(True, False, comparisons)
+    return CanonicalFeasibilityReport(True, True, comparisons)
 
 
 def _iter_ac_operand_matches(
@@ -441,6 +546,13 @@ def _typed_adapter() -> _PatternAdapter:
     )
 
 
+@cache
+def _canonical_feasibility_adapter() -> _PatternAdapter:
+    """Reuse one stateless adapter; no term or template identity is retained."""
+
+    return _typed_adapter()
+
+
 def _compatibility_bindings(
     compiled_pattern: object,
     candidate: TypedBvTerm,
@@ -596,6 +708,12 @@ __all__ = [
     "AcMatchBindings",
     "AcMatchReport",
     "AcMatchStopReason",
+    "CanonicalCandidateFacts",
+    "CanonicalFeasibilityReport",
+    "CanonicalTemplateFacts",
+    "check_canonical_feasibility",
     "match_canonical_term_pattern",
     "match_ac_pattern",
+    "prepare_canonical_candidate_facts",
+    "prepare_canonical_template_facts",
 ]

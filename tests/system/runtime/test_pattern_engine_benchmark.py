@@ -874,6 +874,10 @@ class TestCanonicalFallbackWorkBounds:
         term, shape = self._term_and_shape()
         assert root_shape_for_term(term) == shape
         optimizer._canonical_fallback_rules_by_root_shape = {shape: list(fallback_rules)}
+        optimizer._rule_registration_order = {
+            id(rule): index for index, rule in enumerate((raw_rule, *fallback_rules))
+        }
+        optimizer._canonical_fallback_registration_order = list(fallback_rules)
         return optimizer
 
     @pytest.mark.ida_required

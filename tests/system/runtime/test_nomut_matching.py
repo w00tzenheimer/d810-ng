@@ -342,6 +342,9 @@ def test_ineligible_fallback_inventory_does_not_lower():
     optimizer._canonical_fallback_rules_by_root_shape = {
         ("add", 32, 2): [Rule()]
     }
+    optimizer._canonical_fallback_registration_order = list(
+        optimizer._canonical_fallback_rules_by_root_shape[("add", 32, 2)]
+    )
     optimizer._get_candidates = lambda _ast: []
 
     assert optimizer._try_matches(
@@ -394,6 +397,8 @@ def test_fallback_extension_exception_fails_closed_without_escape():
     optimizer._canonical_fallback_rules_by_root_shape = {
         ("add", 32, 0): [rule]
     }
+    optimizer._rule_registration_order = {id(rule): 0}
+    optimizer._canonical_fallback_registration_order = [rule]
     optimizer._get_candidates = lambda _ast: []
     optimizer._canonical_fallback_rules_for = lambda _shape: (rule,)
 
@@ -433,6 +438,8 @@ def test_raw_hit_skips_canonical_lowering_and_fallback(monkeypatch):
 
     rule = Rule()
     optimizer._canonical_fallback_rules_by_root_shape = {("add", 32, 2): [rule]}
+    optimizer._rule_registration_order = {id(rule): 0}
+    optimizer._canonical_fallback_registration_order = [rule]
     optimizer._get_candidates = lambda _ast: [RulePatternInfo(rule, object())]
     monkeypatch.setattr(pattern_handler, "format_minsn_t", lambda _value: "formatted")
 
@@ -500,6 +507,10 @@ def test_clean_raw_miss_runs_certified_fallback_in_declaration_order():
     raw_rule = Rule("raw", None)
     first_fallback = Rule("first", None)
     second_fallback = Rule("second", "fallback-hit")
+    optimizer._rule_registration_order = {
+        id(raw_rule): 0, id(first_fallback): 1, id(second_fallback): 2,
+    }
+    optimizer._canonical_fallback_registration_order = [first_fallback, second_fallback]
     optimizer._canonical_fallback_rules_by_root_shape = {
         ("add", 32, 2): [first_fallback, second_fallback]
     }

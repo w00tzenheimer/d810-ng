@@ -3,6 +3,7 @@ import dataclasses
 import itertools
 import os
 import time
+from collections import Counter
 from d810.core import typing
 
 import ida_hexrays
@@ -13,6 +14,10 @@ from d810.hexrays.expr.ast import AstBase, AstNode, AstNodeProtocol
 from d810.hexrays.ir.minsn_utils import minsn_to_ast
 from d810.hexrays.utils.hexrays_formatters import format_minsn_t
 from d810.mba.extension_api import CanonicalFallbackError
+from d810.mba.ac_matching import (
+    check_canonical_feasibility,
+    prepare_canonical_candidate_facts,
+)
 from d810.mba.provider_outcome import RawMatcherWorkReceipt
 from d810.optimizers.microcode.instructions.handler import (
     GenericPatternRule,
@@ -31,7 +36,7 @@ from d810.optimizers.microcode.instructions.pattern_matching.engine import (
 
 optimizer_logger = getLogger("d810.optimizer")
 pattern_search_logger = getLogger("d810.pattern_search")
-_CANONICAL_FALLBACK_COMPARISON_BUDGET = 64
+_CANONICAL_FALLBACK_COMPARISON_BUDGET = 256
 
 if typing.TYPE_CHECKING:
     from d810.core import OptimizationStatistics
@@ -345,10 +350,14 @@ class PatternOptimizer(InstructionOptimizer):
 
         # Certified DSL adapters keep their declared pattern in the normal raw
         # stores. Their canonical templates are indexed separately and are
-        # consulted only after every eligible raw candidate misses.
+        # consulted after that rule's raw candidates miss, before later rules.
         self._canonical_fallback_rules_by_root_shape: dict[
             tuple[str, int, int], list[InstructionOptimizationRule]
         ] = {}
+        # Includes traditional rules as well as DSL adapters. Catalogue IDs
+        # alone cannot represent priority across these two populations.
+        self._rule_registration_order: dict[int, int] = {}
+        self._canonical_fallback_registration_order: list[InstructionOptimizationRule] = []
 
         # PR2: Feature flag for rollback to legacy PatternStorage
         # Default is to use the new indexed storage; users can set
@@ -360,6 +369,13 @@ class PatternOptimizer(InstructionOptimizer):
         self._use_indexed_legacy_fallback = (
             os.environ.get("D810_INDEXED_LEGACY_FALLBACK", "1") == "1"
         )
+        # Bounded OLLVM feasibility experiment. Resolve outside callback loops
+        # and retain exact control behavior when the explicit flag is absent.
+        self._use_canonical_fallback_feasibility_filter = (
+            os.environ.get("D810_CANONICAL_FALLBACK_FEASIBILITY_FILTER", "0")
+            == "1"
+        )
+        self._canonical_fallback_feasibility_counts: Counter[str] = Counter()
 
         if self._use_legacy_storage:
             optimizer_logger.debug(
@@ -442,8 +458,29 @@ class PatternOptimizer(InstructionOptimizer):
         self._indexed_storage = _IndexedStorage()
         self._allowed_root_opcodes = set()
         self._canonical_fallback_rules_by_root_shape = {}
+        self._rule_registration_order = {}
+        self._canonical_fallback_registration_order = []
         self._generation += 1
         self._compiled_view = None
+        self._canonical_fallback_feasibility_counts.clear()
+
+    @property
+    def canonical_fallback_feasibility_counts(self) -> dict[str, int]:
+        """Return fixed-key experiment work counters without retained terms."""
+
+        return {
+            key: int(self._canonical_fallback_feasibility_counts.get(key, 0))
+            for key in (
+                "candidate_fact_constructions",
+                "candidate_fact_operands",
+                "template_fact_constructions",
+                "template_fact_requirements",
+                "predicate_comparisons",
+                "rejected_candidates",
+                "surviving_candidates",
+                "unknown_candidates",
+            )
+        }
 
     def _compile_rules(self) -> CompiledRuleView:
         """Build compiled view from current rule set.
@@ -481,6 +518,9 @@ class PatternOptimizer(InstructionOptimizer):
         if len(rule.maturities) == 0:
             rule.maturities = self.maturities
         self.rules.add(rule)
+        self._rule_registration_order.setdefault(
+            id(rule), len(self._rule_registration_order)
+        )
 
         # Register patterns if the rule has them
         if not hasattr(rule, "pattern_candidates"):
@@ -513,7 +553,10 @@ class PatternOptimizer(InstructionOptimizer):
             self._indexed_storage.add_pattern(pattern, rule)
 
         if self._canonical_fallback_enabled_for(rule):
-            for root_shape in getattr(rule, "canonical_fallback_root_shapes", ()):
+            root_shapes = getattr(rule, "canonical_fallback_root_shapes", ())
+            if root_shapes and rule not in self._canonical_fallback_registration_order:
+                self._canonical_fallback_registration_order.append(rule)
+            for root_shape in root_shapes:
                 bucket = self._canonical_fallback_rules_by_root_shape.setdefault(
                     tuple(root_shape), []
                 )
@@ -544,6 +587,9 @@ class PatternOptimizer(InstructionOptimizer):
         is_ok = super().add_rule(rule)
         if not is_ok:
             return False
+        self._rule_registration_order.setdefault(
+            id(rule), len(self._rule_registration_order)
+        )
         # Register patterns (rule already added to self.rules by super())
         if not hasattr(rule, "pattern_candidates"):
             return True
@@ -565,7 +611,10 @@ class PatternOptimizer(InstructionOptimizer):
             self._indexed_storage.add_pattern(pattern, rule)
 
         if self._canonical_fallback_enabled_for(rule):
-            for root_shape in getattr(rule, "canonical_fallback_root_shapes", ()):
+            root_shapes = getattr(rule, "canonical_fallback_root_shapes", ())
+            if root_shapes and rule not in self._canonical_fallback_registration_order:
+                self._canonical_fallback_registration_order.append(rule)
+            for root_shape in root_shapes:
                 bucket = self._canonical_fallback_rules_by_root_shape.setdefault(
                     tuple(root_shape), []
                 )
@@ -940,39 +989,39 @@ class PatternOptimizer(InstructionOptimizer):
         *,
         allowed_rule_names: frozenset[str] | None,
         scheduled_rule_names: frozenset[str],
+        preparing_rule=None,
     ) -> tuple[object | None, tuple[InstructionOptimizationRule, ...]]:
         """Lower one root and select its certified canonical declaration bucket."""
 
         if not getattr(self, "_canonical_fallback_rules_by_root_shape", None):
             return None, ()
-        rules = tuple(
-            rule
-            for bucket in self._canonical_fallback_rules_by_root_shape.values()
-            for rule in bucket
-        )
-        rules = tuple(
-            rule
-            for rule in rules
-            if self._rule_is_eligible(
-                rule,
-                maturity=self.cur_maturity,
-                allowed_rule_names=allowed_rule_names,
-                scheduled_rule_names=scheduled_rule_names,
+        if preparing_rule is None:
+            preparing_rule = next(
+                (
+                    rule
+                    for rule in self._canonical_fallback_registration_order
+                    if self._rule_is_eligible(
+                        rule,
+                        maturity=self.cur_maturity,
+                        allowed_rule_names=allowed_rule_names,
+                        scheduled_rule_names=scheduled_rule_names,
+                    )
+                ),
+                None,
             )
-        )
-        if not rules:
+        if preparing_rule is None:
             return None, ()
-        prepare = getattr(rules[0], "prepare_structural_candidate", None)
+        prepare = getattr(preparing_rule, "prepare_structural_candidate", None)
         if prepare is None:
-            return None, (rules[0],)
+            return None, (preparing_rule,)
         destination_size = getattr(getattr(ins, "d", None), "size", None)
         try:
             lowering = prepare(test_ast, destination_size=destination_size)
         except Exception:
-            return None, (rules[0],)
+            return None, (preparing_rule,)
         term = getattr(lowering, "term", None)
         if term is None:
-            return lowering, (rules[0],)
+            return lowering, (preparing_rule,)
         from d810.mba.certified_catalogue import root_shape_for_term
 
         selected = tuple(
@@ -1002,6 +1051,81 @@ class PatternOptimizer(InstructionOptimizer):
             )
         return fallback_candidates
 
+    def _iter_match_schedule(
+        self,
+        all_matches,
+        test_ast,
+        ins,
+        *,
+        allowed_rule_names,
+        scheduled_rule_names,
+    ):
+        """Merge raw candidates with the actual canonical root bucket lazily.
+
+        Registration owns the unique canonical inventory. Until the first
+        eligible canonical rule's raw forms miss, there is no lowering. Only
+        that lowered root's bucket is then merged with remaining raw candidates;
+        matching never scans every width bucket or sorts the whole catalogue.
+        """
+        inventory = self._canonical_fallback_registration_order
+        if not inventory:
+            for info in all_matches:
+                yield info, None, None, 0
+            return
+
+        def eligible(rule):
+            return self._rule_is_eligible(
+                rule,
+                maturity=self.cur_maturity,
+                allowed_rule_names=allowed_rule_names,
+                scheduled_rule_names=scheduled_rule_names,
+            )
+
+        first_canonical = next((rule for rule in inventory if eligible(rule)), None)
+        if first_canonical is None:
+            for info in all_matches:
+                yield info, None, None, 0
+            return
+
+        # Rules stay strongly owned by this optimizer. IDs are local occurrence
+        # keys, not semantic identities, and reset_rules discards this ordering.
+        order = self._rule_registration_order
+
+        def position(rule):
+            try:
+                return order[id(rule)]
+            except KeyError:
+                raise RuntimeError("mixed matching requires registered rule order") from None
+
+        first_position = position(first_canonical)
+        raw = sorted(
+            (info for info in all_matches if eligible(info.rule)),
+            key=lambda info: position(info.rule),
+        )
+        cursor = 0
+        while cursor < len(raw) and position(raw[cursor].rule) <= first_position:
+            yield raw[cursor], None, None, 0
+            cursor += 1
+
+        lowering, fallback_rules = self._prepare_canonical_fallback(
+            test_ast,
+            ins,
+            allowed_rule_names=allowed_rule_names,
+            scheduled_rule_names=scheduled_rule_names,
+            preparing_rule=first_canonical,
+        )
+        selected = sorted(
+            {id(rule): rule for rule in fallback_rules}.values(), key=position
+        )
+        for rule in selected:
+            while cursor < len(raw) and position(raw[cursor].rule) <= position(rule):
+                yield raw[cursor], None, None, 0
+                cursor += 1
+            yield None, rule, lowering, len(selected)
+        while cursor < len(raw):
+            yield raw[cursor], None, None, 0
+            cursor += 1
+
     def _try_matches(
         self,
         blk: ida_hexrays.mblock_t,
@@ -1022,206 +1146,219 @@ class PatternOptimizer(InstructionOptimizer):
         raw_comparisons = 0
         raw_lazy_swaps = 0
         raw_backend = self._raw_work_backend()
-        for i, rule_pattern_info in enumerate(all_matches):
-            rule_name = str(rule_pattern_info.rule.name)
-            if not self._rule_is_eligible(
-                rule_pattern_info.rule,
-                maturity=self.cur_maturity,
-                allowed_rule_names=allowed_rule_names,
-                scheduled_rule_names=scheduled_rule_names,
-            ):
-                continue
-            if optimizer_logger.debug_on:
-                optimizer_logger.debug(
-                    "[PatternOptimizer.get_optimized_instruction:%s] %s/%s rule_pattern_info: %s",
-                    source_label,
-                    i + 1,
-                    match_len,
-                    rule_pattern_info,
-                )
-            bind_match_context = getattr(
-                rule_pattern_info.rule,
-                "bind_match_context",
-                None,
-            )
-            clear_match_context = getattr(
-                rule_pattern_info.rule,
-                "clear_match_context",
-                None,
-            )
-            attempt_finalized = False
-            try:
-                if bind_match_context is not None:
-                    bind_match_context(blk, ins)
-                # One receipt entry corresponds to one candidate-pattern
-                # comparison actually started by this handler. Generated
-                # legacy permutations are comparisons, not lazy swaps.
-                raw_comparisons += 1
-                self._record_raw_work(
+        fallback_attempt_count = 0
+        remaining_fallback_budget = _CANONICAL_FALLBACK_COMPARISON_BUDGET
+        canonical_candidate_facts = None
+        canonical_candidate_facts_ready = False
+        schedule = self._iter_match_schedule(
+            all_matches,
+            test_ast,
+            ins,
+            allowed_rule_names=allowed_rule_names,
+            scheduled_rule_names=scheduled_rule_names,
+        )
+        for i, (
+            rule_pattern_info,
+            rule,
+            structural_lowering,
+            fallback_bucket_size,
+        ) in enumerate(schedule):
+            if rule_pattern_info is not None:
+                rule_name = str(rule_pattern_info.rule.name)
+                if not self._rule_is_eligible(
                     rule_pattern_info.rule,
-                    comparisons=1,
-                    lazy_swaps=raw_lazy_swaps,
-                    backend=raw_backend,
-                )
-
-                # Task 7 shadow mode remains in force for legacy rules.
-                observe_structural_match = getattr(
+                    maturity=self.cur_maturity,
+                    allowed_rule_names=allowed_rule_names,
+                    scheduled_rule_names=scheduled_rule_names,
+                ):
+                    continue
+                if optimizer_logger.debug_on:
+                    optimizer_logger.debug(
+                        "[PatternOptimizer.get_optimized_instruction:%s] %s/%s rule_pattern_info: %s",
+                        source_label,
+                        i + 1,
+                        match_len,
+                        rule_pattern_info,
+                    )
+                bind_match_context = getattr(
                     rule_pattern_info.rule,
-                    "observe_structural_match",
+                    "bind_match_context",
                     None,
                 )
-                if (
-                    observe_structural_match is not None
-                    and not self._canonical_fallback_enabled_for(
-                        rule_pattern_info.rule
-                    )
-                    and os.environ.get("D810_SHADOW_DSL_MATCHING", "0") == "1"
-                ):
-                    observe_structural_match(test_ast)
-
-                # PR4: Non-mutating match path (when enabled and using indexed storage)
-                if self._use_nomut_matching and not self._use_legacy_storage:
-                    # Non-mutating match: pattern stays frozen, bindings go to separate object
-                    if not _match_nomut(
-                        rule_pattern_info.pattern, test_ast, self._match_bindings
-                    ):
-                        if self._raw_attempt_abstains(rule_pattern_info.rule):
-                            return None
-                        continue
-                    proxy = BindingsProxy(self._match_bindings)
-                    if not rule_pattern_info.rule.check_candidate(proxy):
-                        if self._raw_attempt_abstains(rule_pattern_info.rule):
-                            return None
-                        continue
-                    record_legacy_match_bindings = getattr(
+                clear_match_context = getattr(
+                    rule_pattern_info.rule,
+                    "clear_match_context",
+                    None,
+                )
+                attempt_finalized = False
+                try:
+                    if bind_match_context is not None:
+                        bind_match_context(blk, ins)
+                    # One receipt entry corresponds to one candidate-pattern
+                    # comparison actually started by this handler. Generated
+                    # legacy permutations are comparisons, not lazy swaps.
+                    raw_comparisons += 1
+                    self._record_raw_work(
                         rule_pattern_info.rule,
-                        "record_legacy_match_bindings",
+                        comparisons=1,
+                        lazy_swaps=raw_lazy_swaps,
+                        backend=raw_backend,
+                    )
+
+                    # Task 7 shadow mode remains in force for legacy rules.
+                    observe_structural_match = getattr(
+                        rule_pattern_info.rule,
+                        "observe_structural_match",
                         None,
                     )
-                    if record_legacy_match_bindings is not None:
-                        record_legacy_match_bindings(
-                            rule_pattern_info.pattern,
-                            test_ast,
+                    if (
+                        observe_structural_match is not None
+                        and not self._canonical_fallback_enabled_for(
+                            rule_pattern_info.rule
                         )
-                    new_ins = rule_pattern_info.rule.get_replacement(proxy)
-                    if new_ins is not None:
-                        record_bound_replacement_outcome = getattr(
+                        and os.environ.get("D810_SHADOW_DSL_MATCHING", "0") == "1"
+                    ):
+                        observe_structural_match(test_ast)
+
+                    # PR4: Non-mutating match path (when enabled and using indexed storage)
+                    if self._use_nomut_matching and not self._use_legacy_storage:
+                        # Non-mutating match: pattern stays frozen, bindings go to separate object
+                        if not _match_nomut(
+                            rule_pattern_info.pattern, test_ast, self._match_bindings
+                        ):
+                            if self._raw_attempt_abstains(rule_pattern_info.rule):
+                                return None
+                            continue
+                        proxy = BindingsProxy(self._match_bindings)
+                        if not rule_pattern_info.rule.check_candidate(proxy):
+                            if self._raw_attempt_abstains(rule_pattern_info.rule):
+                                return None
+                            continue
+                        record_legacy_match_bindings = getattr(
                             rule_pattern_info.rule,
-                            "record_bound_replacement_outcome",
+                            "record_legacy_match_bindings",
                             None,
                         )
-                        if record_bound_replacement_outcome is not None:
-                            record_bound_replacement_outcome(
-                                rule_pattern_info.rule.REPLACEMENT_PATTERN
+                        if record_legacy_match_bindings is not None:
+                            record_legacy_match_bindings(
+                                rule_pattern_info.pattern,
+                                test_ast,
                             )
-                else:
-                    # Legacy mutating path: pattern gets mop references copied into it
-                    new_ins = rule_pattern_info.rule.check_pattern_and_replace(
-                        rule_pattern_info.pattern, test_ast
-                    )
-                if self._raw_attempt_abstains(rule_pattern_info.rule):
-                    return None
+                        new_ins = rule_pattern_info.rule.get_replacement(proxy)
+                        if new_ins is not None:
+                            record_bound_replacement_outcome = getattr(
+                                rule_pattern_info.rule,
+                                "record_bound_replacement_outcome",
+                                None,
+                            )
+                            if record_bound_replacement_outcome is not None:
+                                record_bound_replacement_outcome(
+                                    rule_pattern_info.rule.REPLACEMENT_PATTERN
+                                )
+                    else:
+                        # Legacy mutating path: pattern gets mop references copied into it
+                        new_ins = rule_pattern_info.rule.check_pattern_and_replace(
+                            rule_pattern_info.pattern, test_ast
+                        )
+                    if self._raw_attempt_abstains(rule_pattern_info.rule):
+                        return None
 
-                if new_ins is not None:
-                    self._rule_match_aggregate.record(str(rule_pattern_info.rule.name))
-                    if optimizer_logger.debug_on:
-                        optimizer_logger.debug(
-                            "Rule %s matched in maturity %s:",
-                            rule_pattern_info.rule.name,
-                            self.cur_maturity,
+                    if new_ins is not None:
+                        self._rule_match_aggregate.record(
+                            str(rule_pattern_info.rule.name)
                         )
-                        optimizer_logger.debug("  orig: %s", format_minsn_t(ins))
-                        optimizer_logger.debug(
-                            "  new : %s",
-                            format_minsn_t(new_ins),
-                        )
-                    self.last_matched_rule_name = str(rule_pattern_info.rule.name)
-                    self._set_pending_replacement(
-                        rule_pattern_info.rule,
-                        blk,
-                        contextual_anchor_ins,
-                        observation_context_factory,
-                    )
-                    return new_ins
-            except RuntimeError as e:
-                record_attempt_error = getattr(
-                    rule_pattern_info.rule,
-                    "record_attempt_error",
-                    None,
-                )
-                if record_attempt_error is not None:
-                    record_attempt_error(e)
-                optimizer_logger.error(
-                    "Error during rule %s for instruction %s: %s",
-                    rule_pattern_info.rule,
-                    format_minsn_t(ins),
-                    e,
-                    exc_info=True,
-                )
-                self._finalize_provider_rule(
-                    rule_pattern_info.rule,
-                    blk,
-                    contextual_anchor_ins,
-                    observation_context_factory,
-                    accepted=False,
-                    reason="provider_exception",
-                )
-                attempt_finalized = True
-            except Exception:
-                self._finalize_provider_rule(
-                    rule_pattern_info.rule,
-                    blk,
-                    contextual_anchor_ins,
-                    observation_context_factory,
-                    accepted=False,
-                    reason="provider_exception",
-                )
-                attempt_finalized = True
-                raise
-            finally:
-                try:
-                    if self._run_later_callback is not None:
-                        self._run_later_callback(
+                        if optimizer_logger.debug_on:
+                            optimizer_logger.debug(
+                                "Rule %s matched in maturity %s:",
+                                rule_pattern_info.rule.name,
+                                self.cur_maturity,
+                            )
+                            optimizer_logger.debug("  orig: %s", format_minsn_t(ins))
+                            optimizer_logger.debug(
+                                "  new : %s",
+                                format_minsn_t(new_ins),
+                            )
+                        self.last_matched_rule_name = str(rule_pattern_info.rule.name)
+                        self._set_pending_replacement(
                             rule_pattern_info.rule,
-                            self.cur_maturity,
+                            blk,
+                            contextual_anchor_ins,
+                            observation_context_factory,
                         )
-                finally:
-                    if clear_match_context is not None:
-                        clear_match_context()
-                if not attempt_finalized and (
-                    getattr(self, "_pending_replacement_rule", None)
-                    is not rule_pattern_info.rule
-                ):
+                        return new_ins
+                except RuntimeError as e:
+                    record_attempt_error = getattr(
+                        rule_pattern_info.rule,
+                        "record_attempt_error",
+                        None,
+                    )
+                    if record_attempt_error is not None:
+                        record_attempt_error(e)
+                    optimizer_logger.error(
+                        "Error during rule %s for instruction %s: %s",
+                        rule_pattern_info.rule,
+                        format_minsn_t(ins),
+                        e,
+                        exc_info=True,
+                    )
                     self._finalize_provider_rule(
                         rule_pattern_info.rule,
                         blk,
                         contextual_anchor_ins,
                         observation_context_factory,
                         accepted=False,
-                        reason="provider_terminal",
+                        reason="provider_exception",
                     )
+                    attempt_finalized = True
+                except Exception:
+                    self._finalize_provider_rule(
+                        rule_pattern_info.rule,
+                        blk,
+                        contextual_anchor_ins,
+                        observation_context_factory,
+                        accepted=False,
+                        reason="provider_exception",
+                    )
+                    attempt_finalized = True
+                    raise
+                finally:
+                    try:
+                        if self._run_later_callback is not None:
+                            self._run_later_callback(
+                                rule_pattern_info.rule,
+                                self.cur_maturity,
+                            )
+                    finally:
+                        if clear_match_context is not None:
+                            clear_match_context()
+                    if not attempt_finalized and (
+                        getattr(self, "_pending_replacement_rule", None)
+                        is not rule_pattern_info.rule
+                    ):
+                        self._finalize_provider_rule(
+                            rule_pattern_info.rule,
+                            blk,
+                            contextual_anchor_ins,
+                            observation_context_factory,
+                            accepted=False,
+                            reason="provider_terminal",
+                        )
+                if self._raw_attempt_abstains(rule_pattern_info.rule):
+                    return None
+                continue
 
-        # Canonical matching is a fallback only: prepare the native island
-        # after all eligible raw candidates have cleanly missed.
-        structural_lowering, fallback_rules = self._prepare_canonical_fallback(
-            test_ast,
-            ins,
-            allowed_rule_names=allowed_rule_names,
-            scheduled_rule_names=scheduled_rule_names,
-        )
-        if not fallback_rules:
-            return None
-        fallback_bucket_size = len(fallback_rules)
-        fallback_attempt_count = 0
-        remaining_fallback_budget = _CANONICAL_FALLBACK_COMPARISON_BUDGET
-        for rule in fallback_rules:
             rule_name = str(rule.name)
             bind_match_context = getattr(rule, "bind_match_context", None)
+            bind_structural_match_context = getattr(
+                rule,
+                "bind_structural_match_context",
+                bind_match_context,
+            )
             clear_match_context = getattr(rule, "clear_match_context", None)
             fallback_attempt_finalized = False
             try:
-                if bind_match_context is not None:
-                    bind_match_context(blk, ins)
+                if bind_structural_match_context is not None:
+                    bind_structural_match_context(blk, ins)
                 # Carry the complete raw work performed for this root into the
                 # fallback outcome. A fallback candidate has its own adapter
                 # context, so the receipt must cross this boundary explicitly.
@@ -1239,6 +1376,81 @@ class PatternOptimizer(InstructionOptimizer):
                 if match_structural_and_replace is None:
                     fallback_attempt_finalized = True
                     continue
+                if getattr(
+                    self,
+                    "_use_canonical_fallback_feasibility_filter",
+                    False,
+                ):
+                    counts = getattr(
+                        self, "_canonical_fallback_feasibility_counts", None
+                    )
+                    if counts is None:
+                        counts = Counter()
+                        self._canonical_fallback_feasibility_counts = counts
+                    if not canonical_candidate_facts_ready:
+                        canonical_candidate_facts_ready = True
+                        term = getattr(structural_lowering, "term", None)
+                        canonical_candidate_facts = prepare_canonical_candidate_facts(
+                            term
+                        )
+                        if canonical_candidate_facts is not None:
+                            counts["candidate_fact_constructions"] += 1
+                            counts["candidate_fact_operands"] += len(
+                                canonical_candidate_facts.ac_operands or ()
+                            )
+                    template_lookup = getattr(
+                        rule, "canonical_feasibility_template_facts", None
+                    )
+                    template_facts = None
+                    template_constructed = False
+                    if template_lookup is not None:
+                        try:
+                            template_facts, template_constructed = template_lookup(
+                                getattr(
+                                    getattr(canonical_candidate_facts, "root", None),
+                                    "width",
+                                    0,
+                                )
+                            )
+                        except Exception:
+                            optimizer_logger.debug(
+                                "Canonical feasibility facts unavailable for %s",
+                                rule,
+                                exc_info=True,
+                            )
+                    counts["template_fact_constructions"] += int(
+                        template_constructed
+                    )
+                    if template_constructed and template_facts is not None:
+                        counts["template_fact_requirements"] += len(
+                            template_facts.ac_requirements or ()
+                        )
+                    feasibility = check_canonical_feasibility(
+                        template_facts, canonical_candidate_facts
+                    )
+                    counts["predicate_comparisons"] += (
+                        feasibility.predicate_comparisons
+                    )
+                    if not feasibility.known:
+                        counts["unknown_candidates"] += 1
+                    if not feasibility.survives:
+                        counts["rejected_candidates"] += 1
+                        record_rejection = getattr(
+                            rule,
+                            "record_canonical_feasibility_rejection",
+                            None,
+                        )
+                        if record_rejection is not None:
+                            record_rejection(
+                                bucket_size=fallback_bucket_size,
+                                predicate_comparisons=(
+                                    feasibility.predicate_comparisons
+                                ),
+                                lowering=structural_lowering,
+                                source_ast=test_ast,
+                            )
+                        continue
+                    counts["surviving_candidates"] += 1
                 fallback_attempt_count += 1
                 new_ins = match_structural_and_replace(
                     test_ast,
@@ -1341,8 +1553,7 @@ class PatternOptimizer(InstructionOptimizer):
                     if clear_match_context is not None:
                         clear_match_context()
                 if not fallback_attempt_finalized and (
-                    getattr(self, "_pending_replacement_rule", None)
-                    is not rule
+                    getattr(self, "_pending_replacement_rule", None) is not rule
                 ):
                     self._finalize_provider_rule(
                         rule,

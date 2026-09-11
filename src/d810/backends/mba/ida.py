@@ -18,7 +18,7 @@ import time
 from collections.abc import Mapping
 from dataclasses import replace
 from pathlib import Path
-from types import SimpleNamespace
+from types import MappingProxyType, SimpleNamespace
 
 import ida_hexrays
 
@@ -65,18 +65,21 @@ _LEGACY_ALIAS_WARNING_EMITTED = False
 
 
 def canonical_fallback_rollout_requested() -> bool:
-    """Resolve the release rollout flag with one explicit rollback switch.
+    """Request qualified canonical matching by default, with explicit rollback.
 
     ``D810_STRUCTURAL_DSL_MATCHING`` remains a one-release compatibility alias
     for operators that have not migrated their launch environment yet.  It is
-    intentionally warning-only and never overrides the rollback flag.
+    subordinate to the primary flag and never overrides the rollback flag.
+    This request does not bypass catalogue certificate authorization.
     """
 
     if os.environ.get("D810_LEGACY_DSL_PERMUTATIONS", "0") == "1":
         return False
-    if os.environ.get("D810_CANONICAL_MATCH_FALLBACK", "0") == "1":
-        return True
-    if os.environ.get("D810_STRUCTURAL_DSL_MATCHING", "0") == "1":
+    primary = os.environ.get("D810_CANONICAL_MATCH_FALLBACK")
+    if primary is not None:
+        return primary == "1"
+    alias = os.environ.get("D810_STRUCTURAL_DSL_MATCHING")
+    if alias == "1":
         global _LEGACY_ALIAS_WARNING_EMITTED
         if not _LEGACY_ALIAS_WARNING_EMITTED:
             logger.warning(
@@ -85,7 +88,7 @@ def canonical_fallback_rollout_requested() -> bool:
             )
             _LEGACY_ALIAS_WARNING_EMITTED = True
         return True
-    return False
+    return alias is None
 
 _REPLACEMENT_BOUNDARY_EXCEPTIONS = (
     AstEvaluationException,
@@ -341,6 +344,9 @@ class IDANodeVisitor:
         if not is_symbolic_expression(expr):
             raise ValueError(f"Expected SymbolicExpression, got {type(expr).__name__}")
 
+        if expr.operation == "dynamic_const":
+            return AstConstant(expr.name, None)
+
         if expr.is_leaf():
             return self._visit_leaf(expr)
 
@@ -529,6 +535,7 @@ class IDAPatternAdapter:
         self.rule = rule
         self._pattern_candidates_cache: Optional[List[AstNode]] = None
         self._replacement_pattern_cache: Optional[AstNode] = None
+        self._dynamic_replacement_constants_cache: Mapping[str, Any] | None = None
         self._visitor = IDANodeVisitor()
         self._attempt_started: float | None = None
         self._attempt_destination_size: int | None = None
@@ -557,7 +564,13 @@ class IDAPatternAdapter:
         self._certified_catalogue_rule_id: int | None = None
         self._shadow_parity_ledger = None
         self._shadow_parity_recorded = False
+        self._canonical_shadow_eligible = None
+        self.legacy_only_observation_count = 0
+        self.legacy_only_match_count = 0
         self._shadow_canonical_templates: dict[int, Any] = {}
+        self._canonical_feasibility_template_facts: dict[
+            int, tuple[Any, Any]
+        ] = {}
         self._canonical_fallback_enabled = False
         self._canonical_fallback_root_shapes: tuple[tuple[str, int, int], ...] = ()
         self._structural_matching_enabled = False
@@ -568,6 +581,7 @@ class IDAPatternAdapter:
         self._canonical_fallback_comparisons = 0
         self._canonical_fallback_budget_exhausted = False
         self._canonical_fallback_stop_reason: str | None = None
+        self._canonical_feasibility_predicate_comparisons = 0
         self._generate_commutative_permutations = True
 
     def _clear_structural_attempt_state(self) -> None:
@@ -612,17 +626,39 @@ class IDAPatternAdapter:
     def _reset_attempt_outcome(self, instruction: Any | None = None) -> None:
         """Discard telemetry from the previous live pattern attempt."""
 
-        self._attempt_started = time.monotonic()
-        size = getattr(getattr(instruction, "d", None), "size", None)
-        self._attempt_destination_size = (
-            int(size) if type(size) is int and size > 0 else None
-        )
+        self._reset_attempt_site(instruction)
         try:
             self._attempt_input_ast = (
                 None if instruction is None else minsn_to_ast(instruction)
             )
         except Exception:
             self._attempt_input_ast = None
+        self._reset_attempt_state()
+
+    def _reset_structural_attempt_outcome(
+        self, instruction: Any | None = None
+    ) -> None:
+        """Reset a known structural attempt without an unused private AST."""
+
+        if self._provider_outcome_capture_enabled():
+            self._reset_attempt_outcome(instruction)
+            return
+        self._reset_attempt_site(instruction)
+        self._attempt_input_ast = None
+        self._reset_attempt_state()
+
+    def _reset_attempt_site(self, instruction: Any | None) -> None:
+        """Capture timing and destination width shared by every attempt route."""
+
+        self._attempt_started = time.monotonic()
+        size = getattr(getattr(instruction, "d", None), "size", None)
+        self._attempt_destination_size = (
+            int(size) if type(size) is int and size > 0 else None
+        )
+
+    def _reset_attempt_state(self) -> None:
+        """Clear outcome and matcher state after route-specific input setup."""
+
         self._last_provider_outcome = None
         self._attempt_outcome_index = None
         self._attempt_instruction = None
@@ -636,6 +672,7 @@ class IDAPatternAdapter:
         self._canonical_fallback_comparisons = 0
         self._canonical_fallback_budget_exhausted = False
         self._canonical_fallback_stop_reason = None
+        self._canonical_feasibility_predicate_comparisons = 0
         self._structural_selection_active = False
         self._structural_dispatch_bucket_size = 0
         self._structural_dispatch_attempt_count = 0
@@ -750,23 +787,33 @@ class IDAPatternAdapter:
             getattr(self, "_certified_catalogue_snapshot", None) is not snapshot
             or getattr(self, "_certified_catalogue_rule_id", None) != rule_id
         )
+        ledger_replaced = getattr(self, "_shadow_parity_ledger", None) is not ledger
+        if snapshot_replaced or ledger_replaced:
+            self.legacy_only_observation_count = 0
+            self.legacy_only_match_count = 0
+            self._shadow_parity_recorded = False
         if snapshot_replaced:
             # Adapters are reused across project reloads. Never carry frozen
             # templates, raw candidates, or replacement bindings across a new
             # immutable catalogue snapshot.
             self._shadow_canonical_templates = {}
+            self._canonical_feasibility_template_facts = {}
             self._pattern_candidates_cache = None
             self._replacement_pattern_cache = None
+            self._dynamic_replacement_constants_cache = None
             self._clear_structural_attempt_state()
         self._certified_catalogue_snapshot = snapshot
         self._certified_catalogue_rule_id = rule_id
         self._shadow_parity_ledger = ledger
+        self._canonical_shadow_eligible = _snapshot_rule_widths_are_structurally_eligible(
+            snapshot, rule_id, self.rule
+        )
         self._prepare_shadow_canonical_templates()
         # The snapshot only contains already-admitted VerifiableRule DSL
-        # objects. The environment flag requests the experimental path, but a
+        # objects. Canonical matching is requested by default, but a
         # persisted zero-mismatch certificate must also bind this exact
         # snapshot to the active matcher runtime. Keep generated permutations
-        # as the safe default and the release-scoped rollback; never register
+        # for unqualified rules and explicit rollback; never register
         # both forms at once. The explicit rollback wins if both flags are set.
         self._structural_parity_authorized = bool(
             parity_certificate is not None
@@ -818,6 +865,54 @@ class IDAPatternAdapter:
 
         value = getattr(self, "_certified_catalogue_rule_id", None)
         return value if type(value) is int and value >= 0 else None
+
+    def canonical_feasibility_template_facts(
+        self, width: int
+    ) -> tuple[Any | None, bool]:
+        """Return facts owned by the exact frozen template occurrence.
+
+        The cache is invalidated with ``_shadow_canonical_templates`` on an
+        immutable catalogue snapshot replacement. Identity is checked even
+        within one snapshot so a lazily replaced occurrence cannot inherit a
+        prior template's facts.
+        """
+
+        from d810.mba.ac_matching import prepare_canonical_template_facts
+
+        self._prepare_shadow_canonical_templates()
+        template = self._shadow_canonical_templates.get(width)
+        if template is None:
+            return None, False
+        cached = self._canonical_feasibility_template_facts.get(width)
+        if cached is not None and cached[0] is template:
+            return cached[1], False
+        facts = prepare_canonical_template_facts(template)
+        self._canonical_feasibility_template_facts[width] = (template, facts)
+        return facts, True
+
+    def record_canonical_feasibility_rejection(
+        self,
+        *,
+        bucket_size: int,
+        predicate_comparisons: int,
+        lowering: Any,
+        source_ast: Any,
+    ) -> None:
+        """Publish current-attempt state for a pre-matcher rejection."""
+
+        self._structural_selection_active = True
+        self._structural_dispatch_bucket_size = max(0, int(bucket_size))
+        self._structural_dispatch_attempt_count = 0
+        self._shadow_lowering = lowering
+        self._shadow_structural_lowering = lowering
+        self._shadow_source_ast = source_ast
+        self._canonical_fallback_comparisons = 0
+        self._canonical_fallback_budget_exhausted = False
+        self._canonical_fallback_stop_reason = "feasibility_rejected"
+        # Predicate work is deliberately separate from matcher comparisons.
+        self._canonical_feasibility_predicate_comparisons = max(
+            0, int(predicate_comparisons)
+        )
 
     @property
     def uses_structural_matching(self) -> bool:
@@ -983,6 +1078,10 @@ class IDAPatternAdapter:
             self._clear_structural_attempt_state()
         else:
             self._shadow_native_path_unavailable = False
+        if self._canonical_shadow_eligible is False:
+            # An excluded rule has no complete canonical implementation to
+            # compare. Retain its legacy outcome in the separate counters.
+            return None
         try:
             from d810.mba.ac_matching import (
                 AcMatchStopReason,
@@ -1285,27 +1384,33 @@ class IDAPatternAdapter:
             resolved_from_slots: dict[str, set[tuple[int, ...]]] = {}
 
             def walk(pattern: Any, source: Any, path: tuple[int, ...]) -> bool:
-                if bool(getattr(pattern, "is_node", lambda: False)()) != bool(
-                    getattr(source, "is_node", lambda: False)()
-                ):
+                pattern_is_node = getattr(pattern, "is_node", None)
+                source_is_node = getattr(source, "is_node", None)
+                if not callable(pattern_is_node) or not callable(source_is_node):
                     return False
-                if bool(getattr(pattern, "is_node", lambda: False)()):
-                    for index, child_name in enumerate(("left", "right")):
-                        pattern_child = getattr(pattern, child_name, None)
-                        source_child = getattr(source, child_name, None)
-                        if (pattern_child is None) != (source_child is None):
-                            return False
-                        if pattern_child is not None and not walk(
-                            pattern_child, source_child, path + (index,)
-                        ):
-                            return False
+                try:
+                    pattern_is_node = bool(pattern_is_node())
+                    source_is_node = bool(source_is_node())
+                except Exception:
+                    return False
+                if not pattern_is_node:
+                    name = getattr(pattern, "name", None)
+                    if type(name) is str and name in declared_names:
+                        # A declared terminal is a matcher placeholder, not a
+                        # demand that its successful source binding be a leaf.
+                        resolved_from_slots.setdefault(name, set()).add(path)
                     return True
-                name = getattr(pattern, "name", None)
-                if type(name) is str and name in declared_names:
-                    # Repeated pattern variables have several legitimate
-                    # source slots.  Keep all of them; the structural matcher
-                    # may select any one only after checking their equality.
-                    resolved_from_slots.setdefault(name, set()).add(path)
+                if not source_is_node:
+                    return False
+                for index, child_name in enumerate(("left", "right")):
+                    pattern_child = getattr(pattern, child_name, None)
+                    source_child = getattr(source, child_name, None)
+                    if (pattern_child is None) != (source_child is None):
+                        return False
+                    if pattern_child is not None and not walk(
+                        pattern_child, source_child, path + (index,)
+                    ):
+                        return False
                 return True
 
             if walk(candidate_pattern, source_ast, ()) and set(
@@ -1345,6 +1450,11 @@ class IDAPatternAdapter:
             return
         ledger = getattr(self, "_shadow_parity_ledger", None)
         if ledger is None:
+            return
+        if self._canonical_shadow_eligible is False:
+            self.legacy_only_observation_count += 1
+            self.legacy_only_match_count += int(legacy_match)
+            self._shadow_parity_recorded = True
             return
         structural_proven = False
         structural_refused = False
@@ -1803,6 +1913,13 @@ class IDAPatternAdapter:
                 "bucket_size": self._structural_dispatch_bucket_size,
                 "attempted_rule_count": self._structural_dispatch_attempt_count,
             }
+            if self._canonical_fallback_stop_reason == "feasibility_rejected":
+                metadata["canonical_feasibility"] = {
+                    "predicate_comparisons": (
+                        self._canonical_feasibility_predicate_comparisons
+                    ),
+                    "matcher_comparisons": 0,
+                }
         else:
             metadata["shadow"] = self._shadow_metadata(legacy_match=legacy_match)
         if fingerprint is None:
@@ -2025,6 +2142,9 @@ class IDAPatternAdapter:
         if self._replacement_pattern_cache is None:
             replacement = self.rule.replacement
             if replacement is not None:
+                self._dynamic_replacement_constants_cache = MappingProxyType(
+                    self._collect_dynamic_replacement_constants(replacement)
+                )
                 self._replacement_pattern_cache = self._visitor.visit(replacement)
         return self._replacement_pattern_cache
 
@@ -2082,7 +2202,15 @@ class IDAPatternAdapter:
         narrow adapter boundary before creating a native instruction.
         """
 
-        replacement_template = self.REPLACEMENT_PATTERN
+        try:
+            replacement_template = self.REPLACEMENT_PATTERN
+        except _REPLACEMENT_BOUNDARY_EXCEPTIONS as exc:
+            logger.debug(
+                "Invalid replacement metadata for rule %s: %s",
+                self.name,
+                exc,
+            )
+            return None
         if not replacement_template:
             logger.debug(f"No replacement pattern for rule {self.name}")
             return None
@@ -2105,7 +2233,9 @@ class IDAPatternAdapter:
             # leafs_by_name.  Structural and binding-proxy candidates need an
             # active AstNode carrier for the Cython updater.
             if isinstance(candidate, AstLeafProtocol):
-                candidate_for_update = _LeafWrapper(candidate)
+                candidate_for_update = self._shadow_binding_context(
+                    _LeafWrapper(candidate)
+                )
             elif not isinstance(candidate, AstNode):
                 candidate_for_update = self._shadow_binding_context(candidate)
             is_ok = repl_pat.update_leafs_mop(candidate_for_update)
@@ -2129,6 +2259,15 @@ class IDAPatternAdapter:
                 )
                 return None
 
+            if isinstance(repl_pat, AstLeafProtocol):
+                replacement = ida_hexrays.minsn_t(candidate_for_update.ea)
+                replacement.opcode = ida_hexrays.m_mov
+                replacement.l = repl_pat.create_mop(candidate_for_update.ea)
+                replacement.d = ida_hexrays.mop_t()
+                destination = getattr(candidate_for_update, "dst_mop", None)
+                if destination is not None:
+                    replacement.d.assign(destination)
+                return replacement
             return repl_pat.create_minsn(
                 candidate_for_update.ea,
                 getattr(candidate_for_update, "dst_mop", None),
@@ -2142,8 +2281,7 @@ class IDAPatternAdapter:
             )
             return None
 
-    @staticmethod
-    def _replacement_only_literals_are_resolved(repl_pat, candidate) -> bool:
+    def _replacement_only_literals_are_resolved(self, repl_pat, candidate) -> bool:
         """Allow only declared concrete constants to lack a match binding.
 
         The Python AST emitter treats a concrete ``Const(name, value)`` as
@@ -2161,9 +2299,12 @@ class IDAPatternAdapter:
             leaves = repl_pat.get_leaf_list()
         except (AttributeError, TypeError, ValueError, RuntimeError):
             return False
+        dynamic_names = self._dynamic_replacement_constants()
         for leaf in leaves:
             name = getattr(leaf, "name", None)
             if name in candidate_leafs:
+                continue
+            if name in dynamic_names:
                 continue
             if isinstance(leaf, AstConstantProtocol) and type(
                 getattr(leaf, "expected_value", None)
@@ -2181,44 +2322,83 @@ class IDAPatternAdapter:
 
         candidate_leafs = getattr(candidate, "leafs_by_name", {}) or {}
         dst_mop = getattr(candidate, "dst_mop", None)
+        dynamic_consts = self._dynamic_replacement_constants()
 
         for leaf in leafs:
             if not isinstance(leaf, AstConstantProtocol):
                 continue
-            if getattr(leaf, "mop", None) is not None:
-                continue
 
-            value = getattr(leaf, "value", None)
-            size = getattr(leaf, "expected_size", None)
-
-            source_leaf = candidate_leafs.get(getattr(leaf, "name", None))
-            if source_leaf is not None:
-                source_mop = getattr(source_leaf, "mop", None)
-                if source_mop is not None and source_mop.t == ida_hexrays.mop_n:
-                    leaf.mop = MopSnapshot.from_mop(source_mop)
-                    if hasattr(leaf, "expected_value"):
-                        leaf.expected_value = source_mop.nnn.value
-                    if hasattr(leaf, "expected_size"):
-                        leaf.expected_size = source_mop.size
-                    continue
-                # A computed value must retain its evaluation width. Destination
-                # sizing cannot recover high bits discarded during evaluation.
+            dynamic_const = dynamic_consts.get(getattr(leaf, "name", None))
+            if dynamic_const is not None:
+                # update_leafs_mop may have copied a same-named pattern
+                # binding. A DynamicConst is a computation, never an alias for
+                # that binding, so discard the copied mop before evaluation.
+                leaf.mop = None
+                value = None
+                size = None
                 try:
-                    source_size = runtime_operand_size(source_leaf)
-                    result_width = bind_runtime_width(candidate, candidate_leafs)
-                except (ValueError, TypeError, AttributeError):
+                    context = dict(candidate_leafs)
+                    result_width = bind_runtime_width(candidate, context)
+                    context["_candidate"] = candidate
+                    context["size"] = result_width // 8
+                    size_from = dynamic_const.size_from
+                    if size_from is None:
+                        size = result_width // 8
+                    else:
+                        source = candidate_leafs.get(size_from)
+                        if source is None:
+                            return False
+                        size = runtime_operand_size(source)
+                        if size * 8 != result_width:
+                            return False
+                    try:
+                        value = dynamic_const.compute(context)
+                    except Exception as exc:
+                        logger.debug(
+                            "Dynamic constant callback failed for %s.%s: %s",
+                            self.name,
+                            dynamic_const.name,
+                            exc,
+                            exc_info=True,
+                        )
+                        return False
+                except _REPLACEMENT_BOUNDARY_EXCEPTIONS:
                     return False
-                if source_size * 8 != result_width or (
-                    size is not None and size != source_size
-                ):
+                if type(value) is not int:
                     return False
-                size = source_size
-                if value is None:
-                    value = getattr(source_leaf, "value", None)
-                if value is None:
-                    value = getattr(source_leaf, "expected_value", None)
-                if size is None:
-                    size = getattr(source_leaf, "expected_size", None)
+            else:
+                if getattr(leaf, "mop", None) is not None:
+                    continue
+                value = getattr(leaf, "value", None)
+                size = getattr(leaf, "expected_size", None)
+                source_leaf = candidate_leafs.get(getattr(leaf, "name", None))
+                if source_leaf is not None:
+                    source_mop = getattr(source_leaf, "mop", None)
+                    if source_mop is not None and source_mop.t == ida_hexrays.mop_n:
+                        leaf.mop = MopSnapshot.from_mop(source_mop)
+                        if hasattr(leaf, "expected_value"):
+                            leaf.expected_value = source_mop.nnn.value
+                        if hasattr(leaf, "expected_size"):
+                            leaf.expected_size = source_mop.size
+                        continue
+                    # A computed value must retain its evaluation width. Destination
+                    # sizing cannot recover high bits discarded during evaluation.
+                    try:
+                        source_size = runtime_operand_size(source_leaf)
+                        result_width = bind_runtime_width(candidate, candidate_leafs)
+                    except (ValueError, TypeError, AttributeError):
+                        return False
+                    if source_size * 8 != result_width or (
+                        size is not None and size != source_size
+                    ):
+                        return False
+                    size = source_size
+                    if value is None:
+                        value = getattr(source_leaf, "value", None)
+                    if value is None:
+                        value = getattr(source_leaf, "expected_value", None)
+                    if size is None:
+                        size = getattr(source_leaf, "expected_size", None)
 
             if value is None:
                 return False
@@ -2245,6 +2425,53 @@ class IDAPatternAdapter:
                 leaf.expected_size = int(size)
 
         return True
+
+    def _dynamic_replacement_constants(self) -> Mapping[str, Any]:
+        """Return template-local dynamic metadata without per-attempt traversal."""
+
+        cached = self._dynamic_replacement_constants_cache
+        if cached is None:
+            replacement = getattr(self.rule, "replacement", None)
+            cached = MappingProxyType(
+                self._collect_dynamic_replacement_constants(replacement)
+            )
+            self._dynamic_replacement_constants_cache = cached
+        return cached
+
+    @staticmethod
+    def _collect_dynamic_replacement_constants(expression: Any) -> dict[str, Any]:
+        """Collect declared dynamic operations once for one replacement template."""
+
+        result: dict[str, Any] = {}
+
+        def visit(expression: Any) -> None:
+            if expression is None:
+                return
+            if getattr(expression, "operation", None) == "dynamic_const":
+                name = getattr(expression, "name", None)
+                compute = getattr(expression, "compute", None)
+                size_from = getattr(expression, "size_from", None)
+                if type(name) is not str or not name:
+                    raise ValueError("dynamic constant has no valid name")
+                if not callable(compute):
+                    raise ValueError(f"dynamic constant {name!r} has no callback")
+                if size_from is not None and (
+                    type(size_from) is not str or not size_from
+                ):
+                    raise ValueError(
+                        f"dynamic constant {name!r} has invalid size source"
+                    )
+                if name in result:
+                    raise ValueError(f"duplicate dynamic constant name: {name!r}")
+                result[name] = expression
+                return
+            visit(getattr(expression, "left", None))
+            visit(getattr(expression, "right", None))
+
+        if expression is None:
+            return result
+        visit(expression)
+        return result
 
     def check_and_replace(self, blk, instruction) -> Optional[Any]:
         """Check if this rule matches and return a replacement instruction.
@@ -2288,6 +2515,28 @@ class IDAPatternAdapter:
         adapter boundary so the pure rule model remains backend-agnostic.
         """
         self._reset_attempt_outcome(instruction)
+        self._attempt_instruction = instruction
+        setattr(self.rule, "_current_blk", blk)
+        setattr(self.rule, "_current_ins", instruction)
+        setattr(
+            self.rule,
+            "_runtime_constant_evaluator",
+            lambda mop, *, bits: self._eval_runtime_constant(
+                mop, bits, blk, instruction
+            ),
+        )
+
+    def bind_structural_match_context(self, blk, instruction) -> None:
+        """Bind an explicit structural attempt, retaining AST only for capture."""
+
+        direct_binder = self.bind_match_context
+        if (
+            getattr(direct_binder, "__func__", None)
+            is not IDAPatternAdapter.bind_match_context
+        ):
+            direct_binder(blk, instruction)
+            return
+        self._reset_structural_attempt_outcome(instruction)
         self._attempt_instruction = instruction
         setattr(self.rule, "_current_blk", blk)
         setattr(self.rule, "_current_ins", instruction)
@@ -2472,6 +2721,8 @@ class IDAPatternAdapter:
         self._generate_commutative_permutations = generate_permutations
         if hasattr(self.rule, "configure"):
             self.rule.configure(kwargs)
+        self._replacement_pattern_cache = None
+        self._dynamic_replacement_constants_cache = None
 
     def set_log_dir(self, log_dir: str) -> None:
         """Set the log directory for this rule.

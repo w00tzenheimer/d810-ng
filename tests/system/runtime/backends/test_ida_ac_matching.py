@@ -42,6 +42,7 @@ from tools.scripts.mba_structural_matcher_certificate import (  # noqa: E402
     build_certificate,
 )
 from d810.optimizers.microcode.instructions.pattern_matching.handler import (  # noqa: E402
+    _CANONICAL_FALLBACK_COMPARISON_BUDGET,
     PatternOptimizer,
     RulePatternInfo,
 )
@@ -674,6 +675,115 @@ def test_shadow_matcher_accepts_a_structural_path_for_repeated_pattern_leaf() ->
     assert adapter._shadow_metadata(legacy_match=True)["same_bindings"] is True
 
 
+def test_legacy_binding_collector_captures_a_compound_variable_slot() -> None:
+    """A pattern terminal may bind the complete compound at its source slot."""
+
+    x = Var("x")
+
+    class Rule:
+        pattern = x + Const("one", 1)
+
+    adapter = IDAPatternAdapter(Rule())
+    adapter._attempt_destination_size = 4
+    compound = ast_dispatcher.AstNode(
+        ida_hexrays.m_mul, _leaf("b", 2), _leaf("a", 1)
+    )
+    compound.dest_size = 4
+    ast = ast_dispatcher.AstNode(ida_hexrays.m_add, compound, _constant(1))
+    ast.dest_size = 4
+    legacy = ast_dispatcher.AstNode(
+        ida_hexrays.m_add,
+        ast_dispatcher.AstLeaf("x"),
+        ast_dispatcher.AstConstant("one", 1, 4),
+    )
+
+    assert adapter.observe_structural_match(ast) is not None
+    adapter.record_legacy_match_bindings(legacy, ast)
+
+    assert adapter._legacy_binding_paths is not None
+    assert adapter._legacy_binding_paths["x"] == frozenset({(0,)})
+    assert adapter._shadow_metadata(legacy_match=True)["same_bindings"] is True
+
+
+def test_legacy_binding_collector_keeps_repeated_compound_slots() -> None:
+    """Repeated terminals retain both successful raw matcher source slots."""
+
+    x = Var("x")
+
+    class Rule:
+        pattern = x + x
+
+    adapter = IDAPatternAdapter(Rule())
+    adapter._attempt_destination_size = 4
+
+    def compound() -> object:
+        node = ast_dispatcher.AstNode(
+            ida_hexrays.m_mul, _leaf("b", 2), _leaf("a", 1)
+        )
+        node.dest_size = 4
+        return node
+
+    ast = ast_dispatcher.AstNode(ida_hexrays.m_add, compound(), compound())
+    ast.dest_size = 4
+    legacy = ast_dispatcher.AstNode(
+        ida_hexrays.m_add,
+        ast_dispatcher.AstLeaf("x"),
+        ast_dispatcher.AstLeaf("x"),
+    )
+
+    assert adapter.observe_structural_match(ast) is not None
+    adapter.record_legacy_match_bindings(legacy, ast)
+
+    assert adapter._legacy_binding_paths == {
+        "x": frozenset({(0,), (1,)})
+    }
+
+
+def test_legacy_binding_collector_rejects_a_malformed_source_slot() -> None:
+    """A declared terminal does not make a non-AST source valid evidence."""
+
+    x = Var("x")
+
+    class Rule:
+        pattern = x
+
+    adapter = IDAPatternAdapter(Rule())
+    adapter._attempt_destination_size = 4
+    valid_source = _leaf("x", 1)
+    assert adapter.observe_structural_match(valid_source) is not None
+
+    adapter.record_legacy_match_bindings(ast_dispatcher.AstLeaf("x"), object())
+
+    assert adapter._legacy_binding_paths is None
+
+
+@pytest.mark.parametrize("failure", ("matcher", "constraint"))
+def test_failed_raw_candidate_does_not_record_legacy_binding_evidence(
+    monkeypatch, failure
+) -> None:
+    """Only a raw match which also passes constraints may publish slot evidence."""
+
+    x = Var("x")
+
+    class Rule:
+        pattern = x + Const("one", 1)
+        replacement = x
+
+    adapter = IDAPatternAdapter(Rule())
+    adapter._attempt_destination_size = 4
+    candidate = adapter.PATTERN
+    assert candidate is not None
+    opcode = ida_hexrays.m_xor if failure == "matcher" else ida_hexrays.m_add
+    source = ast_dispatcher.AstNode(opcode, _leaf("x", 1), _constant(1))
+    source.dest_size = 4
+    if failure == "constraint":
+        monkeypatch.setattr(adapter, "_check_candidate", lambda _candidate: False)
+
+    assert adapter.check_pattern_and_replace(candidate, source) is None
+    assert adapter._legacy_match_observed is False
+    assert adapter._legacy_binding_paths is None
+
+
 def test_selected_snapshot_narrows_shadow_observation_without_compilation() -> None:
     x = Var("x")
 
@@ -736,6 +846,34 @@ def test_certified_registration_rejects_bare_structural_opt_in(
     assert len(rollback.pattern_candidates) == 2
 
 
+@pytest.mark.parametrize(
+    "primary,alias,rollback,expected",
+    [
+        (None, None, None, True),
+        ("0", None, None, False),
+        ("0", "1", None, False),
+        ("1", "0", None, True),
+        ("1", "1", "1", False),
+        (None, None, "1", False),
+        (None, "0", None, False),
+        ("invalid", None, None, False),
+    ],
+)
+def test_default_rollout_and_explicit_rollback_precedence(
+    monkeypatch, primary, alias, rollback, expected
+) -> None:
+    for name, value in (
+        ("D810_CANONICAL_MATCH_FALLBACK", primary),
+        ("D810_STRUCTURAL_DSL_MATCHING", alias),
+        ("D810_LEGACY_DSL_PERMUTATIONS", rollback),
+    ):
+        if value is None:
+            monkeypatch.delenv(name, raising=False)
+        else:
+            monkeypatch.setenv(name, value)
+    assert canonical_fallback_rollout_requested() is expected
+
+
 def test_rollout_flag_precedence_and_deprecated_alias_warning(monkeypatch) -> None:
     warnings: list[tuple[object, ...]] = []
     monkeypatch.setattr(ida_backend.logger, "warning", lambda *args: warnings.append(args))
@@ -769,8 +907,9 @@ def test_portfolio_can_disable_legacy_fuzzy_permutations_without_structural_opt_
     assert len(adapter.pattern_candidates) == 1
 
 
+@pytest.mark.parametrize("use_deprecated_alias", [False, True])
 def test_structural_opt_in_requires_matching_persisted_parity_certificate(
-    monkeypatch, tmp_path
+    monkeypatch, tmp_path, use_deprecated_alias
 ) -> None:
     """A certificate authorizes exactly its snapshot and active matcher mode."""
 
@@ -782,7 +921,10 @@ def test_structural_opt_in_requires_matching_persisted_parity_certificate(
         replacement = x
 
     assert ida_backend._supports_structural_dsl_pattern(CertifiedRule.pattern)
-    monkeypatch.setenv("D810_STRUCTURAL_DSL_MATCHING", "1")
+    monkeypatch.delenv("D810_CANONICAL_MATCH_FALLBACK", raising=False)
+    monkeypatch.delenv("D810_STRUCTURAL_DSL_MATCHING", raising=False)
+    if use_deprecated_alias:
+        monkeypatch.setenv("D810_STRUCTURAL_DSL_MATCHING", "1")
     monkeypatch.delenv("D810_LEGACY_DSL_PERMUTATIONS", raising=False)
     runtime_mode = get_engine_info()["backend"]
     manifest_path = tmp_path / "controlled-native-corpus.json"
@@ -944,6 +1086,21 @@ def test_structural_opt_in_requires_matching_persisted_parity_certificate(
     )
     assert matching_snapshot.uses_structural_matching is True
     assert len(matching_snapshot.pattern_candidates) == 1
+
+
+    # A valid certificate is not permission to ignore an operator rollback.
+    for primary, rollback in (("0", "0"), ("1", "1")):
+        monkeypatch.setenv("D810_CANONICAL_MATCH_FALLBACK", primary)
+        monkeypatch.setenv("D810_LEGACY_DSL_PERMUTATIONS", rollback)
+        attach_selected_certified_catalogue_snapshot(
+            (matching_snapshot,),
+            parity_certificate_path=certificate_path,
+            parity_expectation=expectation,
+            runtime_mode=runtime_mode,
+        )
+        assert matching_snapshot._structural_parity_authorized is True
+        assert matching_snapshot.uses_structural_matching is False
+        assert len(matching_snapshot.pattern_candidates) == 2
 
 
 def test_structural_selection_fails_closed_when_native_z3_rejects(monkeypatch) -> None:
@@ -1260,6 +1417,8 @@ def test_handler_records_truthful_terminal_receipt_for_active_stage_error(
 
     later = LaterRule()
     optimizer = bare_pattern_optimizer(_get_candidates=lambda _candidate: [])
+    optimizer._rule_registration_order = {id(adapter): 0, id(later): 1}
+    optimizer._canonical_fallback_registration_order = [adapter, later]
     monkeypatch.setattr(
         optimizer,
         "_prepare_canonical_fallback",
@@ -1761,6 +1920,8 @@ def test_structural_dispatch_is_root_bucketed_and_reports_attempt_count(
     rule = StructuralRule()
     optimizer = bare_pattern_optimizer(
         _canonical_fallback_rules_by_root_shape={("add", 32, 2): [rule]},
+        _rule_registration_order={id(rule): 0},
+        _canonical_fallback_registration_order=[rule],
         _get_candidates=lambda _ast: [RulePatternInfo(rule, object())],
     )
 
@@ -2001,6 +2162,8 @@ def test_handler_clears_fallback_rule_context_when_later_callback_raises(
         "_prepare_canonical_fallback",
         lambda *_args, **_kwargs: (SimpleNamespace(term=object()), (rule,)),
     )
+    optimizer._rule_registration_order = {id(rule): 0}
+    optimizer._canonical_fallback_registration_order = [rule]
 
     with pytest.raises(RuntimeError, match="fallback later callback failure"):
         optimizer._try_matches(
@@ -2015,10 +2178,216 @@ def test_handler_clears_fallback_rule_context_when_later_callback_raises(
     assert rule.cleared is True
 
 
+def test_adapter_materializes_input_ast_only_for_required_attempt_routes(
+    monkeypatch,
+) -> None:
+    materialized = []
+
+    def materialize(instruction):
+        ast = object()
+        materialized.append((instruction, ast))
+        return ast
+
+    monkeypatch.setattr(ida_backend, "minsn_to_ast", materialize)
+    adapter = IDAPatternAdapter(SimpleNamespace(name="bounded", maturities=(7,)))
+    instruction = SimpleNamespace(d=SimpleNamespace(size=4), ea=0x401000)
+
+    adapter.bind_match_context(None, instruction)
+    raw_ast = adapter._attempt_input_ast
+
+    adapter.bind_structural_match_context(None, instruction)
+    assert adapter._attempt_input_ast is None
+    assert adapter._attempt_destination_size == 4
+
+    adapter.begin_provider_outcome_capture()
+    adapter.bind_structural_match_context(None, instruction)
+
+    assert materialized == [
+        (instruction, raw_ast),
+        (instruction, adapter._attempt_input_ast),
+    ]
+
+
+@pytest.mark.parametrize("override_kind", ("class", "instance"))
+def test_structural_binder_preserves_custom_direct_binder_override(
+    monkeypatch,
+    override_kind,
+) -> None:
+    materialized = []
+    custom_calls = []
+    monkeypatch.setattr(
+        ida_backend,
+        "minsn_to_ast",
+        lambda instruction: materialized.append(instruction) or object(),
+    )
+
+    class CustomAdapter(IDAPatternAdapter):
+        def bind_match_context(self, blk, instruction) -> None:
+            custom_calls.append((blk, instruction))
+            super().bind_match_context(blk, instruction)
+
+    adapter_type = CustomAdapter if override_kind == "class" else IDAPatternAdapter
+    adapter = adapter_type(SimpleNamespace(name="custom", maturities=(7,)))
+    if override_kind == "instance":
+        def custom_bind(blk, instruction) -> None:
+            custom_calls.append((blk, instruction))
+            IDAPatternAdapter.bind_match_context(adapter, blk, instruction)
+
+        adapter.bind_match_context = custom_bind
+    instruction = SimpleNamespace(d=SimpleNamespace(size=4), ea=0x401000)
+
+    adapter.bind_structural_match_context("block", instruction)
+
+    assert custom_calls == [("block", instruction)]
+    assert materialized == [instruction]
+    assert adapter._attempt_input_ast is not None
+
+
+def test_raw_nomut_outcome_keeps_directly_bound_input_ast(monkeypatch) -> None:
+    input_ast = object()
+    replacement_ast = object()
+    recorded = []
+    monkeypatch.setattr(ida_backend, "minsn_to_ast", lambda _instruction: input_ast)
+    adapter = IDAPatternAdapter(SimpleNamespace(name="raw-nomut", maturities=(7,)))
+    monkeypatch.setattr(
+        adapter,
+        "_record_catalogue_success",
+        lambda source, replacement, **kwargs: recorded.append(
+            (source, replacement, kwargs)
+        ),
+    )
+
+    adapter.bind_match_context(None, SimpleNamespace(d=SimpleNamespace(size=4)))
+    adapter.record_bound_replacement_outcome(replacement_ast)
+
+    assert recorded == [(input_ast, replacement_ast, {"raw_native": True})]
+
+
+def test_handler_uses_structural_binder_only_for_structural_attempt() -> None:
+    calls = []
+
+    class Rule:
+        name = "structural-route"
+        maturities = (7,)
+        canonical_fallback_comparisons = 0
+        canonical_fallback_budget_exhausted = False
+
+        def bind_match_context(self, blk, instruction):
+            calls.append(("raw", blk, instruction))
+
+        def bind_structural_match_context(self, blk, instruction):
+            calls.append(("structural", blk, instruction))
+
+        def clear_match_context(self):
+            calls.append(("clear",))
+
+        def match_structural_and_replace(self, test_ast, **_kwargs):
+            calls.append(("match", test_ast))
+            return None
+
+    rule = Rule()
+    instruction = SimpleNamespace(d=SimpleNamespace(size=4), ea=0x401000)
+    test_ast = object()
+    optimizer = bare_pattern_optimizer(_get_candidates=lambda _candidate: [])
+    optimizer._iter_match_schedule = lambda *_args, **_kwargs: iter(
+        [(None, rule, object(), 1)]
+    )
+
+    assert (
+        optimizer._try_matches(
+            "block",
+            instruction,
+            test_ast,
+            allowed_rule_names=None,
+            scheduled_rule_names=None,
+            source_label="unit",
+        )
+        is None
+    )
+    assert calls[:2] == [("structural", "block", instruction), ("match", test_ast)]
+    assert ("raw", "block", instruction) not in calls
+    assert calls[-1] == ("clear",)
+
+
+def test_handler_preserves_custom_structural_adapter_compatibility() -> None:
+    calls = []
+
+    class Rule:
+        name = "custom-structural-route"
+        maturities = (7,)
+        canonical_fallback_comparisons = 0
+        canonical_fallback_budget_exhausted = False
+
+        def bind_match_context(self, blk, instruction):
+            calls.append(("compatible", blk, instruction))
+
+        def clear_match_context(self):
+            calls.append(("clear",))
+
+        def match_structural_and_replace(self, *_args, **_kwargs):
+            return None
+
+    rule = Rule()
+    instruction = SimpleNamespace(d=SimpleNamespace(size=4), ea=0x401000)
+    optimizer = bare_pattern_optimizer(_get_candidates=lambda _candidate: [])
+    optimizer._iter_match_schedule = lambda *_args, **_kwargs: iter(
+        [(None, rule, object(), 1)]
+    )
+
+    optimizer._try_matches(
+        "block",
+        instruction,
+        object(),
+        allowed_rule_names=None,
+        scheduled_rule_names=None,
+        source_label="unit",
+    )
+
+    assert calls == [("compatible", "block", instruction), ("clear",)]
+
+
+def test_handler_keeps_raw_attempt_on_direct_binder() -> None:
+    calls = []
+
+    class Rule:
+        name = "raw-route"
+        maturities = (7,)
+
+        def bind_match_context(self, blk, instruction):
+            calls.append(("raw", blk, instruction))
+
+        def bind_structural_match_context(self, blk, instruction):
+            calls.append(("structural", blk, instruction))
+
+        def clear_match_context(self):
+            calls.append(("clear",))
+
+        def check_pattern_and_replace(self, _pattern, _test_ast):
+            return None
+
+    rule = Rule()
+    instruction = SimpleNamespace(d=SimpleNamespace(size=4), ea=0x401000)
+    optimizer = bare_pattern_optimizer(_get_candidates=lambda _candidate: [])
+    optimizer._iter_match_schedule = lambda *_args, **_kwargs: iter(
+        [(RulePatternInfo(rule, object()), None, None, 0)]
+    )
+
+    optimizer._try_matches(
+        "block",
+        instruction,
+        object(),
+        allowed_rule_names=None,
+        scheduled_rule_names=None,
+        source_label="unit",
+    )
+
+    assert calls == [("raw", "block", instruction), ("clear",)]
+
+
 def test_handler_shares_canonical_budget_across_multiple_fallback_adapters(
     monkeypatch,
 ) -> None:
-    """One root callback cannot give every eligible fallback adapter 64 comparisons."""
+    """Each eligible adapter consumes one shared configured root budget."""
 
     class Instruction:
         ea = 0x401000
@@ -2053,6 +2422,8 @@ def test_handler_shares_canonical_budget_across_multiple_fallback_adapters(
     first = Rule("first-fallback", 40)
     second = Rule("second-fallback", 20, replacement="replacement")
     optimizer = bare_pattern_optimizer(_get_candidates=lambda _candidate: [])
+    optimizer._rule_registration_order = {id(first): 0, id(second): 1}
+    optimizer._canonical_fallback_registration_order = [first, second]
     monkeypatch.setattr(
         optimizer,
         "_prepare_canonical_fallback",
@@ -2070,9 +2441,13 @@ def test_handler_shares_canonical_budget_across_multiple_fallback_adapters(
         )
         == "replacement"
     )
-    assert first.budgets == [64]
-    assert second.budgets == [24]
-    assert first.canonical_fallback_comparisons + second.canonical_fallback_comparisons <= 64
+    assert first.budgets == [_CANONICAL_FALLBACK_COMPARISON_BUDGET]
+    assert second.budgets == [_CANONICAL_FALLBACK_COMPARISON_BUDGET - 40]
+    assert (
+        first.canonical_fallback_comparisons
+        + second.canonical_fallback_comparisons
+        <= _CANONICAL_FALLBACK_COMPARISON_BUDGET
+    )
 
 
 def test_fallback_budget_exhaustion_discards_partial_report_before_emission(
@@ -2167,6 +2542,8 @@ def test_terminal_fallback_error_abstains_root_before_later_adapter(monkeypatch)
     failing = FailingRule()
     later = LaterRule()
     optimizer = bare_pattern_optimizer(_get_candidates=lambda _candidate: [])
+    optimizer._rule_registration_order = {id(failing): 0, id(later): 1}
+    optimizer._canonical_fallback_registration_order = [failing, later]
     monkeypatch.setattr(
         optimizer,
         "_prepare_canonical_fallback",
@@ -2268,6 +2645,8 @@ def test_try_matches_publishes_one_terminal_receipt_when_preparation_fails(
     monkeypatch.setattr(adapter, "prepare_structural_candidate", prepare)
     optimizer = bare_pattern_optimizer(
         _canonical_fallback_rules_by_root_shape={("add", 32, 2): [adapter]},
+        _rule_registration_order={id(adapter): 0},
+        _canonical_fallback_registration_order=[adapter],
         _get_candidates=lambda _ast: [],
     )
 

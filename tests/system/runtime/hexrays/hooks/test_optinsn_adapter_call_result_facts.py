@@ -452,6 +452,10 @@ def test_snapshot_restore_preserves_canonical_fallback_buckets():
     optimizer = _RecordingOptimizer()
     original = {("add", 32, 2): ["certified-old"]}
     optimizer._canonical_fallback_rules_by_root_shape = original
+    original_order = {101: 0, 102: 1}
+    original_canonical_order = ["certified-old"]
+    optimizer._rule_registration_order = original_order
+    optimizer._canonical_fallback_registration_order = original_canonical_order
     manager = _snapshot_manager()
     manager.instruction_optimizers = [optimizer]
     manager.analyzer = optimizer
@@ -460,6 +464,12 @@ def test_snapshot_restore_preserves_canonical_fallback_buckets():
     )
 
     snapshot = manager.capture_runtime_state()
+    # In-place edits prove the captured values are copies, not aliases to the
+    # live order containers; replacement proves the original stores restore.
+    original_order[103] = 2
+    original_canonical_order.append("failed-in-place")
+    optimizer._rule_registration_order = {999: 0}
+    optimizer._canonical_fallback_registration_order = ["failed-activation"]
     optimizer._canonical_fallback_rules_by_root_shape = {
         ("sub", 32, 2): ["failed-activation"]
     }
@@ -468,6 +478,10 @@ def test_snapshot_restore_preserves_canonical_fallback_buckets():
 
     assert optimizer._canonical_fallback_rules_by_root_shape is original
     assert optimizer._canonical_fallback_rules_by_root_shape == original
+    assert optimizer._rule_registration_order is original_order
+    assert optimizer._rule_registration_order == {101: 0, 102: 1}
+    assert optimizer._canonical_fallback_registration_order is original_canonical_order
+    assert optimizer._canonical_fallback_registration_order == ["certified-old"]
     assert not hasattr(optimizer, "_structural_rules_by_root_opcode")
 
 
@@ -766,23 +780,8 @@ def test_snapshot_restore_clears_removed_and_restored_rule_views():
     manager = _snapshot_manager()
     manager.instruction_optimizers = [old]
     manager.analyzer = old
+    del manager._capture_child_runtime_state
     del manager._restore_child_runtime_state
-    manager._capture_child_runtime_state = lambda optimizer: SimpleNamespace(
-        optimizer=optimizer,
-        rules_store=optimizer.rules,
-        rules=(old,),
-        pattern_storage_present=False,
-        pattern_storage=None,
-        indexed_storage_present=False,
-        indexed_storage=None,
-        allowed_root_opcodes_store=None,
-        allowed_root_opcodes=None,
-        structural_rules_store=None,
-        structural_rules=None,
-        has_patternless_rule=None,
-        compiled_view=None,
-        generation=None,
-    )
     manager._validated_fact_view_provider = object()
     # Use the production snapshot shape while a view is bound.
     old.validated_fact_view = "bound"

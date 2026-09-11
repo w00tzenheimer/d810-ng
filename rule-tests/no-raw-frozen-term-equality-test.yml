@@ -1,0 +1,38 @@
+id: no-raw-frozen-term-equality
+
+valid:
+  - |
+      def _compare_frozen_constraint_terms(operation, left, right, *, width):
+          if operation == "eq":
+              return normalize(left, width=width) == normalize(right, width=width)
+          return False
+  - |
+      def _compare_frozen_constraint_terms(operation, left, right, *, width):
+          if operation == "eq":
+              return left_value == right_value
+          return False
+  - |
+      def other(left, right):
+          return left == right
+  - |
+      def _compare_frozen_constraint_terms(operation, left, right, *, width):
+          if operation == "ne":
+              return left == right
+          return False
+
+invalid:
+  - |
+      def _compare_frozen_constraint_terms(operation, left, right, *, width):
+          if operation == "eq":
+              return left == right
+          return False
+  - |
+      def _compare_frozen_constraint_terms(operation, left, right, *, width):
+          if operation == "eq":
+              return right == left
+          return False
+  - |
+      def _compare_frozen_constraint_terms(operation, left, right, *, width):
+          if operation == "eq":
+              return bool(left == right)
+          return False

@@ -304,6 +304,10 @@ class _InstructionChildRuntimeState:
     generation: int | None
     canonical_fallback_rules_store: object = None
     canonical_fallback_rules: tuple[tuple[object, tuple[object, ...]], ...] | None = None
+    rule_registration_order_store: object = None
+    rule_registration_order: tuple[tuple[int, int], ...] | None = None
+    canonical_registration_order_store: object = None
+    canonical_registration_order: tuple[object, ...] | None = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -1075,6 +1079,18 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
                 (shape, tuple(rules))
                 for shape, rules in canonical_fallback_rules_store.items()
             )
+        rule_registration_order_store = getattr(optimizer, "_rule_registration_order", None)
+        if rule_registration_order_store is not None and not isinstance(
+            rule_registration_order_store, dict
+        ):
+            raise TypeError("instruction optimizer registration order is not a dict")
+        canonical_registration_order_store = getattr(
+            optimizer, "_canonical_fallback_registration_order", None
+        )
+        if canonical_registration_order_store is not None and not isinstance(
+            canonical_registration_order_store, list
+        ):
+            raise TypeError("instruction optimizer canonical registration order is not a list")
         has_patternless_rule = getattr(optimizer, "_has_patternless_rule", None)
         if has_patternless_rule is not None and not isinstance(
             has_patternless_rule, bool
@@ -1106,6 +1122,16 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
             generation=generation,
             canonical_fallback_rules_store=canonical_fallback_rules_store,
             canonical_fallback_rules=canonical_fallback_rules,
+            rule_registration_order_store=rule_registration_order_store,
+            rule_registration_order=(
+                None if rule_registration_order_store is None
+                else tuple(rule_registration_order_store.items())
+            ),
+            canonical_registration_order_store=canonical_registration_order_store,
+            canonical_registration_order=(
+                None if canonical_registration_order_store is None
+                else tuple(canonical_registration_order_store)
+            ),
         )
 
     def capture_runtime_state(self) -> InstructionOptimizerRuntimeState:
@@ -1225,6 +1251,15 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
             )
         if snapshot.has_patternless_rule is not None:
             optimizer._has_patternless_rule = snapshot.has_patternless_rule
+        order_store = snapshot.rule_registration_order_store
+        if order_store is not None:
+            optimizer._rule_registration_order = order_store
+            order_store.clear()
+            order_store.update(snapshot.rule_registration_order or ())
+        canonical_order_store = snapshot.canonical_registration_order_store
+        if canonical_order_store is not None:
+            optimizer._canonical_fallback_registration_order = canonical_order_store
+            canonical_order_store[:] = snapshot.canonical_registration_order or ()
         if hasattr(optimizer, "_compiled_view"):
             optimizer._compiled_view = snapshot.compiled_view
         if snapshot.generation is not None:

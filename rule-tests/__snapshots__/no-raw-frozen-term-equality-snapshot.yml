@@ -1,0 +1,74 @@
+id: no-raw-frozen-term-equality
+snapshots:
+  ? |
+    def _compare_frozen_constraint_terms(operation, left, right, *, width):
+        if operation == "eq":
+            return bool(left == right)
+        return False
+  : labels:
+    - source: left == right
+      style: primary
+      start: 118
+      end: 131
+    - source: |-
+        if operation == "eq":
+                return bool(left == right)
+      style: secondary
+      start: 76
+      end: 132
+    - source: |-
+        def _compare_frozen_constraint_terms(operation, left, right, *, width):
+            if operation == "eq":
+                return bool(left == right)
+            return False
+      style: secondary
+      start: 0
+      end: 149
+  ? |
+    def _compare_frozen_constraint_terms(operation, left, right, *, width):
+        if operation == "eq":
+            return left == right
+        return False
+  : labels:
+    - source: left == right
+      style: primary
+      start: 113
+      end: 126
+    - source: |-
+        if operation == "eq":
+                return left == right
+      style: secondary
+      start: 76
+      end: 126
+    - source: |-
+        def _compare_frozen_constraint_terms(operation, left, right, *, width):
+            if operation == "eq":
+                return left == right
+            return False
+      style: secondary
+      start: 0
+      end: 143
+  ? |
+    def _compare_frozen_constraint_terms(operation, left, right, *, width):
+        if operation == "eq":
+            return right == left
+        return False
+  : labels:
+    - source: right == left
+      style: primary
+      start: 113
+      end: 126
+    - source: |-
+        if operation == "eq":
+                return right == left
+      style: secondary
+      start: 76
+      end: 126
+    - source: |-
+        def _compare_frozen_constraint_terms(operation, left, right, *, width):
+            if operation == "eq":
+                return right == left
+            return False
+      style: secondary
+      start: 0
+      end: 143
