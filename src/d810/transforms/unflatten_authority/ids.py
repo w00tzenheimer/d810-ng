@@ -1738,22 +1738,123 @@ def validate_canonical_roundtrip(value: object, expected_type: type[object]) -> 
     return decoded
 
 
-def validate_producer_proposal_structure(value: object) -> object:
-    """Reconstruct a producer proposal without crossing a byte boundary.
+def _recheck_constructor_fixed_point(
+    value: object, names: tuple[str, ...], derivations: object,
+) -> None:
+    """Reject constructor normalization/replacement without writing live objects.
 
-    Publication needs descendant constructors, supplied-ID checks and exact
-    value preservation, not JSON. Transaction ingress and persistence retain
-    their independent strict byte roundtrip. No runtime ownership is inherited.
+    Rebuild a throwaway record from public init fields. If ``__post_init__``
+    raises, propagate. If the rebuilt value differs (including sequence
+    order), reject. Never setattr the caller's object: a sorting constructor
+    must not silently repair publication inputs.
+    """
+    cls = type(value)
+    if getattr(cls, "__post_init__", None) is None:
+        return
+    if not is_dataclass(value) or cls.__name__ == "NativePreanalysisKey":
+        return
+    init_fields = {field.name for field in fields(cls) if field.init}
+    kwargs = {
+        name: getattr(value, name)
+        for name in names
+        if name in init_fields and name not in derivations
+    }
+    try:
+        rebuilt = cls(**kwargs)
+    except (TypeError, ValueError):
+        raise
+    if rebuilt != value:
+        raise ValueError("producer reconstruction changed the authority value")
+
+
+def _recheck_supplied_lazy_identities(
+    value: object, seen: set[int] | None = None,
+) -> None:
+    """Compare filled lazy-identity slots to a fresh derivation.
+
+    Read the slot descriptor, not getattr: getattr would return a forged
+    filled value without re-deriving. Call the function stored in
+    ``_LAZY_IDENTITY`` directly. Pending slots are not supplied IDs.
+    Do not honour transaction ownership here; the producer path uses
+    ``fact_scope(None)`` and must still reject a forged filled slot.
+    """
+    if value is None or type(value) in (bool, int, str, bytes):
+        return
+    cls = type(value)
+    if isinstance(value, Enum):
+        return
+    seen = set() if seen is None else seen
+    if cls in (list, tuple, frozenset):
+        marker = id(value)
+        if marker in seen:
+            return
+        seen.add(marker)
+        try:
+            for item in value:
+                _recheck_supplied_lazy_identities(item, seen)
+        finally:
+            seen.remove(marker)
+        return
+    if cls is dict or cls is MappingProxyType:
+        marker = id(value)
+        if marker in seen:
+            return
+        seen.add(marker)
+        try:
+            mapping = _exact_canonical_mapping(value)
+            for item in dict.values(mapping):
+                _recheck_supplied_lazy_identities(item, seen)
+        finally:
+            seen.remove(marker)
+        return
+    _ensure_registries()
+    names = _RECORD_FIELDS.get(cls, _EXTERNAL_FIELDS.get(cls))
+    if names is None:
+        return
+    marker = id(value)
+    if marker in seen:
+        return
+    seen.add(marker)
+    try:
+        derivations = _LAZY_IDENTITY.get(cls, ())
+        for name in names:
+            if name in derivations:
+                continue
+            if cls.__name__ == "NativePreanalysisKey" and name == "schema_version":
+                continue
+            _recheck_supplied_lazy_identities(getattr(value, name), seen)
+        for name, derive in dict(derivations).items():
+            slot = getattr(cls, name, None)
+            if slot is None:
+                continue
+            try:
+                supplied = slot.__get__(value, cls)
+            except AttributeError:
+                continue
+            expected = derive(value)
+            if supplied != expected:
+                raise ValueError(
+                    "producer reconstruction changed the authority value"
+                )
+        _recheck_constructor_fixed_point(value, names, derivations)
+    finally:
+        seen.remove(marker)
+
+
+def validate_producer_proposal_structure(value: object) -> object:
+    """Validate a producer proposal without an internal wire round-trip.
+
+    Publication needs live semantic fields and supplied-ID checks, not JSON
+    and not a reconstructed object the caller discards. Transaction ingress
+    and persistence retain their independent strict byte roundtrip. No
+    runtime ownership is inherited.
     """
     from .model import ProposedUnflattenContract
 
     with fact_scope(None):
         validate_live_semantic_fields(value, ProposedUnflattenContract)
-        decoded = _decode_wire(_wire(value))
-        if type(decoded) is not ProposedUnflattenContract or decoded != value:
-            raise ValueError("producer reconstruction changed the authority value")
-    return decoded
-
+        _recheck_supplied_lazy_identities(value)
+    return value
 
 def validate_live_semantic_fields(
     value: object, expected_type: type[object],
