@@ -25,21 +25,29 @@ def _rules(storage, subject):
     return [entry.rule for entry in storage.get_matching_rule_pattern_info(subject)]
 
 
+class _NoPatternRenderSubject:
+    def __init__(self, target):
+        self._target = target
+
+    def get_depth_signature(self, depth):
+        return self._target.get_depth_signature(depth)
+
+    def get_pattern(self):
+        raise AssertionError("matching must not call AstBase.get_pattern()")
+
+
 def test_lookup_does_not_render_subject_when_debug_logging_is_disabled(monkeypatch):
     storage = PatternStorage()
-    subject = _binary(
-        ida_hexrays.m_add,
-        _constant("one", 1),
-        _constant("two", 2),
+    subject = _NoPatternRenderSubject(
+        _binary(
+            ida_hexrays.m_add,
+            _constant("one", 1),
+            _constant("two", 2),
+        )
     )
     storage.add_pattern_for_rule(_binary(ida_hexrays.m_add), "add")
 
     monkeypatch.setattr(pattern_search_logger, "debug_on", False)
-
-    def fail_if_rendered():
-        raise AssertionError("matching must not call AstBase.get_pattern()")
-
-    monkeypatch.setattr(subject, "get_pattern", fail_if_rendered)
 
     assert _rules(storage, subject) == ["add"]
 
