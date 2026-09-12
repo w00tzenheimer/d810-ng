@@ -971,6 +971,11 @@ def _ensure_registries() -> None:
         DefinitionRef, InstructionResultRef, SSAValueRef, TemporaryRef,
         AggregateLocation, MemoryCell, RegisterLocation, StackSlot, WeakStackSlot,
     })
+    global _AUDITED_LOCAL_RECORD_TYPES
+    _AUDITED_LOCAL_RECORD_TYPES = frozenset({
+        NativeEaInterval, NativeEaIntervalSet, StableBlockIdentity,
+        NativeBlockRef, LogicalBlockRef,
+    })
     _EXTERNAL_FIELDS.update({
         NativePreanalysisKey: ("schema_version", "input_identity", "processor", "bitness", "function_rva", "function_fingerprint", "profile_fingerprint", "sdk_fingerprint"),
         TransactionAttemptId: ("plan_id", "session_id", "generation", "attempt_id"),
@@ -1472,6 +1477,84 @@ def canonical_bytes(
     return data
 
 
+
+# Audited block-identity constructors: they do not mutate nested descendants.
+# NativeEaIntervalSet may replace the intervals tuple; merge creates new intervals.
+# StableBlockIdentity may replace exact_instruction_eas with a new frozenset of ints.
+# NativePreanalysisKey is not in this set (strip can change strings).
+# Populated with the real type objects in _ensure_registries, so a merely
+# same-named class cannot take this path.
+_AUDITED_LOCAL_RECORD_TYPES: frozenset[type] = frozenset()
+
+
+def _immutable_atom(value: object) -> bool:
+    return type(value) in (type(None), bool, int, str, bytes)
+
+
+def _exact_atom_equal(live: object, decoded: object) -> bool:
+    """Atoms encode identically only when their *exact* types match.
+
+    ``1 == True`` and ``frozenset({1}) == frozenset({True})``, but the encoder
+    emits different tags for them, so a value-only comparison would let a
+    coerced child through the very check the re-encode would have rejected.
+    """
+    return _immutable_atom(live) and type(live) is type(decoded) and live == decoded
+
+
+def _sequence_children_preserved(live: object, decoded: object) -> bool:
+    # The container tag is part of the encoding: a list and a tuple are
+    # different wire tags even when their elements are identical.
+    if type(live) is not type(decoded) or type(live) not in (tuple, list):
+        return False
+    if len(live) != len(decoded):
+        return False
+    return all(left is right for left, right in zip(live, decoded))
+
+
+def _frozenset_atoms_match(live: object, decoded: object) -> bool:
+    if type(live) is not frozenset or type(decoded) is not frozenset:
+        return False
+    if not all(_immutable_atom(item) for item in live):
+        return False
+    if not all(_immutable_atom(item) for item in decoded):
+        return False
+    # Type-tagged elements: {1} and {True} are equal as sets but not as wire.
+    return {(type(item), item) for item in live} == {
+        (type(item), item) for item in decoded
+    }
+
+
+def _audited_record_matches_incoming(
+    result: object,
+    record_type: type,
+    decoded_children: Mapping[str, object],
+    names: tuple[str, ...],
+) -> bool:
+    """Return whether an audited constructor left checked children unchanged.
+
+    ``is`` is not enough by itself.  This path is allowlisted only for constructors
+    audited not to mutate nested descendants.  Sequence fields may be new tuples
+    whose elements are the decoded children.  Frozensets of immutable atoms may be
+    new objects with equal contents.  Anything else falls back to ``_wire``.
+    """
+
+    if record_type not in _AUDITED_LOCAL_RECORD_TYPES:
+        return False
+    if _LAZY_IDENTITY.get(type(result)):
+        return False
+    for name in names:
+        live = getattr(result, name)
+        decoded = decoded_children[name]
+        if live is decoded:
+            continue
+        if _exact_atom_equal(live, decoded):
+            continue
+        if _sequence_children_preserved(live, decoded):
+            continue
+        if _frozenset_atoms_match(live, decoded):
+            continue
+        return False
+    return True
 def _decode_wire(value: object, *, allow_index: bool = False) -> object:
     _ensure_registries()
     if not isinstance(value, dict) or not isinstance(value.get("t"), str):
@@ -1485,6 +1568,8 @@ def _decode_wire(value: object, *, allow_index: bool = False) -> object:
     }.get(tag)
     if expected is None or set(value) != expected:
         raise ValueError("invalid canonical wire tag shape")
+    audited_children: Mapping[str, object] | None = None
+    audited_names: tuple[str, ...] | None = None
     if tag == "none":
         result: object = None
     elif tag == "bool":
@@ -1588,6 +1673,11 @@ def _decode_wire(value: object, *, allow_index: bool = False) -> object:
         # is a byte-exact check of exactly what the supplied ID claimed.
         for lazy_name in _LAZY_IDENTITY.get(record_type, ()):
             kwargs.pop(lazy_name, None)
+        # Captured by reference and only for audited types, so ordinary records
+        # pay neither a dict copy nor a name tuple here.
+        if record_type in _AUDITED_LOCAL_RECORD_TYPES:
+            audited_children = kwargs
+            audited_names = names
         try:
             if record_type.__name__ == "NativePreanalysisKey":
                 result = record_type.from_dict(kwargs)
@@ -1693,6 +1783,15 @@ def _decode_wire(value: object, *, allow_index: bool = False) -> object:
         tag in {"list", "tuple"}
         and not allow_index
         and not any(type(child) is float for child in result)
+    ):
+        return result
+    if (
+        tag == "record"
+        and audited_children is not None
+        and audited_names is not None
+        and _audited_record_matches_incoming(
+            result, record_type, audited_children, audited_names,
+        )
     ):
         return result
     if tag == "decimal":
