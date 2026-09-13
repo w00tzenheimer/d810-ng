@@ -429,6 +429,68 @@ def _chain_block_serials(
         return ()
 
 
+def _last_reaching_definition(
+    accesses: tuple[tuple[object, bool, bool], ...],
+    *,
+    register: int | None,
+    stack_offset: int | None,
+    size: int,
+) -> tuple[object | None, bool]:
+    """Do not look through a non-exact clobber to an older scalar value.
+
+    Exact access classification intentionally excludes partial writes. A
+    reaching-value query must nevertheless treat them as barriers, not absence
+    of a write. Reconstructing bytes or call effects belongs to another analysis.
+    """
+    for index in range(len(accesses) - 1, -1, -1):
+        instruction, _has_use, has_definition = accesses[index]
+        if has_definition:
+            return _last_unambiguous_definition(accesses[:index + 1])
+        if _instruction_may_clobber_storage(
+            instruction, register=register, stack_offset=stack_offset, size=size
+        ):
+            return (None, True)
+    return (None, False)
+
+
+def _instruction_may_clobber_storage(instruction, *, register, stack_offset, size):
+    """Include nested calls and pair destinations, not only top-level writes."""
+    def visit_instruction(ins, depth):
+        if depth > 32:
+            return True
+        opcode = int(getattr(ins, "opcode", -1))
+        if opcode in (ida_hexrays.m_call, ida_hexrays.m_icall):
+            return True
+        if stack_offset is not None and opcode == ida_hexrays.m_stx:
+            return True
+        return any(visit_operand(getattr(ins, field, None), target, depth + 1)
+                   for field, target in (("l", False), ("r", False), ("d", True)))
+
+    def visit_operand(operand, target, depth):
+        if operand is None:
+            return False
+        if depth > 32:
+            return True
+        kind = int(getattr(operand, "t", -1))
+        if target and register is not None and kind == ida_hexrays.mop_r:
+            offset = int(operand.r)
+            return offset < register + size and register < offset + int(operand.size)
+        if target and stack_offset is not None and _operand_overlaps_stack_storage(
+            operand, stack_offset=stack_offset, size=size
+        ):
+            return True
+        if kind == ida_hexrays.mop_d:
+            return visit_instruction(operand.d, depth + 1)
+        if kind == ida_hexrays.mop_p:
+            pair = operand.pair
+            return any(visit_operand(child, target, depth + 1) for child in (pair.lop, pair.hop))
+        if kind == ida_hexrays.mop_a:
+            return visit_operand(operand.a, False, depth + 1)
+        return False
+
+    return visit_instruction(instruction, 0)
+
+
 def _find_reaching_defs_for_exact_use(
     mba: object,
     block_serial: int,
@@ -437,7 +499,13 @@ def _find_reaching_defs_for_exact_use(
     register: int | None = None,
     stack_offset: int | None = None,
     size: int,
+    require_complete: bool = False,
 ) -> list[DefSite]:
+    if require_complete:
+        try:
+            require_graph_ready(mba)
+        except GraphReadinessUnavailable:
+            return []
     use_accesses = _block_storage_accesses(
         mba,
         block_serial,
@@ -452,11 +520,47 @@ def _find_reaching_defs_for_exact_use(
     )
     if use_index is None:
         return []
-    local_definition, ambiguous = _last_unambiguous_definition(use_accesses[:use_index])
+    local_definition, ambiguous = _last_reaching_definition(
+        use_accesses[:use_index], register=register,
+        stack_offset=stack_offset, size=size,
+    )
     if ambiguous:
         return []
     if local_definition is not None:
         return [_definition_site(block_serial, local_definition)]
+    if require_complete:
+        # UD chains enumerate known definitions, not paths on which a value is
+        # uninitialized. A value-producing consumer must cover EVERY incoming
+        # path, including aliased cells absent from restricted-memory chains.
+        pending = list(mba.get_mblock(block_serial).predset)
+        if not pending:
+            return []
+        visited = set()
+        complete_results = []
+        while pending:
+            serial = int(pending.pop())
+            if serial in visited:
+                continue
+            visited.add(serial)
+            block = mba.get_mblock(serial)
+            if block is None:
+                return []
+            accesses = _block_storage_accesses(
+                mba, serial, register=register, stack_offset=stack_offset, size=size
+            )
+            definition, blocked = _last_reaching_definition(
+                accesses, register=register, stack_offset=stack_offset, size=size
+            )
+            if blocked:
+                return []
+            if definition is not None:
+                complete_results.append(_definition_site(serial, definition))
+            else:
+                predecessors = tuple(block.predset)
+                if not predecessors:
+                    return []
+                pending.extend(predecessors)
+        return complete_results
 
     results: list[DefSite] = []
     for definition_block_serial in _chain_block_serials(
@@ -474,7 +578,10 @@ def _find_reaching_defs_for_exact_use(
             stack_offset=stack_offset,
             size=size,
         )
-        definition, ambiguous = _last_unambiguous_definition(definition_accesses)
+        definition, ambiguous = _last_reaching_definition(
+            definition_accesses, register=register,
+            stack_offset=stack_offset, size=size,
+        )
         if ambiguous:
             return []
         if definition is not None:
@@ -673,14 +780,21 @@ def find_reaching_defs_for_reg_use(
     use_ea: int,
     register: int,
     size: int,
+    *,
+    require_complete: bool = False,
 ) -> list[DefSite]:
-    """Return exact register definitions reaching one unambiguous use anchor."""
+    """Return exact register definitions reaching one unambiguous use anchor.
+
+    Value-producing consumers use ``require_complete`` to reject unseeded CFG
+    paths that a list of known UD definitions does not represent.
+    """
     return _find_reaching_defs_for_exact_use(
         mba,
         block_serial,
         use_ea,
         register=register,
         size=size,
+        require_complete=require_complete,
     )
 
 
@@ -690,14 +804,21 @@ def find_reaching_defs_for_stkvar_use(
     use_ea: int,
     stack_offset: int,
     size: int,
+    *,
+    require_complete: bool = False,
 ) -> list[DefSite]:
-    """Return exact stack definitions reaching one unambiguous use anchor."""
+    """Return stack definitions reaching one unambiguous use anchor.
+
+    ``require_complete`` walks predecessors, retaining unknown paths and
+    clobbers that restricted-memory UD chains cannot represent.
+    """
     return _find_reaching_defs_for_exact_use(
         mba,
         block_serial,
         use_ea,
         stack_offset=stack_offset,
         size=size,
+        require_complete=require_complete,
     )
 
 

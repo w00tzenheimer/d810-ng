@@ -48,11 +48,6 @@ from .chains import (
     find_reaching_defs_for_reg,
     find_reaching_defs_for_stkvar,
 )
-
-from .chains import (
-    find_reaching_defs_for_reg,
-    find_reaching_defs_for_stkvar,
-)
 from .p_multi_def import agreed_value, select_def_index_for_predecessor
 from .p_taint import (
     EvalResult,
@@ -475,7 +470,8 @@ class MicroCodeInterpreter(object):
         # emulation dispatcher resolver (XOR-masked selectors) enables it (ticket llr-a93i).
         self.mask_subreg_reads: bool = mask_subreg_reads
         # Cache for def-use chain resolutions during the current emulation pass
-        self._def_use_cache: dict[tuple, int | None] = {}
+        self._def_use_cache: dict[tuple, int] = {}
+        self._active_def_sites: set[tuple] = set()
         # ``(ea, opcode)`` of every instruction whose result this interpreter
         # INVENTED (a modeled call return, a dereference of a synthetic pointer).
         # Values derived from these are not proven -- see ``p_taint`` (d81-0xzp).
@@ -733,14 +729,16 @@ class MicroCodeInterpreter(object):
     def _resolve_mop_via_def_use(
         self, mop: ida_hexrays.mop_t, environment: MicroCodeEnvironment
     ) -> int | None:
-        # Use cached value if available
-        mop_key = get_mop_key(mop)
+        if environment.cur_blk is None or environment.cur_ins is None:
+            return None
+        # Storage identity is not value identity: a read-modify-write reads
+        # the PREVIOUS definition of the same register (d81-w2u9).
+        mop_key = (
+            environment.cur_blk.serial, environment.cur_ins.ea,
+            get_mop_key(mop), self._merge_pred_context,
+        )
         if mop_key in self._def_use_cache:
-            cached_value = self._def_use_cache[mop_key]
-            # Check for cycle detection sentinel (None value used as marker)
-            if cached_value is None:
-                return None  # Cycle detected, prevent infinite recursion
-            return cached_value
+            return self._def_use_cache[mop_key]
 
         # We only handle mop_r and mop_S for now
         if mop.t not in (ida_hexrays.mop_r, ida_hexrays.mop_S):
@@ -757,7 +755,9 @@ class MicroCodeInterpreter(object):
         blk_serial = (
             environment.cur_blk.serial if environment.cur_blk is not None else 0
         )
-        defs = self._reaching_defs_at(mba, blk_serial, mop)
+        defs = self._reaching_defs_at(
+            mba, blk_serial, mop, use_ea=environment.cur_ins.ea
+        )
 
         # Handle multiple definitions (phi-node situations)
         if len(defs) == 0:
@@ -814,13 +814,18 @@ class MicroCodeInterpreter(object):
         return CAUSE_NO_REACHING_DEFS
 
     def _reaching_defs_at(
-        self, mba: object, blk_serial: int, mop: ida_hexrays.mop_t
+        self, mba: object, blk_serial: int, mop: ida_hexrays.mop_t,
+        *, use_ea: int | None = None,
     ) -> list:
-        """Reaching definitions of *mop* (``mop_r`` / ``mop_S``) at *blk_serial*."""
+        """Query a block, or the value read at an instruction when anchored."""
         if mop.t == ida_hexrays.mop_r:
-            return find_reaching_defs_for_reg(mba, blk_serial, mop.r, mop.size)
+            return find_reaching_defs_for_reg(
+                mba, blk_serial, mop.r, mop.size, use_ea=use_ea
+            )
         if mop.t == ida_hexrays.mop_S and mop.s is not None:
-            return find_reaching_defs_for_stkvar(mba, blk_serial, mop.s.off, mop.size)
+            return find_reaching_defs_for_stkvar(
+                mba, blk_serial, mop.s.off, mop.size, use_ea=use_ea
+            )
         return []
 
     def _select_predecessor_def(
@@ -934,9 +939,11 @@ class MicroCodeInterpreter(object):
         """Evaluate ONE definition site of *mop*, or ``None``.
 
         Caching of the resolved value is the caller's job; this only installs (and
-        removes) the recursion sentinel keyed on *mop*.
+        removes) the recursion sentinel keyed on the definition site.
         """
-        mop_key = get_mop_key(mop)
+        site_key = (def_site.block_serial, def_site.ins_ea, get_mop_key(mop))
+        if site_key in self._active_def_sites:
+            return None
         blk_serial = (
             environment.cur_blk.serial if environment.cur_blk is not None else 0
         )
@@ -945,28 +952,43 @@ class MicroCodeInterpreter(object):
         if blk is None:
             return None
         ins = blk.head
-        def_insn = None
+        matches = []
         while ins is not None:
             if ins.ea == def_site.ins_ea:
-                def_insn = ins
-                break
+                matches.append(ins)
             ins = ins.next
 
-        if def_insn is None:
+        if len(matches) != 1:
+            return None
+        def_insn = matches[0]
+        # MAY clobbers (partial stores, indirect stores, calls) are not scalar
+        # definitions of this cell and must never supply their result as it.
+        if get_mop_key(def_insn.d) != get_mop_key(mop):
             return None
 
         # Insert cycle detection sentinel before recursive evaluation
-        self._def_use_cache[mop_key] = None
+        self._active_def_sites.add(site_key)
 
         # Save current environment flow context to restore later
         saved_cur_blk = environment.cur_blk
         saved_cur_ins = environment.cur_ins
         saved_next_blk = environment.next_blk
         saved_next_ins = environment.next_ins
+        saved_context = self._merge_pred_context
 
         try:
             # Set the environment context to the defining instruction's block
             environment.set_cur_flow(blk, def_insn)
+            # Carry only the remaining prefix of the declared incoming path
+            # when recursively evaluating a definition in that corridor.
+            if saved_context is not None:
+                context_block, path = saved_context
+                if context_block != blk.serial:
+                    self._merge_pred_context = None
+                    if path.count(blk.serial) == 1:
+                        remainder = path[path.index(blk.serial) + 1:]
+                        if remainder:
+                            self._merge_pred_context = (blk.serial, remainder)
 
             # Evaluate the defining instruction using the existing evaluator
             # This enables recursive constant folding through arbitrary def-use chains
@@ -987,8 +1009,6 @@ class MicroCodeInterpreter(object):
                 self._propagate_taint(def_insn, environment)
                 if environment.is_location_tainted(def_insn.d):
                     environment.mark_tainted(mop)
-                if mop_key in self._def_use_cache:
-                    del self._def_use_cache[mop_key]
                 return value
             else:
                 # Evaluation failed, remove from cache
@@ -1004,8 +1024,6 @@ class MicroCodeInterpreter(object):
                         def_site.block_serial,
                         def_site.ins_ea,
                     )
-                if mop_key in self._def_use_cache:
-                    del self._def_use_cache[mop_key]
                 return None
         except Exception as e:
             # Evaluation failed due to an exception, remove from cache
@@ -1022,10 +1040,10 @@ class MicroCodeInterpreter(object):
                     def_site.ins_ea,
                     e,
                 )
-            if mop_key in self._def_use_cache:
-                del self._def_use_cache[mop_key]
             return None
         finally:
+            self._active_def_sites.discard(site_key)
+            self._merge_pred_context = saved_context
             # Restore environment flow context
             environment.cur_blk = saved_cur_blk
             environment.cur_ins = saved_cur_ins

@@ -301,6 +301,10 @@ class _SequenceProjector:
         attrs["nested_sub_kind"] = (
             mop.sub_kind.value if mop.sub_kind is not None else None
         )
+        if operation is ValueOpKind.LOAD:
+            # A TEMP width may be inferred from operands for generic projection.
+            # Provenance consumers must distinguish that from a declared load.
+            attrs["nested_load_width"] = int(mop.size or 0)
         attrs["nested_sub_value_op_kind"] = (
             mop.sub_value_op_kind.value if mop.sub_value_op_kind is not None else None
         )

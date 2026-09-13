@@ -26,6 +26,10 @@ from d810.hexrays.ir.graph_readiness import (
     ensure_graph_and_lists_ready,
     require_graph_ready,
 )
+from d810.hexrays.ir.exact_data_flow import (
+    find_reaching_defs_for_reg_use,
+    find_reaching_defs_for_stkvar_use,
+)
 
 from d810.core.logging import getLogger
 from d810.core.typing import NamedTuple, Optional
@@ -390,8 +394,14 @@ def find_reaching_defs_for_reg(
     blk_serial: int,
     reg_mreg: int,
     size: int,
+    *,
+    use_ea: int | None = None,
 ) -> list[DefSite]:
-    """Find all definitions of a register that reach a given block (read-only).
+    """Find definitions reaching a block, or an exact use (read-only).
+
+    ``use_ea`` selects the value-query contract: last definitions before that
+    instruction, complete incoming CFG coverage, and no skipped clobbers.
+    Omitting it preserves the historical block-level UD enumeration.
 
     Uses UD chains to locate every ``DefSite`` for the micro-register
     *reg_mreg* (with operand *size*) that reaches block *blk_serial*.
@@ -407,6 +417,11 @@ def find_reaching_defs_for_reg(
     Returns:
         List of :class:`DefSite` entries.  Empty if chains are unavailable.
     """
+
+    if use_ea is not None:
+        return [DefSite(*site) for site in find_reaching_defs_for_reg_use(
+            mba, blk_serial, use_ea, reg_mreg, size, require_complete=True
+        )]
 
     try:
         ensure_graph_and_lists_ready(mba)
@@ -455,8 +470,14 @@ def find_reaching_defs_for_stkvar(
     blk_serial: int,
     stkoff: int,
     size: int,
+    *,
+    use_ea: int | None = None,
 ) -> list[DefSite]:
-    """Find all definitions of a stack variable that reach a given block (read-only).
+    """Find stack definitions reaching a block, or an exact use (read-only).
+
+    ``use_ea`` uses instruction order and complete CFG coverage, including
+    aliased cells and conservative call/indirect-store barriers. Omitting it
+    retains the historical UD enumeration and aliased-stack MAY fallback.
 
     Uses UD chains to locate every ``DefSite`` for the stack variable at
     *stkoff* (with operand *size*) that reaches block *blk_serial*.
@@ -472,6 +493,12 @@ def find_reaching_defs_for_stkvar(
     Returns:
         List of :class:`DefSite` entries.  Empty if chains are unavailable.
     """
+
+    if use_ea is not None:
+        return [DefSite(*site) for site in find_reaching_defs_for_stkvar_use(
+            mba, blk_serial, use_ea, stkoff, size,
+            require_complete=True,
+        )]
 
     try:
         ensure_graph_and_lists_ready(mba)

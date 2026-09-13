@@ -742,9 +742,9 @@ def prove_exact_state_transform_feeder(
     selected_arithmetic: set[int] = set()
     visiting: set[Varnode] = set()
 
-    def select_source_definition(operand: Varnode) -> bool:
+    def select_source_definition(operand: Varnode, before_index: int) -> bool:
         if operand in selected_constants:
-            return True
+            return selected_constants[operand] < before_index
         indexes = tuple(source_result_indexes.get(operand, ()))
         if operand.space is Space.REGISTER and int(operand.size) == 4:
             indexes += tuple(
@@ -757,6 +757,11 @@ def prove_exact_state_transform_feeder(
         if not indexes or operand in visiting:
             return False
         index = indexes[-1]
+        # Replay uses one final definition per storage cell. A definition
+        # after its consumer cannot seed that earlier computation; supporting
+        # multiple versions requires a different receipt, so abstain here.
+        if index >= before_index:
+            return False
         instruction = source_instructions[index]
         if _exact_const_definition(instruction, operand) or (
             instruction.result is not None
@@ -775,13 +780,18 @@ def prove_exact_state_transform_feeder(
             return False
         visiting.add(operand)
         selected_arithmetic.add(index)
-        valid = all(select_source_definition(value) for value in instruction.inputs)
+        valid = all(
+            select_source_definition(value, index) for value in instruction.inputs
+        )
         visiting.remove(operand)
         if not valid:
             selected_arithmetic.discard(index)
         return valid
 
-    if not all(select_source_definition(operand) for operand in external_operands):
+    if not all(
+        select_source_definition(operand, len(source_instructions))
+        for operand in external_operands
+    ):
         return None
     if len(selected_arithmetic) > _MAX_SOURCE_STATE_TRANSFORM_VALUE_INSTRUCTIONS:
         return None

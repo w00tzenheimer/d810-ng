@@ -7020,7 +7020,9 @@ def test_current_forest_admits_only_an_explicit_non_state_handler_leaf() -> None
     )
 
     assert listed_bridged_stateful.status is minimal_state_recovery._CurrentU32DecisionForestStatus.INVALID
-def test_current_forest_accepts_call_result_overwriting_the_state_register() -> None:
+@pytest.mark.parametrize("low_byte,missing_rhs", ((False, False), (True, False), (True, True)))
+@pytest.mark.parametrize("producer", ("call", "load", "state_address_load", "missing_width_load"))
+def test_current_forest_accepts_call_result_overwriting_the_state_register(low_byte: bool, missing_rhs: bool, producer: str) -> None:
     """A branch over a call result is semantic even when it reuses the state register."""
 
     state = StorageIdentity(StorageIdentityKind.REGISTER, 8)
@@ -7046,11 +7048,24 @@ def test_current_forest_accepts_call_result_overwriting_the_state_register() -> 
         nested_call,
         MopSnapshot(kind=OperandKind.REGISTER, size=4, reg=8),
     )
+    if low_byte:
+        call_result_move = replace(call_result_move, kind=InsnKind.VALUE,
+            value_op_kind=ValueOpKind.LOW,
+            d=MopSnapshot(kind=OperandKind.REGISTER, size=1, reg=8))
+    if producer != "call":
+        load = MopSnapshot(kind=OperandKind.SUBINSN, size=0 if producer == "missing_width_load" else 1,
+            sub_kind=InsnKind.LOAD, sub_value_op_kind=ValueOpKind.LOAD,
+            sub_l=MopSnapshot(kind=OperandKind.REGISTER, size=2, reg=100),
+            sub_r=MopSnapshot(kind=OperandKind.REGISTER, size=2 if producer == "missing_width_load" else 8,
+                reg=8 if producer == "state_address_load" else 112))
+        call_result_move = replace(call_result_move, l=load, kind=InsnKind.XDU,
+            value_op_kind=ValueOpKind.ZEXT,
+            d=MopSnapshot(kind=OperandKind.REGISTER, size=4, reg=8))
     semantic_branch = InsnSnapshot(
         opcode=_OP_JZ,
         ea=0x1914,
         operands=(),
-        l=MopSnapshot(kind=OperandKind.REGISTER, size=4, reg=8),
+        l=MopSnapshot(kind=OperandKind.REGISTER, size=1 if low_byte and producer == "call" else 4, reg=8),
         r=MopSnapshot(kind=OperandKind.STACK, size=8, stkoff=208),
         d=MopSnapshot(kind=OperandKind.BLOCK, block_ref=4),
         kind=InsnKind.COND_JUMP,
@@ -7061,7 +7076,7 @@ def test_current_forest_accepts_call_result_overwriting_the_state_register() -> 
     graph = FlowGraph(
         {
             1: _blk(1, (2, 3), (), (root_branch,), ea=0x1900),
-            2: _blk(2, (4, 5), (1,), (call_result_move, semantic_branch), ea=0x1910),
+            2: _blk(2, (4, 5), (1,), (call_result_move, replace(semantic_branch, r=None) if missing_rhs else semantic_branch), ea=0x1910),
             3: _stop(3, (1,)),
             4: _stop(4, (2,)),
             5: _stop(5, (2,)),
@@ -7086,7 +7101,9 @@ def test_current_forest_accepts_call_result_overwriting_the_state_register() -> 
         dispatcher=dispatcher,
     )
 
-    assert observed.status is minimal_state_recovery._CurrentU32DecisionForestStatus.VALID
+    assert observed.status is (
+        minimal_state_recovery._CurrentU32DecisionForestStatus.INVALID if missing_rhs or producer in ("state_address_load", "missing_width_load")
+        else minimal_state_recovery._CurrentU32DecisionForestStatus.VALID)
 
 
 @pytest.mark.parametrize(
@@ -7136,6 +7153,53 @@ def test_call_result_semantic_leaf_requires_explicit_u32_carrier_kill(
         ),
         expected_state_width=8 if mode == "wide_direct_call" else 4,
     )
+
+
+@pytest.mark.parametrize("branch_width,overwrite", ((1, False), (4, False), (1, True)))
+@pytest.mark.parametrize("register_base", (0, 8, 16, 24, 128))
+def test_call_result_low_byte_leaf_tracks_the_compared_definition(branch_width, overwrite, register_base):
+    """LOW(call)->AL is semantic; old upper bits or a replacement AL are not."""
+    temp = Varnode(Space.TEMP, 0, 8)
+    byte = Varnode(Space.REGISTER, register_base, 1)
+    instructions = [
+        Instruction(operation=ValueOpKind.MOVE, result=temp,
+                    attrs={"nested_sub_kind": InsnKind.CALL.value}),
+        Instruction(operation=ValueOpKind.LOW, inputs=(temp,), result=byte),
+    ]
+    if overwrite:
+        instructions.append(Instruction(operation=ValueOpKind.MOVE,
+            inputs=(Varnode(Space.REGISTER, 48, 1),), result=byte))
+    instructions.append(Instruction(operation=ValueOpKind.MOVE,
+        inputs=(Varnode(Space.REGISTER, register_base, branch_width), Varnode(Space.CONST, 0, branch_width)),
+        control=InstructionControl(predicate=PredicateKind.NE)))
+    accepted = minimal_state_recovery._is_call_result_overwrite_semantic_leaf(
+        tuple(instructions), expected_state_identities=frozenset({
+            StorageIdentity(StorageIdentityKind.REGISTER, register_base)}), expected_state_width=8)
+    assert accepted is (branch_width == 1 and not overwrite)
+
+
+@pytest.mark.parametrize("read_offset,read_width", ((0, 8), (1, 1)))
+@pytest.mark.parametrize("copy_first", (False, True))
+@pytest.mark.parametrize("register_base", (0, 8, 16, 24, 128))
+def test_low_byte_leaf_rejects_old_upper_bits_copied_after_low(read_offset, read_width, copy_first, register_base):
+    temp = Varnode(Space.TEMP, 0, 8)
+    byte = Varnode(Space.REGISTER, register_base, 1)
+    copied = Varnode(Space.REGISTER, 256, 8)
+    old_read = Varnode(Space.REGISTER, register_base + read_offset, read_width)
+    instructions = [
+        Instruction(operation=ValueOpKind.MOVE, result=temp,
+                    attrs={"nested_sub_kind": InsnKind.CALL.value}),
+        Instruction(operation=ValueOpKind.LOW, inputs=(temp,), result=byte),
+    ]
+    if copy_first:
+        instructions.append(Instruction(operation=ValueOpKind.MOVE,
+                            inputs=(old_read,), result=copied))
+    instructions.append(Instruction(operation=ValueOpKind.MOVE,
+        inputs=(byte, copied if copy_first else old_read),
+        control=InstructionControl(predicate=PredicateKind.NE)))
+    assert not minimal_state_recovery._is_call_result_overwrite_semantic_leaf(
+        tuple(instructions), expected_state_identities=frozenset({
+            StorageIdentity(StorageIdentityKind.REGISTER, register_base)}), expected_state_width=8)
 
 
 @pytest.mark.parametrize("expected_width", (4, 8))
@@ -9088,6 +9152,49 @@ def test_exact_state_transform_accepts_split_final_arithmetic_state_hop(
         ValueOpKind.SUB,
         ValueOpKind.XOR,
     )
+    # Exercise the recovery-to-authority handoff, not just the prover in
+    # isolation. The physical redirect is into the SUB block, not the final XOR.
+    rows = []
+    minimal_state_recovery._emit_partition_transitions(
+        rows, {source_serial: expected_state, 131: 1}, state_feeder_serial,
+        None, graph, lambda state: (200 if state == expected_state else 201, False),
+        lambda block, hop: None, oracle_kind="emulation_concrete_leg",
+        single_kind="back_edge_concrete_fold", split_kind="concrete_fold_partitioned",
+        next_hops={source_serial: feeder_serial, 131: state_feeder_serial},
+    )
+    dag = DecisionDag(32, {
+        comparison_serial: RouteComparison(comparison_serial, "jz", expected_state, 200, 201),
+    }, root=comparison_serial)
+    (resolved,) = _resolve_arithmetic_state_feeder(
+        graph, dag, rows[0], _dispatcher({expected_state: 200}, exit_block=201),
+    )
+    assert resolved.via_block == feeder_serial
+    assert resolved.semantic_route_fact is not None
+    assert resolved.semantic_route_fact.kind is SemanticRouteFactKind.STATE_TRANSFORM
+    assert resolved.semantic_route_fact.transform_witness == receipt
+
+
+@pytest.mark.parametrize(
+    "next_hops,expected",
+    [(None, (105, 105)), ({35: 104, 135: 105}, (104, 105))],
+)
+def test_concrete_partition_binds_immediate_delivery_edge(next_hops, expected):
+    graph = FlowGraph({
+        35: _blk(35, (expected[0],), (), (), ea=0x1000),
+        135: _blk(135, (105,), (), (), ea=0x2000),
+        104: _blk(104, (105,), (35,) if next_hops else (), (), ea=0x3000),
+        105: _blk(105, (2,), (104, 135) if next_hops else (35, 104, 135), (), ea=0x4000),
+        2: _blk(2, (), (105,), (), ea=0x5000),
+    }, 35, 0x1000)
+    rows = []
+    minimal_state_recovery._emit_partition_transitions(
+        rows, {35: 1, 135: 2}, 105, None, graph,
+        lambda state: (100 + state, False), lambda block, hop: None,
+        oracle_kind="emulation", single_kind="back_edge_concrete_fold",
+        split_kind="concrete_fold_partitioned", next_hops=next_hops,
+    )
+    assert tuple(row.via_block for row in rows) == expected
+    assert all(row.via_block in graph.get_block(row.write_block).succs for row in rows)
 
 
 def test_complete_two_stage_transform_partitions_omit_unresolved_glue(_seam) -> None:
@@ -9501,6 +9608,38 @@ def test_captured_nested_u32_state_transform_reconciles_from_existing_evaluator(
     assert resolved[0].proof is not None
     assert "candidate_scoped_prefix_arm" in resolved[0].proof.route_source_kinds
     assert "state_transform_feeder" in resolved[0].proof.route_source_kinds
+
+
+@pytest.mark.parametrize("shared_operand", (False, True))
+def test_state_transform_rejects_source_definition_after_its_use(
+    _seam, shared_operand: bool,
+) -> None:
+    """A later overwrite cannot seed an earlier XOR in the replay program."""
+    source_ea = 0x18001E4D1
+    graph, dag, _transition, _dispatcher = _captured_nested_state_transform_fixture(
+        source_insns=(
+            _mov(source_ea, _num(1), _reg(8)),
+            _mov(source_ea + 4, _num(3), _reg(72)),
+            _xor(source_ea + 8, _reg(8), _reg(72), _reg(80)),
+            _mov(source_ea + 12, _num(2), _reg(8)),
+            _mov(source_ea + 16, _num(0), _reg(24)),
+            _goto(source_ea + 20, 446),
+        ),
+        feeder_insns=(
+            _sub(0x18002A984, _reg(80), _reg(8 if shared_operand else 24), _stk(_STATE_OFF)),
+            _goto(0x18002A98B, 4),
+        ),
+        state=0xFFFFFFFF if shared_operand else 1,
+    )
+    # Execution yields (1 ^ 3) - 0 == 2, not (2 ^ 3) - 0 == 1.
+    receipt = minimal_state_recovery.prove_exact_u32_state_transform_feeder(
+        graph, 285, 446,
+        state_var_stkoff=_STATE_OFF,
+        state_var_reg=None,
+        required_comparison_serials=frozenset({4, *dag.nodes}),
+        expected_state=0xFFFFFFFF if shared_operand else 1,
+    )
+    assert receipt is None
 
 
 def test_state_transform_replays_pure_source_prefix_before_feeder(_seam) -> None:
@@ -11202,6 +11341,61 @@ def test_trusted_arithmetic_state_feeder_reconciles_without_const_carrier_proof(
     assert resolved[0].next_state == state
     assert resolved[0].target_handler == 100
     assert resolved[0].proof is not None and resolved[0].proof.trusted
+    assert "state_transform_feeder" in resolved[0].proof.route_source_kinds
+
+
+@pytest.mark.parametrize(
+    "variant",
+    (
+        "exact", "wrong_state", "missing_binding", "untrusted_return",
+        "untrusted_exact_return", "untrusted_exact_conflict", "untrusted_wrong_state",
+        "wrong_kind",
+    ),
+)
+def test_exact_transform_revalidates_concrete_partition_hint(variant: str) -> None:
+    """Concrete recovery is only a hint until the current source/feeder proves it."""
+    graph, dag, transition, dispatcher = _arithmetic_state_feeder_fixture()
+    transition = replace(
+        transition,
+        next_state=(transition.next_state ^ 1)
+        if variant in {"wrong_state", "untrusted_wrong_state"}
+        else transition.next_state,
+        is_return=variant.startswith("untrusted"),
+        target_handler=101 if variant == "untrusted_exact_conflict" else transition.target_handler,
+        proof=TransitionProof(
+            "emulation_concrete_leg",
+            "concrete_fold" if variant == "wrong_kind" else "concrete_fold_partitioned",
+            not variant.startswith("untrusted"),
+            route_source_kinds=("exact",) if variant.startswith("untrusted_exact") else ("interval",),
+        ),
+    )
+    if variant == "missing_binding":
+        source = graph.get_block(transition.write_block)
+        assert source is not None
+        graph = FlowGraph(
+            {**graph.blocks, source.serial: replace(
+                source, insn_snapshots=source.insn_snapshots[1:]
+            )},
+            graph.entry_serial,
+            graph.func_ea,
+        )
+
+    resolved = _resolve_arithmetic_state_feeder(graph, dag, transition, dispatcher)
+
+    if variant not in {"exact", "untrusted_return", "untrusted_exact_return"}:
+        assert resolved == ()
+        return
+    assert len(resolved) == 1
+    assert resolved[0].next_state == _ARITHMETIC_FEEDER_STATE
+    assert resolved[0].target_handler == 100
+    assert resolved[0].proof is not None
+    assert resolved[0].proof.trusted
+    assert not resolved[0].is_return
+    assert resolved[0].proof.oracle_kind == (
+        "exact_state_transform_decision_dag_route"
+        if variant.startswith("untrusted")
+        else "decision_dag_state_route_reconciliation"
+    )
     assert "state_transform_feeder" in resolved[0].proof.route_source_kinds
 
 

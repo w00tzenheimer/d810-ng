@@ -11212,6 +11212,19 @@ def _build_conditional_arm_redirects_with_forecasts(
             wb_block = flow_graph.get_block(int(wb))
             if wb_block is None or disp not in tuple(int(s) for s in wb_block.succs):
                 continue
+            path = tuple(int(serial) for serial in arm.ordered_path)
+            if len(path) >= 2 and path[-1] == int(wb):
+                owner = flow_graph.get_block(path[-2])
+                if (
+                    (path[-2], int(wb)) in existing
+                    and owner is not None
+                    and int(wb) in tuple(int(target) for target in owner.succs)
+                    and path[-2] in tuple(int(pred) for pred in wb_block.preds)
+                ):
+                    # The back-edge model already owns this physical arm's
+                    # writer-to-feeder edge. Retargeting the shared feeder
+                    # would also change its unrelated incoming partitions.
+                    continue
             _add(int(wb), disp, new, arm)
     forecasts: list[ConditionalArmRouteForecast] = []
     for edge_key in candidate_order:

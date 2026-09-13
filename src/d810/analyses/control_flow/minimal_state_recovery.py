@@ -2707,11 +2707,17 @@ def _attach_candidate_prefix_provenance(
 
 def _has_exact_state_transform_proof(transition: StateWriteTransition) -> bool:
     proof = transition.proof
-    if (
-        transition.next_state is None
-        or proof is None
-        or proof.oracle_kind != "region_partitioned_fixpoint"
-    ):
+    if transition.next_state is None or proof is None:
+        return False
+    if proof.oracle_kind == _EMULATION_ORACLE:
+        # Concrete predecessor recovery supplies the same source/via/state
+        # hint as abstract partitioning. It is not route authority: the
+        # current-graph transform verifier must still reproduce this state.
+        # ``trusted`` also reflects the coarse interval target classification;
+        # a default/return row may still carry an exact computed state. Neither
+        # that classification nor its target is trusted by this admission.
+        return proof.kind == _KIND_CONCRETE_FOLD_PARTITIONED
+    if proof.oracle_kind != "region_partitioned_fixpoint":
         return False
     if proof.kind in {"predecessor_partitioned", "transitive_glue_partitioned"}:
         # The recovery row is only a concrete source/via/state hint here.  The
@@ -3896,44 +3902,64 @@ def _is_call_result_overwrite_semantic_leaf(
     expected_state_identities: frozenset[StorageIdentity],
     expected_state_width: int,
 ) -> bool:
-    """Prove a branch consumes a nested-call result that overwrote a carrier.
+    """Prove a branch consumes a fresh call/load value replacing a carrier.
 
     Register identity is only a physical namespace.  A nested call can define
     the same register that carried the dispatcher state on entry; a subsequent
     predicate over that *new* definition is ordinary program control, not a
     second state router.  The provenance chain is deliberately exact: nested
-    call producer -> move into the compared register -> conditional consumer.
+    call producer -> move/LOW into the compared register -> conditional consumer.
+    LOW may replace only a prefix of the old carrier, but the branch must then
+    read exactly that newly defined prefix, never surviving upper bytes.
+    A nested LOAD followed by ZEXT is likewise a fresh definition when its
+    address computation did not consume the incoming carrier. Neither the load
+    nor its conditional is evaluated or removed by this classification.
     """
 
     call_result_values: set[Varnode] = set()
+    load_result_values: set[Varnode] = set()
     active_state_call_result: Varnode | None = None
+
+    def overlaps_carrier(value: Varnode) -> bool:
+        identity = storage_identity_from_varnode(value)
+        return identity is not None and any(
+            identity.kind is expected.kind
+            and identity.offset < expected.offset + expected_state_width
+            and expected.offset < identity.offset + value.size
+            for expected in expected_state_identities
+        )
+
     for instruction in instructions:
         control = instruction.control
         if control is not None and control.predicate is not None:
             state_inputs = tuple(
                 value
                 for value in instruction.inputs
-                if storage_identity_from_varnode(value) in expected_state_identities
+                if overlaps_carrier(value)
             )
             if state_inputs:
                 return bool(
                     active_state_call_result is not None
-                    and active_state_call_result.size == expected_state_width
+                    and len(instruction.inputs) == 2
                     and active_state_call_result in instruction.inputs
                     and all(value == active_state_call_result for value in state_inputs)
                 )
-        elif (
-            active_state_call_result is None
-            and any(
-                storage_identity_from_varnode(value) in expected_state_identities
-                for value in instruction.inputs
-            )
+        elif any(
+            overlaps_carrier(value)
+            and value != active_state_call_result
+            for value in instruction.inputs
         ):
-            # The incoming carrier is still live.  Any ordinary use before the
-            # explicit CALL-result MOVE makes the leaf state-bearing.
+            # Before the kill, all carrier reads are old-state uses. After a
+            # partial LOW kill, wider reads still expose surviving old bytes.
             return False
         if instruction.result is not None:
             result_identity = storage_identity_from_varnode(instruction.result)
+            load_result_values = {
+                value for value in load_result_values
+                if value != instruction.result
+                and (result_identity is None
+                     or storage_identity_from_varnode(value) != result_identity)
+            }
             call_result_values = {
                 value
                 for value in call_result_values
@@ -3948,17 +3974,37 @@ def _is_call_result_overwrite_semantic_leaf(
             and instruction.result is not None
         ):
             call_result_values.add(instruction.result)
-            if (
-                storage_identity_from_varnode(instruction.result)
-                in expected_state_identities
-            ):
+            if overlaps_carrier(instruction.result):
                 # A CALL cannot establish the proof directly.  The call must
                 # first materialize a result, then an explicit U32 MOVE must
                 # kill the active carrier namespace.
                 active_state_call_result = None
             continue
         if (
-            instruction.operation is ValueOpKind.MOVE
+            instruction.operation is ValueOpKind.LOAD
+            and instruction.attrs.get("nested_sub_kind") == InsnKind.LOAD.value
+            and instruction.result is not None
+            and instruction.result.space is Space.TEMP
+            and instruction.result.size > 0
+            and type(instruction.attrs.get("nested_load_width")) is int
+            and instruction.attrs["nested_load_width"] == instruction.result.size
+            and len(instruction.inputs) == 2
+            and all(value.size > 0 for value in instruction.inputs)
+        ):
+            load_result_values.add(instruction.result)
+            continue
+        if (
+            instruction.operation is ValueOpKind.ZEXT
+            and instruction.result is not None
+            and len(instruction.inputs) == 1
+            and instruction.inputs[0] in load_result_values
+            and storage_identity_from_varnode(instruction.result) in expected_state_identities
+            and 0 < instruction.inputs[0].size < instruction.result.size <= expected_state_width
+        ):
+            active_state_call_result = instruction.result
+            continue
+        if (
+            instruction.operation in (ValueOpKind.MOVE, ValueOpKind.LOW)
             and instruction.result is not None
             and len(instruction.inputs) == 1
             and instruction.inputs[0] in call_result_values
@@ -3966,19 +4012,21 @@ def _is_call_result_overwrite_semantic_leaf(
             if (
                 storage_identity_from_varnode(instruction.result)
                 in expected_state_identities
-                and instruction.result.size == expected_state_width
+                and (
+                    instruction.operation is ValueOpKind.MOVE
+                    and instruction.result.size == expected_state_width
+                    or instruction.operation is ValueOpKind.LOW
+                    and 0 < instruction.result.size <= expected_state_width
+                    and instruction.result.size < instruction.inputs[0].size
+                )
             ):
                 active_state_call_result = instruction.result
-            elif (
-                storage_identity_from_varnode(instruction.result)
-                in expected_state_identities
-            ):
+            elif overlaps_carrier(instruction.result):
                 active_state_call_result = None
             continue
         if (
             instruction.result is not None
-            and storage_identity_from_varnode(instruction.result)
-            in expected_state_identities
+            and overlaps_carrier(instruction.result)
         ):
             active_state_call_result = None
     return False
@@ -5402,6 +5450,11 @@ def _reconcile_transition_routes_with_decision_dag(
             and not physical_route_forest
             and effective.target_handler is not None
             and int(effective.target_handler) == int(route.target)
+            and not (
+                transform_proof is not None
+                and effective.proof is not None
+                and not effective.proof.trusted
+            )
         ):
             resolved_exact = (
                 _attach_candidate_prefix_provenance(
@@ -9323,7 +9376,7 @@ def _emit_partition_transitions(
                 target,
                 is_ret,
                 ip_arm,
-                via_block=pred,
+                via_block=hop,
                 proof=TransitionProof(oracle_kind, split_kind, not is_ret),
             )
         )

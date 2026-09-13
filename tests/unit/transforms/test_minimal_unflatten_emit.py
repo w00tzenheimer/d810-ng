@@ -8182,6 +8182,49 @@ def test_conditional_handler_redirects_unique_arm_glue_before_bst_spine(_seam) -
     assert gotos == {(195, 131, 221), (230, 9, 104)}
 
 
+@pytest.mark.parametrize("is_indirect", (False, True))
+@pytest.mark.parametrize(
+    "existing, expected_sources",
+    (
+        ({(135, 105)}, {116}),
+        ({(135, 105), (147, 116)}, set()),
+        ({(104, 105)}, {105, 116}),
+    ),
+)
+def test_conditional_arm_does_not_retarget_already_partitioned_shared_feeder(
+    existing, expected_sources, is_indirect,
+) -> None:
+    """A writer-edge redirect owns its arm, not the shared feeder's other inputs."""
+    graph = FlowGraph(
+        {
+            74: _b(74, (135, 147), ()),
+            135: _b(135, (105,), (74,)),
+            147: _b(147, (116,), (74,)),
+            104: _b(104, (105,), ()),
+            115: _b(115, (116,), ()),
+            105: _b(105, (2,), (135, 104)),
+            116: _b(116, (2,), (147, 115)),
+            2: _b(2, (80, 195), (105, 116)),
+            80: _b(80, (), (2,)),
+            195: _b(195, (), (2,)),
+            99: _b(99, (), ()),
+        },
+        entry_serial=74, func_ea=0x1000,
+    )
+    handler = HandlerTransition(
+        74, (0x10,),
+        (
+            TransitionArm(0x20, 195, False, 74, 105, 105, (74, 135, 105)),
+            TransitionArm(0x30, 80, False, 74, 116, 116, (74, 147, 116)),
+        ),
+    )
+    modifications = build_conditional_arm_redirects(
+        graph, _disp({0x20: 195, 0x30: 80}, exit_block=99), (handler,),
+        dispatcher_entry_serial=2, existing=existing, is_indirect=is_indirect,
+    )
+    assert {mod.from_serial for mod in modifications} == expected_sources
+
+
 def test_conditional_arm_forecast_abstention_logs_without_changing_redirects(
     monkeypatch, caplog, _seam,
 ) -> None:
