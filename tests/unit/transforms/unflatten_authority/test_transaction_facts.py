@@ -5,7 +5,11 @@ from types import MappingProxyType
 import pytest
 
 from d810.transforms.unflatten_authority import ids
-from d810.transforms.unflatten_authority.transaction_facts import TransactionFacts, fact_scope
+from d810.transforms.unflatten_authority.transaction_facts import (
+    TransactionFacts,
+    _exact_fact_graph_equal,
+    fact_scope,
+)
 
 
 def test_capture_detaches_transient_mapping_alias_and_reuses_fact_references():
@@ -38,6 +42,65 @@ def test_shared_children_are_captured_once_and_owned_encoding_has_no_guard(monke
         first = ids.canonical_bytes(root)
         assert ids.canonical_bytes(root) == first
         assert owner.metrics["encoding_hits"] == 1
+
+
+def test_observed_partition_reuses_exact_parent_canonical_entry():
+    projected = TransactionFacts()
+    observed = TransactionFacts(parent=projected)
+    try:
+        with fact_scope(projected):
+            fact = projected.capture((("source", 1), ("target", 2)))
+            expected_bytes = ids.canonical_bytes(fact)
+        with fact_scope(observed):
+            assert ids.canonical_bytes(fact) is expected_bytes
+        assert observed.metrics["parent_encoding_hits"] == 1
+    finally:
+        observed.close()
+        projected.close()
+
+
+def test_observed_partition_does_not_reuse_equal_distinct_parent_fact():
+    projected = TransactionFacts()
+    observed = TransactionFacts(parent=projected)
+    try:
+        with fact_scope(projected):
+            parent_fact = projected.capture((("source", 1),))
+            parent_bytes = ids.canonical_bytes(parent_fact)
+        with fact_scope(observed):
+            child_fact = observed.capture((("source", 1),))
+            assert child_fact == parent_fact
+            assert child_fact is not parent_fact
+            assert observed.cached_wire(child_fact) is None
+            child_bytes = ids.canonical_bytes(child_fact)
+        assert child_bytes == parent_bytes
+        assert observed.metrics["parent_encoding_hits"] == 0
+    finally:
+        observed.close()
+        projected.close()
+
+
+def test_observed_partition_does_not_borrow_mutable_parent_wire_tree():
+    projected = TransactionFacts()
+    observed = TransactionFacts(parent=projected)
+    sibling = TransactionFacts(parent=projected)
+    try:
+        with fact_scope(projected):
+            fact = projected.capture((("source", 1), ("target", 2)))
+            parent_wire = ids._wire(fact)
+        with fact_scope(observed):
+            child_wire = ids._wire(fact)
+        assert child_wire == parent_wire
+        assert child_wire is not parent_wire
+        child_wire["t"] = "poisoned"
+        assert parent_wire["t"] == "tuple"
+        with fact_scope(sibling):
+            sibling_wire = ids._wire(fact)
+        assert sibling_wire == parent_wire
+        assert sibling_wire is not parent_wire
+    finally:
+        sibling.close()
+        observed.close()
+        projected.close()
 
 
 def test_snapshot_capture_scales_with_edges_and_never_recaptures_shared_descendants():
@@ -198,6 +261,85 @@ def test_external_decode_never_inherits_transaction_issuance():
         assert ids.materialize_for_persistence(admitted, type(admitted)).canonical_bytes == ids.canonical_bytes(proposal)
 
 
+def test_external_admission_avoids_root_roundtrip_and_decode(monkeypatch):
+    from .test_model import _valid_proposal
+    from d810.transforms.unflatten_authority import model
+
+    proposal = model.ProposedUnflattenContract(**_valid_proposal(model))
+    expected = ids.canonical_bytes(proposal)
+    owner = TransactionFacts()
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("external admission rebuilt canonical wire")
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(ids, "canonical_decode", forbidden)
+        scoped.setattr(ids, "validate_canonical_roundtrip", forbidden)
+        with fact_scope(owner):
+            admitted = owner.admit_external(
+                proposal, model.ProposedUnflattenContract,
+            )
+
+    assert admitted is not proposal
+    assert ids.canonical_bytes(admitted) == expected
+
+
+def test_exact_fact_graph_equality_distinguishes_canonical_type_tags():
+    assert _exact_fact_graph_equal(
+        MappingProxyType({"nested": (1, frozenset({2}))}),
+        MappingProxyType({"nested": (1, frozenset({2}))}),
+    )
+    assert not _exact_fact_graph_equal(True, 1)
+    assert not _exact_fact_graph_equal((1,), [1])
+    assert not _exact_fact_graph_equal(frozenset({True}), frozenset({1}))
+    assert not _exact_fact_graph_equal(-0.0, 0.0)
+
+
+def test_external_admission_rejects_constructor_normalization_without_wire():
+    from d810.ir.block_identity import NativeEaInterval, NativeEaIntervalSet
+
+    earlier = NativeEaInterval(0x10, 0x20)
+    later = NativeEaInterval(0x30, 0x40)
+    forged = object.__new__(NativeEaIntervalSet)
+    object.__setattr__(forged, "intervals", (later, earlier))
+    owner = TransactionFacts()
+
+    with fact_scope(owner), pytest.raises(
+        ValueError, match="changed .* value",
+    ):
+        owner.admit_external(forged, NativeEaIntervalSet)
+    assert not owner.contains(forged)
+
+
+@pytest.mark.parametrize("target", ["claim", "subject"])
+def test_external_admission_rejects_forged_nested_lazy_identity(target):
+    from .test_model import _valid_proposal
+    from d810.transforms.unflatten_authority import model
+
+    proposal = model.ProposedUnflattenContract(**_valid_proposal(model))
+    claim = proposal.claims[0]
+    record, field = (
+        (claim, "claim_id")
+        if target == "claim"
+        else (claim.source_subject, "subject_id")
+    )
+    object.__setattr__(record, field, "sha256:" + "f" * 64)
+    owner = TransactionFacts()
+    tables = (
+        owner._values, owner._copies, owner._registry, owner._canonical,
+        owner._digests, owner._wire, owner._external, owner._links,
+    )
+    before = tuple(dict(table) for table in tables)
+
+    with fact_scope(owner), pytest.raises(
+        ValueError, match="capture changed canonical value",
+    ):
+        owner.admit_external(proposal, model.ProposedUnflattenContract)
+    assert not owner.contains(proposal)
+    assert tuple(dict(table) for table in tables) == before
+    assert id(proposal) not in owner._copies
+
+
 @pytest.mark.parametrize("corruption", ["enum", "native", "schema"])
 def test_public_admission_rejects_forged_fields_without_root_issuance(corruption):
     from .test_model import _valid_proposal
@@ -261,6 +403,7 @@ def transaction_work_counts():
         "_external_wire", "_validate_canonical_value", "_occurrence_stamp",
         "_memoizable_digest", "_route_result_identity", "_canonical_record_snapshot",
         "_detached_canonical_copy", "canonical_decode", "validate_canonical_roundtrip",
+        "_exact_fact_graph_equal",
     }
     result = {}
     for owned in (False, True):
@@ -288,7 +431,8 @@ def test_complete_path_work_inventory():
     assert result["owned"]["accepted"] == result["strict"]["accepted"]
     assert result["owned"]["legacy"]["_memoizable_digest"] == 0
     assert result["owned"]["legacy"]["_route_result_identity"] == 0
-    assert result["owned"]["legacy"]["validate_canonical_roundtrip"] == 1
+    assert result["owned"]["legacy"]["validate_canonical_roundtrip"] == 0
+    assert result["owned"]["legacy"]["_exact_fact_graph_equal"] > 0
     assert result["owned"]["legacy"]["_feed_occurrence"] < result["strict"]["legacy"]["_feed_occurrence"]
     print(json.dumps(result, sort_keys=True))
 

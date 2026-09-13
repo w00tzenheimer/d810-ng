@@ -42,6 +42,96 @@ def fact_scope(owner):
         _ACTIVE.reset(token)
 
 
+def _exact_fact_graph_equal(left, right, seen=None):
+    """Compare canonical fact graphs without invoking value-level equality.
+
+    Exact types are part of the representation: ``True`` is not ``1`` and a
+    tuple is not a list.  Registered records are compared through the same
+    declared fields as the canonical codec.  This is an exact comparison, not
+    an authority digest, so admission does not inherit collision semantics.
+    """
+    if left is right:
+        return True
+    if type(left) is not type(right):
+        return False
+    cls = type(left)
+    if left is None or cls in (bool, int, str, bytes):
+        return left == right
+    if cls is float:
+        return left.hex() == right.hex()
+    if isinstance(left, Enum):
+        return False
+
+    pair = (id(left), id(right))
+    seen = set() if seen is None else seen
+    if pair in seen:
+        return True
+    seen.add(pair)
+    try:
+        if cls in (dict, MappingProxyType):
+            from . import ids
+
+            left_map = ids._exact_canonical_mapping(left)
+            right_map = ids._exact_canonical_mapping(right)
+            if len(left_map) != len(right_map):
+                return False
+            for key, left_value in dict.items(left_map):
+                if type(key) is not str or key not in right_map:
+                    return False
+                if not _exact_fact_graph_equal(
+                    left_value, right_map[key], seen,
+                ):
+                    return False
+            return True
+        if cls in (list, tuple):
+            return len(left) == len(right) and all(
+                _exact_fact_graph_equal(a, b, seen)
+                for a, b in zip(left, right)
+            )
+        if cls is frozenset:
+            if len(left) != len(right):
+                return False
+            unmatched = list(right)
+            unmatched_hashes = [hash(item) for item in unmatched]
+            for item in left:
+                item_hash = hash(item)
+                match = next((
+                    index
+                    for index, candidate in enumerate(unmatched)
+                    if unmatched_hashes[index] == item_hash
+                    and type(candidate) is type(item)
+                    and _exact_fact_graph_equal(item, candidate, seen)
+                ), None)
+                if match is None:
+                    return False
+                unmatched.pop(match)
+                unmatched_hashes.pop(match)
+            return True
+
+        from . import ids
+
+        ids._ensure_registries()
+        names = ids._RECORD_FIELDS.get(cls, ids._EXTERNAL_FIELDS.get(cls))
+        if names is None:
+            return False
+        lazy = ids._LAZY_IDENTITY.get(cls, ())
+
+        def field_value(record, name):
+            if cls.__name__ == "NativePreanalysisKey" and name == "schema_version":
+                return cls.SCHEMA_VERSION
+            return getattr(record, name)
+
+        return all(
+            _exact_fact_graph_equal(
+                field_value(left, name), field_value(right, name), seen,
+            )
+            for name in names
+            if name not in lazy or not ids.lazy_identity_is_pending(left, name)
+        )
+    finally:
+        seen.remove(pair)
+
+
 class TransactionFacts:
     """One immutable fact graph and a separate observed allocation partition.
 
@@ -72,6 +162,7 @@ class TransactionFacts:
         self.metrics = dict(capture_visits=0, captures=0, allocations=0,
                             resolves=0, validations=0, registry_issues=0,
                             encoding_hits=0, encoding_misses=0,
+                            parent_encoding_hits=0,
                             immutable_checks=0, wire_reads=0, wire_builds=0,
                             table_entries=0, external_admissions=0,
                             copy_hits=0, links=0)
@@ -108,6 +199,59 @@ class TransactionFacts:
         self._copies[id(source)] = (source, value)
         self.metrics["table_entries"] += 1
         return value
+
+    def cached_canonical_bytes(self, value):
+        """Find bytes for this exact owned occurrence, including its parent."""
+        self.require_open()
+        cached = self._canonical.get(id(value))
+        if cached is not None and cached[0] is value:
+            return cached[1], False
+        if self.parent is not None:
+            inherited = self.parent.cached_canonical_bytes(value)
+            if inherited is not None:
+                return inherited[0], True
+        return None
+
+    def cached_wire(self, value):
+        """Find the mutable wire tree only in this partition."""
+        self.require_open()
+        cached = self._wire.get(id(value))
+        if cached is not None and cached[0] is value:
+            return cached[1], False
+        return None
+
+    def _finish_staged_admission(self, staging):
+        """Adopt one validated staging partition without publishing it first."""
+        if type(staging) is not TransactionFacts or staging.parent is not self:
+            raise TypeError("external admission staging owner differs")
+        staging.require_open()
+        if staging._capturing:
+            raise ValueError("external admission staging capture is incomplete")
+        for name in (
+            "_values", "_copies", "_registry", "_canonical", "_digests",
+            "_wire", "_external", "_links",
+        ):
+            target = getattr(self, name)
+            source = getattr(staging, name)
+            target.update(source)
+            source.clear()
+        for name, count in staging.metrics.items():
+            self.metrics[name] += count
+        staging.closed = True
+
+    @staticmethod
+    def _discard_staged_admission(staging):
+        """Destroy unpublished staging state without emitting work receipts."""
+        if type(staging) is not TransactionFacts:
+            raise TypeError("external admission staging owner differs")
+        staging.closed = True
+        for table in (
+            staging._values, staging._copies, staging._registry,
+            staging._canonical, staging._digests, staging._wire,
+            staging._external, staging._links,
+        ):
+            table.clear()
+        staging._capturing.clear()
 
     def capture(self, value):
         """Detach a new input graph once; existing owned children are references."""
@@ -155,7 +299,7 @@ class TransactionFacts:
                 for field in fields(cls):
                     if field.name in RUNTIME_AUTHORITY_SIDECAR_FIELDS:
                         ids.stage_unpublished_field(clone, field.name, None)
-                    elif field.name in lazy and ids.lazy_identity_is_pending(value, field.name):
+                    elif field.name in lazy:
                         continue
                     else:
                         ids.stage_unpublished_field(clone, field.name, self.capture(getattr(value, field.name)))
@@ -172,19 +316,23 @@ class TransactionFacts:
             self._capturing.remove(id(value))
 
     def admit_external(self, value, expected_type):
-        """Strict public ingress, then detach; validity never follows aliases."""
-        from . import ids
-
+        """Validate and detach public ingress without constructing wire."""
         if type(value) is not expected_type:
             raise TypeError("external fact schema differs")
         self.metrics["external_admissions"] += 1
-        # This decoder check belongs to external admission only. Internal
-        # consumers retain the detached graph and never reconstruct it again.
-        with fact_scope(None):
-            validated = ids.validate_canonical_roundtrip(value, expected_type)
-        snapshot = self.capture(validated)
-        self._copies[id(value)] = (value, snapshot)
-        self._external[id(snapshot)] = value
+        source = value
+        staging = TransactionFacts(parent=self)
+        try:
+            with fact_scope(staging):
+                snapshot = staging.capture(value)
+            if not _exact_fact_graph_equal(source, snapshot):
+                raise ValueError("transaction fact capture changed canonical value")
+            self._finish_staged_admission(staging)
+        finally:
+            if not staging.closed:
+                self._discard_staged_admission(staging)
+        self._copies[id(source)] = (source, snapshot)
+        self._external[id(snapshot)] = source
         return snapshot
 
     def linked_external(self, snapshot, value):

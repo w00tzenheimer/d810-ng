@@ -92,7 +92,7 @@ def _physical_proof_with_attrs(attrs):
     )
 
 
-def test_capture_detaches_real_instruction_attribute_aliases():
+def test_capture_excludes_real_instruction_attribute_aliases():
     aliases = [1, {"value": 2}]
     proof = _physical_proof_with_attrs({"custom": aliases})
     left = RuntimeAuthorityArena(RuntimeAuthorityScope("capture"))
@@ -105,19 +105,29 @@ def test_capture_detaches_real_instruction_attribute_aliases():
     aliases[1]["value"] = 3
     assert compare_values(left.structural, owned, right.structural, expected)
     changed = routes.capture_structural_route_proof(right.structural, proof)
-    assert not compare_values(left.structural, owned, right.structural, changed)
+    assert compare_values(left.structural, owned, right.structural, changed)
 
 
-def test_capture_rejects_opaque_attribute_values_and_cycles():
+def test_capture_does_not_traverse_opaque_attribute_values_or_cycles():
     cycle = []
     cycle.append(cycle)
-    for value, error in ((object(), TypeError), (cycle, ValueError)):
+    expected_arena = RuntimeAuthorityArena(RuntimeAuthorityScope("expected"))
+    expected = routes.capture_structural_route_proof(
+        expected_arena.structural,
+        _physical_proof_with_attrs({}),
+    )
+    for value in (object(), cycle):
         arena = RuntimeAuthorityArena(RuntimeAuthorityScope("rejection"))
-        with pytest.raises(error):
-            routes.capture_structural_route_proof(
-                arena.structural,
-                _physical_proof_with_attrs({"custom": value}),
-            )
+        actual = routes.capture_structural_route_proof(
+            arena.structural,
+            _physical_proof_with_attrs({"custom": value}),
+        )
+        assert compare_values(
+            arena.structural,
+            actual,
+            expected_arena.structural,
+            expected,
+        )
 
 
 @pytest.mark.parametrize("factory", (_proof, _storage_choice_proof))
@@ -369,29 +379,41 @@ def test_live_factory_owned_partition_closes_on_return_or_failed_boundary(monkey
             table.resolve(ref, ref.kind)
 
 
-def test_live_factory_does_not_trust_public_witness_after_owned_admission(monkeypatch):
-    aliases = [1, {"value": 2}]
-    proof = _physical_proof_with_attrs({"custom": aliases})
+def test_live_factory_does_not_trust_shared_descendant_after_owned_admission(
+    monkeypatch,
+):
+    proof = _physical_proof_with_attrs({"custom": {"value": 2}})
+    write = proof.state_write
+    instruction_ea = write.instruction_ea
     original_validate = routes._validate_content_derived_ids
 
     def validate(**values):
-        aliases[1]["value"] = 9
+        object.__setattr__(write, "instruction_ea", instruction_ea + 1)
         return original_validate(**values)
 
     monkeypatch.setattr(routes, "_validate_content_derived_ids", validate)
-    with routes.route_authority_phase("factory-public-boundary"):
-        with pytest.raises(routes.SemanticRouteEvidenceRejected, match="content-derived"):
-            routes.canonical_semantic_evidence_from_proofs(proof.native_key, 1, (proof,))
+    try:
+        with routes.route_authority_phase("factory-public-boundary"):
+            with pytest.raises(routes.SemanticRouteEvidenceRejected, match="content-derived"):
+                routes.canonical_semantic_evidence_from_proofs(
+                    proof.native_key, 1, (proof,)
+                )
+    finally:
+        object.__setattr__(write, "instruction_ea", instruction_ea)
 
 
-@pytest.mark.parametrize(("attribute", "expected_group"), [
-    (0.5, "ca6a857f64d2c65cdeb40e51b83c22b56d99c9aaf8345c35e440e2acc0243ed2"),
-    ({1: 2}, "32026f0ce77ff8b4698aa7564279cb6408806e005b0aa64c7a4c35e25bc098a7"),
-    (UserDict({"value": 2}), "e41dcf8bbfa60c664be6ed3590045e452ddc558099b065ebeccef40e4295cc32"),
-    ({(1, 2), (3, 4)}, "0d071b392ce96644a6c0bd45ebde8f38ce11d16c73815bcf9276f0e1fe55e502"),
-])
-def test_live_factory_preserves_unconverted_open_attribute_boundary(monkeypatch, attribute, expected_group):
-    # Recorded from the pre-conversion canonical factory at a13fe1cbe.
+@pytest.mark.parametrize(
+    "attribute",
+    [
+        0.5,
+        {1: 2},
+        UserDict({"value": 2}),
+        {(1, 2), (3, 4)},
+    ],
+)
+def test_live_factory_excludes_unconverted_open_attributes_from_identity(
+    monkeypatch, attribute,
+):
     captured = []
     original_capture = routes.capture_structural_route_proof
 
@@ -400,16 +422,29 @@ def test_live_factory_preserves_unconverted_open_attribute_boundary(monkeypatch,
         return original_capture(table, value)
 
     monkeypatch.setattr(routes, "capture_structural_route_proof", capture)
+    control = _physical_proof_with_attrs({})
     proof = _physical_proof_with_attrs({"custom": attribute})
+    control_evidence = routes.canonical_semantic_evidence_from_proofs(
+        control.native_key, 1, (control,)
+    )
     captured.clear()
     with routes.route_authority_phase("unconverted-attributes"):
-        evidence = routes.canonical_semantic_evidence_from_proofs(proof.native_key, 1, (proof,))
-        assert evidence.atomic_group_id == "sha256:" + expected_group
+        evidence = routes.canonical_semantic_evidence_from_proofs(
+            proof.native_key, 1, (proof,)
+        )
+        assert evidence.atomic_group_id == control_evidence.atomic_group_id
+        assert (
+            evidence.route_proofs[0].proof_id
+            == control_evidence.route_proofs[0].proof_id
+        )
         assert captured
-        for table in captured:
-            with pytest.raises(StructuralIdentityError, match="closed"):
-                table.intern(routes.StructuralNodeKind.VALUE, None, (None,), ())
-        assert evidence.route_proofs[0].state_write.physical_state_write is proof.state_write.physical_state_write
+        assert (
+            evidence.route_proofs[0].state_write.physical_state_write
+            is proof.state_write.physical_state_write
+        )
+    for table in captured:
+        with pytest.raises(StructuralIdentityError, match="closed"):
+            table.intern(routes.StructuralNodeKind.VALUE, None, (None,), ())
 
 
 

@@ -4308,8 +4308,21 @@ def _derive_patch_lineage_relations(
     candidate_bindings = {
         item.subject.subject_id: item for item in candidate_inventory.bindings
     }
+    try:
+        descriptors_by_index = {
+            descriptor.step_index: descriptor
+            for descriptor in canonical_patch_step_descriptors(plan)
+        }
+    except (TypeError, ValueError):
+        return ()
     relations: list[model.ConditionalSubjectRelation] = []
     for fact in patch_step_facts:
+        if (
+            type(fact.step_index) is not int
+            or fact.step_index < 0
+            or fact.step_index >= len(plan.steps)
+        ):
+            continue
         step = plan.steps[fact.step_index]
         if (
             type(step) is PatchRedirectBranch
@@ -4320,9 +4333,8 @@ def _derive_patch_lineage_relations(
             # evaluator use-def projection, but helper lineage relations are
             # established only by the helper-owned fact.
             continue
-        try:
-            descriptor = canonical_patch_step_descriptor(plan, fact.step_index)
-        except (TypeError, ValueError):
+        descriptor = descriptors_by_index.get(fact.step_index)
+        if descriptor is None:
             continue
         refs = descriptor.route_refs
         source_ref = next((ref for ref in refs if type(ref) is not PlanBlockRef), None)

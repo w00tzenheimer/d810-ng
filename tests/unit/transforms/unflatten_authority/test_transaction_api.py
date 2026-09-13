@@ -5979,8 +5979,9 @@ def test_lower_boundary_retirement_phase_retains_canonical_obligations() -> None
 
 
 
-def test_helper_and_resegmentation_lineage_is_derived_before_case_builder() -> None:
+def test_helper_and_resegmentation_lineage_is_derived_before_case_builder(monkeypatch) -> None:
     """Helper ownership enters closed facts before semantic-case construction."""
+    from copy import copy
     from d810.transforms.unflatten_authority import transaction_api, producer_api, model
     from d810.transforms.unflatten_authority.proposal import canonical_redirect_manifest
     from d810.analyses.control_flow.semantic_route_evidence import CanonicalRouteAssessmentPhase, CanonicalRouteMaterialization
@@ -5999,10 +6000,32 @@ def test_helper_and_resegmentation_lineage_is_derived_before_case_builder() -> N
     source_inventory = transaction_api._build_semantic_graph_inventory(source, proposal, plan, source=True, phase=model.UnflattenAuthorityPhase.PRODUCER_FORECAST, materialization=CanonicalRouteMaterialization.capture(source, generation=1, phase=CanonicalRouteAssessmentPhase.SOURCE))
     projected_inventory = transaction_api._build_semantic_graph_inventory(projected, proposal, plan, source=False, phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT, source_subjects=source_inventory.subjects, materialization=CanonicalRouteMaterialization.capture(projected, generation=1, phase=CanonicalRouteAssessmentPhase.PROJECTED))
     derived = transaction_api._derive_transaction_facts(source_inventory, plan)
+    descriptor_scans = 0
+    original_descriptors = transaction_api.canonical_patch_step_descriptors
+
+    def counted_descriptors(current_plan):
+        nonlocal descriptor_scans
+        descriptor_scans += 1
+        return original_descriptors(current_plan)
+
+    monkeypatch.setattr(transaction_api, "canonical_patch_step_descriptors", counted_descriptors)
+
+    def forbidden_single_descriptor(*_args, **_kwargs):
+        raise AssertionError("lineage must not rescan the complete plan per fact")
+
+    monkeypatch.setattr(transaction_api, "canonical_patch_step_descriptor", forbidden_single_descriptor)
     relations = transaction_api._derive_patch_lineage_relations(source_inventory, projected_inventory, plan, derived.patch_step_facts)
+    assert descriptor_scans == 1
     assert set((fact.step_type, fact.owner_ref) for fact in derived.patch_step_facts) == {("PatchRedirectBranch", refs[0]), ("PatchRedirectBranch", helper), ("PatchRedirectBranch", refs[1]), ("PatchRedirectBranch", second_helper)}
     assert any(item.source_subject_id for item in relations)
     assert any(item.target_subject_id for item in relations)
+    forged = copy(next(
+        fact for fact in derived.patch_step_facts if fact.step_index == 1
+    ))
+    object.__setattr__(forged, "step_index", True)
+    assert transaction_api._derive_patch_lineage_relations(
+        source_inventory, projected_inventory, plan, (forged,),
+    ) == ()
 
 def test_transaction_transport_reuses_detached_source_authority_across_phases() -> None:
     """The transaction transport owns one detached source result per claim."""

@@ -1108,9 +1108,10 @@ def _wire(value: object) -> object:
     owner = active_facts()
     if owner is not None and owner.immutable(value):
         owner.metrics["wire_reads"] += 1
-        cached = owner._wire.get(id(value))
-        if cached is not None and cached[0] is value:
-            return cached[1]
+        cached = owner.cached_wire(value)
+        if cached is not None:
+            encoded, _local = cached
+            return encoded
         encoded = _wire_uncached(value)
         owner.metrics["wire_builds"] += 1
         owner._wire[id(value)] = (value, encoded)
@@ -1447,11 +1448,14 @@ def canonical_bytes(
 
     owner = active_facts()
     if owner is not None and owner.immutable(value):
-        cached = owner._canonical.get(id(value))
-        if cached is not None and cached[0] is value:
+        cached = owner.cached_canonical_bytes(value)
+        if cached is not None:
+            data, inherited = cached
             owner.metrics["encoding_hits"] += 1
+            if inherited:
+                owner.metrics["parent_encoding_hits"] += 1
             record_canonical_bytes_reuse()
-            return cached[1]
+            return data
         owner.metrics["encoding_misses"] += 1
         data = _json_bytes(_wire(value))
         record_wire_encode()

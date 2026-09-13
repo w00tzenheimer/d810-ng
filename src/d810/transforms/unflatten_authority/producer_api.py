@@ -1739,18 +1739,26 @@ def _route_witness(
     return matches[0]
 
 
-def _select_route_proof(
-    evidence: CanonicalSemanticEvidence,
-    matcher: object,
-    family: str,
-) -> SemanticRouteProof:
-    """Select exactly one proof; legacy/provider rows remain non-authoritative."""
+@dataclass(frozen=True, slots=True)
+class _ValidatedRouteSelection:
+    """One program-free proof bundle validated for one graph snapshot."""
 
-    if type(evidence) is not CanonicalSemanticEvidence:
-        raise TypeError(f"{family} adapter requires canonical semantic evidence")
-    # Frozen dataclasses are an API boundary, not a substitute for binding.
-    # Re-run the canonical invariants here so a deserialized, monkey-patched,
-    # or otherwise corrupted proof cannot be selected by endpoint coincidence.
+    evidence: CanonicalSemanticEvidence
+    snapshot: object | None
+    proofs: tuple[SemanticRouteProof, ...]
+
+
+_validated_route_selection: _ValidatedRouteSelection | None = None
+
+
+def reset_validated_route_selection() -> None:
+    """Drop the retained route-selection validation binding."""
+    global _validated_route_selection
+    _validated_route_selection = None
+
+
+def _revalidate_canonical_evidence(evidence: CanonicalSemanticEvidence) -> None:
+    """Re-run canonical invariants over a bundle and its descendants."""
     for proof in evidence.route_proofs:
         for destination in proof.destinations:
             SemanticRouteDestination.__post_init__(destination)
@@ -1762,6 +1770,66 @@ def _select_route_proof(
             type(carrier).__post_init__(carrier)
         SemanticRouteProof.__post_init__(proof)
     CanonicalSemanticEvidence.__post_init__(evidence)
+
+
+def _requires_per_selection_revalidation(
+    evidence: CanonicalSemanticEvidence,
+) -> bool:
+    """Return whether supported nested mutable program data is reachable."""
+    return any(
+        proof.state_transform is not None and proof.state_transform.program
+        for proof in evidence.route_proofs
+    )
+
+
+def _binding_matches(
+    evidence: CanonicalSemanticEvidence,
+    snapshot: object | None,
+) -> bool:
+    binding = _validated_route_selection
+    return bool(
+        binding is not None
+        and binding.evidence is evidence
+        and binding.snapshot is snapshot
+        and binding.proofs is evidence.route_proofs
+    )
+
+
+def _bind_validated_route_selection(
+    evidence: CanonicalSemanticEvidence,
+    snapshot: object | None,
+) -> None:
+    global _validated_route_selection
+    _validated_route_selection = _ValidatedRouteSelection(
+        evidence=evidence,
+        snapshot=snapshot,
+        proofs=evidence.route_proofs,
+    )
+
+
+def _select_route_proof(
+    evidence: CanonicalSemanticEvidence,
+    matcher: object,
+    family: str,
+    *,
+    snapshot: object | None = None,
+) -> SemanticRouteProof:
+    """Select exactly one proof; legacy/provider rows remain non-authoritative."""
+
+    if type(evidence) is not CanonicalSemanticEvidence:
+        raise TypeError(f"{family} adapter requires canonical semantic evidence")
+    # A state-transform program reaches mutable Instruction.attrs through a
+    # supported mapping API, so those bundles deliberately retain the full
+    # validation on every selection. Program-free bundles have no such
+    # authority-semantic mutable descendant after opcode_attrs was removed
+    # from identity; bind their validation to the exact bundle, proof tuple,
+    # and graph snapshot. Matcher and cardinality checks still run below.
+    if _requires_per_selection_revalidation(evidence):
+        reset_validated_route_selection()
+        _revalidate_canonical_evidence(evidence)
+    elif not _binding_matches(evidence, snapshot):
+        _revalidate_canonical_evidence(evidence)
+        _bind_validated_route_selection(evidence, snapshot)
     if not callable(matcher):
         raise TypeError("route adapter matcher must be callable")
     matches = tuple(proof for proof in evidence.route_proofs if matcher(proof))
@@ -2029,7 +2097,9 @@ def adapt_conditional_entry_route(
             and fallthrough.target_identity == expected_fallthrough
         )
 
-    return _select_route_proof(canonical_evidence, matches, "conditional entry")
+    return _select_route_proof(
+        canonical_evidence, matches, "conditional entry", snapshot=source,
+    )
 
 
 def adapt_native_bound_transition_route(
@@ -2114,6 +2184,7 @@ def adapt_native_bound_transition_route(
             canonical_evidence,
             matches_carrier,
             "native-bound carrier transition",
+            snapshot=source,
         )
     try:
         def matches_native_bound(proof: SemanticRouteProof) -> bool:
@@ -2141,6 +2212,7 @@ def adapt_native_bound_transition_route(
             canonical_evidence,
             matches_native_bound,
             "native-bound transition",
+            snapshot=source,
         )
     except ValueError as exc:
         same_id = tuple(
@@ -2679,6 +2751,7 @@ def adapt_conditional_arm_route(
             state_identity=state_identity,
         ),
         "conditional arm",
+        snapshot=source,
     )
 
 
@@ -2969,7 +3042,7 @@ def adapt_state_transition_route(
             return False
 
         return _select_route_proof(
-            canonical_evidence, matches, "state transition",
+            canonical_evidence, matches, "state transition", snapshot=source,
         )
 
     raise TypeError("state transition adapter requires a typed route row")

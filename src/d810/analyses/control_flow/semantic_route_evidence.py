@@ -6583,6 +6583,83 @@ class CanonicalRouteBindingResult:
         object.__setattr__(self, "failures", failures)
 
 
+def _route_identity_field(value_type: type[object], name: str) -> bool:
+    """Return whether one record field belongs to route authority identity.
+
+    ``InsnRecord.opcode_attrs`` is backend provenance derived from the typed
+    opcode fields.  Keeping it in the content hash makes mutable diagnostic
+    metadata authority-semantic and duplicates the already sealed opcode.
+    """
+
+    return not (value_type is InsnRecord and name == "opcode_attrs")
+
+
+def _route_structural_field_value(
+    value: object,
+    name: str,
+    *,
+    canonical: bool,
+) -> object:
+    """Project one record field into structural route identity."""
+
+    if not canonical and not _route_identity_field(type(value), name):
+        return MappingProxyType({})
+    if canonical:
+        return object.__getattribute__(value, name)
+    return getattr(value, name)
+
+
+def _without_non_authoritative_route_metadata(value: object) -> object:
+    """Drop ignored instruction provenance when duplicate proofs coalesce.
+
+    A singleton keeps its public witness unchanged. When multiple occurrences
+    share one authority identity, no occurrence's ignored metadata may win by
+    input order, so only paths leading to ``InsnRecord`` values are copied and
+    their ``opcode_attrs`` bags are replaced by the stable empty projection.
+    Open mapping values are never traversed.
+    """
+
+    value_type = type(value)
+    names = _ROUTE_STRUCTURAL_FIELDS.get(value_type)
+    if names is not None:
+        changed = False
+        values: dict[str, object] = {}
+        for name in names:
+            child = object.__getattribute__(value, name)
+            projected = (
+                MappingProxyType({})
+                if value_type is InsnRecord and name == "opcode_attrs"
+                else _without_non_authoritative_route_metadata(child)
+            )
+            values[name] = projected
+            changed = changed or projected is not child
+        return _copy_owned_route_record(value_type, values) if changed else value
+    if value_type is tuple:
+        projected = tuple(
+            _without_non_authoritative_route_metadata(item) for item in value
+        )
+        return (
+            projected
+            if any(left is not right for left, right in zip(projected, value))
+            else value
+        )
+    if value_type is list:
+        projected = [
+            _without_non_authoritative_route_metadata(item) for item in value
+        ]
+        return (
+            projected
+            if any(left is not right for left, right in zip(projected, value))
+            else value
+        )
+    if value_type is frozenset:
+        projected = frozenset(
+            _without_non_authoritative_route_metadata(item) for item in value
+        )
+        return projected if projected != value else value
+    return value
+
+
 def _fingerprint_value(value: object) -> object:
     if value is None or type(value) in (bool, int, str, float):
         return value
@@ -6595,6 +6672,7 @@ def _fingerprint_value(value: object) -> object:
                 (item.name, _fingerprint_value(getattr(value, item.name)))
                 for item in fields(value)
                 if not item.name.startswith("_")
+                and _route_identity_field(type(value), item.name)
             ),
         )
     if isinstance(value, Mapping):
@@ -6633,7 +6711,8 @@ def _owned_route_fingerprint_value(value: object) -> object:
             raise _UnconvertedRouteFingerprint("route record schema changed")
         return ("record", value_type.__qualname__, tuple(
             (name, _owned_route_fingerprint_value(object.__getattribute__(value, name)))
-            for name in names if not name.startswith("_")
+            for name in names
+            if not name.startswith("_") and _route_identity_field(value_type, name)
         ))
     if value_type in (dict, MappingProxyType):
         backing = value
@@ -6730,7 +6809,9 @@ def _canonical_authoritative_proof_inputs(
         provenance = tuple(sorted(set(
             (*prior.diagnostic_provenance, *proof.diagnostic_provenance)
         )))
-        by_payload[payload] = replace(prior, diagnostic_provenance=provenance)
+        by_payload[payload] = _without_non_authoritative_route_metadata(
+            replace(prior, diagnostic_provenance=provenance)
+        )
     return (
         tuple(by_payload[payload] for payload in sorted(by_payload)),
         tuple(occurrence_payloads),
@@ -6778,14 +6859,18 @@ def _owned_canonical_proof_inputs(
     """Select admitted values by handles; serialize once at the ID boundary.
 
     Selection and ID assembly read only admitted scalar and child handles.
-    The public boundary retains its original witness occurrences and recursive
-    validation; owning this internal partition does not make those legacy
-    witnesses immutable or reusable as trusted authority.
+    A singleton retains its original public witness and recursive validation.
+    Duplicate occurrences receive one deterministic metadata projection so
+    input order cannot select a different public value. Owning this internal
+    partition does not make legacy witnesses reusable as trusted authority.
     """
     table = arena.structural
     source_proofs: dict[StructuralRef, SemanticRouteProof] = {}
     by_input_id: dict[str, StructuralRef] = {}
-    by_value: dict[StructuralRef, tuple[str, str, tuple[tuple[str, str], ...]]] = {}
+    by_value: dict[
+        StructuralRef,
+        tuple[str, str, tuple[tuple[str, str], ...], int],
+    ] = {}
     for proof in proofs:
         ref = capture_structural_route_proof(table, proof)
         proof_id = _identifier(proof.proof_id, "semantic route proof id")
@@ -6811,15 +6896,16 @@ def _owned_canonical_proof_inputs(
         source_proofs.setdefault(ref, proof)
         prior_metadata = by_value.get(ref)
         if prior_metadata is None:
-            by_value[ref] = (proof_id, group_id, provenance)
+            by_value[ref] = (proof_id, group_id, provenance, 1)
         else:
             by_value[ref] = (
                 prior_metadata[0], prior_metadata[1],
                 tuple(sorted(set((*prior_metadata[2], *provenance)))),
+                prior_metadata[3] + 1,
             )
     table.publish()
     projected = []
-    for ref, (proof_id, group_id, provenance) in by_value.items():
+    for ref, (proof_id, group_id, provenance, occurrences) in by_value.items():
         node = table.resolve(ref, StructuralNodeKind.ROUTE_PROOF)
         proof = SemanticRouteProof(
             proof_id=proof_id, atomic_group_id=group_id,
@@ -6829,6 +6915,8 @@ def _owned_canonical_proof_inputs(
         )
         payload = json.dumps(_stable_route_proof_payload(proof), sort_keys=True, separators=(",", ":"))
         public_proof = replace(source_proofs[ref], diagnostic_provenance=provenance)
+        if occurrences > 1:
+            public_proof = _without_non_authoritative_route_metadata(public_proof)
         projected.append((public_proof, payload))
     return tuple(projected)
 
@@ -7527,7 +7615,9 @@ def _capture_route_descendant(
                 _capture_route_descendant(
                     table, (NativePreanalysisKey.SCHEMA_VERSION
                             if canonical and value_type is NativePreanalysisKey and name == "schema_version"
-                            else object.__getattribute__(value, name) if canonical else getattr(value, name)), active,
+                            else _route_structural_field_value(
+                                value, name, canonical=canonical,
+                            )), active,
                     canonical=canonical,
                     open_attributes=(open_attributes
                         or (value_type is InsnRecord and name == "opcode_attrs")
@@ -7826,19 +7916,16 @@ def project_owned_route_group(
 
 
 def _stable_route_proof_key(proof: SemanticRouteProof) -> tuple[object, ...]:
-    """Return the exact authoritative field values that binding compares.
+    """Return the exact authoritative field projections binding compares.
 
-    This is the direct-field counterpart of ``_stable_route_proof_payload``:
-    the same fields, compared as the immutable values they already are instead
-    of being fingerprinted and JSON encoded first.  Top-level identities and
-    diagnostic provenance are excluded for the same reason as there.
-
-    The values are compared, never hashed: a portable instruction record
-    carries a ``mappingproxy`` of opcode attributes, so the field tuple is not
-    hashable even though every component compares exactly.
+    Runtime ingestion deliberately compares open values directly. Project only
+    the one metadata field excluded from route identity, without traversing or
+    narrowing any other descendant, then preserve the prior direct-field
+    equality semantics for everything else.
     """
 
-    return tuple(getattr(proof, name) for name in _STABLE_ROUTE_PROOF_FIELDS)
+    projected = _without_non_authoritative_route_metadata(proof)
+    return tuple(getattr(projected, name) for name in _STABLE_ROUTE_PROOF_FIELDS)
 
 
 def _runtime_route_proof_order(proof: SemanticRouteProof) -> tuple[object, ...]:
@@ -7869,7 +7956,7 @@ def _runtime_authoritative_proofs(
     *,
     owned_route_ids: frozenset[str] = frozenset(),
 ) -> tuple[SemanticRouteProof, ...]:
-    """Merge repeated authoritative payloads by direct field comparison.
+    """Merge repeated authoritative payloads by projected field comparison.
 
     This keeps the corruption check ``_canonical_authoritative_proofs`` makes:
     an input id that claims something about content must not name two
@@ -7919,7 +8006,10 @@ def _runtime_authoritative_proofs(
                     (*prior.diagnostic_provenance, *proof.diagnostic_provenance)
                 )))
                 bucket[index] = (
-                    prior_key, replace(prior, diagnostic_provenance=provenance),
+                    prior_key,
+                    _without_non_authoritative_route_metadata(
+                        replace(prior, diagnostic_provenance=provenance)
+                    ),
                 )
                 break
         else:
