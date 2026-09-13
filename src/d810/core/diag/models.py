@@ -527,6 +527,54 @@ class StateWriteResolutionRecord(BaseModel):
         )
 
 
+class DeadStoreRejectionRecord(BaseModel):
+    """One per-definition reason that authoritative DSE retained a write."""
+
+    event = ForeignKeyField(
+        LifecycleEvent,
+        field="event_id",
+        column_name="event_id",
+        primary_key=True,
+        index=False,
+        null=False,
+    )
+    session_id = TextField()
+    func_ea_hex = TextField()
+    func_ea_i64 = IntegerField()
+    maturity = TextField()
+    strategy = TextField()
+    authoritative = IntegerField(constraints=[Check("authoritative IN (0,1)")])
+    block_serial = IntegerField()
+    block_start_ea_hex = TextField()
+    block_start_ea_i64 = IntegerField()
+    insn_ea_hex = TextField()
+    insn_ea_i64 = IntegerField()
+    ordinal = IntegerField()
+    opcode = IntegerField()
+    destination_kind = TextField(null=True)
+    destination_id = IntegerField(null=True)
+    destination_width = IntegerField()
+    reason = TextField()
+    detail = TextField()
+    use_block_serial = IntegerField(null=True)
+    use_block_start_ea_hex = TextField(null=True)
+    use_block_start_ea_i64 = IntegerField(null=True)
+    use_insn_ea_hex = TextField(null=True)
+    use_insn_ea_i64 = IntegerField(null=True)
+    use_ordinal = IntegerField(null=True)
+    use_opcode = IntegerField(null=True)
+    use_operand_path = TextField()
+    use_kind = TextField()
+
+    class Meta:
+        table_name = "dead_store_rejections"
+        indexes = (
+            (("func_ea_i64", "insn_ea_i64"), False),
+            (("func_ea_i64", "reason"), False),
+            (("func_ea_i64", "use_insn_ea_i64"), False),
+        )
+
+
 class EmulatorGapRecord(BaseModel):
     """One DEDUPED evaluator gap the emulator hit in one attempt (d81-c6n7).
 
@@ -1909,6 +1957,7 @@ MODELS = (
     RecoverySearchOutcomeRecord,
     UnflattenCandidateOutcomeRecord,
     StateWriteResolutionRecord,
+    DeadStoreRejectionRecord,
     EmulatorGapRecord,
     FrontendNormalizationPlanIntent,
     SemanticOutputVerdict,

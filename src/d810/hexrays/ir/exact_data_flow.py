@@ -181,6 +181,83 @@ def instruction_storage_access_roles(
     )
 
 
+def instruction_storage_use_paths(
+    instruction: object,
+    *,
+    register: int | None = None,
+    stack_offset: int | None = None,
+    size: int,
+) -> tuple[str, ...]:
+    """Return exact operand-tree paths that read the requested storage."""
+    if (register is None) == (stack_offset is None):
+        raise ValueError("storage path query requires exactly one namespace")
+    paths: list[str] = []
+
+    def visit_operand(
+        operand: object | None,
+        path: str,
+        *,
+        is_target: bool,
+        seen: set[int],
+        depth: int,
+    ) -> None:
+        if operand is None or depth > 32 or id(operand) in seen:
+            return
+        seen.add(id(operand))
+        if _operand_matches_storage(
+            operand,
+            register=register,
+            stack_offset=stack_offset,
+            size=size,
+        ):
+            if not is_target:
+                paths.append(path)
+            return
+        try:
+            operand_type = int(operand.t)
+        except (AttributeError, TypeError, ValueError):
+            return
+        children: tuple[tuple[object | None, str, bool], ...] = ()
+        if operand_type == int(ida_hexrays.mop_d):
+            nested = getattr(operand, "d", None)
+            if nested is not None:
+                children = (
+                    (getattr(nested, "l", None), f"{path}.d.l", False),
+                    (getattr(nested, "r", None), f"{path}.d.r", False),
+                    (getattr(nested, "d", None), f"{path}.d.d", True),
+                )
+        elif operand_type == int(ida_hexrays.mop_a):
+            children = ((getattr(operand, "a", None), f"{path}.a", False),)
+        elif operand_type == int(ida_hexrays.mop_f):
+            call_info = getattr(operand, "f", None)
+            children = tuple(
+                (argument, f"{path}.f.args[{index}]", False)
+                for index, argument in enumerate(tuple(getattr(call_info, "args", ())))
+            )
+        elif operand_type == int(ida_hexrays.mop_p):
+            pair = getattr(operand, "pair", None)
+            children = (
+                (getattr(pair, "lop", None), f"{path}.pair.lop", is_target),
+                (getattr(pair, "hop", None), f"{path}.pair.hop", is_target),
+            )
+        for child, child_path, child_target in children:
+            visit_operand(
+                child,
+                child_path,
+                is_target=child_target,
+                seen=set(seen),
+                depth=depth + 1,
+            )
+
+    for name, operand, target in (
+        ("l", getattr(instruction, "l", None), False),
+        ("r", getattr(instruction, "r", None), False),
+        ("d", getattr(instruction, "d", None), True),
+    ):
+        visit_operand(operand, name, is_target=target, seen=set(), depth=0)
+    return tuple(paths)
+
+
 def _operand_overlaps_stack_storage(
     operand: object | None,
     *,

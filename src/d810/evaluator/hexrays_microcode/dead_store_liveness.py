@@ -23,9 +23,12 @@ from d810.analyses.value_flow.instruction_value_flow import (
     analyze_instruction_value_flow,
 )
 from d810.ir.locations import RegisterLocation, StackSlot, StorageLocation
-from d810.ir.value_refs import DefinitionRef, InstructionUseKind
+from d810.ir.value_refs import DefinitionRef, InstructionUseKind, InstructionUseRef
 from d810.ir.storage_identity import StorageIdentity, StorageIdentityKind
-from d810.hexrays.ir.exact_data_flow import instruction_takes_stack_address
+from d810.hexrays.ir.exact_data_flow import (
+    instruction_storage_use_paths,
+    instruction_takes_stack_address,
+)
 
 __all__ = ["HexRaysDeadStoreLivenessBackend"]
 
@@ -118,13 +121,61 @@ def _rejection(
     instruction: object | None,
     reason: DeadStoreRejectionReason,
     detail: str = "",
+    *,
+    ordinal: int = -1,
+    use_coordinate: object | None = None,
+    use: InstructionUseRef | None = None,
+    use_operand_path: str = "",
 ) -> DeadStoreRejection:
+    if ordinal < 0 and instruction is not None:
+        ordinal = next(
+            (
+                index
+                for index, candidate in enumerate(_iter_instructions(block))
+                if candidate is instruction
+            ),
+            -1,
+        )
+    storage = _live_storage(getattr(instruction, "d", None))
     return DeadStoreRejection(
         block_serial=int(getattr(block, "serial", 0) or 0),
         block_start_ea=max(0, _block_start_ea(block)),
         insn_ea=max(0, int(getattr(instruction, "ea", 0) or 0)),
         reason=reason,
         detail=detail,
+        ordinal=int(ordinal),
+        opcode=int(getattr(instruction, "opcode", -1) or -1),
+        destination=None if storage is None else storage.identity,
+        destination_width=0 if storage is None else int(storage.width),
+        use_block_serial=(
+            None
+            if use_coordinate is None
+            else int(getattr(use_coordinate, "block_serial", -1))
+        ),
+        use_block_start_ea=(
+            None
+            if use_coordinate is None
+            else max(0, int(getattr(use_coordinate, "block_start_ea", 0)))
+        ),
+        use_insn_ea=(
+            None
+            if use_coordinate is None
+            else max(0, int(getattr(use_coordinate, "insn_ea", 0)))
+        ),
+        use_ordinal=(
+            None
+            if use_coordinate is None
+            else int(getattr(use_coordinate, "ordinal", -1))
+        ),
+        use_opcode=(
+            None
+            if use_coordinate is None
+            else int(
+                getattr(getattr(use_coordinate, "instruction", None), "opcode", -1)
+            )
+        ),
+        use_operand_path=use_operand_path,
+        use_kind="" if use is None else use.kind.value,
     )
 
 
@@ -156,23 +207,32 @@ def _retained_definition_reason(
     instruction_flow: object,
     value_flow: InstructionValueFlowResult,
     definition: DefinitionRef,
-) -> tuple[DeadStoreRejectionReason, str]:
+) -> tuple[DeadStoreRejectionReason, str, InstructionUseRef | None]:
     uses = value_flow.def_use.uses_of(definition)
     if uses:
-        use = uses[0]
+        partial = next(
+            (
+                item
+                for item in uses
+                if item.kind is InstructionUseKind.PARTIAL_DEFINITION
+            ),
+            None,
+        )
+        use = partial or uses[0]
         coordinate = instruction_flow.coordinate(use.insn)
         reason = (
             DeadStoreRejectionReason.PARTIAL_DEFINITION
-            if any(item.kind is InstructionUseKind.PARTIAL_DEFINITION for item in uses)
+            if partial
             else DeadStoreRejectionReason.REACHED_USE
         )
         return (
             reason,
             f"blk{coordinate.block_serial}@0x{coordinate.insn_ea:x}",
+            use,
         )
     if isinstance(definition.location, RegisterLocation):
-        return DeadStoreRejectionReason.RETURN_CARRIER, "register_at_exit"
-    return DeadStoreRejectionReason.CHAIN_UNAVAILABLE, "live_cycle"
+        return DeadStoreRejectionReason.RETURN_CARRIER, "register_at_exit", None
+    return DeadStoreRejectionReason.CHAIN_UNAVAILABLE, "live_cycle", None
 
 
 class HexRaysDeadStoreLivenessBackend:
@@ -327,22 +387,19 @@ class HexRaysDeadStoreLivenessBackend:
                 )
                 continue
             instructions = tuple(_iter_instructions(block))
-            ea_counts: dict[int, int] = {}
-            for instruction in instructions:
-                ea = int(getattr(instruction, "ea", -1))
-                ea_counts[ea] = ea_counts.get(ea, 0) + 1
             for ordinal, instruction in enumerate(instructions):
                 storage = _live_storage(getattr(instruction, "d", None))
                 if storage is None:
                     continue
                 portable_location = _portable_location(storage)
                 ea = int(getattr(instruction, "ea", -1))
-                if ea < 0 or ea_counts.get(ea, 0) != 1:
+                if ea < 0:
                     rejections.append(
                         _rejection(
                             block,
                             instruction,
                             DeadStoreRejectionReason.AMBIGUOUS_DEFINITION,
+                            ordinal=ordinal,
                         )
                     )
                     continue
@@ -356,6 +413,7 @@ class HexRaysDeadStoreLivenessBackend:
                             block,
                             instruction,
                             DeadStoreRejectionReason.EFFECTFUL_RHS,
+                            ordinal=ordinal,
                         )
                     )
                     continue
@@ -372,13 +430,21 @@ class HexRaysDeadStoreLivenessBackend:
                             instruction,
                             DeadStoreRejectionReason.CHAIN_UNAVAILABLE,
                             "destination_location",
+                            ordinal=ordinal,
                         )
                     )
                     continue
                 if storage.identity.kind is StorageIdentityKind.STACK:
                     alias_reason = _stack_alias_rejection(mba, location)
                     if alias_reason is not None:
-                        rejections.append(_rejection(block, instruction, alias_reason))
+                        rejections.append(
+                            _rejection(
+                                block,
+                                instruction,
+                                alias_reason,
+                                ordinal=ordinal,
+                            )
+                        )
                         continue
                     if stack_address_escapes(storage):
                         rejections.append(
@@ -387,6 +453,7 @@ class HexRaysDeadStoreLivenessBackend:
                                 instruction,
                                 DeadStoreRejectionReason.ALIASED_STORAGE,
                                 "exact_stack_address_escape",
+                                ordinal=ordinal,
                             )
                         )
                         continue
@@ -397,6 +464,7 @@ class HexRaysDeadStoreLivenessBackend:
                             instruction,
                             DeadStoreRejectionReason.CHAIN_UNAVAILABLE,
                             "destination_location_consensus",
+                            ordinal=ordinal,
                         )
                     )
                     continue
@@ -410,16 +478,36 @@ class HexRaysDeadStoreLivenessBackend:
                             instruction,
                             DeadStoreRejectionReason.CHAIN_UNAVAILABLE,
                             "instruction_coordinate",
+                            ordinal=ordinal,
                         )
                     )
                     continue
                 if portable_location in access.uses:
+                    use = InstructionUseRef(handle, kind=InstructionUseKind.READ)
+                    paths = instruction_storage_use_paths(
+                        instruction,
+                        register=(
+                            portable_location.register_id
+                            if isinstance(portable_location, RegisterLocation)
+                            else None
+                        ),
+                        stack_offset=(
+                            portable_location.offset
+                            if isinstance(portable_location, StackSlot)
+                            else None
+                        ),
+                        size=int(portable_location.size),
+                    )
                     rejections.append(
                         _rejection(
                             block,
                             instruction,
                             DeadStoreRejectionReason.REACHED_USE,
                             "read_modify_write",
+                            ordinal=ordinal,
+                            use_coordinate=instruction_flow.coordinate(handle),
+                            use=use,
+                            use_operand_path=(",".join(paths) or "implicit_or_unknown"),
                         )
                     )
                     continue
@@ -434,19 +522,76 @@ class HexRaysDeadStoreLivenessBackend:
                         if reason is DeadStoreRejectionReason.PARTIAL_DEFINITION
                         else "definition_membership"
                     )
-                    rejections.append(_rejection(block, instruction, reason, detail))
+                    use = (
+                        InstructionUseRef(
+                            handle,
+                            kind=InstructionUseKind.PARTIAL_DEFINITION,
+                        )
+                        if reason is DeadStoreRejectionReason.PARTIAL_DEFINITION
+                        else None
+                    )
+                    rejections.append(
+                        _rejection(
+                            block,
+                            instruction,
+                            reason,
+                            detail,
+                            ordinal=ordinal,
+                            use_coordinate=(
+                                instruction_flow.coordinate(handle)
+                                if use is not None
+                                else None
+                            ),
+                            use=use,
+                            use_operand_path="d" if use is not None else "",
+                        )
+                    )
                     continue
                 definition = DefinitionRef(
                     location=portable_location,
                     version=int(handle),
                 )
                 if not value_flow.is_definition_dead(definition):
-                    reason, detail = _retained_definition_reason(
+                    reason, detail, use = _retained_definition_reason(
                         instruction_flow,
                         value_flow,
                         definition,
                     )
-                    rejections.append(_rejection(block, instruction, reason, detail))
+                    use_coordinate = (
+                        None if use is None else instruction_flow.coordinate(use.insn)
+                    )
+                    use_operand_path = ""
+                    if use_coordinate is not None:
+                        if use.kind is InstructionUseKind.PARTIAL_DEFINITION:
+                            use_operand_path = "d"
+                        else:
+                            paths = instruction_storage_use_paths(
+                                use_coordinate.instruction,
+                                register=(
+                                    definition.location.register_id
+                                    if isinstance(definition.location, RegisterLocation)
+                                    else None
+                                ),
+                                stack_offset=(
+                                    definition.location.offset
+                                    if isinstance(definition.location, StackSlot)
+                                    else None
+                                ),
+                                size=int(definition.location.size),
+                            )
+                            use_operand_path = ",".join(paths) or "implicit_or_unknown"
+                    rejections.append(
+                        _rejection(
+                            block,
+                            instruction,
+                            reason,
+                            detail,
+                            ordinal=ordinal,
+                            use_coordinate=use_coordinate,
+                            use=use,
+                            use_operand_path=use_operand_path,
+                        )
+                    )
                     continue
                 candidates.append(
                     DeadStoreCandidate(

@@ -81,6 +81,24 @@ def test_unshifted_plan_keeps_its_planned_serial() -> None:
     assert binding.bound is True
 
 
+def test_ordinal_and_destination_disambiguate_shared_instruction_ea() -> None:
+    block = _block(
+        10,
+        FINGERPRINT.block_start_ea,
+        _insn(FINGERPRINT.insn_ea, ident=0xE8),
+        _insn(FINGERPRINT.insn_ea, ident=0x3C),
+    )
+
+    binding = bind_guarded_removal(
+        FINGERPRINT,
+        planned_serial=10,
+        blocks=(block,),
+    )
+
+    assert binding.outcome is GuardedRemovalBindingOutcome.ALREADY_BOUND
+    assert binding.serial == 10
+
+
 def test_clone_shifted_serial_rebinds_to_the_live_block() -> None:
     """The exact d81-d9m5 shape: a clone took serial 10, the victim is now 12."""
     clone = _block(10, 0x7FFB0E398A2C, _insn(0x7FFB0E398A2C, 0x0F))

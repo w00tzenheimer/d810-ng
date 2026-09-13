@@ -20,6 +20,7 @@ from d810.core.observability_events import (
     MutationReceiptObserved,
     RecoverySearchObserved,
     StateWriteResolutionObserved,
+    DeadStoreRejectionObserved,
     UnflattenCandidateOutcomeObserved,
     PassContractEvidencePublished,
     SemanticOutputVerifiedObserved,
@@ -965,6 +966,113 @@ def persist_state_write_resolution(
     return event_id
 
 
+def persist_dead_store_rejection(
+    conn: sqlite3.Connection,
+    event: DeadStoreRejectionObserved,
+) -> int:
+    """Persist one source/use-correlated dead-store rejection."""
+    session_id = event.session_id.strip()
+    if not session_id:
+        row = conn.execute(
+            "SELECT session_id FROM diagnostic_sessions "
+            "WHERE func_ea_i64=? AND status='active' "
+            "ORDER BY started_at DESC LIMIT 1",
+            (int(event.func_ea),),
+        ).fetchone()
+        session_id = "" if row is None else str(row[0])
+    source = {
+        "block_serial": int(event.block_serial),
+        "block_start_ea": int(event.block_start_ea),
+        "ea": int(event.insn_ea),
+        "ordinal": int(event.ordinal),
+        "opcode": int(event.opcode),
+        "destination_kind": event.destination_kind,
+        "destination_id": event.destination_id,
+        "destination_width": int(event.destination_width),
+    }
+    use = {
+        "block_serial": event.use_block_serial,
+        "block_start_ea": event.use_block_start_ea,
+        "ea": event.use_insn_ea,
+        "ordinal": event.use_ordinal,
+        "opcode": event.use_opcode,
+        "operand_path": event.use_operand_path,
+        "kind": event.use_kind,
+    }
+    event_id = persist_lifecycle_event(
+        conn,
+        LifecycleEventObserved(
+            session_id=session_id,
+            func_ea=event.func_ea,
+            event_kind="dead_store_rejection",
+            provider=event.strategy,
+            maturity=event.maturity,
+            phase=event.reason,
+            correlation_id=f"{int(event.block_serial)}:0x{int(event.insn_ea):x}",
+            summary=(
+                f"retained blk{int(event.block_serial)}@0x{int(event.insn_ea):x}: "
+                f"{event.reason}"
+            ),
+            payload={
+                "kind": "DeadStoreRejectionFact",
+                "strategy": event.strategy,
+                "authoritative": bool(event.authoritative),
+                "reason": event.reason,
+                "detail": event.detail,
+                "source": source,
+                "use": use,
+            },
+            timestamp=event.timestamp,
+        ),
+        snapshot_id=None,
+    )
+
+    def optional_hex(value: int | None) -> str | None:
+        return None if value is None else _func_hex(value)
+
+    conn.execute(
+        "INSERT INTO dead_store_rejections "
+        "(event_id,session_id,func_ea_hex,func_ea_i64,maturity,strategy,"
+        "authoritative,block_serial,block_start_ea_hex,block_start_ea_i64,"
+        "insn_ea_hex,insn_ea_i64,ordinal,opcode,destination_kind,destination_id,"
+        "destination_width,reason,detail,use_block_serial,use_block_start_ea_hex,"
+        "use_block_start_ea_i64,use_insn_ea_hex,use_insn_ea_i64,use_ordinal,"
+        "use_opcode,use_operand_path,use_kind) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,"
+        "?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (
+            event_id,
+            session_id,
+            _func_hex(event.func_ea),
+            int(event.func_ea),
+            event.maturity,
+            event.strategy,
+            1 if event.authoritative else 0,
+            int(event.block_serial),
+            _func_hex(event.block_start_ea),
+            int(event.block_start_ea),
+            _func_hex(event.insn_ea),
+            int(event.insn_ea),
+            int(event.ordinal),
+            int(event.opcode),
+            event.destination_kind,
+            event.destination_id,
+            int(event.destination_width),
+            event.reason,
+            event.detail,
+            event.use_block_serial,
+            optional_hex(event.use_block_start_ea),
+            event.use_block_start_ea,
+            optional_hex(event.use_insn_ea),
+            event.use_insn_ea,
+            event.use_ordinal,
+            event.use_opcode,
+            event.use_operand_path,
+            event.use_kind,
+        ),
+    )
+    return event_id
+
+
 def persist_emulator_gap(
     conn: sqlite3.Connection,
     event: EmulatorGapObserved,
@@ -1432,6 +1540,7 @@ __all__.extend(
         "persist_recovery_search",
         "persist_unflatten_candidate_outcome",
         "persist_state_write_resolution",
+        "persist_dead_store_rejection",
         "persist_emulator_gap",
         "persist_mutation_receipt",
         "persist_semantic_fragment_route_oracle",

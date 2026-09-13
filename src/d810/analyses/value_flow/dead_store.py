@@ -82,6 +82,31 @@ class DeadStoreRejection:
     insn_ea: int
     reason: DeadStoreRejectionReason
     detail: str = ""
+    ordinal: int = -1
+    opcode: int = -1
+    destination: StorageIdentity | None = None
+    destination_width: int = 0
+    use_block_serial: int | None = None
+    use_block_start_ea: int | None = None
+    use_insn_ea: int | None = None
+    use_ordinal: int | None = None
+    use_opcode: int | None = None
+    use_operand_path: str = ""
+    use_kind: str = ""
+
+    @property
+    def destination_kind(self) -> str | None:
+        if self.destination is None:
+            return None
+        return (
+            "register"
+            if self.destination.kind is StorageIdentityKind.REGISTER
+            else "stack"
+        )
+
+    @property
+    def destination_id(self) -> int | None:
+        return None if self.destination is None else int(self.destination.offset)
 
 
 @dataclass(frozen=True, slots=True)

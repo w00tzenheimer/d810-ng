@@ -35,6 +35,7 @@ from d810.core.observability_events import (
     ModificationsObserved,
     MutationPlanObserved,
     EmulatorGapObserved,
+    DeadStoreRejectionObserved,
     MutationReceiptObserved,
     PassContractEvidencePublished,
     SemanticOutputVerifiedObserved,
@@ -52,6 +53,7 @@ from d810.core.observability_models import (
     DagNode,
     Modification,
 )
+from d810.analyses.value_flow.observation import FactObservation
 from d810.core.observability_preanalysis import (
     observe_branch_witness_decisions,
     observe_branch_ownership_proofs,
@@ -63,11 +65,84 @@ from d810.core.observability_preanalysis import (
     observe_state_dispatcher_rows,
     observe_state_transition_dispatch_resolutions,
 )
-from d810.analyses.value_flow.observation import FactObservation
 from d810.transforms.cfg_transaction import TransactionAttemptId
 from d810.transforms.unflatten_authority import model as authority_model
 from d810.transforms.unflatten_authority.diagnostics import phase_observation
 from d810.transforms.unflatten_authority.ids import authority_id
+
+
+def test_dead_store_rejection_persists_per_site_evidence(fake_conn):
+    emit(
+        DiagnosticSessionObserved(
+            session_id="active-session",
+            func_ea=0x1FBE5EBD640,
+            top_level_epoch=1,
+            native_key_json="{}",
+            status="active",
+        )
+    )
+    emit(
+        DeadStoreRejectionObserved(
+            func_ea=0x1FBE5EBD640,
+            maturity="MMAT_GLBOPT2",
+            strategy="dead_store_elimination",
+            authoritative=True,
+            block_serial=17,
+            block_start_ea=0x1FBE5EC3C00,
+            insn_ea=0x1FBE5EC3C0F,
+            ordinal=2,
+            opcode=0x55,
+            destination_kind="stack",
+            destination_id=0x3C,
+            destination_width=4,
+            reason="reached_use",
+            detail="blk18@0x1fbe5ec3c70",
+            use_block_serial=18,
+            use_block_start_ea=0x1FBE5EC3C70,
+            use_insn_ea=0x1FBE5EC3C78,
+            use_ordinal=1,
+            use_opcode=0x31,
+            use_operand_path="l.d.r",
+            use_kind="read",
+            session_id="",
+        )
+    )
+
+    row = fake_conn.execute(
+        "SELECT session_id,func_ea_hex,maturity,strategy,authoritative,block_serial,"
+        "block_start_ea_hex,insn_ea_hex,destination_kind,destination_id,"
+        "destination_width,reason,use_block_serial,use_block_start_ea_hex,"
+        "use_insn_ea_hex,use_operand_path,use_kind "
+        "FROM dead_store_rejections"
+    ).fetchone()
+    assert row == (
+        "active-session",
+        "0x000001fbe5ebd640",
+        "MMAT_GLBOPT2",
+        "dead_store_elimination",
+        1,
+        17,
+        "0x000001fbe5ec3c00",
+        "0x000001fbe5ec3c0f",
+        "stack",
+        0x3C,
+        4,
+        "reached_use",
+        18,
+        "0x000001fbe5ec3c70",
+        "0x000001fbe5ec3c78",
+        "l.d.r",
+        "read",
+    )
+
+    payload = json.loads(
+        fake_conn.execute(
+            "SELECT payload_json FROM lifecycle_events "
+            "WHERE event_kind='dead_store_rejection'"
+        ).fetchone()[0]
+    )
+    assert payload["source"]["ea"] == 0x1FBE5EC3C0F
+    assert payload["use"]["operand_path"] == "l.d.r"
 
 
 def request_capture_mba_snapshot(

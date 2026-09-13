@@ -48,6 +48,7 @@ from d810.core.diag.lifecycle import (
     persist_mutation_receipt,
     persist_recovery_search,
     persist_state_write_resolution,
+    persist_dead_store_rejection,
     persist_emulator_gap,
     persist_unflatten_candidate_outcome,
     persist_pass_contract_evidence,
@@ -115,6 +116,7 @@ from d810.core.observability_events import (
     RecoverySearchObserved,
     EmulatorGapObserved,
     StateWriteResolutionObserved,
+    DeadStoreRejectionObserved,
     UnflattenCandidateOutcomeObserved,
     OptblockCallbackExceptionObserved,
     PassContractEvidencePublished,
@@ -460,6 +462,16 @@ def _handle_state_write_resolution(ev: StateWriteResolutionObserved) -> None:
     if conn is not None:
         with conn:
             persist_state_write_resolution(conn, ev)
+
+
+def _handle_dead_store_rejection(ev: DeadStoreRejectionObserved) -> None:
+    try:
+        conn = get_diag_conn(int(ev.func_ea))
+    except Exception:
+        return
+    if conn is not None:
+        with conn:
+            persist_dead_store_rejection(conn, ev)
 
 
 def _handle_emulator_gap(ev: EmulatorGapObserved) -> None:
@@ -1206,6 +1218,7 @@ _HANDLERS: tuple[tuple[type, object], ...] = (
     (RecoverySearchObserved, _handle_recovery_search),
     (UnflattenCandidateOutcomeObserved, _handle_unflat_candidate_outcome),
     (StateWriteResolutionObserved, _handle_state_write_resolution),
+    (DeadStoreRejectionObserved, _handle_dead_store_rejection),
     (EmulatorGapObserved, _handle_emulator_gap),
     (CfgTransactionAttemptObserved, _handle_cfg_transaction_attempt),
     (

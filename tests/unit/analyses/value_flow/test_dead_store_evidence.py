@@ -46,8 +46,19 @@ def test_dead_store_evidence_preserves_stable_rejection_codes() -> None:
         block_serial=3,
         block_start_ea=0x401000,
         insn_ea=0x401020,
+        ordinal=2,
+        opcode=0x55,
+        destination=StorageIdentity(StorageIdentityKind.STACK, 0x3C),
+        destination_width=4,
         reason=DeadStoreRejectionReason.REACHED_USE,
         detail="blk4@0x401100",
+        use_block_serial=4,
+        use_block_start_ea=0x401100,
+        use_insn_ea=0x401118,
+        use_ordinal=1,
+        use_opcode=0x31,
+        use_operand_path="l.d.r",
+        use_kind="read",
     )
 
     evidence = DeadStoreEvidence(
@@ -57,5 +68,8 @@ def test_dead_store_evidence_preserves_stable_rejection_codes() -> None:
     )
 
     assert evidence.rejections[0].reason.value == "reached_use"
+    assert evidence.rejections[0].destination_kind == "stack"
+    assert evidence.rejections[0].destination_id == 0x3C
+    assert evidence.rejections[0].use_operand_path == "l.d.r"
     assert evidence.candidates[0].destination.key == "r7"
     assert evidence.authoritative is True

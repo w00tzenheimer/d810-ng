@@ -1003,6 +1003,45 @@ class StateWriteResolutionObserved:
 
 
 @dataclass(frozen=True, slots=True)
+class DeadStoreRejectionObserved:
+    """One source definition retained by authoritative dead-store analysis."""
+
+    func_ea: int
+    maturity: str
+    strategy: str
+    authoritative: bool
+    block_serial: int
+    block_start_ea: int
+    insn_ea: int
+    ordinal: int
+    opcode: int
+    destination_kind: str | None
+    destination_id: int | None
+    destination_width: int
+    reason: str
+    detail: str = ""
+    use_block_serial: int | None = None
+    use_block_start_ea: int | None = None
+    use_insn_ea: int | None = None
+    use_ordinal: int | None = None
+    use_opcode: int | None = None
+    use_operand_path: str = ""
+    use_kind: str = ""
+    session_id: str = ""
+    timestamp: float = 0.0
+
+    def __post_init__(self) -> None:
+        if int(self.func_ea) < 0:
+            raise ValueError("func_ea must be non-negative")
+        if not self.strategy.strip() or not self.reason.strip():
+            raise ValueError("dead-store strategy and reason must be non-empty")
+        if self.destination_kind not in {None, "register", "stack"}:
+            raise ValueError("invalid dead-store destination kind")
+        object.__setattr__(self, "func_ea", int(self.func_ea))
+        object.__setattr__(self, "authoritative", bool(self.authoritative))
+
+
+@dataclass(frozen=True, slots=True)
 class EmulatorGapObserved:
     """One DEDUPED evaluator gap the microcode emulator could not close.
 
@@ -1629,6 +1668,7 @@ __all__ = [
     "UNFLATTEN_CANDIDATE_DISPOSITIONS",
     "UnflattenCandidateOutcomeObserved",
     "StateWriteResolutionObserved",
+    "DeadStoreRejectionObserved",
     "STATE_WRITE_RESOLUTION_OUTCOMES",
     "EmulatorGapObserved",
     "MutationPlanTargetObserved",

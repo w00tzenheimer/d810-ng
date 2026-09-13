@@ -242,6 +242,27 @@ def test_collection_does_not_use_the_legacy_definition_walk(monkeypatch) -> None
     assert [candidate.insn_ea for candidate in evidence.candidates] == [0x401010]
 
 
+def test_same_ea_definitions_are_disambiguated_by_full_fingerprint() -> None:
+    first_target = _Mop(ida_hexrays.mop_S, stack_offset=0x3C, size=4)
+    second_target = _Mop(ida_hexrays.mop_S, stack_offset=0xE8, size=4)
+    first = _Insn(0x401010, destination=first_target)
+    second = _Insn(0x401010, destination=second_target)
+    overwrite_first = _Insn(0x401020, destination=first_target, effectful=True)
+    overwrite_second = _Insn(0x401030, destination=second_target, effectful=True)
+
+    evidence = HexRaysDeadStoreLivenessBackend().collect(
+        _Mba((_Block(0, (first, second, overwrite_first, overwrite_second)),))
+    )
+
+    assert [
+        (candidate.insn_ea, candidate.ordinal, candidate.destination_id)
+        for candidate in evidence.candidates
+    ] == [
+        (0x401010, 0, 0x3C),
+        (0x401010, 1, 0xE8),
+    ]
+
+
 def test_ignores_call_wide_may_alias_for_unescaped_stack_storage() -> None:
     target = _Mop(ida_hexrays.mop_S, stack_offset=0x40)
     dead = _Insn(0x401010, destination=target)
@@ -271,6 +292,33 @@ def test_rejects_definition_read_by_call_argument() -> None:
 
     assert evidence.candidates == ()
     assert DeadStoreRejectionReason.REACHED_USE in _reasons(evidence)
+    rejection = next(
+        item
+        for item in evidence.rejections
+        if item.insn_ea == 0x401010
+        and item.reason is DeadStoreRejectionReason.REACHED_USE
+    )
+    assert rejection.destination_kind == "stack"
+    assert rejection.destination_id == 0x40
+    assert rejection.use_insn_ea == 0x401020
+    assert rejection.use_block_start_ea == 0x401000
+    assert rejection.use_kind == "read"
+
+
+def test_read_modify_write_rejection_names_its_same_site_use() -> None:
+    target = _Mop(ida_hexrays.mop_S, stack_offset=0x40)
+    update = _Insn(0x401010, destination=target, uses=(target,))
+
+    evidence = HexRaysDeadStoreLivenessBackend().collect(_Mba((_Block(0, (update,)),)))
+
+    rejection = next(
+        item for item in evidence.rejections if item.detail == "read_modify_write"
+    )
+    assert rejection.ordinal == 0
+    assert rejection.use_insn_ea == 0x401010
+    assert rejection.use_block_start_ea == 0x401000
+    assert rejection.use_kind == "read"
+    assert rejection.use_operand_path == "implicit_or_unknown"
 
 
 def test_partial_overwrite_consumes_the_reaching_definition() -> None:
@@ -397,6 +445,13 @@ def test_rejects_effectful_rhs_and_nodel_stack_storage() -> None:
         DeadStoreRejectionReason.EFFECTFUL_RHS,
         DeadStoreRejectionReason.NODEL_STORAGE,
     }
+    effectful_rejection = next(
+        item
+        for item in evidence.rejections
+        if item.reason is DeadStoreRejectionReason.EFFECTFUL_RHS
+    )
+    assert effectful_rejection.ordinal == 0
+    assert effectful_rejection.block_start_ea == 0x401000
 
 
 def test_broad_alias_set_is_not_a_universal_barrier() -> None:
@@ -414,7 +469,7 @@ def test_broad_alias_set_is_not_a_universal_barrier() -> None:
     assert [candidate.insn_ea for candidate in evidence.candidates] == [0x401010]
 
 
-def test_rejects_duplicate_definition_anchors() -> None:
+def test_duplicate_eas_do_not_override_the_actual_liveness_reason() -> None:
     first = _Insn(
         0x401010,
         destination=_Mop(ida_hexrays.mop_r, register=10),
@@ -429,7 +484,7 @@ def test_rejects_duplicate_definition_anchors() -> None:
     )
 
     assert evidence.candidates == ()
-    assert _reasons(evidence) == {DeadStoreRejectionReason.AMBIGUOUS_DEFINITION}
+    assert _reasons(evidence) == {DeadStoreRejectionReason.RETURN_CARRIER}
 
 
 def test_wrong_maturity_abstains_authoritatively() -> None:
