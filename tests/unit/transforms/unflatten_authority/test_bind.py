@@ -12405,6 +12405,88 @@ def test_bind_corridor_coverage_forecast_direct_inventory_matrix() -> None:
     assert full.drifted_path_ids == proposal.corridor_coverage_forecast.covered_path_ids
 
 
+@pytest.mark.parametrize(
+    "source_self_edge,candidate_self_edge,candidate_reachable,residual,expected",
+    [
+        (True, True, True, False, "drifted"),
+        (False, False, True, False, "drifted"),
+        (False, True, True, False, "drifted"),
+        (True, False, True, False, "covered"),
+        (True, True, False, False, "covered"),
+        (True, True, True, True, "residual"),
+        (True, False, True, True, "reject"),
+    ],
+    ids=[
+        "reachable-retained-edge-is-not-covered",
+        "absent-source-edge-is-not-covered",
+        "candidate-edge-cannot-substitute-for-source-edge",
+        "removed-edge-is-covered",
+        "unreachable-retained-edge-is-covered",
+        "retained-residual-edge-is-bound",
+        "removed-residual-edge-is-rejected",
+    ],
+)
+def test_bind_corridor_direct_dispatcher_self_edge(
+    source_self_edge, candidate_self_edge, candidate_reachable, residual, expected,
+) -> None:
+    proposal, source, candidate = _corridor_inventories(
+        candidate_full=candidate_reachable,
+    )
+    forecast = proposal.corridor_coverage_forecast
+    dispatcher = model.CorridorCoveragePathNode(
+        forecast.dispatcher_ref, forecast.dispatcher_anchor_ea,
+    )
+    disposition = (
+        model.CorridorPathDisposition.RESIDUAL if residual
+        else model.CorridorPathDisposition.STRUCTURALLY_COVERED
+    )
+    path = model.CorridorCoveragePath(
+        (dispatcher, dispatcher), None, disposition, (),
+    )
+    covered_ids = () if residual else (path.path_id,)
+    residual_ids = (path.path_id,) if residual else ()
+    forecast_id = authority_id((
+        "unflatten.corridor-coverage-forecast.v1", forecast.plan_id,
+        forecast.function_ea, forecast.source_native_key, forecast.source_generation,
+        forecast.dispatcher_ref, forecast.dispatcher_anchor_ea, (path,),
+        covered_ids, residual_ids, forecast.enumeration_complete, (), (), (),
+    ))
+    proposal = replace(proposal, corridor_coverage_forecast=replace(
+        forecast, forecast_id=forecast_id, paths=(path,),
+        covered_path_ids=covered_ids, residual_path_ids=residual_ids,
+    ))
+
+    def with_self_edge(inventory):
+        dispatcher_block = next(block for block in inventory.blocks if block.serial == 0)
+        return _inventory_with_edges(
+            inventory,
+            {0: (*dispatcher_block.successor_serials, 0)},
+            {0: (*dispatcher_block.predecessor_serials, 0)},
+        )
+
+    if source_self_edge:
+        source = with_self_edge(source)
+    if candidate_self_edge:
+        candidate = with_self_edge(candidate)
+    model.validate_semantic_graph_inventory(source)
+    model.validate_semantic_graph_inventory(candidate)
+    kwargs = dict(
+        proposal=proposal, source_inventory=source, candidate_inventory=candidate,
+        phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+    )
+    if expected == "reject":
+        with pytest.raises(ValueError, match="residual corridor path classification"):
+            bind.bind_corridor_coverage_forecast(**kwargs)
+        return
+    result = bind.bind_corridor_coverage_forecast(**kwargs)
+    assert result is not None
+    assert result.source_dispatcher_reachable is True
+    assert result.candidate_dispatcher_reachable is candidate_reachable
+    assert result.covered_path_ids == ((path.path_id,) if expected == "covered" else ())
+    assert result.residual_path_ids == ((path.path_id,) if expected == "residual" else ())
+    assert result.drifted_path_ids == ((path.path_id,) if expected == "drifted" else ())
+
+
 def test_bind_corridor_unreachable_dispatcher_covers_isolated_structural_residue() -> None:
     """A disconnected corridor is covered even if its physical nodes remain."""
 

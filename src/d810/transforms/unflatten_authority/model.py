@@ -1137,7 +1137,18 @@ class CorridorCoveragePath:
             raise TypeError("corridor path requires at least two exact nodes")
         if any(type(node) is not CorridorCoveragePathNode for node in self.nodes):
             raise TypeError("corridor path nodes must be closed nominal rows")
-        if len({(node.block_ref, node.anchor_ea) for node in self.nodes}) != len(self.nodes):
+        direct_self_edge = (
+            len(self.nodes) == 2 and self.nodes[0] == self.nodes[1]
+            and self.state_merge is None and self.semantic_exclusion_ids == ()
+            and self.disposition in (
+                CorridorPathDisposition.STRUCTURALLY_COVERED,
+                CorridorPathDisposition.RESIDUAL,
+            )
+        )
+        # The enclosing forecast binds the terminal node to its dispatcher.
+        # Preserve a direct self-edge as topology evidence; it is not a license
+        # to accept longer cyclic paths or to infer that this edge is covered.
+        if not direct_self_edge and len({(node.block_ref, node.anchor_ea) for node in self.nodes}) != len(self.nodes):
             raise ValueError("corridor path nodes must be unique")
         if self.state_merge is not None and type(self.state_merge) is not CorridorCoveragePathNode:
             raise TypeError("state_merge must be a CorridorCoveragePathNode or None")

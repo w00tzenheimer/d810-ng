@@ -326,6 +326,76 @@ def _nested_merge_corridor_graph() -> FlowGraph:
     )
 
 
+@pytest.mark.parametrize("redirect_count", [358, 360])
+def test_high_fan_in_feeder_accounts_for_every_immediate_corridor(redirect_count):
+    inputs = tuple(range(1, 361))
+    graph = FlowGraph(blocks={
+        0: _block(0, inputs, (), 0x1000),
+        **{serial: _block(serial, (1000,), (0,), 0x1000 + serial * 16)
+           for serial in inputs},
+        1000: _block(1000, (1001,), inputs, 0x6000),
+        1001: _block(1001, (1002,), (1000,), 0x6010),
+        1002: _block(1002, (), (1001,), 0x6020, kind=BlockKind.STOP),
+    }, entry_serial=0, func_ea=0x1000)
+    report = analyze_dispatcher_corridor_coverage(
+        graph,
+        modifications=tuple(
+            RedirectGoto(from_serial=serial, old_target=1000, new_target=1002)
+            for serial in inputs[:redirect_count]
+        ),
+        dispatcher_entry_serial=1001,
+    )
+    assert report.enumeration_complete
+    assert len(report.covered_corridors) == redirect_count
+    assert tuple(
+        tuple(anchor.serial for anchor in corridor.path)
+        for corridor in report.residual_corridors
+    ) == (() if redirect_count == 360 else ((359, 1000, 1001), (360, 1000, 1001)))
+
+
+def test_high_fan_in_floor_does_not_unbound_upstream_merge_expansion():
+    inputs = tuple(range(1, 361))
+    successors = {
+        **{serial: (1000,) for serial in inputs},
+        1000: (1001,), 1001: (), 2000: (1,), 2001: (1,),
+    }
+    paths, complete = corridor_module._upstream_corridor_paths(
+        successors, feeder_serial=1000, dispatcher_serial=1001,
+    )
+    assert not complete
+    assert len(paths) == 360
+    assert (2000, 1, 1000, 1001) in paths
+    assert (2001, 1, 1000, 1001) in paths
+
+
+@pytest.mark.parametrize("extra_successor", [False, True])
+def test_direct_dispatcher_self_edge_is_one_explicit_corridor(extra_successor):
+    successors = {0: (2,), 2: (2, 3) if extra_successor else (2,), 3: ()}
+    paths, complete = corridor_module._upstream_corridor_paths(
+        successors, feeder_serial=2, dispatcher_serial=2,
+    )
+    assert complete
+    assert paths == ((2, 2),)
+
+
+@pytest.mark.parametrize("redirect_entry", [False, True])
+def test_direct_dispatcher_self_edge_coverage_tracks_reachability(redirect_entry):
+    graph = FlowGraph(blocks={
+        0: _block(0, (2,), (), 0x1000),
+        2: _block(2, (2,), (0, 2), 0x1020),
+        3: _block(3, (), (), 0x1030, kind=BlockKind.STOP),
+    }, entry_serial=0, func_ea=0x1000)
+    report = analyze_dispatcher_corridor_coverage(
+        graph, dispatcher_entry_serial=2,
+        modifications=(RedirectGoto(from_serial=0, old_target=2, new_target=3),)
+        if redirect_entry else (),
+    )
+    assert report.enumeration_complete
+    paths = report.covered_corridors if redirect_entry else report.residual_corridors
+    assert {tuple(a.serial for a in path.path) for path in paths} == {(0, 2), (2, 2)}
+    assert not (report.residual_corridors if redirect_entry else report.covered_corridors)
+
+
 def _dispatcher_self_reentry_corridor_graph(
     *,
     reverse_cycle: bool = False,

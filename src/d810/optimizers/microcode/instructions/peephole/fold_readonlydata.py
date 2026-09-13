@@ -62,7 +62,11 @@ error:
 .text:0000000180006BAE C38 48 8B 80 20 03 00 00                  mov     rax, [rax+320h]
 .text:0000000180006BB5 C38 48 89 84 24 98 05 00 00               mov     [rsp+0C38h+var_6A0], rax
 
-this becomes: `(__ROL8__(MEMORY[0xB10000007FFE03FD]...)` which is obviously wrong.
+This becomes `(__ROL8__(MEMORY[0xB10000007FFE03FD]...)`. The unusual
+address alone does not establish a folding defect: the checked-in AntiDebug
+fixture has a QWORD read at base + 0x320, distinct from its DWORD read at
+base + 4 (0xB10000007FFE00E1). Compare the original load site, width and
+address computation before attributing a discrepancy to readonly folding.
 """
 
 from __future__ import annotations

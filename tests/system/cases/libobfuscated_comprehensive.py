@@ -503,22 +503,24 @@ CONSTANT_FOLDING_CASES = [
         function="AntiDebug_ExceptionFilter",
         description=(
             "Anti-debugging exception handler through the shared Tigress switch "
-            "engine profile. The native constant chain deliberately computes "
-            "0xB10000007FFE00E1 and dereferences it; the recovered pseudocode "
-            "must preserve that access."
+            "engine profile. Preserve the distinct native DWORD read at "
+            "0xB10000007FFE00E1 and QWORD read at 0xB10000007FFE03FD."
         ),
         project="default_unflattening_tigress_engine_transition_facts.json",
-        skip=(
-            "temporarily disabled: readonly-data provenance still folds the "
-            "native 0xB10000007FFE00E1 chain to the documented invalid "
-            "0xB10000007FFE03FD dereference"
-        ),
         # Cases 0x7C..0x88 in the native fixture reduce to
-        # v240=0xB10000007FFE00B8, then v241=(v240 ^ 0x65)+4.  Treating the
-        # resulting MEMORY access as forbidden would reward an omission.
-        deobfuscated_contains=[
-            "MEMORY[0xB10000007FFE00E1]",
+        # v240=0xB10000007FFE00B8, then v241=(v240 ^ 0x65)+4 (DWORD).
+        # Cases 0x99..0x9C reconstruct the same base and read base+0x320
+        # (QWORD). The latter ...03FD access is not a corrupted ...00E1.
+        # Hex-Rays may render the first address as 4-0x4EFFFFFF8001FF23LL;
+        # accept that uint64-equivalent spelling while retaining read widths.
+        deobfuscated_regexes=[
+            r"__ROL4__\(\s*(?:MEMORY\[0xB10000007FFE00E1\]"
+            r"|\*\s*\(_DWORD\s*\*\)\s*\(\s*"
+            r"(?:4\s*-\s*0x4EFFFFFF8001FF23LL|0xB10000007FFE00E1(?:u?LL)?)"
+            r"\s*\))\s*,",
+            r"__ROL8__\(\s*MEMORY\[0xB10000007FFE03FD\]\s*\^\s*0x65LL\s*,",
         ],
+        deobfuscated_not_contains=["switch"],
         # EmulatedDispatcherUnflattener was swapped to the §1a StateMachineCffUnflattener
         # (llr-a93i); it returns 0 to IDA (optblock cadence) so it is not tracked in
         # cfg_rule_usages -- assert the deobfuscation OUTCOME (must_change + contents)

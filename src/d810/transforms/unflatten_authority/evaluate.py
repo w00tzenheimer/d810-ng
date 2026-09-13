@@ -1278,7 +1278,10 @@ def _retirement_cycle_allowance_covers(
         or result.candidate_generation != candidate.generation
         or {member.block_ref for member in result.members}
         != set(catalog.member_refs)
-        or cycle_refs != frozenset(result.retired_refs)
+        # One sealed retirement can contain acyclic members and multiple SCCs.
+        # Every member of this SCC must be retired by that exact certificate;
+        # the SCC need not exhaust the certificate's complete retired set.
+        or not cycle_refs <= frozenset(result.retired_refs)
     ):
         return False
     return all(

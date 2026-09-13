@@ -416,6 +416,27 @@ def _valid_proposal(model):
     )
 
 
+@pytest.mark.parametrize("disposition", [
+    model.CorridorPathDisposition.STRUCTURALLY_COVERED,
+    model.CorridorPathDisposition.RESIDUAL,
+])
+def test_corridor_direct_self_edge_roundtrips(disposition):
+    node = model.CorridorCoveragePathNode(block_ref("self-edge"), 0x1020)
+    path = model.CorridorCoveragePath((node, node), None, disposition, ())
+    assert canonical_decode(canonical_bytes(path)) == path
+
+
+@pytest.mark.parametrize("shape", ["long", "internal", "merge", "excluded"])
+def test_corridor_self_edge_exception_does_not_admit_other_repetition(shape):
+    node = model.CorridorCoveragePathNode(block_ref("self-edge"), 0x1020)
+    other = model.CorridorCoveragePathNode(block_ref("other"), 0x1000)
+    nodes = {"long": (other, node, node), "internal": (node, other, node)}.get(shape, (node, node))
+    disposition = model.CorridorPathDisposition.SEMANTICALLY_EXCLUDED if shape == "excluded" else model.CorridorPathDisposition.STRUCTURALLY_COVERED
+    with pytest.raises(ValueError, match="nodes must be unique"):
+        model.CorridorCoveragePath(nodes, node if shape == "merge" else None,
+                                  disposition, (authority_id("exclusion"),) if shape == "excluded" else ())
+
+
 def _minimal_corridor_forecast(model, proposal):
     """Build a minimal typed PATH-domain forecast for retirement fixtures."""
 

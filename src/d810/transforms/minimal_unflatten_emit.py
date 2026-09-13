@@ -13757,12 +13757,17 @@ def emit_minimal_unflatten(
                     # unrelated, non-emitted route.
                     if entry_fact is None:
                         return compile_with_dispatcher_coverage(())
-                    if same_fact and (
-                        len(same_fact) != 1
-                        or same_fact[0].source_serial != entry_fact.source_serial
-                        or same_fact[0].source_instruction_ea != entry_fact.source_instruction_ea
-                        or same_fact[0].state_constant != entry_fact.state_constant
-                        or same_fact[0].target_serial != entry_fact.target_serial
+                    # Multiple recovery occurrences can bind the same native
+                    # receipt (e.g. global and predecessor-partitioned folds).
+                    # Preserve their paths; require agreement, not one row.
+                    # Full fact equality and deduplication belong to the final
+                    # join after same-snapshot anchor normalization.
+                    if any(
+                        fact.source_serial != entry_fact.source_serial
+                        or fact.source_instruction_ea != entry_fact.source_instruction_ea
+                        or fact.state_constant != entry_fact.state_constant
+                        or fact.target_serial != entry_fact.target_serial
+                        for fact in same_fact
                     ):
                         return compile_with_dispatcher_coverage(())
                     if not caller_supplied_canonical_evidence:

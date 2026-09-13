@@ -5222,6 +5222,93 @@ def _typed_entry_native_route_fixture(monkeypatch):
     )
 
 
+@pytest.mark.parametrize("copies", (1, 2, 3))
+def test_typed_native_entry_accepts_agreeing_recovery_occurrences(
+    monkeypatch, _seam, copies,
+):
+    """Overlapping recovery rows must reach one final entry proof without losing paths."""
+    graph, state, _route, kwargs = _typed_entry_native_route_fixture(monkeypatch)
+    rows = tuple(
+        StateWriteTransition(
+            0, state, 20, False, None,
+            via_block=None if index == 0 else 2,
+            proof=TransitionProof(
+                "region_partitioned_fixpoint",
+                "global_fold" if index == 0 else "partial_predecessor_partitioned",
+                True,
+            ),
+        )
+        for index in range(copies)
+    )
+    monkeypatch.setattr(
+        minimal_unflatten_emit_module,
+        "recover_state_write_transitions_via_partitioned_fixpoint",
+        lambda *_args, **_kwargs: rows,
+    )
+    original_select = minimal_unflatten_emit_module.build_state_write_redirects
+    selected_rows = []
+
+    def observe_selection(flow_graph, dispatcher, transitions, **options):
+        selected_rows.extend(row for row in transitions if row.write_block == 0)
+        return original_select(flow_graph, dispatcher, transitions, **options)
+
+    monkeypatch.setattr(
+        minimal_unflatten_emit_module, "build_state_write_redirects", observe_selection,
+    )
+    plan = emit_minimal_unflatten(graph, native_key=NATIVE_KEY, **kwargs)
+
+    assert plan.unflatten_proposal is not None
+    assert sum(bool(getattr(claim, "route_proof_ids", ()))
+               for claim in plan.unflatten_proposal.claims) == 2  # entry plus loop-back
+    assert sum(isinstance(mod, RedirectGoto) and mod.from_serial == 0
+               for mod in graph_modifications(plan)) == 1
+    assert [row.via_block for row in selected_rows] == [None, *([2] * (copies - 1))]
+    assert rows[0].proof.kind == "global_fold"
+    assert all(row.proof.kind == "partial_predecessor_partitioned" for row in rows[1:])
+
+
+@pytest.mark.parametrize("field,value", (
+    ("source_serial", 20),
+    ("source_instruction_ea", 0x1002),
+    ("state_constant", 0x12345678),
+    ("target_serial", 99),
+))
+def test_typed_native_entry_rejects_conflicting_recovery_occurrence(
+    monkeypatch, _seam, field, value,
+):
+    """An agreeing first occurrence cannot hide a later conflicting entry fact."""
+    graph, state, _route, kwargs = _typed_entry_native_route_fixture(monkeypatch)
+    monkeypatch.setattr(
+        minimal_unflatten_emit_module,
+        "recover_state_write_transitions_via_partitioned_fixpoint",
+        lambda *_args, **_kwargs: (
+            StateWriteTransition(0, state, 20, False, None),
+        ),
+    )
+    original_attach = minimal_unflatten_emit_module._attach_dispatcher_map_route_facts
+
+    def conflicting_occurrence(*args, **options):
+        rows = original_attach(*args, **options)
+        entry = next(row for row in rows if row.write_block == 0)
+        assert entry.semantic_route_fact is not None
+        changes = {field: value}
+        if field == "source_serial":
+            changes.update(path_serials=(0, 20), path_edges=((0, 20),))
+        if field == "state_constant":
+            changes["physical_state_write"] = None
+        return (*rows, replace(entry, semantic_route_fact=replace(
+            entry.semantic_route_fact, **changes,
+        )))
+
+    monkeypatch.setattr(
+        minimal_unflatten_emit_module,
+        "_attach_dispatcher_map_route_facts", conflicting_occurrence,
+    )
+    plan = emit_minimal_unflatten(graph, native_key=NATIVE_KEY, **kwargs)
+    assert graph_modifications(plan) == []
+    assert plan.unflatten_proposal is None
+
+
 def test_typed_native_entry_is_not_blocked_by_an_unselected_untyped_transition(
     monkeypatch, _seam,
 ):

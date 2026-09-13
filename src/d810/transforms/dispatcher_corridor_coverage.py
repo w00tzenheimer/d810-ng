@@ -35,6 +35,7 @@ from d810.ir.flowgraph import (
     BlockKind,
     FlowGraph,
     InsnKind,
+    OperandKind,
 )
 from d810.ir.insn_projection import (
     InstructionProjection,
@@ -403,13 +404,22 @@ def _upstream_corridor_paths(
     exactly one additional layer so a merge behind a shared feeder retains its
     real incoming anchors (for example ``45 -> 123 -> 3 -> dispatcher``).
     """
+    if int(feeder_serial) == int(dispatcher_serial):
+        # A direct dispatcher self-edge is one edge, not an upstream walk
+        # through the dispatcher again. Other incoming corridors are enumerated
+        # independently; retain this edge so reachable residue stays visible.
+        return (((int(dispatcher_serial), int(dispatcher_serial)),), True)
     predecessors = _predecessors(successors)
+    # Every immediate feeder input is already an explicit graph edge, so a
+    # wide merge needs at least that many output rows. Keep further upstream
+    # expansion bounded independently of this output-linear fan-in floor.
+    path_limit = max(_MAX_CORRIDORS, len(predecessors.get(int(feeder_serial), ())))
     paths: list[tuple[int, ...]] = []
     complete = True
 
     def append(path: tuple[int, ...]) -> None:
         nonlocal complete
-        if len(paths) >= _MAX_CORRIDORS:
+        if len(paths) >= path_limit:
             complete = False
             return
         if path not in paths:
@@ -891,11 +901,12 @@ def _retired_dispatcher_infrastructure(
 
 
 def _is_effect_free_dispatcher_router(block: object) -> bool:
-    """Recognize only control-only comparison infrastructure.
+    """Recognize control-only comparison or literal switch infrastructure.
 
     The proof is intentionally narrower than normal CFG analysis: an empty
     portable snapshot is an accepted control-only node, while populated blocks
-    must contain only branch/no-op tails.  Any unclassified instruction keeps
+    must contain only branch/no-op instructions, with literal switch targets
+    checked against the block's edges. Any unclassified instruction keeps
     the node semantic and makes the narrow allowance abstain.
     """
     if block is None:
@@ -904,6 +915,37 @@ def _is_effect_free_dispatcher_router(block: object) -> bool:
     if not insns:
         return True
     for insn in insns:
+        if getattr(insn, "kind", None) is InsnKind.TABLE_JUMP:
+            # Literal case rows describe control destinations, not executable
+            # operand expressions. Check the whole block as usual; admit only
+            # a final table branch with a pure selector and exact CFG targets.
+            selector = getattr(insn, "l", None)
+            cases = getattr(insn, "r", None)
+            destination = getattr(insn, "d", None)
+            rows = tuple(getattr(cases, "switch_cases", ()) or ())
+            if (
+                insn is not insns[-1]
+                or getattr(insn, "is_call", False)
+                or getattr(insn, "call_kind", None) is not None
+                or selector is None
+                or getattr(selector, "kind", None) is OperandKind.EMPTY
+                or not is_effect_free_operand_tree(selector)
+                or getattr(cases, "kind", None) is not OperandKind.CASE_LIST
+                or getattr(cases, "args", ())
+                or getattr(cases, "sub_l", None) is not None
+                or getattr(cases, "sub_r", None) is not None
+                or not rows
+                or any(
+                    type(row) is not tuple or len(row) != 2
+                    or type(row[0]) is not tuple or type(row[1]) is not int
+                    or any(type(value) is not int for value in row[0])
+                    for row in rows
+                )
+                or {row[1] for row in rows} != set(getattr(block, "succs", ()))
+                or (destination is not None and getattr(destination, "kind", None) is not OperandKind.EMPTY)
+            ):
+                return False
+            continue
         if getattr(insn, "kind", None) not in {
             InsnKind.NOP,
             InsnKind.GOTO,
