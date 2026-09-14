@@ -17,6 +17,12 @@ from . import gates
 from . import producer_api
 from .ids import _case_factory, _evidence_factory, _justification_factory, authority_id as _authority_id_digest, canonical_bytes, content_id as _content_id_digest, stage_unpublished_field
 from .proposal import _redirect_owner_sort_key
+from .work_counters import (
+    AuthorityInputOrigin,
+    AuthorityWorkKind,
+    AuthorityWorkPhase,
+    record_authority_work,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -3719,6 +3725,21 @@ def build_semantic_case(
     model._id(authority_id, "authority_id")
     if type(phase) is not model.UnflattenAuthorityPhase:
         raise TypeError("phase must be UnflattenAuthorityPhase")
+    work_phase = (
+        AuthorityWorkPhase.OBSERVED
+        if phase is model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY
+        else AuthorityWorkPhase.PROJECTED
+    )
+    input_origin = (
+        AuthorityInputOrigin.OBSERVED_GRAPH
+        if work_phase is AuthorityWorkPhase.OBSERVED
+        else AuthorityInputOrigin.PROJECTED_GRAPH
+    )
+    record_authority_work(
+        AuthorityWorkKind.BUILD_SEMANTIC_CASE,
+        work_phase,
+        input_origin,
+    )
     for source_result in inputs.detached_dead_handler_component_source_results:
         authority_bind.validate_detached_source_result(source_result)
     for phase_result in inputs.detached_dead_handler_component_phase_results:
@@ -5545,6 +5566,21 @@ def build_semantic_loss_ledger(
         raise TypeError("semantic ledger requires canonical verdict")
     if verdict.safety_case is not case:
         raise ValueError("semantic ledger verdict must retain exact safety case")
+    work_phase = (
+        AuthorityWorkPhase.OBSERVED
+        if case.phase is model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY
+        else AuthorityWorkPhase.PROJECTED
+    )
+    input_origin = (
+        AuthorityInputOrigin.OBSERVED_GRAPH
+        if work_phase is AuthorityWorkPhase.OBSERVED
+        else AuthorityInputOrigin.PROJECTED_GRAPH
+    )
+    record_authority_work(
+        AuthorityWorkKind.BUILD_LOSS_LEDGER,
+        work_phase,
+        input_origin,
+    )
     rows = _semantic_loss_rows(case)
     return construct(model.SemanticLossLedger,
         case=case, authority_id=case.authority_id, case_id=case.case_id,
