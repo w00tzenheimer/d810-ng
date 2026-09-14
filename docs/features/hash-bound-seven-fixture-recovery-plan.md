@@ -158,9 +158,16 @@
 
   Run the same script without `-MasmFuncs`, pull artifacts by the documented tar-over-SSH route, strip only the known 29-byte profile preamble, and verify PE32+ plus `Micr` PDB headers.
 
-- [ ] **Step 5: Prove all seven exports and exact native bytes**
+- [ ] **Step 5: Prove all seven exports and linked fixture extents**
 
-  Use `llvm-objdump -p` for export names and a fresh IDA loader/readback for code bytes. Fail if any export is absent, overlaps another function, or differs from the declared fixture extent. Add a `MASM_LINK_LAST_FUNCS` row only if the isolated/combined A/B proves object ordering changes native bytes or a required relative relocation.
+  Use `llvm-objdump -p` for export names and Microsoft COFF object headers plus
+  a fresh IDA loader/readback for linked code extents. Record both the immutable
+  source-image extent and the measured linked `.text` extent: structural MASM
+  reassembly can relax branches and therefore is not byte-for-byte identical
+  to the source image. Fail if any export is absent, overlaps another function,
+  or differs from the measured linked extent. Add a `MASM_LINK_LAST_FUNCS` row
+  only if the isolated/combined A/B proves object ordering changes fixture
+  semantics or a required relative relocation.
 
 - [ ] **Step 6: Commit only the canonical validated artifacts and any proven layout rule**
 
@@ -203,17 +210,18 @@
 
 - [ ] **Step 5: Register exact code extents**
 
-  Add these sizes to the e2e runner's MASM extent map in manifest order:
+  Add these measured Microsoft-COFF `.text` sizes to the e2e runner's MASM
+  extent map in manifest order:
 
   ```python
   {
-      "sub_7FFB0E53C420": 0x4296,
-      "sub_7FFB0DE51120": 0x7470,
-      "sub_7FFB0DF992D0": 0x500D,
-      "sub_7FFB0DFD1D70": 0x1E6FD,
-      "sub_7FFB0E1E69E0": 0x166,
-      "sub_7FFB0E0A2C90": 0x95CB,
-      "sub_7FFB0E086BE0": 0x8CB0,
+      "sub_7FFB0E53C420": 0x4279,
+      "sub_7FFB0DE51120": 0x745E,
+      "sub_7FFB0DF992D0": 0x4FD4,
+      "sub_7FFB0DFD1D70": 0x1E74C,
+      "sub_7FFB0E1E69E0": 0x15A,
+      "sub_7FFB0E0A2C90": 0x95BD,
+      "sub_7FFB0E086BE0": 0x8C97,
   }
   ```
 

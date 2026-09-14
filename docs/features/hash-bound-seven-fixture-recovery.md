@@ -69,7 +69,7 @@ The repository MASM workflow remains authoritative:
   build the fixtures; do not introduce a parallel build system.
 - Preserve `MASM_LINK_LAST_FUNCS` ordering where native layout constraints
   require it.
-- Add exact MASM extents and seven required cases to the existing
+- Add measured linked MASM extents and seven required cases to the existing
   `libobfuscated.dll` DSL inventory.
 
 Build qualification is incremental. First assemble and link each new fixture
@@ -91,8 +91,9 @@ Investigation proceeds by failure boundary, not fixture order.
 
 Start with `sub_7FFB0E0A2C90` and `sub_7FFB0E1E69E0`.
 
-- Reproduce the native failure with exact instruction bytes and declared code
-  extents.
+- Reproduce the failure with the exact canonical fixture bytes and measured
+  linked code extents. Keep the source-image extent as separate provenance;
+  structural MASM reassembly can relax instructions and change its length.
 - Reject switch targets that are not proven instruction starts within the
   function extent.
 - Keep malformed-tail recovery bounded to the fixture's authoritative extent.
