@@ -10,6 +10,7 @@ from pathlib import Path
 from types import SimpleNamespace
 import shutil
 import subprocess
+import sys
 from uuid import UUID
 
 import pytest
@@ -212,6 +213,7 @@ def _manager(optimizer, maturity):
     return manager
 
 
+@contextlib.contextmanager
 def _activate_real_provider(
     pass_id: str,
     store: MbaDiscoveryStore,
@@ -219,65 +221,128 @@ def _activate_real_provider(
     max_leaves: int = 8,
     time_budget_ms: int = 20,
 ):
-    host_registry = _host_capability_registry()
-    sink = SqliteMbaResidualObservationSink(store)
-    lease = host_registry.register(
-        D810_MBA_RESIDUAL_OBSERVATION_CAPABILITY,
-        MbaResidualObservationSink,
-        sink,
-        activation_binder=sink.bind_activation,
-        implementation_binder=sink.bind_implementation,
+    with contextlib.ExitStack() as cleanup:
+        host_registry = _host_capability_registry()
+        sink = SqliteMbaResidualObservationSink(store)
+        cleanup.callback(sink.close)
+        lease = host_registry.register(
+            D810_MBA_RESIDUAL_OBSERVATION_CAPABILITY,
+            MbaResidualObservationSink,
+            sink,
+            activation_binder=sink.bind_activation,
+            implementation_binder=sink.bind_implementation,
+        )
+        cleanup.callback(lease.release)
+        project = ProjectConfiguration(
+            path=Path(f"task11-{pass_id}.runtime-config-v2.json"),
+            additional_configuration={
+                "pipeline_v2": [
+                    {
+                        "pass_id": pass_id,
+                        "options": (
+                            {
+                                "maturities": [
+                                    "GLOBAL_OPTIMIZED"
+                                    if pass_id == "mba-egraph"
+                                    else "CANONICAL"
+                                ],
+                                "require_proof": True,
+                                "max_leaves": max_leaves,
+                            }
+                            if pass_id == "mba-solve"
+                            else {
+                                "maturities": [
+                                    "GLOBAL_OPTIMIZED"
+                                    if pass_id == "mba-egraph"
+                                    else "CANONICAL"
+                                ],
+                                "max_leaves": max_leaves,
+                                "max_operator_nodes": 128,
+                                "max_degree": 1,
+                                "time_budget_ms": time_budget_ms,
+                                # These observation cases exercise one XOR identity
+                                # and candidate refusal, not whole-corpus coverage.
+                                "families": ["xor"],
+                            }
+                        ),
+                    }
+                ]
+            },
+        )
+        schedule = compile_config_v2_hook_schedule(project)
+        binding = next(
+            item for item in schedule.instruction_bindings if item.pass_id == pass_id
+        )
+        backends = registry()
+        cleanup.callback(backends.close_activations)
+        candidate = backends.require_unique_implementation(
+            pass_id,
+            install_hint=("d810-cobra" if pass_id == "mba-solve" else "d810-egglog"),
+        )
+        assert candidate.rule_name == binding.implementation_id
+        implementation = backends.activate_implementation(candidate)
+        implementation.bind_plugin_services(backends.plugin_rule_services(candidate))
+        implementation.configure(dict(binding.config))
+        yield implementation, schedule
+
+
+@pytest.mark.parametrize("failure", ["compile", "activate", "bind", "configure", "body", "close"])
+def test_real_provider_scope_releases_registration_after_failure(
+    tmp_path: Path, monkeypatch, failure: str
+) -> None:
+    host = PluginHostCapabilityRegistry()
+    module = sys.modules[__name__]
+    closed = []
+
+    def fail_at(stage):
+        if stage == failure:
+            raise RuntimeError(f"injected {stage} failure")
+
+    binding = SimpleNamespace(pass_id="mba-solve", implementation_id="test", config={})
+
+    def compile_schedule(_project):
+        fail_at("compile")
+        return SimpleNamespace(instruction_bindings=[binding])
+
+    rule = SimpleNamespace(
+        bind_plugin_services=lambda _services: fail_at("bind"),
+        configure=lambda _config: fail_at("configure"),
     )
-    project = ProjectConfiguration(
-        path=Path(f"task11-{pass_id}.runtime-config-v2.json"),
-        additional_configuration={
-            "pipeline_v2": [
-                {
-                    "pass_id": pass_id,
-                    "options": (
-                        {
-                            "maturities": [
-                                "GLOBAL_OPTIMIZED"
-                                if pass_id == "mba-egraph"
-                                else "CANONICAL"
-                            ],
-                            "require_proof": True,
-                            "max_leaves": max_leaves,
-                        }
-                        if pass_id == "mba-solve"
-                        else {
-                            "maturities": [
-                                "GLOBAL_OPTIMIZED"
-                                if pass_id == "mba-egraph"
-                                else "CANONICAL"
-                            ],
-                            "max_leaves": max_leaves,
-                            "max_operator_nodes": 128,
-                            "max_degree": 1,
-                            "time_budget_ms": time_budget_ms,
-                            # These observation cases exercise one XOR identity
-                            # and candidate refusal, not whole-corpus coverage.
-                            "families": ["xor"],
-                        }
-                    ),
-                }
-            ]
-        },
+
+    def activate(_candidate):
+        fail_at("activate")
+        return rule
+
+    def close_activations():
+        closed.append("backends")
+        fail_at("close")
+
+    backends = SimpleNamespace(
+        require_unique_implementation=lambda *_args, **_kwargs: SimpleNamespace(rule_name="test"),
+        activate_implementation=activate,
+        plugin_rule_services=lambda _candidate: None,
+        close_activations=close_activations,
     )
-    schedule = compile_config_v2_hook_schedule(project)
-    binding = next(
-        item for item in schedule.instruction_bindings if item.pass_id == pass_id
-    )
-    backends = registry()
-    candidate = backends.require_unique_implementation(
-        pass_id,
-        install_hint=("d810-cobra" if pass_id == "mba-solve" else "d810-egglog"),
-    )
-    assert candidate.rule_name == binding.implementation_id
-    implementation = backends.activate_implementation(candidate)
-    implementation.bind_plugin_services(backends.plugin_rule_services(candidate))
-    implementation.configure(dict(binding.config))
-    return backends, implementation, lease, sink, schedule
+    monkeypatch.setattr(module, "_host_capability_registry", lambda: host)
+    monkeypatch.setattr(module, "registry", lambda: backends)
+    monkeypatch.setattr(module, "compile_config_v2_hook_schedule", compile_schedule)
+
+    with contextlib.closing(MbaDiscoveryStore(tmp_path / "failure.sqlite3")) as store:
+        with pytest.raises(RuntimeError, match=f"injected {failure} failure"):
+            with _activate_real_provider("mba-solve", store):
+                fail_at("body")
+        # This uses the same registry, so a leaked registration fails here.
+        sink = SqliteMbaResidualObservationSink(store)
+        with contextlib.ExitStack() as cleanup:
+            cleanup.callback(sink.close)
+            lease = host.register(
+                D810_MBA_RESIDUAL_OBSERVATION_CAPABILITY,
+                MbaResidualObservationSink,
+                sink,
+            )
+            cleanup.callback(lease.release)
+        if failure != "compile":
+            assert closed == ["backends"]
 
 
 def _real_provider_case(
@@ -315,6 +380,43 @@ def _real_provider_case(
     return (pass_id, plugin_name, distribution, version, provider, status, reason)
 
 
+def _requires_provider_distributions(*distributions: str):
+    """Skip absent distributions only; installed but broken providers must fail."""
+    missing = []
+    for distribution in distributions:
+        try:
+            importlib.metadata.version(distribution)
+        except importlib.metadata.PackageNotFoundError:
+            missing.append(distribution)
+    return pytest.mark.skipif(
+        bool(missing),
+        reason=f"provider distributions are not installed: {', '.join(missing)}",
+    )
+
+
+@pytest.mark.parametrize("missing", [None, "d810-egglog", "d810-cobra"])
+def test_provider_dependency_marks_only_skip_missing_distributions(monkeypatch, missing):
+    def version(distribution):
+        if distribution == missing:
+            raise importlib.metadata.PackageNotFoundError(distribution)
+        return "test-version"
+
+    monkeypatch.setattr(importlib.metadata, "version", version)
+    mark = _requires_provider_distributions("d810-egglog", "d810-cobra")
+    assert mark.args == (missing is not None,)
+    if missing is not None:
+        assert missing in mark.kwargs["reason"]
+
+
+def test_provider_dependency_marks_do_not_hide_broken_metadata(monkeypatch):
+    def version(_distribution):
+        raise RuntimeError("broken installed provider metadata")
+
+    monkeypatch.setattr(importlib.metadata, "version", version)
+    with pytest.raises(RuntimeError, match="broken installed provider metadata"):
+        _requires_provider_distributions("d810-egglog")
+
+
 @pytest.mark.usefixtures("libobfuscated_setup")
 class TestRealProviderResidualDiscovery:
     binary_name = "libobfuscated.dll"
@@ -344,29 +446,28 @@ class TestRealProviderResidualDiscovery:
         db_path = tmp_path / f"{pass_id}.sqlite3"
         db_path.unlink(missing_ok=True)
         store = MbaDiscoveryStore(db_path)
-        backends, rule, lease, sink, schedule = _activate_real_provider(
+        with contextlib.closing(store), _activate_real_provider(
             pass_id, store, max_leaves=1
-        )
-        assert schedule.instruction_bindings
-        runtime_maturity = (
-            ida_hexrays.MMAT_GLBOPT2
-            if pass_id == "mba-egraph"
-            else ida_hexrays.MMAT_PREOPTIMIZED
-        )
-        assert rule.maturities == [runtime_maturity]
-        block = SimpleNamespace(
-            mba=SimpleNamespace(
-                maturity=runtime_maturity,
-                entry_ea=0x401000,
-            ),
-            serial=7,
-        )
-        instruction = _native_instruction()
-        optimizer = _Optimizer([runtime_maturity], stats=None)
-        optimizer.add_rule(rule)
-        manager = _manager(optimizer, runtime_maturity)
+        ) as (rule, schedule):
+            assert schedule.instruction_bindings
+            runtime_maturity = (
+                ida_hexrays.MMAT_GLBOPT2
+                if pass_id == "mba-egraph"
+                else ida_hexrays.MMAT_PREOPTIMIZED
+            )
+            assert rule.maturities == [runtime_maturity]
+            block = SimpleNamespace(
+                mba=SimpleNamespace(
+                    maturity=runtime_maturity,
+                    entry_ea=0x401000,
+                ),
+                serial=7,
+            )
+            instruction = _native_instruction()
+            optimizer = _Optimizer([runtime_maturity], stats=None)
+            optimizer.add_rule(rule)
+            manager = _manager(optimizer, runtime_maturity)
 
-        try:
             with native_mba_callback_scope():
                 assert manager.optimize(block, instruction) is False
             pending = rule.pending_provider_observation()
@@ -401,47 +502,39 @@ class TestRealProviderResidualDiscovery:
             assert attempt.outcome.input_cost is not None
             assert attempt.outcome.output_cost is None or attempt.outcome.output_cost < attempt.outcome.input_cost
             assert attempt.outcome.provider.value == provider
-        finally:
-            backends.close_activations()
-            lease.release()
-            sink.close()
-            store.close()
 
+    @_requires_provider_distributions("d810-egglog")
     def test_real_accepted_rewrite_is_applied_without_residual_row(
         self, tmp_path: Path
     ) -> None:
         store = MbaDiscoveryStore(tmp_path / "accepted.sqlite3")
-        backends, rule, lease, sink, schedule = _activate_real_provider(
+        with contextlib.closing(store), _activate_real_provider(
             "mba-egraph", store, max_leaves=8, time_budget_ms=1000
-        )
-        assert schedule.instruction_bindings
-        runtime_maturity = ida_hexrays.MMAT_GLBOPT2
-        assert rule.maturities == [runtime_maturity]
-        block = SimpleNamespace(
-            mba=SimpleNamespace(
-                maturity=runtime_maturity,
-                entry_ea=0x401000,
-            ),
-            serial=7,
-        )
-        instruction = _accepted_native_instruction()
-        optimizer = _Optimizer([runtime_maturity], stats=None)
-        optimizer.add_rule(rule)
-        manager = _manager(optimizer, runtime_maturity)
-        rule.begin_provider_outcome_capture()
+        ) as (rule, schedule):
+            assert schedule.instruction_bindings
+            runtime_maturity = ida_hexrays.MMAT_GLBOPT2
+            assert rule.maturities == [runtime_maturity]
+            block = SimpleNamespace(
+                mba=SimpleNamespace(
+                    maturity=runtime_maturity,
+                    entry_ea=0x401000,
+                ),
+                serial=7,
+            )
+            instruction = _accepted_native_instruction()
+            optimizer = _Optimizer([runtime_maturity], stats=None)
+            optimizer.add_rule(rule)
+            manager = _manager(optimizer, runtime_maturity)
+            rule.begin_provider_outcome_capture()
 
-        try:
-            with native_mba_callback_scope():
-                assert manager.optimize(block, instruction) is True
-            assert rule.pending_provider_observation() is None
-            assert store.provider_attempt_snapshots() == ()
-            assert rule.provider_outcomes()[-1].status.value == "applied"
-        finally:
-            rule.end_provider_outcome_capture()
-            backends.close_activations()
-            lease.release()
-            sink.close()
-            store.close()
+            try:
+                with native_mba_callback_scope():
+                    assert manager.optimize(block, instruction) is True
+                assert rule.pending_provider_observation() is None
+                assert store.provider_attempt_snapshots() == ()
+                assert rule.provider_outcomes()[-1].status.value == "applied"
+            finally:
+                rule.end_provider_outcome_capture()
 
 
 @contextlib.contextmanager
@@ -532,19 +625,22 @@ class TestLiveExactCProviderResidualDiscovery:
     @pytest.mark.parametrize(
         ("pass_id", "rule_name", "plugin_name", "distribution", "provider"),
         (
-            (
+            pytest.param(
                 "mba-solve",
                 "CobraSolveRule",
                 "cobra",
                 "d810-cobra",
                 MbaProviderKind.COEFFICIENT_SOLVER,
+                marks=_requires_provider_distributions("d810-cobra"),
             ),
-            (
+            pytest.param(
                 "mba-egraph",
                 "EgglogOptimizer",
                 "egglog",
                 "d810-egglog",
                 MbaProviderKind.EGRAPH,
+                # The live egraph pipeline runs mba-solve first.
+                marks=_requires_provider_distributions("d810-egglog", "d810-cobra"),
             ),
         ),
     )
