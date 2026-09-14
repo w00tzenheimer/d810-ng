@@ -50,18 +50,10 @@ def _origin(arena: RuntimeAuthorityArena, origin: InventoryOrigin) -> object:
 def publish_inventory(
     arena: RuntimeAuthorityArena, value: model.SemanticGraphInventory,
 ) -> InventoryPublication:
-    """Validate ingress and captured content before retaining an origin."""
+    """Validate ingress and capture it once; export closes the live boundary."""
     _require_arena(arena)
     model.validate_semantic_graph_inventory(value)
-    validated_digest = value.inventory_digest
     root = inventory_inputs.capture_inventory(arena.structural, value)
-    # Replay the captured value itself. A public-before/public-after check can
-    # miss a transient mutation that affected only the captured terms.
-    detached = inventory_inputs.materialize_inventory(arena.structural, root)
-    if detached.inventory_digest != validated_digest:
-        raise ValueError("captured inventory differs from validated ingress")
-    if inventory_inputs.capture_inventory(arena.structural, detached) is not root:
-        raise ValueError("captured inventory constructor normalization differs")
     return InventoryPublication(root, _retain(arena, value))
 
 
@@ -102,13 +94,9 @@ def require_inventory_export(
     root = inventory_root(arena, publication)
     if _origin(arena, publication.origin) is not value:
         raise ValueError("inventory occurrence changed before export")
-    model.validate_semantic_graph_inventory(value)
-    digest = inventory_values.scalar_value(
-        arena.structural,
-        inventory_values.inventory_field(arena.structural, root, "inventory_digest"),
-    )
-    if digest != value.inventory_digest:
-        raise ValueError("inventory content changed before export")
+    model.validate_semantic_graph_inventory_full(value)
+    if inventory_inputs.capture_inventory(arena.structural, value) is not root:
+        raise ValueError("inventory structural root changed before export")
 
 
 class InventoryRowOccurrences(NamedTuple):

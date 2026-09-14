@@ -6558,6 +6558,16 @@ class SemanticGraphInventory:
             record_inventory_seal_mint()
 
 
+def validate_semantic_graph_inventory_full(
+    value: object,
+) -> SemanticGraphInventory:
+    """Run the complete live inventory validator without ownership shortcuts."""
+    if type(value) is not SemanticGraphInventory:
+        raise TypeError("inventory must be SemanticGraphInventory")
+    value.__post_init__()
+    return value
+
+
 def validate_semantic_graph_inventory(value: object) -> SemanticGraphInventory:
     """Revalidate a live inventory object before every authority consumption."""
 
@@ -6574,8 +6584,7 @@ def validate_semantic_graph_inventory(value: object) -> SemanticGraphInventory:
         record_inventory_seal_check(sealed)
         if sealed:
             return value
-    value.__post_init__()
-    return value
+    return validate_semantic_graph_inventory_full(value)
 
 
 def _validate_terminal_cycle_phase_result_inventories(

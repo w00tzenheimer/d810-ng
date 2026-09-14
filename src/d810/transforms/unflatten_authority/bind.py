@@ -476,6 +476,32 @@ class _ProjectedSiteDraftViolation(ValueError):
         ValueError.__init__(self, self.reason_code)
 
 
+class _OwnedInventoryExportViolation(RuntimeError):
+    """A private inventory failed its final gate; no public result may escape."""
+
+
+def _require_owned_inventory_exports(
+    pair: object,
+    source_inventory: model.SemanticGraphInventory,
+    projected_inventory: model.SemanticGraphInventory,
+    drafts: tuple[object, ...] = (),
+) -> dict[int, tuple[object, ...]]:
+    try:
+        inventory_alias_binding.require_pair_export(
+            pair, source_inventory, projected_inventory,
+        )
+        return {
+            id(item): inventory_alias_binding.require_alias_export(
+                pair, item, source_inventory, projected_inventory,
+            )
+            for item in drafts
+        }
+    except Exception as exc:
+        raise _OwnedInventoryExportViolation(
+            "owned inventory export failed before public result",
+        ) from exc
+
+
 def _projected_relation_diagnostic_anchors(
     relation: object,
 ) -> tuple[model.AnchoredBlockRef, ...]:
@@ -8548,8 +8574,6 @@ def _make_route_kernels():
         route_publications: tuple[tuple[object, str], ...], _owned_pair=None,
     ) -> model.ProjectedRouteRealizationResult:
         """Mint the accepted closure only after independent draft validation."""
-        publication_batch = _AtomicPublicationBatch()
-        publish_route_objects(route_publications, publication_batch)
         # The inventories are immutable, exact transaction-owned occurrences.
         # Replay each complete canonical inventory once before binding its site
         # rows; replaying it again for every row makes closure quadratic while
@@ -8559,12 +8583,12 @@ def _make_route_kernels():
             model.validate_semantic_graph_inventory(source_inventory)
             model.validate_semantic_graph_inventory(projected_inventory)
         else:
-            inventory_alias_binding.require_pair_export(_owned_pair, source_inventory, projected_inventory)
-            alias_exports = {
-                id(item): inventory_alias_binding.require_alias_export(
-                    _owned_pair, item, source_inventory, projected_inventory,
-                ) for item in draft.local_binding_drafts
-            }
+            alias_exports = _require_owned_inventory_exports(
+                _owned_pair, source_inventory, projected_inventory,
+                draft.local_binding_drafts,
+            )
+        publication_batch = _AtomicPublicationBatch()
+        publish_route_objects(route_publications, publication_batch)
         source_effect_coordinates = {
             id(row): _bind_effect_site_coordinate(
                 source_inventory, row, _batch=publication_batch,
@@ -8859,35 +8883,49 @@ def _make_route_kernels():
                             raise TypeError("owned alias requires exact native identity")
                         structural_context.require_native_input(identity.native_key)
             if any(type(claim) is model.LocalAliasEffectScalarizationClaim for claim in claims):
-                owned_pair = inventory_alias_binding.publish_pair(
-                    structural_context.source_arena, structural_context.projected_arena,
-                    source_inventory, projected_inventory,
-                )
-        site_draft = _draft_projected_site_closure(
-            authority_id=authority_id, source_authority=source_authority, plan=plan,
-            source_inventory=source_inventory, projected_inventory=projected_inventory,
-            claims=claims, patch_step_facts=patch_step_facts,
-            raw_effect_gate_fact=raw_effect_gate_fact,
-            legacy_effective_gate_facts=legacy_effective_gate_facts,
-            attempt_id=attempt_id, drafts=drafts, owner_index=owner_index,
-            _owned_pair=owned_pair,
-        )
-        if owned_pair is not None:
-            owned_pair = inventory_alias_binding.release_occurrence_snapshots(owned_pair)
-        _validate_projected_site_closure_draft(
-            site_draft, source_authority=source_authority, plan=plan,
-            source_inventory=source_inventory, projected_inventory=projected_inventory,
-            claims=claims, patch_step_facts=patch_step_facts,
-            raw_effect_gate_fact=raw_effect_gate_fact,
-            legacy_effective_gate_facts=legacy_effective_gate_facts,
-            attempt_id=attempt_id, drafts=drafts, owner_index=owner_index,
-            _owned_pair=owned_pair,
-            route_publications=route_publications,
-        )
-        if claim_inventory is not None:
-            require_registered_transaction_projected_claim_inventory(
-                claim_inventory,
+                try:
+                    owned_pair = inventory_alias_binding.publish_pair(
+                        structural_context.source_arena,
+                        structural_context.projected_arena,
+                        source_inventory,
+                        projected_inventory,
+                    )
+                except Exception as exc:
+                    raise _OwnedInventoryExportViolation(
+                        "owned inventory export failed during pair publication",
+                    ) from exc
+        try:
+            site_draft = _draft_projected_site_closure(
+                authority_id=authority_id, source_authority=source_authority, plan=plan,
+                source_inventory=source_inventory, projected_inventory=projected_inventory,
+                claims=claims, patch_step_facts=patch_step_facts,
+                raw_effect_gate_fact=raw_effect_gate_fact,
+                legacy_effective_gate_facts=legacy_effective_gate_facts,
+                attempt_id=attempt_id, drafts=drafts, owner_index=owner_index,
+                _owned_pair=owned_pair,
             )
+            if owned_pair is not None:
+                owned_pair = inventory_alias_binding.release_occurrence_snapshots(owned_pair)
+            _validate_projected_site_closure_draft(
+                site_draft, source_authority=source_authority, plan=plan,
+                source_inventory=source_inventory, projected_inventory=projected_inventory,
+                claims=claims, patch_step_facts=patch_step_facts,
+                raw_effect_gate_fact=raw_effect_gate_fact,
+                legacy_effective_gate_facts=legacy_effective_gate_facts,
+                attempt_id=attempt_id, drafts=drafts, owner_index=owner_index,
+                _owned_pair=owned_pair,
+                route_publications=route_publications,
+            )
+            if claim_inventory is not None:
+                require_registered_transaction_projected_claim_inventory(
+                    claim_inventory,
+                )
+        except Exception:
+            if owned_pair is not None:
+                _require_owned_inventory_exports(
+                    owned_pair, source_inventory, projected_inventory,
+                )
+            raise
         return _mint_projected_site_closure(
             draft=site_draft, authority_id=authority_id,
             source_authority=source_authority, plan=plan,

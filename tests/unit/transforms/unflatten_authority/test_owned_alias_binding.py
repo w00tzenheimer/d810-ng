@@ -12,6 +12,42 @@ from d810.transforms.unflatten_authority.gates import GenericEffectfulGateFacts
 from tests.unit.transforms.unflatten_authority.test_bind import _c_local_alias_fixture, _c_two_local_alias_draft_inputs, _c_two_local_alias_transaction_inputs, _compiler_direct_branch_case
 
 
+def _owned_alias_realization_case():
+    authority, plan, source, projected, _facts, attempt = (
+        _compiler_direct_branch_case(helper=True, two_local_aliases=True)
+    )
+    derived = transaction_api._derive_transaction_facts(source, plan)
+    owners = frozenset(row.owner_serial for row in source.effects)
+    legacy = GenericEffectfulGateFacts(
+        True, owners, owners, frozenset(), "owned-alias-export",
+    )
+    raw = bind.bind_raw_effect_gate_phase_fact(
+        source_inventory=source, projected_inventory=projected,
+        raw_gate_facts=legacy,
+    )
+    identity = projected_authority_id(
+        attempt_id=attempt, proposal_id=authority.proposal_id,
+        source_authority_id=authority.source_authority_id,
+        plan_id=plan.plan_id, claims=derived.claims,
+        patch_step_facts=derived.patch_step_facts,
+        source_inventory=source, projected_inventory=projected,
+        raw_effect_gate_fact=raw,
+    )
+    context = StructuralTransactionContext(
+        attempt, source.blocks[0].block_ref.identity.native_key,
+        StructuralTransactionCoordinates(
+            plan.snapshot_id, 0, attempt.generation, None, 0,
+        ),
+    )
+    values = dict(
+        authority_id_value=identity, derived_claim_inventory=derived,
+        source_route_authority=authority, attempt_id=attempt,
+        projected_inventory=projected, raw_effect_gate_fact=raw,
+        legacy_effective_gate_facts=legacy, structural_context=context,
+    )
+    return values, context
+
+
 def test_owned_alias_replay_uses_published_inputs_without_capture(monkeypatch):
     fixture = _c_local_alias_fixture()
     source = RuntimeAuthorityArena(RuntimeAuthorityScope("source"))
@@ -116,8 +152,18 @@ def test_private_closure_replays_and_mints_owned_aliases_with_exact_output(monke
     context.close()
 
 
-@pytest.mark.parametrize("mutation", ("equal-source-row", "projected-display", "claim-token", "empty-origins"))
-def test_owned_consumer_rejects_drift_before_mint(monkeypatch, mutation):
+@pytest.mark.parametrize(
+    ("mutation", "export_fails"),
+    (
+        ("equal-source-row", False),
+        ("projected-display", True),
+        ("claim-token", False),
+        ("empty-origins", False),
+    ),
+)
+def test_owned_consumer_gates_export_before_public_result(
+    monkeypatch, mutation, export_fails,
+):
     authority, plan, source, projected, _facts, attempt = _compiler_direct_branch_case(helper=True, two_local_aliases=True)
     derived = transaction_api._derive_transaction_facts(source, plan)
     owners = frozenset(row.owner_serial for row in source.effects)
@@ -158,12 +204,118 @@ def test_owned_consumer_rejects_drift_before_mint(monkeypatch, mutation):
 
     monkeypatch.setattr(bind, "_validate_projected_site_closure_draft", mutate_then_validate)
     monkeypatch.setattr(bind, "_site_mint", tracked_mint)
-    result = transaction_api.realize_projected_routes(
-        authority_id_value=identity, derived_claim_inventory=derived,
-        source_route_authority=authority, attempt_id=attempt,
-        projected_inventory=projected, raw_effect_gate_fact=raw,
-        legacy_effective_gate_facts=legacy, structural_context=context,
+    if export_fails:
+        with pytest.raises(RuntimeError, match="owned inventory export"):
+            transaction_api.realize_projected_routes(
+                authority_id_value=identity, derived_claim_inventory=derived,
+                source_route_authority=authority, attempt_id=attempt,
+                projected_inventory=projected, raw_effect_gate_fact=raw,
+                legacy_effective_gate_facts=legacy, structural_context=context,
+            )
+    else:
+        result = transaction_api.realize_projected_routes(
+            authority_id_value=identity, derived_claim_inventory=derived,
+            source_route_authority=authority, attempt_id=attempt,
+            projected_inventory=projected, raw_effect_gate_fact=raw,
+            legacy_effective_gate_facts=legacy, structural_context=context,
+        )
+        assert type(result) is model.ProjectedRouteRealizationRejected
+    assert minted == []
+    context.close()
+
+
+def test_owned_draft_failure_runs_inventory_export_gate_before_typed_rejection(
+    monkeypatch,
+):
+    values, context = _owned_alias_realization_case()
+    original_export = inventory_alias_binding.require_pair_export
+    events = []
+
+    def tracked_export(*args, **kwargs):
+        events.append("pair-export")
+        return original_export(*args, **kwargs)
+
+    def fail_draft(**_kwargs):
+        raise ValueError("ordinary owned draft failure")
+
+    monkeypatch.setattr(
+        inventory_alias_binding, "require_pair_export", tracked_export,
     )
+    monkeypatch.setattr(bind, "_draft_projected_site_closure", fail_draft)
+    result = transaction_api.realize_projected_routes(**values)
     assert type(result) is model.ProjectedRouteRealizationRejected
+    assert events == ["pair-export"]
+    context.close()
+
+
+def test_owned_post_draft_claim_check_runs_inventory_export_before_escape(
+    monkeypatch,
+):
+    values, context = _owned_alias_realization_case()
+    original_export = inventory_alias_binding.require_pair_export
+    cells = dict(zip(
+        bind._realize_projected_routes_from_claim_inventory.__code__.co_freevars,
+        bind._realize_projected_routes_from_claim_inventory.__closure__,
+    ))
+    claim_check_cell = cells[
+        "require_registered_transaction_projected_claim_inventory"
+    ]
+    original_claim_check = claim_check_cell.cell_contents
+    claim_checks = 0
+    events = []
+
+    def fail_post_draft_claim_check(value):
+        nonlocal claim_checks
+        claim_checks += 1
+        if claim_checks == 4:
+            events.append("claim-check-failed")
+            raise ValueError("post-draft claim inventory failure")
+        return original_claim_check(value)
+
+    def tracked_export(*args, **kwargs):
+        events.append("pair-export")
+        return original_export(*args, **kwargs)
+
+    monkeypatch.setattr(
+        inventory_alias_binding, "require_pair_export", tracked_export,
+    )
+    claim_check_cell.cell_contents = fail_post_draft_claim_check
+    try:
+        result = transaction_api.realize_projected_routes(**values)
+        assert type(result) is model.ProjectedRouteRealizationRejected
+        assert events == ["claim-check-failed", "pair-export"]
+    finally:
+        claim_check_cell.cell_contents = original_claim_check
+        context.close()
+
+
+def test_owned_partial_pair_publication_failure_cannot_return_public_result(
+    monkeypatch,
+):
+    values, context = _owned_alias_realization_case()
+    original_publish = inventory_alias_binding.publication.publish_inventory
+    publications = 0
+    minted = []
+
+    def fail_projected_publication(*args, **kwargs):
+        nonlocal publications
+        publications += 1
+        if publications == 2:
+            raise ValueError("projected inventory publication failed")
+        return original_publish(*args, **kwargs)
+
+    def tracked_mint(*args, **kwargs):
+        minted.append((args, kwargs))
+        return original_mint(*args, **kwargs)
+
+    original_mint = bind._site_mint
+    monkeypatch.setattr(
+        inventory_alias_binding.publication, "publish_inventory",
+        fail_projected_publication,
+    )
+    monkeypatch.setattr(bind, "_site_mint", tracked_mint)
+    with pytest.raises(RuntimeError, match="owned inventory export"):
+        transaction_api.realize_projected_routes(**values)
+    assert publications == 2
     assert minted == []
     context.close()
