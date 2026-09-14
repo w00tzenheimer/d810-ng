@@ -21,6 +21,7 @@ import pytest
 
 import idaapi
 import ida_bytes
+import ida_funcs
 import ida_ua
 import idc
 
@@ -44,6 +45,7 @@ from tests.system.cases.libobfuscated_comprehensive import (
     HARDENED_OLLVM_COND_CHAIN_CASES,
     RESIZE_BUFFER_CFF_CASES,
 )
+from tests.system.e2e.hash_bound_fixture_receipts import HASH_BOUND_LINKED_EXTENTS
 
 
 def _get_default_binary() -> str:
@@ -74,7 +76,29 @@ _EXACT_MASM_CODE_EXTENTS = {
     # Recreate it so fresh IDA analysis cannot truncate the function at its
     # embedded switch/jump-table edges.
     "sub_7FFB0DE93330": 0x30C5,
+    # Hash-bound structural exports. These are the measured Microsoft-COFF
+    # .text extents, not the source-image extents: ml64 branch relaxation can
+    # shrink or grow a semantic reassembly.
+    **HASH_BOUND_LINKED_EXTENTS,
 }
+
+_HASH_BOUND_MASM_FUNCTIONS = tuple(HASH_BOUND_LINKED_EXTENTS)
+
+
+def _assert_hash_bound_fixture_inventory() -> None:
+    resolved = {
+        function: idc.get_name_ea_simple(function)
+        for function in _HASH_BOUND_MASM_FUNCTIONS
+    }
+    present = {
+        function for function, ea in resolved.items() if ea != idaapi.BADADDR
+    }
+    if not present:
+        return
+    assert present == set(_HASH_BOUND_MASM_FUNCTIONS), (
+        "partial hash-bound fixture corpus",
+        sorted(set(_HASH_BOUND_MASM_FUNCTIONS) - present),
+    )
 
 def _materialize_exact_masm_code_extent(function: str) -> None:
     size = _EXACT_MASM_CODE_EXTENTS.get(function)
@@ -90,12 +114,6 @@ def _materialize_exact_masm_code_extent(function: str) -> None:
     assert function_end != idaapi.BADADDR, function
     end = int(start) + int(size)
     assert function_start == int(start)
-    assert function_end == end, (
-        function,
-        hex(function_start),
-        hex(function_end),
-        hex(end),
-    )
 
     cursor = int(start)
     instruction = ida_ua.insn_t()
@@ -125,7 +143,26 @@ def _materialize_exact_masm_code_extent(function: str) -> None:
         )
         cursor += decoded_size
 
+    if function_end < end:
+        materialized = ida_funcs.get_func(int(start))
+        assert materialized is not None, function
+        assert ida_funcs.append_func_tail(materialized, function_end, end), (
+            f"could not append the measured linked tail for {function}: "
+            f"0x{function_end:X}-0x{end:X}"
+        )
+    elif function_end > end:
+        assert ida_funcs.set_func_end(int(start), end), (
+            f"could not trim {function} to its measured linked extent: "
+            f"observed 0x{function_end:X}, expected 0x{end:X}"
+        )
     idaapi.auto_wait()
+    function_end = int(idc.get_func_attr(int(start), idc.FUNCATTR_END))
+    assert function_end == end, (
+        function,
+        hex(function_start),
+        hex(function_end),
+        hex(end),
+    )
     idaapi.mark_cfunc_dirty(int(start), False)
 
 
@@ -324,6 +361,7 @@ class TestDacMasmFixtures:
         load_expected_stats,
     ):
         """dac.dll issue-48 functions extracted as MASM."""
+        _assert_hash_bound_fixture_inventory()
         _materialize_exact_masm_code_extent(case.function)
         run_deobfuscation_test(
             case=case,

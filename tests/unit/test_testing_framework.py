@@ -101,6 +101,16 @@ class TestDeobfuscationCase:
         assert default_case.allow_unchanged_pseudocode_if_rules_fired is False
         assert case.allow_unchanged_pseudocode_if_rules_fired is True
 
+    def test_missing_baseline_cfunc_requires_explicit_case_contract(self):
+        default_case = DeobfuscationCase(function="missing_cfunc")
+        recovery_case = DeobfuscationCase(
+            function="missing_cfunc",
+            allow_missing_baseline_cfunc=True,
+        )
+
+        assert default_case.allow_missing_baseline_cfunc is False
+        assert recovery_case.allow_missing_baseline_cfunc is True
+
     def test_sdk_specific_ast_stats_are_exact(self):
         case = DeobfuscationCase(
             function="sdk_rendered_function",

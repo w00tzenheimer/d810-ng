@@ -60,6 +60,41 @@ IDBs, diagnostic logs, or private absolute paths.
    `92ca85f671d4c8c2c8230337a987542f4f3b604787b0728787bbdb1df456b0ff`.
    A `JMP RAX` requires predecessor/path-sensitive target recovery.
 
+These classifications describe the source-image/source-IDB evidence. They are
+not assumed to survive structural reassembly unchanged.
+
+## Fresh canonical-build baseline
+
+Fresh IDA 9.4 databases over canonical DLL SHA-256
+`612a936715bebdf56779582fe555909dcea1c7a9399c070dd2d3a22d8288499d`
+reclassified several first failures. The diagnostic runs used the exact
+attested profile and were retained under the isolated worktree rather than the
+shared D810 log directory.
+
+- `sub_7FFB0E1E69E0`, `sub_7FFB0E0A2C90`, and `sub_7FFB0DF992D0`
+  produce no cfunc with or without D810. Their D810 sessions abandon at
+  `MMAT_ZERO`, before state-transition recovery.
+- `sub_7FFB0E086BE0` also produces no cfunc. Its D810 attempt terminates before
+  a diagnostic session database is opened, so missing path-sensitive `RAX`
+  evidence is not yet the first observable failure in this build.
+- `sub_7FFB0E53C420` reaches state recovery. It assembles 77 transition routes
+  but reports four unreached handlers, incomplete written-state evidence,
+  ambiguous state-write anchors, and `producer-arena-closed` while validating
+  78 projected route proofs.
+- `sub_7FFB0DE51120` reaches recovery but exhausts the 256-item live-DAG work
+  budget and records `phi_multi_def` at linked EAs `0x180058AE8` and
+  `0x180059D66`; no state-machine plan is submitted. A later seven-operation
+  DSE transaction does not constitute unflattening success.
+- `sub_7FFB0DFD1D70` commits an 81/81-handler transaction, then later recovery
+  attempts retain only 46/81 handlers and report `phi_multi_def` at linked EA
+  `0x1800684B8` with eight reaching definitions. The run was bounded after
+  reaching this first failure rather than treated as a completed benchmark.
+
+The canonical linked RVAs, extents, and per-function byte hashes live in the
+tracked fixture manifest. Production fixes must address these fresh-build
+first failures; the older source-run classifications remain provenance, not
+current causal conclusions.
+
 ## Build and corpus integration
 
 The repository MASM workflow remains authoritative:

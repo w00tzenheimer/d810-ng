@@ -1192,6 +1192,107 @@ DAC_MASM_CASES = [
         skip_if_function_absent=True,
     ),
     DeobfuscationCase(
+        function="sub_7FFB0E53C420",
+        description=(
+            "Hash-bound loader state machine: structurally recovered in the "
+            "source run but not semantically certified. The tracked case "
+            "requires complete dispatcher retirement before its later semantic "
+            "oracle can certify the published edges."
+        ),
+        project="hash_bound_v4_user_cfg_const_simplify_solve.json",
+        obfuscated_contains=["while ( 1 )", "0x3EBDE73C"],
+        deobfuscated_not_contains=["while ( 1 )", "0x53DB4AA6", "0x3EBDE73C"],
+        must_change=True,
+        required_rules=[],
+        skip_if_function_absent=True,
+    ),
+    DeobfuscationCase(
+        function="sub_7FFB0DE51120",
+        description=(
+            "Hash-bound route-activation failure. Five dispatcher loops "
+            "survived the source run; all must be lowered rather than counted "
+            "as a deterministic abstention."
+        ),
+        project="hash_bound_v4_user_cfg_const_simplify_solve.json",
+        obfuscated_contains=["while ( 1 )"],
+        deobfuscated_not_contains=["while ( 1 )", "0x175DAB70", "0x38EF23AC"],
+        must_change=True,
+        required_rules=[],
+        skip_if_function_absent=True,
+    ),
+    DeobfuscationCase(
+        function="sub_7FFB0DF992D0",
+        description=(
+            "Hash-bound deferred-store scheduling failure. The proved selector "
+            "state must reach the consuming store and retire the residual "
+            "dispatcher."
+        ),
+        project="hash_bound_v4_user_cfg_const_simplify_solve.json",
+        obfuscated_contains=["while ( 1 )"],
+        deobfuscated_not_contains=["while ( 1 )", "0x63E3AD4D", "0x42B10E40"],
+        must_change=True,
+        allow_missing_baseline_cfunc=True,
+        required_rules=[],
+        skip_if_function_absent=True,
+    ),
+    DeobfuscationCase(
+        function="sub_7FFB0DFD1D70",
+        description=(
+            "Hash-bound predecessor-provenance case. Path-local selector "
+            "values must survive through the shared store, produce a cfunc, "
+            "and fully retire the dispatcher."
+        ),
+        project="hash_bound_v4_user_cfg_const_simplify_solve.json",
+        deobfuscated_not_contains=["while ( 1 )", "0x416A2BA7", "0x23F91960"],
+        must_change=True,
+        allow_missing_baseline_cfunc=True,
+        required_rules=[],
+        skip_if_function_absent=True,
+    ),
+    DeobfuscationCase(
+        function="sub_7FFB0E1E69E0",
+        description=(
+            "Hash-bound malformed LOCK boundary case. Recovery must stay "
+            "inside the measured linked extent and still remove the selector "
+            "switch rather than treating safe termination as success."
+        ),
+        project="hash_bound_v4_user_cfg_const_simplify_solve.json",
+        obfuscated_contains=["0x6E8E902A", "0x199A79B7"],
+        deobfuscated_not_contains=["0x6E8E902A", "0x199A79B7", "JUMPOUT"],
+        must_change=True,
+        allow_missing_baseline_cfunc=True,
+        required_rules=[],
+        skip_if_function_absent=True,
+    ),
+    DeobfuscationCase(
+        function="sub_7FFB0E0A2C90",
+        description=(
+            "Hash-bound mid-instruction switch-target case. Speculative native "
+            "targets must be rejected without SIGBUS, after which the valid "
+            "state machine must still be fully lowered."
+        ),
+        project="hash_bound_v4_user_cfg_const_simplify_solve.json",
+        deobfuscated_not_contains=["while ( 1 )", "0x40D9BA32", "0x2FA91DC5", "JUMPOUT"],
+        must_change=True,
+        allow_missing_baseline_cfunc=True,
+        required_rules=[],
+        skip_if_function_absent=True,
+    ),
+    DeobfuscationCase(
+        function="sub_7FFB0E086BE0",
+        description=(
+            "Hash-bound path-sensitive indirect-jump case. Each feasible RAX "
+            "definition must resolve independently so the function produces a "
+            "cfunc and no dispatcher transfer remains."
+        ),
+        project="hash_bound_v4_user_cfg_const_simplify_solve.json",
+        deobfuscated_not_contains=["while ( 1 )", "0x4C815852", "0x295D4032", "JUMPOUT"],
+        must_change=True,
+        allow_missing_baseline_cfunc=True,
+        required_rules=[],
+        skip_if_function_absent=True,
+    ),
+    DeobfuscationCase(
         function="Java_dimension_DimensionAPI_getHuzpsbPY",
         description="dac.dll DimensionAPI (issue #48, MASM-extracted): the function "
         "whose flattening crashed old d810-ng with INTERR 50860/51920. "

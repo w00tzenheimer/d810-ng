@@ -197,21 +197,22 @@ def run_deobfuscation_test(
             state.stop_d810()
             decompiled_before = idaapi.decompile(func_ea, flags=idaapi.DECOMP_NO_CACHE)
             if decompiled_before is None:
-                raise AssertionError(
-                    f"Decompilation failed for '{effective_case.function}'"
-                )
-
-            code_before = pseudocode_to_string(decompiled_before.get_pseudocode())
+                if not effective_case.allow_missing_baseline_cfunc:
+                    raise AssertionError(
+                        f"Decompilation failed for '{effective_case.function}'"
+                    )
+            else:
+                code_before = pseudocode_to_string(decompiled_before.get_pseudocode())
 
             # Assert obfuscation patterns are present
-            if effective_case.obfuscated_contains:
+            if code_before is not None and effective_case.obfuscated_contains:
                 assert_contains(
                     code_before,
                     effective_case.obfuscated_contains,
                     context="obfuscated code",
                 )
 
-            if effective_case.obfuscated_regexes:
+            if code_before is not None and effective_case.obfuscated_regexes:
                 assert_regex_contains(
                     code_before,
                     effective_case.obfuscated_regexes,
@@ -219,7 +220,7 @@ def run_deobfuscation_test(
                 )
 
             # Assert forbidden patterns are not present
-            if effective_case.obfuscated_not_contains:
+            if code_before is not None and effective_case.obfuscated_not_contains:
                 assert_not_contains(
                     code_before,
                     effective_case.obfuscated_not_contains,
@@ -310,8 +311,9 @@ def run_deobfuscation_test(
         # unchanged text is accepted only when its required block rule recorded
         # an actual positive microcode patch.
         if effective_case.must_change:
-            assert code_before is not None
-            if code_before != code_after:
+            if code_before is None:
+                assert effective_case.allow_missing_baseline_cfunc
+            elif code_before != code_after:
                 assert_code_changed(code_before, code_after)
             elif not effective_case.allow_unchanged_pseudocode_if_rules_fired:
                 assert_code_changed(code_before, code_after)

@@ -110,6 +110,10 @@ class DeobfuscationCase:
             pseudocode string only when the explicitly required CFG rule(s)
             recorded a native mutation. This is for SDK renderer no-ops, not a
             general relaxation of ``must_change``.
+        allow_missing_baseline_cfunc: Permit the D810-off decompilation to
+            return no cfunc. A later D810-produced cfunc then satisfies
+            ``must_change`` by construction. This is only for recovery fixtures
+            whose defect is the missing baseline cfunc itself.
         check_stats: Whether to verify rule firing statistics (default: True).
         skip: If set, skip this test with this reason.
         operator_complexity_mode: Optional complexity trend assertion mode:
@@ -172,6 +176,7 @@ class DeobfuscationCase:
     # Behavior flags
     must_change: bool = True
     allow_unchanged_pseudocode_if_rules_fired: bool = False
+    allow_missing_baseline_cfunc: bool = False
     check_stats: bool = True
     skip: Optional[str] = None
     # When True, a function absent from the current binary is a SKIP, not a
@@ -305,6 +310,7 @@ class DeobfuscationCase:
                 if override.allow_unchanged_pseudocode_if_rules_fired is not None
                 else self.allow_unchanged_pseudocode_if_rules_fired
             ),
+            allow_missing_baseline_cfunc=self.allow_missing_baseline_cfunc,
             check_stats=self.check_stats,
             skip=override.skip if override.skip is not None else self.skip,
             skip_if_function_absent=self.skip_if_function_absent,
