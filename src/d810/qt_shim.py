@@ -48,20 +48,31 @@ def _is_ida_gui_available() -> bool:
     - Running in headless IDA (idat64/idat32)
     - Running via idalib/idapro module
     - Running in pytest or other non-GUI environment
+
+    NOTE: This must NOT rely on ``sys.executable`` pointing at the IDA
+    binary. On some setups (external Python 3.14 interpreter, idalib,
+    renamed binaries) ``sys.executable`` is ``python``/``python3`` even
+    when running inside the IDA GUI, which used to force the stub
+    Qt classes to load and crash later with::
+
+        AttributeError: 'QVBoxLayout' object has no attribute 'addLayout'
     """
-    exec_name = pathlib.Path(sys.executable).name.lower()
-
-    # Check if we're in IDA at all
-    in_ida = exec_name.startswith("ida")
-    if not in_ida:
-        return False
-
     try:
         import idaapi
     except ImportError:
         return False
 
-    return idaapi.is_idaq()
+    try:
+        # is_idaq() is the authoritative check: True in GUI (ida),
+        # False in headless (idat) / idalib.
+        return bool(idaapi.is_idaq())
+    except Exception:
+        # idaapi present but is_idaq() unavailable (mocked module in unit
+        # tests, very old IDA). Fall back to the executable-name heuristic.
+        exec_name = pathlib.Path(sys.executable).name.lower()
+        return exec_name.startswith("ida") and not exec_name.startswith(
+            "idat"
+        )
 
 
 # Skip Qt imports entirely if not in GUI mode
@@ -212,6 +223,21 @@ if not _QT_AVAILABLE:
                 stretch: int = ...,
                 alignment: Any = ...,
             ) -> None: ...
+            def addLayout(
+                self,
+                layout: Any,
+                stretch: int = ...,
+                alignment: Any = ...,
+            ) -> None: ...
+            def addStretch(self, stretch: int = ...) -> None: ...
+            def addSpacing(self, size: int) -> None: ...
+            def insertWidget(
+                self, index: int, widget: Any, *args: Any, **kwargs: Any
+            ) -> None: ...
+            def insertLayout(
+                self, index: int, layout: Any, *args: Any, **kwargs: Any
+            ) -> None: ...
+            def setAlignment(self, *args: Any, **kwargs: Any) -> None: ...
             def setContentsMargins(
                 self, left: int, top: int, right: int, bottom: int
             ) -> None: ...
