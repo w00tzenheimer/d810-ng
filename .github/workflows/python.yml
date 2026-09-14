@@ -2,10 +2,10 @@ name: d810-ng tests
 
 on:
     push:
-        branches: ["main"]
+        branches: ["main", "cfg-recon-mainline"]
     pull_request:
         types: [synchronize, opened, reopened, ready_for_review]
-        branches: ["main"]
+        branches: ["main", "cfg-recon-mainline"]
 
 concurrency:
     group: ${{ github.workflow }}-${{ github.ref }}
