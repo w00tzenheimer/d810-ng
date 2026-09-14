@@ -80,12 +80,6 @@ from d810.transforms.unflatten_authority.gates import (
 )
 from d810.transforms.unflatten_authority.diagnostics import PhaseTimings, phase_observation
 from d810.transforms.unflatten_authority.views import compatibility_projection
-from d810.transforms.unflatten_authority.work_counters import (
-    AuthorityInputOrigin,
-    AuthorityWorkKind,
-    AuthorityWorkPhase,
-    record_authority_work,
-)
 from d810.transforms.exit_path_liveness_policy import exit_path_blocks_live_violations
 from .runtime_authority import rebind_route_evidence
 
@@ -2924,21 +2918,6 @@ def _build_semantic_graph_inventory(
     discovery, subject construction, and topology materialization.
     """
 
-    if phase is model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY:
-        work_phase = AuthorityWorkPhase.OBSERVED
-        input_origin = AuthorityInputOrigin.OBSERVED_GRAPH
-    elif source:
-        work_phase = AuthorityWorkPhase.PROJECTED
-        input_origin = AuthorityInputOrigin.PREPARED_SOURCE
-    else:
-        work_phase = AuthorityWorkPhase.PROJECTED
-        input_origin = AuthorityInputOrigin.PROJECTED_GRAPH
-    record_authority_work(
-        AuthorityWorkKind.BUILD_INVENTORY,
-        work_phase,
-        input_origin,
-    )
-
     if source:
         if source_inventory is not None:
             raise ValueError("source inventory builder must not receive a source inventory")
@@ -4279,11 +4258,6 @@ def _derive_transaction_facts(
     from silently comparing a Task 12 plan against the Task 11-only replay.
     """
 
-    record_authority_work(
-        AuthorityWorkKind.DERIVE_TRANSACTION_FACTS,
-        AuthorityWorkPhase.PROJECTED,
-        AuthorityInputOrigin.PREPARED_SOURCE,
-    )
     alias_occurrences, alias_patch_facts, alias_relations = (
         _derive_local_alias_transaction_facts(source_inventory, plan)
     )
@@ -4319,12 +4293,6 @@ def _derive_patch_lineage_relations(
     patch_step_facts: tuple[model.PatchStepEvidencePayload, ...],
 ) -> tuple[model.ConditionalSubjectRelation, ...]:
     """Bind each patch step to exact source/candidate block witnesses."""
-
-    record_authority_work(
-        AuthorityWorkKind.DERIVE_PATCH_LINEAGE,
-        AuthorityWorkPhase.PROJECTED,
-        AuthorityInputOrigin.PROJECTED_GRAPH,
-    )
 
     source_subjects = tuple(
         subject for subject in source_inventory.subjects
@@ -4659,22 +4627,6 @@ def _derive_inputs(
     preparation_inputs=None,
 ):
     """Assemble immutable facts; semantic evidence belongs to the evaluator."""
-
-    work_phase = (
-        AuthorityWorkPhase.OBSERVED
-        if phase is model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY
-        else AuthorityWorkPhase.PROJECTED
-    )
-    input_origin = (
-        AuthorityInputOrigin.OBSERVED_GRAPH
-        if work_phase is AuthorityWorkPhase.OBSERVED
-        else AuthorityInputOrigin.PROJECTED_GRAPH
-    )
-    record_authority_work(
-        AuthorityWorkKind.DERIVE_INPUTS,
-        work_phase,
-        input_origin,
-    )
 
     if type(source_inventory) is not model.SemanticGraphInventory:
         raise TypeError("source_inventory must be SemanticGraphInventory")
