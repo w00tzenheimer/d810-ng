@@ -969,6 +969,143 @@ class Z3MopProver:
         return result
 
     @requires_z3_installed
+    def prove_equal_then_unequal(
+        self,
+        mop1: ida_hexrays.mop_t | MopSnapshot | None,
+        mop2: ida_hexrays.mop_t | MopSnapshot | None,
+        *,
+        blk: ida_hexrays.mblock_t | None = None,
+        ins: ida_hexrays.minsn_t | None = None,
+        solver: z3.Solver | None = None,
+    ) -> typing.Iterator[tuple[str, Z3ProofResult]]:
+        """Yield complementary pair proofs from one operand translation.
+
+        The first yield is the equality proof.  The inequality query is not
+        executed until the iterator resumes, so rule-level observation and
+        equality short-circuiting keep their existing order.  Prepared values
+        live only for this iterator; no pre-construction identity is retained
+        across decisions or graph mutations.
+        """
+
+        blk, ins = self._resolve_context(blk, ins)
+        started_at = time.perf_counter()
+        try:
+            prepared = self._prepare_operand_pair(
+                mop1,
+                mop2,
+                blk=blk,
+                operation="prove_equal",
+            )
+        except Exception as exc:
+            logger.debug("prove_equal: failed to prepare operands: %s", exc)
+            equal_result = _unsupported_result(started_at)
+            yield "prove_equal", equal_result
+            yield "prove_unequal", _unsupported_result(time.perf_counter())
+            return
+        if prepared is None:
+            equal_result = _unsupported_result(started_at)
+            yield "prove_equal", equal_result
+            yield "prove_unequal", _unsupported_result(time.perf_counter())
+            return
+        left_mop, right_mop, native_size = prepared
+        budget = (
+            Z3ExpressionNodeBudget(self._policy)
+            if self._policy is not None
+            else None
+        )
+        try:
+            expressions = _translate_mop_pair(
+                left_mop,
+                right_mop,
+                operation="prove_equal",
+                node_budget=budget,
+            )
+        except Z3NodeLimitExceeded:
+            assert budget is not None
+            equal_result = _node_limit_result(started_at, budget)
+            yield "prove_equal", equal_result
+            yield "prove_unequal", _node_limit_result(time.perf_counter(), budget)
+            return
+        if expressions is None:
+            observed = budget.observed_nodes if budget is not None else None
+            equal_result = _unsupported_result(started_at, observed)
+            yield "prove_equal", equal_result
+            yield "prove_unequal", _unsupported_result(
+                time.perf_counter(), observed
+            )
+            return
+        z3_mop1, z3_mop2 = expressions
+        native_bits = native_size * 8
+        try:
+            sizes_match = (
+                z3_mop1.size() == native_bits and z3_mop2.size() == native_bits
+            )
+            predicate = z3_mop1 == z3_mop2 if sizes_match else None
+        except Exception as exc:
+            logger.debug("pair proof: failed to construct predicate: %s", exc)
+            observed = budget.observed_nodes if budget is not None else None
+            equal_result = Z3ProofResult(
+                status=Z3ProofStatus.ABSTAINED,
+                reason=Z3ProofAbstentionReason.SOLVER_UNKNOWN,
+                observed_expression_nodes=observed,
+                elapsed_ms=(time.perf_counter() - started_at) * 1000.0,
+            )
+            yield "prove_equal", equal_result
+            unequal_started_at = time.perf_counter()
+            yield "prove_unequal", Z3ProofResult(
+                status=Z3ProofStatus.ABSTAINED,
+                reason=Z3ProofAbstentionReason.SOLVER_UNKNOWN,
+                observed_expression_nodes=observed,
+                elapsed_ms=(time.perf_counter() - unequal_started_at) * 1000.0,
+            )
+            return
+        if not sizes_match:
+            observed = budget.observed_nodes if budget is not None else None
+            equal_result = _unsupported_result(started_at, observed)
+            yield "prove_equal", equal_result
+            yield "prove_unequal", _unsupported_result(
+                time.perf_counter(), observed
+            )
+            return
+        assert predicate is not None
+        observed = budget.observed_nodes if budget is not None else None
+        for operation, equality in (
+            ("prove_equal", True),
+            ("prove_unequal", False),
+        ):
+            query_started_at = started_at if equality else time.perf_counter()
+            try:
+                query = z3.Not(predicate) if equality else predicate
+                query_solver = _new_query_solver(self._policy, solver)
+                query_solver.push()
+                try:
+                    query_solver.add(query)
+                    check_result = _check_bounded_query(
+                        query_solver,
+                        policy=self._policy,
+                        cache_allowed=solver is None,
+                    )
+                finally:
+                    query_solver.pop()
+            except Exception as exc:
+                logger.debug("%s: failed to discharge query: %s", operation, exc)
+                result = Z3ProofResult(
+                    status=Z3ProofStatus.ABSTAINED,
+                    reason=Z3ProofAbstentionReason.SOLVER_UNKNOWN,
+                    observed_expression_nodes=observed,
+                    elapsed_ms=(time.perf_counter() - query_started_at) * 1000.0,
+                )
+            else:
+                result = _classify_solver_result(
+                    check_result,
+                    query_solver,
+                    self._policy,
+                    query_started_at,
+                    observed,
+                )
+            yield operation, result
+
+    @requires_z3_installed
     def prove_equal(
         self,
         mop1: ida_hexrays.mop_t | None,

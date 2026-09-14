@@ -299,6 +299,10 @@ def test_every_generic_prover_branch_forwards_exact_policy(
         def prove_unequal(self, *_args, **_kwargs):
             return self._result("prove_unequal")
 
+        def prove_equal_then_unequal(self, *_args, **_kwargs):
+            yield "prove_equal", self._result("prove_equal")
+            yield "prove_unequal", self._result("prove_unequal")
+
         def prove_always_zero(self, *_args, **_kwargs):
             return self._result("prove_always_zero")
 
@@ -628,6 +632,10 @@ def test_low_node_setz_abstention_does_not_block_setnz_or_lnot_policy(
         def prove_unequal(self, *_args, **_kwargs):
             return self._result("prove_unequal")
 
+        def prove_equal_then_unequal(self, *_args, **_kwargs):
+            yield "prove_equal", self._result("prove_equal")
+            yield "prove_unequal", self._result("prove_unequal")
+
         def prove_always_zero(self, *_args, **_kwargs):
             return self._result("prove_always_zero")
 
@@ -744,6 +752,10 @@ def test_malformed_conclusive_result_cannot_mutate_or_emit_a_receipt(monkeypatch
         def prove_unequal(self, *_args, **_kwargs):
             return self.prove_equal()
 
+        def prove_equal_then_unequal(self, *_args, **_kwargs):
+            yield "prove_equal", self.prove_equal()
+            yield "prove_unequal", self.prove_unequal()
+
         def prove_always_zero(self, *_args, **_kwargs):
             return self.prove_equal()
 
@@ -805,6 +817,10 @@ def test_proof_receipts_preserve_conclusive_and_abstention_reasons_without_error
                 observed_expression_nodes=4,
                 elapsed_ms=1.5,
             )
+
+        def prove_equal_then_unequal(self, *_args, **_kwargs):
+            yield "prove_equal", self.prove_equal()
+            yield "prove_unequal", self.prove_unequal()
 
     monkeypatch.setattr(predicates, "Z3MopProver", _FakeProver)
     from d810.optimizers.microcode.instructions.z3.predicates import Z3setzRuleGeneric

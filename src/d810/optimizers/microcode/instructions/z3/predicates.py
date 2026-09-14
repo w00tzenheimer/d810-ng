@@ -28,21 +28,18 @@ class Z3setzRuleGeneric(Z3Rule):
         x0_mop = candidate["x_0"].mop
         x1_mop = candidate["x_1"].mop
 
-        equal_result = self.make_z3_mop_prover(prover_cls=Z3MopProver).prove_equal(
-            x0_mop, x1_mop
-        )
-        if self.observe_z3_proof("prove_equal", equal_result) and (
-            equal_result.status is Z3ProofStatus.PROVED
-        ):
-            candidate.add_constant_leaf("val_res", 1, res_size)
-            return True
-        unequal_result = self.make_z3_mop_prover(prover_cls=Z3MopProver).prove_unequal(
-            x0_mop, x1_mop
-        )
-        if self.observe_z3_proof("prove_unequal", unequal_result) and (
-            unequal_result.status is Z3ProofStatus.PROVED
-        ):
-            candidate.add_constant_leaf("val_res", 0, res_size)
+        pair_proofs = self.make_z3_mop_prover(
+            prover_cls=Z3MopProver
+        ).prove_equal_then_unequal(x0_mop, x1_mop)
+        for operation, result in pair_proofs:
+            observed = self.observe_z3_proof(operation, result)
+            if result.status is not Z3ProofStatus.PROVED or not observed:
+                continue
+            candidate.add_constant_leaf(
+                "val_res",
+                1 if operation == "prove_equal" else 0,
+                res_size,
+            )
             return True
 
         # Check if comparing expression against constant 0
@@ -128,21 +125,18 @@ class Z3setnzRuleGeneric(Z3Rule):
                 candidate.add_constant_leaf("val_res", 1, res_size)
                 return True
 
-        equal_result = self.make_z3_mop_prover(prover_cls=Z3MopProver).prove_equal(
-            x0_mop, x1_mop
-        )
-        if self.observe_z3_proof("prove_equal", equal_result) and (
-            equal_result.status is Z3ProofStatus.PROVED
-        ):
-            candidate.add_constant_leaf("val_res", 0, res_size)
-            return True
-        unequal_result = self.make_z3_mop_prover(prover_cls=Z3MopProver).prove_unequal(
-            x0_mop, x1_mop
-        )
-        if self.observe_z3_proof("prove_unequal", unequal_result) and (
-            unequal_result.status is Z3ProofStatus.PROVED
-        ):
-            candidate.add_constant_leaf("val_res", 1, res_size)
+        pair_proofs = self.make_z3_mop_prover(
+            prover_cls=Z3MopProver
+        ).prove_equal_then_unequal(x0_mop, x1_mop)
+        for operation, result in pair_proofs:
+            observed = self.observe_z3_proof(operation, result)
+            if result.status is not Z3ProofStatus.PROVED or not observed:
+                continue
+            candidate.add_constant_leaf(
+                "val_res",
+                0 if operation == "prove_equal" else 1,
+                res_size,
+            )
             return True
 
         # Check if comparing expression against constant 0
