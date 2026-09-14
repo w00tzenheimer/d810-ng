@@ -98,6 +98,9 @@ class _SnapshotInsn:
     def dstr(self) -> str:
         return ""
 
+    def is_assert(self) -> bool:
+        return False
+
 
 def _required(name: str) -> int:
     """Return the int value of an ``ida_hexrays.m_X`` constant, or
@@ -309,6 +312,23 @@ class TestHexraysOpcodeLift:
 
 
 class TestCaptureInsnSnapshotOperationFamilies:
+    def test_portable_only_capture_omits_owned_operand_clones(self) -> None:
+        snapshot = capture_insn_snapshot(
+            _SnapshotInsn(
+                _required("m_add"),
+                left=_number(1, 4),
+                right=_number(2, 4),
+                dest=_number(3, 4),
+            ),
+            include_rich_operands=False,
+        )
+
+        assert snapshot.operands == ()
+        assert snapshot.operand_slots == ()
+        assert snapshot.l is not None
+        assert snapshot.r is not None
+        assert snapshot.d is not None
+
     def test_set_predicate_survives_snapshot_capture_without_transfer(self) -> None:
         insn = _SnapshotInsn(
             _required("m_setz"),

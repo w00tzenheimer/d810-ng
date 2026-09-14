@@ -289,3 +289,26 @@ def test_lift_block_preserves_independent_live_tail_provenance() -> None:
         producer_api.observe_inventory_block(
             missing, owner_ref=None, owner_anchor_ea=0x1000,
         )
+
+
+def test_portable_graph_lift_disables_transitional_rich_operands() -> None:
+    source_path = Path(__file__).parents[4] / "src/d810/hexrays/mutation/ir_translator.py"
+    tree = ast.parse(source_path.read_text())
+    lift = next(
+        node for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "lift"
+    )
+    calls = [
+        node for node in ast.walk(lift)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "lift_block"
+    ]
+
+    assert len(calls) == 1
+    keyword = next(
+        item for item in calls[0].keywords
+        if item.arg == "include_rich_operands"
+    )
+    assert isinstance(keyword.value, ast.Constant)
+    assert keyword.value.value is False

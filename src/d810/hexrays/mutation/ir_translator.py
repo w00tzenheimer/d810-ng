@@ -628,6 +628,7 @@ def capture_insn_snapshot(
     lvar_stkoff_map: dict[int, int] | None = None,
     *,
     native_ea: int | None = None,
+    include_rich_operands: bool = True,
 ) -> InsnSnapshot:
     """Capture a rich ``InsnSnapshot`` from a live ``minsn_t``.
 
@@ -646,14 +647,18 @@ def capture_insn_snapshot(
     except Exception:
         display_text = ""
 
-    operand_slots = tuple(
-        (slot_name, MopSnapshot.from_mop(mop))
-        for slot_name, mop in (
-            ("l", insn.l),
-            ("r", insn.r),
-            ("d", insn.d),
+    operand_slots = (
+        ()
+        if not include_rich_operands
+        else tuple(
+            (slot_name, MopSnapshot.from_mop(mop))
+            for slot_name, mop in (
+                ("l", insn.l),
+                ("r", insn.r),
+                ("d", insn.d),
+            )
+            if mop.t != ida_hexrays.mop_z  # type: ignore[attr-defined]
         )
-        if mop.t != ida_hexrays.mop_z  # type: ignore[attr-defined]
     )
     operands = tuple(operand for _, operand in operand_slots)
     branch_predicate = _branch_predicate_only_from_hexrays(opcode)
@@ -707,6 +712,7 @@ def lift_block(
     lvar_stkoff_map: dict[int, int] | None = None,
     *,
     map_fict_ea: Callable[[int], int],
+    include_rich_operands: bool = True,
 ) -> BlockSnapshot:
     serial = blk.serial
     block_type = blk.type
@@ -724,6 +730,7 @@ def lift_block(
                 insn,
                 lvar_stkoff_map,
                 native_ea=int(map_fict_ea(int(insn.ea))),
+                include_rich_operands=include_rich_operands,
             )
         )
         insn = insn.next
@@ -831,6 +838,10 @@ def lift(mba: "ida_hexrays.mba_t") -> FlowGraph:
             blk,
             lvar_stkoff_map,
             map_fict_ea=mba.map_fict_ea,
+            # The portable graph is an analysis snapshot.  Rich operands own
+            # Hex-Rays clones for later materialization and are captured by
+            # the dedicated body/instruction capture call sites instead.
+            include_rich_operands=False,
         )
 
     # E2b: pin a small, portable metadata contract on every lifted
