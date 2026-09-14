@@ -101,6 +101,25 @@ if ($clangcl) {
 } else {
     Write-Host "  clang-cl not found, Makefile will use fallback" -ForegroundColor Yellow
 }
+$PythonExe = @(
+    Get-Command python.exe -All -ErrorAction SilentlyContinue |
+        Select-Object -ExpandProperty Source |
+        Where-Object { $_ -notmatch '\\WindowsApps\\' }
+) | Select-Object -First 1
+if (-not $PythonExe) {
+    $PythonExe = Get-Command py.exe -ErrorAction SilentlyContinue |
+        Select-Object -ExpandProperty Source -First 1
+}
+if (-not $PythonExe) {
+    Write-Host "ERROR: a real Python interpreter is required for MASM normalization" -ForegroundColor Red
+    exit 1
+}
+& $PythonExe -c "import sys; raise SystemExit(0 if sys.version_info >= (3, 9) else 1)"
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "ERROR: Python 3.9+ is required for MASM normalization: $PythonExe" -ForegroundColor Red
+    exit 1
+}
+Write-Host "  python: $PythonExe" -ForegroundColor Green
 Write-Host "  make: $MakeExe" -ForegroundColor Green
 Write-Host "  Done."
 
@@ -134,7 +153,13 @@ if ($RealSh) {
     & $MakeExe clean 2>&1 | Out-Null
 }
 # Pass USING_CLANG_CL=1 and CC_BASE explicitly because make's sh.exe can't run 'where'
-$makeArgs = @("TARGET_OS=windows", "BINARY_NAME=libobfuscated", "USING_CLANG_CL=1", "CC_BASE=clang-cl.exe")
+$makeArgs = @(
+    "TARGET_OS=windows",
+    "BINARY_NAME=libobfuscated",
+    "USING_CLANG_CL=1",
+    "CC_BASE=clang-cl.exe",
+    "PYTHON=$PythonExe"
+)
 if ($MasmFuncs) {
     Write-Host "  MASM functions: $MasmFuncs (assembled with ml64, linked + exported)" -ForegroundColor Green
     $makeArgs += "MASM_FUNCS=$MasmFuncs"

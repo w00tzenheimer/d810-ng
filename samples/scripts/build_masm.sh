@@ -181,6 +181,10 @@ OBJDUMP="$(resolve_tool "${LLVM_OBJDUMP:-llvm-objdump}")" || {
     echo "error: llvm-objdump/objdump not found" >&2
     exit 1
 }
+PYTHON="$(resolve_tool "${PYTHON:-python3}")" || {
+    echo "error: python3/python not found" >&2
+    exit 1
+}
 
 case "$MASM_INCLUDE_C" in
     0|1) ;;
@@ -218,6 +222,8 @@ MASM_FUNCS="${masm_link_first[*]} ${masm_link_last[*]}"
 
 BUILD_DIR=".build_masm"
 rm -rf "$BUILD_DIR"; mkdir -p "$BUILD_DIR" bins
+NORMALIZED_MASM_DIR="$SAMPLES_DIR/$BUILD_DIR/normalized"
+mkdir -p "$NORMALIZED_MASM_DIR"
 
 CFLAGS=(--target=x86_64-pc-windows-msvc -c -O0 -g -Iinclude -ffreestanding
         -fms-compatibility -fms-extensions -Wno-error -DD810_DLL_EXPORT=1
@@ -258,8 +264,12 @@ for f in $MASM_FUNCS; do
     # -> MASM" action (materialized data + relocatable symbols).
     src="$MASM_SOURCE_DIR/$f.asm"
     [ -f "$src" ] || { echo "error: missing $src" >&2; exit 1; }
+    normalized_src="$NORMALIZED_MASM_DIR/$f.asm"
+    "$PYTHON" "$SCRIPT_DIR/normalize_masm_for_build.py" "$src" "$normalized_src" \
+        >"$BUILD_DIR/$f.normalize.log" 2>&1 \
+        || { echo "error: normalizing $f.asm failed:" >&2; cat "$BUILD_DIR/$f.normalize.log" >&2; exit 1; }
     obj="$BUILD_DIR/$f.obj"
-    "$ML64" /nologo /c /Fo"$obj" "$src" >"$BUILD_DIR/$f.asm.log" 2>&1 \
+    "$ML64" /nologo /c /Fo"$obj" "$normalized_src" >"$BUILD_DIR/$f.asm.log" 2>&1 \
         || { echo "error: assembling $f.asm failed:" >&2; cat "$BUILD_DIR/$f.asm.log" >&2; exit 1; }
     objs+=("$obj")
     export_flags+=("/EXPORT:$f")

@@ -293,6 +293,9 @@ ifeq ($(HOST_OS),windows)
 else
     ML64 ?= llvm-ml64
 endif
+PYTHON ?= python
+MASM_NORMALIZER := scripts/normalize_masm_for_build.py
+MASM_NORMALIZED_DIR := .build_masm/normalized
 
 ifeq ($(USING_CLANG_CL),1)
     # Keep layout-sensitive additions append-only.  The Hodur fixture's
@@ -305,9 +308,14 @@ ifeq ($(USING_CLANG_CL),1)
         warden_mixed_source warden_v55_index_lookup warden_v55_index_offset \
         warden_v57_value_mba warden_v85_value_mba
     MASM_ASM_DISCOVERED  := $(wildcard src/masm/*.asm)
+    ifneq ($(strip $(MASM_FUNCS)),)
+        MASM_ASM_SELECTED := $(addprefix src/masm/,$(addsuffix .asm,$(MASM_FUNCS)))
+    else
+        MASM_ASM_SELECTED := $(MASM_ASM_DISCOVERED)
+    endif
     MASM_ASM_LINK_LAST   := $(addprefix src/masm/,$(addsuffix .asm,$(MASM_LINK_LAST_FUNCS)))
-    MASM_ASM   := $(filter-out $(MASM_ASM_LINK_LAST),$(MASM_ASM_DISCOVERED)) \
-                  $(filter $(MASM_ASM_DISCOVERED),$(MASM_ASM_LINK_LAST))
+    MASM_ASM   := $(filter-out $(MASM_ASM_LINK_LAST),$(MASM_ASM_SELECTED)) \
+                  $(filter $(MASM_ASM_SELECTED),$(MASM_ASM_LINK_LAST))
     MASM_FUNCS := $(patsubst src/masm/%.asm,%,$(MASM_ASM))
     MASM_OBJS  := $(MASM_ASM:.asm=.obj)
 else
@@ -372,9 +380,15 @@ $(TARGET_LIB): $(OBJS) $(MASM_OBJS) $(AUTO_EXPORTS_RSP)
 #  * under git-bash (MSYS) the `/`-prefixed options are rewritten to Windows
 #    paths (`/c` -> `C:/`); MSYS2_ARG_CONV_EXCL='*' disables that mangling
 #    (the var is simply ignored on mac/linux).
-src/masm/%.obj: src/masm/%.asm
+src/masm/%.obj: $(MASM_NORMALIZED_DIR)/%.asm
 	@echo "Assembling $< ($(ML64))"
 	MSYS2_ARG_CONV_EXCL='*' $(ML64) /nologo /c /Fo$@ $<
+
+$(MASM_NORMALIZED_DIR):
+	@mkdir -p "$@"
+
+$(MASM_NORMALIZED_DIR)/%.asm: src/masm/%.asm $(MASM_NORMALIZER) | $(MASM_NORMALIZED_DIR)
+	"$(PYTHON)" $(MASM_NORMALIZER) $< $@
 else ifeq ($(CC),cl)
 $(TARGET_LIB): $(OBJS)
 	$(CC) $(LDFLAGS) /Fe:$@ $^

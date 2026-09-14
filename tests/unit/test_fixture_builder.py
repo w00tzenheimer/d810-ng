@@ -672,6 +672,14 @@ def test_windows_builder_preserves_explicit_masm_export_contract() -> None:
     assert 'throw "MASM source' in exporter
 
 
+def test_windows_builder_rejects_store_alias_and_passes_real_python_to_make() -> None:
+    script = (REPO / "samples/scripts/build_windows.ps1").read_text()
+
+    assert "\\WindowsApps\\" in script
+    assert "python.exe" in script
+    assert 'PYTHON=$PythonExe' in script
+
+
 def test_authoritative_windows_builder_marks_hodconst_read_only() -> None:
     """The Microsoft-link release path must retain immutable Hodur constants."""
 
@@ -706,6 +714,10 @@ def test_masm_builder_pins_layout_sensitive_object_at_link_tail(tmp_path) -> Non
     source_builder = REPO / "samples/scripts/build_masm.sh"
     builder.write_text(source_builder.read_text())
     builder.chmod(source_builder.stat().st_mode)
+    normalizer = scripts / "normalize_masm_for_build.py"
+    normalizer.write_text(
+        (REPO / "samples/scripts/normalize_masm_for_build.py").read_text()
+    )
 
     tools = tmp_path / "tools"
     tools.mkdir()
@@ -718,11 +730,13 @@ def test_masm_builder_pins_layout_sensitive_object_at_link_tail(tmp_path) -> Non
 
     assembler = executable(
         "ml64",
+        'printf \'%s\\n\' "$@" >> "$D810_TEST_ASSEMBLER_ARGS"\n'
         'for arg in "$@"; do\n'
         '  case "$arg" in /Fo*) touch "${arg#/Fo}" ;; esac\n'
         "done\n",
     )
     link_args = tmp_path / "link-args.txt"
+    assembler_args = tmp_path / "assembler-args.txt"
     linker = executable(
         "linker",
         'printf \'%s\\n\' "$@" > "$D810_TEST_LINK_ARGS"\n'
@@ -759,6 +773,7 @@ def test_masm_builder_pins_layout_sensitive_object_at_link_tail(tmp_path) -> Non
         "MASM_INCLUDE_C": "0",
         "MASM_FUNCS": "",
         "D810_TEST_LINK_ARGS": str(link_args),
+        "D810_TEST_ASSEMBLER_ARGS": str(assembler_args),
     }
     built = _sp.run(
         ["bash", str(builder)],
@@ -784,6 +799,81 @@ def test_masm_builder_pins_layout_sensitive_object_at_link_tail(tmp_path) -> Non
         "warden_v85_value_mba",
     ]
     assert "/SECTION:HODCONST,R" in args
+    assembled_sources = [
+        Path(arg)
+        for arg in assembler_args.read_text().splitlines()
+        if arg.endswith(".asm")
+    ]
+    assert assembled_sources
+    assert all(
+        source.is_relative_to(samples / ".build_masm" / "normalized")
+        for source in assembled_sources
+    )
+
+
+def test_windows_makefile_masm_subset_selects_only_requested_source() -> None:
+    """The PowerShell ``-MasmFuncs`` contract must constrain prerequisites."""
+
+    requested = "sub_7FFB0E53C420"
+    result = _sp.run(
+        [
+            "make",
+            "-C",
+            str(REPO / "samples"),
+            "-pn",
+            "HOST_OS=windows",
+            "USING_CLANG_CL=1",
+            f"MASM_FUNCS={requested}",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+
+    assignment = next(
+        line for line in result.stdout.splitlines() if line.startswith("MASM_ASM := ")
+    )
+    assert assignment.removeprefix("MASM_ASM := ").split() == [
+        f"src/masm/{requested}.asm"
+    ]
+
+
+def test_windows_makefile_assembles_only_derived_normalized_masm() -> None:
+    requested = "sub_7FFB0E1E69E0"
+    result = _sp.run(
+        [
+            "make",
+            "-C",
+            str(REPO / "samples"),
+            "-Bn",
+            "HOST_OS=windows",
+            "USING_CLANG_CL=1",
+            f"MASM_FUNCS={requested}",
+            f"src/masm/{requested}.obj",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert (
+        "normalize_masm_for_build.py "
+        f"src/masm/{requested}.asm .build_masm/normalized/{requested}.asm"
+    ) in result.stdout
+    assembler_lines = [
+        line for line in result.stdout.splitlines() if "ml64" in line.lower()
+    ]
+    assert len(assembler_lines) == 2  # status echo plus command
+    assert all(f".build_masm/normalized/{requested}.asm" in line for line in assembler_lines)
+
+
+def test_windows_makefile_creates_normalized_directory_once_for_parallel_builds() -> None:
+    makefile = (REPO / "samples/Makefile").read_text()
+
+    assert "$(MASM_NORMALIZED_DIR):\n" in makefile
+    assert (
+        "$(MASM_NORMALIZED_DIR)/%.asm: src/masm/%.asm $(MASM_NORMALIZER) "
+        "| $(MASM_NORMALIZED_DIR)"
+    ) in makefile
 
 
 def test_windows_builder_uses_native_masm_relative_jump_table() -> None:
