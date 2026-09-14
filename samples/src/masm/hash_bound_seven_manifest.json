@@ -1,0 +1,54 @@
+{
+  "schema": "d810.hash-bound-masm-fixtures.v1",
+  "fixtures": [
+    {
+      "function": "sub_7FFB0E53C420",
+      "masm": "sub_7FFB0E53C420.asm",
+      "rva": "0x78C420",
+      "size": "0x4296",
+      "masm_sha256": "092076b62bf2ffb18d32e07e2ec17b8b7166f09d6aaa3e24bc237c37d2161cb2"
+    },
+    {
+      "function": "sub_7FFB0DE51120",
+      "masm": "sub_7FFB0DE51120.asm",
+      "rva": "0xA1120",
+      "size": "0x7470",
+      "masm_sha256": "7b8ba63d39338634d13ce754e44b2cb75b3fe1c74a458c7ac12c3dd3e6bde5dd"
+    },
+    {
+      "function": "sub_7FFB0DF992D0",
+      "masm": "sub_7FFB0DF992D0.asm",
+      "rva": "0x1E92D0",
+      "size": "0x500D",
+      "masm_sha256": "b4b8f02832eaff8728ce7e4c493a89fcd8e90f8b4e3d35690de4ee80be390e73"
+    },
+    {
+      "function": "sub_7FFB0DFD1D70",
+      "masm": "sub_7FFB0DFD1D70.asm",
+      "rva": "0x221D70",
+      "size": "0x1E6FD",
+      "masm_sha256": "959f90c564ecfe7ff881accf38a90c8d2f3bd73cb26f7fa49fc1f17fa88f5338"
+    },
+    {
+      "function": "sub_7FFB0E1E69E0",
+      "masm": "sub_7FFB0E1E69E0.asm",
+      "rva": "0x4369E0",
+      "size": "0x166",
+      "masm_sha256": "0c446160e198d6ecc00c915906e48718f5b123f98a1b00ba2888e6ae77f2e81c"
+    },
+    {
+      "function": "sub_7FFB0E0A2C90",
+      "masm": "sub_7FFB0E0A2C90.asm",
+      "rva": "0x2F2C90",
+      "size": "0x95CB",
+      "masm_sha256": "c44e8383c2c39fe4a31d50a21447c861906cb6ad696e6420ca63ca6e30e9dc93"
+    },
+    {
+      "function": "sub_7FFB0E086BE0",
+      "masm": "sub_7FFB0E086BE0.asm",
+      "rva": "0x2D6BE0",
+      "size": "0x8CB0",
+      "masm_sha256": "92ca85f671d4c8c2c8230337a987542f4f3b604787b0728787bbdb1df456b0ff"
+    }
+  ]
+}

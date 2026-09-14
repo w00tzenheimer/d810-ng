@@ -774,7 +774,15 @@ def test_masm_builder_pins_layout_sensitive_object_at_link_tail(tmp_path) -> Non
     source_names = {source.stem for source in masm_sources.glob("*.asm")}
     assert set(linked_masm) == source_names
     assert len(linked_masm) == len(source_names)
-    assert linked_masm[-1] == "sub_7FF855576B50"
+    assert linked_masm[-7:] == [
+        "WardenScanModule_DecryptAndDispatchRequest",
+        "sub_7FF855576B50",
+        "warden_mixed_source",
+        "warden_v55_index_lookup",
+        "warden_v55_index_offset",
+        "warden_v57_value_mba",
+        "warden_v85_value_mba",
+    ]
     assert "/SECTION:HODCONST,R" in args
 
 
