@@ -238,6 +238,15 @@ class EmulatorGapScope:
             counts[gap.cause] = counts.get(gap.cause, 0) + int(gap.occurrences)
         return dict(sorted(counts.items(), key=lambda kv: (-kv[1], kv[0])))
 
+    def discard(self, cause: str, *, site_ea: int, block_serial: int) -> bool:
+        """Drop one exact gap superseded before this attempt is published."""
+        key = (str(cause), int(site_ea), int(block_serial))
+        gap = self._index.pop(key, None)
+        if gap is None:
+            return False
+        self.gaps.remove(gap)
+        return True
+
     def is_empty(self) -> bool:
         return not self.gaps
 
@@ -372,6 +381,34 @@ def emulator_gap_counts(func_ea: int) -> dict[str, int]:
     return {} if scope is None else scope.counts()
 
 
+def supersede_emulator_gap(
+    func_ea: int,
+    cause: str,
+    *,
+    site_ea: int,
+    block_serial: int,
+) -> bool:
+    """Remove an exact preliminary gap after complete stronger evidence wins.
+
+    The caller must own the stronger, attempt-local proof.  Coordinates are
+    exact so resolving one predecessor-partitioned PHI cannot hide an unrelated
+    gap at another instruction or block.
+    """
+    try:
+        scope = emulator_gap_scope(int(func_ea))
+        return bool(
+            scope is not None
+            and scope.discard(
+                cause,
+                site_ea=int(site_ea),
+                block_serial=int(block_serial),
+            )
+        )
+    except Exception:  # noqa: BLE001 - diagnostics never break recovery
+        logger.debug("emulator gap supersession failed", exc_info=True)
+        return False
+
+
 def active_gap_db_path(func_ea: int) -> str | None:
     """The capture path a ``next=`` hint may name for ``func_ea``, or ``None``.
 
@@ -490,6 +527,25 @@ def _flush_scope(
         unresolved_state_writes=unresolved_state_writes,
         db_path=active_gap_db_path(scope.func_ea) if db_path is None else db_path,
     )
+    if log is not None:
+        for gap in scope.gaps:
+            if gap.cause != CAUSE_PHI_MULTI_DEF:
+                continue
+            try:
+                log.warning(  # type: ignore[attr-defined]
+                    "%s",
+                    format_emulator_gap(
+                        scope,
+                        gap,
+                        db_path=(
+                            active_gap_db_path(scope.func_ea)
+                            if db_path is None
+                            else db_path
+                        ),
+                    ),
+                )
+            except Exception:  # noqa: BLE001
+                logger.debug("deferred PHI gap log failed", exc_info=True)
     publish = emit if emit_fn is None else emit_fn
     for event in build_emulator_gap_events(scope):
         try:
@@ -594,4 +650,5 @@ __all__ = [
     "format_emulator_gap_aggregate",
     "is_stack_slot_in_aliased_memory",
     "record_emulator_gap",
+    "supersede_emulator_gap",
 ]

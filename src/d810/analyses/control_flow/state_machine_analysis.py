@@ -5,7 +5,7 @@ from __future__ import annotations
 import enum
 from collections.abc import Callable
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from d810.ir.flowgraph import (
     BlockKind,
@@ -726,6 +726,9 @@ def _forward_eval_projected_snapshot(
 ) -> int | None:
     """Evaluate a cached canonical program against the caller's own maps."""
 
+    if snapshot.is_assert:
+        return None
+
     resolved_state: int | None = None
     for instruction in projection_cache.instructions_for(snapshot):
         resolved = _forward_eval_insn(
@@ -749,6 +752,9 @@ def _classify_truncation_side_effect_snapshot(
     state_var_stkoff: int,
 ) -> str | None:
     """Classify why truncating *insn* after a state write would be unsafe."""
+
+    if insn.is_assert:
+        return None
 
     if _is_goto_insn(insn) or _is_nop_insn(insn):
         return None
@@ -817,6 +823,15 @@ def _transfer_snapshot_constant_block(
     for insn in block.insn_snapshots:
         eval_insn = _eval_insn_view_snapshot(insn)
         dest_locator = _constant_dest_locator_snapshot(eval_insn)
+        if insn.is_assert:
+            # IPROP_ASSERT is an optimizer fact, not an executable write.  A
+            # fact about the dispatcher state must therefore never manufacture
+            # a transition.  Facts about other tracked cells are still valid
+            # abstract-environment seeds (for example a terminal return
+            # carrier); evaluate only that assumption view here.
+            if dest_locator == ("stk", int(state_var_stkoff)):
+                continue
+            eval_insn = replace(eval_insn, is_assert=False)
         old_dest_value = None
         if dest_locator is not None:
             kind, ident = dest_locator
@@ -989,6 +1004,11 @@ def find_state_write_sites_snapshot(
     for index, insn in enumerate(instructions):
         eval_insn = _eval_insn_view_snapshot(insn)
         dest_locator = _constant_dest_locator_snapshot(eval_insn)
+        assertion_fact = bool(insn.is_assert)
+        if assertion_fact:
+            if dest_locator == ("stk", int(state_var_stkoff)):
+                continue
+            eval_insn = replace(eval_insn, is_assert=False)
         old_dest_value = None
         if dest_locator is not None:
             kind, ident = dest_locator
@@ -1009,6 +1029,10 @@ def find_state_write_sites_snapshot(
             if new_dest_value != old_dest_value or new_dest_value is not None:
                 continue
             _kill_constant_dest_snapshot(eval_insn, stk_map, reg_map)
+            continue
+        if assertion_fact:
+            # The fact has updated the abstract environment, but it is not a
+            # physical state-write site and cannot own truncation/mutation.
             continue
         trailing = instructions[index + 1 :]
         unsafe_trailing_eas: list[int] = []

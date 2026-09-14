@@ -433,6 +433,88 @@ def test_cached_projection_preserves_global_fold_and_write_site_metadata() -> No
     assert sites[-1].unsafe_trailing_reasons == ("call",)
 
 
+def test_hexrays_assertion_is_not_a_semantic_state_write() -> None:
+    """IPROP_ASSERT facts must not compete with the real carrier transition."""
+
+    state_stkoff = 0x2C4
+    asserted_state = InsnSnapshot(
+        opcode=1,
+        ea=0x7FFB0DE936BC,
+        operands=(),
+        kind=InsnKind.MOV,
+        l=_mop_n(0x5CD7812F),
+        d=_mop_s(state_stkoff),
+        is_assert=True,
+    )
+    real_carrier = InsnSnapshot(
+        opcode=1,
+        ea=0x7FFB0DE93773,
+        operands=(),
+        kind=InsnKind.MOV,
+        l=_mop_n(0x5BE53D1A),
+        d=_mop_r(8),
+    )
+    block = _block_with_insns(36, (), (35,), asserted_state, real_carrier)
+    graph = FlowGraph(
+        blocks={36: block},
+        entry_serial=36,
+        func_ea=0x7FFB0DE93330,
+    )
+
+    out_stk, out_reg = sma._transfer_snapshot_constant_block(
+        block,
+        {},
+        {},
+        state_stkoff,
+    )
+
+    assert state_stkoff not in out_stk
+    assert out_reg[8] == 0x5BE53D1A
+    assert sma.find_state_write_sites_snapshot(graph, 36, state_stkoff) == ()
+
+
+def test_non_state_assertion_seeds_abstract_transition_evaluation() -> None:
+    """Optimizer facts may seed evaluation without becoming state writes."""
+
+    state_stkoff = 0x2C4
+    asserted_carrier = InsnSnapshot(
+        opcode=1,
+        ea=0x180004902,
+        operands=(),
+        kind=InsnKind.MOV,
+        l=_mop_n(0x4F),
+        d=_mop_r(8),
+        is_assert=True,
+    )
+    derived_state = InsnSnapshot(
+        opcode=1,
+        ea=0x180004911,
+        operands=(),
+        kind=InsnKind.MOV,
+        l=_mop_r(8),
+        d=_mop_s(state_stkoff),
+    )
+    block = _block_with_insns(37, (), (), asserted_carrier, derived_state)
+    graph = FlowGraph(
+        blocks={37: block},
+        entry_serial=37,
+        func_ea=0x180002530,
+    )
+
+    out_stk, out_reg = sma._transfer_snapshot_constant_block(
+        block,
+        {},
+        {},
+        state_stkoff,
+    )
+
+    assert out_reg[8] == 0x4F
+    assert out_stk[state_stkoff] == 0x4F
+    sites = sma.find_state_write_sites_snapshot(graph, 37, state_stkoff)
+    assert tuple(site.insn_ea for site in sites) == (derived_state.ea,)
+    assert tuple(site.state_value for site in sites) == (0x4F,)
+
+
 def test_projection_cache_fails_loud_on_projector_runtime_error(monkeypatch) -> None:
     insn = InsnSnapshot(
         opcode=1,

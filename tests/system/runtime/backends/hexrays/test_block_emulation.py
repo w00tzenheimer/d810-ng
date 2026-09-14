@@ -15,6 +15,9 @@ shape so a regression to a *wrong* ExactResult is caught cheaply.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from types import SimpleNamespace
+
+import ida_hexrays
 
 from d810.analyses.data_flow.concolic import Abstain, ConcreteStore, ExactResult
 from d810.analyses.data_flow.concolic.refs import LocationRef
@@ -35,6 +38,9 @@ class _FakeInsn:
     opcode: object | None = None
     d: object | None = None
     next: object | None = None
+    iprops: int = 0
+    ea: int = 0
+    value: int | None = None
 
 
 _STATE_STKOFF = 0x64
@@ -58,6 +64,136 @@ class TestAbstainContract:
         block = _FakeBlock(head=_FakeInsn(opcode=None))
         outcome = _emulator().eval_block(block, ConcreteStore.of({}))
         assert isinstance(outcome, Abstain)
+
+    def test_assertion_state_write_is_not_an_executable_definition(self) -> None:
+        state_mop = SimpleNamespace(
+            t=ida_hexrays.mop_S,
+            s=SimpleNamespace(off=_STATE_STKOFF),
+        )
+        real_write = _FakeInsn(opcode=ida_hexrays.m_mov, d=state_mop)
+        assertion = _FakeInsn(
+            opcode=ida_hexrays.m_mov,
+            d=state_mop,
+            next=real_write,
+            iprops=ida_hexrays.IPROP_ASSERT,
+        )
+
+        assert _emulator()._find_first_state_write(_FakeBlock(assertion)) is real_write
+
+    def test_eval_skips_same_site_assertion_before_real_write(self, monkeypatch) -> None:
+        state_mop = SimpleNamespace(
+            t=ida_hexrays.mop_S,
+            s=SimpleNamespace(off=_STATE_STKOFF),
+        )
+        real_write = _FakeInsn(
+            opcode=ida_hexrays.m_mov,
+            d=state_mop,
+            ea=0x401000,
+            value=0x22222222,
+        )
+        assertion = _FakeInsn(
+            opcode=ida_hexrays.m_mov,
+            d=state_mop,
+            next=real_write,
+            iprops=ida_hexrays.IPROP_ASSERT,
+            ea=real_write.ea,
+            value=0x11111111,
+        )
+
+        class _Environment:
+            value = None
+
+            def lookup(self, _mop, *, raise_exception=False):
+                return self.value
+
+        class _Interpreter:
+            abstain_causes = SimpleNamespace(
+                dominant=lambda: None,
+                def_sites=lambda: (),
+            )
+
+            def __init__(self, *, symbolic_mode):
+                assert symbolic_mode is False
+
+            def eval_instruction(self, _block, insn, *, environment, raise_exception):
+                environment.value = insn.value
+                return True
+
+            def eval_mop(self, _mop, *, environment, raise_exception):
+                return environment.value
+
+        monkeypatch.setattr(
+            "d810.backends.hexrays.evidence.emulation.MicroCodeEnvironment",
+            _Environment,
+        )
+        monkeypatch.setattr(
+            "d810.backends.hexrays.evidence.emulation.MicroCodeInterpreter",
+            _Interpreter,
+        )
+
+        outcome = _emulator().eval_block(_FakeBlock(assertion), ConcreteStore.of({}))
+
+        assert isinstance(outcome, ExactResult)
+        assert outcome.value_for(_STATE_CELL) == real_write.value
+
+    def test_eval_uses_non_state_assertion_as_carrier_fact(self, monkeypatch) -> None:
+        state_mop = SimpleNamespace(
+            t=ida_hexrays.mop_S,
+            s=SimpleNamespace(off=_STATE_STKOFF),
+        )
+        carrier_mop = SimpleNamespace(t=ida_hexrays.mop_r, r=8)
+        real_write = _FakeInsn(
+            opcode=ida_hexrays.m_mov,
+            d=state_mop,
+            ea=0x180004911,
+        )
+        carrier_assertion = _FakeInsn(
+            opcode=ida_hexrays.m_mov,
+            d=carrier_mop,
+            next=real_write,
+            iprops=ida_hexrays.IPROP_ASSERT,
+            ea=0x180004902,
+            value=0x4F,
+        )
+
+        class _Environment:
+            value = None
+
+            def lookup(self, _mop, *, raise_exception=False):
+                return self.value
+
+        class _Interpreter:
+            abstain_causes = SimpleNamespace(
+                dominant=lambda: None,
+                def_sites=lambda: (),
+            )
+
+            def __init__(self, *, symbolic_mode):
+                assert symbolic_mode is False
+
+            def eval_instruction(self, _block, insn, *, environment, raise_exception):
+                if insn.value is not None:
+                    environment.value = insn.value
+                return True
+
+            def eval_mop(self, _mop, *, environment, raise_exception):
+                return environment.value
+
+        monkeypatch.setattr(
+            "d810.backends.hexrays.evidence.emulation.MicroCodeEnvironment",
+            _Environment,
+        )
+        monkeypatch.setattr(
+            "d810.backends.hexrays.evidence.emulation.MicroCodeInterpreter",
+            _Interpreter,
+        )
+
+        outcome = _emulator().eval_block(
+            _FakeBlock(carrier_assertion), ConcreteStore.of({})
+        )
+
+        assert isinstance(outcome, ExactResult)
+        assert outcome.value_for(_STATE_CELL) == 0x4F
 
     def test_eval_insn_is_unsupported(self) -> None:
         from d810.analyses.data_flow.concolic.emulation import InsnRef, Unsupported

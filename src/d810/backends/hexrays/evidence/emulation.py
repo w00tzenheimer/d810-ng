@@ -132,10 +132,20 @@ class HexRaysBlockEmulator:
             resolved: Optional[int] = None
             insn = getattr(block, "head", None)
             while insn is not None:
+                if (
+                    int(getattr(insn, "iprops", 0)) & ida_hexrays.IPROP_ASSERT
+                    and self._mop_is_state_var(getattr(insn, "d", None))
+                ):
+                    # A selector assertion is not an executable transition.
+                    # Other assertions are optimizer facts and may seed the
+                    # concrete environment used to evaluate a later real
+                    # state write (notably terminal return carriers).
+                    insn = getattr(insn, "next", None)
+                    continue
                 ok = interpreter.eval_instruction(
                     block, insn, environment=env, raise_exception=False
                 )
-                if insn.ea == write_insn.ea and insn.opcode == write_insn.opcode:
+                if insn is write_insn:
                     if ok:
                         # Both fetches are EXACT-or-``None``: a next-state derived
                         # from a call the emulator MODELED rather than computed is
@@ -224,7 +234,11 @@ class HexRaysBlockEmulator:
         insn = getattr(block, "head", None)
         while insn is not None:
             d = getattr(insn, "d", None)
-            if d is not None and self._mop_is_state_var(d):
+            if (
+                not (int(getattr(insn, "iprops", 0)) & ida_hexrays.IPROP_ASSERT)
+                and d is not None
+                and self._mop_is_state_var(d)
+            ):
                 return insn
             insn = getattr(insn, "next", None)
         return None

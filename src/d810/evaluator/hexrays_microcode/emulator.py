@@ -607,14 +607,19 @@ class MicroCodeInterpreter(object):
                 recorded.gap.detail = str(detail_fn())[: EmulatorGapScope.MAX_DETAIL]
             except Exception:  # noqa: BLE001 — a render must never break a run
                 recorded.gap.detail = ""
-        emulator_log.warning(
-            "%s",
-            format_emulator_gap(
-                recorded.scope,
-                recorded.gap,
-                db_path=active_gap_db_path(func_ea),
-            ),
-        )
+        # A PHI abstention may be superseded later in this same attempt by the
+        # predecessor-partitioned transition evaluator.  Delay only that cause
+        # until attempt flush so complete stronger evidence can retract it;
+        # every other gap remains an immediate worklist warning.
+        if cause != CAUSE_PHI_MULTI_DEF:
+            emulator_log.warning(
+                "%s",
+                format_emulator_gap(
+                    recorded.scope,
+                    recorded.gap,
+                    db_path=active_gap_db_path(func_ea),
+                ),
+            )
         return True
 
     def _collect_mop_keys(self, mop: ida_hexrays.mop_t | None, keys: set) -> None:

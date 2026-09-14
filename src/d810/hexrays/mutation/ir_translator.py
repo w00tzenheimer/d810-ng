@@ -614,6 +614,15 @@ def capture_mop_snapshot(
     return CfgMopSnapshot(t=t, size=size, kind=kind)
 
 
+def _live_insn_is_assert(insn: "ida_hexrays.minsn_t") -> bool:
+    """Return the exact Hex-Rays IPROP_ASSERT identity for one live row."""
+
+    iprops = getattr(insn, "iprops", None)
+    if iprops is not None and int(iprops) & int(ida_hexrays.IPROP_ASSERT):
+        return True
+    return bool(insn.is_assert())
+
+
 def capture_insn_snapshot(
     insn: "ida_hexrays.minsn_t",
     lvar_stkoff_map: dict[int, int] | None = None,
@@ -689,6 +698,7 @@ def capture_insn_snapshot(
         is_conditional_jump=branch_predicate is not None,
         is_unconditional_jump=insn_kind is InsnKind.GOTO,
         is_call=insn_kind is InsnKind.CALL,
+        is_assert=_live_insn_is_assert(insn),
     )
 
 

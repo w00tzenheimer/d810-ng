@@ -67,6 +67,13 @@ _EXACT_MASM_CODE_EXTENTS = {
     # first dispatcher transfer requires the five-byte near form once the
     # relative table is emitted immediately before the procedure.
     "sub_7FF856533A20": 0x4402,
+    # d81-vp29: exact structural export of loader build 12.1.0.69587.
+    # MASM relaxes several branches and removes the source table's absolute
+    # displacement, so the linked fixture's measured dense instruction range
+    # is 0x30C5 rather than the source function's 0x30E9.
+    # Recreate it so fresh IDA analysis cannot truncate the function at its
+    # embedded switch/jump-table edges.
+    "sub_7FFB0DE93330": 0x30C5,
 }
 
 def _materialize_exact_masm_code_extent(function: str) -> None:

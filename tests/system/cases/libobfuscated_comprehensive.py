@@ -916,6 +916,27 @@ DAC_MASM_CASES = [
         skip_if_function_absent=True,
     ),
     DeobfuscationCase(
+        function="sub_7FFB0DE93330",
+        description=(
+            "Exact loader-build 12.1.0.69587 dispatcher fixture for d81-vp29. "
+            "The selector load at source VA 0x7FFB0DE93400 is represented by "
+            "Hex-Rays as an assertion sharing an EA with executable microcode. "
+            "D810 must not execute that assertion or merge its eight reaching "
+            "definitions into phi_multi_def; the recovered 70-handler machine "
+            "must publish completely and leave the quoted-value parser intact."
+        ),
+        project="eidolon_v4_const_simplify_solve.json",
+        obfuscated_contains=["while ( 1 )", "0x381CC2A9", "0x5CD7812F"],
+        deobfuscated_contains=["case 0x2Cu:", "*a7 =", "return 1;"],
+        deobfuscated_not_contains=[
+            "while ( 1 )",
+            "0x381CC2A9",
+            "0x5CD7812F",
+        ],
+        must_change=True,
+        skip_if_function_absent=True,
+    ),
+    DeobfuscationCase(
         function="sub_7FF856533A20",
         description=(
             "Exact Eid v4 layered-control-flow fixture. The outer interval "

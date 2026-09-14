@@ -211,6 +211,9 @@ class InsnSnapshot:
     # fictitious ``ea`` to generated microcode; adapters populate this field
     # from ``mba_t::map_fict_ea`` without replacing the live lookup coordinate.
     native_ea: int | None = None
+    # Hex-Rays IPROP_ASSERT instructions state an optimizer fact; they are not
+    # executable assignments and must never become transition evidence.
+    is_assert: bool = False
 
     def __post_init__(self) -> None:
         if self.native_ea is not None:
@@ -224,9 +227,10 @@ class InsnSnapshot:
             raise ValueError(
                 "InsnSnapshot: synthetic negative opcode cannot carry raw provenance"
             )
-        object.__setattr__(
-            self, "opcode_attrs", MappingProxyType(dict(self.opcode_attrs))
-        )
+        opcode_attrs = dict(self.opcode_attrs)
+        if self.is_assert:
+            opcode_attrs["is_assert"] = True
+        object.__setattr__(self, "opcode_attrs", MappingProxyType(opcode_attrs))
         if self.value_op_kind is None:
             kind_to_value = {
                 InsnKind.MOV: ValueOpKind.MOVE,

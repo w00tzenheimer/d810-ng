@@ -1161,6 +1161,88 @@ def test_typed_emitter_mints_closed_entry_forecast_for_exact_conditional_arm(
     assert allowance.replacement_endpoint_ref == refs[20]
 
 
+def test_unbound_optional_route_receipt_does_not_veto_switch_dispatcher(
+    monkeypatch,
+    _seam,
+) -> None:
+    """A switch map without comparison rows keeps the legacy route path."""
+
+    class _CleanUseDefSafety:
+        def redirect_use_def_violations(self, *_args, **_kwargs):
+            return ()
+
+    branch = InsnSnapshot(
+        opcode=_OP_MOV,
+        ea=0x1008,
+        operands=(),
+        d=MopSnapshot(kind=OperandKind.BLOCK, block_ref=2),
+        kind=InsnKind.COND_JUMP,
+        branch_predicate=PredicateKind.EQ,
+        is_conditional_jump=True,
+    )
+    graph = FlowGraph(
+        {
+            0: replace(
+                _b(0, (1, 2), (), (_mov_state(0x1004, 0), branch)),
+                kind=BlockKind.TWO_WAY,
+                tail_kind=InsnKind.COND_JUMP,
+            ),
+            1: _b(1, (), (0,)),
+            2: _b(2, (20,), (0,)),
+            20: _b(
+                20,
+                (),
+                (2,),
+                (InsnSnapshot(opcode=0, ea=0x1500, operands=(), kind=InsnKind.NOP),),
+            ),
+        },
+        0,
+        0x1000,
+    )
+    switch_map = StateDispatcherMap(
+        rows=(
+            StateDispatcherRow(
+                state_const=0,
+                target_block=20,
+                dispatcher_block=2,
+                compare_block=None,
+                branch_kind="switch",
+                router_kind=RouterKind.TABLE,
+            ),
+        ),
+        dispatcher_entry_block=2,
+        dispatcher_blocks=frozenset({2}),
+        state_var_stkoff=_STATE,
+        state_var_lvar_idx=None,
+        router_kind=RouterKind.TABLE,
+    )
+    monkeypatch.setattr(
+        minimal_unflatten_emit_module,
+        "recover_state_write_transitions_via_partitioned_fixpoint",
+        lambda *_args, **_kwargs: (),
+    )
+
+    plan = emit_minimal_unflatten(
+        graph,
+        _DualRouteDispatcher(
+            exact_targets={0: 20}, interval_rows=(IntervalRow(0, 1, 20),),
+        ),
+        state_var_stkoff=_STATE,
+        dispatcher_entry_serial=2,
+        initial_state=0,
+        state_dispatcher_map=switch_map,
+        entry_bridge_exit_path_blocks=(2,),
+        entry_bridge_requires_witness=True,
+        dispatcher_region_serials=frozenset({2}),
+        native_key=NATIVE_KEY,
+        block_refs_by_serial=_entry_dispatcher_map_test_refs(graph),
+        use_def_safety=_CleanUseDefSafety(),
+        live_function=object(),
+    )
+
+    assert RedirectBranch(0, 2, 20) in graph_modifications(plan)
+
+
 def test_typed_emitter_entry_liveness_reuses_matching_transition_proof(
     monkeypatch,
     _seam,
@@ -3577,6 +3659,89 @@ def _equality_dispatcher(point_targets, entry_block, compare_blocks):
         for st, target in point_targets.items()
     ]
     return IntervalDispatcher(interval_rows), dispatch_map
+
+
+@pytest.mark.parametrize(
+    "malformation",
+    ("entry", "state_identity", "stale_target", "wrong_existing_target", "empty"),
+)
+def test_exact_dispatcher_receipt_binds_current_candidate_or_abstains(
+    malformation: str,
+) -> None:
+    state = 0x16AA65E9
+    graph = FlowGraph(
+        {
+            0: _b(0, (2,), ()),
+            2: _b(2, (20,), (0, 10)),
+            20: _eq_block(20, state, 10, 99, preds=(2,)),
+            10: _b(10, (2,), (20,)),
+            99: replace(_b(99, (), (20,)), kind=BlockKind.STOP),
+        },
+        0,
+        0x180055760,
+    )
+    _dispatcher, dispatch_map = _equality_dispatcher(
+        {state: 10}, entry_block=2, compare_blocks=(20,)
+    )
+    if malformation == "entry":
+        dispatch_map = replace(dispatch_map, dispatcher_entry_block=3)
+    elif malformation == "state_identity":
+        dispatch_map = replace(dispatch_map, state_var_stkoff=_STATE + 4)
+    elif malformation == "stale_target":
+        dispatch_map = replace(
+            dispatch_map,
+            rows=(replace(dispatch_map.rows[0], target_block=999),),
+        )
+    elif malformation == "wrong_existing_target":
+        dispatch_map = replace(
+            dispatch_map,
+            rows=(replace(dispatch_map.rows[0], target_block=99),),
+        )
+    elif malformation == "empty":
+        dispatch_map = replace(dispatch_map, rows=())
+    else:  # pragma: no cover - parametrization is closed above
+        raise AssertionError(malformation)
+
+    receipt = minimal_unflatten_emit_module._bind_exact_u32_dispatcher_route_receipt(
+        graph,
+        dispatch_map,
+        dispatcher_entry_serial=2,
+        state_var_stkoff=_STATE,
+        state_var_reg=None,
+        dispatcher_region_serials=frozenset({2, 20}),
+    )
+
+    assert receipt is None
+
+
+def test_exact_dispatcher_receipt_accepts_bound_current_rows() -> None:
+    state = 0x16AA65E9
+    graph = FlowGraph(
+        {
+            0: _b(0, (2,), ()),
+            2: _b(2, (20,), (0, 10)),
+            20: _eq_block(20, state, 10, 99, preds=(2,)),
+            10: _b(10, (2,), (20,)),
+            99: replace(_b(99, (), (20,)), kind=BlockKind.STOP),
+        },
+        0,
+        0x180055760,
+    )
+    _dispatcher, dispatch_map = _equality_dispatcher(
+        {state: 10}, entry_block=2, compare_blocks=(20,)
+    )
+
+    receipt = minimal_unflatten_emit_module._bind_exact_u32_dispatcher_route_receipt(
+        graph,
+        dispatch_map,
+        dispatcher_entry_serial=2,
+        state_var_stkoff=_STATE,
+        state_var_reg=None,
+        dispatcher_region_serials=frozenset({2, 20}),
+    )
+
+    assert receipt is not None
+    assert receipt.target_for_u32_state(state) == 10
 
 
 def test_emits_back_edge_redirect_and_entry_bridge(_seam) -> None:
@@ -8315,12 +8480,13 @@ def test_conditional_arm_does_not_retarget_already_partitioned_shared_feeder(
 def test_conditional_arm_forecast_abstention_logs_without_changing_redirects(
     monkeypatch, caplog, _seam,
 ) -> None:
-    """An informational forecast abstention cannot abort its owned redirect.
+    """A forecast abstention rejects only that optional arm redirect.
 
     ``TransitionArm`` records its handler only through ``ordered_path``.  The
-    actual conditional-arm builder still owns the redirect when canonical
-    forecast construction abstains; its INFO diagnostic must therefore use the
-    arm's typed path rather than a nonexistent ``arm.handler`` field.
+    canonical pipeline cannot publish the redirect without its corresponding
+    typed route fact, but the failure need not reject unrelated back-edge
+    redirects.  Its INFO diagnostic uses the arm's typed path rather than a
+    nonexistent ``arm.handler`` field.
     """
     fg = FlowGraph(
         blocks={
@@ -8358,7 +8524,7 @@ def test_conditional_arm_forecast_abstention_logs_without_changing_redirects(
             decision_dag=DecisionDag(32, {}, root=8),
         )
 
-    assert modifications == [RedirectGoto(101, 8, 20)]
+    assert modifications == []
     assert forecasts == ()
     messages = [record.getMessage() for record in caplog.records]
     assert any(
@@ -17337,6 +17503,66 @@ def test_exact_source_carrier_dag_route_authorizes_default_entry_leaf(
         graph_modifications(plan)
     )
     _assert_no_legacy_plan_metadata(plan)
+
+
+def test_source_carrier_entry_route_accepts_complete_multi_predecessor_partition(
+    _seam,
+) -> None:
+    state_a = 0x34BF5A81
+    state_b = 0x4E6E550E
+    graph = FlowGraph(
+        {
+            0: _b(0, (1, 2), ()),
+            1: _b(1, (3,), (0,)),
+            2: _b(2, (3,), (0,)),
+            3: _b(3, (4,), (1, 2)),
+            4: _b(4, (10, 11), (3,)),
+            10: _b(10, (), (4,)),
+            11: _b(11, (), (4,)),
+        },
+        entry_serial=0,
+        func_ea=0x1000,
+    )
+
+    def carrier(source: int, state: int, target: int) -> StateWriteTransition:
+        return StateWriteTransition(
+            source,
+            state,
+            target,
+            False,
+            None,
+            via_block=3,
+            proof=TransitionProof(
+                "exact_source_carrier_decision_dag_route",
+                "source_carrier_decision_dag_reconciled",
+                True,
+                route_source_kinds=("decision_dag", "source_carrier"),
+            ),
+        )
+
+    complete = (carrier(1, state_a, 10), carrier(2, state_b, 11))
+    resolution = minimal_unflatten_emit_module._trusted_source_carrier_entry_route(
+        graph,
+        dispatcher_entry_serial=3,
+        state=state_a,
+        state_write_transitions=complete,
+        dispatcher_region_serials=frozenset({3, 4}),
+    )
+
+    assert not resolution.conflict
+    assert resolution.route is not None
+    assert resolution.route.normalized_state == state_a
+    assert resolution.route.target_block == 10
+
+    incomplete = minimal_unflatten_emit_module._trusted_source_carrier_entry_route(
+        graph,
+        dispatcher_entry_serial=3,
+        state=state_a,
+        state_write_transitions=complete[:1],
+        dispatcher_region_serials=frozenset({3, 4}),
+    )
+    assert incomplete.conflict
+    assert incomplete.route is None
 
 
 def test_exact_state_carrier_survives_canonical_entry_liveness_selection(

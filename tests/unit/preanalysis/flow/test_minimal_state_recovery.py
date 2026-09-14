@@ -7,10 +7,13 @@ runs through a registered portable ``forward_eval_insn`` seam.
 from __future__ import annotations
 
 from dataclasses import replace
+from types import SimpleNamespace
 
 import pytest
 
 import d810.analyses.control_flow.minimal_state_recovery as minimal_state_recovery
+from d810.analyses.data_flow.concolic import ExactResult
+from d810.analyses.data_flow.concolic.refs import LocationRef
 from d810.analyses.control_flow.route_comparison import current_u32_route_comparison
 import d810.analyses.control_flow.state_carrier as state_carrier
 import d810.analyses.control_flow.state_machine_analysis as state_machine_analysis
@@ -463,6 +466,71 @@ def _stop(serial, preds) -> BlockSnapshot:
         insn_snapshots=(),
         kind=BlockKind.STOP,
     )
+
+
+def test_state_write_gap_supersession_uses_instruction_ea_not_block_start(
+    monkeypatch,
+) -> None:
+    block_start = 0x180001000
+    write_ea = block_start + 0x10
+    writer = _blk(
+        2,
+        (3,),
+        (1,),
+        (_mov(write_ea, _num(0x12345678), _stk(_STATE_OFF)),),
+        ea=block_start,
+    )
+    graph = FlowGraph(
+        {
+            1: _blk(1, (2,), (), ()),
+            2: writer,
+            3: _stop(3, (2,)),
+        },
+        1,
+        0x180000000,
+    )
+    ctx = SimpleNamespace(
+        flow_graph=graph,
+        state_var_reg=None,
+        state_var_gaddr=None,
+        effective_stkoff=_STATE_OFF,
+    )
+    assert minimal_state_recovery._ctx_state_write_ea(ctx, 2) == write_ea
+
+    state_cell = LocationRef.stack(_STATE_OFF, 8)
+
+    class _Emulator:
+        def eval_block(self, _block, _store, *, pred_serial):
+            return ExactResult({state_cell: 0x12345678})
+
+    superseded: list[tuple[int, str, int, int]] = []
+
+    def _supersede(func_ea, cause, *, site_ea, block_serial):
+        superseded.append((func_ea, cause, site_ea, block_serial))
+        return True
+
+    monkeypatch.setattr(minimal_state_recovery, "supersede_emulator_gap", _supersede)
+    result = minimal_state_recovery._emulate_partition_states(
+        _Emulator(),
+        lambda serial: SimpleNamespace(serial=serial, predset=(1,)),
+        state_cell,
+        SimpleNamespace(out_stk_maps={1: {}}, out_reg_maps={1: {}}),
+        writer,
+        2,
+        func_ea=graph.func_ea,
+        block_ea=block_start,
+        site_ea=write_ea,
+    )
+
+    assert result == ({1: 0x12345678}, {1: 2})
+    assert superseded == [
+        (
+            graph.func_ea,
+            minimal_state_recovery.CAUSE_PHI_MULTI_DEF,
+            write_ea,
+            2,
+        )
+    ]
 
 
 def test_current_u32_router_rejects_bare_unknown_shell_before_projection() -> None:
@@ -8124,6 +8192,35 @@ def test_untrusted_source_carrier_state_disagreement_abstains_atomically() -> No
     assert _resolve_carrier_transition(graph, dag, conflicting) == ()
 
 
+def test_unresolved_source_carrier_outranks_unrelated_binary_assignment() -> None:
+    """A non-state binary result must not hide an exact carrier corridor."""
+
+    graph, dag = _typed_state_route_reconciliation_fixture()
+    source = graph.get_block(15)
+    assert source is not None
+    unrelated = _sub(0x1EFE, _stk(0x100), _stk(0x104), _stk(0x108))
+    graph = FlowGraph(
+        blocks={
+            **graph.blocks,
+            15: replace(
+                source,
+                insn_snapshots=(unrelated, *source.insn_snapshots),
+            ),
+        },
+        entry_serial=graph.entry_serial,
+        func_ea=graph.func_ea,
+    )
+
+    (resolved,) = _resolve_carrier_transition(
+        graph,
+        dag,
+        _unresolved_carrier_transition(15),
+    )
+
+    assert resolved.next_state == 0x6CF816C1
+    assert resolved.target_handler == 10
+
+
 def test_weak_region_seeded_state_is_superseded_by_exact_source_carrier() -> None:
     graph, dag = _typed_state_route_reconciliation_fixture()
     coarse = replace(
@@ -8144,6 +8241,126 @@ def test_weak_region_seeded_state_is_superseded_by_exact_source_carrier() -> Non
         resolved.proof.reason == "exact_source_carrier_u32;decision_dag_final_route;"
         "superseded=region_partitioned_fixpoint:region_seeded:interval"
     )
+
+
+def test_assertion_seeded_untrusted_state_is_superseded_by_source_carrier() -> None:
+    graph, dag = _typed_state_route_reconciliation_fixture()
+    source = graph.get_block(14)
+    assert source is not None
+    assertion = replace(
+        _mov(0x1DFF, _num(0x1888937E), _stk(_STATE_OFF)),
+        is_assert=True,
+    )
+    graph = FlowGraph(
+        {
+            **graph.blocks,
+            14: replace(
+                source,
+                insn_snapshots=(assertion, *source.insn_snapshots),
+            ),
+        },
+        graph.entry_serial,
+        graph.func_ea,
+    )
+    coarse = replace(
+        _coarse_transition(14, 0x1888937E, 13),
+        via_block=None,
+        proof=TransitionProof(
+            "region_partitioned_fixpoint",
+            "region_seeded",
+            False,
+            route_source_kinds=("interval",),
+        ),
+    )
+
+    (resolved,) = _resolve_carrier_transition(graph, dag, coarse)
+
+    assert resolved.next_state == 0x1BABC1DC
+    assert resolved.target_handler == 19
+    assert resolved.proof is not None
+    assert resolved.proof.route_source_kinds == ("decision_dag", "source_carrier")
+
+
+def test_route_stops_at_unresolved_transition_source_before_reconciling_it() -> None:
+    graph, dag = _typed_state_route_reconciliation_fixture()
+    target = graph.get_block(15)
+    assert target is not None
+    assertion = replace(
+        _mov(0x1EFE, _num(0x079323F9), _stk(_STATE_OFF)),
+        is_assert=True,
+    )
+    semantic = _sub(0x1EFF, _stk(0x100), _stk(0x104), _stk(0x108))
+    graph = FlowGraph(
+        {
+            **graph.blocks,
+            15: replace(
+                target,
+                insn_snapshots=(assertion, semantic, *target.insn_snapshots),
+            ),
+        },
+        graph.entry_serial,
+        graph.func_ea,
+    )
+    incoming = replace(
+        _coarse_transition(16, 0x079323F9, 15),
+        via_block=None,
+    )
+
+    resolved = resolve_materialized_indirect_transfer_targets(
+        (incoming, _unresolved_carrier_transition(15)),
+        graph,
+        _dispatcher({}, exit_block=99),
+        (),
+        condition_chain_dag=dag,
+        condition_chain_handlers=frozenset({2, 10, 15, 19}),
+        state_var_stkoff=_STATE_OFF,
+        exact_u32_route_receipt=(
+            minimal_state_recovery.ExactU32DispatcherRouteReceipt(
+                ((0x079323F9, 15),)
+            )
+        ),
+    )
+
+    assert tuple((row.write_block, row.target_handler) for row in resolved) == (
+        (16, 15),
+        (15, 10),
+    )
+
+
+def test_route_stops_at_provider_handler_without_outgoing_transition() -> None:
+    graph, dag = _typed_state_route_reconciliation_fixture()
+    target = graph.get_block(15)
+    assert target is not None
+    semantic = _sub(0x1EFF, _stk(0x100), _stk(0x104), _stk(0x108))
+    graph = FlowGraph(
+        {
+            **graph.blocks,
+            15: replace(
+                target,
+                insn_snapshots=(semantic, *target.insn_snapshots),
+            ),
+        },
+        graph.entry_serial,
+        graph.func_ea,
+    )
+    incoming = replace(
+        _coarse_transition(16, 0x079323F9, 15),
+        via_block=None,
+    )
+
+    (resolved,) = resolve_materialized_indirect_transfer_targets(
+        (incoming,),
+        graph,
+        _dispatcher({0x079323F9: 15}, exit_block=99),
+        (),
+        condition_chain_dag=dag,
+        condition_chain_handlers=frozenset({2, 10, 15, 19}),
+        state_var_stkoff=_STATE_OFF,
+    )
+
+    assert resolved.write_block == 16
+    assert resolved.next_state == 0x079323F9
+    assert resolved.target_handler == 15
 
 
 @pytest.mark.parametrize(
@@ -9217,6 +9434,362 @@ def test_complete_two_stage_transform_partitions_omit_unresolved_glue(_seam) -> 
         row.proof is not None
         and "state_transform_feeder" in row.proof.route_source_kinds
         for row in resolved
+    )
+
+
+def test_unresolved_two_stage_transform_is_partitioned_from_all_predecessors(
+    _seam,
+) -> None:
+    graph, dag, _transitions, unresolved, state = _two_stage_state_transform_fixture()
+    blocks = dict(graph.blocks)
+    source = blocks[166]
+    first, second = source.insn_snapshots
+    blocks[166] = replace(
+        source,
+        insn_snapshots=(replace(first, l=_num(0x43B6183F)), second),
+    )
+    graph = FlowGraph(blocks, graph.entry_serial, graph.func_ea)
+
+    resolved = resolve_materialized_indirect_transfer_targets(
+        (unresolved,),
+        graph,
+        _dispatcher({state: 100}, exit_block=101),
+        (),
+        condition_chain_dag=dag,
+        condition_chain_handlers=frozenset({100, 101}),
+        state_var_stkoff=_STATE_OFF,
+    )
+
+    assert tuple(int(row.write_block) for row in resolved) == (3, 166, 278)
+    assert tuple(int(row.next_state) for row in resolved) == (
+        state,
+        state ^ 1,
+        state,
+    )
+    assert tuple(int(row.target_handler) for row in resolved) == (100, 101, 100)
+    assert all(
+        row.proof is not None
+        and "state_transform_feeder" in row.proof.route_source_kinds
+        for row in resolved
+    )
+
+
+@pytest.mark.parametrize(
+    "handler_evidence",
+    (
+        "transition_source",
+        "assertion",
+        "classified_target",
+        "materialized_source",
+    ),
+)
+def test_transition_target_arithmetic_is_not_a_source_transform(
+    _seam,
+    handler_evidence: str,
+) -> None:
+    incoming_state = 0x6380920C
+    outgoing_state = 0x319EFB36
+    handler_insns = (
+        _xor(0x180010100, _stk(0x100), _stk(0x104), _stk(0x108)),
+        _mov(0x180010104, _num(outgoing_state), _stk(_STATE_OFF)),
+        _goto(0x180010108, 5),
+    )
+    if handler_evidence == "assertion":
+        handler_insns = (
+            replace(
+                _mov(0x1800100FC, _num(incoming_state), _stk(_STATE_OFF)),
+                is_assert=True,
+            ),
+            *handler_insns,
+        )
+    graph = FlowGraph(
+        {
+            1: _blk(
+                1,
+                (4,),
+                (),
+                (
+                    _mov(0x180010000, _num(incoming_state), _stk(_STATE_OFF)),
+                    _goto(0x180010004, 4),
+                ),
+                ea=0x180010000,
+            ),
+            4: _blk(
+                4,
+                (5,),
+                (1, 5),
+                handler_insns,
+                ea=0x180010100,
+            ),
+            5: _blk(
+                5,
+                (4, 100),
+                (4,),
+                (_jz_stack_const(0x180010200, _STATE_OFF, incoming_state, 4),),
+                ea=0x180010200,
+            ),
+            100: _stop(100, (5,)),
+        },
+        1,
+        0x180010000,
+    )
+    dag = DecisionDag(
+        32,
+        {5: RouteComparison(5, "jz", incoming_state, 4, 100)},
+        root=5,
+    )
+    incoming = StateWriteTransition(
+        1,
+        incoming_state,
+        (
+            None
+            if handler_evidence == "assertion"
+            else (100 if handler_evidence == "materialized_source" else 4)
+        ),
+        False,
+        None,
+        via_block=4,
+        proof=TransitionProof(
+            "region_partitioned_fixpoint",
+            "multi_entry_global_fold",
+            True,
+            route_source_kinds=("interval",),
+        ),
+    )
+    outgoing = StateWriteTransition(
+        4,
+        outgoing_state,
+        100,
+        True,
+        None,
+        proof=TransitionProof(
+            "region_partitioned_fixpoint",
+            "region_seeded",
+            True,
+            route_source_kinds=("interval",),
+        ),
+    )
+
+    rows = ((incoming, outgoing) if handler_evidence == "transition_source" else (incoming,))
+    resolved = resolve_materialized_indirect_transfer_targets(
+        rows,
+        graph,
+        _dispatcher({incoming_state: 4, outgoing_state: 100}, exit_block=100),
+        (),
+        condition_chain_dag=dag,
+        condition_chain_handlers=frozenset({4, 100}),
+        state_var_stkoff=_STATE_OFF,
+        exact_u32_route_receipt=(
+            minimal_state_recovery.ExactU32DispatcherRouteReceipt(
+                ((incoming_state, 4),)
+            )
+            if handler_evidence == "assertion"
+            else None
+        ),
+    )
+
+    assert tuple((row.write_block, row.target_handler) for row in resolved) == (
+        ((1, 4), (4, 100))
+        if handler_evidence == "transition_source"
+        else ((1, 4),)
+    )
+
+
+def test_partitioned_intermediate_state_before_assertion_handler_is_omitted(
+    _seam,
+) -> None:
+    intermediate_state = 0x69B84034
+    outgoing_state = 0x2A45BF98
+    graph = FlowGraph(
+        {
+            1: _blk(
+                1,
+                (4,),
+                (),
+                (
+                    _mov(0x180010000, _num(0xEAE646A8), _reg(8)),
+                    _mov(0x180010004, _num(0x835E069C), _reg(24)),
+                    _goto(0x180010008, 4),
+                ),
+                ea=0x180010000,
+            ),
+            4: _blk(
+                4,
+                (5,),
+                (1,),
+                (
+                    _xor(0x180010100, _reg(8), _reg(24), _stk(_STATE_OFF)),
+                    _goto(0x180010104, 5),
+                ),
+                ea=0x180010100,
+            ),
+            5: _blk(
+                5,
+                (6,),
+                (4,),
+                (
+                    replace(
+                        _mov(0x180010200, _num(0x7C603C6B), _reg(0)),
+                        is_assert=True,
+                    ),
+                    _mov(0x180010204, _num(outgoing_state), _stk(_STATE_OFF)),
+                    _goto(0x180010208, 6),
+                ),
+                ea=0x180010200,
+            ),
+            6: _blk(
+                6,
+                (100, 101),
+                (5,),
+                (_jz_stack_const(0x180010300, _STATE_OFF, outgoing_state, 100),),
+                ea=0x180010300,
+            ),
+            100: _stop(100, (6,)),
+            101: _stop(101, (6,)),
+        },
+        1,
+        0x180010000,
+    )
+    dag = DecisionDag(
+        32,
+        {6: RouteComparison(6, "jz", outgoing_state, 100, 101)},
+        root=6,
+    )
+    intermediate = StateWriteTransition(
+        1,
+        intermediate_state,
+        101,
+        False,
+        None,
+        via_block=4,
+        proof=TransitionProof(
+            "region_partitioned_fixpoint", "predecessor_partitioned", True,
+        ),
+    )
+    outgoing = StateWriteTransition(
+        5,
+        outgoing_state,
+        100,
+        False,
+        None,
+        proof=TransitionProof(
+            "region_partitioned_fixpoint",
+            "region_seeded",
+            True,
+            route_source_kinds=("interval",),
+        ),
+    )
+
+    resolved = resolve_materialized_indirect_transfer_targets(
+        (intermediate, outgoing),
+        graph,
+        _dispatcher(
+            {intermediate_state: 101, outgoing_state: 100},
+            exit_block=101,
+        ),
+        (),
+        condition_chain_dag=dag,
+        condition_chain_handlers=frozenset({100, 101}),
+        state_var_stkoff=_STATE_OFF,
+    )
+
+    assert tuple((row.write_block, row.target_handler) for row in resolved) == (
+        (5, 100),
+    )
+
+
+def test_direct_assertion_conditional_handler_is_semantic_route_boundary(_seam) -> None:
+    state = 0x2A45BF98
+    graph = FlowGraph(
+        {
+            1: _blk(
+                1,
+                (4,),
+                (),
+                (
+                    _mov(0x180010000, _num(state), _stk(_STATE_OFF)),
+                    _goto(0x180010004, 4),
+                ),
+                ea=0x180010000,
+            ),
+            4: _blk(
+                4,
+                (5, 100),
+                (1,),
+                (
+                    replace(
+                        _mov(0x180010100, _num(state), _stk(_STATE_OFF)),
+                        is_assert=True,
+                    ),
+                    _jz_stack_const(0x180010104, 0x88, 0, 100),
+                ),
+                ea=0x180010100,
+            ),
+            5: _blk(
+                5,
+                (100, 101),
+                (4,),
+                (_jz_stack_const(0x180010200, _STATE_OFF, state, 100),),
+                ea=0x180010200,
+            ),
+            100: _stop(100, (4, 5)),
+            101: _stop(101, (5,)),
+        },
+        1,
+        0x180010000,
+    )
+    dag = DecisionDag(
+        32,
+        {5: RouteComparison(5, "jz", state, 100, 101)},
+        root=5,
+    )
+    incoming = StateWriteTransition(
+        1,
+        state,
+        100,
+        False,
+        None,
+        via_block=4,
+        proof=TransitionProof(
+            "region_partitioned_fixpoint",
+            "multi_entry_global_fold",
+            True,
+            route_source_kinds=("interval",),
+        ),
+    )
+
+    resolved = resolve_materialized_indirect_transfer_targets(
+        (incoming,),
+        graph,
+        _dispatcher({state: 4}, exit_block=101),
+        (),
+        condition_chain_dag=dag,
+        condition_chain_handlers=frozenset({4, 100, 101}),
+        state_var_stkoff=_STATE_OFF,
+        exact_u32_route_receipt=(
+            minimal_state_recovery.ExactU32DispatcherRouteReceipt(((state, 4),))
+        ),
+    )
+    assert tuple((row.write_block, row.target_handler) for row in resolved) == (
+        (1, 4),
+    )
+
+    assert (
+        resolve_materialized_indirect_transfer_targets(
+            (incoming,),
+            graph,
+            _dispatcher({state: 100}, exit_block=101),
+            (),
+            condition_chain_dag=dag,
+            condition_chain_handlers=frozenset({4, 100, 101}),
+            state_var_stkoff=_STATE_OFF,
+            exact_u32_route_receipt=(
+                minimal_state_recovery.ExactU32DispatcherRouteReceipt(
+                    ((state, 100),)
+                )
+            ),
+        )
+        == ()
     )
 
 

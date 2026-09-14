@@ -629,6 +629,39 @@ class TestMbaSerializerInstructionMeta:
         assert instruction.result is not None
         assert instruction.result.space.value == "r"
 
+    def test_diag_replay_preserves_assertion_identity(self) -> None:
+        from d810.backends.hexrays.diag_lifter import project_diag_instruction
+
+        row = SimpleNamespace(
+            opcode=1,
+            opcode_name="m_mov",
+            raw_opcode=1,
+            provenance_version=1,
+            ea=0x7FFB0DE936BC,
+            dstr="mov #0x5CD7812F.4, %var_2C4.4{2}",
+            is_assert=1,
+            meta=json.dumps(
+                {
+                    "l": {
+                        "type": "mop_n",
+                        "type_num": 2,
+                        "size": 4,
+                        "value": 0x5CD7812F,
+                    },
+                    "d": {
+                        "type": "mop_S",
+                        "type_num": 5,
+                        "size": 4,
+                        "stkoff": 0x2C4,
+                    },
+                }
+            ),
+        )
+
+        instruction = project_diag_instruction(row)
+
+        assert instruction.attrs["is_assert"] is True
+
     def test_persisted_replay_rejects_portable_opcode_aliases(self) -> None:
         from d810.backends.hexrays.diag_lifter import project_diag_instruction
 

@@ -116,6 +116,23 @@ def _capture_mop_snapshot_without_ida():
     return namespace["capture_mop_snapshot"]
 
 
+def _live_assertion_classifier_without_ida():
+    source_path = (
+        Path(__file__).parents[4] / "src/d810/hexrays/mutation/ir_translator.py"
+    )
+    tree = ast.parse(source_path.read_text())
+    function = next(
+        node for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "_live_insn_is_assert"
+    )
+    namespace = {"ida_hexrays": SimpleNamespace(IPROP_ASSERT=0x80)}
+    exec(
+        compile(ast.Module([function], type_ignores=[]), str(source_path), "exec"),
+        namespace,
+    )
+    return namespace["_live_insn_is_assert"]
+
+
 def _control_flow_classifier():
     source_path = Path(__file__).parents[4] / "src/d810/hexrays/mutation/ir_translator.py"
     tree = ast.parse(source_path.read_text())
@@ -215,6 +232,14 @@ def test_capture_mop_snapshot_normalizes_nested_live_nosize_for_inventory() -> N
     producer_api.observe_inventory_block(
         block, owner_ref=None, owner_anchor_ea=0x1000,
     )
+
+
+def test_live_assertion_classifier_reads_hexrays_instruction_identity() -> None:
+    classify = _live_assertion_classifier_without_ida()
+
+    assert classify(SimpleNamespace(is_assert=lambda: True)) is True
+    assert classify(SimpleNamespace(is_assert=lambda: False)) is False
+    assert classify(SimpleNamespace(iprops=0x80, is_assert=lambda: False)) is True
 
 
 def test_control_flow_classifier_delegates_transfer_and_call_families() -> None:

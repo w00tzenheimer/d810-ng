@@ -51,6 +51,10 @@ from d810.core.observability_state_write import (
     CAUSE_TOP_FLOOR_STRICT,
     StateWriteResolutionRecorder,
 )
+from d810.core.observability_emulator import (
+    CAUSE_PHI_MULTI_DEF,
+    supersede_emulator_gap,
+)
 from d810.core.observability_unflat import note_unresolved_state_write
 from d810.analyses.control_flow.state_machine_analysis import (
     _SnapshotProjectionCache,
@@ -1253,26 +1257,29 @@ def _block_writes_state_cell(ctx: "_ResolverContext", block: BlockSnapshot) -> b
     state writer.  Reading a constant inherited from an earlier block is not
     proof that this block owns the transition.
     """
-    for instruction in block.insn_snapshots:
-        _left, _right, destination = operand_storages(instruction)
-        _left_kind, _right_kind, destination_kind = operand_kinds(instruction)
-        if ctx.state_var_reg is not None:
-            if _storage_dest_locator(destination, destination_kind) == (
-                "reg",
-                int(ctx.state_var_reg),
-            ):
-                return True
-            continue
-        if ctx.state_var_gaddr is not None:
-            if _storage_global_offset(destination) == int(ctx.state_var_gaddr):
-                return True
-            continue
-        if _storage_dest_locator(destination, destination_kind) == (
-            "stk",
-            int(ctx.effective_stkoff),
-        ):
-            return True
-    return False
+    return any(
+        _snapshot_writes_state_cell(ctx, instruction)
+        for instruction in block.insn_snapshots
+    )
+
+
+def _snapshot_writes_state_cell(ctx: "_ResolverContext", instruction: InsnSnapshot) -> bool:
+    """Whether one executable snapshot writes the configured state identity."""
+    if instruction.is_assert:
+        return False
+    _left, _right, destination = operand_storages(instruction)
+    _left_kind, _right_kind, destination_kind = operand_kinds(instruction)
+    if ctx.state_var_reg is not None:
+        return _storage_dest_locator(destination, destination_kind) == (
+            "reg",
+            int(ctx.state_var_reg),
+        )
+    if ctx.state_var_gaddr is not None:
+        return _storage_global_offset(destination) == int(ctx.state_var_gaddr)
+    return _storage_dest_locator(destination, destination_kind) == (
+        "stk",
+        int(ctx.effective_stkoff),
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -4203,14 +4210,26 @@ def _route_u32_state_through_decision_dag(
 ) -> _DecisionDagStateRoute | None:
     """Route one transition state from its exact comparison entry."""
 
-    if not 0 <= int(state) <= 0xFFFFFFFF or int(decision_dag.width) != 32:
+    def reject(reason: str, *, at: int | None = None) -> None:
+        logger.info(
+            "decision-DAG state route rejected: reason=%s state=0x%08X "
+            "root=blk%d at=%s via=%s",
+            reason,
+            int(state) & 0xFFFFFFFF,
+            int(decision_dag.root if entry_serial is None else entry_serial),
+            "none" if at is None else f"blk{int(at)}",
+            "none" if via_block is None else f"blk{int(via_block)}",
+        )
         return None
+
+    if not 0 <= int(state) <= 0xFFFFFFFF or int(decision_dag.width) != 32:
+        return reject("invalid_state_or_width")
     state = int(state)
     root = int(decision_dag.root if entry_serial is None else entry_serial)
     if root not in {
         int(serial) for serial in (*decision_dag.nodes, *decision_dag.aliases)
     }:
-        return None
+        return reject("entry_not_in_dag", at=root)
     expected_state_identities = expected_u32_state_identities(
         state_var_stkoff=state_var_stkoff,
         state_var_reg=state_var_reg,
@@ -4232,7 +4251,7 @@ def _route_u32_state_through_decision_dag(
             root=root,
         )
         if bound_route is None:
-            return None
+            return reject("bound_route", at=root)
         target, _path = bound_route
         if route_entry is None:
             route_entry = int(root)
@@ -4254,7 +4273,7 @@ def _route_u32_state_through_decision_dag(
                 )
                 if current is None:
                     if expected_identity is not None:
-                        return None
+                        return reject("missing_current_comparison_identity", at=serial)
                     # Existing recovery may provide a trusted structural DAG
                     # whose synthetic fixture shape is intentionally outside
                     # the exact native comparison extractor.  Preserve its
@@ -4288,7 +4307,7 @@ def _route_u32_state_through_decision_dag(
                             else frozenset({expected_identity})
                         )
                         if identity not in authorized_identities:
-                            return None
+                            return reject("unauthorized_comparison_identity", at=serial)
                         route_comparisons[int(serial)] = DecisionDagComparisonWitness(
                             int(serial), comparison, identity,
                         )
@@ -4296,7 +4315,7 @@ def _route_u32_state_through_decision_dag(
                         structural_comparisons[int(serial)] = comparison
                     continue
                 if current[0] != comparison:
-                    return None
+                    return reject("current_comparison_mismatch", at=serial)
                 current_comparison, current_identity, _block_ea, _branch_ea = current
                 route_comparisons[int(serial)] = DecisionDagComparisonWitness(
                     int(serial), current_comparison, current_identity,
@@ -4316,7 +4335,7 @@ def _route_u32_state_through_decision_dag(
                 ):
                     prior = comparison_identities.get(int(child_serial))
                     if prior is not None and prior != downstream_identity:
-                        return None
+                        return reject("comparison_identity_conflict", at=child_serial)
                     comparison_identities[int(child_serial)] = downstream_identity
         route_aliases.update(
             (int(source), int(destination))
@@ -4366,14 +4385,14 @@ def _route_u32_state_through_decision_dag(
             or via_block is None
             or int(via_block) != int(step.feeder_serial)
         ):
-            return None
+            return reject("normalizer_step", at=target)
         key = (target, int(step.state))
         if key in seen:
-            return None
+            return reject("normalizer_cycle", at=target)
         seen.add(key)
         state = int(step.state)
         root = int(step.dag_entry_serial)
-    return None
+    return reject("normalizer_budget", at=root)
 
 
 def _route_state_through_decision_dag(
@@ -4427,6 +4446,10 @@ def _prior_exact_route_sources(transition: StateWriteTransition) -> set[str]:
 
 def _is_weak_region_seeded_interval_state(
     transition: StateWriteTransition,
+    flow_graph: FlowGraph,
+    *,
+    state_var_stkoff: int | None,
+    state_var_reg: int | None,
 ) -> bool:
     """Return whether carrier evidence may replace this coarse state hint.
 
@@ -4436,12 +4459,40 @@ def _is_weak_region_seeded_interval_state(
     """
 
     proof = transition.proof
-    return bool(
+    interval_seed = bool(
         proof is not None
-        and proof.trusted
         and proof.oracle_kind == "region_partitioned_fixpoint"
         and proof.kind == "region_seeded"
         and tuple(proof.route_source_kinds) == ("interval",)
+    )
+    if not interval_seed:
+        return False
+    if proof is not None and proof.trusted:
+        return True
+    if transition.next_state is None:
+        return False
+    if state_var_stkoff is not None:
+        state_identity = StorageIdentity(
+            StorageIdentityKind.STACK, int(state_var_stkoff),
+        )
+    elif state_var_reg is not None:
+        state_identity = StorageIdentity(
+            StorageIdentityKind.REGISTER, int(state_var_reg),
+        )
+    else:
+        return False
+    source = flow_graph.get_block(int(transition.write_block))
+    return bool(
+        source is not None
+        and any(
+            snapshot.is_assert
+            and _is_exact_u32_literal_state_move(
+                snapshot,
+                state_identity=state_identity,
+                state_constant=int(transition.next_state),
+            )
+            for snapshot in source.insn_snapshots
+        )
     )
 
 
@@ -4556,9 +4607,11 @@ def _reject_decision_dag_reconciliation(
         )
     except Exception:
         logger.debug("unresolved state-write anchor capture failed", exc_info=True)
+    proof = transition.proof
     logger.warning(
         "decision-DAG reconciliation rejected fragment: reason=%s "
-        "source=blk%d@0x%X via=%s state=%s",
+        "source=blk%d@0x%X via=%s state=%s proof_oracle=%s proof_kind=%s "
+        "proof_trusted=%s route_sources=%s",
         reason,
         int(transition.write_block),
         source_ea,
@@ -4568,6 +4621,10 @@ def _reject_decision_dag_reconciliation(
             if transition.next_state is None
             else f"0x{int(transition.next_state) & 0xFFFFFFFF:08X}"
         ),
+        "none" if proof is None else proof.oracle_kind,
+        "none" if proof is None else proof.kind,
+        "none" if proof is None else proof.trusted,
+        () if proof is None else proof.route_source_kinds,
     )
     return None
 
@@ -4643,6 +4700,95 @@ def _fully_partitioned_state_transform_glues(
             continue
         complete.add(glue_serial)
     return frozenset(complete)
+
+
+def _complete_unresolved_state_transform_partitions(
+    transitions: tuple[StateWriteTransition, ...],
+    flow_graph: FlowGraph,
+    decision_dag: DecisionDag,
+    *,
+    state_var_stkoff: int | None,
+    state_var_reg: int | None,
+) -> tuple[StateWriteTransition, ...]:
+    """Replace a lone transform aggregate with an exhaustive source partition.
+
+    Recovery can reach a shared carrier transform with no concrete state in its
+    merged environment even though every physical predecessor supplies an exact
+    carrier value.  Reconciliation is the first boundary that has both the
+    immutable current graph and the complete comparison forest, so prove every
+    predecessor here.  This is deliberately all-or-nothing: an existing partial
+    partition, a malformed edge, or one failed source proof leaves the aggregate
+    untouched for the normal fragment-atomic rejection below.
+    """
+
+    existing_sources = {int(item.write_block) for item in transitions}
+    required_comparison_serials = frozenset(
+        int(serial) for serial in (*decision_dag.nodes, *decision_dag.aliases)
+    )
+    additions: list[StateWriteTransition] = []
+    for aggregate in transitions:
+        proof = aggregate.proof
+        glue_serial = int(aggregate.write_block)
+        glue = _stable_flow_block(flow_graph, glue_serial)
+        if (
+            aggregate.next_state is not None
+            or proof is None
+            or proof.oracle_kind != _FIXPOINT_ORACLE
+            or proof.kind != "unresolved"
+            or proof.trusted
+            or glue is None
+            or not observes_u32_state_transform_feeder_candidate(
+                flow_graph, glue_serial,
+            )
+            or len(glue.preds) < 2
+            or len(glue.succs) != 1
+        ):
+            continue
+        source_serials = tuple(sorted(int(pred) for pred in glue.preds))
+        # Do not silently complete a partition that another provider already
+        # described.  Mixed authorities retain the existing fail-closed path.
+        if any(source_serial in existing_sources for source_serial in source_serials):
+            continue
+        receipts: list[ExactStateTransformFeeder] = []
+        for source_serial in source_serials:
+            source = _stable_flow_block(flow_graph, source_serial)
+            if (
+                source is None
+                or tuple(int(target) for target in source.succs) != (glue_serial,)
+            ):
+                break
+            receipt = prove_exact_u32_state_transform_feeder(
+                flow_graph,
+                source_serial,
+                glue_serial,
+                state_var_stkoff=state_var_stkoff,
+                state_var_reg=state_var_reg,
+                required_comparison_serials=required_comparison_serials,
+                expected_state=None,
+            )
+            if receipt is None:
+                break
+            receipts.append(receipt)
+        if len(receipts) != len(source_serials):
+            continue
+        additions.extend(
+            StateWriteTransition(
+                source_serial,
+                int(receipt.state) & 0xFFFFFFFF,
+                None,
+                False,
+                None,
+                via_block=glue_serial,
+                proof=TransitionProof(
+                    _FIXPOINT_ORACLE,
+                    "transitive_glue_partitioned",
+                    True,
+                    reason="all_predecessors_exact_state_transform",
+                ),
+            )
+            for source_serial, receipt in zip(source_serials, receipts, strict=True)
+        )
+    return (*transitions, *additions)
 
 
 def _current_snapshot_route_fact_for_transition(
@@ -4756,6 +4902,50 @@ def _has_exact_current_direct_state_write(
     return len(matches) == 1
 
 
+def _source_materializes_exact_transition_state(
+    transition: StateWriteTransition,
+    flow_graph: FlowGraph,
+    *,
+    state_var_stkoff: int | None,
+    state_var_reg: int | None,
+) -> bool:
+    """Recognize one real source-local write of the transition's exact state.
+
+    A following split block can be the destination handler rather than an
+    arithmetic feeder.  Once the current source itself uniquely materializes
+    the proved U32 state, arithmetic in that successor cannot own production
+    of this transition value.  Assertion instructions are recovery metadata,
+    not physical writes, and multiple matching writes remain ambiguous.
+    """
+
+    if transition.next_state is None:
+        return False
+    if state_var_stkoff is not None:
+        state_identity = StorageIdentity(
+            StorageIdentityKind.STACK, int(state_var_stkoff),
+        )
+    elif state_var_reg is not None:
+        state_identity = StorageIdentity(
+            StorageIdentityKind.REGISTER, int(state_var_reg),
+        )
+    else:
+        return False
+    source = flow_graph.get_block(int(transition.write_block))
+    if source is None:
+        return False
+    matches = tuple(
+        snapshot
+        for snapshot in source.insn_snapshots
+        if not snapshot.is_assert
+        and _is_exact_u32_literal_state_move(
+            snapshot,
+            state_identity=state_identity,
+            state_constant=int(transition.next_state),
+        )
+    )
+    return len(matches) == 1
+
+
 def _reconcile_transition_routes_with_decision_dag(
     transitions: tuple[StateWriteTransition, ...],
     flow_graph: FlowGraph,
@@ -4846,11 +5036,17 @@ def _reconcile_transition_routes_with_decision_dag(
         ):
             return None
         prefix_authority = candidate_prefix_authority
+    transitions = _complete_unresolved_state_transform_partitions(
+        transitions,
+        flow_graph,
+        route_authority_dag,
+        state_var_stkoff=state_var_stkoff,
+        state_var_reg=state_var_reg,
+    )
     semantic_transition_sources = frozenset(
         int(transition.write_block)
         for transition in transitions
         if transition.next_state is not None
-        and flow_graph.get_block(int(transition.write_block)) is not None
     )
     fully_partitioned_transform_glues = _fully_partitioned_state_transform_glues(
         transitions,
@@ -4870,19 +5066,6 @@ def _reconcile_transition_routes_with_decision_dag(
             # Each source row is independently re-proven; the aggregate must
             # not survive as a synthetic return edge.
             continue
-        if transition.next_state is None and observes_u32_state_transform_feeder_candidate(
-            flow_graph,
-            int(transition.write_block),
-        ):
-            # A transform-shaped glue with an incomplete source partition is
-            # not terminal authority.  Retaining its unresolved row as a
-            # return would mix an aggregate recovery sentinel into the route
-            # plan, so fail the fragment atomically.
-            return _reject_decision_dag_reconciliation(
-                "incomplete_state_transform_partition",
-                flow_graph,
-                transition,
-            )
         source = flow_graph.get_block(int(transition.write_block))
         source_successors = (
             () if source is None else tuple(int(target) for target in source.succs)
@@ -4896,6 +5079,23 @@ def _reconcile_transition_routes_with_decision_dag(
                 int(feeder),
             )
         )
+        if (
+            transition.next_state is None
+            and not observed_carrier_feeders
+            and observes_u32_state_transform_feeder_candidate(
+                flow_graph,
+                int(transition.write_block),
+            )
+        ):
+            # A transform-shaped glue with an incomplete source partition is
+            # not terminal authority.  Retaining its unresolved row as a
+            # return would mix an aggregate recovery sentinel into the route
+            # plan, so fail the fragment atomically.
+            return _reject_decision_dag_reconciliation(
+                "incomplete_state_transform_partition",
+                flow_graph,
+                transition,
+            )
         if (
             transition.next_state is None
             and transition.is_return
@@ -5019,7 +5219,76 @@ def _reconcile_transition_routes_with_decision_dag(
         }
         if prefix_entry.feeder_serial is not None and prefix_authority is not None:
             required_comparison_serials.add(int(prefix_authority.prefix_serial))
-        transform_observed = bool(
+        feeder_block = (
+            None
+            if feeder_serial is None
+            else _stable_flow_block(flow_graph, int(feeder_serial))
+        )
+        assertion_handler_handoff: int | None = None
+        if (
+            feeder_serial is not None
+            and feeder_block is not None
+            and transition.next_state is not None
+            and len(source_successors) == 1
+            and source_successors[0] == int(feeder_serial)
+        ):
+            if state_var_stkoff is not None:
+                handoff_state_identity = StorageIdentity(
+                    StorageIdentityKind.STACK, int(state_var_stkoff),
+                )
+            elif state_var_reg is not None:
+                handoff_state_identity = StorageIdentity(
+                    StorageIdentityKind.REGISTER, int(state_var_reg),
+                )
+            else:
+                handoff_state_identity = None
+            assertion_handoff_candidate = handoff_state_identity is not None and any(
+                snapshot.is_assert
+                and _is_exact_u32_literal_state_move(
+                    snapshot,
+                    state_identity=handoff_state_identity,
+                    state_constant=int(transition.next_state),
+                )
+                for snapshot in feeder_block.insn_snapshots
+            )
+            if assertion_handoff_candidate:
+                receipt_exact = _receipt_exact_dispatcher_target(
+                    exact_u32_route_receipt,
+                    int(transition.next_state) & 0xFFFFFFFF,
+                )
+                if receipt_exact is None:
+                    return _reject_decision_dag_reconciliation(
+                        "assertion_handoff_exact_receipt_malformed",
+                        flow_graph,
+                        transition,
+                    )
+                _receipt_available, assertion_target = receipt_exact
+                if assertion_target is None or int(assertion_target) != int(feeder_serial):
+                    return _reject_decision_dag_reconciliation(
+                        "assertion_handoff_exact_target_disagreement",
+                        flow_graph,
+                        transition,
+                    )
+                assertion_handler_handoff = int(feeder_serial)
+        source_materializes_transition_state = (
+            _source_materializes_exact_transition_state(
+                transition,
+                flow_graph,
+                state_var_stkoff=state_var_stkoff,
+                state_var_reg=state_var_reg,
+            )
+        )
+        feeder_successors = (
+            ()
+            if feeder_block is None
+            else tuple(int(target) for target in feeder_block.succs)
+        )
+        enters_semantic_transition_source = bool(
+            len(feeder_successors) == 1
+            and feeder_successors[0] not in route_authority_dag.nodes
+            and feeder_successors[0] in semantic_transition_sources
+        )
+        if (
             feeder_serial is not None
             and int(feeder_serial) != int(route_authority_dag.root)
             and int(feeder_serial) not in route_authority_dag.nodes
@@ -5029,15 +5298,49 @@ def _reconcile_transition_routes_with_decision_dag(
                 flow_graph,
                 int(feeder_serial),
             )
+            and not source_materializes_transition_state
+            and enters_semantic_transition_source
+        ):
+            # The exact physical edge reaches another recovered handler before
+            # it can reach the dispatcher.  Its state write is an intermediate
+            # value which that handler owns; classifying the value against the
+            # dispatcher would invent a redirect and skip handler semantics.
+            # Retain the physical corridor and let the handler's own outgoing
+            # transition be lowered independently.
+            logger.info(
+                "decision-DAG transition omitted: "
+                "reason=intermediate_state_before_recovered_handler "
+                "source=blk%d feeder=blk%d handler=blk%d state=%s",
+                int(transition.write_block),
+                int(feeder_serial),
+                feeder_successors[0],
+                (
+                    "none"
+                    if transition.next_state is None
+                    else f"0x{int(transition.next_state) & 0xFFFFFFFF:08X}"
+                ),
+            )
+            continue
+        transform_observed = bool(
+            feeder_serial is not None
+            and int(feeder_serial) != int(route_authority_dag.root)
+            and int(feeder_serial) not in route_authority_dag.nodes
+            and int(feeder_serial) not in semantic_transition_sources
+            and assertion_handler_handoff is None
+            and not source_materializes_transition_state
+            and (
+                transition.target_handler is None
+                or int(transition.target_handler) != int(feeder_serial)
+            )
+            and len(source_successors) == 1
+            and source_successors[0] == int(feeder_serial)
+            and observes_u32_state_transform_feeder_candidate(
+                flow_graph,
+                int(feeder_serial),
+            )
         )
         transform_route_forest: DecisionDag | None = None
         if transform_observed and feeder_serial is not None:
-            feeder = _stable_flow_block(flow_graph, int(feeder_serial))
-            feeder_successors = (
-                ()
-                if feeder is None
-                else tuple(int(target) for target in feeder.succs)
-            )
             if (
                 len(feeder_successors) == 1
                 and feeder_successors[0] not in route_authority_dag.nodes
@@ -5111,7 +5414,12 @@ def _reconcile_transition_routes_with_decision_dag(
                 transition.next_state is not None
                 and (int(transition.next_state) & 0xFFFFFFFF) != carrier_state
             ):
-                if not _is_weak_region_seeded_interval_state(transition):
+                if not _is_weak_region_seeded_interval_state(
+                    transition,
+                    flow_graph,
+                    state_var_stkoff=state_var_stkoff,
+                    state_var_reg=state_var_reg,
+                ):
                     return _reject_decision_dag_reconciliation(
                         "carrier_state_disagreement",
                         flow_graph,
@@ -5207,14 +5515,49 @@ def _reconcile_transition_routes_with_decision_dag(
                 else route_authority_dag
             )
         )
-        route = _route_state_through_decision_dag(
-            effective,
-            flow_graph,
-            route_dag,
-            state_var_stkoff=state_var_stkoff,
-            state_var_reg=state_var_reg,
-            entry_serial=route_entry,
-            semantic_transition_sources=semantic_transition_sources,
+        route_transition_sources = set(semantic_transition_sources)
+        if effective.next_state is not None:
+            provider_target: int | None = None
+            receipt_target = _receipt_exact_dispatcher_target(
+                exact_u32_route_receipt,
+                int(effective.next_state) & 0xFFFFFFFF,
+            )
+            if receipt_target is not None and receipt_target[1] is not None:
+                provider_target = int(receipt_target[1])
+            elif replay_leaf_catalog is not None:
+                provider_target = _sealed_interval_provider_target(
+                    replay_leaf_catalog,
+                    int(effective.next_state),
+                )
+            else:
+                provider = _dispatcher_provider_targets(
+                    dispatcher,
+                    int(effective.next_state),
+                    condition_chain_handlers=condition_chain_handlers,
+                )
+                if provider is not None and len(provider[0]) == 1:
+                    provider_target = next(iter(provider[0]))
+            if provider_target is not None:
+                # The sealed/singleton dispatcher destination is a semantic
+                # handler boundary even when recovery has no outgoing row for
+                # that handler in this maturity.  The provider still has to
+                # agree with the complete certified route below.
+                route_transition_sources.add(int(provider_target))
+        route = (
+            _DecisionDagStateRoute(
+                assertion_handler_handoff,
+                frozenset({assertion_handler_handoff}),
+            )
+            if assertion_handler_handoff is not None
+            else _route_state_through_decision_dag(
+                effective,
+                flow_graph,
+                route_dag,
+                state_var_stkoff=state_var_stkoff,
+                state_var_reg=state_var_reg,
+                entry_serial=route_entry,
+                semantic_transition_sources=frozenset(route_transition_sources),
+            )
         )
         if route is None or effective.next_state is None:
             return _reject_decision_dag_reconciliation(
@@ -5267,7 +5610,33 @@ def _reconcile_transition_routes_with_decision_dag(
         )
         exact_switch_handoff = False
         if not physical_route_forest:
-            if replay_leaf_catalog is not None:
+            if assertion_handler_handoff is not None:
+                receipt_exact = _receipt_exact_dispatcher_target(
+                    exact_u32_route_receipt,
+                    state,
+                )
+                if receipt_exact is None:
+                    return _reject_decision_dag_reconciliation(
+                        "assertion_handoff_exact_receipt_malformed",
+                        flow_graph,
+                        effective,
+                    )
+                _receipt_available, assertion_provider_target = receipt_exact
+                if (
+                    assertion_provider_target is None
+                    or int(assertion_provider_target)
+                    != int(assertion_handler_handoff)
+                ):
+                    return _reject_decision_dag_reconciliation(
+                        "assertion_handoff_exact_target_disagreement",
+                        flow_graph,
+                        effective,
+                    )
+                provider_targets = frozenset({int(assertion_handler_handoff)})
+                provider_sources = frozenset(
+                    {"assertion_handler_handoff", "exact"}
+                )
+            elif replay_leaf_catalog is not None:
                 sealed_target = _sealed_interval_provider_target(
                     replay_leaf_catalog,
                     state,
@@ -8080,6 +8449,23 @@ def _ctx_block_ea(ctx, serial: int) -> int:
         return 0
 
 
+def _ctx_state_write_ea(ctx, serial: int) -> int:
+    """Exact native EA of the first executable state write in ``serial``."""
+    try:
+        block = ctx.flow_graph.get_block(int(serial))
+    except (AttributeError, KeyError, IndexError, TypeError, ValueError):
+        return 0
+    if block is None:
+        return 0
+    for instruction in block.insn_snapshots:
+        if _snapshot_writes_state_cell(ctx, instruction):
+            try:
+                return int(instruction.ea)
+            except (AttributeError, TypeError, ValueError):
+                return 0
+    return 0
+
+
 def _provider_emulation(ctx, pred, block, arm, ambiguous):
     """[refine] The reduced-product CONCRETE leg -- ⊥-only, fold_exact-gated.
 
@@ -8103,6 +8489,7 @@ def _provider_emulation(ctx, pred, block, arm, ambiguous):
         pred,
         func_ea=_ctx_func_ea(ctx),
         block_ea=_ctx_block_ea(ctx, pred),
+        site_ea=_ctx_state_write_ea(ctx, pred),
     )
     if emulated is None:
         return None
@@ -9127,6 +9514,7 @@ def _emulate_partition_states(
     *,
     func_ea: int = 0,
     block_ea: int = 0,
+    site_ea: int = 0,
     maturity: str = "",
 ):
     """Per-immediate-predecessor concrete next-states for a ⊥ back-edge, or ``None``.
@@ -9198,6 +9586,12 @@ def _emulate_partition_states(
     if not edge_states:
         return _abstain_partition(recorder)
     recorder.emit()
+    supersede_emulator_gap(
+        int(func_ea),
+        CAUSE_PHI_MULTI_DEF,
+        site_ea=int(site_ea),
+        block_serial=int(pred),
+    )
     return (edge_states, next_hops)
 
 

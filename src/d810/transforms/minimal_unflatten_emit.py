@@ -34,8 +34,10 @@ import hashlib
 from d810.analyses.control_flow.branch_witness import (
     BranchWitnessAbstain,
     BranchWitnessConflict,
+    BranchWitnessRow,
     ExactBranchWitness,
     resolve_exact_branch_witness,
+    static_witness_for_state,
 )
 from d810.analyses.control_flow.concrete_state_route import (
     ConcreteStateRoute,
@@ -96,6 +98,7 @@ from d810.analyses.control_flow.semantic_transition import (
 )
 from d810.analyses.control_flow.dispatcher_resolution import (
     InitialStateWriteWitness,
+    StateDispatcherMap,
     bind_initial_state_write_witness,
 )
 from d810.analyses.control_flow.interval_map import IntervalDispatcher, IntervalRow
@@ -3052,29 +3055,48 @@ def _trusted_source_carrier_entry_route(
 
     if not proof_shaped:
         return _ConcreteStateRouteResolution(None)
-    if len(prologue_sources) != 1 or len(proof_shaped) != 1:
-        return _ConcreteStateRouteResolution(None, conflict=True)
-    transition = proof_shaped[0]
-    if transition.next_state is None or transition.target_handler is None:
-        return _ConcreteStateRouteResolution(None, conflict=True)
-    if (int(transition.next_state) & 0xFFFFFFFF) != normalized:
-        return _ConcreteStateRouteResolution(None, conflict=True)
-
-    source = int(transition.write_block)
-    target = int(transition.target_handler)
-    source_block = flow_graph.get_block(source)
-    target_block = flow_graph.get_block(target)
-    if (
-        source_block is None
-        or tuple(int(successor) for successor in source_block.succs)
-        != (dispatcher_entry,)
-        or target == dispatcher_entry
-        or target in dispatcher_region_serials
-        or not _block_has_stable_native_anchor(source_block)
-        or not _block_has_stable_native_anchor(target_block)
-        or target not in _flow_graph_reachable_serials(flow_graph)
+    # A multi-entry function may reach several physical dispatcher
+    # predecessors before its first dispatch.  Treat those predecessors as a
+    # complete source partition: every feasible source needs one agreeing
+    # state/target receipt, while duplicate occurrences for the same source
+    # may agree byte-for-byte.  Collapsing the whole partition to one scalar
+    # row was the source of the former PHI-style abstention.
+    routes_by_source: dict[int, set[tuple[int, int]]] = {}
+    reachable = _flow_graph_reachable_serials(flow_graph)
+    for transition in proof_shaped:
+        if transition.next_state is None or transition.target_handler is None:
+            return _ConcreteStateRouteResolution(None, conflict=True)
+        source = int(transition.write_block)
+        target = int(transition.target_handler)
+        source_block = flow_graph.get_block(source)
+        target_block = flow_graph.get_block(target)
+        if (
+            source_block is None
+            or tuple(int(successor) for successor in source_block.succs)
+            != (dispatcher_entry,)
+            or target == dispatcher_entry
+            or target in dispatcher_region_serials
+            or not _block_has_stable_native_anchor(source_block)
+            or not _block_has_stable_native_anchor(target_block)
+            or target not in reachable
+        ):
+            return _ConcreteStateRouteResolution(None, conflict=True)
+        routes_by_source.setdefault(source, set()).add(
+            (int(transition.next_state) & 0xFFFFFFFF, target)
+        )
+    if set(routes_by_source) != set(prologue_sources) or any(
+        len(routes) != 1 for routes in routes_by_source.values()
     ):
         return _ConcreteStateRouteResolution(None, conflict=True)
+    matching_targets = {
+        target
+        for routes in routes_by_source.values()
+        for state, target in routes
+        if state == normalized
+    }
+    if len(matching_targets) != 1:
+        return _ConcreteStateRouteResolution(None, conflict=True)
+    target = next(iter(matching_targets))
     return _ConcreteStateRouteResolution(
         ConcreteStateRoute(
             normalized_state=normalized,
@@ -3585,6 +3607,11 @@ def _resolve_entry_state_route_resolution(
         dispatcher_region_serials=dispatcher_region_serials,
     )
     if source_carrier_resolution.conflict:
+        logger.info(
+            "entry-route reconciliation rejected: "
+            "reason=source_carrier_conflict state=0x%08X",
+            int(state) & 0xFFFFFFFF,
+        )
         return _EntryStateRouteResolution(None, conflict=True)
     source_scoped_resolution = _trusted_source_scoped_transition_entry_route(
         flow_graph,
@@ -3594,6 +3621,11 @@ def _resolve_entry_state_route_resolution(
         dispatcher_region_serials=dispatcher_region_serials,
     )
     if source_scoped_resolution.conflict:
+        logger.info(
+            "entry-route reconciliation rejected: "
+            "reason=source_scoped_transition_conflict state=0x%08X",
+            int(state) & 0xFFFFFFFF,
+        )
         return _EntryStateRouteResolution(None, conflict=True)
     initial_state_dag_resolution = _trusted_initial_state_decision_dag_entry_route(
         flow_graph,
@@ -3605,6 +3637,11 @@ def _resolve_entry_state_route_resolution(
         dispatcher_region_serials=dispatcher_region_serials,
     )
     if initial_state_dag_resolution.conflict:
+        logger.info(
+            "entry-route reconciliation rejected: "
+            "reason=initial_state_dag_conflict state=0x%08X",
+            int(state) & 0xFFFFFFFF,
+        )
         return _EntryStateRouteResolution(None, conflict=True)
     resolution = _resolve_concrete_route_resolution(
         dispatcher,
@@ -3623,6 +3660,11 @@ def _resolve_entry_state_route_resolution(
         allow_interval_default=source_carrier_resolution.route is not None,
     )
     if resolution.conflict:
+        logger.info(
+            "entry-route reconciliation rejected: "
+            "reason=concrete_provider_conflict state=0x%08X",
+            int(state) & 0xFFFFFFFF,
+        )
         return _EntryStateRouteResolution(None, conflict=True)
     route = resolution.route
     carrier_route = source_carrier_resolution.route
@@ -3632,6 +3674,14 @@ def _resolve_entry_state_route_resolution(
         if route is not None and int(route.target_block) != int(
             carrier_route.target_block
         ):
+            logger.info(
+                "entry-route reconciliation rejected: "
+                "reason=source_carrier_target_conflict state=0x%08X "
+                "provider_target=blk%d carrier_target=blk%d",
+                int(state) & 0xFFFFFFFF,
+                int(route.target_block),
+                int(carrier_route.target_block),
+            )
             return _EntryStateRouteResolution(None, conflict=True)
         route = ConcreteStateRoute(
             normalized_state=int(carrier_route.normalized_state),
@@ -3649,6 +3699,14 @@ def _resolve_entry_state_route_resolution(
         if route is not None and int(route.target_block) != int(
             source_scoped_route.target_block
         ):
+            logger.info(
+                "entry-route reconciliation rejected: "
+                "reason=source_scoped_target_conflict state=0x%08X "
+                "provider_target=blk%d source_target=blk%d",
+                int(state) & 0xFFFFFFFF,
+                int(route.target_block),
+                int(source_scoped_route.target_block),
+            )
             return _EntryStateRouteResolution(None, conflict=True)
         route = ConcreteStateRoute(
             normalized_state=int(source_scoped_route.normalized_state),
@@ -3666,6 +3724,14 @@ def _resolve_entry_state_route_resolution(
         if route is not None and int(route.target_block) != int(
             initial_state_dag_route.target_block
         ):
+            logger.info(
+                "entry-route reconciliation rejected: "
+                "reason=initial_state_dag_target_conflict state=0x%08X "
+                "provider_target=blk%d dag_target=blk%d",
+                int(state) & 0xFFFFFFFF,
+                int(route.target_block),
+                int(initial_state_dag_route.target_block),
+            )
             return _EntryStateRouteResolution(None, conflict=True)
         route = ConcreteStateRoute(
             normalized_state=int(initial_state_dag_route.normalized_state),
@@ -11241,7 +11307,6 @@ def _build_conditional_arm_redirects_with_forecasts(
             continue
         mod = candidate_mods.get(edge_key)
         if mod is not None:
-            mods.append(mod)
             arms = candidate_arms.get(edge_key, ())
             if len(arms) == 1 and (
                 decision_dag is not None or partition_table_facts
@@ -11253,6 +11318,7 @@ def _build_conditional_arm_redirects_with_forecasts(
                     dispatcher_serial=dispatcher_entry_serial,
                 )
                 if forecast is not None:
+                    mods.append(mod)
                     forecasts.append(forecast)
                 elif logger.info_on:
                     arm = arms[0]
@@ -11271,29 +11337,32 @@ def _build_conditional_arm_redirects_with_forecasts(
                             for serial in arm.ordered_path
                         ),
                     )
-            elif len(arms) != 1 and logger.info_on:
-                logger.info(
-                    "UNFLAT_ARM_FORECAST_ABSTAIN source=%s old=%s new=%s "
-                    "reason=arm_occurrence_count arms=%s",
-                    _format_block_label(flow_graph, int(mod.from_serial)),
-                    _format_block_label(flow_graph, int(mod.old_target)),
-                    _format_block_label(flow_graph, int(mod.new_target)),
-                    tuple(
-                        (
-                            "none" if not arm.ordered_path else _format_block_label(flow_graph, int(arm.ordered_path[0])),
-                            "none" if arm.branch_block is None else _format_block_label(flow_graph, int(arm.branch_block)),
-                            "none" if arm.write_block is None else _format_block_label(flow_graph, int(arm.write_block)),
-                            "none" if arm.exit_block is None else _format_block_label(flow_graph, int(arm.exit_block)),
-                            arm.next_state,
-                            arm.target_handler,
-                            tuple(
-                                _format_block_label(flow_graph, int(serial))
-                                for serial in arm.ordered_path
-                            ),
-                        )
-                        for arm in arms
-                    ),
-                )
+            elif len(arms) != 1 and (decision_dag is not None or partition_table_facts):
+                if logger.info_on:
+                    logger.info(
+                        "UNFLAT_ARM_FORECAST_ABSTAIN source=%s old=%s new=%s "
+                        "reason=arm_occurrence_count arms=%s",
+                        _format_block_label(flow_graph, int(mod.from_serial)),
+                        _format_block_label(flow_graph, int(mod.old_target)),
+                        _format_block_label(flow_graph, int(mod.new_target)),
+                        tuple(
+                            (
+                                "none" if not arm.ordered_path else _format_block_label(flow_graph, int(arm.ordered_path[0])),
+                                "none" if arm.branch_block is None else _format_block_label(flow_graph, int(arm.branch_block)),
+                                "none" if arm.write_block is None else _format_block_label(flow_graph, int(arm.write_block)),
+                                "none" if arm.exit_block is None else _format_block_label(flow_graph, int(arm.exit_block)),
+                                arm.next_state,
+                                arm.target_handler,
+                                tuple(
+                                    _format_block_label(flow_graph, int(serial))
+                                    for serial in arm.ordered_path
+                                ),
+                            )
+                            for arm in arms
+                        ),
+                    )
+            else:
+                mods.append(mod)
     return mods, tuple(forecasts)
 
 
@@ -12537,6 +12606,127 @@ def _mint_loop_guard_terminal_delivery_proof(
         )
     except (TypeError, ValueError, StopIteration):
         return None
+
+
+def _bind_exact_u32_dispatcher_route_receipt(
+    flow_graph: FlowGraph,
+    state_dispatcher_map: object,
+    *,
+    dispatcher_entry_serial: int,
+    state_var_stkoff: int | None,
+    state_var_reg: int | None,
+    dispatcher_region_serials: frozenset[int],
+) -> ExactU32DispatcherRouteReceipt | None:
+    """Bind exact map rows to this state identity and current dispatcher graph."""
+    if type(state_dispatcher_map) is not StateDispatcherMap:
+        return None
+    dispatch_map = state_dispatcher_map
+    entry = int(dispatcher_entry_serial)
+    if int(dispatch_map.dispatcher_entry_block) != entry:
+        return None
+    if state_var_stkoff is not None:
+        if (
+            dispatch_map.state_var_stkoff != int(state_var_stkoff)
+            or dispatch_map.state_var_reg is not None
+        ):
+            return None
+    elif state_var_reg is not None:
+        if (
+            dispatch_map.state_var_stkoff is not None
+            or dispatch_map.state_var_reg != int(state_var_reg)
+        ):
+            return None
+        # Current portable branch-witness validation binds stack selectors.
+        # A register map needs an equivalently exact register-aware witness
+        # before it may become this receipt capability.
+        return None
+    else:
+        return None
+
+    current_serials = frozenset(int(serial) for serial in flow_graph.blocks)
+    declared_dispatcher = frozenset(
+        {entry, *(int(serial) for serial in dispatch_map.dispatcher_blocks)}
+    )
+    if not declared_dispatcher.issubset(current_serials):
+        return None
+    if dispatcher_region_serials and not declared_dispatcher.issubset(
+        frozenset(int(serial) for serial in dispatcher_region_serials)
+    ):
+        return None
+
+    exact_targets_by_state: dict[int, set[int]] = {}
+    for row in dispatch_map.rows:
+        if not (row.is_handler_row or row.is_dispatcher_self_loop):
+            continue
+        dispatcher_block = int(row.dispatcher_block)
+        compare_block = (
+            None if row.compare_block is None else int(row.compare_block)
+        )
+        target = int(row.target_block)
+        if (
+            row.router_kind is not dispatch_map.router_kind
+            or dispatcher_block not in declared_dispatcher
+            or (compare_block is not None and compare_block not in declared_dispatcher)
+            or target not in current_serials
+            or (
+                dispatcher_region_serials
+                and (
+                    dispatcher_block not in dispatcher_region_serials
+                    or (
+                        compare_block is not None
+                        and compare_block not in dispatcher_region_serials
+                    )
+                )
+            )
+            or (row.is_dispatcher_self_loop and target not in declared_dispatcher)
+            or (row.is_handler_row and target in declared_dispatcher)
+        ):
+            return None
+        state = int(row.state_const)
+        if not 0 <= state <= 0xFFFFFFFF:
+            return None
+        if compare_block is None:
+            return None
+        compare = flow_graph.get_block(compare_block)
+        compare_successors = (
+            () if compare is None else tuple(int(serial) for serial in compare.succs)
+        )
+        if len(compare_successors) != 2 or target not in compare_successors:
+            return None
+        witness = static_witness_for_state(
+            flow_graph,
+            BranchWitnessRow(
+                state=state,
+                compare_block=compare_block,
+                predicate=str(row.branch_kind),
+                compare_const=state,
+                selected_successor=target,
+                rejected_successors=tuple(
+                    serial for serial in compare_successors if serial != target
+                ),
+                router_kind=row.router_kind,
+            ),
+            state,
+            state_var_stkoff,
+        )
+        if not isinstance(witness, ExactBranchWitness) or int(witness.target_block) != target:
+            return None
+        exact_targets_by_state.setdefault(state, set()).add(target)
+    if not exact_targets_by_state or any(
+        len(targets) != 1 for targets in exact_targets_by_state.values()
+    ):
+        return None
+    try:
+        return ExactU32DispatcherRouteReceipt(
+            tuple(
+                (state, next(iter(targets)))
+                for state, targets in sorted(exact_targets_by_state.items())
+            )
+        )
+    except (TypeError, ValueError):
+        return None
+
+
 def emit_minimal_unflatten(
     flow_graph,
     dispatcher,
@@ -12758,6 +12948,22 @@ def emit_minimal_unflatten(
 
     if dispatcher_entry_serial is None:
         return compile_with_dispatcher_coverage(())
+    exact_u32_route_receipt: ExactU32DispatcherRouteReceipt | None = None
+    if state_dispatcher_map is not None:
+        exact_u32_route_receipt = _bind_exact_u32_dispatcher_route_receipt(
+            flow_graph,
+            state_dispatcher_map,
+            dispatcher_entry_serial=int(dispatcher_entry_serial),
+            state_var_stkoff=state_var_stkoff,
+            state_var_reg=state_var_reg,
+            dispatcher_region_serials=dispatcher_region_serials,
+        )
+        if exact_u32_route_receipt is None and logger.info_on:
+            logger.info(
+                "exact U32 dispatcher receipt unavailable; retaining legacy "
+                "route authorities router_kind=%s",
+                getattr(state_dispatcher_map, "router_kind", None),
+            )
     if materialized_computed_goto_profile and missing_materialized_handler_targets:
         if logger.info_on:
             logger.info(
@@ -13172,6 +13378,7 @@ def emit_minimal_unflatten(
         state_var_stkoff=_soff,
         state_var_reg=state_var_reg,
         candidate_prefix_authority=candidate_prefix_authority,
+        exact_u32_route_receipt=exact_u32_route_receipt,
     )
     if (
         condition_chain_dag is not None
@@ -14661,6 +14868,7 @@ def emit_minimal_unflatten(
                 0 if source_generation is None else int(source_generation)
             ),
             decision_dag=condition_chain_dag,
+            exact_u32_route_receipt=exact_u32_route_receipt,
         )
         if held_entry_fact is None:
             if logger.info_on:

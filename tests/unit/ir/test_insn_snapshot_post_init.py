@@ -42,3 +42,16 @@ def test_non_branch_leaves_transfer_none():
     insn = InsnSnapshot(opcode=0, ea=0, operands=(), kind=InsnKind.MOV)
     assert insn.is_conditional_jump is False
     assert insn.control_transfer_kind is None
+
+
+def test_assertion_identity_is_sealed_into_opcode_attributes():
+    insn = InsnSnapshot(
+        opcode=1,
+        ea=0x401000,
+        operands=(),
+        kind=InsnKind.MOV,
+        is_assert=True,
+    )
+
+    assert insn.is_assert is True
+    assert insn.opcode_attrs["is_assert"] is True

@@ -37,6 +37,7 @@ from d810.core.observability_emulator import (
     format_emulator_gap_aggregate,
     is_stack_slot_in_aliased_memory,
     record_emulator_gap,
+    supersede_emulator_gap,
 )
 from d810.core.observability_events import EmulatorGapObserved
 from d810.core.observability_state_write import STATE_WRITE_RESOLUTION_CAUSES
@@ -174,6 +175,35 @@ class TestDedupeKeying:
         assert len(gaps) == 1
         assert gaps[0].occurrences == 5
 
+    def test_complete_stronger_evidence_supersedes_only_the_exact_gap(self):
+        begin_emulator_gap_attempt(FUNC, maturity="MMAT_GLBOPT1")
+        record_emulator_gap(
+            FUNC,
+            CAUSE_PHI_MULTI_DEF,
+            site_ea=0x4000,
+            block_serial=3,
+        )
+        record_emulator_gap(
+            FUNC,
+            CAUSE_PHI_MULTI_DEF,
+            site_ea=0x4000,
+            block_serial=4,
+        )
+
+        assert supersede_emulator_gap(
+            FUNC,
+            CAUSE_PHI_MULTI_DEF,
+            site_ea=0x4000,
+            block_serial=3,
+        )
+        assert not supersede_emulator_gap(
+            FUNC,
+            CAUSE_PHI_MULTI_DEF,
+            site_ea=0x4000,
+            block_serial=3,
+        )
+        assert tuple(gap.block_serial for gap in emulator_gap_scope(FUNC).gaps) == (4,)
+
     def test_a_maturity_change_rotates_the_attempt(self):
         begin_emulator_gap_attempt(FUNC, maturity="MMAT_CALLS")
         record_emulator_gap(
@@ -296,6 +326,27 @@ class TestFacts:
         assert warnings == [line]
         assert len(published) == 1
         assert emulator_gap_counts(FUNC) == {}
+
+    def test_unresolved_phi_site_is_rendered_at_attempt_flush(self):
+        warnings: list[str] = []
+
+        class _Log:
+            def warning(self, msg, *args):
+                warnings.append(msg % args if args else msg)
+
+        begin_emulator_gap_attempt(FUNC, maturity="MMAT_GLBOPT1")
+        record_emulator_gap(
+            FUNC,
+            CAUSE_PHI_MULTI_DEF,
+            site_ea=0x4000,
+            block_serial=3,
+        )
+        aggregate = flush_emulator_gaps(FUNC, log=_Log(), emit_fn=lambda _event: None)
+
+        assert aggregate is not None
+        assert len(warnings) == 2
+        assert warnings[0].startswith("EMULATOR_GAP cause=phi_multi_def")
+        assert warnings[1] == aggregate
 
     def test_flush_of_a_gapless_attempt_says_nothing(self):
         published: list[object] = []

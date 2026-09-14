@@ -342,6 +342,13 @@ def _diag_row_to_insn_snapshot(row: object) -> InsnSnapshot:
         raise ValueError("conditional diag instruction lacks complete expression evidence")
     if branch_predicate is not None and meta.get("l") is not None:
         opcode_attrs["raw_conditional_l"] = meta["l"]
+    is_assert = _row_field(row, "is_assert")
+    if type(is_assert) not in (bool, int, type(None)) or is_assert not in (
+        None,
+        0,
+        1,
+    ):
+        raise ValueError("diag instruction assertion identity is not boolean")
 
     return InsnSnapshot(
         opcode=opcode,
@@ -360,6 +367,7 @@ def _diag_row_to_insn_snapshot(row: object) -> InsnSnapshot:
         control_transfer_kind=control_transfer_kind_for_opcode_name(canonical_name),
         is_conditional_jump=branch_predicate is not None,
         is_call=call_kind is not None,
+        is_assert=bool(is_assert),
         compare_width=compare_width,
         opcode_attrs=opcode_attrs,
     )
