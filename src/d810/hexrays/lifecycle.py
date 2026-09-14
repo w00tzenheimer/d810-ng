@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from d810.core import getLogger
 from d810.core.decompilation_session import DecompilationEvent as _DecompilationEvent
+from d810.core.provider_phase import ProviderPhaseSnapshot
 from d810.hexrays.mutation.ir_translator import lift as lift_mba_to_flowgraph
 from d810.hexrays.utils.hexrays_formatters import maturity_to_string
 
@@ -15,6 +16,7 @@ def _emit_flowgraph_ready_event(
     mba,
     *,
     snapshot=None,
+    flowgraph_required=None,
 ) -> None:
     """Lift ``mba`` and emit ``FLOWGRAPH_READY`` (no-op when emitter is None).
 
@@ -50,6 +52,57 @@ def _emit_flowgraph_ready_event(
     """
     if event_emitter is None:
         return
+    func_ea = int(getattr(mba, "entry_ea", 0) or 0)
+    maturity = int(getattr(mba, "maturity", 0) or 0)
+    maturity_name = maturity_to_string(maturity)
+    ready_listeners = tuple(
+        getattr(event_emitter, "_listeners", {}).get(
+            _DecompilationEvent.FLOWGRAPH_READY,
+            (),
+        )
+    )
+    demand_owner = getattr(flowgraph_required, "__self__", None)
+    listener_owner = (
+        getattr(ready_listeners[0], "__self__", None)
+        if len(ready_listeners) == 1
+        else None
+    )
+    manager_owns_only_listener = (
+        demand_owner is not None
+        and listener_owner is not None
+        and getattr(listener_owner, "decompilation_lifecycle", None)
+        is demand_owner
+    )
+    if manager_owns_only_listener and callable(flowgraph_required):
+        provider_phase = ProviderPhaseSnapshot(
+            provider_name=HEXRAYS_MICROCODE_PROVIDER,
+            provider_level=maturity,
+            friendly_provider_level=maturity_name,
+        )
+        try:
+            required = bool(
+                flowgraph_required(
+                    func_ea=func_ea,
+                    provider_phase=provider_phase,
+                )
+            )
+        except Exception:
+            optimizer_logger.exception(
+                "FlowGraph demand check failed at maturity %s (func=0x%x)",
+                maturity_name,
+                func_ea,
+            )
+            required = True
+        if not required:
+            if snapshot is not None:
+                event_emitter.emit(
+                    _DecompilationEvent.FLOWGRAPH_SNAPSHOT_READY,
+                    func_ea=func_ea,
+                    maturity=maturity,
+                    maturity_name=maturity_name,
+                    snapshot=snapshot,
+                )
+            return
     try:
         flow_graph = lift_mba_to_flowgraph(mba)
     except Exception:
@@ -63,7 +116,7 @@ def _emit_flowgraph_ready_event(
     metadata = flow_graph.metadata
     payload = {
         "flow_graph": flow_graph,
-        "func_ea": int(mba.entry_ea),
+        "func_ea": func_ea,
         # Provider-neutral stage fields (E2d), sourced from the lifter's
         # metadata so the event mirrors the single source of truth.
         "producer": metadata["producer"],

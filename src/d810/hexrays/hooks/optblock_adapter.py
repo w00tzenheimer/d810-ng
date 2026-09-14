@@ -33,6 +33,7 @@ from d810.core.observability_unflat import (
     skipped_maturities,
 )
 from d810.core.execution_scope import ExecutionPipeline, ExecutionStageIdentity
+from d810.core.settings import get_settings
 from d810.errors import D810Exception
 from d810.hexrays.hooks.callback_mutation_diagnostics import (
     LiveNopSite,
@@ -1065,10 +1066,20 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
                 pass  # diagnostic, never gates decompilation
 
             mba_ea = int(getattr(mba, "entry_ea", 0) or 0)
+            demand_check = (
+                getattr(
+                    self._decompilation_lifecycle,
+                    "flowgraph_required",
+                    None,
+                )
+                if get_settings().flowgraph_demand_elision
+                else None
+            )
             _emit_flowgraph_ready_event(
                 self.event_emitter,
                 mba,
                 snapshot=_pre_snap_ref,
+                flowgraph_required=demand_check,
             )
             if self._decompilation_lifecycle is not None:
                 self._decompilation_lifecycle.analyze_current_function(

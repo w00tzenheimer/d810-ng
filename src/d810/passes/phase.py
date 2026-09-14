@@ -122,6 +122,22 @@ class PreanalysisPhase:
         """Clear the maturity guard for a function (call on new decompilation)."""
         self._fired.pop(func_ea, None)
 
+    def needs_microcode_collection(
+        self,
+        *,
+        func_ea: int,
+        provider_phase: ProviderPhase,
+    ) -> bool:
+        """Return whether a portable graph can still reach a collector."""
+        provider_level = int(provider_phase.provider_level)
+        if provider_level in self._fired.get(int(func_ea), set()):
+            return False
+        return any(
+            collector.level == "microcode"
+            and self._collector_runs_at_provider_level(collector, provider_level)
+            for collector in self._collectors
+        )
+
     def run_microcode_collectors(
         self,
         target: Any,

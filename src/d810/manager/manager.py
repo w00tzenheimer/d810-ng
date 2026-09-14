@@ -4364,6 +4364,29 @@ class D810Manager:
             )
         )
 
+    def _capture_flowgraph_snapshot_ready(
+        self,
+        *,
+        func_ea: int,
+        maturity: int,
+        maturity_name: str,
+        snapshot: typing.Any,
+    ) -> None:
+        """Attach a later diagnostic snapshot after graph consumers fired."""
+        from d810.manager.decompilation_lifecycle import FlowgraphSnapshotPayload
+
+        self.decompilation_lifecycle.capture_flowgraph_snapshot(
+            FlowgraphSnapshotPayload(
+                func_ea=int(func_ea),
+                provider_phase=ProviderPhaseSnapshot(
+                    provider_name=HEXRAYS_MICROCODE_PROVIDER,
+                    provider_level=int(maturity),
+                    friendly_provider_level=str(maturity_name),
+                ),
+                snapshot=snapshot,
+            )
+        )
+
     @staticmethod
     def _on_cfg_transaction_authority(event) -> None:
         """Translate typed Hex-Rays authority into core diagnostic records."""
@@ -4555,6 +4578,10 @@ class D810Manager:
         self.event_emitter.on(
             DecompilationEvent.FLOWGRAPH_READY,
             self._capture_flowgraph_ready,
+        )
+        self.event_emitter.on(
+            DecompilationEvent.FLOWGRAPH_SNAPSHOT_READY,
+            self._capture_flowgraph_snapshot_ready,
         )
 
         from d810.manager.rhad_generated_checksum import (

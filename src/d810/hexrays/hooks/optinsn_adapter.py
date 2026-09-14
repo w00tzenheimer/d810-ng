@@ -18,6 +18,7 @@ from d810.core import getLogger, typing
 from d810.core.cymode import CythonMode
 from d810.core.decompilation_session import DecompilationEvent
 from d810.core.execution_scope import ExecutionPipeline, ExecutionStageIdentity
+from d810.core.settings import get_settings
 from d810.analyses.control_flow.native_preanalysis_session import (
     NativeMutationBoundary,
     native_mutation_quarantine_blocks,
@@ -2523,7 +2524,17 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
 
             mba_ea = int(getattr(mba, "entry_ea", 0) or 0)
             if self.event_emitter is not None:
-                _emit_flowgraph_ready_event(self.event_emitter, mba)
+                lifecycle = getattr(self, "_decompilation_lifecycle", None)
+                demand_check = (
+                    getattr(lifecycle, "flowgraph_required", None)
+                    if get_settings().flowgraph_demand_elision
+                    else None
+                )
+                _emit_flowgraph_ready_event(
+                    self.event_emitter,
+                    mba,
+                    flowgraph_required=demand_check,
+                )
             lifecycle = getattr(self, "_decompilation_lifecycle", None)
             if lifecycle is not None:
                 lifecycle.analyze_current_function(

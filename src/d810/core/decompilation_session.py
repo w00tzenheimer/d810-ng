@@ -28,6 +28,7 @@ class DecompilationEvent(enum.Enum):
     HEXRAYS_BUILD_CALLINFO = "decompilation.hexrays.callinfo.build"
     HEXRAYS_CALLS_DONE = "decompilation.hexrays.calls_done"
     FLOWGRAPH_READY = "decompilation.flowgraph.ready"
+    FLOWGRAPH_SNAPSHOT_READY = "decompilation.flowgraph.snapshot.ready"
 
 
 @dataclass(frozen=True, slots=True)

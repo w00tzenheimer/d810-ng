@@ -242,6 +242,15 @@ class FlowgraphReadyPayload:
     snapshot: object | None
 
 
+@dataclass(frozen=True, slots=True)
+class FlowgraphSnapshotPayload:
+    """A later diagnostic snapshot whose graph consumers already fired."""
+
+    func_ea: int
+    provider_phase: ProviderPhaseSnapshot
+    snapshot: object
+
+
 @dataclass(slots=True)
 class DecompilationLifecycleCoordinator:
     """Own session boundaries and ordered preanalysis/analysis hand-off.
@@ -1185,9 +1194,65 @@ class DecompilationLifecycleCoordinator:
                     payload.provider_phase.friendly_provider_level,
                 )
 
+    def flowgraph_required(
+        self,
+        *,
+        func_ea: int,
+        provider_phase: ProviderPhaseSnapshot,
+    ) -> bool:
+        """Fail closed unless the runtime proves all graph consumers fired."""
+        runtime = self.preanalysis_runtime
+        if runtime is None:
+            return False
+        needs_flowgraph = getattr(runtime, "needs_flowgraph", None)
+        if not callable(needs_flowgraph):
+            return True
+        try:
+            return bool(
+                needs_flowgraph(
+                    func_ea=int(func_ea),
+                    provider_phase=provider_phase,
+                )
+            )
+        except Exception:
+            logger.exception(
+                "flowgraph demand check failed for func=0x%x maturity=%s",
+                int(func_ea),
+                provider_phase.friendly_provider_level,
+            )
+            return True
+
+    def capture_flowgraph_snapshot(self, payload: FlowgraphSnapshotPayload) -> None:
+        """Publish and attach a later snapshot without another graph lift."""
+        self._publish_state_write_route_facts(payload)
+        self._publish_materialized_transfer_facts(payload)
+        self._publish_rebound_bootstrap_route_facts(payload)
+        runtime = self.preanalysis_runtime
+        if runtime is None:
+            return
+        attach = getattr(runtime, "attach_flowgraph_snapshot", None)
+        if not callable(attach):
+            logger.error(
+                "snapshot-only flowgraph capture unavailable for func=0x%x",
+                int(payload.func_ea),
+            )
+            return
+        try:
+            attach(
+                func_ea=int(payload.func_ea),
+                provider_phase=payload.provider_phase,
+                snapshot=payload.snapshot,
+            )
+        except Exception:
+            logger.exception(
+                "preanalysis snapshot attachment failed for func=0x%x maturity=%s",
+                int(payload.func_ea),
+                payload.provider_phase.friendly_provider_level,
+            )
+
     def _publish_state_write_route_facts(
         self,
-        payload: FlowgraphReadyPayload,
+        payload: FlowgraphReadyPayload | FlowgraphSnapshotPayload,
     ) -> None:
         """Persist native state-write delivery authority on a real snapshot."""
         if payload.snapshot is None:
@@ -1258,7 +1323,7 @@ class DecompilationLifecycleCoordinator:
 
     def _publish_rebound_bootstrap_route_facts(
         self,
-        payload: FlowgraphReadyPayload,
+        payload: FlowgraphReadyPayload | FlowgraphSnapshotPayload,
     ) -> None:
         """Attach one rebound bootstrap proof to the next real diag snapshot.
 
@@ -1326,7 +1391,7 @@ class DecompilationLifecycleCoordinator:
 
     def _publish_materialized_transfer_facts(
         self,
-        payload: FlowgraphReadyPayload,
+        payload: FlowgraphReadyPayload | FlowgraphSnapshotPayload,
     ) -> None:
         """Persist the complete portable resolver inventory once per epoch."""
         if payload.snapshot is None:

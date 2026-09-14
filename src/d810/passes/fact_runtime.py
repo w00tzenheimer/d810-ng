@@ -157,6 +157,45 @@ class PreanalysisFactRuntime:
         self._last_observations_by_func.pop(func_ea, None)
         self._invalidate_validated_views(func_ea)
 
+    def needs_capture(
+        self,
+        *,
+        func_ea: int,
+        provider_phase: ProviderPhase,
+        phase: str = "pre_d810",
+    ) -> bool:
+        """Return whether this key can still invoke a registered collector."""
+        if not get_settings().fact_lifecycle:
+            return False
+        provider_level = provider_level_id(provider_phase)
+        if (int(func_ea), provider_level, str(phase)) in self._fired:
+            return False
+        ir_maturity = self._provider_phase_ir_maturity(provider_phase)
+        return any(
+            self._collector_runs_at_provider_level(
+                collector,
+                provider_level,
+                ir_maturity,
+            )
+            for collector in self._collectors
+        )
+
+    def attach_captured_snapshot(
+        self,
+        *,
+        func_ea: int,
+        provider_phase: ProviderPhase,
+        phase: str,
+        snapshot: Any,
+    ) -> None:
+        """Attach retained facts without requiring another graph target."""
+        dedupe_key = (
+            int(func_ea),
+            provider_level_id(provider_phase),
+            str(phase),
+        )
+        self._attach_to_snapshot(dedupe_key, int(func_ea), snapshot)
+
     def _invalidate_validated_views(self, func_ea: int) -> None:
         stale = tuple(
             key for key in self._validated_views if key[0] == int(func_ea)
