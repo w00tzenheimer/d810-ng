@@ -8468,6 +8468,299 @@ def test_projected_goto_does_not_prefer_wrong_target_prefix_sibling() -> None:
     assert selected.descriptor.step_index == 1
 
 
+def test_retained_prefix_selector_checks_only_indexed_coordinates(monkeypatch) -> None:
+    """Unrelated redirects must not multiply the exact retained-prefix check."""
+    from d810.transforms.plan import PatchRedirectGoto
+    from d810.transforms.unflatten_authority.proposal import (
+        canonical_patch_step_descriptors,
+    )
+
+    (
+        _authority,
+        plan,
+        source_inventory,
+        _projected_inventory,
+        _facts,
+        _attempt,
+        claim,
+        proof,
+        refs,
+    ) = _real_projected_branch_fixture(
+        step_shape="goto",
+        direct_route=True,
+        retained_prefix_sibling_rewrite=True,
+    )
+    indexed_plan = replace(
+        plan,
+        steps=(
+            PatchRedirectGoto(refs[0], refs[1], refs[4]),
+            plan.steps[1],
+            *(PatchRedirectGoto(refs[4], refs[1], refs[3]) for _ in range(375)),
+        ),
+    )
+    descriptors = canonical_patch_step_descriptors(indexed_plan)
+    facts = tuple(
+        model.PatchStepEvidencePayload(
+            indexed_plan.plan_id,
+            descriptor.step_index,
+            descriptor.step_type,
+            owner_ref,
+            descriptor.step_digest,
+            descriptor.host_ea,
+            descriptor.host_opcode,
+            None,
+            dict(descriptor.new_block_spec_digests).get(owner_ref),
+        )
+        for descriptor in descriptors
+        for owner_ref in descriptor.owner_refs
+    )
+    selected_entries = []
+    match_counts = []
+    indexes = (
+        bind._index_lineage_fact_groups(indexed_plan, facts),
+        bind._index_lineage_fact_groups(
+            indexed_plan,
+            facts,
+            source_inventory=source_inventory,
+        ),
+    )
+    for lineage_index in indexes:
+        with patch.object(
+            bind,
+            "_retained_prefix_direct_coordinates_match",
+            wraps=bind._retained_prefix_direct_coordinates_match,
+        ) as retained_match:
+            selected_entries.append(bind._select_lineage_fact_group(
+                lineage_index,
+                plan=indexed_plan,
+                claim=claim,
+                proof=proof,
+                source_inventory=source_inventory,
+            ))
+        match_counts.append(retained_match.call_count)
+
+    exhaustive, indexed = selected_entries
+    assert indexed.descriptor == exhaustive.descriptor
+    assert indexed.descriptor.step_index == 1
+    assert match_counts == [377, 1]
+    assert len(source_inventory.blocks) < 377
+    assert sum(len(rows) for rows in indexes[1].entries_by_kind.values()) == 377
+
+
+def test_indexed_retained_prefix_selection_matches_exhaustive_oracle() -> None:
+    """Coordinate narrowing must preserve the exhaustive selected step."""
+    from d810.transforms.plan import PatchRedirectGoto
+    from d810.transforms.unflatten_authority.proposal import (
+        canonical_patch_step_descriptors,
+    )
+
+    (
+        _authority,
+        plan,
+        source_inventory,
+        _projected_inventory,
+        _facts,
+        _attempt,
+        claim,
+        proof,
+        refs,
+    ) = _real_projected_branch_fixture(
+        step_shape="goto",
+        direct_route=True,
+        retained_prefix_sibling_rewrite=True,
+    )
+    oracle_plan = replace(
+        plan,
+        steps=(PatchRedirectGoto(refs[0], refs[1], refs[4]), plan.steps[1]),
+    )
+    descriptors = canonical_patch_step_descriptors(oracle_plan)
+    facts = tuple(
+        model.PatchStepEvidencePayload(
+            oracle_plan.plan_id,
+            descriptor.step_index,
+            descriptor.step_type,
+            owner_ref,
+            descriptor.step_digest,
+            descriptor.host_ea,
+            descriptor.host_opcode,
+            None,
+            dict(descriptor.new_block_spec_digests).get(owner_ref),
+        )
+        for descriptor in descriptors
+        for owner_ref in descriptor.owner_refs
+    )
+    exhaustive = bind._select_lineage_fact_group(
+        bind._index_lineage_fact_groups(oracle_plan, facts),
+        plan=oracle_plan,
+        claim=claim,
+        proof=proof,
+        source_inventory=source_inventory,
+    )
+    indexed = bind._select_lineage_fact_group(
+        bind._index_lineage_fact_groups(
+            oracle_plan,
+            facts,
+            source_inventory=source_inventory,
+        ),
+        plan=oracle_plan,
+        claim=claim,
+        proof=proof,
+        source_inventory=source_inventory,
+    )
+
+    assert indexed is not exhaustive
+    assert indexed.descriptor == exhaustive.descriptor
+    assert indexed.facts == exhaustive.facts
+    assert indexed.violation == exhaustive.violation
+
+
+def test_indexed_retained_prefix_preserves_ambiguity_rejection() -> None:
+    """Two exact retained-prefix owners remain ambiguous after narrowing."""
+    from d810.transforms.plan import PatchRedirectGoto
+    from d810.transforms.unflatten_authority.proposal import (
+        canonical_patch_step_descriptors,
+    )
+
+    (
+        _authority,
+        plan,
+        source_inventory,
+        _projected_inventory,
+        _facts,
+        _attempt,
+        claim,
+        proof,
+        refs,
+    ) = _real_projected_branch_fixture(
+        step_shape="goto",
+        direct_route=True,
+        retained_prefix_sibling_rewrite=True,
+    )
+    ambiguous_plan = replace(
+        plan,
+        steps=(
+            PatchRedirectGoto(refs[0], refs[1], refs[4]),
+            plan.steps[1],
+            plan.steps[1],
+        ),
+    )
+    descriptors = canonical_patch_step_descriptors(ambiguous_plan)
+    facts = tuple(
+        model.PatchStepEvidencePayload(
+            ambiguous_plan.plan_id,
+            descriptor.step_index,
+            descriptor.step_type,
+            owner_ref,
+            descriptor.step_digest,
+            descriptor.host_ea,
+            descriptor.host_opcode,
+            None,
+            dict(descriptor.new_block_spec_digests).get(owner_ref),
+        )
+        for descriptor in descriptors
+        for owner_ref in descriptor.owner_refs
+    )
+    outcomes = []
+    for index in (
+        bind._index_lineage_fact_groups(ambiguous_plan, facts),
+        bind._index_lineage_fact_groups(
+            ambiguous_plan,
+            facts,
+            source_inventory=source_inventory,
+        ),
+    ):
+        with pytest.raises(bind._LineageFactViolation) as caught:
+            bind._select_lineage_fact_group(
+                index,
+                plan=ambiguous_plan,
+                claim=claim,
+                proof=proof,
+                source_inventory=source_inventory,
+            )
+        outcomes.append((
+            str(caught.value),
+            caught.value.stage,
+            caught.value.descriptor,
+            caught.value.fact,
+        ))
+
+    assert outcomes == [
+        (
+            "projected route has ambiguous owning step groups",
+            model.RouteRealizationFailureStage.CLAIM_SELECTION,
+            None,
+            None,
+        ),
+    ] * 2
+
+
+def test_lineage_selector_default_and_rollback_use_identical_public_result(
+    monkeypatch,
+) -> None:
+    """The default index and exhaustive rollback share the public outcome."""
+    authority, plan, source, projected, facts, attempt, *_ = (
+        _real_projected_branch_fixture(
+            step_shape="goto",
+            direct_route=True,
+            retained_prefix_sibling_rewrite=True,
+        )
+    )
+
+    monkeypatch.setenv("D810_LINEAGE_SELECTOR_INDEX", "0")
+    with patch.object(
+        bind,
+        "_lineage_fact_group_projections",
+        wraps=bind._lineage_fact_group_projections,
+    ) as rollback_projection:
+        exhaustive = realize_projected_routes_for_test(
+            source_authority=authority,
+            plan=plan,
+            source_inventory=source,
+            projected_inventory=projected,
+            patch_step_facts=facts,
+            attempt_id=attempt,
+        )
+    assert rollback_projection.call_count == 0
+
+    monkeypatch.delenv("D810_LINEAGE_SELECTOR_INDEX")
+    with patch.object(
+        bind,
+        "_lineage_fact_group_projections",
+        wraps=bind._lineage_fact_group_projections,
+    ) as default_projection:
+        indexed = realize_projected_routes_for_test(
+            source_authority=authority,
+            plan=plan,
+            source_inventory=source,
+            projected_inventory=projected,
+            patch_step_facts=facts,
+            attempt_id=attempt,
+        )
+    assert default_projection.call_count == 1
+    assert indexed == exhaustive
+
+    corrupt_facts = (
+        replace(facts[0], owner_ref=block_ref("foreign-lineage-owner")),
+        *facts[1:],
+    )
+    outcomes = []
+    for setting in ("0", None):
+        if setting is None:
+            monkeypatch.delenv("D810_LINEAGE_SELECTOR_INDEX")
+        else:
+            monkeypatch.setenv("D810_LINEAGE_SELECTOR_INDEX", setting)
+        outcomes.append(realize_projected_routes_for_test(
+            source_authority=authority,
+            plan=plan,
+            source_inventory=source,
+            projected_inventory=projected,
+            patch_step_facts=corrupt_facts,
+            attempt_id=attempt,
+        ))
+    assert outcomes[0] == outcomes[1]
+    assert type(outcomes[0]) is model.ProjectedRouteRealizationRejected
+
+
 def test_projected_bypass_accepts_exact_trampoline_lineage_without_rebinding_source(monkeypatch) -> None:
     from d810.analyses.control_flow import semantic_route_evidence as route_model
 

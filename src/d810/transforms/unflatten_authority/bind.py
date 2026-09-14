@@ -6,6 +6,7 @@ from .transaction_facts import active_facts, same_admitted_input, validate_inter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, fields as dataclass_fields, is_dataclass, replace
 import hashlib
+import os
 import re
 import threading
 from types import MappingProxyType, MemberDescriptorType
@@ -4524,13 +4525,102 @@ class _LineageFactGroupEntry:
 
 
 @dataclass(frozen=True, slots=True)
+class _LineageInventoryIndex:
+    blocks_by_ref: Mapping[object, tuple[model.InventoryBlockObservation, ...]]
+    blocks_by_identity: Mapping[
+        StableBlockIdentity,
+        tuple[model.InventoryBlockObservation, ...],
+    ]
+    blocks_by_serial: Mapping[int, tuple[model.InventoryBlockObservation, ...]]
+    serial_by_ref: Mapping[object, int]
+
+
+def _index_lineage_inventory(
+    source_inventory: model.SemanticGraphInventory,
+) -> _LineageInventoryIndex:
+    """Project immutable inventory coordinates once for lineage selection."""
+    by_ref: dict[object, list[model.InventoryBlockObservation]] = {}
+    by_identity: dict[
+        StableBlockIdentity,
+        list[model.InventoryBlockObservation],
+    ] = {}
+    by_serial: dict[int, list[model.InventoryBlockObservation]] = {}
+    serial_by_ref: dict[object, int] = {}
+    for block in source_inventory.blocks:
+        by_serial.setdefault(block.serial, []).append(block)
+        ref = block.block_ref
+        if ref is None:
+            continue
+        by_ref.setdefault(ref, []).append(block)
+        serial_by_ref[ref] = block.serial
+        if type(ref) is NativeBlockRef:
+            by_identity.setdefault(ref.identity, []).append(block)
+    return _LineageInventoryIndex(
+        MappingProxyType({key: tuple(value) for key, value in by_ref.items()}),
+        MappingProxyType({
+            key: tuple(value) for key, value in by_identity.items()
+        }),
+        MappingProxyType({
+            key: tuple(value) for key, value in by_serial.items()
+        }),
+        MappingProxyType(serial_by_ref),
+    )
+
+
+@dataclass(frozen=True, slots=True)
 class _LineageFactGroupIndex:
     entries: tuple[_LineageFactGroupEntry, ...]
+    inventory: _LineageInventoryIndex | None = None
+    entries_by_kind: Mapping[
+        PatchStepKind,
+        tuple[_LineageFactGroupEntry, ...],
+    ] = field(
+        default_factory=lambda: MappingProxyType({}),
+        repr=False,
+        compare=False,
+    )
+    retained_prefix_by_coordinates: Mapping[
+        tuple[object, object],
+        tuple[_LineageFactGroupEntry, ...],
+    ] = field(
+        default_factory=lambda: MappingProxyType({}),
+        repr=False,
+        compare=False,
+    )
+
+
+def _lineage_fact_group_projections(
+    entries: tuple[_LineageFactGroupEntry, ...],
+) -> tuple[
+    Mapping[PatchStepKind, tuple[_LineageFactGroupEntry, ...]],
+    Mapping[tuple[object, object], tuple[_LineageFactGroupEntry, ...]],
+]:
+    """Construct selector projections before publishing the frozen index."""
+    by_kind: dict[PatchStepKind, list[_LineageFactGroupEntry]] = {}
+    retained: dict[
+        tuple[object, object],
+        list[_LineageFactGroupEntry],
+    ] = {}
+    for entry in entries:
+        descriptor = entry.descriptor
+        by_kind.setdefault(descriptor.step_kind, []).append(entry)
+        if (
+            descriptor.step_kind is PatchStepKind.REDIRECT_GOTO
+            and len(descriptor.route_refs) == 3
+        ):
+            key = (descriptor.route_refs[0], descriptor.route_refs[2])
+            retained.setdefault(key, []).append(entry)
+    return (
+        MappingProxyType({key: tuple(value) for key, value in by_kind.items()}),
+        MappingProxyType({key: tuple(value) for key, value in retained.items()}),
+    )
 
 
 def _index_lineage_fact_groups(
     plan: PatchPlan,
     patch_step_facts: tuple[model.PatchStepEvidencePayload, ...],
+    *,
+    source_inventory: model.SemanticGraphInventory | None = None,
 ) -> _LineageFactGroupIndex:
     """Build the one canonical fact/descriptor view for a binder call."""
     if type(plan) is not PatchPlan:
@@ -4627,7 +4717,19 @@ def _index_lineage_fact_groups(
         else:
             ordered = supplied
         entries.append(_LineageFactGroupEntry(descriptor, expected, ordered, violation))
-    return _LineageFactGroupIndex(tuple(entries))
+    ordered_entries = tuple(entries)
+    if source_inventory is None:
+        return _LineageFactGroupIndex(ordered_entries)
+    inventory = _index_lineage_inventory(source_inventory)
+    entries_by_kind, retained_prefix_by_coordinates = (
+        _lineage_fact_group_projections(ordered_entries)
+    )
+    return _LineageFactGroupIndex(
+        ordered_entries,
+        inventory,
+        entries_by_kind,
+        retained_prefix_by_coordinates,
+    )
 
 
 def _descriptor_refs_match(ref: object, target: object) -> bool:
@@ -4892,6 +4994,8 @@ def _retained_prefix_direct_coordinates_match(
     proof: route_model.SemanticRouteProof,
     descriptor: CanonicalPatchStepDescriptor,
     source_inventory: model.SemanticGraphInventory,
+    *,
+    inventory_index: _LineageInventoryIndex | None = None,
 ) -> bool:
     """Match proof-source -> delivery-owner -> rewritten destination exactly."""
     if (
@@ -4909,20 +5013,35 @@ def _retained_prefix_direct_coordinates_match(
     ):
         return False
     delivery_ref, _old_ref, new_ref = descriptor.route_refs
-    source_matches = tuple(
-        row for row in source_inventory.blocks
-        if _ref_matches_identity(row.block_ref, proof.source_identity)
+    source_matches = (
+        inventory_index.blocks_by_identity.get(proof.source_identity, ())
+        if inventory_index is not None
+        else tuple(
+            row for row in source_inventory.blocks
+            if _ref_matches_identity(row.block_ref, proof.source_identity)
+        )
     )
     if len(source_matches) != 1:
         return False
     source_row = source_matches[0]
-    delivery_serial = source_inventory.serial_by_ref.get(delivery_ref)
+    serial_by_ref = (
+        inventory_index.serial_by_ref
+        if inventory_index is not None
+        else source_inventory.serial_by_ref
+    )
+    delivery_serial = serial_by_ref.get(delivery_ref)
     if delivery_serial is None or delivery_ref == source_row.block_ref:
         return False
-    try:
-        delivery_row = _inventory_block(source_inventory, delivery_ref)
-    except (KeyError, TypeError, ValueError):
-        return False
+    if inventory_index is not None:
+        delivery_rows = inventory_index.blocks_by_ref.get(delivery_ref, ())
+        if len(delivery_rows) != 1:
+            return False
+        delivery_row = delivery_rows[0]
+    else:
+        try:
+            delivery_row = _inventory_block(source_inventory, delivery_ref)
+        except (KeyError, TypeError, ValueError):
+            return False
     step = plan.steps[descriptor.step_index]
     destination = proof.destinations[0]
     return bool(
@@ -4932,6 +5051,42 @@ def _retained_prefix_direct_coordinates_match(
         and source_row.successor_serials == (delivery_serial,)
         and source_row.serial in delivery_row.predecessor_serials
         and _ref_matches_identity(new_ref, destination.target_identity)
+    )
+
+
+def _indexed_retained_prefix_entries(
+    index: _LineageFactGroupIndex,
+    proof: route_model.SemanticRouteProof,
+) -> tuple[_LineageFactGroupEntry, ...]:
+    """Narrow retained-prefix redirects without changing the final matcher."""
+    inventory = index.inventory
+    if inventory is None:
+        return tuple(
+            entry for entry in index.entries
+            if entry.descriptor.step_kind is PatchStepKind.REDIRECT_GOTO
+        )
+    if (
+        proof.proof_kind is not route_model.SemanticRouteProofKind.STATE_ASSIGNMENT
+        or proof.shape is not route_model.SemanticRouteShape.DIRECT
+        or proof.source_owner_identity is not None
+        or len(proof.destinations) != 1
+        or proof.destinations[0].role is not SemanticEdgeRole.DIRECT
+    ):
+        return ()
+    source_rows = inventory.blocks_by_identity.get(proof.source_identity, ())
+    if len(source_rows) != 1:
+        return ()
+    successor_serials = source_rows[0].successor_serials
+    if len(successor_serials) != 1:
+        return ()
+    delivery_rows = inventory.blocks_by_serial.get(successor_serials[0], ())
+    if len(delivery_rows) != 1 or delivery_rows[0].block_ref is None:
+        # A malformed inventory must retain the exhaustive fail-closed behavior.
+        return index.entries_by_kind.get(PatchStepKind.REDIRECT_GOTO, ())
+    destination_ref = NativeBlockRef(proof.destinations[0].target_identity)
+    return index.retained_prefix_by_coordinates.get(
+        (delivery_rows[0].block_ref, destination_ref),
+        (),
     )
 
 
@@ -5198,8 +5353,14 @@ def _select_lineage_fact_group(
         and proof.shape is route_model.SemanticRouteShape.CONDITIONAL
     )
     entries = index.entries
+
     def kind_entries(kind: PatchStepKind):
-        return tuple(entry for entry in entries if entry.descriptor.step_kind is kind)
+        if index.inventory is not None:
+            return index.entries_by_kind.get(kind, ())
+        return tuple(
+            entry for entry in entries
+            if entry.descriptor.step_kind is kind
+        )
 
     direct = tuple(
         entry for entry in kind_entries(PatchStepKind.REDIRECT_GOTO)
@@ -5282,9 +5443,13 @@ def _select_lineage_fact_group(
         )
     ) if not is_conditional else ()
     retained_prefix_direct = tuple(
-        entry for entry in kind_entries(PatchStepKind.REDIRECT_GOTO)
+        entry for entry in _indexed_retained_prefix_entries(index, proof)
         if _retained_prefix_direct_coordinates_match(
-            plan, proof, entry.descriptor, source_inventory,
+            plan,
+            proof,
+            entry.descriptor,
+            source_inventory,
+            inventory_index=index.inventory,
         )
     ) if not is_conditional else ()
     proof_source_direct = tuple(
@@ -5569,7 +5734,15 @@ def _legacy_structural_projected_routes(*, source_authority: model.SourceBoundRo
         projected_by_ref = projected_inventory.serial_by_ref
         claims = _route_claims(source_authority.proposal)
         try:
-            lineage_index = _index_lineage_fact_groups(plan, facts)
+            lineage_index = _index_lineage_fact_groups(
+                plan,
+                facts,
+                source_inventory=(
+                    source_inventory
+                    if os.environ.get("D810_LINEAGE_SELECTOR_INDEX", "1") == "1"
+                    else None
+                ),
+            )
         except _LineageFactViolation as violation:
             active_stage = violation.stage
             active_fact = violation.fact
