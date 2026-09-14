@@ -14,8 +14,16 @@ concurrency:
     group: ${{ github.workflow }}-${{ github.ref || github.run_id }}
     cancel-in-progress: true
 
+permissions:
+    contents: read
+    actions: read
+
 jobs:
     build_wheels:
+        if: >-
+            github.event_name != 'workflow_run' ||
+            (github.event.workflow_run.conclusion == 'success' &&
+            github.event.workflow_run.head_repository.full_name == github.repository)
         name: Build wheels for ${{ matrix.os }}
         runs-on: ${{ matrix.runs-on }}
         env:
@@ -33,8 +41,48 @@ jobs:
                       runs-on: macos-latest
 
         steps:
+            - name: Download release source
+              if: github.event_name == 'workflow_run'
+              uses: actions/download-artifact@v4
+              with:
+                  name: release-source
+                  path: .release-source
+                  run-id: ${{ github.event.workflow_run.id }}
+                  repository: ${{ github.repository }}
+                  github-token: ${{ secrets.GITHUB_TOKEN }}
+
+            - name: Resolve source
+              id: source
+              shell: bash
+              env:
+                  EVENT_NAME: ${{ github.event_name }}
+                  EVENT_SHA: ${{ github.sha }}
+              run: |
+                  python - <<'PYCODE'
+                  import json
+                  import os
+                  import re
+                  from pathlib import Path
+
+                  if os.environ["EVENT_NAME"] == "workflow_run":
+                      receipt = json.loads(Path(".release-source/receipt.json").read_text())
+                      if not isinstance(receipt, dict) or set(receipt) != {"tag", "sha"}:
+                          raise SystemExit("Invalid release source receipt")
+                      tag = receipt["tag"]
+                      if not isinstance(tag, str) or not re.fullmatch(r"v[0-9][0-9A-Za-z.!+_-]*", tag):
+                          raise SystemExit("Invalid release tag")
+                      sha = receipt["sha"]
+                  else:
+                      sha = os.environ["EVENT_SHA"]
+                  if not isinstance(sha, str) or not re.fullmatch(r"[0-9a-f]{40}", sha):
+                      raise SystemExit("Invalid release commit")
+                  with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+                      output.write(f"sha={sha}\n")
+                  PYCODE
+
             - uses: actions/checkout@v4
               with:
+                  ref: ${{ steps.source.outputs.sha }}
                   persist-credentials: false
 
             - name: Ensure IDA SDK
