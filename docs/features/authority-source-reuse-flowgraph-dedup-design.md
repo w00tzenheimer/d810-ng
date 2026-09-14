@@ -1,6 +1,6 @@
 # Authority Source Reuse and Flowgraph Deduplication Design
 
-Status: approved in chat; written review pending
+Status: approved in chat and approved after written review
 
 Tickets: `d81-2zj2` (stage 1), `d81-if7a` (stage 2)
 
@@ -77,6 +77,11 @@ rechecked against the preparation digest. It must not introduce a second,
 potentially divergent immutability traversal. If the required digest check
 recreates the measured work, the candidate stops rather than weakening it.
 
+`opcode_attrs` is not an example of such a read path: current mainline removes
+that backend provenance from canonical route identity. The concrete supported
+mutable descendant is a state-transform program instruction's `attrs` mapping,
+which deliberately forces per-selection validation today.
+
 ## Stage 1: phase-invariant authority reuse
 
 ### Measurement
@@ -113,8 +118,9 @@ case, evaluate it, construct the observed ledger and delta, and validate that
 ledger. A certificate is invalid unless the exact prepared object, transaction
 context, session, attempt, source snapshot, and native input identity match.
 Identity or an occurrence-seal hit alone is insufficient: a nested mutable
-value such as `opcode_attrs["nested"]["version"]` can change without changing
-the enclosing frozen-record or mapping-proxy identity.
+value such as
+`route_evidence.route_proofs[0].state_transform.program[0].attrs["mutable"]`
+can change without changing the enclosing frozen-record identity.
 
 ### Shadow oracle
 
