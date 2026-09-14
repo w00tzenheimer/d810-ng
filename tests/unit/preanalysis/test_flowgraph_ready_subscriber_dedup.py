@@ -247,38 +247,6 @@ class TestFlowGraphReadyCoordinatorDedup:
         assert func_ea == 0x140002000
         assert maturity == 14
 
-    def test_phase_reports_graph_demand_until_capture_and_after_reset(
-        self, monkeypatch
-    ) -> None:
-        collector = _CountingCollector()
-        phase = self._build_phase(monkeypatch, collector)
-        provider_phase = ProviderPhaseSnapshot(
-            provider_name="hexrays_microcode",
-            provider_level=14,
-            friendly_provider_level="MMAT_GLBOPT1",
-        )
-        graph = self._empty_flow_graph(func_ea=0x140002000, maturity=14)
-
-        assert phase.needs_microcode_collection(
-            func_ea=0x140002000,
-            provider_phase=provider_phase,
-        )
-        phase.run_microcode_collectors(
-            graph,
-            func_ea=0x140002000,
-            provider_phase=provider_phase,
-        )
-        assert not phase.needs_microcode_collection(
-            func_ea=0x140002000,
-            provider_phase=provider_phase,
-        )
-
-        phase.reset(func_ea=0x140002000)
-        assert phase.needs_microcode_collection(
-            func_ea=0x140002000,
-            provider_phase=provider_phase,
-        )
-
     def test_different_maturities_yield_separate_collects(self, monkeypatch) -> None:
         """Different maturities for the same function must NOT
         collapse -- the dedup key is ``(func_ea, maturity)``, not

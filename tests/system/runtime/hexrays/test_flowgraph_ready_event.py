@@ -76,10 +76,6 @@ class TestDecompilationEventValues:
         assert (
             DecompilationEvent.FLOWGRAPH_READY.value == "decompilation.flowgraph.ready"
         )
-        assert (
-            DecompilationEvent.FLOWGRAPH_SNAPSHOT_READY.value
-            == "decompilation.flowgraph.snapshot.ready"
-        )
 
     def test_flowgraph_ready_is_registered(self) -> None:
         """``FLOWGRAPH_READY`` is the new E1 event.  Tests downstream
@@ -435,101 +431,6 @@ class TestProducerHelper:
         # Event suppressed for the failed transition; no subscribers
         # invoked.
         assert received == []
-
-    def test_helper_elides_unused_lift_but_preserves_snapshot_event(
-        self, monkeypatch
-    ) -> None:
-        from d810.core.events import EventEmitter
-        from d810.hexrays import lifecycle
-        from d810.core.decompilation_session import DecompilationEvent
-        from d810.hexrays.lifecycle import _emit_flowgraph_ready_event
-
-        lifted: list[object] = []
-        monkeypatch.setattr(
-            lifecycle,
-            "lift_mba_to_flowgraph",
-            lambda mba: lifted.append(mba) or self._fake_flow_graph(),
-        )
-        emitter: EventEmitter[DecompilationEvent] = EventEmitter()
-        ready: list[dict[str, object]] = []
-        snapshots: list[dict[str, object]] = []
-
-        class _Coordinator:
-            def flowgraph_required(self, **_kwargs) -> bool:
-                return False
-
-        class _Manager:
-            def __init__(self) -> None:
-                self.decompilation_lifecycle = _Coordinator()
-
-            def capture(self, **kwargs) -> None:
-                ready.append(kwargs)
-
-        manager = _Manager()
-        emitter.on(DecompilationEvent.FLOWGRAPH_READY, manager.capture)
-        emitter.on(
-            DecompilationEvent.FLOWGRAPH_SNAPSHOT_READY,
-            lambda **kw: snapshots.append(kw),
-        )
-        snapshot = object()
-
-        _emit_flowgraph_ready_event(
-            emitter,
-            self._stub_mba(),
-            snapshot=snapshot,
-            flowgraph_required=manager.decompilation_lifecycle.flowgraph_required,
-        )
-
-        assert lifted == []
-        assert ready == []
-        assert len(snapshots) == 1
-        assert snapshots[0]["snapshot"] is snapshot
-        assert snapshots[0]["func_ea"] == 0x140002000
-        assert snapshots[0]["maturity"] == 14
-        assert "flow_graph" not in snapshots[0]
-
-    def test_extra_flowgraph_listener_disables_elision(self, monkeypatch) -> None:
-        from d810.core.events import EventEmitter
-        from d810.hexrays import lifecycle
-        from d810.core.decompilation_session import DecompilationEvent
-        from d810.hexrays.lifecycle import _emit_flowgraph_ready_event
-
-        graph = self._fake_flow_graph()
-        lifted: list[object] = []
-        monkeypatch.setattr(
-            lifecycle,
-            "lift_mba_to_flowgraph",
-            lambda mba: lifted.append(mba) or graph,
-        )
-        emitter: EventEmitter[DecompilationEvent] = EventEmitter()
-        first: list[dict[str, object]] = []
-        second: list[dict[str, object]] = []
-
-        class _Coordinator:
-            def flowgraph_required(self, **_kwargs) -> bool:
-                return False
-
-        class _Manager:
-            def __init__(self) -> None:
-                self.decompilation_lifecycle = _Coordinator()
-
-            def capture(self, **kwargs) -> None:
-                first.append(kwargs)
-
-        manager = _Manager()
-        emitter.on(DecompilationEvent.FLOWGRAPH_READY, manager.capture)
-        emitter.on(DecompilationEvent.FLOWGRAPH_READY, lambda **kw: second.append(kw))
-
-        _emit_flowgraph_ready_event(
-            emitter,
-            self._stub_mba(),
-            snapshot=object(),
-            flowgraph_required=manager.decompilation_lifecycle.flowgraph_required,
-        )
-
-        assert len(lifted) == 1
-        assert first[0]["flow_graph"] is graph
-        assert second[0]["flow_graph"] is graph
 
     def test_both_managers_invoke_helper(self, monkeypatch) -> None:
         "Architectural regression cover for the P1 review finding:\n        BOTH ``InstructionOptimizerManager`` and\n        ``BlockOptimizerManager`` must invoke\n        ``_emit_flowgraph_ready_event`` at their maturity gates.\n        If a future edit silently removes the call from one manager,\n        ``FLOWGRAPH_READY`` would only fire from the other and E4's\n        consumer rewire would lose a preanalysis collection point."

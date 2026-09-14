@@ -285,50 +285,6 @@ def test_diag_attachment_is_not_double_persisted() -> None:
     assert len(calls) == 1
 
 
-def test_fact_runtime_reports_demand_and_attaches_without_a_graph() -> None:
-    configure_settings(fact_lifecycle=True)
-    calls: list = []
-    runtime = PreanalysisFactRuntime(
-        persistence_callback=lambda *args: calls.append(args)
-    )
-    runtime.register(_Collector())
-    provider_phase = _phase(1)
-
-    assert runtime.needs_capture(
-        func_ea=0x401000,
-        provider_phase=provider_phase,
-        phase="pre_d810",
-    )
-    runtime.capture(
-        object(),
-        func_ea=0x401000,
-        provider_phase=provider_phase,
-        phase="pre_d810",
-        snapshot=None,
-    )
-    assert not runtime.needs_capture(
-        func_ea=0x401000,
-        provider_phase=provider_phase,
-        phase="pre_d810",
-    )
-
-    runtime.attach_captured_snapshot(
-        func_ea=0x401000,
-        provider_phase=provider_phase,
-        phase="pre_d810",
-        snapshot=_TEST_REF,
-    )
-    assert len(calls) == 1
-    assert calls[0][0] is _TEST_REF
-
-    runtime.reset_for_func(0x401000)
-    assert runtime.needs_capture(
-        func_ea=0x401000,
-        provider_phase=provider_phase,
-        phase="pre_d810",
-    )
-
-
 def test_capture_persists_collector_mappings() -> None:
     configure_settings(fact_lifecycle=True)
     calls = []

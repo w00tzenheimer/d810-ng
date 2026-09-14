@@ -200,13 +200,6 @@ class D810Settings:
     ``d810_mba_discovery.sqlite3`` makes a decompile unusable.
     """
 
-    flowgraph_demand_elision: bool = False
-    """Skip later portable graph lifts only after all consumers have fired.
-
-    This remains opt-in while the exact OLLVM oracle and paired wall bracket
-    qualify the demand contract (D810_FLOWGRAPH_DEMAND_ELISION).
-    """
-
     @classmethod
     def _from_env(cls) -> D810Settings:
         return cls(
@@ -231,9 +224,6 @@ class D810Settings:
             nomut_matching=_env_bool("D810_NOMUT_MATCHING"),
             mba_residual_recording=_env_bool(
                 "D810_MBA_RESIDUAL_RECORDING", default=True
-            ),
-            flowgraph_demand_elision=_env_bool(
-                "D810_FLOWGRAPH_DEMAND_ELISION", default=False
             ),
         )
 

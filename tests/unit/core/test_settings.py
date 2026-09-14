@@ -32,7 +32,6 @@ class TestD810Settings:
         assert s.execution_callback_detail == "summary"
         assert s.native_perf is False
         assert s.nomut_matching is False
-        assert s.flowgraph_demand_elision is False
 
     def test_developer_runtime_settings_default_off(self, monkeypatch):
         monkeypatch.delenv("D810_NATIVE_PERF", raising=False)
@@ -51,13 +50,6 @@ class TestD810Settings:
 
         assert settings.native_perf is True
         assert settings.nomut_matching is True
-
-    def test_flowgraph_demand_elision_is_opt_in(self, monkeypatch):
-        monkeypatch.delenv("D810_FLOWGRAPH_DEMAND_ELISION", raising=False)
-        assert reset_settings().flowgraph_demand_elision is False
-
-        monkeypatch.setenv("D810_FLOWGRAPH_DEMAND_ELISION", "1")
-        assert reset_settings().flowgraph_demand_elision is True
 
     @pytest.mark.parametrize("mode", ["summary", "full"])
     def test_from_env_reads_execution_callback_detail(self, monkeypatch, mode):

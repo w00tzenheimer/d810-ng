@@ -158,37 +158,6 @@ class PreanalysisRuntime:
             snapshot=snapshot,
         )
 
-    def needs_flowgraph(
-        self,
-        *,
-        func_ea: int,
-        provider_phase: ProviderPhase,
-    ) -> bool:
-        """Return whether either graph consumer can still run for this key."""
-        return self.phase.needs_microcode_collection(
-            func_ea=int(func_ea),
-            provider_phase=provider_phase,
-        ) or self._facts.needs_capture(
-            func_ea=int(func_ea),
-            provider_phase=provider_phase,
-            phase="pre_d810",
-        )
-
-    def attach_flowgraph_snapshot(
-        self,
-        *,
-        func_ea: int,
-        provider_phase: ProviderPhase,
-        snapshot: "SnapshotRef | None",
-    ) -> None:
-        """Attach facts retained by an earlier graph-bearing event."""
-        self._facts.attach_captured_snapshot(
-            func_ea=int(func_ea),
-            provider_phase=provider_phase,
-            phase="pre_d810",
-            snapshot=snapshot,
-        )
-
     def capture_ctree(
         self,
         cfunc: Any,
