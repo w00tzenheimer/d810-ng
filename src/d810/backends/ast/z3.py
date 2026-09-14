@@ -51,11 +51,13 @@ from __future__ import annotations
 
 import functools
 import sys
+import threading
 import time
 
 import ida_hexrays
 
 from d810.core import getLogger, typing
+from d810.core.cache import CacheImpl
 from d810.core.typing import Dict
 from d810.errors import D810Z3Exception
 from d810.analyses.data_flow.concolic.refs import ValueRef
@@ -165,6 +167,68 @@ def _new_query_solver(
             ) from exc
     query_solver.set(timeout=policy.proof_timeout_ms)
     return query_solver
+
+
+_BOUNDED_QUERY_RESULT_CACHE: CacheImpl[
+    tuple[int, Z3ProofPolicy, str], object
+] = CacheImpl(max_size=4096)
+_BOUNDED_QUERY_RESULT_CACHE_LOCK = threading.RLock()
+_BOUNDED_QUERY_RESULT_CACHE_GENERATION = 0
+
+
+def _clear_bounded_query_result_cache() -> None:
+    """Drop exact final-query results at the decompilation boundary."""
+
+    global _BOUNDED_QUERY_RESULT_CACHE_GENERATION
+    with _BOUNDED_QUERY_RESULT_CACHE_LOCK:
+        _BOUNDED_QUERY_RESULT_CACHE_GENERATION += 1
+        _BOUNDED_QUERY_RESULT_CACHE.clear(reset_stats=True)
+
+
+def bounded_query_result_cache_stats():
+    """Return detached accounting for the current decompilation session."""
+
+    with _BOUNDED_QUERY_RESULT_CACHE_LOCK:
+        return _BOUNDED_QUERY_RESULT_CACHE.stats
+
+
+def _check_bounded_query(
+    solver: z3.Solver,
+    *,
+    policy: Z3ProofPolicy | None,
+    cache_allowed: bool,
+) -> object:
+    """Check one completed bounded query with exact, session-local reuse.
+
+    Only the complete serialized SMT-LIB problem (including declarations) is
+    equality.  Hashes, operand renderings, EAs, and graph coordinates are
+    deliberately not identities.
+    Callers may enable reuse only for a fresh solver configured solely by the
+    supplied immutable policy; externally supplied solvers remain ineligible.
+    """
+
+    if not cache_allowed or policy is None:
+        return solver.check()
+    with _BOUNDED_QUERY_RESULT_CACHE_LOCK:
+        generation = _BOUNDED_QUERY_RESULT_CACHE_GENERATION
+    try:
+        key = generation, policy, solver.sexpr()
+    except Exception:
+        return solver.check()
+    with _BOUNDED_QUERY_RESULT_CACHE_LOCK:
+        cached = (
+            _BOUNDED_QUERY_RESULT_CACHE.get(key)
+            if generation == _BOUNDED_QUERY_RESULT_CACHE_GENERATION
+            else None
+        )
+    if cached is not None:
+        return cached
+    result = solver.check()
+    if result in (z3.sat, z3.unsat):
+        with _BOUNDED_QUERY_RESULT_CACHE_LOCK:
+            if generation == _BOUNDED_QUERY_RESULT_CACHE_GENERATION:
+                _BOUNDED_QUERY_RESULT_CACHE[key] = result
+    return result
 
 
 def _solver_unknown_reason(
@@ -872,7 +936,11 @@ class Z3MopProver:
             query_solver.push()
             try:
                 query_solver.add(query)
-                check_result = query_solver.check()
+                check_result = _check_bounded_query(
+                    query_solver,
+                    policy=self._policy,
+                    cache_allowed=solver is None,
+                )
             finally:
                 query_solver.pop()
         except Exception as exc:
@@ -1090,14 +1158,22 @@ class Z3MopProver:
             _solver.push()
             try:
                 _solver.add(z3.Not(predicate))
-                negated_result = _solver.check()
+                negated_result = _check_bounded_query(
+                    _solver,
+                    policy=self._policy,
+                    cache_allowed=solver is None,
+                )
             finally:
                 _solver.pop()
 
             _solver.push()
             try:
                 _solver.add(predicate)
-                predicate_result = _solver.check()
+                predicate_result = _check_bounded_query(
+                    _solver,
+                    policy=self._policy,
+                    cache_allowed=solver is None,
+                )
             finally:
                 _solver.pop()
         except Exception as exc:
@@ -1358,7 +1434,11 @@ class Z3MopProver:
             try:
                 zero = z3.BitVecVal(0, z3_expr.size())
                 query_solver.add(z3_expr == zero if nonzero else z3_expr != zero)
-                check_result = query_solver.check()
+                check_result = _check_bounded_query(
+                    query_solver,
+                    policy=self._policy,
+                    cache_allowed=solver is None,
+                )
             finally:
                 query_solver.pop()
         except Exception as exc:
@@ -1534,6 +1614,7 @@ class Z3MopProver:
 
     def clear_caches(self) -> None:
         """Clear all memoization caches. Call on decompilation start."""
+        _clear_bounded_query_result_cache()
         self._eq_cache.clear()
         self._neq_cache.clear()
         self._comparison_cache.clear()

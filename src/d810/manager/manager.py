@@ -42,7 +42,10 @@ from d810.core.execution_scope import (
 )
 from d810.core.stats import OptimizationStatistics
 from d810.core.settings import get_settings
-from d810.backends.ast.z3 import Z3MopProver
+from d810.backends.ast.z3 import (
+    Z3MopProver,
+    bounded_query_result_cache_stats,
+)
 from d810.backends.hexrays.registration import (
     ensure_hexrays_fact_lifter_registered,
 )
@@ -234,6 +237,12 @@ def _session_telemetry_summary() -> dict[str, object]:
         summary["mop_to_ast_cache"] = _cache_session_summary(MOP_TO_AST_CACHE)
     except Exception:
         summary["mop_to_ast_cache"] = {"error": "unavailable"}
+    try:
+        summary["z3_bounded_query_result_cache"] = dataclasses.asdict(
+            bounded_query_result_cache_stats()
+        )
+    except Exception:
+        summary["z3_bounded_query_result_cache"] = {"error": "unavailable"}
     return summary
 
 
