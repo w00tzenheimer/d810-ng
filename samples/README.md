@@ -189,6 +189,32 @@ Microsoft `ml64` + `link.exe` on `reversepc.local`:
 captured fixtures intentionally use Microsoft-MASM directives such as `OPTION
 NOSCOPED`; regenerate the committed PE/PDB with the Windows workflow above.
 
+### Generated hash-bound build receipt
+
+The canonical local MASM build also refreshes the exact-byte attestation used by
+the seven hash-bound fixtures. After linking and all post-link export/callsite
+checks succeed, `scripts/build_masm.sh` runs
+`../tools/scripts/update_hash_bound_build_receipt.py` and writes
+`src/masm/hash_bound_seven_build_receipt.json`. The generated receipt records
+the current DLL hash, export RVAs, linked extents, and per-function byte hashes.
+Semantic route expectations remain function-relative and are not rewritten by
+a relink.
+
+Automatic generation is intentionally limited to the canonical corpus build:
+`BINARY_NAME=libobfuscated` with `MASM_SOURCE_DIR=src/masm`. Selector builds,
+custom output names, and alternate MASM source directories do not overwrite the
+canonical receipt. Do not edit the receipt by hand; rebuild canonically or
+regenerate it explicitly from the repository root:
+
+```bash
+PYTHONPATH=src python tools/scripts/update_hash_bound_build_receipt.py \
+  --image samples/bins/libobfuscated.dll
+```
+
+Receipt generation is part of the build gate: if generation or exact linked
+extent validation fails, `build_masm.sh` fails instead of publishing a stale
+attestation.
+
 On mac/linux/MinGW *default* builds the `src/masm/` dir is ignored and the C bodies
 build as usual. The external `call` targets remain unresolved (tolerated, like
 the C build). Confirm the function is present with the export check below.

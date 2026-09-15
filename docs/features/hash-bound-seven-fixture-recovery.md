@@ -90,10 +90,14 @@ shared D810 log directory.
   `0x1800684B8` with eight reaching definitions. The run was bounded after
   reaching this first failure rather than treated as a completed benchmark.
 
-The canonical linked RVAs, extents, and per-function byte hashes live in the
-tracked fixture manifest. Production fixes must address these fresh-build
-first failures; the older source-run classifications remain provenance, not
-current causal conclusions.
+The source fixture manifest retains immutable extraction provenance and stable
+linked extents. Current export RVAs, the whole-DLL hash, and per-function byte
+hashes live in the generated `hash_bound_seven_build_receipt.json`. Semantic
+transitions are stored as offsets from their function entry, so a relink only
+regenerates the receipt; it does not rewrite reviewed route facts. The loader
+verifies the receipt against the linked DLL before any oracle is used.
+Production fixes must address these fresh-build first failures; the older
+source-run classifications remain provenance, not current causal conclusions.
 
 ## Build and corpus integration
 

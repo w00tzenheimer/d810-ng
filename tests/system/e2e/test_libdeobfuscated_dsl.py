@@ -298,8 +298,18 @@ def _assert_hash_bound_native_slice_semantics(*, function: str) -> None:
         e1e69e0_native_slices,
     )
 
+    reference = _HASH_BOUND_SEMANTICS[function]
+    image_base = int(idaapi.get_imagebase())
+
+    def read_linked_bytes(ea: int, size: int) -> bytes | None:
+        return ida_bytes.get_bytes(ea, size)
+
     if function == "sub_7FFB0E086BE0":
-        image_slices = e086be0_missing_native_slices(int(idaapi.get_imagebase()))
+        image_slices = e086be0_missing_native_slices(
+            image_base,
+            linked_entry_rva=reference.entry_rva,
+            read_linked_bytes=read_linked_bytes,
+        )
         expected_targets = (
             "handler_8A5BB",
             "handler_8AFD5",
@@ -315,7 +325,11 @@ def _assert_hash_bound_native_slice_semantics(*, function: str) -> None:
             0x4C815853,
         )
     else:
-        image_slices = e1e69e0_native_slices(int(idaapi.get_imagebase()))
+        image_slices = e1e69e0_native_slices(
+            image_base,
+            linked_entry_rva=reference.entry_rva,
+            read_linked_bytes=read_linked_bytes,
+        )
         expected_targets = ("state_6e8e902a", "atomic_lock_seto", "return")
         expected_selector_values = (0x6E8E902A, 0x199A79B7, 0x2E7FCF22)
     receipts = []
@@ -336,8 +350,12 @@ def _assert_hash_bound_native_slice_semantics(*, function: str) -> None:
     )
     if function == "sub_7FFB0E086BE0":
         gs_receipt = prove_linked_native_transition(
-            e086be0_gs_selector_slice(int(idaapi.get_imagebase())),
-            read_linked_bytes=lambda ea, size: ida_bytes.get_bytes(ea, size),
+            e086be0_gs_selector_slice(
+                image_base,
+                linked_entry_rva=reference.entry_rva,
+                read_linked_bytes=read_linked_bytes,
+            ),
+            read_linked_bytes=read_linked_bytes,
         )
         gc.collect()
         assert gs_receipt.status is NativeTransitionStatus.RESOLVED

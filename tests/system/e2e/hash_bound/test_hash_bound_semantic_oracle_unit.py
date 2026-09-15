@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -304,12 +306,91 @@ def test_reference_loader_rejects_unknown_schema(tmp_path: Path) -> None:
         load_fixture_references(path)
 
 
+def test_v2_reference_loader_rebases_function_relative_routes(
+    tmp_path: Path,
+) -> None:
+    from d810.testing.hash_bound_build_receipt import (
+        generate_hash_bound_build_receipt,
+    )
+
+    linked_image = _REPO_ROOT / "samples" / "bins" / "libobfuscated.dll"
+    manifest_path = tmp_path / "manifest.json"
+    receipt_path = tmp_path / "receipt.json"
+    semantics_path = tmp_path / "semantics.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "schema": "d810.hash-bound-masm-fixtures.v4",
+                "fixtures": [
+                    {
+                        "function": "sub_7FFB0E1E69E0",
+                        "linked_text_size": "0x15A",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    receipt_path.write_text(
+        json.dumps(
+            generate_hash_bound_build_receipt(
+                manifest_path=manifest_path,
+                linked_image_path=linked_image,
+            )
+        ),
+        encoding="utf-8",
+    )
+    semantics_path.write_text(
+        json.dumps(
+            {
+                "schema": "d810.hash-bound-seven-semantics.v2",
+                "source": {
+                    "fixture_manifest": manifest_path.name,
+                    "build_receipt": receipt_path.name,
+                    "reference_policy": "exact_bytes_dispatcher_routes_only",
+                },
+                "fixtures": [
+                    {
+                        "function": "sub_7FFB0E1E69E0",
+                        "transitions": [
+                            {
+                                "source_offset": "0x10",
+                                "state": "0x12345678",
+                                "target_offsets": ["0x20"],
+                            }
+                        ],
+                        "effects": [],
+                        "exits": [],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    reference = load_fixture_references(
+        semantics_path,
+        linked_image_path=linked_image,
+    )["sub_7FFB0E1E69E0"]
+
+    assert reference.entry_rva == 0xA6EA0
+    assert reference.extent == 0x15A
+    assert reference.transitions == (
+        Transition(
+            partition="src=0xA6EB0:state=0x12345678",
+            predecessor_eas=(0xA6EB0,),
+            constraints=("selector_state == 0x12345678",),
+            target_rvas=(0xA6EC0,),
+        ),
+    )
+
+
 def test_reference_loader_rejects_undeclared_whole_semantics_scope(
     tmp_path: Path,
 ) -> None:
     path = tmp_path / "semantics.json"
     path.write_text(
-        '{"schema":"d810.hash-bound-seven-semantics.v1","fixtures":[]}',
+        '{"schema":"d810.hash-bound-seven-semantics.v2","fixtures":[]}',
         encoding="utf-8",
     )
     with pytest.raises(ValueError, match="route-only scope"):
@@ -317,30 +398,23 @@ def test_reference_loader_rejects_undeclared_whole_semantics_scope(
 
 
 def test_reference_loader_rejects_duplicate_partitions(tmp_path: Path) -> None:
-    path = tmp_path / "semantics.json"
-    path.write_text(
-        """
-        {
-          "schema": "d810.hash-bound-seven-semantics.v1",
-          "source": {"reference_policy": "exact_bytes_dispatcher_routes_only"},
-          "fixtures": [{
-            "function": "fixture",
-            "entry_rva": "0x1000",
-            "extent": "0x100",
-            "linked_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
-            "transitions": [
-              {"partition": "p", "target_rvas": ["0x1010"]},
-              {"partition": "p", "target_rvas": ["0x1020"]}
-            ],
-            "effects": [],
-            "exits": []
-          }]
-        }
-        """,
-        encoding="utf-8",
+    manifest_path = (
+        _REPO_ROOT / "samples/src/masm/hash_bound_seven_manifest.json"
+    ).resolve()
+    receipt_path = (
+        _REPO_ROOT / "samples/src/masm/hash_bound_seven_build_receipt.json"
+    ).resolve()
+    linked_image = _REPO_ROOT / "samples/bins/libobfuscated.dll"
+    payload = json.loads(_REFERENCE_PATH.read_text(encoding="utf-8"))
+    payload["source"]["fixture_manifest"] = str(manifest_path)
+    payload["source"]["build_receipt"] = str(receipt_path)
+    payload["fixtures"][0]["transitions"].append(
+        dict(payload["fixtures"][0]["transitions"][0])
     )
+    path = tmp_path / "semantics.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
     with pytest.raises(ValueError, match="duplicate transition partition"):
-        load_fixture_references(path)
+        load_fixture_references(path, linked_image_path=linked_image)
 
 
 def test_native_receipt_projects_an_independent_route_transition() -> None:
@@ -390,30 +464,41 @@ def test_tracked_references_are_exactly_the_seven_resolved_fixtures() -> None:
     assert all(not reference.unresolved for reference in references.values())
     assert all(reference.transitions for reference in references.values())
     e086_partitions = {
-        transition.partition
+        transition.predecessor_eas[0]
+        - references["sub_7FFB0E086BE0"].entry_rva
         for transition in references["sub_7FFB0E086BE0"].transitions
     }
     assert len(e086_partitions) == 21
     assert {
-        "src=0x8AA43:state=0x7ACCC969",
-        "src=0x8C968:state=0x76711AAE",
-        "src=0x8CC3D:state=0x51FAE032",
-        "src=0x8D56A:state=0x7C35A383",
-        "src=0x8EB73:state=0x4C815853",
+        0x40EB,
+        0x6010,
+        0x62E5,
+        0x6C12,
+        0x821B,
     } <= e086_partitions
 
 
-def test_tracked_references_match_the_hash_bound_build_manifest() -> None:
-    import json
-
-    manifest_path = (
-        _REPO_ROOT / "samples" / "src" / "masm" / "hash_bound_seven_manifest.json"
+def test_tracked_references_match_the_generated_build_receipt() -> None:
+    receipt_path = _REPO_ROOT / (
+        "samples/src/masm/hash_bound_seven_build_receipt.json"
     )
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
     references = load_fixture_references(_REFERENCE_PATH)
 
-    for fixture in manifest["fixtures"]:
+    for fixture in receipt["fixtures"]:
         reference = references[fixture["function"]]
-        assert reference.entry_rva == int(fixture["linked_rva"], 0)
-        assert reference.extent == int(fixture["linked_text_size"], 0)
+        assert reference.entry_rva == int(fixture["entry_rva"], 0)
+        assert reference.extent == int(fixture["extent"], 0)
         assert reference.linked_sha256 == fixture["linked_sha256"]
+
+
+def test_tracked_reference_set_names_the_exact_linked_dll() -> None:
+    receipt_path = _REPO_ROOT / (
+        "samples/src/masm/hash_bound_seven_build_receipt.json"
+    )
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    linked_dll = _REPO_ROOT / "samples" / "bins" / "libobfuscated.dll"
+
+    assert receipt["linked_dll_sha256"] == hashlib.sha256(
+        linked_dll.read_bytes()
+    ).hexdigest()

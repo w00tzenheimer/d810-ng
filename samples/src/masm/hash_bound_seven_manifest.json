@@ -1,5 +1,5 @@
 {
-  "schema": "d810.hash-bound-masm-fixtures.v3",
+  "schema": "d810.hash-bound-masm-fixtures.v4",
   "native_source": {
     "sha256": "835fe0d11e03b4bb3886b463efc56791db23808c8b80e9cf40193427eff83109",
     "segment_override_repairs": [
@@ -29,9 +29,7 @@
       "masm": "sub_7FFB0E53C420.asm",
       "rva": "0x78C420",
       "size": "0x4296",
-      "linked_rva": "0x9C260",
       "linked_text_size": "0x4279",
-      "linked_sha256": "e9304cfca6b973d63acdc6c0d84106b774628c5bd376612f5517a5464825e9f2",
       "masm_sha256": "092076b62bf2ffb18d32e07e2ec17b8b7166f09d6aaa3e24bc237c37d2161cb2"
     },
     {
@@ -39,9 +37,7 @@
       "masm": "sub_7FFB0DE51120.asm",
       "rva": "0xA1120",
       "size": "0x7470",
-      "linked_rva": "0x58A40",
       "linked_text_size": "0x745E",
-      "linked_sha256": "1710009f3ac9083b76558226cecbfb31e9be1920f2fa0d98016f62e8d380b778",
       "masm_sha256": "7b8ba63d39338634d13ce754e44b2cb75b3fe1c74a458c7ac12c3dd3e6bde5dd"
     },
     {
@@ -49,9 +45,7 @@
       "masm": "sub_7FFB0DF992D0.asm",
       "rva": "0x1E92D0",
       "size": "0x500D",
-      "linked_rva": "0x630B4",
       "linked_text_size": "0x4FE9",
-      "linked_sha256": "7e940fd8eca74f61333a547e3e5cb7834d34ed08bbbf1b8d0071c326d7103c8e",
       "masm_sha256": "040dfbbcad55230b358dded437de33418bd9d1f8132c268559adf80751d713c5"
     },
     {
@@ -59,9 +53,7 @@
       "masm": "sub_7FFB0DFD1D70.asm",
       "rva": "0x221D70",
       "size": "0x1E6FD",
-      "linked_rva": "0x680A0",
       "linked_text_size": "0x1E74C",
-      "linked_sha256": "4ad6639c98385f8970066505c925992da07c9565776b356daa5c63e1a0bddea1",
       "masm_sha256": "959f90c564ecfe7ff881accf38a90c8d2f3bd73cb26f7fa49fc1f17fa88f5338"
     },
     {
@@ -69,9 +61,7 @@
       "masm": "sub_7FFB0E1E69E0.asm",
       "rva": "0x4369E0",
       "size": "0x166",
-      "linked_rva": "0x98D80",
       "linked_text_size": "0x15A",
-      "linked_sha256": "c8f2550d44cf2013f5e6c81cd935be45e8158140490a99251c684e0f8d6fba08",
       "masm_sha256": "0c446160e198d6ecc00c915906e48718f5b123f98a1b00ba2888e6ae77f2e81c"
     },
     {
@@ -79,9 +69,7 @@
       "masm": "sub_7FFB0E0A2C90.asm",
       "rva": "0x2F2C90",
       "size": "0x95CB",
-      "linked_rva": "0x8F7B0",
       "linked_text_size": "0x95BD",
-      "linked_sha256": "efd306d013d8972a6da44dcf6012fc192cfe141d5198329aafab02a5cd93ba3b",
       "masm_sha256": "f85a24406da37b37ee2c49ee0d4986887210c6242164f2311743068f6ddb5a12"
     },
     {
@@ -89,9 +77,7 @@
       "masm": "sub_7FFB0E086BE0.asm",
       "rva": "0x2D6BE0",
       "size": "0x8CB0",
-      "linked_rva": "0x86958",
       "linked_text_size": "0x8CAB",
-      "linked_sha256": "f53e90da1115110ffb01e6825134eaf572680dfcc60b6b307e4e22cc8593d44f",
       "masm_sha256": "5a04f8536324963ce70b7cd564630c51b4cd11934de215058f25b0ffc447c964"
     }
   ]

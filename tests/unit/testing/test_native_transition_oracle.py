@@ -132,6 +132,28 @@ def test_target_near_page_end_maps_only_bounded_decode_padding() -> None:
     assert receipt.instruction_eas == (0x7000,)
 
 
+def test_target_translation_prefetch_can_cross_the_next_page() -> None:
+    request = NativeTransitionRequest(
+        instructions=(
+            NativeInstruction(0x1800A6F90, bytes.fromhex("31 c0")),
+            NativeInstruction(0x1800A6F92, bytes.fromhex("75 57")),
+        ),
+        entry_ea=0x1800A6F90,
+        target_partitions=(("page_end", (0x1800A6F94,)),),
+        register_assumptions=(),
+        # A mapped data page above the code extends emu_start's stop address.
+        # Unicorn then translates past the named target before firing its hook.
+        memory_assumptions=((0x1800D0000, b"\0"),),
+        instruction_budget=16,
+    )
+
+    receipt = prove_native_transition(request)
+
+    assert receipt.status is NativeTransitionStatus.RESOLVED
+    assert receipt.target == "page_end"
+    assert receipt.instruction_eas == (0x1800A6F90, 0x1800A6F92)
+
+
 def test_target_observation_can_be_armed_after_state_write() -> None:
     request = NativeTransitionRequest(
         instructions=(

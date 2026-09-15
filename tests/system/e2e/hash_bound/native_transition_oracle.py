@@ -311,10 +311,11 @@ def prove_native_transition(
     pages = {_page(item.ea) for item in request.instructions} | {
         page
         for ea in targets
-        # Unicorn may translate a bounded decode window before the code hook
-        # observes a named target. Map that window, including a page boundary,
-        # but never populate it with executable evidence.
-        for page in (_page(ea), _page(ea + 0x3F))
+        # Unicorn may translate beyond a named target before its code hook runs.
+        # Map one successor page as decode padding, but never populate it with
+        # executable evidence. The hook still resolves only the exact target
+        # and rejects every other address before executing it.
+        for page in (_page(ea), _page(ea) + 0x1000)
     }
     for ea, data in request.memory_assumptions:
         if not data:

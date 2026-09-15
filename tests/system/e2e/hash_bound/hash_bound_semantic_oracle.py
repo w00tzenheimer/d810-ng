@@ -440,18 +440,23 @@ def _parse_int(value: object, *, field: str) -> int:
     raise ValueError(f"{field} must be an integer or base-prefixed string")
 
 
-def _parse_transition(raw: dict[str, object]) -> Transition:
+def _parse_transition(
+    raw: dict[str, object], *, entry_rva: int
+) -> Transition:
+    source_offset = _parse_int(raw["source_offset"], field="source_offset")
+    state_constant = _parse_int(raw["state"], field="state") & 0xFFFFFFFFFFFFFFFF
+    target_offsets = tuple(
+        _parse_int(value, field="target_offsets")
+        for value in raw.get("target_offsets", ())
+    )
+    width = max(8, ((state_constant.bit_length() + 3) // 4))
+    state_text = f"0x{state_constant:0{width}X}"
+    source_rva = entry_rva + source_offset
     return Transition(
-        partition=str(raw["partition"]),
-        predecessor_eas=tuple(
-            _parse_int(value, field="predecessor_eas")
-            for value in raw.get("predecessor_eas", ())
-        ),
-        constraints=tuple(str(value) for value in raw.get("constraints", ())),
-        target_rvas=tuple(
-            _parse_int(value, field="target_rvas")
-            for value in raw.get("target_rvas", ())
-        ),
+        partition=f"src=0x{source_rva:X}:state={state_text}",
+        predecessor_eas=(source_rva,),
+        constraints=(f"selector_state == {state_text}",),
+        target_rvas=tuple(entry_rva + offset for offset in target_offsets),
     )
 
 
@@ -475,25 +480,50 @@ def _parse_exit(raw: dict[str, object]) -> Exit:
     )
 
 
-def load_fixture_references(path: Path) -> dict[str, FixtureReference]:
+def load_fixture_references(
+    path: Path,
+    *,
+    linked_image_path: Path | None = None,
+) -> dict[str, FixtureReference]:
+    from d810.testing.hash_bound_build_receipt import (
+        load_verified_hash_bound_build_receipt,
+    )
+
+    path = Path(path)
     payload = json.loads(path.read_text(encoding="utf-8"))
-    if payload.get("schema") != "d810.hash-bound-seven-semantics.v1":
+    if payload.get("schema") != "d810.hash-bound-seven-semantics.v2":
         raise ValueError("unsupported hash-bound semantic reference schema")
     source = payload.get("source")
     if not isinstance(source, dict) or source.get("reference_policy") != (
         "exact_bytes_dispatcher_routes_only"
     ):
         raise ValueError("hash-bound references must declare route-only scope")
+    manifest_path = path.parent / str(source["fixture_manifest"])
+    receipt_path = path.parent / str(source["build_receipt"])
+    if linked_image_path is None:
+        linked_image_path = path.parents[2] / "bins" / "libobfuscated.dll"
+    receipt = load_verified_hash_bound_build_receipt(
+        receipt_path=receipt_path,
+        manifest_path=manifest_path,
+        linked_image_path=linked_image_path,
+    )
+    identities = {str(row["function"]): row for row in receipt["fixtures"]}
     references: dict[str, FixtureReference] = {}
     for raw_fixture in payload.get("fixtures", ()):
         raw = dict(raw_fixture)
+        function = str(raw["function"])
+        if function not in identities:
+            raise ValueError(f"semantic fixture has no build identity: {function}")
+        identity = identities[function]
+        entry_rva = _parse_int(identity["entry_rva"], field="entry_rva")
         reference = FixtureReference(
-            function=str(raw["function"]),
-            entry_rva=_parse_int(raw["entry_rva"], field="entry_rva"),
-            extent=_parse_int(raw["extent"], field="extent"),
-            linked_sha256=str(raw["linked_sha256"]),
+            function=function,
+            entry_rva=entry_rva,
+            extent=_parse_int(identity["extent"], field="extent"),
+            linked_sha256=str(identity["linked_sha256"]),
             transitions=tuple(
-                _parse_transition(dict(value)) for value in raw.get("transitions", ())
+                _parse_transition(dict(value), entry_rva=entry_rva)
+                for value in raw.get("transitions", ())
             ),
             effects=tuple(
                 _parse_effect(dict(value)) for value in raw.get("effects", ())
@@ -514,4 +544,7 @@ def load_fixture_references(path: Path) -> dict[str, FixtureReference]:
         ):
             raise ValueError(f"non-contiguous effect order for {reference.function}")
         references[reference.function] = reference
+    if references.keys() != identities.keys():
+        missing = sorted(identities.keys() - references.keys())
+        raise ValueError(f"build receipt has no semantic fixture: {missing!r}")
     return references

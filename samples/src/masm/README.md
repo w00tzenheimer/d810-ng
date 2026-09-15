@@ -44,6 +44,17 @@ Re-run one stage with `fixture extract` / `retarget --dry-run` / `build` /
 `scripts/fixture_idb_worker.py` (extract + VA→name resolve) +
 `cmd_fixture` in `tools/d810cli.py`.
 
+For the canonical full-corpus build (`BINARY_NAME=libobfuscated` and
+`MASM_SOURCE_DIR=src/masm`), `scripts/build_masm.sh` regenerates
+`hash_bound_seven_build_receipt.json` after every post-link validation passes.
+That generated receipt binds the current DLL hash, export RVAs, linked extents,
+and per-function byte hashes. The reviewed semantic routes stay as offsets from
+their function entry, so relinking refreshes this one receipt rather than
+rewriting route expectations. Custom binary names, selectors, and alternate
+source directories deliberately leave the canonical receipt untouched. Never
+edit it manually; see the generated-receipt section in `../../README.md` for the
+explicit regeneration command and failure behavior.
+
 ### 1. Extract the function to MASM
 
 d810's structural exporter reads the function's real instructions from the IDB

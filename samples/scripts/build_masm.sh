@@ -340,3 +340,12 @@ for expected in "${expected_markers[@]}"; do
             ;;
     esac
 done
+
+# Publish attestation only after every post-link contract has passed. A normal
+# canonical relink therefore refreshes one generated receipt; semantic route
+# references remain function-relative and untouched.
+if [ "$BINARY_NAME" = "libobfuscated" ] && [ "$MASM_SOURCE_DIR" = "src/masm" ]; then
+    PYTHONPATH="$SAMPLES_DIR/../src" "$PYTHON" \
+        "$SAMPLES_DIR/../tools/scripts/update_hash_bound_build_receipt.py" \
+        --image "$out"
+fi

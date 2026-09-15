@@ -2,11 +2,110 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from dataclasses import replace
+
 from tests.system.e2e.hash_bound.native_transition_oracle import (
     NativeImageSlice,
     NativeInstruction,
     NativeTransitionRequest,
 )
+
+
+LinkedByteReader = Callable[[int, int], bytes | None]
+
+
+def _rip_relative_target(ea: int, data: bytes) -> int | None:
+    if len(data) < 5:
+        return None
+    displacement = int.from_bytes(data[-4:], "little", signed=True)
+    return int(ea) + len(data) + displacement
+
+
+def _rebase_linked_slice(
+    image_slice: NativeImageSlice,
+    *,
+    authored_entry_rva: int,
+    linked_entry_rva: int,
+    read_linked_bytes: LinkedByteReader,
+) -> NativeImageSlice:
+    """Rebase reviewed slice topology onto an attested current PE layout."""
+
+    delta = int(linked_entry_rva) - int(authored_entry_rva)
+    old_to_new_instruction: dict[int, NativeInstruction] = {}
+    instructions: list[NativeInstruction] = []
+    for instruction in image_slice.request.instructions:
+        current_ea = int(instruction.ea) + delta
+        current_data = read_linked_bytes(current_ea, len(instruction.data))
+        if current_data is None or len(current_data) != len(instruction.data):
+            raise ValueError(f"missing linked instruction bytes at 0x{current_ea:X}")
+        current = NativeInstruction(current_ea, bytes(current_data))
+        old_to_new_instruction[int(instruction.ea)] = current
+        instructions.append(current)
+
+    linked_memory: list[tuple[int, bytes]] = []
+    for old_memory_ea, old_data in image_slice.linked_memory:
+        current_memory_ea: int | None = None
+        for old_instruction in image_slice.request.instructions:
+            if _rip_relative_target(old_instruction.ea, old_instruction.data) != int(
+                old_memory_ea
+            ):
+                continue
+            current_instruction = old_to_new_instruction[int(old_instruction.ea)]
+            current_memory_ea = _rip_relative_target(
+                current_instruction.ea, current_instruction.data
+            )
+            break
+        if current_memory_ea is None:
+            raise ValueError(
+                f"linked memory at 0x{int(old_memory_ea):X} has no RIP-relative owner"
+            )
+        current_data = read_linked_bytes(current_memory_ea, len(old_data))
+        if current_data is None or len(current_data) != len(old_data):
+            raise ValueError(f"missing linked data bytes at 0x{current_memory_ea:X}")
+        linked_memory.append((current_memory_ea, bytes(current_data)))
+
+    request = image_slice.request
+    return NativeImageSlice(
+        image_base=image_slice.image_base,
+        request=replace(
+            request,
+            instructions=tuple(instructions),
+            entry_ea=int(request.entry_ea) + delta,
+            target_partitions=tuple(
+                (name, tuple(int(ea) + delta for ea in eas))
+                for name, eas in request.target_partitions
+            ),
+            target_observation_ea=(
+                None
+                if request.target_observation_ea is None
+                else int(request.target_observation_ea) + delta
+            ),
+        ),
+        linked_memory=tuple(linked_memory),
+    )
+
+
+def _maybe_rebase_slices(
+    slices: tuple[NativeImageSlice, ...],
+    *,
+    authored_entry_rva: int,
+    linked_entry_rva: int | None,
+    read_linked_bytes: LinkedByteReader | None,
+) -> tuple[NativeImageSlice, ...]:
+    if linked_entry_rva is None and read_linked_bytes is None:
+        return slices
+    if linked_entry_rva is None or read_linked_bytes is None:
+        raise ValueError("linked entry RVA and byte reader must be supplied together")
+    return tuple(
+        _rebase_linked_slice(
+            image_slice,
+            authored_entry_rva=authored_entry_rva,
+            linked_entry_rva=linked_entry_rva,
+            read_linked_bytes=read_linked_bytes,
+        )
+        for image_slice in slices
+    )
 
 
 def _instructions(
@@ -59,7 +158,12 @@ _E1_DISPATCH_TAIL = (
 )
 
 
-def e1e69e0_native_slices(image_base: int) -> tuple[NativeImageSlice, ...]:
+def e1e69e0_native_slices(
+    image_base: int,
+    *,
+    linked_entry_rva: int | None = None,
+    read_linked_bytes: LinkedByteReader | None = None,
+) -> tuple[NativeImageSlice, ...]:
     """Return the three independently checked selector routes in E1E69E0."""
 
     initial = _request(
@@ -131,7 +235,7 @@ def e1e69e0_native_slices(image_base: int) -> tuple[NativeImageSlice, ...]:
         target_rvas=(("return", (0x98E7C,)),),
         selector_stack_offset=4,
     )
-    return (
+    slices = (
         NativeImageSlice(
             image_base=image_base,
             request=initial,
@@ -148,6 +252,12 @@ def e1e69e0_native_slices(image_base: int) -> tuple[NativeImageSlice, ...]:
             linked_memory=((image_base + 0xD0638, bytes.fromhex("7d9a460f")),),
         ),
     )
+    return _maybe_rebase_slices(
+        slices,
+        authored_entry_rva=0x98D80,
+        linked_entry_rva=linked_entry_rva,
+        read_linked_bytes=read_linked_bytes,
+    )
 
 
 _E086_DISPATCH_HIGH = (
@@ -159,7 +269,12 @@ _E086_DISPATCH_HIGH = (
 )
 
 
-def e086be0_missing_native_slices(image_base: int) -> tuple[NativeImageSlice, ...]:
+def e086be0_missing_native_slices(
+    image_base: int,
+    *,
+    linked_entry_rva: int | None = None,
+    read_linked_bytes: LinkedByteReader | None = None,
+) -> tuple[NativeImageSlice, ...]:
     """Return exact native proofs for five routes omitted by the old golden."""
 
     references = (
@@ -320,7 +435,7 @@ def e086be0_missing_native_slices(image_base: int) -> tuple[NativeImageSlice, ..
             "1bc69c14",
         ),
     )
-    return tuple(
+    slices = tuple(
         NativeImageSlice(
             image_base=image_base,
             request=request,
@@ -328,12 +443,23 @@ def e086be0_missing_native_slices(image_base: int) -> tuple[NativeImageSlice, ..
         )
         for request, linked_rva, linked_hex in references
     )
+    return _maybe_rebase_slices(
+        slices,
+        authored_entry_rva=0x86958,
+        linked_entry_rva=linked_entry_rva,
+        read_linked_bytes=read_linked_bytes,
+    )
 
 
-def e086be0_gs_selector_slice(image_base: int) -> NativeImageSlice:
+def e086be0_gs_selector_slice(
+    image_base: int,
+    *,
+    linked_entry_rva: int | None = None,
+    read_linked_bytes: LinkedByteReader | None = None,
+) -> NativeImageSlice:
     """Prove the 0x8EC5D arm under an explicit Windows GS-base assumption."""
 
-    return NativeImageSlice(
+    image_slice = NativeImageSlice(
         image_base=image_base,
         request=_request(
             image_base=image_base,
@@ -371,6 +497,12 @@ def e086be0_gs_selector_slice(image_base: int) -> NativeImageSlice:
         ),
         linked_memory=((image_base + 0xD04A1, bytes.fromhex("5718dd4c")),),
     )
+    return _maybe_rebase_slices(
+        (image_slice,),
+        authored_entry_rva=0x86958,
+        linked_entry_rva=linked_entry_rva,
+        read_linked_bytes=read_linked_bytes,
+    )[0]
 
 
 __all__ = [
