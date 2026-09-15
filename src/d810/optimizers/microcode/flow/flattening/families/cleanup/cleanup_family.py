@@ -107,6 +107,10 @@ from d810.analyses.control_flow.local_select_loop import (
     extract_local_select_loop_fixes,
     serialize_local_select_loop_fixes,
 )
+from d810.analyses.control_flow.side_effect_select_loop import (
+    SideEffectSelectLoopFix,
+    ValidatedSideEffectSelectLoopFixes,
+)
 from d810.analyses.control_flow.selector_shell import (
     SELECTOR_SHELL_FACTS_METADATA_KEY,
     extract_selector_shell_facts,
@@ -284,7 +288,9 @@ class SimpleFlatteningCleanupFamily(CFFStrategyFamily):
     ) -> AnalysisSnapshot:
         flow_graph = self._cfg_translator.lift(mba)
         flow_graph = self._attach_dead_store_evidence(mba, flow_graph)
-        flow_graph = self._attach_cleanup_metadata(flow_graph, detection)
+        flow_graph, selected_side_effect_select_loop_fixes = (
+            self._attach_cleanup_metadata(flow_graph, detection)
+        )
         return AnalysisSnapshot(
             mba=mba,
             reachability=self.compute_reachability_info(flow_graph),
@@ -294,6 +300,12 @@ class SimpleFlatteningCleanupFamily(CFFStrategyFamily):
                 state_constants=frozenset(),
                 handler_count=0,
                 transition_count=0,
+            ),
+            validated_side_effect_select_loop_fixes=(
+                ValidatedSideEffectSelectLoopFixes(
+                    flow_graph=flow_graph,
+                    fixes=selected_side_effect_select_loop_fixes,
+                )
             ),
         )
 
@@ -327,7 +339,7 @@ class SimpleFlatteningCleanupFamily(CFFStrategyFamily):
         self,
         flow_graph: FlowGraph,
         detection: SimpleFlatteningCleanupDetection,
-    ) -> FlowGraph:
+    ) -> tuple[FlowGraph, tuple[SideEffectSelectLoopFix, ...]]:
         metadata = dict(flow_graph.metadata)
         dead_store_evidence = metadata.get(DEAD_STORE_EVIDENCE_METADATA_KEY)
         if not isinstance(dead_store_evidence, DeadStoreEvidence):
@@ -644,12 +656,13 @@ class SimpleFlatteningCleanupFamily(CFFStrategyFamily):
             dead_store_candidates=len(dead_store_evidence.candidates),
             dead_store_rejections=len(dead_store_evidence.rejections),
         )
-        return FlowGraph(
+        final_flow_graph = FlowGraph(
             blocks=flow_graph.blocks,
             entry_serial=flow_graph.entry_serial,
             func_ea=flow_graph.func_ea,
             metadata=metadata,
         )
+        return final_flow_graph, selected_side_effect_select_loop_fixes
 
     def compute_reachability_info(self, flow_graph: FlowGraph) -> ReachabilityInfo:
         reachable = compute_reachable_blocks(

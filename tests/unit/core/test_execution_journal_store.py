@@ -694,6 +694,46 @@ def test_attempts_survive_a_store_close_and_reopen() -> None:
         reopened.close()
 
 
+def test_publish_terminal_attempts_returns_before_slow_sqlite_write(
+    tmp_path: Path, monkeypatch
+) -> None:
+    db_path = tmp_path / "execution.sqlite"
+    session = DecompilationSessionId.new()
+    store = ExecutionJournalStore(db_path)
+    entered = threading.Event()
+    release = threading.Event()
+    real_record = store.record_terminal_attempts
+
+    def slow_record(*args, **kwargs):
+        entered.set()
+        assert release.wait(timeout=5)
+        return real_record(*args, **kwargs)
+
+    monkeypatch.setattr(store, "record_terminal_attempts", slow_record)
+    try:
+        store.publish_terminal_attempts(
+            session,
+            parent_attempt_id=None,
+            records=(
+                TerminalExecutionAttempt(
+                    stage_id="late_mutation",
+                    domain=ExecutionDomain.MUTATION,
+                    status=ExecutionAttemptStatus.COMPLETED,
+                ),
+            ),
+        )
+
+        assert entered.wait(timeout=1)
+        release.set()
+        store.flush_published_attempts()
+        assert store.only_attempt(session, stage_id="late_mutation").status is (
+            ExecutionAttemptStatus.COMPLETED
+        )
+    finally:
+        release.set()
+        store.close()
+
+
 def test_opening_a_pre_detail_journal_adds_the_new_event_columns() -> None:
     db_path = _tmp_db_path()
     connection = sqlite3.connect(db_path)

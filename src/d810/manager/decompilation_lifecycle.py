@@ -28,6 +28,7 @@ from d810.core.execution_journal import (
 )
 from d810.core.execution_journal_store import ExecutionJournalStore
 from d810.core.logging import getLogger
+from d810.core.settings import get_settings
 from d810.core.input_identity_attestation import (
     InputIdentityResolution,
 )
@@ -277,6 +278,11 @@ class DecompilationLifecycleCoordinator:
         init=False,
         repr=False,
     )
+    _flowgraph_ready_event_counts: dict[tuple[int, int, bool], int] = field(
+        default_factory=dict,
+        init=False,
+        repr=False,
+    )
     #: Sessions minted since the last full quiescence whose emulator gap
     #: scope may still hold unflushed gaps (ticket d81-e0uy). Appended once
     #: per genuinely new top-level/nested session; drained and cleared
@@ -323,6 +329,11 @@ class DecompilationLifecycleCoordinator:
     @property
     def has_active_sessions(self) -> bool:
         return bool(self._active_sessions)
+
+    @property
+    def flowgraph_ready_event_counts(self) -> dict[tuple[int, int, bool], int]:
+        """Exact successful-lift event counts by function, maturity, producer."""
+        return dict(self._flowgraph_ready_event_counts)
 
     @staticmethod
     def _observe_session(session: DecompilationSessionContext, status: str) -> None:
@@ -1166,6 +1177,24 @@ class DecompilationLifecycleCoordinator:
 
     def capture_flowgraph(self, payload: FlowgraphReadyPayload) -> None:
         """Collect and persist portable flowgraph facts in their existing order."""
+        event_key = (
+            int(payload.func_ea),
+            int(payload.provider_phase.provider_level),
+            payload.snapshot is not None,
+        )
+        event_count = self._flowgraph_ready_event_counts.get(event_key, 0) + 1
+        self._flowgraph_ready_event_counts[event_key] = event_count
+        if len(self._flowgraph_ready_event_counts) > 4096:
+            oldest_key = next(iter(self._flowgraph_ready_event_counts))
+            self._flowgraph_ready_event_counts.pop(oldest_key, None)
+        if get_settings().preanalysis_collector_timing:
+            logger.info(
+                "FLOWGRAPH_READY event: func=0x%x maturity=%s snapshot=%s count=%d",
+                int(payload.func_ea),
+                int(payload.provider_phase.provider_level),
+                payload.snapshot is not None,
+                event_count,
+            )
         self._publish_state_write_route_facts(payload)
         self._publish_materialized_transfer_facts(payload)
         self._publish_rebound_bootstrap_route_facts(payload)
@@ -1659,6 +1688,15 @@ class DecompilationLifecycleCoordinator:
             self.execution_journal is not None
             and session.preanalysis_attempt_id is not None
         ):
+            try:
+                self.execution_journal.flush_published_attempts()
+            except Exception:
+                logger.debug(
+                    "execution journal: failed to flush published attempts "
+                    "for func=0x%x",
+                    session.function_ea,
+                    exc_info=True,
+                )
             try:
                 self.execution_journal.flush_callback_summaries(
                     session.session_id,

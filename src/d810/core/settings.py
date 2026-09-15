@@ -165,6 +165,9 @@ class D810Settings:
     fact_lifecycle: bool = True
     """Enable maturity fact lifecycle capture hooks (D810_FACT_LIFECYCLE=0 disables)."""
 
+    preanalysis_collector_timing: bool = False
+    """Log per-collector wall timing (D810_PREANALYSIS_COLLECTOR_TIMING)."""
+
     trace_decompile_callers: bool = False
     """Log a Python stack for every top-level decompilation (D810_TRACE_DECOMPILE_CALLERS).
 
@@ -215,6 +218,9 @@ class D810Settings:
                 "D810_CAPTURE_POST_FILE", "/tmp/d810_capture.txt"
             ),
             fact_lifecycle=_env_bool("D810_FACT_LIFECYCLE", default=True),
+            preanalysis_collector_timing=_env_bool(
+                "D810_PREANALYSIS_COLLECTOR_TIMING"
+            ),
             trace_decompile_callers=_env_bool("D810_TRACE_DECOMPILE_CALLERS"),
             execution_callback_detail=_execution_callback_detail(
                 _env_str("D810_EXECUTION_CALLBACK_DETAIL", "summary"),

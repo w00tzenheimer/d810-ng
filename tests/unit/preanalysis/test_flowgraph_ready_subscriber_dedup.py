@@ -232,7 +232,8 @@ class TestFlowGraphReadyCoordinatorDedup:
         collector = _CountingCollector()
         phase = self._build_phase(monkeypatch, collector)
         emitter: EventEmitter[_Event] = EventEmitter()
-        emitter.on(_Event.FLOWGRAPH_READY, self._subscriber(phase).capture_flowgraph)
+        coordinator = self._subscriber(phase)
+        emitter.on(_Event.FLOWGRAPH_READY, coordinator.capture_flowgraph)
 
         fg = self._empty_flow_graph(func_ea=0x140002000, maturity=14)
 
@@ -246,6 +247,42 @@ class TestFlowGraphReadyCoordinatorDedup:
         assert target is fg
         assert func_ea == 0x140002000
         assert maturity == 14
+        assert coordinator.flowgraph_ready_event_counts == {
+            (0x140002000, 14, False): 2,
+        }
+
+    def test_graph_collector_records_per_collector_elapsed_time(
+        self, monkeypatch
+    ) -> None:
+        collector = _CountingCollector()
+        phase = self._build_phase(monkeypatch, collector)
+        clock = iter((1_000, 1_375))
+        monkeypatch.setattr(
+            "d810.passes.phase.perf_counter_ns",
+            lambda: next(clock),
+            raising=False,
+        )
+
+        phase.run_microcode_collectors(
+            self._empty_flow_graph(func_ea=0x140002000, maturity=14),
+            func_ea=0x140002000,
+            provider_phase=ProviderPhaseSnapshot(
+                provider_name="hexrays_microcode",
+                provider_level=14,
+                friendly_provider_level="MMAT_GLBOPT1",
+            ),
+        )
+
+        assert phase.collector_timings == (
+            {
+                "collector": "CountingCollector",
+                "func_ea": 0x140002000,
+                "provider_level": 14,
+                "level": "microcode",
+                "elapsed_ns": 375,
+                "succeeded": True,
+            },
+        )
 
     def test_different_maturities_yield_separate_collects(self, monkeypatch) -> None:
         """Different maturities for the same function must NOT

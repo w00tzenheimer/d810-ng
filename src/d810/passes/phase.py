@@ -9,9 +9,12 @@ imports. This module is fully unit-testable.
 
 from __future__ import annotations
 
+from time import perf_counter_ns
+
 from d810.core.logging import getLogger
 from d810.core.provider_phase import ProviderPhase
 from d810.core.typing import Any, Protocol, runtime_checkable
+from d810.core.settings import get_settings
 
 from d810.analyses.control_flow.collection_context import PreanalysisCollectionContext
 from d810.analyses.control_flow.models import PreanalysisResult
@@ -75,10 +78,49 @@ class PreanalysisPhase:
         # Ctree collection uses a tagged key so microcode and ctree passes at
         # the same provider level do not block each other.
         self._fired: dict[int, set[int | tuple[int, str]]] = {}
+        self._collector_timings: list[dict[str, object]] = []
 
     @property
     def collector_count(self) -> int:
         return len(self._collectors)
+
+    @property
+    def collector_timings(self) -> tuple[dict[str, object], ...]:
+        """Bounded session-local timing samples for collector attribution."""
+        return tuple(self._collector_timings)
+
+    def _record_collector_timing(
+        self,
+        *,
+        collector: PreanalysisCollector,
+        func_ea: int,
+        provider_level: int,
+        level: str,
+        elapsed_ns: int,
+        succeeded: bool,
+    ) -> None:
+        sample = {
+            "collector": str(collector.name),
+            "func_ea": int(func_ea),
+            "provider_level": int(provider_level),
+            "level": str(level),
+            "elapsed_ns": int(elapsed_ns),
+            "succeeded": bool(succeeded),
+        }
+        self._collector_timings.append(sample)
+        if len(self._collector_timings) > 2048:
+            del self._collector_timings[:1024]
+        if get_settings().preanalysis_collector_timing:
+            logger.info(
+                "preanalysis collector timing: collector=%s func=0x%x "
+                "maturity=%s level=%s elapsed_ms=%.3f succeeded=%s",
+                collector.name,
+                int(func_ea),
+                int(provider_level),
+                level,
+                int(elapsed_ns) / 1_000_000.0,
+                bool(succeeded),
+            )
 
     def register(self, collector: PreanalysisCollector) -> None:
         """Register a collector. Raises ValueError if already registered."""
@@ -121,6 +163,11 @@ class PreanalysisPhase:
     def reset(self, *, func_ea: int) -> None:
         """Clear the maturity guard for a function (call on new decompilation)."""
         self._fired.pop(func_ea, None)
+        self._collector_timings = [
+            sample
+            for sample in self._collector_timings
+            if int(sample["func_ea"]) != int(func_ea)
+        ]
 
     def run_microcode_collectors(
         self,
@@ -155,13 +202,33 @@ class PreanalysisPhase:
                 continue
             if not self._collector_runs_at_provider_level(collector, provider_level):
                 continue
+            started_ns = perf_counter_ns()
+            timing_recorded = False
             try:
                 result = self._collect(collector, target, context)
+                self._record_collector_timing(
+                    collector=collector,
+                    func_ea=func_ea,
+                    provider_level=provider_level,
+                    level="microcode",
+                    elapsed_ns=perf_counter_ns() - started_ns,
+                    succeeded=True,
+                )
+                timing_recorded = True
                 writer = get_preanalysis_writer(self._store.db_path)
                 writer.submit(lambda store, r=result: store.save_preanalysis_result(r))
                 writer.flush()
                 results.append(result)
             except Exception:
+                if not timing_recorded:
+                    self._record_collector_timing(
+                        collector=collector,
+                        func_ea=func_ea,
+                        provider_level=provider_level,
+                        level="microcode",
+                        elapsed_ns=perf_counter_ns() - started_ns,
+                        succeeded=False,
+                    )
                 logger.exception(
                     "PreanalysisCollector '%s' failed at func=0x%x maturity=%s",
                     collector.name,
@@ -197,13 +264,33 @@ class PreanalysisPhase:
                 continue
             if not self._collector_runs_at_provider_level(collector, provider_level):
                 continue
+            started_ns = perf_counter_ns()
+            timing_recorded = False
             try:
                 result = self._collect(collector, target, context)
+                self._record_collector_timing(
+                    collector=collector,
+                    func_ea=func_ea,
+                    provider_level=provider_level,
+                    level="ctree",
+                    elapsed_ns=perf_counter_ns() - started_ns,
+                    succeeded=True,
+                )
+                timing_recorded = True
                 get_preanalysis_writer(self._store.db_path).submit(
                     lambda store, r=result: store.save_preanalysis_result(r)
                 )
                 results.append(result)
             except Exception:
+                if not timing_recorded:
+                    self._record_collector_timing(
+                        collector=collector,
+                        func_ea=func_ea,
+                        provider_level=provider_level,
+                        level="ctree",
+                        elapsed_ns=perf_counter_ns() - started_ns,
+                        succeeded=False,
+                    )
                 logger.exception(
                     "PreanalysisCollector '%s' (ctree) failed at func=0x%x maturity=%s",
                     collector.name,

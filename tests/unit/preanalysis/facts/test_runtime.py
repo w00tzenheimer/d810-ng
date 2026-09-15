@@ -129,6 +129,37 @@ def test_capture_supports_ir_maturity_collector_schedule() -> None:
     assert seen == [_MATURITY_GLBOPT1]
 
 
+def test_fact_collector_records_per_collector_elapsed_time(monkeypatch) -> None:
+    configure_settings(fact_lifecycle=True)
+    runtime = PreanalysisFactRuntime()
+    runtime.register(_Collector())
+    clock = iter((2_000, 2_625))
+    monkeypatch.setattr(
+        facts_runtime_module,
+        "perf_counter_ns",
+        lambda: next(clock),
+        raising=False,
+    )
+
+    runtime.capture(
+        object(),
+        func_ea=0x401000,
+        provider_phase=_phase(1),
+        phase="pre_d810",
+    )
+
+    assert runtime.collector_timings == (
+        {
+            "collector": "fake-induction",
+            "func_ea": 0x401000,
+            "provider_level": 1,
+            "phase": "pre_d810",
+            "elapsed_ns": 625,
+            "succeeded": True,
+        },
+    )
+
+
 def teardown_function() -> None:
     reset_settings()
 

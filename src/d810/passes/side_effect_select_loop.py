@@ -24,6 +24,7 @@ from d810.transforms.plan_fragment import (
 from d810.analyses.control_flow.side_effect_select_loop import (
     SIDE_EFFECT_SELECT_LOOP_FIXES_METADATA_KEY,
     SideEffectSelectLoopFix,
+    ValidatedSideEffectSelectLoopFixes,
     collect_side_effect_select_loop_fixes,
     extract_side_effect_select_loop_fixes,
     serialize_side_effect_select_loop_fixes,
@@ -61,11 +62,22 @@ class SideEffectSelectLoopStrategy:
     name = "side_effect_select_loop"
     family = FAMILY_CLEANUP
 
+    @staticmethod
+    def _validated_fixes(
+        snapshot: AnalysisSnapshot,
+    ) -> tuple[SideEffectSelectLoopFix, ...]:
+        validated = snapshot.validated_side_effect_select_loop_fixes
+        if isinstance(validated, ValidatedSideEffectSelectLoopFixes):
+            fixes = validated.for_flow_graph(snapshot.flow_graph)
+            if fixes is not None:
+                return fixes
+        return extract_side_effect_select_loop_fixes(snapshot.flow_graph)
+
     def is_applicable(self, snapshot: AnalysisSnapshot) -> bool:
-        return bool(extract_side_effect_select_loop_fixes(snapshot.flow_graph))
+        return bool(self._validated_fixes(snapshot))
 
     def plan(self, snapshot: AnalysisSnapshot) -> PlanFragment | None:
-        fixes = extract_side_effect_select_loop_fixes(snapshot.flow_graph)
+        fixes = self._validated_fixes(snapshot)
         if not fixes:
             return None
         modifications = build_side_effect_select_loop_modifications(fixes)

@@ -60,6 +60,7 @@ a raw ``ExecutionAttemptId`` with a sequence number they picked themselves.
 from __future__ import annotations
 
 import json
+import queue
 import sqlite3
 import threading
 import time
@@ -278,7 +279,22 @@ class ExecutionJournalStore:
             tuple[str, int | None],
             dict[tuple[str, str, str, str], int],
         ] = {}
-        self._lock = threading.Lock()
+        # Reads and writes share one sqlite connection.  The async publisher
+        # must not expose the identity half of an uncommitted complete attempt
+        # to a concurrent reader.
+        self._lock = threading.RLock()
+        self._publish_queue: queue.Queue[
+            tuple[
+                DecompilationSessionId,
+                ExecutionAttemptId | None,
+                tuple[TerminalExecutionAttempt, ...],
+            ]
+            | None
+        ] = queue.Queue()
+        self._publish_thread: threading.Thread | None = None
+        self._publish_failures = 0
+        self._publish_state_lock = threading.Lock()
+        self._publish_closed = False
         self._conn: sqlite3.Connection = sqlite3.connect(
             str(self.db_path), check_same_thread=False
         )
@@ -602,6 +618,72 @@ class ExecutionJournalStore:
             self._conn.commit()
             return attempts
 
+    def publish_terminal_attempts(
+        self,
+        session_id: DecompilationSessionId,
+        *,
+        parent_attempt_id: ExecutionAttemptId | None,
+        records: tuple[TerminalExecutionAttempt, ...],
+    ) -> None:
+        """Queue complete attempts for ordered off-thread persistence.
+
+        This deliberately provides no durable ``STARTED`` row before the
+        caller returns. It is for already-completed, non-authoritative
+        diagnostic attempts on latency-sensitive callback paths.
+        """
+        if not isinstance(session_id, DecompilationSessionId):
+            raise TypeError("session_id must be a DecompilationSessionId")
+        if parent_attempt_id is not None and parent_attempt_id.session != session_id:
+            raise ValueError("parent_attempt_id must belong to session_id")
+        if not records:
+            return
+        if not all(isinstance(record, TerminalExecutionAttempt) for record in records):
+            raise TypeError("records must contain TerminalExecutionAttempt values")
+        self._ensure_publish_thread()
+        with self._publish_state_lock:
+            if self._publish_closed:
+                raise RuntimeError("execution journal store is closed")
+            self._publish_queue.put((session_id, parent_attempt_id, records))
+
+    def _ensure_publish_thread(self) -> None:
+        with self._publish_state_lock:
+            if self._publish_closed:
+                raise RuntimeError("execution journal store is closed")
+            if self._publish_thread is not None:
+                return
+            thread = threading.Thread(
+                target=self._run_publish_queue,
+                name="d810-execution-journal-writer",
+                daemon=True,
+            )
+            self._publish_thread = thread
+            thread.start()
+
+    def _run_publish_queue(self) -> None:
+        while True:
+            item = self._publish_queue.get()
+            try:
+                if item is None:
+                    return
+                session_id, parent_attempt_id, records = item
+                self.record_terminal_attempts(
+                    session_id,
+                    parent_attempt_id=parent_attempt_id,
+                    records=records,
+                )
+            except Exception:
+                with self._publish_state_lock:
+                    self._publish_failures += 1
+                logger.exception("execution journal async publish failed")
+            finally:
+                self._publish_queue.task_done()
+
+    def flush_published_attempts(self) -> int:
+        """Wait for queued attempts and return the cumulative failure count."""
+        self._publish_queue.join()
+        with self._publish_state_lock:
+            return int(self._publish_failures)
+
     def _record_terminal_attempts_locked(
         self,
         session_id: DecompilationSessionId,
@@ -799,6 +881,12 @@ class ExecutionJournalStore:
 
     def get_attempt(self, attempt_id: ExecutionAttemptId) -> ExecutionAttempt | None:
         """Return the current (latest-event) state of one attempt, or ``None``."""
+        with self._lock:
+            return self._get_attempt_locked(attempt_id)
+
+    def _get_attempt_locked(
+        self, attempt_id: ExecutionAttemptId
+    ) -> ExecutionAttempt | None:
         identity_row = self._conn.execute(
             """
             SELECT parent_session_id, parent_sequence, stage_id, domain
@@ -993,6 +1081,16 @@ class ExecutionJournalStore:
 
     def close(self) -> None:
         """Close the database connection."""
+        with self._publish_state_lock:
+            if self._publish_closed:
+                return
+            self._publish_closed = True
+            thread = self._publish_thread
+        self.flush_published_attempts()
+        if thread is not None:
+            self._publish_queue.put(None)
+            thread.join()
+            self._publish_thread = None
         self._conn.close()
 
     def __enter__(self) -> "ExecutionJournalStore":

@@ -44,6 +44,22 @@ class SideEffectSelectLoopFix:
     terminal_redirects: tuple[tuple[int, int, int], ...]
 
 
+@dataclass(frozen=True)
+class ValidatedSideEffectSelectLoopFixes:
+    """Fixes validated for one exact immutable flow-graph snapshot."""
+
+    flow_graph: FlowGraph
+    fixes: tuple[SideEffectSelectLoopFix, ...]
+
+    def for_flow_graph(
+        self,
+        flow_graph: FlowGraph | None,
+    ) -> tuple[SideEffectSelectLoopFix, ...] | None:
+        if flow_graph is not self.flow_graph:
+            return None
+        return self.fixes
+
+
 def _is_branch(insn: object | None) -> bool:
     return is_branch(insn)
 
@@ -368,6 +384,7 @@ def extract_side_effect_select_loop_fixes(
 __all__ = [
     "SIDE_EFFECT_SELECT_LOOP_FIXES_METADATA_KEY",
     "SideEffectSelectLoopFix",
+    "ValidatedSideEffectSelectLoopFixes",
     "collect_side_effect_select_loop_fixes",
     "extract_side_effect_select_loop_fixes",
     "serialize_side_effect_select_loop_fixes",

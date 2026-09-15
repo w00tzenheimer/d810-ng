@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from time import perf_counter_ns
 
 from d810.core.logging import getLogger
 from d810.core.maturity_labels import (
@@ -139,10 +140,49 @@ class PreanalysisFactRuntime:
                 tuple[FactConflict, ...],
             ],
         ] = {}
+        self._collector_timings: list[dict[str, object]] = []
 
     @property
     def collector_count(self) -> int:
         return len(self._collectors)
+
+    @property
+    def collector_timings(self) -> tuple[dict[str, object], ...]:
+        """Bounded session-local timing samples for fact attribution."""
+        return tuple(self._collector_timings)
+
+    def _record_collector_timing(
+        self,
+        *,
+        collector: FactCollector,
+        func_ea: int,
+        provider_level: int,
+        phase: str,
+        elapsed_ns: int,
+        succeeded: bool,
+    ) -> None:
+        sample = {
+            "collector": str(collector.name),
+            "func_ea": int(func_ea),
+            "provider_level": int(provider_level),
+            "phase": str(phase),
+            "elapsed_ns": int(elapsed_ns),
+            "succeeded": bool(succeeded),
+        }
+        self._collector_timings.append(sample)
+        if len(self._collector_timings) > 2048:
+            del self._collector_timings[:1024]
+        if get_settings().preanalysis_collector_timing:
+            logger.info(
+                "fact collector timing: collector=%s func=0x%x maturity=%s "
+                "phase=%s elapsed_ms=%.3f succeeded=%s",
+                collector.name,
+                int(func_ea),
+                int(provider_level),
+                phase,
+                int(elapsed_ns) / 1_000_000.0,
+                bool(succeeded),
+            )
 
     def reset_for_func(self, func_ea: int) -> None:
         self._fired = {key for key in self._fired if key[0] != func_ea}
@@ -156,6 +196,11 @@ class PreanalysisFactRuntime:
         self._mappings_by_func.pop(func_ea, None)
         self._last_observations_by_func.pop(func_ea, None)
         self._invalidate_validated_views(func_ea)
+        self._collector_timings = [
+            sample
+            for sample in self._collector_timings
+            if int(sample["func_ea"]) != int(func_ea)
+        ]
 
     def _invalidate_validated_views(self, func_ea: int) -> None:
         stale = tuple(
@@ -1426,10 +1471,21 @@ class PreanalysisFactRuntime:
                 collector, provider_level, ir_maturity
             ):
                 continue
+            started_ns = perf_counter_ns()
+            timing_recorded = False
             try:
                 result = self._normalize_result(
                     self._collect(collector, target, context)
                 )
+                self._record_collector_timing(
+                    collector=collector,
+                    func_ea=func_ea,
+                    provider_level=provider_level,
+                    phase=phase,
+                    elapsed_ns=perf_counter_ns() - started_ns,
+                    succeeded=True,
+                )
+                timing_recorded = True
                 observations.extend(result.observations)
                 mappings.extend(result.mappings)
                 conflicts.extend(result.conflicts)
@@ -1438,6 +1494,15 @@ class PreanalysisFactRuntime:
                     observation.kind for observation in result.observations
                 )
             except Exception:
+                if not timing_recorded:
+                    self._record_collector_timing(
+                        collector=collector,
+                        func_ea=func_ea,
+                        provider_level=provider_level,
+                        phase=phase,
+                        elapsed_ns=perf_counter_ns() - started_ns,
+                        succeeded=False,
+                    )
                 logger.exception(
                     "FactCollector '%s' failed at func=0x%x maturity=%s",
                     collector.name,

@@ -2447,6 +2447,7 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
         function_ea: int,
         mutation: typing.Callable[[], int],
         receipt_provider: typing.Callable[[], tuple[object, ...]] | None = None,
+        defer_terminal_persistence: bool = False,
     ) -> int:
         """Run one late MBA writer under the normal mutation-attempt ledger."""
         journal, session_id, parent_attempt_id = _flow_rule_execution_context(
@@ -2456,13 +2457,16 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
             f"mba_late_mutation:{route_name}:maturity={maturity_name}:"
             f"function=0x{int(function_ea):x}"
         )
-        attempt = _safe_begin_execution_attempt(
-            journal,
-            session_id,
-            parent_attempt_id=parent_attempt_id,
-            stage_id=stage_id,
-            domain=ExecutionDomain.MUTATION,
-        )
+        started_at = time.perf_counter()
+        attempt = None
+        if not defer_terminal_persistence:
+            attempt = _safe_begin_execution_attempt(
+                journal,
+                session_id,
+                parent_attempt_id=parent_attempt_id,
+                stage_id=stage_id,
+                domain=ExecutionDomain.MUTATION,
+            )
 
         def _receipt_effects() -> tuple[ExecutionEffectRef, ...]:
             if receipt_provider is None:
@@ -2501,21 +2505,65 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
                 )
             return tuple(effects)
 
+        def _publish_terminal(
+            *,
+            status: ExecutionAttemptStatus,
+            reason_code: str | None = None,
+            effect_refs: tuple[ExecutionEffectRef, ...] = (),
+            details: dict[str, object],
+        ) -> None:
+            if journal is None or session_id is None:
+                return
+            publish = getattr(journal, "publish_terminal_attempts", None)
+            if not callable(publish):
+                return
+            try:
+                publish(
+                    session_id,
+                    parent_attempt_id=parent_attempt_id,
+                    records=(
+                        TerminalExecutionAttempt(
+                            stage_id=stage_id,
+                            domain=ExecutionDomain.MUTATION,
+                            status=status,
+                            reason_code=reason_code,
+                            effect_refs=effect_refs,
+                            elapsed_ms=(time.perf_counter() - started_at) * 1000.0,
+                            details=details,
+                        ),
+                    ),
+                )
+            except Exception:
+                optimizer_logger.debug(
+                    "execution journal publish failed for stage=%s",
+                    stage_id,
+                    exc_info=True,
+                )
+
         try:
             patch_count = int(mutation())
         except Exception as error:
             effects = _receipt_effects()
-            _safe_advance_execution_attempt(
-                journal,
-                attempt,
-                status=ExecutionAttemptStatus.FAILED,
-                reason_code=f"{type(error).__name__}: {error}",
-                effect_refs=effects,
-                details={
-                    "maturity": maturity_name,
-                    "function_ea": int(function_ea),
-                },
-            )
+            failure_details = {
+                "maturity": maturity_name,
+                "function_ea": int(function_ea),
+            }
+            if defer_terminal_persistence:
+                _publish_terminal(
+                    status=ExecutionAttemptStatus.FAILED,
+                    reason_code=f"{type(error).__name__}: {error}",
+                    effect_refs=effects,
+                    details=failure_details,
+                )
+            else:
+                _safe_advance_execution_attempt(
+                    journal,
+                    attempt,
+                    status=ExecutionAttemptStatus.FAILED,
+                    reason_code=f"{type(error).__name__}: {error}",
+                    effect_refs=effects,
+                    details=failure_details,
+                )
             raise
 
         details: dict[str, object] = {
@@ -2525,32 +2573,49 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
         }
         if patch_count > 0:
             effects = _receipt_effects()
-            if not effects and receipt_provider is None and attempt is not None:
+            if not effects and receipt_provider is None:
+                effect_identity = stage_id
+                if attempt is not None:
+                    effect_identity = (
+                        f"{attempt.attempt_id.session.value}:"
+                        f"{attempt.attempt_id.sequence}"
+                    )
                 effects = (
                     ExecutionEffectRef(
                         kind="mba_rule_edit",
-                        ref_id=(
-                            f"{attempt.attempt_id.session.value}:"
-                            f"{attempt.attempt_id.sequence}"
-                        ),
+                        ref_id=effect_identity,
                         detail=details,
                     ),
                 )
-            _safe_advance_execution_attempt(
-                journal,
-                attempt,
-                status=ExecutionAttemptStatus.COMPLETED,
-                effect_refs=effects,
-                details=details,
-            )
+            if defer_terminal_persistence:
+                _publish_terminal(
+                    status=ExecutionAttemptStatus.COMPLETED,
+                    effect_refs=effects,
+                    details=details,
+                )
+            else:
+                _safe_advance_execution_attempt(
+                    journal,
+                    attempt,
+                    status=ExecutionAttemptStatus.COMPLETED,
+                    effect_refs=effects,
+                    details=details,
+                )
         else:
-            _safe_advance_execution_attempt(
-                journal,
-                attempt,
-                status=ExecutionAttemptStatus.ABSTAINED,
-                reason_code="no_modifications",
-                details=details,
-            )
+            if defer_terminal_persistence:
+                _publish_terminal(
+                    status=ExecutionAttemptStatus.ABSTAINED,
+                    reason_code="no_modifications",
+                    details=details,
+                )
+            else:
+                _safe_advance_execution_attempt(
+                    journal,
+                    attempt,
+                    status=ExecutionAttemptStatus.ABSTAINED,
+                    reason_code="no_modifications",
+                    details=details,
+                )
         return patch_count
 
     def _maybe_rewrite_impossible_return_artifact_edges(
@@ -2605,6 +2670,7 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
                     for gateway in mutation_gateway_holder
                     for receipt in tuple(getattr(gateway, "receipts", ()) or ())
                 ),
+                defer_terminal_persistence=True,
             )
         except Exception:
             optimizer_logger.exception(
@@ -2818,6 +2884,7 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
                     for gateway in mutation_gateway_holder
                     for receipt in tuple(getattr(gateway, "receipts", ()) or ())
                 ),
+                defer_terminal_persistence=True,
             )
         except Exception:
             optimizer_logger.exception(

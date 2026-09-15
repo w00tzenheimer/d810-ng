@@ -22,9 +22,15 @@ from d810.transforms.plan_fragment import FAMILY_CLEANUP
 from d810.passes.side_effect_select_loop import (
     SideEffectSelectLoopStrategy,
 )
+from d810.optimizers.microcode.flow.flattening.families.cleanup.cleanup_family import (
+    SimpleFlatteningCleanupDetection,
+    SimpleFlatteningCleanupFamily,
+)
+import d810.analyses.control_flow.side_effect_select_loop as select_loop_analysis
 from d810.analyses.control_flow.side_effect_select_loop import (
     SIDE_EFFECT_SELECT_LOOP_FIXES_METADATA_KEY,
     SideEffectSelectLoopFix,
+    ValidatedSideEffectSelectLoopFixes,
     collect_side_effect_select_loop_fixes,
     extract_side_effect_select_loop_fixes,
     serialize_side_effect_select_loop_fixes,
@@ -410,3 +416,76 @@ def test_extract_side_effect_select_loop_fixes_rejects_wrong_pred_targets() -> N
     )
 
     assert extract_side_effect_select_loop_fixes(cfg) == ()
+
+
+def test_cleanup_snapshot_validates_side_effect_fixes_once(monkeypatch) -> None:
+    cfg = _selector_loop_cfg()
+    fixes = collect_side_effect_select_loop_fixes(cfg)
+    discovery_calls = 0
+    real_collect = select_loop_analysis.collect_side_effect_select_loop_fixes
+
+    def counted_collect(flow_graph):
+        nonlocal discovery_calls
+        discovery_calls += 1
+        return real_collect(flow_graph)
+
+    class _Translator:
+        def lift(self, _mba):
+            return cfg
+
+    monkeypatch.setattr(
+        select_loop_analysis,
+        "collect_side_effect_select_loop_fixes",
+        counted_collect,
+    )
+    family = SimpleFlatteningCleanupFamily(cfg_translator=_Translator())
+    mba = SimpleNamespace(maturity=0, entry_ea=cfg.func_ea)
+    snapshot = family.build_snapshot(
+        mba,
+        SimpleFlatteningCleanupDetection(
+            maturity=0,
+            func_ea=cfg.func_ea,
+            side_effect_select_loop_fixes=fixes,
+        ),
+    )
+    strategy = next(
+        strategy
+        for strategy in family.strategies
+        if strategy.name == "side_effect_select_loop"
+    )
+
+    assert strategy.is_applicable(snapshot) is True
+    assert strategy.plan(snapshot) is not None
+    assert discovery_calls == 1
+
+
+def test_validated_side_effect_fixes_do_not_cross_flowgraph_snapshots() -> None:
+    original = _selector_loop_cfg()
+    fixes = collect_side_effect_select_loop_fixes(original)
+    stale = replace(
+        original,
+        metadata={
+            SIDE_EFFECT_SELECT_LOOP_FIXES_METADATA_KEY: (
+                {
+                    "init_block": 6,
+                    "header_block": 9,
+                    "per_pred_targets": ((4, 8), (5, 12)),
+                    "terminal_redirects": ((8, 99, 15), (14, 9, 15)),
+                },
+            )
+        },
+    )
+    snapshot = AnalysisSnapshot(
+        mba=object(),
+        flow_graph=stale,
+        validated_side_effect_select_loop_fixes=(
+            ValidatedSideEffectSelectLoopFixes(
+                flow_graph=original,
+                fixes=fixes,
+            )
+        ),
+    )
+
+    strategy = SideEffectSelectLoopStrategy()
+    assert strategy.is_applicable(snapshot) is False
+    assert strategy.plan(snapshot) is None

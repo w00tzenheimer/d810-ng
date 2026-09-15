@@ -20,6 +20,9 @@ if TYPE_CHECKING:
     from d810.analyses.control_flow.round_discovery_context import (
         PreanalysisRoundDiscoveryContext,
     )
+    from d810.analyses.control_flow.side_effect_select_loop import (
+        ValidatedSideEffectSelectLoopFixes,
+    )
 
 
 __all__ = [
@@ -117,6 +120,13 @@ class AnalysisSnapshot:
     # the behavior is explicitly fact-backed and does not rediscover intent.
     diagnostic_fact_view: object | None
 
+    # Family-produced fixes already validated against this snapshot's exact
+    # FlowGraph object. Consumers must fall back to metadata validation if the
+    # graph identity does not match.
+    validated_side_effect_select_loop_fixes: (
+        ValidatedSideEffectSelectLoopFixes | None
+    )
+
     # Cumulative planner-context view built from prior fragments' metadata
     # entries under the "planner_ctx" key. The engine rebuilds this before
     # each strategy's plan() call, aggregating every LinearizationDecision /
@@ -164,6 +174,9 @@ class AnalysisSnapshot:
         state_summary: StateModelSummary | None = None,
         discovery: PreanalysisRoundDiscoveryContext | None = None,
         diagnostic_fact_view: object | None = None,
+        validated_side_effect_select_loop_fixes: (
+            ValidatedSideEffectSelectLoopFixes | None
+        ) = None,
         cumulative_planner_view: CumulativePlannerView | None = None,
         round_context: RoundContext | None = None,
         **legacy_fields: object,
@@ -199,6 +212,11 @@ class AnalysisSnapshot:
         object.__setattr__(self, "state_summary", state_summary)
         object.__setattr__(self, "discovery", discovery)
         object.__setattr__(self, "diagnostic_fact_view", diagnostic_fact_view)
+        object.__setattr__(
+            self,
+            "validated_side_effect_select_loop_fixes",
+            validated_side_effect_select_loop_fixes,
+        )
         object.__setattr__(self, "cumulative_planner_view", cumulative_planner_view)
         object.__setattr__(self, "round_context", round_context or RoundContext())
 

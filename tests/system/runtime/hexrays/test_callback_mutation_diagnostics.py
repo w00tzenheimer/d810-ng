@@ -877,6 +877,44 @@ def test_late_mba_mutation_failure_is_recorded_before_propagation(tmp_path) -> N
         assert attempt.reason_code == "RuntimeError: injected late mutation failure"
 
 
+def test_late_mba_mutation_can_publish_terminal_record_after_mutation(tmp_path) -> None:
+    with ExecutionJournalStore(tmp_path / "execution.sqlite") as journal:
+        session_id = DecompilationSessionId.new()
+        parent = journal.begin_attempt(
+            session_id,
+            stage_id="hexrays_preanalysis",
+            domain=ExecutionDomain.HOOK,
+        )
+        flow_context = SimpleNamespace(
+            execution_attempt_context=lambda: (
+                journal,
+                session_id,
+                parent.attempt_id,
+            )
+        )
+        manager = object.__new__(BlockOptimizerManager)
+
+        assert manager._run_recorded_mba_mutation_attempt(
+            flow_context=flow_context,
+            route_name="impossible_return_artifact_edges",
+            maturity_name="MMAT_GLBOPT2",
+            function_ea=0x401000,
+            mutation=lambda: 1,
+            defer_terminal_persistence=True,
+        ) == 1
+        journal.flush_published_attempts()
+
+        attempt = journal.only_attempt(
+            session_id,
+            stage_id=(
+                "mba_late_mutation:impossible_return_artifact_edges:"
+                "maturity=MMAT_GLBOPT2:function=0x401000"
+            ),
+        )
+        assert attempt.status is ExecutionAttemptStatus.COMPLETED
+        assert attempt.parent_attempt_id == parent.attempt_id
+
+
 def test_late_mba_mutation_effect_references_committed_gateway_receipt(
     tmp_path,
 ) -> None:
@@ -1075,6 +1113,11 @@ def test_each_late_route_records_its_swallowed_failure(
             result = manager._maybe_run_terminal_tail_cascade_egress_lowering(mba)
 
         assert result == 0
+        if route_name in {
+            "impossible_return_artifact_edges",
+            "terminal_zero_guard_literal_return_edges",
+        }:
+            assert journal.flush_published_attempts() == 0
         attempt = journal.only_attempt(
             session_id,
             stage_id=(
