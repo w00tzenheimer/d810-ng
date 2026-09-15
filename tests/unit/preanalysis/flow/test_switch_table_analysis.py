@@ -10,6 +10,7 @@ from d810.ir.flowgraph import (
     MopSnapshot,
     OperandKind,
 )
+from d810.ir.expressions import ValueOpKind
 from d810.ir.varnode import Space, Varnode
 from d810.capabilities.dispatcher import RouterKind
 from d810.analyses.control_flow.switch_table_analysis import (
@@ -27,6 +28,10 @@ def _mop(
     value: int | None = None,
     stack_refs: tuple[int, ...] = (),
     switch_cases: tuple[tuple[tuple[int, ...], int], ...] = (),
+    sub_kind: InsnKind | None = None,
+    sub_value_op_kind: ValueOpKind | None = None,
+    sub_l: MopSnapshot | None = None,
+    sub_r: MopSnapshot | None = None,
 ) -> MopSnapshot:
     return MopSnapshot(
         kind=kind,
@@ -34,6 +39,10 @@ def _mop(
         value=value,
         stack_refs=stack_refs,
         switch_cases=switch_cases,
+        sub_kind=sub_kind,
+        sub_value_op_kind=sub_value_op_kind,
+        sub_l=sub_l,
+        sub_r=sub_r,
     )
 
 
@@ -201,6 +210,34 @@ def test_analyze_switch_table_at_dispatcher_ignores_lower_serial_table():
     assert result is not None
     assert result.state_dispatcher_map.dispatcher_entry_block == 3
     assert result.state_dispatcher_map.state_to_handler() == {7: 6, 8: 7}
+
+
+def test_switch_memory_load_address_is_not_dispatcher_state() -> None:
+    """A semantic opcode switch must not bind its cursor as selected state."""
+
+    table_tail = _insn(
+        kind=InsnKind.TABLE_JUMP,
+        left=_mop(
+            kind=OperandKind.SUBINSN,
+            stack_refs=(0x38,),
+            sub_kind=InsnKind.LOAD,
+            sub_value_op_kind=ValueOpKind.LOAD,
+            sub_l=_mop(kind=OperandKind.ADDRESS, stack_refs=(0x38,)),
+        ),
+        right=_mop(
+            kind=OperandKind.CASE_LIST,
+            switch_cases=(((0,), 2), ((1,), 3)),
+        ),
+    )
+    flow_graph = _flow_graph(
+        {
+            1: _block(1, succs=(2, 3), tail=table_tail),
+            2: _block(2, preds=(1,)),
+            3: _block(3, preds=(1,)),
+        }
+    )
+
+    assert analyze_switch_table_flow_graph(flow_graph) is None
 
 
 class TestBuildStateDispatcherMapFromCases:

@@ -51,10 +51,12 @@ def _fake_popen_factory(results: list[tuple[str, str, int]]):
     """Return a ``popen`` callable that yields *results* in call order."""
 
     calls: list[list[str]] = []
+    call_kwargs: list[dict] = []
     remaining = list(results)
 
     def fake_popen(command, **kwargs):
         calls.append(list(command))
+        call_kwargs.append(dict(kwargs))
         stdout_text, stderr_text, returncode = remaining.pop(0)
         return _FakePopen(
             command,
@@ -64,6 +66,7 @@ def _fake_popen_factory(results: list[tuple[str, str, int]]):
         )
 
     fake_popen.calls = calls
+    fake_popen.call_kwargs = call_kwargs
     return fake_popen
 
 
@@ -196,6 +199,25 @@ def test_run_batches_runs_memory_heavy_oracle_after_regular_batches() -> None:
     ]
 
 
+def test_hash_bound_masm_cases_require_fresh_ida_interpreters() -> None:
+    module = _module()
+    fixture_functions = {
+        "sub_7FFB0E53C420",
+        "sub_7FFB0DE51120",
+        "sub_7FFB0DF992D0",
+        "sub_7FFB0DFD1D70",
+        "sub_7FFB0E1E69E0",
+        "sub_7FFB0E0A2C90",
+        "sub_7FFB0E086BE0",
+    }
+
+    assert {
+        nodeid.rsplit("[", 1)[1][:-1]
+        for nodeid in module.ISOLATED_NODEIDS
+        if "TestDacMasmFixtures::test_dac_masm_fixtures[" in nodeid
+    } == fixture_functions
+
+
 def test_augment_pytest_args_does_not_duplicate_existing_durations_flag() -> None:
     module = _module()
 
@@ -316,6 +338,89 @@ def test_run_batches_writes_one_jsonl_record_per_batch(tmp_path) -> None:
     second = json.loads(lines[1])
     assert second["batch_index"] == 2
     assert second["run_id"] == "run-abc"
+
+
+def test_run_batches_isolates_each_batch_diagnostic_database(tmp_path) -> None:
+    module = _module()
+
+    def fake_run(command, **kwargs):
+        assert "--collect-only" in command
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout="\n".join(
+                f"tests/system/test_x.py::test_{index}" for index in range(2)
+            ),
+            stderr="",
+        )
+
+    fake_popen = _fake_popen_factory(
+        [("1 passed in 0.10s\n", "", 0), ("1 passed in 0.10s\n", "", 0)]
+    )
+    module.run_batches(
+        python="/runtime/python",
+        root="tests/system",
+        pytest_args=(),
+        batch_size=1,
+        run=fake_run,
+        popen=fake_popen,
+        log_dir=str(tmp_path),
+        run_id="run-abc",
+    )
+
+    expected = [
+        tmp_path / "runs" / f"run-abc-s0-b{index}" / "d810_logs"
+        for index in (1, 2)
+    ]
+    assert all(path.is_dir() for path in expected)
+    assert [
+        kwargs["env"]["D810_RUN_ID"] for kwargs in fake_popen.call_kwargs
+    ] == ["run-abc-s0-b1", "run-abc-s0-b2"]
+    assert [
+        kwargs["env"]["D810_DIAG_LOG_DIR"] for kwargs in fake_popen.call_kwargs
+    ] == [str(path) for path in expected]
+
+    records = [
+        json.loads(line)
+        for line in (tmp_path / module.BATCH_LOG_FILENAME)
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    assert [record["batch_run_id"] for record in records] == [
+        "run-abc-s0-b1",
+        "run-abc-s0-b2",
+    ]
+    assert [record["diagnostics_directory"] for record in records] == [
+        str(path) for path in expected
+    ]
+
+
+def test_hash_bound_batch_mandates_diagnostic_capture(tmp_path) -> None:
+    module = _module()
+    nodeid = (
+        "tests/system/e2e/test_libdeobfuscated_dsl.py::"
+        "TestDacMasmFixtures::test_dac_masm_fixtures[sub_7FFB0E1E69E0]"
+    )
+
+    def fake_run(command, **kwargs):
+        assert "--collect-only" in command
+        return subprocess.CompletedProcess(command, 0, stdout=nodeid, stderr="")
+
+    fake_popen = _fake_popen_factory([("1 passed in 0.10s\n", "", 0)])
+    assert (
+        module.run_batches(
+            python="/runtime/python",
+            root="tests/system",
+            pytest_args=(),
+            batch_size=20,
+            run=fake_run,
+            popen=fake_popen,
+            log_dir=str(tmp_path),
+            run_id="required-diag",
+        )
+        == 0
+    )
+    assert fake_popen.call_kwargs[0]["env"]["D810_DIAG_SNAPSHOT"] == "1"
 
 
 def test_run_batches_resume_appends_to_the_same_jsonl_file(tmp_path) -> None:

@@ -665,6 +665,7 @@ def persist_mutation_plan(
                 "description": event.description,
                 "mutation_kind": event.mutation_kind,
                 "planned_operation_count": int(event.planned_operation_count),
+                "unflatten_authority_json": event.unflatten_authority_json,
             },
             timestamp=event.timestamp,
         ),

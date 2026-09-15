@@ -1238,7 +1238,64 @@ _COMPUTED_WRITE_PASSTHROUGH = ("m_mov", "m_xdu", "m_xds", "m_low")
 #: Hops the unique-predecessor walk may take looking for a constant definition.
 _COMPUTED_WRITE_MAX_BACK = 6
 
+#: Maximum number of correlated incoming paths admitted for one computed write.
+#: Exceeding it abstains; truncation would understate the written-state set.
+_COMPUTED_WRITE_MAX_PARTITIONS = 64
+
 _U32_MASK = 0xFFFFFFFF
+
+
+def _x86_widest_register_name(name: str) -> str:
+    """Return the 64-bit x86 alias family name for a processor register."""
+    lowered = str(name).lower()
+    legacy = {
+        "al": "rax", "ah": "rax", "ax": "rax", "eax": "rax", "rax": "rax",
+        "bl": "rbx", "bh": "rbx", "bx": "rbx", "ebx": "rbx", "rbx": "rbx",
+        "cl": "rcx", "ch": "rcx", "cx": "rcx", "ecx": "rcx", "rcx": "rcx",
+        "dl": "rdx", "dh": "rdx", "dx": "rdx", "edx": "rdx", "rdx": "rdx",
+        "sil": "rsi", "si": "rsi", "esi": "rsi", "rsi": "rsi",
+        "dil": "rdi", "di": "rdi", "edi": "rdi", "rdi": "rdi",
+        "bpl": "rbp", "bp": "rbp", "ebp": "rbp", "rbp": "rbp",
+        "spl": "rsp", "sp": "rsp", "esp": "rsp", "rsp": "rsp",
+        "ip": "rip", "eip": "rip", "rip": "rip",
+    }
+    if lowered in legacy:
+        return legacy[lowered]
+    if lowered.startswith("r") and lowered[1:-1].isdigit() and lowered[-1] in "dwb":
+        return lowered[:-1]
+    return lowered
+
+
+def _canonical_mreg_key(mreg: int, width: int) -> int:
+    """Normalize x86 subregister mregs to their widest processor-register family.
+
+    Hex-Rays assigns distinct mregs to e.g. ``r8`` and ``r8d``.  The processor
+    register API is the authority for their alias family; duck-typed/unit-test
+    environments retain the supplied key when that API is unavailable.
+    """
+    try:
+        import ida_hexrays
+        import ida_idp
+
+        processor_reg = int(ida_hexrays.mreg2reg(int(mreg), int(width)))
+        if processor_reg < 0:
+            return int(mreg)
+        observed_name = ida_idp.get_reg_name(processor_reg, int(width))
+        candidate_names = (
+            _x86_widest_register_name(str(observed_name or "")),
+            str(ida_idp.get_reg_name(processor_reg, 8) or ""),
+        )
+        for name in candidate_names:
+            if not name:
+                continue
+            canonical_reg = int(ida_idp.str2reg(str(name)))
+            if canonical_reg >= 0:
+                canonical_mreg = int(ida_hexrays.reg2mreg(canonical_reg))
+                if canonical_mreg >= 0:
+                    return canonical_mreg
+    except Exception:
+        pass
+    return int(mreg)
 
 
 def _mop_storage_key(mop: object) -> Optional[StorageKey]:
@@ -1254,7 +1311,12 @@ def _mop_storage_key(mop: object) -> Optional[StorageKey]:
         return None if off is None else StorageKey("S", int(off))
     if mop_t == _mop_type_value("mop_r", 1):
         reg = getattr(mop, "r", None)
-        return None if reg is None else StorageKey("r", int(reg))
+        size = getattr(mop, "size", None)
+        return (
+            None
+            if reg is None or size is None
+            else StorageKey("r", _canonical_mreg_key(int(reg), int(size)))
+        )
     if mop_t == _mop_type_value("mop_l", 9):
         lref = getattr(mop, "l", None)
         idx = getattr(lref, "idx", None) if lref is not None else None
@@ -1331,7 +1393,7 @@ def _read_storage_definition(
     } - {None}
     result = StorageDefinition()
     insn = getattr(blk, "head", None)
-    while insn is not None and insn is not before:
+    while insn is not None and not _same_instruction_occurrence(insn, before):
         opcode = getattr(insn, "opcode", None)
         destination, destination_size, indirect = _storage_write_destination(insn)
         if opcode in calls:
@@ -1357,6 +1419,22 @@ def _read_storage_definition(
             result = StorageDefinition(written=True, value=value)
         insn = getattr(insn, "next", None)
     return result
+
+
+def _same_instruction_occurrence(left: object, right: object) -> bool:
+    """Compare a live SWIG instruction by native identity, fakes by identity."""
+    if right is None:
+        return False
+    if left is right:
+        return True
+    left_native = getattr(left, "this", None)
+    right_native = getattr(right, "this", None)
+    if left_native is None or right_native is None:
+        return False
+    try:
+        return bool(left_native == right_native)
+    except Exception:
+        return False
 
 
 def _read_storage_const_writer(blk: object, storage: StorageKey) -> Optional[int]:
@@ -1395,7 +1473,319 @@ def _storage_const_on_path_back(
     return None
 
 
-def _fold_computed_write(insn: object, env: object) -> Optional[int]:
+def _computed_write_path_partitions(
+    *,
+    mba: object,
+    blk: object,
+    state_write_insn: object,
+    leaves: Sequence[StorageKey],
+    expression_depth: int = 0,
+) -> tuple[tuple[tuple[int, Dict[StorageKey, int]], ...], AbstainReason | None]:
+    """Bind *leaves* on every bounded path reaching a computed state write.
+
+    The writer prefix contributes bindings common to every path.  Remaining
+    operands are followed backwards through pass-through joins without joining
+    their values: each predecessor arm remains one correlated environment.
+    Unknown writes are terminal kills, and every cap is an abstention rather
+    than a partial result.
+    """
+    incoming = _block_predecessors(blk)
+    if not incoming:
+        return (), AbstainReason.NO_PREDECESSORS
+    if len(incoming) > _COMPUTED_WRITE_MAX_PARTITIONS:
+        return (), AbstainReason.PREDECESSOR_BUDGET_EXCEEDED
+
+    # (serial, bindings, depth, path) -- path-local cycle detection matters:
+    # the same physical block may legitimately occur in distinct partitions.
+    pending: List[tuple[int, Dict[StorageKey, int], int, frozenset[int]]] = [
+        (serial, {}, 0, frozenset()) for serial in incoming
+    ]
+    completed: List[tuple[int, Dict[StorageKey, int]]] = []
+    while pending:
+        if len(pending) + len(completed) > _COMPUTED_WRITE_MAX_PARTITIONS:
+            return (), AbstainReason.PREDECESSOR_BUDGET_EXCEEDED
+        serial, bindings, depth, path = pending.pop()
+        if serial in path:
+            logger.info("COMPUTED_STATE_PATH_ABSTAIN: cycle serial=%d", serial)
+            return (), AbstainReason.UNRESOLVED_OPERAND
+        try:
+            predecessor = mba.get_mblock(serial)
+        except Exception:
+            predecessor = None
+        if predecessor is None:
+            logger.info("COMPUTED_STATE_PATH_ABSTAIN: missing_block serial=%d", serial)
+            return (), AbstainReason.UNRESOLVED_OPERAND
+
+        expanded_deferred_definition = False
+        for leaf in leaves:
+            if leaf in bindings:
+                continue
+            definition = _read_storage_definition(
+                predecessor, leaf, mba=mba
+            )
+            if not definition.written:
+                continue
+            if definition.value is None:
+                # A shared state-store block often consumes a register whose
+                # value was computed in the immediately preceding block.  The
+                # ordinary reaching-constant walk must treat an arbitrary
+                # non-literal write as a kill, but one exact supported u32
+                # expression can be replayed per incoming CFG arm.  Restrict
+                # this refinement to a single outstanding leaf so values from
+                # independent predecessor walks can never be cross-producted.
+                expanded = None
+                if len(leaves) == 1 and expression_depth < 8:
+                    expanded = _fold_deferred_storage_definition(
+                        mba=mba,
+                        blk=predecessor,
+                        storage=leaf,
+                        expression_depth=expression_depth,
+                    )
+                if expanded:
+                    for origin_serial, value in expanded:
+                        completed.append(
+                            (int(origin_serial), {leaf: int(value) & _U32_MASK})
+                        )
+                    expanded_deferred_definition = True
+                    break
+                logger.info(
+                    "COMPUTED_STATE_PATH_ABSTAIN: unknown_definition serial=%d storage=%r",
+                    serial,
+                    leaf,
+                )
+                return (), AbstainReason.UNRESOLVED_OPERAND
+            bindings[leaf] = int(definition.value) & _U32_MASK
+
+        if expanded_deferred_definition:
+            continue
+
+        if all(leaf in bindings for leaf in leaves):
+            completed.append((serial, bindings))
+            continue
+        if depth >= _COMPUTED_WRITE_MAX_BACK:
+            logger.info(
+                "COMPUTED_STATE_PATH_ABSTAIN: depth serial=%d unbound=%s",
+                serial,
+                tuple(repr(leaf) for leaf in leaves if leaf not in bindings),
+            )
+            return (), AbstainReason.UNRESOLVED_OPERAND
+        predecessors = _block_predecessors(predecessor)
+        if not predecessors:
+            logger.info(
+                "COMPUTED_STATE_PATH_ABSTAIN: root serial=%d unbound=%s",
+                serial,
+                tuple(repr(leaf) for leaf in leaves if leaf not in bindings),
+            )
+            return (), AbstainReason.UNRESOLVED_OPERAND
+        if len(pending) + len(completed) + len(predecessors) > _COMPUTED_WRITE_MAX_PARTITIONS:
+            return (), AbstainReason.PREDECESSOR_BUDGET_EXCEEDED
+        next_path = path | {serial}
+        pending.extend(
+            (pred, dict(bindings), depth + 1, next_path) for pred in predecessors
+        )
+
+    # ``resolve_computed_write`` keys evidence by serial.  Distinct paths that
+    # end at the same serial must agree; otherwise serial alone cannot carry a
+    # faithful receipt and the adapter abstains.
+    by_serial: Dict[int, Dict[StorageKey, int]] = {}
+    for serial, bindings in completed:
+        previous = by_serial.get(serial)
+        if previous is not None and previous != bindings:
+            return (), AbstainReason.UNRESOLVED_OPERAND
+        by_serial[serial] = bindings
+    return tuple(by_serial.items()), None
+
+
+def _fold_deferred_storage_definition(
+    *,
+    mba: object,
+    blk: object,
+    storage: StorageKey,
+    expression_depth: int,
+) -> tuple[tuple[int, int], ...] | None:
+    """Replay one exact predecessor-owned u32 definition per incoming arm."""
+    kind, defining_insn = _last_local_storage_effect(
+        blk,
+        storage,
+        before=None,
+        mba=mba,
+    )
+    if kind != "definition" or defining_insn is None:
+        return None
+    source_leaves = _collect_operand_storage_leaves(defining_insn)
+    incoming_leaves, reason = _incoming_computed_write_leaves(
+        blk,
+        defining_insn,
+        source_leaves,
+        mba=mba,
+    )
+    if reason is not None or not incoming_leaves:
+        return None
+    partitions, reason = _computed_write_path_partitions(
+        mba=mba,
+        blk=blk,
+        state_write_insn=defining_insn,
+        leaves=incoming_leaves,
+        expression_depth=expression_depth + 1,
+    )
+    if reason is not None or not partitions:
+        return None
+    folded: List[tuple[int, int]] = []
+    for origin_serial, env in partitions:
+        value = _fold_computed_write(
+            defining_insn,
+            env,
+            storage_resolver=lambda source, env=env: _fold_local_storage_before(
+                blk,
+                source,
+                before=defining_insn,
+                env=env,
+                mba=mba,
+            ),
+        )
+        if value is None:
+            return None
+        folded.append((int(origin_serial), int(value) & _U32_MASK))
+    logger.info(
+        "COMPUTED_STATE_DEFERRED_DEFINITION: blk%d storage=%r partitions=%d values=%s",
+        int(getattr(blk, "serial", -1)),
+        storage,
+        len(folded),
+        tuple(f"{value:#010x}" for _, value in folded),
+    )
+    return tuple(folded)
+
+
+def _last_local_storage_effect(
+    blk: object,
+    storage: StorageKey,
+    *,
+    before: object,
+    mba: object,
+) -> tuple[str, object | None]:
+    """Return the last local definition of *storage*, or a conservative kill."""
+    calls = {
+        _opcode_value("m_call", None),
+        _opcode_value("m_icall", None),
+    } - {None}
+    effect = ("absent", None)
+    insn = getattr(blk, "head", None)
+    while insn is not None and not _same_instruction_occurrence(insn, before):
+        opcode = getattr(insn, "opcode", None)
+        if opcode in calls:
+            effect = ("kill", None)
+        else:
+            destination, destination_size, indirect = _storage_write_destination(insn)
+            if overlaps_state_operand(
+                storage,
+                destination,
+                destination_size,
+                lvar_stkoff=lambda index: _lvar_stkoff(mba, index),
+                indirect=indirect,
+            ):
+                name = OPCODE_MAP.get(opcode) if opcode is not None else None
+                source_size = getattr(getattr(insn, "l", None), "size", None)
+                exact = destination == storage and (
+                    destination_size == 4
+                    or (
+                        name in _COMPUTED_WRITE_PASSTHROUGH
+                        and source_size == 4
+                        and destination_size is not None
+                        and destination_size > 4
+                    )
+                )
+                foldable = name in _COMPUTED_WRITE_PASSTHROUGH or name in _COMPUTED_WRITE_BINOPS
+                effect = ("definition", insn) if exact and foldable else ("kill", None)
+                if effect[0] == "kill":
+                    logger.info(
+                        "COMPUTED_STATE_LOCAL_EFFECT: storage=%r destination=%r "
+                        "destination_size=%s source_size=%s opcode=%s exact=%s foldable=%s",
+                        storage,
+                        destination,
+                        destination_size,
+                        source_size,
+                        name,
+                        exact,
+                        foldable,
+                    )
+        insn = getattr(insn, "next", None)
+    return effect
+
+
+def _incoming_computed_write_leaves(
+    blk: object,
+    state_write_insn: object,
+    leaves: Sequence[StorageKey],
+    *,
+    mba: object,
+) -> tuple[Tuple[StorageKey, ...], AbstainReason | None]:
+    """Expand local derived definitions into their predecessor-side leaves."""
+    incoming: List[StorageKey] = []
+
+    def visit(storage: StorageKey, before: object, depth: int) -> bool:
+        if depth > 16:
+            return False
+        kind, definition = _last_local_storage_effect(
+            blk, storage, before=before, mba=mba
+        )
+        if kind == "kill":
+            return False
+        if kind == "absent":
+            if storage not in incoming:
+                incoming.append(storage)
+            return True
+        assert definition is not None
+        for source in _collect_operand_storage_leaves(definition):
+            if not visit(source, definition, depth + 1):
+                return False
+        return True
+
+    for leaf in leaves:
+        if not visit(leaf, state_write_insn, 0):
+            return (), AbstainReason.UNRESOLVED_OPERAND
+    return tuple(incoming), None
+
+
+def _fold_local_storage_before(
+    blk: object,
+    storage: StorageKey,
+    *,
+    before: object,
+    env: Dict[StorageKey, int],
+    mba: object,
+    depth: int = 0,
+) -> Optional[int]:
+    """Evaluate a supported local definition using one predecessor environment."""
+    if depth > 16:
+        return None
+    kind, definition = _last_local_storage_effect(
+        blk, storage, before=before, mba=mba
+    )
+    if kind == "kill":
+        return None
+    if kind == "absent":
+        return env.get(storage)
+    assert definition is not None
+    return _fold_computed_write(
+        definition,
+        env,
+        storage_resolver=lambda source: _fold_local_storage_before(
+            blk,
+            source,
+            before=definition,
+            env=env,
+            mba=mba,
+            depth=depth + 1,
+        ),
+    )
+
+
+def _fold_computed_write(
+    insn: object,
+    env: object,
+    *,
+    storage_resolver: object = None,
+) -> Optional[int]:
     """Evaluate *insn*'s operand tree under a fully bound ``{storage: const}``.
 
     Recurses into nested ``mop_d`` sub-instructions.  Returns ``None`` for any
@@ -1416,7 +1806,9 @@ def _fold_computed_write(insn: object, env: object) -> Optional[int]:
         storage = _mop_storage_key(mop)
         if storage is None:
             return None
-        bound = env.get(storage)
+        bound = storage_resolver(storage) if storage_resolver is not None else None
+        if bound is None:
+            bound = env.get(storage)
         return None if bound is None else int(bound) & _U32_MASK
 
     def eval_insn(node: object) -> Optional[int]:
@@ -1486,21 +1878,66 @@ def _resolve_computed_state_write_in_block(
             values=frozenset(), reason=AbstainReason.NO_STATE_WRITE, evidence=()
         )
     leaves = _collect_operand_storage_leaves(state_write_insn)
-    if any(
-        _read_storage_definition(blk, leaf, before=state_write_insn, mba=mba).written
-        for leaf in leaves
-    ):
-        return ComputedWriteResolution(
-            values=frozenset(), reason=AbstainReason.UNRESOLVED_OPERAND, evidence=()
-        )
-    return resolve_computed_write(
-        operands=leaves,
-        predecessors=_block_predecessors(blk),
-        const_reader=lambda pred, storage: _storage_const_on_path_back(
-            mba, pred, storage
-        ),
-        fold=lambda env: _fold_computed_write(state_write_insn, env),
+    incoming_leaves, reason = _incoming_computed_write_leaves(
+        blk, state_write_insn, leaves, mba=mba
     )
+    if reason is not None:
+        logger.info(
+            "COMPUTED_STATE_WRITE_SITE: blk%d outcome=abstain stage=local_definition "
+            "reason=%s leaves=%s",
+            int(getattr(blk, "serial", -1)),
+            reason,
+            tuple(repr(leaf) for leaf in leaves),
+        )
+        return ComputedWriteResolution(
+            values=frozenset(), reason=reason, evidence=()
+        )
+    partitions, reason = _computed_write_path_partitions(
+        mba=mba,
+        blk=blk,
+        state_write_insn=state_write_insn,
+        leaves=incoming_leaves,
+    )
+    if reason is not None:
+        logger.info(
+            "COMPUTED_STATE_WRITE_SITE: blk%d outcome=abstain stage=path_partition "
+            "reason=%s leaves=%s incoming_leaves=%s",
+            int(getattr(blk, "serial", -1)),
+            reason,
+            tuple(repr(leaf) for leaf in leaves),
+            tuple(repr(leaf) for leaf in incoming_leaves),
+        )
+        return ComputedWriteResolution(
+            values=frozenset(), reason=reason, evidence=()
+        )
+    environments = dict(partitions)
+    resolution = resolve_computed_write(
+        operands=incoming_leaves,
+        predecessors=tuple(environments),
+        const_reader=lambda pred, storage: environments[pred].get(storage),
+        fold=lambda env: _fold_computed_write(
+            state_write_insn,
+            env,
+            storage_resolver=lambda storage: _fold_local_storage_before(
+                blk,
+                storage,
+                before=state_write_insn,
+                env=env,
+                mba=mba,
+            ),
+        ),
+    )
+    logger.info(
+        "COMPUTED_STATE_WRITE_SITE: blk%d outcome=%s reason=%s leaves=%s "
+        "partitions=%d values=%s",
+        int(getattr(blk, "serial", -1)),
+        "exact_result" if resolution.resolved else "abstain",
+        resolution.reason,
+        tuple(repr(leaf) for leaf in leaves),
+        len(partitions),
+        tuple(f"{value:#010x}" for value in sorted(resolution.values)),
+    )
+    return resolution
 
 
 def _resolve_mop_value_in_block(

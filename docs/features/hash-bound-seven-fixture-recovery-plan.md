@@ -245,6 +245,12 @@
 
 ### Task 4: Build fixture-specific semantic transition oracles
 
+Current delivered scope: exact-byte dispatcher-route certification. The
+checked-in reference declares `exact_bytes_dispatcher_routes_only`; its empty
+effect and exit arrays are not a whole-function semantic-equivalence claim.
+Independent observable-effect and terminal-exit traces remain required before
+using that stronger label.
+
 **Files:**
 - Create: `tests/system/e2e/hash_bound/hash_bound_semantic_oracle.py`
 - Create: `tests/system/e2e/hash_bound/test_hash_bound_semantic_oracle_unit.py`

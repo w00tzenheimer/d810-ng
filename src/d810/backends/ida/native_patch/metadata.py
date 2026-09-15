@@ -1102,7 +1102,9 @@ class IdaMetadataActionExecutor:
             state["values"] = int(switch.values)
         else:
             state["lowcase"] = int(switch.lowcase)
-        return _SWITCH_PREFIX + json.dumps(state, sort_keys=True, separators=(",", ":"))
+        return _SWITCH_PREFIX + json.dumps(
+            state, sort_keys=True, separators=(",", ":")
+        )
 
     def _read_tail_state(self, ea: int) -> str:
         import ida_funcs

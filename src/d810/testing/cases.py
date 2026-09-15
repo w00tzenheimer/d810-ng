@@ -114,6 +114,13 @@ class DeobfuscationCase:
             return no cfunc. A later D810-produced cfunc then satisfies
             ``must_change`` by construction. This is only for recovery fixtures
             whose defect is the missing baseline cfunc itself.
+        eager_native_preanalysis: Run the manager-owned native recovery before
+            the first D810-enabled decompilation. This is reserved for fixtures
+            whose unresolved native control transfer prevents Hex-Rays from
+            producing the initial cfunc needed by microcode callbacks.
+        native_patch_opt_in: Explicitly authorize manager-owned native metadata
+            preparation for this exact function. Global profile availability is
+            still required; this flag alone never enables native writes.
         check_stats: Whether to verify rule firing statistics (default: True).
         skip: If set, skip this test with this reason.
         operator_complexity_mode: Optional complexity trend assertion mode:
@@ -177,6 +184,8 @@ class DeobfuscationCase:
     must_change: bool = True
     allow_unchanged_pseudocode_if_rules_fired: bool = False
     allow_missing_baseline_cfunc: bool = False
+    eager_native_preanalysis: bool = False
+    native_patch_opt_in: bool = False
     check_stats: bool = True
     skip: Optional[str] = None
     # When True, a function absent from the current binary is a SKIP, not a
@@ -311,6 +320,8 @@ class DeobfuscationCase:
                 else self.allow_unchanged_pseudocode_if_rules_fired
             ),
             allow_missing_baseline_cfunc=self.allow_missing_baseline_cfunc,
+            eager_native_preanalysis=self.eager_native_preanalysis,
+            native_patch_opt_in=self.native_patch_opt_in,
             check_stats=self.check_stats,
             skip=override.skip if override.skip is not None else self.skip,
             skip_if_function_absent=self.skip_if_function_absent,

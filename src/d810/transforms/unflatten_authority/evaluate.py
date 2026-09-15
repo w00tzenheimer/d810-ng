@@ -2570,6 +2570,68 @@ def _observed_identity_backed_origin_loss(
     )
 
 
+def _observed_route_endpoint_origin_fold_covered(
+    inputs: model.DerivedUnflattenPreparationInputs,
+    *,
+    subject: model.SemanticSubjectRef,
+    source_binding: model.PhaseSubjectBinding,
+    candidate_binding: model.PhaseSubjectBinding | None,
+) -> bool:
+    """Cover pure origin folding at one exactly realized route endpoint.
+
+    Rewiring an incoming edge can make Hex-Rays propagate pure SSA helpers
+    into a surviving instruction in the destination block.  The top-level
+    native origins then become a strict subset even though the same physical
+    block, effects, terminals, and route remain.  Admit that observation only
+    when an exact projected realization and its own patch fact touch this
+    block; this is not a general allowance for instruction loss.
+    """
+
+    realization = inputs.projected_route_realization
+    if (
+        inputs.candidate_inventory.phase
+        is not model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY
+        or subject.role is not model.SemanticSubjectRole.SOURCE_CATALOG_BLOCK
+        or type(realization) is not model.ProjectedRouteRealization
+        or candidate_binding is None
+        or candidate_binding.status is not model.SubjectBindingStatus.UNIQUE
+        or candidate_binding.block_ref != subject.block_ref
+    ):
+        return False
+    source_origins = set(source_binding.native_instruction_eas)
+    candidate_origins = set(candidate_binding.native_instruction_eas)
+    if not _observed_identity_backed_origin_loss(
+        phase=inputs.candidate_inventory.phase,
+        block_ref=candidate_binding.block_ref,
+        anchor_ea=candidate_binding.anchor_ea,
+        source_origins=source_origins,
+        candidate_origins=candidate_origins,
+    ):
+        return False
+    missing = source_origins - candidate_origins
+    if any(
+        row.owner_ref == subject.block_ref and row.instruction_ea in missing
+        for row in (*inputs.source_inventory.effects, *inputs.source_inventory.terminals)
+    ):
+        return False
+    touching_rows = tuple(
+        row
+        for row in realization.rows
+        if subject.block_ref in {row.source_ref, row.new_target_ref}
+    )
+    return bool(
+        touching_rows
+        and any(
+            fact.plan_id == inputs.proposal.plan_id
+            and fact.step_index == row.plan_step_index
+            and fact.step_digest == row.plan_step_digest
+            and fact.owner_ref == row.source_ref
+            for row in touching_rows
+            for fact in inputs.patch_step_facts
+        )
+    )
+
+
 def _evaluator_fact_evidence(
     inputs: model.DerivedUnflattenPreparationInputs,
     phase: model.UnflattenAuthorityPhase,
@@ -2756,6 +2818,12 @@ def _evaluator_fact_evidence(
             and (
                 set(candidate_binding.native_instruction_eas) == source_origins
                 or observed_exact_patch_owner_subset_covered()
+                or _observed_route_endpoint_origin_fold_covered(
+                    inputs,
+                    subject=subject,
+                    source_binding=source_binding,
+                    candidate_binding=candidate_binding,
+                )
             )
         ):
             return (

@@ -31,6 +31,7 @@ from d810.backends.hexrays.evidence import condition_chain_analysis as cca
 _VOCABULARY = SimpleNamespace(
     MMAT_LVARS=9,
     m_mov=4,
+    m_xdu=7,
     m_stx=62,
     m_add=28,
     m_sub=29,
@@ -268,6 +269,35 @@ def test_constant_is_found_one_hop_up_a_unique_predecessor_chain():
     assert res.values == frozenset({0x0AFBB178})
 
 
+def test_deferred_register_expression_is_folded_per_incoming_path():
+    """A shared store may consume a value computed in its predecessor block."""
+    blocks = {
+        2: _block(
+            _insn(_VOCABULARY.m_mov, _reg(_EDX), None, _stk(_STATE_STKOFF)),
+            preds=(3,),
+        ),
+        3: _block(
+            _insn(_VOCABULARY.m_xor, _reg(_EAX), _reg(_EDX), _reg(_EDX)),
+            _insn(_VOCABULARY.m_goto),
+            preds=(7, 159),
+        ),
+        7: _block(
+            _insn(_VOCABULARY.m_mov, _num(0x5D2FE549), None, _reg(_EAX)),
+            _insn(_VOCABULARY.m_mov, _num(0x03604258), None, _reg(_EDX)),
+        ),
+        159: _block(
+            _insn(_VOCABULARY.m_mov, _num(0x2C039622), None, _reg(_EAX)),
+            _insn(_VOCABULARY.m_mov, _num(0x09705EB8), None, _reg(_EDX)),
+        ),
+    }
+
+    res = _resolve(_Mba(blocks), 2)
+
+    assert res.resolved, res.reason
+    assert res.values == frozenset({0x5E4FA711, 0x2573C89A})
+    assert {e.pred_serial for e in res.evidence} == {7, 159}
+
+
 # --------------------------------------------------------------------------
 # abstentions -- the negative controls
 # --------------------------------------------------------------------------
@@ -329,8 +359,8 @@ def test_a_call_cannot_preserve_a_stack_binding_without_effect_evidence():
     assert res.reason == AbstainReason.UNRESOLVED_OPERAND
 
 
-def test_a_fork_on_the_way_back_abstains_rather_than_guessing():
-    """A join has no flow-sensitively unique constant, so the partition dies."""
+def test_a_join_on_the_way_back_expands_into_correlated_partitions():
+    """A pass-through join preserves one binding per incoming path."""
     blocks = {
         2: _block(
             _insn(_VOCABULARY.m_mov, _reg(_ECX), None, _stk(_STATE_STKOFF)),
@@ -341,8 +371,33 @@ def test_a_fork_on_the_way_back_abstains_rather_than_guessing():
         7: _block(_insn(_VOCABULARY.m_mov, _num(0x22222222), None, _reg(_ECX))),
     }
     res = _resolve(_Mba(blocks), 2)
-    assert not res.resolved
-    assert res.reason == AbstainReason.UNRESOLVED_OPERAND
+    assert res.resolved, res.reason
+    assert res.values == frozenset({0x11111111, 0x22222222})
+    assert {e.pred_serial for e in res.evidence} == {6, 7}
+
+
+def test_join_frontier_keeps_two_operand_bindings_correlated():
+    blocks = {
+        2: _block(
+            _insn(_VOCABULARY.m_xor, _reg(_ECX), _reg(_EAX), _stk(_STATE_STKOFF)),
+            preds=(5,),
+        ),
+        5: _block(_insn(_VOCABULARY.m_goto), preds=(6, 7)),
+        6: _block(
+            _insn(_VOCABULARY.m_mov, _num(0x10), None, _reg(_ECX)),
+            _insn(_VOCABULARY.m_mov, _num(0x01), None, _reg(_EAX)),
+        ),
+        7: _block(
+            _insn(_VOCABULARY.m_mov, _num(0x20), None, _reg(_ECX)),
+            _insn(_VOCABULARY.m_mov, _num(0x02), None, _reg(_EAX)),
+        ),
+    }
+
+    res = _resolve(_Mba(blocks), 2)
+
+    assert res.resolved, res.reason
+    assert res.values == frozenset({0x11, 0x22})
+    assert len(res.evidence) == 2
 
 
 def test_a_nonconstant_definition_abstains():
@@ -433,7 +488,7 @@ def test_overwrite_never_revives_an_older_predecessor_constant(overwrite, same_b
     assert res.reason == AbstainReason.UNRESOLVED_OPERAND
 
 
-@pytest.mark.parametrize("prefix_kind", ["call", "constant", "arithmetic"])
+@pytest.mark.parametrize("prefix_kind", ["call", "arithmetic"])
 def test_writer_block_prefix_cannot_reuse_the_incoming_operand(prefix_kind):
     prefix = {
         "call": _insn(_VOCABULARY.m_call),
@@ -451,6 +506,95 @@ def test_writer_block_prefix_cannot_reuse_the_incoming_operand(prefix_kind):
     res = _resolve(_Mba(blocks), 2)
     assert not res.resolved
     assert res.reason == AbstainReason.UNRESOLVED_OPERAND
+
+
+def test_writer_block_literal_binding_combines_with_predecessor_binding():
+    blocks = {
+        2: _block(
+            _insn(_VOCABULARY.m_mov, _num(0x22), None, _reg(_ECX)),
+            _insn(_VOCABULARY.m_xor, _reg(_ECX), _reg(_EAX), _stk(_STATE_STKOFF)),
+            preds=(7,),
+        ),
+        7: _block(_insn(_VOCABULARY.m_mov, _num(0x11), None, _reg(_EAX))),
+    }
+
+    res = _resolve(_Mba(blocks), 2)
+
+    assert res.resolved, res.reason
+    assert res.values == frozenset({0x33})
+
+
+def test_writer_block_derived_register_is_folded_per_predecessor_path(monkeypatch):
+    wide_r8 = _R8D - 8
+    monkeypatch.setattr(
+        cca,
+        "_canonical_mreg_key",
+        lambda mreg, width: wide_r8 if mreg in {wide_r8, _R8D} else mreg,
+    )
+    derived = _sub_insn(
+        _VOCABULARY.m_add,
+        _reg(_EAX),
+        _sub_insn(_VOCABULARY.m_xor, _reg(_ECX), _reg(_R8D)),
+    )
+    blocks = {
+        2: _block(
+            _insn(_VOCABULARY.m_xdu, derived, None, _reg(wide_r8, size=8)),
+            _insn(_VOCABULARY.m_mov, _reg(_R8D), None, _stk(_STATE_STKOFF)),
+            preds=(6, 7),
+        ),
+        6: _block(
+            _insn(_VOCABULARY.m_mov, _num(1), None, _reg(_EAX)),
+            _insn(_VOCABULARY.m_mov, _num(2), None, _reg(_ECX)),
+            _insn(_VOCABULARY.m_mov, _num(4), None, _reg(_R8D)),
+        ),
+        7: _block(
+            _insn(_VOCABULARY.m_mov, _num(10), None, _reg(_EAX)),
+            _insn(_VOCABULARY.m_mov, _num(20), None, _reg(_ECX)),
+            _insn(_VOCABULARY.m_mov, _num(40), None, _reg(_R8D)),
+        ),
+    }
+
+    res = _resolve(_Mba(blocks), 2)
+
+    assert res.resolved, res.reason
+    assert res.values == frozenset({1 + (2 ^ 4), 10 + (20 ^ 40)})
+
+
+@pytest.mark.parametrize(
+    ("narrow", "wide"),
+    [("eax", "rax"), ("r8d", "r8"), ("r15w", "r15"), ("sil", "rsi")],
+)
+def test_x86_register_aliases_use_one_widest_family(narrow, wide):
+    assert cca._x86_widest_register_name(narrow) == wide
+
+
+def test_swig_instruction_wrappers_share_native_occurrence_identity():
+    native_pointer = object()
+    first_wrapper = SimpleNamespace(this=native_pointer)
+    second_wrapper = SimpleNamespace(this=native_pointer)
+
+    assert first_wrapper is not second_wrapper
+    assert cca._same_instruction_occurrence(first_wrapper, second_wrapper)
+
+
+def test_join_frontier_abstains_instead_of_truncating_over_partition_budget():
+    leaves = tuple(range(10, 75))
+    blocks = {
+        2: _block(
+            _insn(_VOCABULARY.m_mov, _reg(_ECX), None, _stk(_STATE_STKOFF)),
+            preds=(5,),
+        ),
+        5: _block(_insn(_VOCABULARY.m_goto), preds=leaves),
+    }
+    for serial in leaves:
+        blocks[serial] = _block(
+            _insn(_VOCABULARY.m_mov, _num(serial), None, _reg(_ECX))
+        )
+
+    res = _resolve(_Mba(blocks), 2)
+
+    assert not res.resolved
+    assert res.reason == AbstainReason.PREDECESSOR_BUDGET_EXCEEDED
 
 
 def test_narrow_operand_is_not_folded_as_an_untruncated_u32():

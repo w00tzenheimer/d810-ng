@@ -48,6 +48,7 @@ MAPPED_BUNDLED_PROJECTS = frozenset(
 
 STANDALONE_BUNDLED_PROJECTS = frozenset(
     {
+        "default_constants_and_mba_simplifiers.json",
         "eidolon_v3_const_solve.json",
         "eidolon_v4_const_simplify_solve.json",
     }
@@ -58,6 +59,7 @@ FIXTURE_ONLY_BUNDLED_PROJECTS = frozenset(
         "call_result_predicate_acceptance.json",
         "constant_stage_controls.json",
         "dead_store_elimination_fixture.json",
+        "hash_bound_v4_user_cfg_const_simplify_solve.json",
         "hodur_flag2_s1a_fixture_constant_simplification.json",
     }
 )

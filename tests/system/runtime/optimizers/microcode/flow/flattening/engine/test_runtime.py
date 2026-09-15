@@ -1013,6 +1013,30 @@ def test_generation_poison_quarantines_stage_and_aborts_pipeline(monkeypatch) ->
     assert results == [stage_result]
 
 
+def test_pipeline_defers_dse_after_committed_cfg_stage(monkeypatch) -> None:
+    """Instruction ordinals must be re-collected after a CFG transaction."""
+
+    executor = TransactionalExecutor(SimpleNamespace(qty=0))
+    executed: list[str] = []
+
+    def execute_stage(fragment, _total_handlers):
+        executed.append(fragment.strategy_name)
+        return StageResult(fragment.strategy_name, edits_applied=2)
+
+    monkeypatch.setattr(executor, "execute_stage", execute_stage)
+    cfg_fragment = _fragment("fake_jump")
+    dse_fragment = _fragment("dead_store_elimination")
+    cfg_fragment.metadata["safeguard_min_required"] = 1
+    dse_fragment.metadata["safeguard_min_required"] = 1
+    results = executor.execute_pipeline(
+        [cfg_fragment, dse_fragment],
+        total_handlers=1,
+    )
+
+    assert executed == ["fake_jump"]
+    assert [result.strategy_name for result in results] == ["fake_jump"]
+
+
 def test_committed_semantic_ownership_gate_rejects_before_transaction() -> None:
     patch_plan = _semantic_ownership_gate_plan(
         0x401000,

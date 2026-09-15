@@ -259,16 +259,22 @@ sub_7FFB0E0A2C90:
     mov ecx, dword ptr [rsp+4]
     cmp ecx, 40D9BA32h
     jg loc_7FFB0E0A30E0
+    loc_7FFB0E0A2D70:
     cmp ecx, 2FA91DC5h
     jle loc_7FFB0E0A3190
+    loc_7FFB0E0A2D7C:
     cmp ecx, 34235305h
     jle loc_7FFB0E0A3ADB
+    loc_7FFB0E0A2D88:
     cmp ecx, 3908A3C2h
     jg loc_7FFB0E0A3C12
+    loc_7FFB0E0A2D94:
     cmp ecx, 34235306h
     jz loc_7FFB0E0A5923
+    loc_7FFB0E0A2DA0:
     cmp ecx, 36E27253h
     jnz loc_7FFB0E0A6581
+    loc_7FFB0E0A2DAC:
     movzx r11d, byte ptr [rsp+15h]
     lea r8d, [r11+37h]
     add r11b, 8Ah
@@ -884,14 +890,19 @@ sub_7FFB0E0A2C90:
     loc_7FFB0E0A30E0:
     cmp ecx, 620A36F0h
     jle loc_7FFB0E0A34F0
+    loc_7FFB0E0A30EC:
     cmp ecx, 6F79CE6Ah
     jle loc_7FFB0E0A3725
+    loc_7FFB0E0A30F8:
     cmp ecx, 7595A4C3h
     jg loc_7FFB0E0A3B1F
+    loc_7FFB0E0A3104:
     cmp ecx, 6F79CE6Bh
     jz loc_7FFB0E0A4EB4
+    loc_7FFB0E0A3110:
     cmp ecx, 7000B403h
     jnz loc_7FFB0E0A502B
+    loc_7FFB0E0A311C:
     movzx ecx, byte ptr [rax+0F9h]
     mov r8, qword ptr [rsp+48h]
     lea rdx, unk_7FFB0FE45930
@@ -915,12 +926,16 @@ sub_7FFB0E0A2C90:
     loc_7FFB0E0A3190:
     cmp ecx, 1CCF3367h
     jg loc_7FFB0E0A3530
+    loc_7FFB0E0A319C:
     cmp ecx, 0F33C381h
     jle loc_7FFB0E0A3D56
+    loc_7FFB0E0A31A8:
     cmp ecx, 0F33C382h
     jz loc_7FFB0E0A576B
+    loc_7FFB0E0A31B4:
     cmp ecx, 0FFEF9A5h
     jnz loc_7FFB0E0A7347
+    loc_7FFB0E0A31C0:
     movzx ecx, byte ptr [rax+0F9h]
     lea rdx, jpt_7FFB0E0A31D5
     movsxd rcx, dword ptr (jpt_7FFB0E0A31D5 - 7FFB0FE4EDC8h)[rdx+rcx*4]
@@ -1561,22 +1576,29 @@ sub_7FFB0E0A2C90:
     loc_7FFB0E0A34F0:
     cmp ecx, 48293DEDh
     jg loc_7FFB0E0A3997
+    loc_7FFB0E0A34FC:
     cmp ecx, 43D8866Dh
     jle loc_7FFB0E0A3F03
+    loc_7FFB0E0A3508:
     cmp ecx, 43D8866Eh
     jz loc_7FFB0E0A4BA2
+    loc_7FFB0E0A3514:
     cmp ecx, 45650D88h
     jnz loc_7FFB0E0A5288
+    loc_7FFB0E0A3520:
     mov rcx, qword ptr [rsp+110h]
     mov byte ptr [rcx], 10h
     jmp loc_7FFB0E0A66EC
     loc_7FFB0E0A3530:
     cmp ecx, 2620D213h
     jg loc_7FFB0E0A3D7E
+    loc_7FFB0E0A353C:
     cmp ecx, 1CCF3368h
     jz loc_7FFB0E0A56BD
+    loc_7FFB0E0A3548:
     cmp ecx, 1EFAE5FDh
     jnz loc_7FFB0E0A9C17
+    loc_7FFB0E0A3554:
     mov byte ptr [rax+44h], 1
     mov rcx, qword ptr [rsp+100h]
     movzx ecx, byte ptr [rcx]
@@ -1970,10 +1992,13 @@ sub_7FFB0E0A2C90:
     loc_7FFB0E0A3725:
     cmp ecx, 6409F33Fh
     jle loc_7FFB0E0A3D9B
+    loc_7FFB0E0A3731:
     cmp ecx, 6409F340h
     jz loc_7FFB0E0A4B51
+    loc_7FFB0E0A373D:
     cmp ecx, 6E44ACDDh
     jnz loc_7FFB0E0A7365
+    loc_7FFB0E0A3749:
     nop
     nop
     nop
@@ -2442,10 +2467,13 @@ sub_7FFB0E0A2C90:
     loc_7FFB0E0A3997:
     cmp ecx, 54186DA4h
     jle loc_7FFB0E0A40AA
+    loc_7FFB0E0A39A3:
     cmp ecx, 54186DA5h
     jz loc_7FFB0E0A4599
+    loc_7FFB0E0A39AF:
     cmp ecx, 5D0AFB86h
     jnz loc_7FFB0E0A52B4
+    loc_7FFB0E0A39BB:
     mov r11d, dword ptr [rsp+90h]
     xor r11d, dword ptr [rsp+8Ch]
     mov r8d, dword ptr [rsp+44h]
@@ -2647,8 +2675,10 @@ sub_7FFB0E0A2C90:
     loc_7FFB0E0A3ADB:
     cmp ecx, 309054F9h
     jle loc_7FFB0E0A44A8
+    loc_7FFB0E0A3AE7:
     cmp ecx, 309054FAh
     jz loc_7FFB0E0A56F9
+    loc_7FFB0E0A3AF3:
     cmp ecx, 328251E2h
     jnz loc_7FFB0E0A5EB0
     loc_7FFB0E0A3AFF:
@@ -2662,8 +2692,10 @@ sub_7FFB0E0A2C90:
     loc_7FFB0E0A3B1F:
     cmp ecx, 7595A4C4h
     jz loc_7FFB0E0A4EC4
+    loc_7FFB0E0A3B2B:
     cmp ecx, 7E1528D9h
     jnz loc_7FFB0E0A5913
+    loc_7FFB0E0A3B37:
     movzx ecx, byte ptr [rsp+11h]
     mov r8d, ecx
     not r8b
@@ -2727,6 +2759,7 @@ sub_7FFB0E0A2C90:
     add bl, byte ptr [rsp+24h]
     cmp byte ptr [rsp+23h], bl
     jnz loc_7FFB0E0A75DF
+    loc_7FFB0E0A3BFC:
     mov ecx, dword ptr [dword_7FFB0FED8D48]
     mov edx, -31E7A40Fh
     xor ecx, edx
@@ -2735,8 +2768,10 @@ sub_7FFB0E0A2C90:
     loc_7FFB0E0A3C12:
     cmp ecx, 3908A3C3h
     jz loc_7FFB0E0A5E0B
+    loc_7FFB0E0A3C1E:
     cmp ecx, 3D4257E1h
     jnz loc_7FFB0E0A4116
+    loc_7FFB0E0A3C2A:
     movzx ecx, byte ptr [byte_7FFB0FE9C7F2]
     add cl, 80h
     mov r8d, ecx
@@ -2975,20 +3010,25 @@ sub_7FFB0E0A2C90:
     loc_7FFB0E0A3D56:
     cmp ecx, 8D4B0EBh
     jg loc_7FFB0E0A6EF0
+    loc_7FFB0E0A3D62:
     cmp ecx, 7DD3850h
     jnz loc_7FFB0E0ABCD9
+    loc_7FFB0E0A3D6E:
     mov rcx, qword ptr [rsp+110h]
     mov byte ptr [rcx], 8
     jmp loc_7FFB0E0A66EC
     loc_7FFB0E0A3D7E:
     cmp ecx, 2620D214h
     jz loc_7FFB0E0A553C
+    loc_7FFB0E0A3D8A:
     cmp ecx, 2A7FEFB2h
     jz loc_7FFB0E0A91EE
+    loc_7FFB0E0A3D96:
     jmp loc_7FFB0E0ABD94
     loc_7FFB0E0A3D9B:
     cmp ecx, 620A36F1h
     jnz loc_7FFB0E0A7384
+    loc_7FFB0E0A3DA7:
     lea rcx, [r9+10h]
     mov qword ptr [rsp+160h], rcx
     movzx ecx, byte ptr [r9+10h]
@@ -3472,6 +3512,7 @@ sub_7FFB0E0A2C90:
     loc_7FFB0E0A40AA:
     cmp ecx, 48293DEEh
     jnz loc_7FFB0E0A93F0
+    loc_7FFB0E0A40B6:
     nop
     nop
     nop
@@ -4293,6 +4334,7 @@ sub_7FFB0E0A2C90:
     sub r8b, r10b
     cmp cl, r8b
     jz loc_7FFB0E0A5D73
+    loc_7FFB0E0A4490:
     mov ecx, dword ptr [dword_7FFB0FED8D30]
     add ecx, ecx
     mov edx, -641F4576h
@@ -4302,6 +4344,7 @@ sub_7FFB0E0A2C90:
     loc_7FFB0E0A44A8:
     cmp ecx, 2FA91DC6h
     jnz loc_7FFB0E0A5EC0
+    loc_7FFB0E0A44B4:
     mov ecx, dword ptr [rsp+0E8h]
     mov rdx, qword ptr [rsp+178h]
     mov dword ptr [rdx], ecx
@@ -4424,6 +4467,7 @@ sub_7FFB0E0A2C90:
     movzx ecx, byte ptr [rcx]
     and ecx, 3
     jnz loc_7FFB0E0ABD82
+    loc_7FFB0E0A454C:
     mov dword ptr [rsp+60h], 2
     mov ecx, dword ptr [dword_7FFB0FED8D44]
     lea edx, [rcx+0E9A524Ah]
@@ -8089,6 +8133,7 @@ sub_7FFB0E0A2C90:
     nop
     cmp byte ptr [rsp+1Ah], dl
     jnz loc_7FFB0E0A6F5C
+    loc_7FFB0E0A58CC:
     movzx ecx, byte ptr [rsp+12h]
     mov byte ptr [rsp+0Ch], cl
     mov qword ptr [rsp+50h], 0
@@ -9228,6 +9273,7 @@ sub_7FFB0E0A2C90:
     add ecx, -2
     cmp ecx, 3
     ja def_7FFB0E0A5EDD
+    loc_7FFB0E0A5ECF:
     lea rdx, jpt_7FFB0E0A5EDD
     movsxd rcx, dword ptr (jpt_7FFB0E0A5EDD - 7FFB0FE4EE08h)[rdx+rcx*4]
     add rcx, rdx
@@ -10623,6 +10669,7 @@ sub_7FFB0E0A2C90:
     add bpl, 7Dh
     cmp cl, bpl
     jz def_7FFB0E0A5EDD
+    loc_7FFB0E0A655B:
     mov ecx, dword ptr [dword_7FFB0FED8D10]
     lea edx, [rcx-3A1EB04h]
     add ecx, -10011824h
@@ -13830,6 +13877,7 @@ sub_7FFB0E0A2C90:
     movsxd rcx, dword ptr (unk_7FFB0FE4ED40 - 7FFB0FE4ED40h)[rdx+rcx*4]
     add rcx, rdx
     jmp rcx
+    loc_7FFB0E0A75BC:
     movzx ecx, byte ptr [rax+0F9h]
     lea rdx, jpt_7FFB0E0A75D1
     movsxd rcx, dword ptr (jpt_7FFB0E0A75D1 - 7FFB0FE4EDE8h)[rdx+rcx*4]
@@ -13859,6 +13907,7 @@ sub_7FFB0E0A2C90:
     jmp loc_7FFB0E0A2D60
     loc_7FFB0E0A763B:
     jnz loc_7FFB0E0A865D
+    loc_7FFB0E0A7641:
     mov rcx, qword ptr [rsp+158h]
     movzx ecx, byte ptr [rcx]
     mov r14d, dword ptr [dword_7FFB0FE9C7A4]
@@ -16604,6 +16653,7 @@ sub_7FFB0E0A2C90:
     add bpl, 0ABh
     cmp cl, bpl
     jz loc_7FFB0E0A66EC
+    loc_7FFB0E0A83D5:
     mov ecx, dword ptr [dword_7FFB0FED8CEC]
     lea edx, [rcx+24EE2C75h]
     xor edx, 19D4EE85h
@@ -16945,6 +16995,7 @@ sub_7FFB0E0A2C90:
     mov byte ptr [rsp+12h], cl
     test cl, cl
     js loc_7FFB0E0A8A36
+    loc_7FFB0E0A85A6:
     lea rcx, [r9+10h]
     mov qword ptr [rsp+150h], rcx
     movzx ecx, byte ptr [r9+10h]
@@ -19335,11 +19386,14 @@ sub_7FFB0E0A2C90:
     loc_7FFB0E0A9407:
     mov dword ptr [rax+54h], 3
     jmp loc_7FFB0E0AAB10
+    loc_7FFB0E0A9413:
     movzx ecx, byte ptr [rax+0F9h]
     test ecx, ecx
     jz loc_7FFB0E0AAB10
+    loc_7FFB0E0A9422:
     cmp ecx, 1
     jnz loc_7FFB0E0AAAA8
+    loc_7FFB0E0A942B:
     nop
     nop
     nop
@@ -20753,6 +20807,7 @@ sub_7FFB0E0A2C90:
     add r8d, -3AEF585Ah
     mov dword ptr [rsp+4], r8d
     jmp loc_7FFB0E0A2D60
+    loc_7FFB0E0A9B7F:
     mov ecx, dword ptr [dword_7FFB0FED8CB0]
     lea r8d, [rcx-1246D71Eh]
     xor r8d, -9CF67C9h
@@ -20767,6 +20822,7 @@ sub_7FFB0E0A2C90:
     add ecx, 6FA7A982h
     mov dword ptr [rsp+4], ecx
     jmp loc_7FFB0E0A2D60
+    loc_7FFB0E0A9BCE:
     nop
     nop
     nop
@@ -20968,6 +21024,7 @@ sub_7FFB0E0A2C90:
     add r8b, 6Eh
     cmp cl, r8b
     jbe loc_7FFB0E0AAB10
+    loc_7FFB0E0A9CE7:
     movzx r8d, byte ptr [byte_7FFB0FE9C7B2]
     lea ecx, [r8+3Ch]
     mov r10d, ecx
@@ -21206,6 +21263,7 @@ sub_7FFB0E0A2C90:
     nop
     nop
     jmp loc_7FFB0E0AAB10
+    loc_7FFB0E0A9E15:
     mov ecx, dword ptr [dword_7FFB0FED8CE0]
     lea r8d, [rcx+1E1545B2h]
     xor r8d, 10A2478Ch
@@ -21216,6 +21274,7 @@ sub_7FFB0E0A2C90:
     xor ecx, r8d
     mov dword ptr [rsp+4], ecx
     jmp loc_7FFB0E0A2D60
+    loc_7FFB0E0A9E45:
     mov ecx, dword ptr [dword_7FFB0FED8CF0]
     lea edx, [rcx-74191EA1h]
     mov r8d, ecx
@@ -21227,6 +21286,7 @@ sub_7FFB0E0A2C90:
     add ecx, -7BCE611Eh
     mov dword ptr [rsp+4], ecx
     jmp loc_7FFB0E0A2D60
+    loc_7FFB0E0A9E7B:
     mov ecx, dword ptr [dword_7FFB0FED8D04]
     mov edx, ecx
     xor edx, -6674293Fh
@@ -21240,6 +21300,7 @@ sub_7FFB0E0A2C90:
     xor r10d, r11d
     mov dword ptr [rsp+4], r10d
     jmp loc_7FFB0E0A2D60
+    loc_7FFB0E0A9EBB:
     movzx ecx, byte ptr [rax+0F9h]
     mov byte ptr [rsp+0Eh], cl
     movzx r8d, byte ptr [byte_7FFB0FE9C7AF]
@@ -24101,6 +24162,7 @@ sub_7FFB0E0A2C90:
     add r15b, r14b
     cmp cl, r15b
     jnz loc_7FFB0E0A2D16
+    loc_7FFB0E0AADEE:
     mov ecx, dword ptr [dword_7FFB0FED8CDC]
     lea edx, [rcx-489B4323h]
     mov r8d, edx
@@ -25267,6 +25329,7 @@ sub_7FFB0E0A2C90:
     mov qword ptr [rsp+110h], rdx
     test cl, cl
     jz loc_7FFB0E0ABCAF
+    loc_7FFB0E0AB43C:
     mov ecx, dword ptr [dword_7FFB0FED8D50]
     mov r8d, ecx
     xor r8d, -79BB6C13h
@@ -26821,6 +26884,7 @@ sub_7FFB0E0A2C90:
     mov qword ptr [rsp+108h], rdx
     cmp cl, bl
     jnz loc_7FFB0E0ABC51
+    loc_7FFB0E0ABC04:
     mov ecx, dword ptr [dword_7FFB0FED8D4C]
     lea edx, [rcx-659C3C26h]
     mov r8d, edx
@@ -26869,6 +26933,7 @@ sub_7FFB0E0A2C90:
     loc_7FFB0E0ABCD9:
     cmp ecx, 5E6CF9Ah
     jnz loc_7FFB0E0ABE0E
+    loc_7FFB0E0ABCE5:
     mov ecx, dword ptr [rsp+84h]
     add ecx, dword ptr [rsp+80h]
     sub ecx, dword ptr [rsp+78h]
@@ -26980,6 +27045,7 @@ sub_7FFB0E0A2C90:
     loc_7FFB0E0ABD82:
     cmp ecx, 1
     jnz loc_7FFB0E0ABE06
+    loc_7FFB0E0ABD87:
     mov dword ptr [rsp+64h], 3
     jmp loc_7FFB0E0ABE86
     loc_7FFB0E0ABD94:

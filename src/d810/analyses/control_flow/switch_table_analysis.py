@@ -5,8 +5,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from d810.analyses.value_flow.induction_carrier import _const_value_from_varnode
+from d810.ir.expressions import ValueOpKind
 from d810.ir.flowgraph import BlockSnapshot, FlowGraph, InsnKind, InsnSnapshot
-from d810.ir.insn_projection import operand_storages, project_instruction
+from d810.ir.insn_projection import (
+    operand_storages,
+    project_instruction,
+    project_instruction_sequence,
+)
 from d810.ir.locations import WeakStackSlot
 from d810.ir.varnode import Space, Varnode
 from d810.core.logging import getLogger
@@ -110,19 +115,69 @@ def build_state_dispatcher_map_from_cases(
     )
 
 
-def _find_table_jump_state_var(insn: InsnSnapshot) -> Varnode | None:
-    """Return the canonical STACK state-variable operand of a table jump.
+_TABLE_STATE_VALUE_OPS = frozenset(
+    {
+        ValueOpKind.MOVE,
+        ValueOpKind.ZEXT,
+        ValueOpKind.SEXT,
+        ValueOpKind.AND,
+        ValueOpKind.OR,
+        ValueOpKind.XOR,
+        ValueOpKind.SUB,
+        # Hand-built portable fixtures created before nested operation kinds
+        # were mandatory expose one state leaf through a VENDOR temp.  It is
+        # safe only under the same leaf rules below; real lifted LOADs carry
+        # ValueOpKind.LOAD and are rejected.
+        ValueOpKind.VENDOR,
+    }
+)
 
-    Read off the canonical ``Instruction.inputs`` for the table-branch tail:
-    the projection exposes the (possibly SUBINSN-wrapped) state operand's stack
-    reference as a ``Varnode(Space.STACK, offset, size)`` input, never from the
-    raw ``insn.l`` operand slot.  The first STACK input is the table state
-    variable (matching the previous ``stack_refs[0]`` / ``stkoff`` read).
+
+def _find_table_jump_state_var(insn: InsnSnapshot) -> Varnode | None:
+    """Return a stack value that directly computes a table selector.
+
+    The canonical sequence preserves nested producers.  Follow the table
+    branch's root temp through only scalar copy/mask/arithmetic operations and
+    require exactly one stack leaf.  A LOAD is intentionally not transparent:
+    stack cells used to address ``switch (*table_cursor)`` are address inputs,
+    not the selected state value.
     """
-    for value in project_instruction(insn).inputs:
+    sequence = project_instruction_sequence(insn)
+    if not sequence:
+        return None
+    parent = sequence[-1]
+    producers = {
+        value.result: value
+        for value in sequence[:-1]
+        if value.result is not None
+    }
+    stack_leaves: list[Varnode] = []
+    visiting: set[Varnode] = set()
+
+    def visit(value: Varnode) -> bool:
         if value.space is Space.STACK:
-            return value
-    return None
+            stack_leaves.append(value)
+            return True
+        if value.space is Space.CONST:
+            return True
+        if value.space is not Space.TEMP or value in visiting:
+            return False
+        producer = producers.get(value)
+        if producer is None or producer.operation not in _TABLE_STATE_VALUE_OPS:
+            return False
+        visiting.add(value)
+        accepted = bool(producer.inputs) and all(visit(item) for item in producer.inputs)
+        visiting.remove(value)
+        return accepted
+
+    if len(parent.inputs) != 1 or not visit(parent.inputs[0]):
+        return None
+    unique = {
+        (int(value.offset), int(value.size)): value for value in stack_leaves
+    }
+    if len(unique) != 1:
+        return None
+    return next(iter(unique.values()))
 
 
 def _extract_cases_from_switch_control(

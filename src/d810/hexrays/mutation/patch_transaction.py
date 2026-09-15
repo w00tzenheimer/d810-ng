@@ -229,8 +229,8 @@ def _patch_plan_observation_items(plan: PatchPlan, snapshot: FlowGraph):
 
     items = []
     for item_index, step in enumerate(plan.steps):
-        source_ref, old_ref, target_ref, mutation_kind, reason, additional_targets = shape(
-            step
+        source_ref, old_ref, target_ref, mutation_kind, reason, additional_targets = (
+            shape(step)
         )
         source_serial, source_anchor = coordinate(source_ref)
         old_target_serial, old_target_anchor = coordinate(old_ref)
@@ -269,6 +269,20 @@ def _publish_patch_plan_observation(
     emitter = getattr(gateway, "event_emitter", None)
     if emitter is None:
         return
+    authority_json = ""
+    from d810.core.observability import (
+        get_active_diag_func_ea,
+        get_active_diag_path,
+    )
+
+    if (
+        participant.plan.unflatten_proposal is not None
+        and get_active_diag_path() is not None
+        and get_active_diag_func_ea() == int(snapshot.func_ea)
+    ):
+        authority_json = unflatten_authority_api.serialize_proposal_for_observation(
+            participant.plan.unflatten_proposal
+        )
     event = MbaMutationPlanned(
         session_id=str(gateway.session_id),
         function_ea=int(snapshot.func_ea),
@@ -282,6 +296,7 @@ def _publish_patch_plan_observation(
         planned_operation_count=len(participant.plan.steps),
         description=f"PatchPlan {participant.plan.plan_id}",
         items=_patch_plan_observation_items(participant.plan, snapshot),
+        unflatten_authority_json=authority_json,
     )
     emit_observation = getattr(gateway, "_emit_observation", None)
     if callable(emit_observation):
@@ -297,6 +312,8 @@ def _publish_patch_plan_observation(
         emitter,
         MbaMutationPlanned,
     )
+
+
 def _conditional_lowering_projection_failure(
     plan: PatchPlan,
     snapshot: FlowGraph,
@@ -524,7 +541,8 @@ class HexRaysPatchTransactionParticipant:
     attempt_authority: TransactionAttemptId | None = None
     attempt_id: TransactionAttemptId = field(init=False)
     structural_context: unflatten_authority_api.StructuralTransactionContext = field(
-        init=False, repr=False,
+        init=False,
+        repr=False,
     )
     _projection: CfgProjection | None = field(default=None, init=False, repr=False)
     _snapshot: FlowGraph | None = field(default=None, init=False, repr=False)
@@ -540,25 +558,47 @@ class HexRaysPatchTransactionParticipant:
     )
     _applied_count: int | None = field(default=None, init=False, repr=False)
     _observed_patch_binding: ObservedPatchBinding | None = field(
-        default=None, init=False, repr=False,
+        default=None,
+        init=False,
+        repr=False,
     )
     _unflatten_authority: object | None = field(default=None, init=False, repr=False)
-    _projected_unflatten_verdict: object | None = field(default=None, init=False, repr=False)
+    _projected_unflatten_verdict: object | None = field(
+        default=None, init=False, repr=False
+    )
     # Non-authoritative: what the producer/transaction seam was able to
     # verify about the route bundle during the projected preparation.  The
     # session that decided it is closed by the time a receipt is read, so
     # the value has to be carried rather than queried.
     _projected_route_authority_verification: object | None = field(
-        default=None, init=False, repr=False,
+        default=None,
+        init=False,
+        repr=False,
     )
-    _observed_unflatten_verdict: object | None = field(default=None, init=False, repr=False)
-    _observed_unflatten_verdict_occurrence: object | None = field(default=None, init=False, repr=False)
-    _observed_unflatten_acceptance: object | None = field(default=None, init=False, repr=False)
-    _observed_unflatten_case_occurrence: object | None = field(default=None, init=False, repr=False)
-    _observed_unflatten_ledger_occurrence: object | None = field(default=None, init=False, repr=False)
-    _observed_unflatten_delta_occurrence: object | None = field(default=None, init=False, repr=False)
-    _projected_unflatten_timing: unflatten_authority_api.PhaseTimings | None = field(default=None, init=False, repr=False)
-    _observed_unflatten_timing: unflatten_authority_api.PhaseTimings | None = field(default=None, init=False, repr=False)
+    _observed_unflatten_verdict: object | None = field(
+        default=None, init=False, repr=False
+    )
+    _observed_unflatten_verdict_occurrence: object | None = field(
+        default=None, init=False, repr=False
+    )
+    _observed_unflatten_acceptance: object | None = field(
+        default=None, init=False, repr=False
+    )
+    _observed_unflatten_case_occurrence: object | None = field(
+        default=None, init=False, repr=False
+    )
+    _observed_unflatten_ledger_occurrence: object | None = field(
+        default=None, init=False, repr=False
+    )
+    _observed_unflatten_delta_occurrence: object | None = field(
+        default=None, init=False, repr=False
+    )
+    _projected_unflatten_timing: unflatten_authority_api.PhaseTimings | None = field(
+        default=None, init=False, repr=False
+    )
+    _observed_unflatten_timing: unflatten_authority_api.PhaseTimings | None = field(
+        default=None, init=False, repr=False
+    )
 
     def __post_init__(self) -> None:
         if not isinstance(self.plan, PatchPlan):
@@ -579,7 +619,9 @@ class HexRaysPatchTransactionParticipant:
             )
         else:
             if not isinstance(attempt_authority, TransactionAttemptId):
-                raise TypeError("patch participant requires TransactionAttemptId authority")
+                raise TypeError(
+                    "patch participant requires TransactionAttemptId authority"
+                )
             if (
                 attempt_authority.plan_id != self.plan.plan_id
                 or attempt_authority.session_id != expected_session_id
@@ -588,15 +630,19 @@ class HexRaysPatchTransactionParticipant:
                 raise ValueError("patch participant attempt authority differs")
             self.attempt_id = attempt_authority
         self.structural_context = unflatten_authority_api.StructuralTransactionContext(
-            self.attempt_id, self.gateway.native_key, self._structural_coordinates(),
+            self.attempt_id,
+            self.gateway.native_key,
+            self._structural_coordinates(),
         )
 
     def _structural_coordinates(
         self,
     ) -> unflatten_authority_api.StructuralTransactionCoordinates:
         return unflatten_authority_api.StructuralTransactionCoordinates(
-            self.plan.snapshot_id, int(self.gateway.maturity),
-            int(self.gateway.generation), None,
+            self.plan.snapshot_id,
+            int(self.gateway.maturity),
+            int(self.gateway.generation),
+            None,
             self.gateway.identity_index.evidence_generation,
         )
 
@@ -673,7 +719,11 @@ class HexRaysPatchTransactionParticipant:
         )
         effectful_reachability_raw = check_effectful_reachability_preserved(
             snapshot,
-            post_adj=projection.graph.as_adjacency_dict(),
+            **(
+                {"post_cfg": projection.graph}
+                if self.plan.unflatten_proposal is not None
+                else {"post_adj": projection.graph.as_adjacency_dict()}
+            ),
         )
         effectful_reachability = effectful_reachability_raw
         entry_reachability = check_entry_reachability_not_collapsed(
@@ -689,7 +739,9 @@ class HexRaysPatchTransactionParticipant:
         )
 
         self.structural_context.require_scope(
-            self.attempt_id, self.gateway.native_key, self._structural_coordinates(),
+            self.attempt_id,
+            self.gateway.native_key,
+            self._structural_coordinates(),
         )
         semantic_timed_result = transaction_api.prepare_unflatten_authority_timed(
             source=snapshot,
@@ -719,64 +771,70 @@ class HexRaysPatchTransactionParticipant:
                 )
             semantic_authority = None
             semantic_verdict = None
-        elif isinstance(semantic_result, transaction_api.UnflattenAuthorityPreparationAccepted):
+        elif isinstance(
+            semantic_result, transaction_api.UnflattenAuthorityPreparationAccepted
+        ):
             semantic_authority = semantic_result.prepared
             semantic_verdict = semantic_result.verdict
         else:
             semantic_verdict = semantic_result.verdict
             semantic_authority = None
         self._projected_route_authority_verification = getattr(
-            semantic_result, "route_authority_verification", None,
+            semantic_result,
+            "route_authority_verification",
+            None,
         )
         # A preparation rejection is already the final projected-phase truth.
         # Accepted preparation remains provisional until the exact live patch
         # binding is sealed in ``bind``; publishing it here would allow a later
         # binding rejection to contradict the single projected observation.
-        if (
-            semantic_verdict is not None
-            and not isinstance(
-                semantic_result, transaction_api.UnflattenAuthorityPreparationAccepted
-            )
+        if semantic_verdict is not None and not isinstance(
+            semantic_result, transaction_api.UnflattenAuthorityPreparationAccepted
         ):
             from d810.hexrays.observability import observe_unflatten_authority_phase
+
             observe_unflatten_authority_phase(
                 mba=self.mba,
                 verdict=semantic_verdict,
-                observation_factory=lambda: (transaction_api.phase_observation(
-                    semantic_verdict,
-                    maturity=str(self.plan.source_maturity),
-                    source_ea=int(snapshot.func_ea),
-                    timings=self._projected_unflatten_timing,
-                    correlation=self.attempt_id,
-                ),),
+                observation_factory=lambda: (
+                    transaction_api.phase_observation(
+                        semantic_verdict,
+                        maturity=str(self.plan.source_maturity),
+                        source_ea=int(snapshot.func_ea),
+                        timings=self._projected_unflatten_timing,
+                        correlation=self.attempt_id,
+                    ),
+                ),
             )
-        canonical_rejected = (
-            not isinstance(semantic_result, transaction_api.UnflattenAuthorityPreparationAccepted)
-            and not isinstance(semantic_result, transaction_api.UnflattenAuthorityNotApplicable)
+        canonical_rejected = not isinstance(
+            semantic_result, transaction_api.UnflattenAuthorityPreparationAccepted
+        ) and not isinstance(
+            semantic_result, transaction_api.UnflattenAuthorityNotApplicable
         )
         if canonical_rejected:
             proposal_detail = ""
-            if isinstance(
-                semantic_result,
-                transaction_api.UnflattenAuthorityPreparationRejected,
-            ) and semantic_result.proposal_failure is not None:
+            if (
+                isinstance(
+                    semantic_result,
+                    transaction_api.UnflattenAuthorityPreparationRejected,
+                )
+                and semantic_result.proposal_failure is not None
+            ):
                 failure = semantic_result.proposal_failure
                 proposal_detail = (
                     f": proposal_stage={failure.stage.value} "
                     f"detail={failure.detail_code}"
                 )
             raise PatchTransactionPreflightRejected(
-                "projected unflatten authority rejected"
-                + proposal_detail,
+                "projected unflatten authority rejected" + proposal_detail,
                 unflatten_verdict=semantic_verdict,
             )
-        if (
-            isinstance(semantic_result, transaction_api.UnflattenAuthorityNotApplicable)
-            and (
-                not terminal_reachability.passed
-                or not effectful_reachability.passed
-                or not entry_reachability.passed
-            )
+        if isinstance(
+            semantic_result, transaction_api.UnflattenAuthorityNotApplicable
+        ) and (
+            not terminal_reachability.passed
+            or not effectful_reachability.passed
+            or not entry_reachability.passed
         ):
             effectful_detail = ""
             if not effectful_reachability.passed:
@@ -865,7 +923,9 @@ class HexRaysPatchTransactionParticipant:
                 raise TypeError("canonical bind returned malformed outcome")
             if bind_result is None:
                 bound_authority = None
-            elif not isinstance(bind_result, transaction_api.UnflattenAuthorityBindingAccepted):
+            elif not isinstance(
+                bind_result, transaction_api.UnflattenAuthorityBindingAccepted
+            ):
                 self._observe_projected_unflatten_verdict(bind_result.verdict)
                 raise PatchTransactionPreflightRejected(
                     "bound unflatten authority rejected",
@@ -894,7 +954,10 @@ class HexRaysPatchTransactionParticipant:
         return bound
 
     def _observe_projected_unflatten_verdict(
-        self, verdict: object, *, prepared_authority: object | None = None,
+        self,
+        verdict: object,
+        *,
+        prepared_authority: object | None = None,
     ) -> None:
         """Publish the one final projected-phase authority observation."""
 
@@ -904,6 +967,7 @@ class HexRaysPatchTransactionParticipant:
         if snapshot is None:
             raise RuntimeError("projected observation lacks immutable source snapshot")
         from d810.hexrays.observability import observe_unflatten_authority_phase
+
         observe_unflatten_authority_phase(
             mba=self.mba,
             verdict=verdict,
@@ -955,7 +1019,9 @@ class HexRaysPatchTransactionParticipant:
         )
         self._applied_count = receipt
         self.structural_context.begin_observation(
-            self.attempt_id, self.gateway.native_key, self._structural_coordinates(),
+            self.attempt_id,
+            self.gateway.native_key,
+            self._structural_coordinates(),
         )
         return observed
 
@@ -1020,7 +1086,11 @@ class _PatchTransactionLifecycle:
         realized = self.participant.realize(begun, self.gateway)
         if realized == 0:
             failure = self.gateway.transaction_failure
-            reason = failure.reason if failure is not None else "PatchPlan applied no operations"
+            reason = (
+                failure.reason
+                if failure is not None
+                else "PatchPlan applied no operations"
+            )
             raise RuntimeError(reason)
         return realized
 
@@ -1092,21 +1162,27 @@ class _PatchTransactionLifecycle:
                 terminal_reachability,
             )
 
-            semantic_timed_result = transaction_api.revalidate_observed_unflatten_authority_timed(
-                authority=active_unflatten_authority,
-                observed=observed,
-                observed_generation=int(self.gateway.generation),
-                generic_gates=semantic_gates,
-                observed_patch_binding=self.participant._observed_patch_binding,
-                structural_context=self.participant.structural_context,
+            semantic_timed_result = (
+                transaction_api.revalidate_observed_unflatten_authority_timed(
+                    authority=active_unflatten_authority,
+                    observed=observed,
+                    observed_generation=int(self.gateway.generation),
+                    generic_gates=semantic_gates,
+                    observed_patch_binding=self.participant._observed_patch_binding,
+                    structural_context=self.participant.structural_context,
+                )
             )
             if not isinstance(
                 semantic_timed_result, transaction_api.TimedUnflattenAuthorityResult
             ):
-                raise TypeError("canonical observed authority returned malformed outcome")
+                raise TypeError(
+                    "canonical observed authority returned malformed outcome"
+                )
             semantic_verdict = semantic_timed_result.result
             if type(semantic_verdict) is not transaction_api.UnflattenAuthorityVerdict:
-                raise TypeError("canonical observed authority returned malformed verdict")
+                raise TypeError(
+                    "canonical observed authority returned malformed verdict"
+                )
             self.participant._observed_unflatten_timing = semantic_timed_result.timings
             self.participant._observed_unflatten_verdict = semantic_verdict
             self.participant._observed_unflatten_verdict_occurrence = semantic_verdict
@@ -1121,22 +1197,25 @@ class _PatchTransactionLifecycle:
                 self.participant._observed_unflatten_acceptance = acceptance
                 self.participant._observed_unflatten_delta_occurrence = acceptance.delta
             from d810.hexrays.observability import observe_unflatten_authority_phase
+
             observe_unflatten_authority_phase(
                 mba=self.participant.mba,
                 verdict=semantic_verdict,
-                observation_factory=lambda: (transaction_api.phase_observation(
-                    semantic_verdict,
-                    maturity=str(self.plan.source_maturity),
-                    source_ea=int(observed.func_ea),
-                    timings=self.participant._observed_unflatten_timing,
-                    projected_case=(
-                        None
-                        if self.prepared.projected_unflatten_verdict is None
-                        else self.prepared.projected_unflatten_verdict.safety_case
+                observation_factory=lambda: (
+                    transaction_api.phase_observation(
+                        semantic_verdict,
+                        maturity=str(self.plan.source_maturity),
+                        source_ea=int(observed.func_ea),
+                        timings=self.participant._observed_unflatten_timing,
+                        projected_case=(
+                            None
+                            if self.prepared.projected_unflatten_verdict is None
+                            else self.prepared.projected_unflatten_verdict.safety_case
+                        ),
+                        prepared_authority=active_unflatten_authority.prepared,
+                        correlation=self.participant.attempt_id,
                     ),
-                    prepared_authority=active_unflatten_authority.prepared,
-                    correlation=self.participant.attempt_id,
-                ),),
+                ),
             )
             if not semantic_verdict.accepted:
                 failed = tuple(
@@ -1181,7 +1260,10 @@ class _PatchTransactionLifecycle:
         authority = self.bound.unflatten_authority
         observed_verdict = self.participant._observed_unflatten_verdict
         if authority is not None:
-            if observed_verdict is not self.participant._observed_unflatten_verdict_occurrence:
+            if (
+                observed_verdict
+                is not self.participant._observed_unflatten_verdict_occurrence
+            ):
                 raise PatchTransactionPostObservationRejected(
                     "observed semantic authority verdict occurrence drifted"
                 )
@@ -1205,21 +1287,32 @@ class _PatchTransactionLifecycle:
                 raise PatchTransactionPostObservationRejected(
                     "observed patch binding occurrence drifted"
                 )
-            if accepted.observed_case is not self.participant._observed_unflatten_case_occurrence:
+            if (
+                accepted.observed_case
+                is not self.participant._observed_unflatten_case_occurrence
+            ):
                 raise PatchTransactionPostObservationRejected(
                     "observed semantic authority case occurrence drifted"
                 )
-            if accepted.observed_ledger is not self.participant._observed_unflatten_ledger_occurrence:
+            if (
+                accepted.observed_ledger
+                is not self.participant._observed_unflatten_ledger_occurrence
+            ):
                 raise PatchTransactionPostObservationRejected(
                     "observed semantic authority ledger occurrence drifted"
                 )
-            if accepted.delta is not self.participant._observed_unflatten_delta_occurrence:
+            if (
+                accepted.delta
+                is not self.participant._observed_unflatten_delta_occurrence
+            ):
                 raise PatchTransactionPostObservationRejected(
                     "observed semantic authority delta occurrence drifted"
                 )
             try:
                 unflatten_authority_api.validate_observed_commit_authority(
-                    authority, observed_verdict, accepted,
+                    authority,
+                    observed_verdict,
+                    accepted,
                     structural_context=self.participant.structural_context,
                 )
             except (TypeError, ValueError) as error:
@@ -1354,6 +1447,7 @@ def execute_patch_transaction(
         )
     finally:
         participant.close()
+
 
 __all__ = [
     "BoundPatchCfgTransaction",

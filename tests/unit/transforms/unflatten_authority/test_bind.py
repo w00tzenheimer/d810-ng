@@ -3833,6 +3833,7 @@ def _3b4a_inventory_pair(
     *, two_effects: bool = False, unreachable_effect: bool = False,
     synthesized_stop: bool = False, unreachable_terminal: bool = False,
     foreign_projected_source_subjects: bool = False,
+    drop_projected_effect: bool = False,
 ):
     source, proposal, _exclusion, refs = exact_fixture()
     if two_effects or unreachable_effect or synthesized_stop:
@@ -3887,8 +3888,30 @@ def _3b4a_inventory_pair(
         source, proposal, plan, source=True,
         phase=model.UnflattenAuthorityPhase.PRODUCER_FORECAST,
     )
+    projected_source = source
+    if drop_projected_effect:
+        from dataclasses import replace
+        from d810.ir.flowgraph import FlowGraph, InsnKind
+
+        effect_owner = 2
+        block = projected_source.blocks[effect_owner]
+        instruction = replace(
+            block.insn_snapshots[0], kind=InsnKind.MOV, is_call=False
+        )
+        projected_source = FlowGraph(
+            {
+                **projected_source.blocks,
+                effect_owner: replace(
+                    block,
+                    insn_snapshots=(instruction,),
+                    tail_kind=InsnKind.MOV,
+                ),
+            },
+            projected_source.entry_serial,
+            projected_source.func_ea,
+        )
     projected_inventory = transaction_api._build_semantic_graph_inventory(
-        source, proposal, plan, source=False,
+        projected_source, proposal, plan, source=False,
         phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
         source_subjects=(() if foreign_projected_source_subjects else source_inventory.subjects),
     )
@@ -3926,13 +3949,44 @@ def test_raw_effect_gate_uses_canonical_partition_and_accepts_legacy_subset() ->
         assert subset.pre_effectful_source_owners == fact.pre_effectful_source_owners
         assert subset.raw_retained_source_owners == fact.raw_retained_source_owners
         assert subset.raw_lost_source_owners == ()
+    canonically_retained = bind.bind_raw_effect_gate_phase_fact(
+        source_inventory=source_inventory,
+        projected_inventory=projected_inventory,
+        raw_gate_facts=GenericEffectfulGateFacts(
+            False, frozenset({owners[0]}), frozenset(),
+            frozenset({owners[0]}), "two-owner-nested-effect-blind-spot",
+        ),
+    )
+    assert not canonically_retained.raw_lost_source_owners
+    assert {
+        owner.ref for owner in canonically_retained.raw_retained_source_owners
+    } == {
+        row.owner_ref for row in source_inventory.effects
+    }
+
+
+def test_raw_effect_gate_rejects_loss_when_canonical_effect_is_missing() -> None:
+    from d810.transforms.unflatten_authority.gates import GenericEffectfulGateFacts
+
+    _plan, source_inventory, projected_inventory = _3b4a_inventory_pair(
+        two_effects=True,
+        drop_projected_effect=True,
+    )
+    missing_owner = next(
+        row.owner_serial
+        for row in source_inventory.effects
+        if row.owner_serial == 2
+    )
     with pytest.raises(ValueError, match="contradicts canonical inventory"):
         bind.bind_raw_effect_gate_phase_fact(
             source_inventory=source_inventory,
             projected_inventory=projected_inventory,
             raw_gate_facts=GenericEffectfulGateFacts(
-                False, frozenset({owners[0]}), frozenset(),
-                frozenset({owners[0]}), "two-owner-contradiction",
+                False,
+                frozenset({missing_owner}),
+                frozenset(),
+                frozenset({missing_owner}),
+                "canonical-effect-missing",
             ),
         )
 
@@ -13252,6 +13306,92 @@ def test_bind_corridor_semantic_exclusion_requires_one_canonical_route_link() ->
             source_inventory=_source,
             candidate_inventory=_candidate,
             phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        )
+
+
+def test_semantic_exclusion_matches_state_transform_first_feeder() -> None:
+    """A transform corridor links through its exact first physical feeder."""
+
+    key = NativePreanalysisKey(
+        "corridor-transform", "x86", 64, 0,
+        "f" * 64, "p" * 64, "s" * 64,
+    )
+    source = StableBlockIdentity.from_instruction_eas(
+        (0x1300, 0x1304), native_key=key,
+    )
+    feeder = StableBlockIdentity.from_instruction_eas(
+        (0x1400,), native_key=key,
+    )
+    state = state_identity()
+    exclusion = SimpleNamespace(
+        normalized_state=7,
+        state_identity=state,
+        source=SimpleNamespace(anchor_ea=0x1300),
+        feeder=SimpleNamespace(anchor_ea=0x1400),
+    )
+    transform = SimpleNamespace(
+        owner_identity=source,
+        owner_anchor_ea=0x1300,
+        source_identity=source,
+        feeder_identity=feeder,
+        feeder_anchor_ea=0x1400,
+        state_identity=state,
+        state_constant=7,
+    )
+    proof = SimpleNamespace(
+        state_write=None,
+        state_transform=transform,
+        state_partition=None,
+        source_identity=source,
+        source_owner_identity=None,
+        source_owner_anchor_ea=None,
+    )
+
+    assert bind._semantic_exclusion_route_proof_matches(
+        exclusion,
+        proof,
+        source_identity=source,
+        feeder_identity=feeder,
+    )
+    assert not bind._semantic_exclusion_route_proof_matches(
+        SimpleNamespace(
+            **{**vars(exclusion), "feeder": SimpleNamespace(anchor_ea=0x1401)}
+        ),
+        proof,
+        source_identity=source,
+        feeder_identity=feeder,
+    )
+
+
+def test_corridor_route_endpoint_accepts_inner_anchor_in_exact_native_identity() -> None:
+    """Route endpoints may be inside a catalog block, not only at its start."""
+
+    key = NativePreanalysisKey(
+        "corridor-inner-anchor", "x86", 64, 0,
+        "f" * 64, "p" * 64, "s" * 64,
+    )
+    identity = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x1100, 0x1110),),
+        native_key=key,
+        exact_instruction_eas=(0x1100, 0x1108),
+    )
+    ref = NativeBlockRef(identity)
+    witness = SimpleNamespace(
+        block_ref=ref,
+        anchor_ea=0x1100,
+        native_instruction_eas=(0x1100, 0x1108),
+    )
+
+    assert bind._corridor_node_exact_native_identity(
+        model.CorridorCoveragePathNode(ref, 0x1108),
+        source_catalog_by_ref={ref: witness},
+        native_key=key,
+    ) == identity
+    with pytest.raises(ValueError, match="differs from source catalog"):
+        bind._corridor_node_exact_native_identity(
+            model.CorridorCoveragePathNode(ref, 0x1110),
+            source_catalog_by_ref={ref: witness},
+            native_key=key,
         )
 
 
@@ -22741,6 +22881,70 @@ def test_state_transform_direct_route_owns_exact_bypassed_feeder_only() -> None:
     assert not bind._state_transform_direct_old_target_is_proof_owned(
         proof, destination_ref,
     )
+
+
+def test_state_transform_feeder_direct_selects_exact_comparison_bypass() -> None:
+    """A transform feeder may bypass only its proved comparison entry."""
+    from d810.transforms.unflatten_authority.proposal import (
+        canonical_patch_step_descriptors,
+    )
+
+    authority, plan, source_inventory, *_ = _compiler_corridor_unsupported_case(
+        proof_kind=route_model.SemanticRouteProofKind.STATE_TRANSFORM,
+    )
+    proof = authority.proposal.route_evidence.route_proofs[0]
+    transform = proof.state_transform
+    assert transform is not None
+
+    def ref_for(identity):
+        return next(
+            row.block_ref for row in source_inventory.blocks
+            if row.block_ref.identity == identity
+        )
+
+    feeder_ref = ref_for(transform.feeder_identity)
+    comparison_ref = ref_for(transform.comparison_entry_identity)
+    destination_ref = ref_for(proof.destinations[0].target_identity)
+    direct_plan = replace(
+        plan,
+        steps=(PatchRedirectGoto(feeder_ref, comparison_ref, destination_ref),),
+        new_blocks=(),
+    )
+    descriptor = canonical_patch_step_descriptors(direct_plan)[0]
+
+    assert bind._state_transform_feeder_direct_coordinates_match(
+        direct_plan, proof, descriptor,
+    )
+    lineage_index = bind._index_lineage_fact_groups(
+        direct_plan,
+        transaction_api._derive_patch_lineage_facts(
+            source_inventory, direct_plan,
+        ),
+    )
+    route_claim = next(
+        claim for claim in authority.proposal.claims
+        if type(claim) is model.EquivalentSemanticRouteClaim
+    )
+    selected = bind._select_lineage_fact_group(
+        lineage_index,
+        plan=direct_plan,
+        claim=route_claim,
+        proof=proof,
+        source_inventory=source_inventory,
+    )
+    assert selected.descriptor.step_index == 0
+
+    for drifted_step in (
+        PatchRedirectGoto(ref_for(transform.source_identity), comparison_ref, destination_ref),
+        PatchRedirectGoto(feeder_ref, feeder_ref, destination_ref),
+        PatchRedirectGoto(feeder_ref, comparison_ref, comparison_ref),
+    ):
+        drifted_plan = replace(direct_plan, steps=(drifted_step,))
+        assert not bind._state_transform_feeder_direct_coordinates_match(
+            drifted_plan,
+            proof,
+            canonical_patch_step_descriptors(drifted_plan)[0],
+        )
 
 
 @pytest.mark.parametrize("step_type", (PatchRedirectGoto, PatchRedirectBranch))

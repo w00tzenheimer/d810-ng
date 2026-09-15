@@ -1112,7 +1112,7 @@ def test_preflight_starts_one_session_and_hands_its_state_to_the_resolver(
     monkeypatch.setattr(
         computed_goto_resolver,
         "_has_unresolved_computed_goto",
-        lambda function_ea: function_ea == 0x401000,
+        lambda _function_ea: False,
     )
     monkeypatch.setattr(
         computed_goto_resolver,
@@ -1138,7 +1138,10 @@ def test_preflight_starts_one_session_and_hands_its_state_to_the_resolver(
         ),
     )
 
-    assert manager.prepare_native_preanalysis(0x401000) == 5
+    assert manager.prepare_native_preanalysis(
+        0x401000,
+        force_computed_goto_probe=True,
+    ) == 5
 
     state = resolver_session_state(session)
     # Session events belong to the coordinator. The manager must not mirror
@@ -1158,6 +1161,81 @@ def test_preflight_starts_one_session_and_hands_its_state_to_the_resolver(
     ]
     assert state.materialization is not None
     assert state.materialization.resolution is resolution
+
+
+def test_preflight_does_not_reclassify_nested_relative_switches_as_dispatcher(
+    monkeypatch,
+) -> None:
+    from d810.hexrays.preanalysis import indirect_jump_labels
+    from d810.hexrays.preanalysis import relative_dword_jump_tables
+
+    session = SimpleNamespace(
+        native_preanalysis=NativePreanalysisSessionState(),
+        native_key=NATIVE_KEY,
+        resolver_attachment=None,
+        event=SimpleNamespace(function_ea=0x401000),
+    )
+
+    class _Lifecycle:
+        @staticmethod
+        def ensure_hexrays_session(**_kwargs):
+            return session, True
+
+        @staticmethod
+        def begin_native_preanalysis(_session):
+            return None
+
+        @staticmethod
+        def finish_native_preanalysis(_session):
+            return None
+
+    manager = _started_manager_without_init()
+    manager.decompilation_lifecycle = _Lifecycle()
+    manager._database_identity = "sample.i64"
+    manager._native_materialization_executor = object()
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "stage_computed_goto_preanalysis",
+        lambda _function_ea, *, state: None,
+    )
+    proof = SimpleNamespace(
+        load_ea=0x401010,
+        jump_ea=0x401020,
+        table_ea=0x402000,
+        target_eas=(0x403000, 0x404000),
+    )
+    monkeypatch.setattr(
+        relative_dword_jump_tables,
+        "prove_relative_dword_jump_tables",
+        lambda _function_ea: (proof,),
+    )
+    monkeypatch.setattr(
+        indirect_jump_labels,
+        "materialize_proven_indirect_label_targets",
+        lambda **_kwargs: indirect_jump_labels.IndirectLabelMaterializationResult(
+            function_ea=0x401000,
+            table_address=0x402000,
+            table_count=2,
+            label_start=0x403000,
+            label_end=0x405000,
+            target_count=2,
+            materialized_target_count=2,
+            dispatch_jump_ea=0x401020,
+            jump_xref_count=0,
+            switch_info_installed=True,
+            appended_tail=False,
+            success=True,
+            reason="already_materialized_switches",
+        ),
+    )
+
+    assert manager.prepare_native_preanalysis(
+        0x401000,
+        force_computed_goto_probe=True,
+    ) == 1
+    assert not indirect_jump_labels.is_materialized_indirect_dispatcher(
+        resolver_session_state(session)
+    )
 
 
 def test_preflight_records_complete_call_companion_mismatch(

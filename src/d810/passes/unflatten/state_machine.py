@@ -15,6 +15,7 @@ additive + behavior-neutral (not wired into the maturity hook).
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 
 from d810.passes.pass_pipeline import (
@@ -170,6 +171,17 @@ from d810.transforms.unflatten_authority.proposal import (
 )
 
 logger = logging.getLogger("d810.passes.unflatten.state_machine")
+
+
+@contextmanager
+def _diagnose_unflatten_emission_failure():
+    """Expose an emitter exception before the callback host safely abstains."""
+
+    try:
+        yield
+    except Exception:
+        logger.exception("unflat lower-state emission raised before publication")
+        raise
 
 LOWER_STATE_MACHINE_PLAN_METADATA = "lower_state_machine_plan_metadata"
 CANONICAL_SEMANTIC_EVIDENCE = "canonical_semantic_evidence"
@@ -3385,7 +3397,9 @@ class LowerStateMachine(PipelinePass):
             # what the authority transaction reads, and any later attempt to
             # *join* on the producer's bundle is refused instead of answered
             # by a scope that outlived its analysis.
-            with route_authority_phase("unflatten-emission"):
+            with route_authority_phase(
+                "unflatten-emission"
+            ), _diagnose_unflatten_emission_failure():
                 plan = emit_minimal_unflatten(
                     context.graph,
                     dispatcher,
@@ -3475,7 +3489,20 @@ class LowerStateMachine(PipelinePass):
                     native_cfg_persistence=self.native_cfg_persistence,
                     canonical_route_evidence=canonical_route_evidence,
                 )
+            produced_step_count = len(plan.steps)
+            produced_block_count = len(plan.new_blocks)
             plan = _typed_or_empty_unflatten_plan(plan)
+            logger.info(
+                "unflat lower-state publication: produced_steps=%d "
+                "produced_blocks=%d published_steps=%d published_blocks=%d "
+                "proposal=%s abstention=%s",
+                produced_step_count,
+                produced_block_count,
+                len(plan.steps),
+                len(plan.new_blocks),
+                plan.unflatten_proposal is not None,
+                plan.metadata_dict().get("unflatten_producer_abstention"),
+            )
             plan_metadata = plan.metadata_dict()
             _publish(context, LOWER_STATE_MACHINE_PLAN_METADATA, plan_metadata)
             return PassResult(

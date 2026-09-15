@@ -143,6 +143,7 @@ from d810.core.function_storage_config import FunctionRecipeStorageConfig
 from d810.mba.discovery_store import MbaDiscoveryStore
 from d810.mba.residual_observation_lifecycle import (
     MbaResidualObservationLifecycle,
+    resolve_mba_discovery_store_path,
 )
 from d810.mba.residual_observation_sink import SqliteMbaResidualObservationSink
 from d810.manager.hexrays_pass_pipeline import build_hexrays_flowgraph_pipeline
@@ -873,10 +874,10 @@ class D810Manager:
             # to outlive a stop/start cycle: ``state.load_project()`` restarts
             # the manager after the rules have already bound (d81-uncr).  A
             # per-start lifecycle would hand each rule a dead routing point.
+            discovery_store_path = resolve_mba_discovery_store_path(self.log_dir)
+            discovery_store_path.parent.mkdir(parents=True, exist_ok=True)
             lifecycle = MbaResidualObservationLifecycle(
-                store_factory=lambda: MbaDiscoveryStore(
-                    self.log_dir / "d810_mba_discovery.sqlite3"
-                ),
+                store_factory=lambda: MbaDiscoveryStore(discovery_store_path),
                 registry_factory=_host_capability_registry,
                 # Read per generation, so a restart picks up a settings change.
                 sink_factory=lambda store: SqliteMbaResidualObservationSink(
@@ -1079,7 +1080,12 @@ class D810Manager:
     def cprofiler(self):
         return self.profiling.cprofiler
 
-    def prepare_native_preanalysis(self, function_ea: int) -> int:
+    def prepare_native_preanalysis(
+        self,
+        function_ea: int,
+        *,
+        force_computed_goto_probe: bool = False,
+    ) -> int:
         """Establish resolver evidence before the first top-level decompile.
 
         This explicit batch/headless entry point may generate auxiliary
@@ -1117,13 +1123,78 @@ class D810Manager:
                 return 0
             resolution = state.portable_evidence.computed_goto_resolution
             if resolution is None:
-                if not _has_unresolved_computed_goto(function_ea):
+                if (
+                    not force_computed_goto_probe
+                    and not _has_unresolved_computed_goto(function_ea)
+                ):
                     return 0
                 resolution = stage_computed_goto_preanalysis(
                     function_ea,
                     state=state,
                 )
                 if resolution is None or not resolution.jmp_targets:
+                    prepared_relative_tables = 0
+                    if force_computed_goto_probe:
+                        from d810.hexrays.preanalysis.indirect_jump_labels import (
+                            materialize_proven_indirect_label_targets,
+                        )
+                        from d810.hexrays.preanalysis.relative_dword_jump_tables import (
+                            prove_relative_dword_jump_tables,
+                        )
+
+                        lifecycle.begin_native_preanalysis(session)
+                        try:
+                            grouped_proofs = {}
+                            for proof in prove_relative_dword_jump_tables(function_ea):
+                                grouped_proofs.setdefault(
+                                    (proof.table_ea, proof.target_eas), []
+                                ).append(proof)
+                            for (table_ea, target_eas), group in sorted(
+                                grouped_proofs.items()
+                            ):
+                                outcome = materialize_proven_indirect_label_targets(
+                                    function_ea=function_ea,
+                                    table_address=table_ea,
+                                    target_eas=target_eas,
+                                    dispatch_jump_eas=tuple(
+                                        proof.jump_ea for proof in group
+                                    ),
+                                    executor=self._native_materialization_executor,
+                                )
+                                logger.info(
+                                    "relative-dword jump-table materialization: "
+                                    "func=0x%X load=0x%X jump=0x%X table=0x%X "
+                                    "targets=%d success=%s reason=%s",
+                                    function_ea,
+                                    min(proof.load_ea for proof in group),
+                                    min(proof.jump_ea for proof in group),
+                                    table_ea,
+                                    len(target_eas),
+                                    outcome.success,
+                                    outcome.reason,
+                                )
+                                # A function may contain proven relative-dword
+                                # switch tables inside ordinary handler bodies.
+                                # Their metadata is required for complete CFG
+                                # lifting, but it does not prove that the state
+                                # machine's dispatcher is itself indirect.
+                                # ``mark_indirect_dispatcher`` is deliberately
+                                # reserved for that stronger fact: setting it
+                                # here forces the whole function into the
+                                # Tigress CALLS-only recovery contract and can
+                                # suppress a distinct comparison dispatcher at
+                                # GLBOPT1.
+                                prepared_relative_tables += int(outcome.success)
+                        finally:
+                            lifecycle.finish_native_preanalysis(session)
+                    if prepared_relative_tables:
+                        return prepared_relative_tables
+                    logger.info(
+                        "native preanalysis unresolved for func=0x%X "
+                        "forced_probe=%s",
+                        function_ea,
+                        force_computed_goto_probe,
+                    )
                     return 0
             if state.materialization is None and not state.materialized:
                 state.begin_materialization(resolution)
@@ -1353,7 +1424,10 @@ class D810Manager:
         while True:
             if not recovery_mode:
                 if eager_native_preanalysis:
-                    self.prepare_native_preanalysis(function_ea)
+                    self.prepare_native_preanalysis(
+                        function_ea,
+                        force_computed_goto_probe=True,
+                    )
                 else:
                     # Session ownership is cheap and required by Stage C and
                     # live callback collection. Keep it independent from the
@@ -3358,6 +3432,9 @@ class D810Manager:
                 install_switch_info=request.install_switch_info,
                 state_base=request.state_base,
                 state_var_stkoff=request.state_var_stkoff,
+                additional_dispatch_jump_eas=(
+                    request.additional_dispatch_jump_eas
+                ),
             )
             plan = build_indirect_label_metadata_plan(
                 plan_request,
@@ -4057,6 +4134,9 @@ class D810Manager:
                     D810Manager._fragment_root_group_observations(
                         event.root_publication_groups
                     )
+                ),
+                unflatten_authority_json=getattr(
+                    event, "unflatten_authority_json", ""
                 ),
             )
         )

@@ -47,6 +47,7 @@ from d810.analyses.control_flow.linearized_state_dag import (
     _resolve_exact_cover_anchor,
     _resolve_owner_family_fallback,
     _is_range_backed_only_handoff_anchor,
+    _is_supplemental_existing_handler_handoff,
     _resolve_nonraw_owner_semantic_alias,
     _resolve_nonraw_dispatcher_cover_alias,
     _resolve_semantic_entry_anchor,
@@ -85,6 +86,25 @@ from d810.analyses.control_flow.transition_report import (
     TransitionSummary,
     build_dispatcher_transition_report_from_graph,
 )
+
+
+def test_supplemental_route_prefers_exact_interval_dispatcher(monkeypatch) -> None:
+    monkeypatch.setattr(
+        linearized_state_dag,
+        "resolve_exit_via_condition_chain_default_snapshot",
+        lambda *_args: 13,
+    )
+    dispatcher = SimpleNamespace(lookup=lambda state: 99 if state == 0x1234 else None)
+
+    assert (
+        linearized_state_dag._resolve_condition_chain_state(
+            object(),
+            dispatcher_entry_serial=5,
+            state_value=0x1234,
+            dispatcher=dispatcher,
+        )
+        == 99
+    )
 
 
 def test_linearized_state_dag_does_not_import_live_hexrays() -> None:
@@ -6930,6 +6950,22 @@ def test_stable_handoff_anchor_allows_exact_dispatcher_binding() -> None:
         exact_handler,
         report,
         dispatcher,
+    )
+
+
+def test_supplemental_exact_alias_to_existing_handler_is_stable_handoff() -> None:
+    assert _is_supplemental_existing_handler_handoff(
+        resolved=109,
+        handler_entry_blocks={3, 109},
+        condition_chain_blocks={2, 4, 56},
+    )
+
+
+def test_supplemental_condition_chain_anchor_is_not_existing_handler_handoff() -> None:
+    assert not _is_supplemental_existing_handler_handoff(
+        resolved=56,
+        handler_entry_blocks={3, 56, 109},
+        condition_chain_blocks={2, 4, 56},
     )
 
 

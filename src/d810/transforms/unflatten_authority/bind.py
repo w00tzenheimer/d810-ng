@@ -3,6 +3,7 @@
 from __future__ import annotations
 from .transaction_facts import active_facts, same_admitted_input, validate_internal
 
+from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, fields as dataclass_fields, is_dataclass, replace
 import hashlib
@@ -77,6 +78,74 @@ from .ids import OccurrenceDigest, _occurrence_stamp
 
 
 logger = getLogger(__name__)
+
+
+def _semantic_exclusion_route_proof_matches(
+    exclusion: model.CorridorSemanticExclusion,
+    proof: route_model.SemanticRouteProof,
+    *,
+    source_identity: StableBlockIdentity,
+    feeder_identity: StableBlockIdentity | None,
+) -> bool:
+    """Match one excluded prefix corridor to its canonical route certificate.
+
+    A direct assignment owns and carries its state in the exclusion source.
+    A state-transform route carries the same logical source through its exact
+    first physical feeder.  Keep those evidence shapes distinct and require
+    every available source/feeder coordinate to agree with the sealed suffix.
+    """
+
+    direct = bool(
+        exclusion.feeder is None
+        and proof.state_write is not None
+        and proof.source_identity == source_identity
+        and proof.state_write.identity == source_identity
+        and proof.state_write.state_variable == exclusion.state_identity
+        and proof.state_write.state_constant == exclusion.normalized_state
+    )
+    transform = getattr(proof, "state_transform", None)
+    if transform is not None:
+        return bool(
+            exclusion.feeder is not None
+            and feeder_identity is not None
+            and proof.source_identity == source_identity
+            and proof.source_owner_identity is None
+            and transform.owner_identity == source_identity
+            and transform.owner_anchor_ea == exclusion.source.anchor_ea
+            and transform.source_identity == source_identity
+            and transform.feeder_identity == feeder_identity
+            and transform.feeder_anchor_ea == exclusion.feeder.anchor_ea
+            and transform.state_identity == exclusion.state_identity
+            and transform.state_constant == exclusion.normalized_state
+        )
+    return direct
+
+
+def _corridor_node_exact_native_identity(
+    node: model.CorridorCoveragePathNode,
+    *,
+    source_catalog_by_ref: Mapping[object, object],
+    native_key: object,
+) -> StableBlockIdentity:
+    """Resolve a corridor endpoint in the canonical route-anchor namespace."""
+
+    witness = source_catalog_by_ref.get(node.block_ref)
+    if witness is None:
+        raise ValueError("corridor semantic exclusion node is absent from source catalog")
+    if type(witness.block_ref) is NativeBlockRef:
+        expected = witness.block_ref.identity
+    else:
+        expected = StableBlockIdentity.from_instruction_eas(
+            witness.native_instruction_eas,
+            native_key=native_key,
+        )
+    if (
+        expected.exact_instruction_eas
+        != frozenset(witness.native_instruction_eas)
+        or not expected.native_ranges.contains(int(node.anchor_ea))
+    ):
+        raise ValueError("corridor semantic exclusion identity differs from source catalog")
+    return expected
 
 
 @dataclass(frozen=True, slots=True)
@@ -1334,6 +1403,46 @@ def bind_raw_effect_gate_phase_fact(
         )
     )
     structurally_lost = frozenset(expected_effect_owners) - structurally_retained
+    canonically_retained_effect_owners: set[int] = set()
+    for serial in structurally_retained:
+        owner_ref = source_owner_refs[serial]
+        projected_serial = projected_serial_by_ref[owner_ref]
+        source_effects = Counter(
+            (
+                row.instruction_ordinal,
+                row.instruction_ea,
+                row.effect_kind,
+                row.opcode,
+                row.width,
+            )
+            for row in source_inventory.effects
+            if row.owner_serial == serial
+        )
+        projected_effects = Counter(
+            (
+                row.instruction_ordinal,
+                row.instruction_ea,
+                row.effect_kind,
+                row.opcode,
+                row.width,
+            )
+            for row in projected_inventory.effects
+            if row.owner_serial == projected_serial and row.owner_ref == owner_ref
+        )
+        if source_effects and all(
+            projected_effects[key] >= count
+            for key, count in source_effects.items()
+        ):
+            canonically_retained_effect_owners.add(serial)
+
+    # The generic checker sees only top-level portable instruction snapshots.
+    # A nested STORE/CALL can therefore look lost after its containing
+    # expression is rewritten even when the exact canonical effect occurrence
+    # and owner reference survive.  Normalize only that exact, multiplicity-
+    # preserving case; any missing or changed canonical effect still fails.
+    false_raw_losses = lost & canonically_retained_effect_owners
+    retained = retained | false_raw_losses
+    lost = lost - false_raw_losses
     local_scalarized_owners = frozenset(
         occurrence.source_site.owner_serial
         for occurrence in (
@@ -1343,9 +1452,29 @@ def bind_raw_effect_gate_phase_fact(
     )
     allowed_lost = structurally_lost | local_scalarized_owners
     if not lost <= allowed_lost:
+        conflicts = tuple(sorted(lost - allowed_lost))
+        conflict_details = tuple(
+            (
+                serial,
+                source_owner_refs[serial],
+                projected_serial_by_ref.get(source_owner_refs[serial]),
+                tuple(
+                    (row.instruction_ea, row.effect_kind)
+                    for row in source_inventory.effects
+                    if row.owner_serial == serial
+                ),
+                tuple(
+                    (row.instruction_ea, row.effect_kind)
+                    for row in projected_inventory.effects
+                    if row.owner_serial
+                    == projected_serial_by_ref.get(source_owner_refs[serial])
+                ),
+            )
+            for serial in conflicts
+        )
         raise ValueError(
             "raw gate effect-owner disposition contradicts canonical inventory "
-            f"lost_conflicts={tuple(sorted(lost - allowed_lost))!r}"
+            f"lost_conflicts={conflicts!r} details={conflict_details!r}"
         )
     # Older gates can report only a subset of source effect owners.  Complete
     # that view from immutable structural reachability, exactly as before; a
@@ -4825,6 +4954,54 @@ def _proof_source_direct_coordinates_match(
     )
 
 
+def _state_transform_feeder_direct_coordinates_match(
+    plan: PatchPlan,
+    proof: route_model.SemanticRouteProof,
+    descriptor: CanonicalPatchStepDescriptor,
+) -> bool:
+    """Match the exact transform-feeder -> comparison bypass.
+
+    A state-transform proof seals the complete source, arithmetic feeder,
+    optional state feeder, and comparison-entry corridor.  Once the arithmetic
+    feeder has produced its proved constant, the physical redirect bypasses
+    the obsolete state feeder (when present) and comparison.  Admit only that
+    exact first suffix edge and the proof's sole destination.
+    """
+    transform = proof.state_transform
+    if (
+        descriptor.step_kind is not PatchStepKind.REDIRECT_GOTO
+        or descriptor.step_index < 0
+        or descriptor.step_index >= len(plan.steps)
+        or type(plan.steps[descriptor.step_index]) is not PatchRedirectGoto
+        or len(descriptor.route_refs) != 3
+        or descriptor.helper_refs
+        or proof.proof_kind is not route_model.SemanticRouteProofKind.STATE_TRANSFORM
+        or proof.shape is not route_model.SemanticRouteShape.DIRECT
+        or transform is None
+        or len(proof.destinations) != 1
+        or proof.destinations[0].role is not SemanticEdgeRole.DIRECT
+    ):
+        return False
+    feeder_ref, comparison_ref, destination_ref = descriptor.route_refs
+    step = plan.steps[descriptor.step_index]
+    destination = proof.destinations[0]
+    bypassed_suffix_identity = (
+        transform.state_feeder_identity
+        if transform.state_feeder_identity is not None
+        else transform.comparison_entry_identity
+    )
+    return bool(
+        step.from_serial == feeder_ref
+        and step.old_target == comparison_ref
+        and step.new_target == destination_ref
+        and _ref_matches_identity(feeder_ref, transform.feeder_identity)
+        and _ref_matches_identity(comparison_ref, bypassed_suffix_identity)
+        and _ref_matches_identity(
+            destination_ref, destination.target_identity,
+        )
+    )
+
+
 def _state_carrier_feeder_direct_coordinates_match(
     plan: PatchPlan,
     proof: route_model.SemanticRouteProof,
@@ -5458,6 +5635,12 @@ def _select_lineage_fact_group(
             plan, proof, entry.descriptor,
         )
     ) if not is_conditional else ()
+    state_transform_feeder_direct = tuple(
+        entry for entry in kind_entries(PatchStepKind.REDIRECT_GOTO)
+        if _state_transform_feeder_direct_coordinates_match(
+            plan, proof, entry.descriptor,
+        )
+    ) if not is_conditional else ()
     state_carrier_feeder_direct = tuple(
         entry for entry in kind_entries(PatchStepKind.REDIRECT_GOTO)
         if _state_carrier_feeder_direct_coordinates_match(
@@ -5526,6 +5709,8 @@ def _select_lineage_fact_group(
             if owner_bound_direct
             else proof_source_direct
             if proof_source_direct
+            else state_transform_feeder_direct
+            if state_transform_feeder_direct
             else shared_state_carrier_source_bypass
             if shared_state_carrier_source_bypass
             else state_carrier_feeder_direct
@@ -5557,6 +5742,20 @@ def _select_lineage_fact_group(
                 carrier.requires_feeder_clone,
             )
         )
+        transform = proof.state_transform
+        transform_coordinates = (
+            None if transform is None else (
+                identity_serial(transform.owner_identity),
+                identity_serial(transform.source_identity),
+                identity_serial(transform.feeder_identity),
+                identity_serial(transform.state_feeder_identity),
+                identity_serial(transform.comparison_entry_identity),
+                tuple(
+                    identity_serial(point.identity)
+                    for point in transform.corridor
+                ),
+            )
+        )
         proof_identities = {
             proof.source_identity,
             proof.source_owner_identity,
@@ -5580,7 +5779,7 @@ def _select_lineage_fact_group(
         )
         logger.warning(
             "projected route has no owning step: proof=%s kind=%s shape=%s "
-            "source=%r owner=%r destinations=%r carrier=%r nearby=%r",
+            "source=%r owner=%r destinations=%r carrier=%r transform=%r nearby=%r",
             proof.proof_id,
             proof.proof_kind.value,
             proof.shape.value,
@@ -5588,6 +5787,7 @@ def _select_lineage_fact_group(
             proof.source_owner_identity,
             tuple(destination.target_identity for destination in proof.destinations),
             carrier_coordinates,
+            transform_coordinates,
             nearby,
         )
         selected_arm_redirects = tuple(
@@ -5996,6 +6196,7 @@ def _legacy_structural_projected_routes(*, source_authority: model.SourceBoundRo
             conditional_helper_serial = None
             retained_prefix_match = False
             retained_prefix_source_ref = None
+            state_transform_feeder_direct_match = False
             state_carrier_helper_corridor_match = False
             shared_state_carrier_source_bypass_match = False
             route_source_ref = source_ref
@@ -6045,6 +6246,16 @@ def _legacy_structural_projected_routes(*, source_authority: model.SourceBoundRo
                 route_source_ref, route_source_serial_number = _ref_and_serial(
                     descriptor.route_refs[0], source_by_ref,
                 )
+            if (
+                descriptor.step_kind is PatchStepKind.REDIRECT_GOTO
+                and _state_transform_feeder_direct_coordinates_match(
+                    plan, claim_proof, descriptor,
+                )
+            ):
+                state_transform_feeder_direct_match = True
+                route_source_ref, route_source_serial_number = _ref_and_serial(
+                    descriptor.route_refs[0], source_by_ref,
+                )
             if descriptor.step_kind in {
                 PatchStepKind.REDIRECT_GOTO,
                 PatchStepKind.BYPASS_TRAMPOLINE,
@@ -6062,6 +6273,9 @@ def _legacy_structural_projected_routes(*, source_authority: model.SourceBoundRo
                         and (
                             _state_transform_direct_old_target_is_proof_owned(
                                 claim_proof, old_ref,
+                            )
+                            or _state_transform_feeder_direct_coordinates_match(
+                                plan, claim_proof, descriptor,
                             )
                             or _owner_bound_direct_coordinates_match(
                                 plan, claim_proof, descriptor,
@@ -6162,6 +6376,11 @@ def _legacy_structural_projected_routes(*, source_authority: model.SourceBoundRo
                         plan, proof, descriptor,
                     )
                 )
+                state_transform_feeder_direct_match = (
+                    _state_transform_feeder_direct_coordinates_match(
+                        plan, proof, descriptor,
+                    )
+                )
                 state_carrier_feeder_direct_match = (
                     _state_carrier_feeder_direct_coordinates_match(
                         plan, proof, descriptor,
@@ -6202,6 +6421,11 @@ def _legacy_structural_projected_routes(*, source_authority: model.SourceBoundRo
                     )
                 )
                 if owner_bound_direct_match:
+                    direct_proof_match = True
+                    route_source_ref, route_source_serial_number = _ref_and_serial(
+                        descriptor.route_refs[0], source_by_ref,
+                    )
+                if state_transform_feeder_direct_match:
                     direct_proof_match = True
                     route_source_ref, route_source_serial_number = _ref_and_serial(
                         descriptor.route_refs[0], source_by_ref,
@@ -8185,6 +8409,11 @@ def _make_route_kernels():
                         plan, proof, draft.descriptor,
                     )
                 )
+                transform_feeder_direct = (
+                    _state_transform_feeder_direct_coordinates_match(
+                        plan, proof, draft.descriptor,
+                    )
+                )
                 shared_carrier_source_bypass = (
                     _shared_state_carrier_source_bypass_coordinates_match(
                         plan, proof, draft.descriptor, source_inventory,
@@ -8259,6 +8488,11 @@ def _make_route_kernels():
                         proof.state_carrier.feeder_anchor_ea,
                     )
                     if carrier_feeder_direct and proof.state_carrier is not None
+                    else identity_owner(
+                        proof.state_transform.feeder_identity,
+                        proof.state_transform.feeder_anchor_ea,
+                    )
+                    if transform_feeder_direct and proof.state_transform is not None
                     else identity_owner(
                         proof.source_owner_identity,
                         proof.source_owner_anchor_ea,
@@ -10806,19 +11040,11 @@ def _classify_corridor_coverage_forecast(
     }
 
     def exact_native_identity(node: model.CorridorCoveragePathNode) -> StableBlockIdentity:
-        witness = source_catalog_by_ref.get(node.block_ref)
-        if witness is None or witness.anchor_ea != node.anchor_ea:
-            raise ValueError("corridor semantic exclusion node is absent from source catalog")
-        if type(witness.block_ref) is NativeBlockRef:
-            expected = witness.block_ref.identity
-        else:
-            expected = StableBlockIdentity.from_instruction_eas(
-                witness.native_instruction_eas,
-                native_key=proposal.source_identity_catalog.native_key,
-            )
-        if expected.exact_instruction_eas != frozenset(witness.native_instruction_eas):
-            raise ValueError("corridor semantic exclusion identity differs from source catalog")
-        return expected
+        return _corridor_node_exact_native_identity(
+            node,
+            source_catalog_by_ref=source_catalog_by_ref,
+            native_key=proposal.source_identity_catalog.native_key,
+        )
 
     def bind_semantic_exclusion(
         exclusion_id: str,
@@ -10845,7 +11071,13 @@ def _classify_corridor_coverage_forecast(
         if any(edge not in source_edges for edge in zip(suffix_serials, suffix_serials[1:])):
             raise ValueError("corridor semantic exclusion suffix is absent from source topology")
         source_identity = exact_native_identity(exclusion.source)
+        feeder_identity = (
+            None
+            if exclusion.feeder is None
+            else exact_native_identity(exclusion.feeder)
+        )
         candidates = []
+        route_link_diagnostics: list[tuple[object, ...]] = []
         for claim in (proposal.claims if claims is None else claims):
             if type(claim) is not model.EquivalentSemanticRouteClaim:
                 continue
@@ -10854,22 +11086,21 @@ def _classify_corridor_coverage_forecast(
             proof = route_proofs.get(claim.route_proof_ids[0])
             if proof is None:
                 continue
-            source_match = (
-                proof.source_anchor_ea == exclusion.source.anchor_ea
-                and proof.source_identity == source_identity
-            )
             matching_destinations = tuple(
                 destination
                 for destination in proof.destinations
                 if destination.state_constant == exclusion.normalized_state
             )
-            state_route_match = (
-                proof.state_write is not None
-                and proof.state_write.state_variable == exclusion.state_identity
-                and proof.state_write.state_constant == exclusion.normalized_state
-                and len(matching_destinations) == 1
+            route_match = (
+                len(matching_destinations) == 1
+                and _semantic_exclusion_route_proof_matches(
+                    exclusion,
+                    proof,
+                    source_identity=source_identity,
+                    feeder_identity=feeder_identity,
+                )
             )
-            if source_match and state_route_match:
+            if route_match:
                 destination = matching_destinations[0]
                 try:
                     destination_subject = _native_route_destination_subject_for_proof_destination(
@@ -10891,10 +11122,45 @@ def _classify_corridor_coverage_forecast(
                     )
             else:
                 destination_match = False
-            if source_match and state_route_match and destination_match:
+            if matching_destinations:
+                partition = proof.state_partition
+                route_link_diagnostics.append((
+                    proof.proof_id,
+                    proof.proof_kind.value,
+                    route_match,
+                    destination_match,
+                    proof.source_identity == source_identity,
+                    proof.source_owner_identity == source_identity,
+                    proof.source_owner_anchor_ea,
+                    None if partition is None else (
+                        partition.feeder_identity == feeder_identity,
+                        partition.feeder_anchor_ea,
+                        tuple(
+                            (
+                                member.owner_identity == source_identity,
+                                member.owner_anchor_ea,
+                                member.state_constant,
+                            )
+                            for member in partition.members
+                        ),
+                    ),
+                    tuple(
+                        (destination.target_anchor_ea, destination.state_constant)
+                        for destination in matching_destinations
+                    ),
+                ))
+            if route_match and destination_match:
                 candidates.append(claim)
         if len(candidates) != 1:
-            raise ValueError("corridor semantic exclusion has zero or multiple route links")
+            raise ValueError(
+                "corridor semantic exclusion has zero or multiple route links: "
+                f"exclusion_id={exclusion_id} "
+                f"state=0x{int(exclusion.normalized_state):08X} "
+                f"source_anchor=0x{int(exclusion.source.anchor_ea):X} "
+                f"candidate_count={len(candidates)} "
+                f"candidate_claims={tuple(claim.claim_id for claim in candidates)} "
+                f"route_diagnostics={tuple(route_link_diagnostics)}"
+            )
         matched_exclusions.append(exclusion_id)
         claim = candidates[0]
         correlation_specs.append((
@@ -12769,6 +13035,25 @@ def bind_subjects(
             model.SemanticSubjectRole.SEMANTIC_ROUTE_SOURCE,
             model.SemanticSubjectRole.SEMANTIC_ROUTE_DESTINATION,
         }
+        if is_route_endpoint and type(owner) is LogicalBlockRef:
+            # LogicalBlockRef may name a native occurrence only when the
+            # identity index had to distinguish multiple physical blocks with
+            # the same native anchor/origins.  A lone logical catalog row is
+            # merely a relabelled physical proof source and must not acquire
+            # route authority.  Keep the occurrence escape hatch exact to the
+            # duplicated logical family that justifies it.
+            occurrence_family = tuple(
+                candidate
+                for candidate in catalog.blocks
+                if type(candidate.block_ref) is LogicalBlockRef
+                and candidate.anchor_ea == witness.anchor_ea
+                and candidate.native_instruction_eas
+                == witness.native_instruction_eas
+            )
+            if len(occurrence_family) < 2:
+                raise ValueError(
+                    "unique binding does not match its block observation"
+                )
         route_anchor_matches = (
             is_route_endpoint
             and type(owner) is NativeBlockRef
@@ -12895,6 +13180,8 @@ def bind_projected_subjects(
     generation: int,
     serial_by_ref: Mapping[object, int],
     native_instruction_eas_by_ref: Mapping[object, Sequence[int]] | None = None,
+    graph_start_eas_by_ref: Mapping[object, int] | None = None,
+    anchor_loss_owner_refs: frozenset[object] = frozenset(),
     source_inventory: model.SemanticGraphInventory | None = None,
     observed_logical_endpoint_occurrences: tuple[
         model.ObservedLogicalEndpointOccurrence, ...
@@ -12989,6 +13276,14 @@ def bind_projected_subjects(
     )
     if native_instruction_eas_by_ref is not None and set(origins) != set(serial_by_ref):
         raise ValueError("projected native-origin binding must cover every projected reference")
+    if graph_start_eas_by_ref is not None and set(graph_start_eas_by_ref) != set(serial_by_ref):
+        raise ValueError("projected graph-start binding must cover every projected reference")
+    if type(anchor_loss_owner_refs) is not frozenset:
+        raise TypeError("anchor_loss_owner_refs must be an exact frozenset")
+    if not anchor_loss_owner_refs <= set(serial_by_ref):
+        raise ValueError("anchor-loss owners must belong to projected references")
+    if anchor_loss_owner_refs and phase is not model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY:
+        raise ValueError("anchor-loss owners require observed phase")
     if any(ref not in serial_by_ref for ref in origins):
         raise ValueError("projected native-origin binding contains a foreign reference")
     for ref, supplied in origins.items():
@@ -13005,6 +13300,14 @@ def bind_projected_subjects(
                     witnesses[ref].anchor_ea,
                     supplied_origins,
                     expected_origins,
+                    observed_graph_start_ea=(
+                        None
+                        if (
+                            graph_start_eas_by_ref is None
+                            or ref not in anchor_loss_owner_refs
+                        )
+                        else graph_start_eas_by_ref[ref]
+                    ),
                 )
             ):
                 raise _projected_native_origin_mismatch(
@@ -13207,6 +13510,8 @@ def bind_inventory_subjects(
     terminals: Sequence[model.InventoryTerminalSite],
     reachable_serials: Sequence[int],
     native_instruction_eas_by_ref: Mapping[object, Sequence[int]] | None = None,
+    graph_start_eas_by_ref: Mapping[object, int] | None = None,
+    anchor_loss_owner_refs: frozenset[object] = frozenset(),
     source_inventory: model.SemanticGraphInventory | None = None,
     observed_logical_endpoint_occurrences: tuple[
         model.ObservedLogicalEndpointOccurrence, ...
@@ -13249,6 +13554,8 @@ def bind_inventory_subjects(
         generation=generation,
         serial_by_ref=serial_by_ref,
         native_instruction_eas_by_ref=native_instruction_eas_by_ref,
+        graph_start_eas_by_ref=graph_start_eas_by_ref,
+        anchor_loss_owner_refs=anchor_loss_owner_refs,
         source_inventory=source_inventory,
         observed_logical_endpoint_occurrences=(
             observed_logical_endpoint_occurrences

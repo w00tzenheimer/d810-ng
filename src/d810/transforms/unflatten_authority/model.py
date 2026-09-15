@@ -4355,13 +4355,19 @@ def _phase_native_origin_subset_preserves_anchor(
     anchor_ea: int | None,
     observed_instruction_eas: tuple[int, ...],
     expected_instruction_eas: tuple[int, ...],
+    *,
+    observed_graph_start_ea: int | None = None,
 ) -> bool:
     """Allow phase-local origin loss only when it retains the canonical anchor.
 
     A native physical block entry can be the canonical anchor without being an
     instruction origin. In that one case a strict projected/observed subset need not
     contain the anchor. If the canonical anchor is an exact instruction, it
-    must remain present in the observed origin subset.
+    normally remains present in the observed origin subset. Hex-Rays may DCE
+    a proved-dead leading selector write after a redirect while retaining the
+    physical block at the same native start. That narrower case remains the
+    same identity only when the observed graph start exactly equals the
+    catalog anchor; a suffix alone is not sufficient evidence.
 
     Total loss is the boundary case of that same subset, not a distinct
     identity failure: a proven fake jump folded away leaves the physical block
@@ -4378,7 +4384,14 @@ def _phase_native_origin_subset_preserves_anchor(
     ):
         return False
     if anchor_ea in expected_instruction_eas:
-        return anchor_ea in observed_instruction_eas
+        return (
+            anchor_ea in observed_instruction_eas
+            or (
+                type(block_ref) is NativeBlockRef
+                and observed_graph_start_ea == anchor_ea
+                and block_ref.identity.native_ranges.contains(anchor_ea)
+            )
+        )
     return (
         type(block_ref) is NativeBlockRef
         and block_ref.identity.native_ranges.contains(anchor_ea)
@@ -4454,9 +4467,18 @@ class SourceIdentityCatalog:
         for rows in by_anchor.values():
             if len(rows) <= 1:
                 continue
-            if any(type(row.block_ref) is not NativeBlockRef for row in rows):
+            row_ref_types = {type(row.block_ref) for row in rows}
+            if row_ref_types == {LogicalBlockRef}:
+                # The MBA identity index emits a distinct logical occurrence
+                # reference when Hex-Rays has more than one live block for the
+                # same native identity.  Those refs are the exact
+                # session/version coordinates needed to keep cloned source
+                # blocks injective; rejecting them here makes typed lowering
+                # impossible precisely when clone disambiguation succeeded.
+                continue
+            if row_ref_types != {NativeBlockRef}:
                 raise ValueError(
-                    "shared source anchor requires distinct NativeBlockRef rows"
+                    "shared source anchor requires one homogeneous ref family"
                 )
             if len({row.block_ref for row in rows}) != len(rows):
                 raise ValueError("shared source anchor requires distinct native refs")
@@ -5958,6 +5980,10 @@ class SemanticGraphInventory:
             )
         for occurrence in conditional_occurrences:
             occurrence.__post_init__()
+        anchor_loss_owner_refs = frozenset(
+            occurrence.patch_fact.owner_ref
+            for occurrence in (*occurrences, *conditional_occurrences)
+        )
         if type(self.graph_fingerprint) is not str:
             raise TypeError("graph_fingerprint must be an exact string")
         _id(self.graph_fingerprint, "graph_fingerprint")
@@ -6222,6 +6248,11 @@ class SemanticGraphInventory:
                         block.anchor_ea,
                         block.native_instruction_eas,
                         tuple(sorted(identity.exact_instruction_eas)),
+                        observed_graph_start_ea=(
+                            block.graph_start_ea
+                            if block.block_ref in anchor_loss_owner_refs
+                            else None
+                        ),
                     )
                 )
                 if (
@@ -6280,7 +6311,17 @@ class SemanticGraphInventory:
                         and binding.anchor_ea != block.anchor_ea
                     )
                 ):
-                    raise ValueError("unique binding does not match its block observation")
+                    raise ValueError(
+                        "unique binding does not match its block observation"
+                        f" subject={binding.subject.subject_id}"
+                        f" role={binding.role.value}"
+                        f" serial={binding.serial}"
+                        f" ref_match={binding.block_ref == block.block_ref}"
+                        f" binding_anchor={binding.anchor_ea!r}"
+                        f" observed_anchor={block.anchor_ea!r}"
+                        f" binding_origins={binding.native_instruction_eas!r}"
+                        f" observed_origins={block.native_instruction_eas!r}"
+                    )
                 occurrence = binding.observed_logical_occurrence
                 if occurrence is not None:
                     if not _is_exact_logical_function_exit_row(block):
@@ -6493,8 +6534,14 @@ class SemanticGraphInventory:
                 and type(item.locator) is EffectSubjectLocator
                 and item.subject_id in source_subject_set
             }
-            if expected_candidate_effects - effect_subject_keys:
-                raise ValueError("candidate reachable effects are missing subjects")
+            missing_candidate_effects = (
+                expected_candidate_effects - effect_subject_keys
+            )
+            if missing_candidate_effects:
+                raise ValueError(
+                    "candidate reachable effects are missing subjects: "
+                    f"{tuple(sorted(missing_candidate_effects, key=repr))!r}"
+                )
             expected_candidate_terminals = reachable_terminal_keys - {
                 (
                     item.locator.block_ref,
@@ -6507,8 +6554,14 @@ class SemanticGraphInventory:
                 and type(item.locator) is TerminalSubjectLocator
                 and item.subject_id in source_subject_set
             }
-            if expected_candidate_terminals - terminal_subject_keys:
-                raise ValueError("candidate reachable terminals are missing subjects")
+            missing_candidate_terminals = (
+                expected_candidate_terminals - terminal_subject_keys
+            )
+            if missing_candidate_terminals:
+                raise ValueError(
+                    "candidate reachable terminals are missing subjects: "
+                    f"{tuple(sorted(missing_candidate_terminals, key=repr))!r}"
+                )
         for block in self.blocks:
             if block.transfer_ea is not None and block.transfer_ea not in block.native_instruction_eas:
                 raise ValueError("block transfer EA is outside instruction rows")

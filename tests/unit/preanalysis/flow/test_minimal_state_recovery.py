@@ -363,6 +363,22 @@ def _jle_stack_const(ea: int, stkoff: int, const: int, target: int) -> InsnSnaps
     )
 
 
+def _table_jump(ea: int, stkoff: int, cases: tuple[tuple[tuple[int, ...], int], ...]) -> InsnSnapshot:
+    return InsnSnapshot(
+        opcode=53,
+        ea=ea,
+        operands=(),
+        l=_stk(stkoff),
+        r=MopSnapshot(
+            t=-1,
+            size=0,
+            switch_cases=cases,
+            kind=OperandKind.CASE_LIST,
+        ),
+        kind=InsnKind.TABLE_JUMP,
+    )
+
+
 _OP_AND = 21  # m_and (portable evaluator default)
 _OP_OR = 22  # m_or  (portable evaluator default)
 
@@ -3786,7 +3802,7 @@ def test_partitioned_fixpoint_splits_predecessor_sensitive_stack_alias_store(
         assert revoked.proof is None
 
 
-def test_shared_suffix_folds_per_handler(_seam) -> None:
+def test_shared_suffix_folds_per_handler(_seam, monkeypatch) -> None:
     # blk10 and blk60 both flow into the SHARED xor suffix blk11, with different
     # register constants -> different folded next-states. The scan must fold each
     # for its own entry and stop at the dispatcher, not drift into the other.
@@ -3824,6 +3840,18 @@ def test_shared_suffix_folds_per_handler(_seam) -> None:
     disp = _dispatcher(
         {0x10: 10, 0x60: 60, 0x1A2893D9: 20, 0x33333333: 70}, exit_block=99
     )
+    projected: list[int] = []
+    real_project = state_machine_analysis.project_instruction_sequence
+
+    def counted_project(snapshot: InsnSnapshot):
+        projected.append(id(snapshot))
+        return real_project(snapshot)
+
+    monkeypatch.setattr(
+        state_machine_analysis,
+        "project_instruction_sequence",
+        counted_project,
+    )
     edges = {
         e.handler: e
         for e in recover_handler_transitions(
@@ -3834,6 +3862,100 @@ def test_shared_suffix_folds_per_handler(_seam) -> None:
     assert edges[10].arms[0].target_handler == 20
     assert edges[60].arms[0].next_state == 0x33333333
     assert edges[60].arms[0].target_handler == 70
+    unique_snapshots = {
+        id(snapshot)
+        for block in fg.blocks.values()
+        for snapshot in block.insn_snapshots
+    }
+    assert set(projected) == unique_snapshots
+    assert len(projected) == len(unique_snapshots)
+
+
+def test_handler_scan_dominates_reconverged_equivalent_path_states(
+    _seam, monkeypatch
+) -> None:
+    blocks = {
+        2: _blk(2, (10, 20), (161,), ()),
+        10: _blk(10, (100,), (2,), ()),
+        20: _blk(20, (2,), (2,), ()),
+    }
+    predecessor = 10
+    for index in range(6):
+        branch = 100 + index * 10
+        left = branch + 1
+        right = branch + 2
+        join = branch + 3
+        blocks[branch] = _blk(branch, (left, right), (predecessor,), ())
+        blocks[left] = _blk(left, (join,), (branch,), ())
+        blocks[right] = _blk(right, (join,), (branch,), ())
+        next_branch = 100 + (index + 1) * 10
+        successor = 161 if index == 5 else next_branch
+        blocks[join] = _blk(join, (successor,), (left, right), ())
+        predecessor = join
+    blocks[161] = _blk(
+        161,
+        (2,),
+        (153,),
+        (_mov(0x1610, _num(0x20), _stk(_STATE_OFF)),),
+    )
+    fg = FlowGraph(blocks=blocks, entry_serial=2, func_ea=0x1000)
+    dispatcher = _dispatcher({0x10: 10, 0x20: 20}, exit_block=99)
+    real_transfer = minimal_state_recovery._transfer_snapshot_constant_block
+    transfer_count = 0
+
+    def counted_transfer(*args, **kwargs):
+        nonlocal transfer_count
+        transfer_count += 1
+        return real_transfer(*args, **kwargs)
+
+    monkeypatch.setattr(
+        minimal_state_recovery,
+        "_transfer_snapshot_constant_block",
+        counted_transfer,
+    )
+
+    transitions = {
+        transition.handler: transition
+        for transition in recover_handler_transitions(
+            fg,
+            dispatcher,
+            _STATE_OFF,
+            dispatcher_entry_serial=2,
+        )
+    }
+
+    assert transitions[10].arms[0].next_state == 0x20
+    assert transitions[10].arms[0].target_handler == 20
+    assert transfer_count < 50
+
+
+def test_handler_scan_stops_at_unsupported_multiway_switch(_seam) -> None:
+    fg = FlowGraph(
+        blocks={
+            2: _blk(2, (10, 20), (31, 32, 33), ()),
+            10: _blk(10, (11,), (2,), ()),
+            11: _blk(11, (21, 22, 23), (10,), ()),
+            20: _blk(20, (2,), (2,), ()),
+            21: _blk(21, (31,), (11,), ()),
+            22: _blk(22, (32,), (11,), ()),
+            23: _blk(23, (33,), (11,), ()),
+            31: _blk(31, (2,), (21,), (_mov(0x3100, _num(0x20), _stk(_STATE_OFF)),)),
+            32: _blk(32, (2,), (22,), (_mov(0x3200, _num(0x20), _stk(_STATE_OFF)),)),
+            33: _blk(33, (2,), (23,), (_mov(0x3300, _num(0x20), _stk(_STATE_OFF)),)),
+        },
+        entry_serial=2,
+        func_ea=0x1000,
+    )
+
+    paths = minimal_state_recovery._scan_handler(
+        fg,
+        10,
+        state_var_stkoff=_STATE_OFF,
+        dispatcher_entry_serial=2,
+        handler_entries={10, 20},
+    )
+
+    assert paths == [(None, None, (10, 11))]
 
 
 def test_terminal_when_next_state_routes_to_exit(_seam) -> None:
@@ -6080,8 +6202,8 @@ def test_exact_state_normalizer_chain_routes_to_semantic_destination() -> None:
     assert resolved.is_return is False
 
 
-def test_u32_state_router_without_normalizer_feeder_abstains_cleanly() -> None:
-    """Arm routing cannot traverse a normalizer without its exact feeder."""
+def test_u32_state_router_without_normalizer_feeder_stops_at_known_handler() -> None:
+    """A known handler starts a second state epoch unless this row owns its feeder."""
 
     graph, dag = _typed_state_route_reconciliation_fixture()
     transition = _coarse_transition(14, 0x1BABC1DC, 13)
@@ -6094,6 +6216,18 @@ def test_u32_state_router_without_normalizer_feeder_abstains_cleanly() -> None:
         state_var_reg=None,
         via_block=None,
     ) is None
+    known_handler_route = minimal_state_recovery._route_u32_state_through_decision_dag(
+        0x1BABC1DC,
+        graph,
+        dag,
+        state_var_stkoff=_STATE_OFF,
+        state_var_reg=None,
+        via_block=None,
+        semantic_handler_entries=frozenset({2}),
+    )
+    assert known_handler_route is not None
+    assert known_handler_route.target == 2
+    assert known_handler_route.path_serials == (4,)
     routed = minimal_state_recovery._route_state_through_decision_dag(
         transition,
         graph,
@@ -7223,6 +7357,45 @@ def test_call_result_semantic_leaf_requires_explicit_u32_carrier_kill(
     )
 
 
+@pytest.mark.parametrize(
+    ("overwrite_width", "reads_carrier", "expected"),
+    ((8, False, True), (4, False, False), (8, True, False)),
+)
+def test_local_full_width_overwrite_kills_incoming_route_carrier(
+    overwrite_width: int,
+    reads_carrier: bool,
+    expected: bool,
+) -> None:
+    active = Varnode(Space.REGISTER, 8, 8)
+    overwrite_result = Varnode(Space.REGISTER, 8, overwrite_width)
+    stack_left = Varnode(Space.STACK, 408, 8)
+    stack_right = Varnode(Space.STACK, 536, 8)
+    predicate_rhs = Varnode(Space.STACK, 140, 8)
+    overwrite_inputs = (
+        (active, stack_right) if reads_carrier else (stack_left, stack_right)
+    )
+    instructions = (
+        Instruction(
+            operation=ValueOpKind.ADD,
+            inputs=overwrite_inputs,
+            result=overwrite_result,
+        ),
+        Instruction(
+            operation=ValueOpKind.MOVE,
+            inputs=(active, predicate_rhs),
+            control=InstructionControl(predicate=PredicateKind.SGE),
+        ),
+    )
+
+    assert minimal_state_recovery._is_exact_local_carrier_overwrite_semantic_leaf(
+        instructions,
+        expected_state_identities=frozenset(
+            {StorageIdentity(StorageIdentityKind.REGISTER, 8)}
+        ),
+        expected_state_width=8,
+    ) is expected
+
+
 @pytest.mark.parametrize("branch_width,overwrite", ((1, False), (4, False), (1, True)))
 @pytest.mark.parametrize("register_base", (0, 8, 16, 24, 128))
 def test_call_result_low_byte_leaf_tracks_the_compared_definition(branch_width, overwrite, register_base):
@@ -7679,6 +7852,20 @@ def test_recovered_semantic_handler_is_not_reclassified_as_invalid_normalizer() 
     )
     incoming = _coarse_transition(14, 0x1BABC1DC, 2)
     outgoing = _coarse_transition(2, 0x1939CB36, 19)
+
+    incoming_route = minimal_state_recovery._route_u32_state_through_decision_dag(
+        0x1BABC1DC,
+        graph,
+        dag,
+        state_var_stkoff=_STATE_OFF,
+        state_var_reg=None,
+        via_block=3,
+        semantic_transition_sources=frozenset({2}),
+    )
+    assert incoming_route is not None
+    assert incoming_route.entry_serial == dag.root
+    assert incoming_route.path_serials
+    assert len(incoming_route.path_serials) == len(incoming_route.path_anchors)
 
     resolved = resolve_materialized_indirect_transfer_targets(
         (incoming, outgoing),
@@ -8241,6 +8428,30 @@ def test_weak_region_seeded_state_is_superseded_by_exact_source_carrier() -> Non
         resolved.proof.reason == "exact_source_carrier_u32;decision_dag_final_route;"
         "superseded=region_partitioned_fixpoint:region_seeded:interval"
     )
+
+
+def test_unrouted_region_seeded_state_is_superseded_by_exact_source_carrier() -> None:
+    """An unattributed region seed is not a source-local state definition."""
+    graph, dag = _typed_state_route_reconciliation_fixture()
+    coarse = replace(
+        _coarse_transition(14, 0x1888937E, 13),
+        target_handler=None,
+        via_block=None,
+        proof=TransitionProof(
+            "region_partitioned_fixpoint",
+            "region_seeded",
+            True,
+            route_source_kinds=(),
+        ),
+    )
+
+    (resolved,) = _resolve_carrier_transition(graph, dag, coarse)
+
+    assert resolved.next_state == 0x1BABC1DC
+    assert resolved.target_handler == 19
+    assert resolved.via_block == 3
+    assert resolved.proof is not None
+    assert resolved.proof.route_source_kinds == ("decision_dag", "source_carrier")
 
 
 def test_assertion_seeded_untrusted_state_is_superseded_by_source_carrier() -> None:
@@ -9479,6 +9690,7 @@ def test_unresolved_two_stage_transform_is_partitioned_from_all_predecessors(
     (
         "transition_source",
         "assertion",
+        "assertion_without_exact",
         "classified_target",
         "materialized_source",
     ),
@@ -9494,7 +9706,7 @@ def test_transition_target_arithmetic_is_not_a_source_transform(
         _mov(0x180010104, _num(outgoing_state), _stk(_STATE_OFF)),
         _goto(0x180010108, 5),
     )
-    if handler_evidence == "assertion":
+    if handler_evidence in {"assertion", "assertion_without_exact"}:
         handler_insns = (
             replace(
                 _mov(0x1800100FC, _num(incoming_state), _stk(_STATE_OFF)),
@@ -9543,7 +9755,7 @@ def test_transition_target_arithmetic_is_not_a_source_transform(
         incoming_state,
         (
             None
-            if handler_evidence == "assertion"
+            if handler_evidence in {"assertion", "assertion_without_exact"}
             else (100 if handler_evidence == "materialized_source" else 4)
         ),
         False,
@@ -9593,6 +9805,11 @@ def test_transition_target_arithmetic_is_not_a_source_transform(
         if handler_evidence == "transition_source"
         else ((1, 4),)
     )
+    if handler_evidence == "assertion_without_exact":
+        proof = resolved[0].proof
+        assert proof is not None
+        assert "assertion_handler_handoff" in proof.route_source_kinds
+        assert "exact" not in proof.route_source_kinds
 
 
 def test_partitioned_intermediate_state_before_assertion_handler_is_omitted(
@@ -13666,6 +13883,83 @@ def test_candidate_prefix_recovers_each_partitioned_feeder_source_without_seeded
             assert row.proof.kind == "predecessor_partitioned"
 
 
+def test_candidate_prefix_recovers_complete_transitive_feeder_partition(
+    _seam,
+    monkeypatch,
+) -> None:
+    """A bottom immediate predecessor may expand to exact grandparent arms."""
+
+    graph, dag = _candidate_prefix_partitioned_feeder_fixture()
+    blocks = dict(graph.blocks)
+    selected_left = 0x22222222
+    dag_left = 0x33333333
+    blocks[100] = replace(blocks[100], succs=(401, 403, 404, 490))
+    blocks[330] = replace(blocks[330], preds=(401, 410))
+    blocks[402] = replace(
+        blocks[402],
+        succs=(410,),
+        insn_snapshots=(
+            _mov(0x180047000, _num(selected_left), _reg(8)),
+            _mov(
+                0x180047004,
+                _num(selected_left ^ _PREFIX_SELECTED_STATE),
+                _reg(9),
+            ),
+        ),
+    )
+    blocks[404] = _blk(
+        404,
+        (410,),
+        (100,),
+        (
+            _mov(0x180047200, _num(dag_left), _reg(8)),
+            _mov(
+                0x180047204,
+                _num(dag_left ^ _DAG_COMPARE_STATE),
+                _reg(9),
+            ),
+        ),
+        ea=0x1800471F0,
+    )
+    blocks[410] = _blk(410, (330,), (402, 404), (), ea=0x180047300)
+    candidate = FlowGraph(blocks, graph.entry_serial, graph.func_ea)
+    observation = minimal_state_recovery.observe_candidate_scoped_prefix_authority(
+        candidate,
+        dag,
+        state_var_stkoff=_STATE_OFF,
+        state_var_reg=None,
+    )
+    assert observation.authority is not None
+
+    monkeypatch.setattr(
+        minimal_state_recovery,
+        "_resolve_back_edge_states",
+        lambda *_args, **_kwargs: pytest.fail(
+            "complete transitive prefix partitions need no seeded walk"
+        ),
+    )
+
+    recovered = recover_state_write_transitions_via_partitioned_fixpoint(
+        candidate,
+        _candidate_prefix_partitioned_dispatcher(),
+        _STATE_OFF,
+        dispatcher_entry_serial=15,
+        dispatcher_region_serials=frozenset({4, 15}),
+        candidate_prefix_authority=observation.authority,
+    )
+
+    by_source = {int(row.write_block): row for row in recovered}
+    assert tuple(by_source) == (401, 402, 403, 404, 490, 495)
+    assert by_source[401].via_block == 330
+    assert by_source[401].proof is not None
+    assert by_source[401].proof.kind == "partial_predecessor_partitioned"
+    for source in (402, 404):
+        row = by_source[source]
+        assert row.via_block == 410
+        assert row.proof is not None
+        assert row.proof.kind == "transitive_glue_partitioned"
+
+
 def _candidate_prefix_incomplete_feeder_fixture() -> tuple[FlowGraph, DecisionDag]:
     """Root15 has three complete direct groups and one incomplete prefix group."""
 
@@ -13854,6 +14148,68 @@ def test_candidate_prefix_concrete_alternate_rows_complete_feeder_partition(
     )
 
 
+def test_candidate_prefix_deferred_feeder_preserves_independent_root_groups(
+    _seam,
+    monkeypatch,
+) -> None:
+    """One residual prefix feeder cannot discard proven direct-root partitions."""
+
+    graph, dag = _candidate_prefix_incomplete_feeder_fixture()
+    observation = minimal_state_recovery.observe_candidate_scoped_prefix_authority(
+        graph,
+        dag,
+        state_var_stkoff=_STATE_OFF,
+        state_var_reg=None,
+    )
+    assert observation.authority is not None
+    rows = _captured_prefix_provider_rows()
+
+    def provider(_ctx, pred, block, arm):
+        if int(pred) != 3:
+            return list(rows[int(pred)])
+        return minimal_state_recovery._DeferredSeededResolution(
+            pred=int(pred),
+            block=block,
+            arm=arm,
+            edge_states=((2, 0x704FAFF6),),
+            ambiguous=True,
+        )
+
+    monkeypatch.setattr(
+        minimal_state_recovery,
+        "_resolve_next_state_before_seeded",
+        provider,
+    )
+
+    recovered = recover_state_write_transitions_via_partitioned_fixpoint(
+        graph,
+        _dispatcher(
+            {
+                0x011A0881: 100,
+                0x33D9A310: 101,
+                0x2431DE88: 100,
+                0x1B30D140: 101,
+                0x2E160A90: 100,
+                0x0244FF40: 101,
+            },
+            exit_block=200,
+        ),
+        _STATE_OFF,
+        dispatcher_entry_serial=15,
+        dispatcher_region_serials=frozenset({4, 15}),
+        candidate_prefix_authority=observation.authority,
+    )
+
+    assert tuple(int(row.write_block) for row in recovered) == (
+        351,
+        404,
+        305,
+        491,
+        365,
+        496,
+    )
+
+
 def test_candidate_prefix_reconciliation_filters_only_physical_feeder_arm(
     _seam,
 ) -> None:
@@ -13891,6 +14247,112 @@ def test_candidate_prefix_reconciliation_filters_only_physical_feeder_arm(
         assert proof is not None
         assert "decision_dag" in proof.route_source_kinds
         assert "candidate_scoped_prefix_arm" not in proof.route_source_kinds
+
+
+def test_candidate_prefix_routes_exact_alternate_corridor_to_semantic_table_handler(
+    _seam,
+) -> None:
+    """A complete current prefix forest may retire its alternate arm too."""
+
+    graph, dag = _candidate_prefix_partitioned_feeder_fixture()
+    blocks = dict(graph.blocks)
+    blocks[20] = _blk(
+        20,
+        (21, 100),
+        (4,),
+        (
+            _jz_stack_const(
+                0x180037A70,
+                _STATE_OFF,
+                _PREFIX_ALTERNATE_STATE,
+                21,
+            ),
+        ),
+        ea=0x180037A40,
+    )
+    blocks[100] = replace(blocks[100], preds=(15, 20))
+    blocks[200] = _stop(200, ())
+    blocks[21] = _blk(
+        21,
+        (201, 202),
+        (20,),
+        (
+            replace(
+                _mov(
+                    0x180037A80,
+                    _num(_PREFIX_ALTERNATE_STATE),
+                    _stk(_STATE_OFF),
+                ),
+                is_assert=True,
+            ),
+            _table_jump(
+                0x180037A90,
+                _STATE_OFF + 4,
+                (((0,), 201), ((), 202)),
+            ),
+        ),
+        ea=0x180037A78,
+    )
+    blocks[201] = _stop(201, (21,))
+    blocks[202] = _stop(202, (21,))
+    graph = FlowGraph(blocks, graph.entry_serial, graph.func_ea)
+    observation = minimal_state_recovery.observe_candidate_scoped_prefix_authority(
+        graph,
+        dag,
+        state_var_stkoff=_STATE_OFF,
+        state_var_reg=None,
+    )
+    assert observation.authority is not None
+    resolved = _resolve_with_sealed_interval_catalog(
+        _candidate_prefix_partitioned_transitions(),
+        graph,
+        _candidate_prefix_partitioned_dispatcher(),
+        (),
+        condition_chain_dag=dag,
+        condition_chain_handlers=frozenset({100, 101}),
+        state_var_stkoff=_STATE_OFF,
+        candidate_prefix_authority=observation.authority,
+    )
+
+    by_source = {int(row.write_block): row for row in resolved}
+    assert tuple(by_source) == (401, 402, 403, 490, 495)
+    alternate = by_source[401]
+    assert alternate.target_handler == 21
+    assert not alternate.is_return
+    assert alternate.proof is not None
+    assert "candidate_scoped_prefix_arm" in alternate.proof.route_source_kinds
+
+
+def test_semantic_internal_route_leaf_accepts_selector_disjoint_table(
+    _seam,
+) -> None:
+    """A parameter switch is a handler boundary, not selector plumbing."""
+
+    disjoint = _blk(
+        21,
+        (201, 202),
+        (20,),
+        (_table_jump(0x180037A90, _STATE_OFF + 4, (((0,), 201), ((), 202))),),
+        ea=0x180037A78,
+    )
+    selector_dependent = replace(
+        disjoint,
+        insn_snapshots=(
+            _table_jump(0x180037A90, _STATE_OFF, (((0,), 201), ((), 202))),
+        ),
+    )
+    expected = frozenset(
+        {StorageIdentity(StorageIdentityKind.STACK, _STATE_OFF)}
+    )
+
+    assert minimal_state_recovery._is_semantic_internal_route_leaf(
+        disjoint,
+        expected_state_identities=expected,
+    )
+    assert not minimal_state_recovery._is_semantic_internal_route_leaf(
+        selector_dependent,
+        expected_state_identities=expected,
+    )
 
 
 def test_candidate_prefix_exact_transform_omits_untrusted_alternate_hint(

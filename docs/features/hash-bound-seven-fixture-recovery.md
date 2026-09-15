@@ -187,9 +187,20 @@ run directory. Evidence must correlate:
 Aggregate counters remain useful but never replace per-site receipts. Block
 serials may appear only with an EA anchor.
 
-## Semantic oracles
+## Route-semantic certification
 
-Each case requires an explicit oracle derived from its native behavior. The
+The tracked seven-fixture gate certifies the dispatcher transitions affected by
+unflattening. It combines exact-byte native-slice execution with committed D810
+route authority and rejects missing, extra, conflicting, or out-of-extent
+routes. It does not claim whole-function semantic equivalence: the current
+reference does not independently enumerate every call, memory write, return,
+or exceptional exit. Empty `effects` and `exits` arrays therefore mean "outside
+the route-only scope", not "the function has no observable effects".
+
+Whole-function certification remains a separate acceptance layer when needed.
+That stronger layer follows the options below.
+
+Each whole-function case requires an explicit oracle derived from its native behavior. The
 oracle is selected after inspecting its inputs and observable effects, using
 the cheapest sound option:
 

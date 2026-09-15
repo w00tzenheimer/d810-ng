@@ -144,7 +144,11 @@ _VOCABULARY_ROWS = (
     ("m_push", _entry(InsnKind.UNKNOWN, OperandShape(True, False, False), value=ValueOpKind.VENDOR)),
     ("m_pop", _entry(InsnKind.UNKNOWN, OperandShape(False, False, True), value=ValueOpKind.VENDOR)),
     ("m_und", _entry(InsnKind.UNKNOWN, OperandShape(False, False, True), value=ValueOpKind.VENDOR)),
-    ("m_ext", _entry(InsnKind.UNKNOWN, OperandShape(True, True, True), value=ValueOpKind.VENDOR)),
+    # Hex-Rays treats m_ext as an external instruction with opcode-specific
+    # operands.  The SDK validity contract imposes no presence pattern (only
+    # mop_b/mop_f are forbidden), and live 9.4 microcode includes destination-
+    # only forms such as the lock/seto extension.
+    ("m_ext", _entry(InsnKind.UNKNOWN, OperandShape(None, None, None), value=ValueOpKind.VENDOR)),
     ("m_f2i", _entry(InsnKind.UNKNOWN, OperandShape(True, False, True), value=ValueOpKind.VENDOR)),
     ("m_f2u", _entry(InsnKind.UNKNOWN, OperandShape(True, False, True), value=ValueOpKind.VENDOR)),
     ("m_i2f", _entry(InsnKind.UNKNOWN, OperandShape(True, False, True), value=ValueOpKind.VENDOR)),

@@ -24,6 +24,7 @@ from d810.core.execution_journal import (
     ExecutionEffectRef,
 )
 from d810.core.execution_journal_store import ExecutionJournalStore
+from d810.core.logging import getLogger
 from d810.core.typing import Any
 from d810.hexrays.preanalysis.indirect_jump_labels import (
     IndirectLabelMaterializationResult,
@@ -57,6 +58,8 @@ _DEAD_EDGE_PROOF_KIND_PRIORITY = (
     "single_trip_loop_peel",
     "z3_opaque_predicate",
 )
+
+logger = getLogger("d810.manager.native_writer_migration")
 
 
 def _select_dead_edge_candidate_batch(
@@ -422,11 +425,16 @@ class ManagerOwnedNativePatchRequestExecutor:
                 },
             )
             return None, None
-        except Exception:
+        except Exception as error:
+            logger.exception("native plan build failed")
             self._execution_journal.advance(
                 attempt,
                 status=ExecutionAttemptStatus.FAILED,
                 reason_code="NATIVE_PLAN_OR_APPLY_FAILED",
+                details={
+                    "error_type": type(error).__name__,
+                    "message": str(error),
+                },
             )
             raise
 
@@ -460,11 +468,16 @@ class ManagerOwnedNativePatchRequestExecutor:
                 NativeNormalizationRequest(plan=prepared.plan, user_enabled=True),
                 gateway=self._gateway,
             )
-        except Exception:
+        except Exception as error:
+            logger.exception("native plan apply failed")
             self._execution_journal.advance(
                 attempt,
                 status=ExecutionAttemptStatus.FAILED,
                 reason_code="NATIVE_PLAN_OR_APPLY_FAILED",
+                details={
+                    "error_type": type(error).__name__,
+                    "message": str(error),
+                },
             )
             raise
 

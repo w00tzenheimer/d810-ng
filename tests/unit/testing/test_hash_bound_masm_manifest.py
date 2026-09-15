@@ -18,7 +18,7 @@ MANIFEST_PATH = MASM_ROOT / "hash_bound_seven_manifest.json"
 PROFILE_PATH = (
     REPO_ROOT / "src" / "d810" / "conf" / "hash_bound_v4_user_cfg_const_simplify_solve.json"
 )
-PROFILE_SHA256 = "135c6a4ed77329b96539f72de82280a4b0af5582a468764ce9ef05b6d3343c24"
+PROFILE_SHA256 = "1c9dd1d14158e2be7e9a838577f79c201e7eed72cd01c5911100068f098f1c12"
 LINKED_DLL_PATH = REPO_ROOT / "samples" / "bins" / "libobfuscated.dll"
 
 EXPECTED_FIXTURES = (
@@ -26,9 +26,9 @@ EXPECTED_FIXTURES = (
         "sub_7FFB0E53C420",
         "0x78C420",
         "0x4296",
-        "0x9BE60",
+        "0x9C260",
         "0x4279",
-        "7801b57baf631366a663afa42c2f6ea1345e9c0c9966bd10e5995d5e43aaa87d",
+        "e9304cfca6b973d63acdc6c0d84106b774628c5bd376612f5517a5464825e9f2",
         "092076b62bf2ffb18d32e07e2ec17b8b7166f09d6aaa3e24bc237c37d2161cb2",
     ),
     (
@@ -37,53 +37,53 @@ EXPECTED_FIXTURES = (
         "0x7470",
         "0x58A40",
         "0x745E",
-        "41ab1bb6891df8549288666cf94e342617a079f98248031eefa992abc2a62433",
+        "1710009f3ac9083b76558226cecbfb31e9be1920f2fa0d98016f62e8d380b778",
         "7b8ba63d39338634d13ce754e44b2cb75b3fe1c74a458c7ac12c3dd3e6bde5dd",
     ),
     (
         "sub_7FFB0DF992D0",
         "0x1E92D0",
         "0x500D",
-        "0x63000",
-        "0x4FD4",
-        "82b428888f8392c14286a0477fa3786ca3d8ce677b14d76d2ce40969c6988891",
-        "b4b8f02832eaff8728ce7e4c493a89fcd8e90f8b4e3d35690de4ee80be390e73",
+        "0x630B4",
+        "0x4FE9",
+        "7e940fd8eca74f61333a547e3e5cb7834d34ed08bbbf1b8d0071c326d7103c8e",
+        "040dfbbcad55230b358dded437de33418bd9d1f8132c268559adf80751d713c5",
     ),
     (
         "sub_7FFB0DFD1D70",
         "0x221D70",
         "0x1E6FD",
-        "0x67FE0",
+        "0x680A0",
         "0x1E74C",
-        "302a7c95b07aa3cb1bb8c4a6dae138f10842e4a5922b3600015363175a1f4f39",
+        "4ad6639c98385f8970066505c925992da07c9565776b356daa5c63e1a0bddea1",
         "959f90c564ecfe7ff881accf38a90c8d2f3bd73cb26f7fa49fc1f17fa88f5338",
     ),
     (
         "sub_7FFB0E1E69E0",
         "0x4369E0",
         "0x166",
-        "0x98990",
+        "0x98D80",
         "0x15A",
-        "7297548b1b7525a43c01021b5ca0b782c029ccc8f0774940bf74ee24051bf858",
+        "c8f2550d44cf2013f5e6c81cd935be45e8158140490a99251c684e0f8d6fba08",
         "0c446160e198d6ecc00c915906e48718f5b123f98a1b00ba2888e6ae77f2e81c",
     ),
     (
         "sub_7FFB0E0A2C90",
         "0x2F2C90",
         "0x95CB",
-        "0x8F3D0",
+        "0x8F7B0",
         "0x95BD",
-        "a3c7ab80d6acf9e234785d4aadc07378d706cda295ea7e2d3420e0f92a594724",
-        "c44e8383c2c39fe4a31d50a21447c861906cb6ad696e6420ca63ca6e30e9dc93",
+        "efd306d013d8972a6da44dcf6012fc192cfe141d5198329aafab02a5cd93ba3b",
+        "f85a24406da37b37ee2c49ee0d4986887210c6242164f2311743068f6ddb5a12",
     ),
     (
         "sub_7FFB0E086BE0",
         "0x2D6BE0",
         "0x8CB0",
-        "0x86730",
-        "0x8C97",
-        "c77b8c4ff8086006dc3a84dbeae1b5ee44eeef292c3e6893964620e54d4964fe",
-        "92ca85f671d4c8c2c8230337a987542f4f3b604787b0728787bbdb1df456b0ff",
+        "0x86958",
+        "0x8CAB",
+        "f53e90da1115110ffb01e6825134eaf572680dfcc60b6b307e4e22cc8593d44f",
+        "5a04f8536324963ce70b7cd564630c51b4cd11934de215058f25b0ffc447c964",
     ),
 )
 
@@ -114,7 +114,30 @@ def test_manifest_enumerates_the_exact_seven_hash_bound_fixtures() -> None:
     manifest = _load_manifest()
 
     assert manifest == {
-        "schema": "d810.hash-bound-masm-fixtures.v2",
+        "schema": "d810.hash-bound-masm-fixtures.v3",
+        "native_source": {
+            "sha256": "835fe0d11e03b4bb3886b463efc56791db23808c8b80e9cf40193427eff83109",
+            "segment_override_repairs": [
+                {
+                    "function": "sub_7FFB0DF992D0",
+                    "exported_masm_sha256": (
+                        "b4b8f02832eaff8728ce7e4c493a89fcd8e90f8b4e3d35690de4ee80be390e73"
+                    ),
+                    "segment": "gs",
+                    "operand": "qword ptr [60h]",
+                    "count": 21,
+                },
+                {
+                    "function": "sub_7FFB0E086BE0",
+                    "exported_masm_sha256": (
+                        "92ca85f671d4c8c2c8230337a987542f4f3b604787b0728787bbdb1df456b0ff"
+                    ),
+                    "segment": "gs",
+                    "operand": "qword ptr [60h]",
+                    "count": 20,
+                },
+            ],
+        },
         "profile": {
             "name": PROFILE_PATH.name,
             "sha256": PROFILE_SHA256,
@@ -172,6 +195,18 @@ def test_fixture_bytes_and_public_symbol_match_the_attested_identity(
     text = payload.decode("ascii")
     public_pattern = re.compile(rf"(?m)^PUBLIC\s+{re.escape(function)}\s*$")
     assert len(public_pattern.findall(text)) == 1
+
+
+def test_native_segment_override_repairs_are_present_in_corrected_masm() -> None:
+    manifest = _load_manifest()
+    repairs = manifest["native_source"]["segment_override_repairs"]
+
+    for repair in repairs:
+        text = (MASM_ROOT / f"{repair['function']}.asm").read_text(encoding="ascii")
+        bare_operand = str(repair["operand"])
+        corrected_operand = f"{repair['segment']}:{bare_operand.removeprefix('qword ptr ')}"
+        assert bare_operand not in text.replace(f"qword ptr {corrected_operand}", "")
+        assert text.count(f"qword ptr {corrected_operand}") == int(repair["count"])
 
 
 def test_hash_bound_profile_matches_the_attested_configuration() -> None:

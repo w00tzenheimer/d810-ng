@@ -2463,7 +2463,7 @@ if [ "$CMD" = "system" ]; then
     if [ -n "$DUMP_OUT" ]; then
       _shard_capture="/work/.tmp/shard${_shard}-${DUMP_OUT}"
     fi
-    _shard_flags="$BATCHER_FLAGS --shard-index $_shard --shard-count $SYSTEM_SHARDS${START_BATCH:+ --start-batch $START_BATCH}"
+    _shard_flags="$BATCHER_FLAGS --run-id $SHARD_BASE_RUN_ID --shard-index $_shard --shard-count $SYSTEM_SHARDS${START_BATCH:+ --start-batch $START_BATCH}"
     _shard_inner="$(_system_inner "$_shard_flags" "/root/.idapro/logs/d810_logs/shard-$_shard" "$_shard_capture")"
     # Each shard needs its own run id: in remote mode it names the run
     # directory the live logs and diag databases are written to, which two
@@ -2485,16 +2485,23 @@ if [ "$CMD" = "system" ]; then
   done
 
   # Merge the per-shard ledgers into one. Local -l runs land under
-  # <work>/.tmp/logs; remote runs stage under <work>/.tmp/logs/<run-id>. Both
-  # are globbed here; when neither is present (no -l), print the command so the
-  # merge can be run against whatever the operator did retain.
+  # <work>/.tmp/logs; remote runs stage under <work>/.tmp/logs/<run-id>.
+  # Select only the newest ledger for each shard launched above: a prior run
+  # may have used more shards, and globbing every retained shard would mix its
+  # stale records into this run's summary.
   MERGED_LEDGER="${WORK_DIR}/.tmp/logs/system_batches-merged.jsonl"
   SHARD_LEDGERS=()
-  while IFS= read -r _ledger; do
-    [ -n "$_ledger" ] && SHARD_LEDGERS+=("$_ledger")
-  done < <(find "${WORK_DIR}/.tmp/logs" -type f -path '*shard-*/system_batches.jsonl' 2>/dev/null | sort)
+  for _shard in "${SHARD_IDS[@]}"; do
+    _newest_ledger=""
+    while IFS= read -r _ledger; do
+      if [ -z "$_newest_ledger" ] || [ "$_ledger" -nt "$_newest_ledger" ]; then
+        _newest_ledger="$_ledger"
+      fi
+    done < <(find "${WORK_DIR}/.tmp/logs" -type f -path "*/shard-${_shard}/system_batches.jsonl" 2>/dev/null)
+    [ -n "$_newest_ledger" ] && SHARD_LEDGERS+=("$_newest_ledger")
+  done
   if [ ${#SHARD_LEDGERS[@]} -gt 0 ]; then
-    python3 "$(cd "$(dirname "$0")" && pwd -P)/merge_system_batch_ledgers.py" --out "$MERGED_LEDGER" "${SHARD_LEDGERS[@]}" || true
+    python3 "$(cd "$(dirname "$0")" && pwd -P)/merge_system_batch_ledgers.py" --run-id "$SHARD_BASE_RUN_ID" --out "$MERGED_LEDGER" "${SHARD_LEDGERS[@]}" || true
     echo "[shards] merged ledger: $MERGED_LEDGER"
   else
     echo "[shards] no per-shard ledger reachable on the host (pass -l to mount logs);"

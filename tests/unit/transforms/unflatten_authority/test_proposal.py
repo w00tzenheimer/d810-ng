@@ -391,6 +391,101 @@ def test_default_gap_adapter_empty_input_is_exact_legacy_forecast_roundtrip() ->
     assert validate_canonical_roundtrip(explicit_empty, model.CorridorCoverageForecast) == omitted
 
 
+def test_corridor_adapter_rebinds_graph_range_anchor_to_catalog_anchor() -> None:
+    from d810.ir.flowgraph import FlowGraph
+    from d810.transforms.dispatcher_corridor_coverage import (
+        DispatcherBlockAnchor,
+        DispatcherCorridor,
+        DispatcherCorridorCoverage,
+    )
+    from d810.transforms.unflatten_authority import proposal as proposal_api
+    from .helpers import exact_fixture
+
+    source, proposal, _effect_exclusion, refs = exact_fixture()
+    blocks = dict(source.blocks)
+    blocks[1] = replace(blocks[1], start_ea=0x1FF0)
+    range_anchored_source = FlowGraph(blocks, source.entry_serial, source.func_ea)
+    dispatcher = DispatcherBlockAnchor(1, 0x1FF0)
+    coverage = DispatcherCorridorCoverage(
+        source.func_ea,
+        dispatcher,
+        (DispatcherCorridor((DispatcherBlockAnchor(0, 0x1000), dispatcher)),),
+        (),
+        True,
+    )
+
+    forecast = proposal_api.corridor_coverage_forecast_from_analysis(
+        coverage,
+        source=range_anchored_source,
+        proposal=proposal,
+        block_refs_by_serial=refs,
+    )
+
+    assert forecast.dispatcher_anchor_ea == 0x2000
+    assert forecast.paths[0].nodes[-1].anchor_ea == 0x2000
+
+
+def test_corridor_adapter_binds_multiple_semantic_exclusions_against_source_graph() -> None:
+    """One exclusion's typed source node must not shadow the source graph."""
+
+    from d810.analyses.control_flow.minimal_state_recovery import (
+        CandidatePrefixAlternateCorridorProof,
+    )
+    from d810.ir.flowgraph import FlowGraph
+    from d810.transforms.dispatcher_corridor_coverage import (
+        DispatcherBlockAnchor,
+        DispatcherCorridor,
+        DispatcherCorridorCoverage,
+    )
+    from d810.transforms.unflatten_authority import proposal as proposal_api
+    from .helpers import exact_fixture
+
+    source, proposal, _effect_exclusion, refs = exact_fixture()
+    blocks = dict(source.blocks)
+    blocks[0] = replace(blocks[0], preds=(2, 3))
+    blocks[2] = replace(blocks[2], succs=(0,))
+    blocks[3] = replace(blocks[3], succs=(0,))
+    source = FlowGraph(blocks, 2, source.func_ea)
+    def anchor(serial):
+        return DispatcherBlockAnchor(serial, source.blocks[serial].start_ea)
+    proofs = tuple(
+        CandidatePrefixAlternateCorridorProof(
+            normalized_state=state,
+            source_serial=serial,
+            source_ea=source.blocks[serial].start_ea,
+            feeder_serial=None,
+            feeder_ea=None,
+            prefix_serial=0,
+            prefix_ea=source.blocks[0].start_ea,
+            root_serial=1,
+            root_ea=source.blocks[1].start_ea,
+            state_identity=proposal.plan_inputs.state_identity,
+        )
+        for state, serial in ((7, 2), (8, 3))
+    )
+    coverage = DispatcherCorridorCoverage(
+        source.func_ea,
+        anchor(1),
+        (
+            DispatcherCorridor((anchor(2), anchor(0), anchor(1))),
+            DispatcherCorridor((anchor(3), anchor(0), anchor(1))),
+        ),
+        (),
+        True,
+        semantic_exclusions=proofs,
+    )
+
+    forecast = proposal_api.corridor_coverage_forecast_from_analysis(
+        coverage,
+        source=source,
+        proposal=proposal,
+        block_refs_by_serial=refs,
+    )
+
+    assert len(forecast.semantic_exclusions) == 2
+    assert all(path.semantic_exclusion_ids for path in forecast.paths)
+
+
 def test_default_gap_adapter_rejects_incomplete_or_ambiguous_residual_linkage() -> None:
     from d810.transforms.unflatten_authority import model, proposal as proposal_api
     from .helpers import exact_fixture

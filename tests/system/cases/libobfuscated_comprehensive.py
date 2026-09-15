@@ -1195,9 +1195,9 @@ DAC_MASM_CASES = [
         function="sub_7FFB0E53C420",
         description=(
             "Hash-bound loader state machine: structurally recovered in the "
-            "source run but not semantically certified. The tracked case "
-            "requires complete dispatcher retirement before its later semantic "
-            "oracle can certify the published edges."
+            "source run but not previously route-certified. The tracked case "
+            "requires complete dispatcher retirement and exact-byte "
+            "certification of every published dispatcher edge."
         ),
         project="hash_bound_v4_user_cfg_const_simplify_solve.json",
         obfuscated_contains=["while ( 1 )", "0x3EBDE73C"],
@@ -1215,7 +1215,10 @@ DAC_MASM_CASES = [
         ),
         project="hash_bound_v4_user_cfg_const_simplify_solve.json",
         obfuscated_contains=["while ( 1 )"],
-        deobfuscated_not_contains=["while ( 1 )", "0x175DAB70", "0x38EF23AC"],
+        # This function contains genuine bounded record-walking loops which
+        # Hex-Rays may render as ``while ( 1 )``.  The selector constants are
+        # the stable residual-dispatcher oracle; a generic loop spelling is not.
+        deobfuscated_not_contains=["0x175DAB70", "0x38EF23AC"],
         must_change=True,
         required_rules=[],
         skip_if_function_absent=True,
@@ -1229,7 +1232,16 @@ DAC_MASM_CASES = [
         ),
         project="hash_bound_v4_user_cfg_const_simplify_solve.json",
         obfuscated_contains=["while ( 1 )"],
-        deobfuscated_not_contains=["while ( 1 )", "0x63E3AD4D", "0x42B10E40"],
+        deobfuscated_not_contains=[
+            "while ( 1 )",
+            "0x63E3AD4D",
+            "0x42B10E40",
+            # State-transform selector pair and their folded dispatcher state.
+            "0x5D2FE549",
+            "0x3604258",
+            "0x5E4FA711",
+            "0x2573C89A",
+        ],
         must_change=True,
         allow_missing_baseline_cfunc=True,
         required_rules=[],
@@ -1243,7 +1255,10 @@ DAC_MASM_CASES = [
             "and fully retire the dispatcher."
         ),
         project="hash_bound_v4_user_cfg_const_simplify_solve.json",
-        deobfuscated_not_contains=["while ( 1 )", "0x416A2BA7", "0x23F91960"],
+        # This function contains a genuine bounded doubling loop over v158;
+        # Hex-Rays renders it as ``while ( 1 )`` with a data-dependent break.
+        # The selector constants are the stable residual-dispatcher oracle.
+        deobfuscated_not_contains=["0x416A2BA7", "0x23F91960"],
         must_change=True,
         allow_missing_baseline_cfunc=True,
         required_rules=[],
@@ -1258,7 +1273,10 @@ DAC_MASM_CASES = [
         ),
         project="hash_bound_v4_user_cfg_const_simplify_solve.json",
         obfuscated_contains=["0x6E8E902A", "0x199A79B7"],
-        deobfuscated_not_contains=["0x6E8E902A", "0x199A79B7", "JUMPOUT"],
+        # Case 3 has three genuine transfers to the fixture's exported extern
+        # labels.  Their JUMPOUT rendering is semantic output, not residual
+        # state dispatch; the two selector constants are the stable oracle.
+        deobfuscated_not_contains=["0x6E8E902A", "0x199A79B7"],
         must_change=True,
         allow_missing_baseline_cfunc=True,
         required_rules=[],
@@ -1286,9 +1304,14 @@ DAC_MASM_CASES = [
             "cfunc and no dispatcher transfer remains."
         ),
         project="hash_bound_v4_user_cfg_const_simplify_solve.json",
-        deobfuscated_not_contains=["while ( 1 )", "0x4C815852", "0x295D4032", "JUMPOUT"],
+        # The linked fixture has one genuine stack-cookie failure edge to the
+        # final INT3 at RVA 0x8F5DE.  Hex-Rays renders that compiler terminal
+        # as JUMPOUT; it is not one of the computed dispatcher transfers.
+        deobfuscated_not_contains=["while ( 1 )", "0x4C815852", "0x295D4032"],
         must_change=True,
         allow_missing_baseline_cfunc=True,
+        eager_native_preanalysis=True,
+        native_patch_opt_in=True,
         required_rules=[],
         skip_if_function_absent=True,
     ),

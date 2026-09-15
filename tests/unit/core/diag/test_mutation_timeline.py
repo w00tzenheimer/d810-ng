@@ -182,6 +182,30 @@ def test_plan_and_receipt_are_correlated_by_gateway_batch(diag_conn) -> None:
     ]
 
 
+def test_mutation_plan_persists_canonical_unflatten_authority(diag_conn) -> None:
+    authority_json = '["d810.test.UnflattenAuthority",{"proof_id":"proof-1"}]'
+    emit(
+        MutationPlanObserved(
+            session_id="s1",
+            func_ea=0x40C8B0,
+            mutation_batch_id="authority-batch",
+            mutation_kind="block_replace",
+            planned_operation_count=0,
+            mba_generation=8,
+            evidence_generation=3,
+            maturity="MMAT_CALLS",
+            description="typed unflatten plan",
+            unflatten_authority_json=authority_json,
+        )
+    )
+
+    payload = diag_conn.execute(
+        "SELECT payload_json FROM lifecycle_events "
+        "WHERE event_kind='mutation_plan' AND correlation_id='authority-batch'"
+    ).fetchone()[0]
+    assert json.loads(payload)["unflatten_authority_json"] == authority_json
+
+
 def test_recovery_search_observation_is_persisted_with_anchored_targets(
     diag_conn,
 ) -> None:

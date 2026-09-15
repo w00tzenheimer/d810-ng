@@ -1,0 +1,3885 @@
+{
+  "schema": "d810.hash-bound-seven-semantics.v1",
+  "source": {
+    "fixture_manifest": "hash_bound_seven_manifest.json",
+    "linked_dll_sha256": "f5221e5ae3f53281bb981d480f93e96aada02a57d286a59974dca64b4b8c7c35",
+    "reference_policy": "exact_bytes_dispatcher_routes_only"
+  },
+  "fixtures": [
+    {
+      "function": "sub_7FFB0E53C420",
+      "entry_rva": "0x9C260",
+      "extent": "0x4279",
+      "linked_sha256": "e9304cfca6b973d63acdc6c0d84106b774628c5bd376612f5517a5464825e9f2",
+      "transitions": [
+        {
+          "partition": "src=0x9C2D9:state=0x57ADCBB9",
+          "predecessor_eas": [
+            "0x9C2D9"
+          ],
+          "constraints": [
+            "selector_state == 0x57ADCBB9"
+          ],
+          "target_rvas": [
+            "0x9EABC"
+          ]
+        },
+        {
+          "partition": "src=0x9C32E:state=0x752073CE",
+          "predecessor_eas": [
+            "0x9C32E"
+          ],
+          "constraints": [
+            "selector_state == 0x752073CE"
+          ],
+          "target_rvas": [
+            "0x9EBEF"
+          ]
+        },
+        {
+          "partition": "src=0x9C421:state=0x78AC9D2D",
+          "predecessor_eas": [
+            "0x9C421"
+          ],
+          "constraints": [
+            "selector_state == 0x78AC9D2D"
+          ],
+          "target_rvas": [
+            "0xA0446"
+          ]
+        },
+        {
+          "partition": "src=0x9C494:state=0x4CFBD454",
+          "predecessor_eas": [
+            "0x9C494"
+          ],
+          "constraints": [
+            "selector_state == 0x4CFBD454"
+          ],
+          "target_rvas": [
+            "0x9CFDC"
+          ]
+        },
+        {
+          "partition": "src=0x9C563:state=0x090D289F",
+          "predecessor_eas": [
+            "0x9C563"
+          ],
+          "constraints": [
+            "selector_state == 0x090D289F"
+          ],
+          "target_rvas": [
+            "0x9DFD7"
+          ]
+        },
+        {
+          "partition": "src=0x9C639:state=0x36B895D8",
+          "predecessor_eas": [
+            "0x9C639"
+          ],
+          "constraints": [
+            "selector_state == 0x36B895D8"
+          ],
+          "target_rvas": [
+            "0x9DEBF"
+          ]
+        },
+        {
+          "partition": "src=0x9C752:state=0x5948061C",
+          "predecessor_eas": [
+            "0x9C752"
+          ],
+          "constraints": [
+            "selector_state == 0x5948061C"
+          ],
+          "target_rvas": [
+            "0x9E159"
+          ]
+        },
+        {
+          "partition": "src=0x9C98F:state=0x5F2309BC",
+          "predecessor_eas": [
+            "0x9C98F"
+          ],
+          "constraints": [
+            "selector_state == 0x5F2309BC"
+          ],
+          "target_rvas": [
+            "0x9F55B"
+          ]
+        },
+        {
+          "partition": "src=0x9C9FF:state=0x30258B45",
+          "predecessor_eas": [
+            "0x9C9FF"
+          ],
+          "constraints": [
+            "selector_state == 0x30258B45"
+          ],
+          "target_rvas": [
+            "0x9FE3C"
+          ]
+        },
+        {
+          "partition": "src=0x9CA51:state=0x66FF9852",
+          "predecessor_eas": [
+            "0x9CA51"
+          ],
+          "constraints": [
+            "selector_state == 0x66FF9852"
+          ],
+          "target_rvas": [
+            "0x9FD0F"
+          ]
+        },
+        {
+          "partition": "src=0x9CACF:state=0x35F1B5F4",
+          "predecessor_eas": [
+            "0x9CACF"
+          ],
+          "constraints": [
+            "selector_state == 0x35F1B5F4"
+          ],
+          "target_rvas": [
+            "0x9E0EF"
+          ]
+        },
+        {
+          "partition": "src=0x9CBBF:state=0x01B3D812",
+          "predecessor_eas": [
+            "0x9CBBF"
+          ],
+          "constraints": [
+            "selector_state == 0x01B3D812"
+          ],
+          "target_rvas": [
+            "0x9D2E4"
+          ]
+        },
+        {
+          "partition": "src=0x9CCD6:state=0x449F469E",
+          "predecessor_eas": [
+            "0x9CCD6"
+          ],
+          "constraints": [
+            "selector_state == 0x449F469E"
+          ],
+          "target_rvas": [
+            "0x9D98B"
+          ]
+        },
+        {
+          "partition": "src=0x9CE88:state=0x5C0147C9",
+          "predecessor_eas": [
+            "0x9CE88"
+          ],
+          "constraints": [
+            "selector_state == 0x5C0147C9"
+          ],
+          "target_rvas": [
+            "0x9E894"
+          ]
+        },
+        {
+          "partition": "src=0x9CF87:state=0x0DBC98A7",
+          "predecessor_eas": [
+            "0x9CF87"
+          ],
+          "constraints": [
+            "selector_state == 0x0DBC98A7"
+          ],
+          "target_rvas": [
+            "0x9D06E"
+          ]
+        },
+        {
+          "partition": "src=0x9D021:state=0x33260BAA",
+          "predecessor_eas": [
+            "0x9D021"
+          ],
+          "constraints": [
+            "selector_state == 0x33260BAA"
+          ],
+          "target_rvas": [
+            "0x9C598"
+          ]
+        },
+        {
+          "partition": "src=0x9D0AA:state=0x61FE4E71",
+          "predecessor_eas": [
+            "0x9D0AA"
+          ],
+          "constraints": [
+            "selector_state == 0x61FE4E71"
+          ],
+          "target_rvas": [
+            "0x9DC0B"
+          ]
+        },
+        {
+          "partition": "src=0x9D238:state=0x5D1E77B2",
+          "predecessor_eas": [
+            "0x9D238"
+          ],
+          "constraints": [
+            "selector_state == 0x5D1E77B2"
+          ],
+          "target_rvas": [
+            "0x9CFA6"
+          ]
+        },
+        {
+          "partition": "src=0x9D2D0:state=0x0347846E",
+          "predecessor_eas": [
+            "0x9D2D0"
+          ],
+          "constraints": [
+            "selector_state == 0x0347846E"
+          ],
+          "target_rvas": [
+            "0x9D84E"
+          ]
+        },
+        {
+          "partition": "src=0x9D391:state=0x4ED9765C",
+          "predecessor_eas": [
+            "0x9D391"
+          ],
+          "constraints": [
+            "selector_state == 0x4ED9765C"
+          ],
+          "target_rvas": [
+            "0x9E642"
+          ]
+        },
+        {
+          "partition": "src=0x9D4DC:state=0x11832EDA",
+          "predecessor_eas": [
+            "0x9D4DC"
+          ],
+          "constraints": [
+            "selector_state == 0x11832EDA"
+          ],
+          "target_rvas": [
+            "0x9CA35"
+          ]
+        },
+        {
+          "partition": "src=0x9D539:state=0x3D8C7510",
+          "predecessor_eas": [
+            "0x9D539"
+          ],
+          "constraints": [
+            "selector_state == 0x3D8C7510"
+          ],
+          "target_rvas": [
+            "0x9CEA7"
+          ]
+        },
+        {
+          "partition": "src=0x9D7D7:state=0x08AF5652",
+          "predecessor_eas": [
+            "0x9D7D7"
+          ],
+          "constraints": [
+            "selector_state == 0x08AF5652"
+          ],
+          "target_rvas": [
+            "0x9DB52"
+          ]
+        },
+        {
+          "partition": "src=0x9D83A:state=0x1ABA1C59",
+          "predecessor_eas": [
+            "0x9D83A"
+          ],
+          "constraints": [
+            "selector_state == 0x1ABA1C59"
+          ],
+          "target_rvas": [
+            "0x9C46E"
+          ]
+        },
+        {
+          "partition": "src=0x9D977:state=0x53658CF3",
+          "predecessor_eas": [
+            "0x9D977"
+          ],
+          "constraints": [
+            "selector_state == 0x53658CF3"
+          ],
+          "target_rvas": [
+            "0x9D0BE"
+          ]
+        },
+        {
+          "partition": "src=0x9DBF7:state=0x775E2604",
+          "predecessor_eas": [
+            "0x9DBF7"
+          ],
+          "constraints": [
+            "selector_state == 0x775E2604"
+          ],
+          "target_rvas": [
+            "0x9C4D4"
+          ]
+        },
+        {
+          "partition": "src=0x9DD1D:state=0x7F5891E2",
+          "predecessor_eas": [
+            "0x9DD1D"
+          ],
+          "constraints": [
+            "selector_state == 0x7F5891E2"
+          ],
+          "target_rvas": [
+            "0x9FF91"
+          ]
+        },
+        {
+          "partition": "src=0x9DFCE:state=0x4902993E",
+          "predecessor_eas": [
+            "0x9DFCE"
+          ],
+          "constraints": [
+            "selector_state == 0x4902993E"
+          ],
+          "target_rvas": [
+            "0x9F3F0"
+          ]
+        },
+        {
+          "partition": "src=0x9E09C:state=0x23997F3A",
+          "predecessor_eas": [
+            "0x9E09C"
+          ],
+          "constraints": [
+            "selector_state == 0x23997F3A"
+          ],
+          "target_rvas": [
+            "0x9EE12"
+          ]
+        },
+        {
+          "partition": "src=0x9E0A6:state=0x265C8E48",
+          "predecessor_eas": [
+            "0x9E0A6"
+          ],
+          "constraints": [
+            "selector_state == 0x265C8E48"
+          ],
+          "target_rvas": [
+            "0x9DE0F"
+          ]
+        },
+        {
+          "partition": "src=0x9E14F:state=0x4D768044",
+          "predecessor_eas": [
+            "0x9E14F"
+          ],
+          "constraints": [
+            "selector_state == 0x4D768044"
+          ],
+          "target_rvas": [
+            "0x9E0A6"
+          ]
+        },
+        {
+          "partition": "src=0x9E218:state=0x66F210DE",
+          "predecessor_eas": [
+            "0x9E218"
+          ],
+          "constraints": [
+            "selector_state == 0x66F210DE"
+          ],
+          "target_rvas": [
+            "0x9DF06"
+          ]
+        },
+        {
+          "partition": "src=0x9E4BD:state=0x073E9BAD",
+          "predecessor_eas": [
+            "0x9E4BD"
+          ],
+          "constraints": [
+            "selector_state == 0x073E9BAD"
+          ],
+          "target_rvas": [
+            "0x9F3B0"
+          ]
+        },
+        {
+          "partition": "src=0x9E5DD:state=0x7749F222",
+          "predecessor_eas": [
+            "0x9E5DD"
+          ],
+          "constraints": [
+            "selector_state == 0x7749F222"
+          ],
+          "target_rvas": [
+            "0x9E187"
+          ]
+        },
+        {
+          "partition": "src=0x9E618:state=0x05C05705",
+          "predecessor_eas": [
+            "0x9E618"
+          ],
+          "constraints": [
+            "selector_state == 0x05C05705"
+          ],
+          "target_rvas": [
+            "0x9F420"
+          ]
+        },
+        {
+          "partition": "src=0x9E665:state=0x6B1A62CA",
+          "predecessor_eas": [
+            "0x9E665"
+          ],
+          "constraints": [
+            "selector_state == 0x6B1A62CA"
+          ],
+          "target_rvas": [
+            "0x9F07E"
+          ]
+        },
+        {
+          "partition": "src=0x9E804:state=0x06C97571",
+          "predecessor_eas": [
+            "0x9E804"
+          ],
+          "constraints": [
+            "selector_state == 0x06C97571"
+          ],
+          "target_rvas": [
+            "0x9C720"
+          ]
+        },
+        {
+          "partition": "src=0x9E9EA:state=0x4D1A2752",
+          "predecessor_eas": [
+            "0x9E9EA"
+          ],
+          "constraints": [
+            "selector_state == 0x4D1A2752"
+          ],
+          "target_rvas": [
+            "0x9EA76"
+          ]
+        },
+        {
+          "partition": "src=0x9EA89:state=0x2A7B26E8",
+          "predecessor_eas": [
+            "0x9EA89"
+          ],
+          "constraints": [
+            "selector_state == 0x2A7B26E8"
+          ],
+          "target_rvas": [
+            "0x9CC4E"
+          ]
+        },
+        {
+          "partition": "src=0x9EABC:state=0x4435C9CC",
+          "predecessor_eas": [
+            "0x9EABC"
+          ],
+          "constraints": [
+            "selector_state == 0x4435C9CC"
+          ],
+          "target_rvas": [
+            "0x9F04B"
+          ]
+        },
+        {
+          "partition": "src=0x9EB90:state=0x3D250850",
+          "predecessor_eas": [
+            "0x9EB90"
+          ],
+          "constraints": [
+            "selector_state == 0x3D250850"
+          ],
+          "target_rvas": [
+            "0x9CD01"
+          ]
+        },
+        {
+          "partition": "src=0x9EBE0:state=0x01D5570B",
+          "predecessor_eas": [
+            "0x9EBE0"
+          ],
+          "constraints": [
+            "selector_state == 0x01D5570B"
+          ],
+          "target_rvas": [
+            "0x9FFA4"
+          ]
+        },
+        {
+          "partition": "src=0x9EC1E:state=0x30B6125D",
+          "predecessor_eas": [
+            "0x9EC1E"
+          ],
+          "constraints": [
+            "selector_state == 0x30B6125D"
+          ],
+          "target_rvas": [
+            "0x9D77F"
+          ]
+        },
+        {
+          "partition": "src=0x9EF58:state=0x4ED51626",
+          "predecessor_eas": [
+            "0x9EF58"
+          ],
+          "constraints": [
+            "selector_state == 0x4ED51626"
+          ],
+          "target_rvas": [
+            "0x9C400"
+          ]
+        },
+        {
+          "partition": "src=0x9EFA9:state=0x46D8D45E",
+          "predecessor_eas": [
+            "0x9EFA9"
+          ],
+          "constraints": [
+            "selector_state == 0x46D8D45E"
+          ],
+          "target_rvas": [
+            "0x9EBA1"
+          ]
+        },
+        {
+          "partition": "src=0x9EFEA:state=0x702BBCBF",
+          "predecessor_eas": [
+            "0x9EFEA"
+          ],
+          "constraints": [
+            "selector_state == 0x702BBCBF"
+          ],
+          "target_rvas": [
+            "0x9C9C5"
+          ]
+        },
+        {
+          "partition": "src=0x9F032:state=0x1078B351",
+          "predecessor_eas": [
+            "0x9F032"
+          ],
+          "constraints": [
+            "selector_state == 0x1078B351"
+          ],
+          "target_rvas": [
+            "0x9E0E0"
+          ]
+        },
+        {
+          "partition": "src=0x9F075:state=0x16F0E65E",
+          "predecessor_eas": [
+            "0x9F075"
+          ],
+          "constraints": [
+            "selector_state == 0x16F0E65E"
+          ],
+          "target_rvas": [
+            "0x9F223"
+          ]
+        },
+        {
+          "partition": "src=0x9F215:state=0x7F4C1B4C",
+          "predecessor_eas": [
+            "0x9F215"
+          ],
+          "constraints": [
+            "selector_state == 0x7F4C1B4C"
+          ],
+          "target_rvas": [
+            "0x9D80F"
+          ]
+        },
+        {
+          "partition": "src=0x9F25F:state=0x417EE0C1",
+          "predecessor_eas": [
+            "0x9F25F"
+          ],
+          "constraints": [
+            "selector_state == 0x417EE0C1"
+          ],
+          "target_rvas": [
+            "0x9D3A5"
+          ]
+        },
+        {
+          "partition": "src=0x9F38A:state=0x3204A75D",
+          "predecessor_eas": [
+            "0x9F38A"
+          ],
+          "constraints": [
+            "selector_state == 0x3204A75D"
+          ],
+          "target_rvas": [
+            "0x9E4C6"
+          ]
+        },
+        {
+          "partition": "src=0x9F3B6:state=0x24176468",
+          "predecessor_eas": [
+            "0x9F3B6"
+          ],
+          "constraints": [
+            "selector_state == 0x24176468"
+          ],
+          "target_rvas": [
+            "0x9EFBD"
+          ]
+        },
+        {
+          "partition": "src=0x9F402:state=0x00627894",
+          "predecessor_eas": [
+            "0x9F402"
+          ],
+          "constraints": [
+            "selector_state == 0x00627894"
+          ],
+          "target_rvas": [
+            "0x9CDCC"
+          ]
+        },
+        {
+          "partition": "src=0x9F43F:state=0x660DB7F4",
+          "predecessor_eas": [
+            "0x9F43F"
+          ],
+          "constraints": [
+            "selector_state == 0x660DB7F4"
+          ],
+          "target_rvas": [
+            "0x9F6AE"
+          ]
+        },
+        {
+          "partition": "src=0x9F498:state=0x0E7F3E1B",
+          "predecessor_eas": [
+            "0x9F498"
+          ],
+          "constraints": [
+            "selector_state == 0x0E7F3E1B"
+          ],
+          "target_rvas": [
+            "0x9EF76"
+          ]
+        },
+        {
+          "partition": "src=0x9F647:state=0x140F1480",
+          "predecessor_eas": [
+            "0x9F647"
+          ],
+          "constraints": [
+            "selector_state == 0x140F1480"
+          ],
+          "target_rvas": [
+            "0x9E7AC"
+          ]
+        },
+        {
+          "partition": "src=0x9F8FA:state=0x27FF40A0",
+          "predecessor_eas": [
+            "0x9F8FA"
+          ],
+          "constraints": [
+            "selector_state == 0x27FF40A0"
+          ],
+          "target_rvas": [
+            "0x9F904"
+          ]
+        },
+        {
+          "partition": "src=0x9FB11:state=0x3C89C22D",
+          "predecessor_eas": [
+            "0x9FB11"
+          ],
+          "constraints": [
+            "selector_state == 0x3C89C22D"
+          ],
+          "target_rvas": [
+            "0x9FB4D"
+          ]
+        },
+        {
+          "partition": "src=0x9FB4D:state=0x47B08C15",
+          "predecessor_eas": [
+            "0x9FB4D"
+          ],
+          "constraints": [
+            "selector_state == 0x47B08C15"
+          ],
+          "target_rvas": [
+            "0x9C787"
+          ]
+        },
+        {
+          "partition": "src=0x9FCDF:state=0x14C690E3",
+          "predecessor_eas": [
+            "0x9FCDF"
+          ],
+          "constraints": [
+            "selector_state == 0x14C690E3"
+          ],
+          "target_rvas": [
+            "0x9D4F2"
+          ]
+        },
+        {
+          "partition": "src=0x9FE21:state=0x0CC247D2",
+          "predecessor_eas": [
+            "0x9FE21"
+          ],
+          "constraints": [
+            "selector_state == 0x0CC247D2"
+          ],
+          "target_rvas": [
+            "0x9E618"
+          ]
+        },
+        {
+          "partition": "src=0x9FF2D:state=0x72D7BB5B",
+          "predecessor_eas": [
+            "0x9FF2D"
+          ],
+          "constraints": [
+            "selector_state == 0x72D7BB5B"
+          ],
+          "target_rvas": [
+            "0x9D24C"
+          ]
+        },
+        {
+          "partition": "src=0xA0041:state=0x19992C72",
+          "predecessor_eas": [
+            "0xA0041"
+          ],
+          "constraints": [
+            "selector_state == 0x19992C72"
+          ],
+          "target_rvas": [
+            "0x9E301"
+          ]
+        },
+        {
+          "partition": "src=0xA006E:state=0x5B074F82",
+          "predecessor_eas": [
+            "0xA006E"
+          ],
+          "constraints": [
+            "selector_state == 0x5B074F82"
+          ],
+          "target_rvas": [
+            "0x9CA80"
+          ]
+        },
+        {
+          "partition": "src=0xA0077:state=0x280B7BD5",
+          "predecessor_eas": [
+            "0xA0077"
+          ],
+          "constraints": [
+            "selector_state == 0x280B7BD5"
+          ],
+          "target_rvas": [
+            "0xA0429"
+          ]
+        },
+        {
+          "partition": "src=0xA00EE:state=0x35B0ABBF",
+          "predecessor_eas": [
+            "0xA00EE"
+          ],
+          "constraints": [
+            "selector_state == 0x35B0ABBF"
+          ],
+          "target_rvas": [
+            "0x9EF64"
+          ]
+        },
+        {
+          "partition": "src=0xA012A:state=0x064979B0",
+          "predecessor_eas": [
+            "0xA012A"
+          ],
+          "constraints": [
+            "selector_state == 0x064979B0"
+          ],
+          "target_rvas": [
+            "0x9EAC5"
+          ]
+        },
+        {
+          "partition": "src=0xA0165:state=0x08B6E964",
+          "predecessor_eas": [
+            "0xA0165"
+          ],
+          "constraints": [
+            "selector_state == 0x08B6E964"
+          ],
+          "target_rvas": [
+            "0xA02D0"
+          ]
+        },
+        {
+          "partition": "src=0xA019E:state=0x7E6FC736",
+          "predecessor_eas": [
+            "0xA019E"
+          ],
+          "constraints": [
+            "selector_state == 0x7E6FC736"
+          ],
+          "target_rvas": [
+            "0x9FE2A"
+          ]
+        },
+        {
+          "partition": "src=0xA01A7:state=0x40E758FB",
+          "predecessor_eas": [
+            "0xA01A7"
+          ],
+          "constraints": [
+            "selector_state == 0x40E758FB"
+          ],
+          "target_rvas": [
+            "0x9F03D"
+          ]
+        },
+        {
+          "partition": "src=0xA020C:state=0x0062220F",
+          "predecessor_eas": [
+            "0xA020C"
+          ],
+          "constraints": [
+            "selector_state == 0x0062220F"
+          ],
+          "target_rvas": [
+            "0x9EFBD"
+          ]
+        },
+        {
+          "partition": "src=0xA024E:state=0x3AF7A522",
+          "predecessor_eas": [
+            "0xA024E"
+          ],
+          "constraints": [
+            "selector_state == 0x3AF7A522"
+          ],
+          "target_rvas": [
+            "0xA041F"
+          ]
+        },
+        {
+          "partition": "src=0xA027C:state=0x78A4415C",
+          "predecessor_eas": [
+            "0xA027C"
+          ],
+          "constraints": [
+            "selector_state == 0x78A4415C"
+          ],
+          "target_rvas": [
+            "0x9E9F3"
+          ]
+        },
+        {
+          "partition": "src=0xA02B6:state=0x70476A26",
+          "predecessor_eas": [
+            "0xA02B6"
+          ],
+          "constraints": [
+            "selector_state == 0x70476A26"
+          ],
+          "target_rvas": [
+            "0x9FB60"
+          ]
+        },
+        {
+          "partition": "src=0xA02FF:state=0x78D2268F",
+          "predecessor_eas": [
+            "0xA02FF"
+          ],
+          "constraints": [
+            "selector_state == 0x78D2268F"
+          ],
+          "target_rvas": [
+            "0x9CAEF"
+          ]
+        },
+        {
+          "partition": "src=0xA0329:state=0x45E2AE62",
+          "predecessor_eas": [
+            "0xA0329"
+          ],
+          "constraints": [
+            "selector_state == 0x45E2AE62"
+          ],
+          "target_rvas": [
+            "0x9F44D"
+          ]
+        },
+        {
+          "partition": "src=0xA0363:state=0x0BA150B5",
+          "predecessor_eas": [
+            "0xA0363"
+          ],
+          "constraints": [
+            "selector_state == 0x0BA150B5"
+          ],
+          "target_rvas": [
+            "0x9C386"
+          ]
+        },
+        {
+          "partition": "src=0xA036D:state=0x7DF65151",
+          "predecessor_eas": [
+            "0xA036D"
+          ],
+          "constraints": [
+            "selector_state == 0x7DF65151"
+          ],
+          "target_rvas": [
+            "0xA0416"
+          ]
+        }
+      ],
+      "effects": [],
+      "exits": [],
+      "assumptions": [
+        "the linked function bytes match linked_sha256 exactly",
+        "each transition is named by a committed canonical route claim and proof",
+        "transaction preflight and observed-post-apply validation reject non-state effect or use-def severance",
+        "effects and exits record rewrite deltas, not the whole-function native trace"
+      ],
+      "unresolved": []
+    },
+    {
+      "function": "sub_7FFB0DE51120",
+      "entry_rva": "0x58A40",
+      "extent": "0x745E",
+      "linked_sha256": "1710009f3ac9083b76558226cecbfb31e9be1920f2fa0d98016f62e8d380b778",
+      "transitions": [
+        {
+          "partition": "src=0x58A8A:state=0x06987B53",
+          "predecessor_eas": [
+            "0x58A8A"
+          ],
+          "constraints": [
+            "selector_state == 0x06987B53"
+          ],
+          "target_rvas": [
+            "0x59EE6"
+          ]
+        },
+        {
+          "partition": "src=0x58ADD:state=0x2399290D",
+          "predecessor_eas": [
+            "0x58ADD"
+          ],
+          "constraints": [
+            "selector_state == 0x2399290D"
+          ],
+          "target_rvas": [
+            "0x5990C"
+          ]
+        },
+        {
+          "partition": "src=0x58C76:state=0x21FF5728",
+          "predecessor_eas": [
+            "0x58C76"
+          ],
+          "constraints": [
+            "selector_state == 0x21FF5728"
+          ],
+          "target_rvas": [
+            "0x58BA1"
+          ]
+        },
+        {
+          "partition": "src=0x58D4B:state=0x712CC77F",
+          "predecessor_eas": [
+            "0x58D4B"
+          ],
+          "constraints": [
+            "selector_state == 0x712CC77F"
+          ],
+          "target_rvas": [
+            "0x59815"
+          ]
+        },
+        {
+          "partition": "src=0x58ECC:state=0x56D55420",
+          "predecessor_eas": [
+            "0x58ECC"
+          ],
+          "constraints": [
+            "selector_state == 0x56D55420"
+          ],
+          "target_rvas": [
+            "0x5CEC4"
+          ]
+        },
+        {
+          "partition": "src=0x58F63:state=0x3848910B",
+          "predecessor_eas": [
+            "0x58F63"
+          ],
+          "constraints": [
+            "selector_state == 0x3848910B"
+          ],
+          "target_rvas": [
+            "0x58D01"
+          ]
+        },
+        {
+          "partition": "src=0x58F98:state=0x54286756",
+          "predecessor_eas": [
+            "0x58F98"
+          ],
+          "constraints": [
+            "selector_state == 0x54286756"
+          ],
+          "target_rvas": [
+            "0x5D0F8"
+          ]
+        },
+        {
+          "partition": "src=0x59051:state=0x6F0B7068",
+          "predecessor_eas": [
+            "0x59051"
+          ],
+          "constraints": [
+            "selector_state == 0x6F0B7068"
+          ],
+          "target_rvas": [
+            "0x5A493"
+          ]
+        },
+        {
+          "partition": "src=0x59237:state=0x32800A73",
+          "predecessor_eas": [
+            "0x59237"
+          ],
+          "constraints": [
+            "selector_state == 0x32800A73"
+          ],
+          "target_rvas": [
+            "0x5E2BD"
+          ]
+        },
+        {
+          "partition": "src=0x59256:state=0x683077E0",
+          "predecessor_eas": [
+            "0x59256"
+          ],
+          "constraints": [
+            "selector_state == 0x683077E0"
+          ],
+          "target_rvas": [
+            "0x59D20"
+          ]
+        },
+        {
+          "partition": "src=0x597F1:state=0x1A331802",
+          "predecessor_eas": [
+            "0x597F1"
+          ],
+          "constraints": [
+            "selector_state == 0x1A331802"
+          ],
+          "target_rvas": [
+            "0x5E4C5"
+          ]
+        },
+        {
+          "partition": "src=0x598E1:state=0x08F0F227",
+          "predecessor_eas": [
+            "0x598E1"
+          ],
+          "constraints": [
+            "selector_state == 0x08F0F227"
+          ],
+          "target_rvas": [
+            "0x5CDFF"
+          ]
+        },
+        {
+          "partition": "src=0x59BE5:state=0x0041156F",
+          "predecessor_eas": [
+            "0x59BE5"
+          ],
+          "constraints": [
+            "selector_state == 0x0041156F"
+          ],
+          "target_rvas": [
+            "0x59862"
+          ]
+        },
+        {
+          "partition": "src=0x59C96:state=0x5705E594",
+          "predecessor_eas": [
+            "0x59C96"
+          ],
+          "constraints": [
+            "selector_state == 0x5705E594"
+          ],
+          "target_rvas": [
+            "0x59500"
+          ]
+        },
+        {
+          "partition": "src=0x59D02:state=0x1F82EDD3",
+          "predecessor_eas": [
+            "0x59D02"
+          ],
+          "constraints": [
+            "selector_state == 0x1F82EDD3"
+          ],
+          "target_rvas": [
+            "0x5A3E9"
+          ]
+        },
+        {
+          "partition": "src=0x59D16:state=0x6BB3B883",
+          "predecessor_eas": [
+            "0x59D16"
+          ],
+          "constraints": [
+            "selector_state == 0x6BB3B883"
+          ],
+          "target_rvas": [
+            "0x5C9A6"
+          ]
+        },
+        {
+          "partition": "src=0x59D7A:state=0x3FD7701F",
+          "predecessor_eas": [
+            "0x59D7A"
+          ],
+          "constraints": [
+            "selector_state == 0x3FD7701F"
+          ],
+          "target_rvas": [
+            "0x5A805"
+          ]
+        },
+        {
+          "partition": "src=0x59E75:state=0x710243CE",
+          "predecessor_eas": [
+            "0x59E75"
+          ],
+          "constraints": [
+            "selector_state == 0x710243CE"
+          ],
+          "target_rvas": [
+            "0x5AEB4"
+          ]
+        },
+        {
+          "partition": "src=0x59E7D:state=0x5FFD9DCD",
+          "predecessor_eas": [
+            "0x59E7D"
+          ],
+          "constraints": [
+            "selector_state == 0x5FFD9DCD"
+          ],
+          "target_rvas": [
+            "0x5D63F"
+          ]
+        },
+        {
+          "partition": "src=0x59F6E:state=0x63088F73",
+          "predecessor_eas": [
+            "0x59F6E"
+          ],
+          "constraints": [
+            "selector_state == 0x63088F73"
+          ],
+          "target_rvas": [
+            "0x5D00F"
+          ]
+        },
+        {
+          "partition": "src=0x5A1BD:state=0x45BA2E86",
+          "predecessor_eas": [
+            "0x5A1BD"
+          ],
+          "constraints": [
+            "selector_state == 0x45BA2E86"
+          ],
+          "target_rvas": [
+            "0x58FA8"
+          ]
+        },
+        {
+          "partition": "src=0x5A1F8:state=0x6FC4ECF1",
+          "predecessor_eas": [
+            "0x5A1F8"
+          ],
+          "constraints": [
+            "selector_state == 0x6FC4ECF1"
+          ],
+          "target_rvas": [
+            "0x5990C"
+          ]
+        },
+        {
+          "partition": "src=0x5A291:state=0x7FF1052F",
+          "predecessor_eas": [
+            "0x5A291"
+          ],
+          "constraints": [
+            "selector_state == 0x7FF1052F"
+          ],
+          "target_rvas": [
+            "0x5D070"
+          ]
+        },
+        {
+          "partition": "src=0x5A2FC:state=0x66683F76",
+          "predecessor_eas": [
+            "0x5A2FC"
+          ],
+          "constraints": [
+            "selector_state == 0x66683F76"
+          ],
+          "target_rvas": [
+            "0x593A9"
+          ]
+        },
+        {
+          "partition": "src=0x5A3CF:state=0x67BCA6A2",
+          "predecessor_eas": [
+            "0x5A3CF"
+          ],
+          "constraints": [
+            "selector_state == 0x67BCA6A2"
+          ],
+          "target_rvas": [
+            "0x5AE71"
+          ]
+        },
+        {
+          "partition": "src=0x5A434:state=0x7377472E",
+          "predecessor_eas": [
+            "0x5A434"
+          ],
+          "constraints": [
+            "selector_state == 0x7377472E"
+          ],
+          "target_rvas": [
+            "0x5CD43"
+          ]
+        },
+        {
+          "partition": "src=0x5A474:state=0x2380FB78",
+          "predecessor_eas": [
+            "0x5A474"
+          ],
+          "constraints": [
+            "selector_state == 0x2380FB78"
+          ],
+          "target_rvas": [
+            "0x5DB54"
+          ]
+        },
+        {
+          "partition": "src=0x5A7DD:state=0x190A96F6",
+          "predecessor_eas": [
+            "0x5A7DD"
+          ],
+          "constraints": [
+            "selector_state == 0x190A96F6"
+          ],
+          "target_rvas": [
+            "0x5E447"
+          ]
+        },
+        {
+          "partition": "src=0x5AA48:state=0x3E7C8533",
+          "predecessor_eas": [
+            "0x5AA48"
+          ],
+          "constraints": [
+            "selector_state == 0x3E7C8533"
+          ],
+          "target_rvas": [
+            "0x5E5C8"
+          ]
+        },
+        {
+          "partition": "src=0x5AADA:state=0x58220A4C",
+          "predecessor_eas": [
+            "0x5AADA"
+          ],
+          "constraints": [
+            "selector_state == 0x58220A4C"
+          ],
+          "target_rvas": [
+            "0x59E86"
+          ]
+        },
+        {
+          "partition": "src=0x5AB38:state=0x51800C84",
+          "predecessor_eas": [
+            "0x5AB38"
+          ],
+          "constraints": [
+            "selector_state == 0x51800C84"
+          ],
+          "target_rvas": [
+            "0x59F83"
+          ]
+        },
+        {
+          "partition": "src=0x5AC1E:state=0x4B0657CB",
+          "predecessor_eas": [
+            "0x5AC1E"
+          ],
+          "constraints": [
+            "selector_state == 0x4B0657CB"
+          ],
+          "target_rvas": [
+            "0x5AD78"
+          ]
+        },
+        {
+          "partition": "src=0x5AC6F:state=0x40A9060C",
+          "predecessor_eas": [
+            "0x5AC6F"
+          ],
+          "constraints": [
+            "selector_state == 0x40A9060C"
+          ],
+          "target_rvas": [
+            "0x5AAD4"
+          ]
+        },
+        {
+          "partition": "src=0x5AD47:state=0x71D527C2",
+          "predecessor_eas": [
+            "0x5AD47"
+          ],
+          "constraints": [
+            "selector_state == 0x71D527C2"
+          ],
+          "target_rvas": [
+            "0x59E3F"
+          ]
+        },
+        {
+          "partition": "src=0x5ADF2:state=0x389B1B12",
+          "predecessor_eas": [
+            "0x5ADF2"
+          ],
+          "constraints": [
+            "selector_state == 0x389B1B12"
+          ],
+          "target_rvas": [
+            "0x59C06"
+          ]
+        },
+        {
+          "partition": "src=0x5C8BA:state=0x2A7FDD3D",
+          "predecessor_eas": [
+            "0x5C8BA"
+          ],
+          "constraints": [
+            "selector_state == 0x2A7FDD3D"
+          ],
+          "target_rvas": [
+            "0x5E79B"
+          ]
+        },
+        {
+          "partition": "src=0x5C93D:state=0x105D4019",
+          "predecessor_eas": [
+            "0x5C93D"
+          ],
+          "constraints": [
+            "selector_state == 0x105D4019"
+          ],
+          "target_rvas": [
+            "0x58F63"
+          ]
+        },
+        {
+          "partition": "src=0x5C97C:state=0x78C51C7E",
+          "predecessor_eas": [
+            "0x5C97C"
+          ],
+          "constraints": [
+            "selector_state == 0x78C51C7E"
+          ],
+          "target_rvas": [
+            "0x5D8D8"
+          ]
+        },
+        {
+          "partition": "src=0x5CC94:state=0x0FDC4885",
+          "predecessor_eas": [
+            "0x5CC94"
+          ],
+          "constraints": [
+            "selector_state == 0x0FDC4885"
+          ],
+          "target_rvas": [
+            "0x5AC43"
+          ]
+        },
+        {
+          "partition": "src=0x5CD5F:state=0x7F8A42D7",
+          "predecessor_eas": [
+            "0x5CD5F"
+          ],
+          "constraints": [
+            "selector_state == 0x7F8A42D7"
+          ],
+          "target_rvas": [
+            "0x58E97"
+          ]
+        },
+        {
+          "partition": "src=0x5CE33:state=0x255D0822",
+          "predecessor_eas": [
+            "0x5CE33"
+          ],
+          "constraints": [
+            "selector_state == 0x255D0822"
+          ],
+          "target_rvas": [
+            "0x5E500"
+          ]
+        },
+        {
+          "partition": "src=0x5CFA2:state=0x5EA2A1D9",
+          "predecessor_eas": [
+            "0x5CFA2"
+          ],
+          "constraints": [
+            "selector_state == 0x5EA2A1D9"
+          ],
+          "target_rvas": [
+            "0x5A220"
+          ]
+        },
+        {
+          "partition": "src=0x5D032:state=0x44000D18",
+          "predecessor_eas": [
+            "0x5D032"
+          ],
+          "constraints": [
+            "selector_state == 0x44000D18"
+          ],
+          "target_rvas": [
+            "0x5E31D"
+          ]
+        },
+        {
+          "partition": "src=0x5D0CC:state=0x625AD8ED",
+          "predecessor_eas": [
+            "0x5D0CC"
+          ],
+          "constraints": [
+            "selector_state == 0x625AD8ED"
+          ],
+          "target_rvas": [
+            "0x58D99"
+          ]
+        },
+        {
+          "partition": "src=0x5D1D4:state=0x4648CDD3",
+          "predecessor_eas": [
+            "0x5D1D4"
+          ],
+          "constraints": [
+            "selector_state == 0x4648CDD3"
+          ],
+          "target_rvas": [
+            "0x5F99B"
+          ]
+        },
+        {
+          "partition": "src=0x5D577:state=0x121C2020",
+          "predecessor_eas": [
+            "0x5D577"
+          ],
+          "constraints": [
+            "selector_state == 0x121C2020"
+          ],
+          "target_rvas": [
+            "0x5AB1E"
+          ]
+        },
+        {
+          "partition": "src=0x5D633:state=0x557FF7A9",
+          "predecessor_eas": [
+            "0x5D633"
+          ],
+          "constraints": [
+            "selector_state == 0x557FF7A9"
+          ],
+          "target_rvas": [
+            "0x5AB56"
+          ]
+        },
+        {
+          "partition": "src=0x5D8A0:state=0x719C4B92",
+          "predecessor_eas": [
+            "0x5D8A0"
+          ],
+          "constraints": [
+            "selector_state == 0x719C4B92"
+          ],
+          "target_rvas": [
+            "0x5C95A"
+          ]
+        },
+        {
+          "partition": "src=0x5D9C3:state=0x30CBE11C",
+          "predecessor_eas": [
+            "0x5D9C3"
+          ],
+          "constraints": [
+            "selector_state == 0x30CBE11C"
+          ],
+          "target_rvas": [
+            "0x5FA41"
+          ]
+        },
+        {
+          "partition": "src=0x5D9CC:state=0x49295B9D",
+          "predecessor_eas": [
+            "0x5D9CC"
+          ],
+          "constraints": [
+            "selector_state == 0x49295B9D"
+          ],
+          "target_rvas": [
+            "0x59166"
+          ]
+        },
+        {
+          "partition": "src=0x5DB90:state=0x6183E6F2",
+          "predecessor_eas": [
+            "0x5DB90"
+          ],
+          "constraints": [
+            "selector_state == 0x6183E6F2"
+          ],
+          "target_rvas": [
+            "0x58AB1"
+          ]
+        },
+        {
+          "partition": "src=0x5E2AA:state=0x2E9048BE",
+          "predecessor_eas": [
+            "0x5E2AA"
+          ],
+          "constraints": [
+            "selector_state == 0x2E9048BE"
+          ],
+          "target_rvas": [
+            "0x5A8CA"
+          ]
+        },
+        {
+          "partition": "src=0x5E314:state=0x14A31706",
+          "predecessor_eas": [
+            "0x5E314"
+          ],
+          "constraints": [
+            "selector_state == 0x14A31706"
+          ],
+          "target_rvas": [
+            "0x5A448"
+          ]
+        },
+        {
+          "partition": "src=0x5E3B8:state=0x1D2DFAB0",
+          "predecessor_eas": [
+            "0x5E3B8"
+          ],
+          "constraints": [
+            "selector_state == 0x1D2DFAB0"
+          ],
+          "target_rvas": [
+            "0x59043"
+          ]
+        },
+        {
+          "partition": "src=0x5E4B2:state=0x0FBBE885",
+          "predecessor_eas": [
+            "0x5E4B2"
+          ],
+          "constraints": [
+            "selector_state == 0x0FBBE885"
+          ],
+          "target_rvas": [
+            "0x5DA4C"
+          ]
+        },
+        {
+          "partition": "src=0x5E4EB:state=0x6C8930D2",
+          "predecessor_eas": [
+            "0x5E4EB"
+          ],
+          "constraints": [
+            "selector_state == 0x6C8930D2"
+          ],
+          "target_rvas": [
+            "0x5D225"
+          ]
+        },
+        {
+          "partition": "src=0x5E546:state=0x0EEF3EDB",
+          "predecessor_eas": [
+            "0x5E546"
+          ],
+          "constraints": [
+            "selector_state == 0x0EEF3EDB"
+          ],
+          "target_rvas": [
+            "0x5A395"
+          ]
+        },
+        {
+          "partition": "src=0x5E623:state=0x43C001B9",
+          "predecessor_eas": [
+            "0x5E623"
+          ],
+          "constraints": [
+            "selector_state == 0x43C001B9"
+          ],
+          "target_rvas": [
+            "0x5FA77"
+          ]
+        },
+        {
+          "partition": "src=0x5E62D:state=0x1FC93E20",
+          "predecessor_eas": [
+            "0x5E62D"
+          ],
+          "constraints": [
+            "selector_state == 0x1FC93E20"
+          ],
+          "target_rvas": [
+            "0x5DCD9"
+          ]
+        },
+        {
+          "partition": "src=0x5F8D5:state=0x783D72E1",
+          "predecessor_eas": [
+            "0x5F8D5"
+          ],
+          "constraints": [
+            "selector_state == 0x783D72E1"
+          ],
+          "target_rvas": [
+            "0x5A2B6"
+          ]
+        },
+        {
+          "partition": "src=0x5F8DC:state=0x5C362FD1",
+          "predecessor_eas": [
+            "0x5F8DC"
+          ],
+          "constraints": [
+            "selector_state == 0x5C362FD1"
+          ],
+          "target_rvas": [
+            "0x59DEE"
+          ]
+        },
+        {
+          "partition": "src=0x5FA62:state=0x4E6EACC2",
+          "predecessor_eas": [
+            "0x5FA62"
+          ],
+          "constraints": [
+            "selector_state == 0x4E6EACC2"
+          ],
+          "target_rvas": [
+            "0x59CBD"
+          ]
+        },
+        {
+          "partition": "src=0x5FA7D:state=0x567B591D",
+          "predecessor_eas": [
+            "0x5FA7D"
+          ],
+          "constraints": [
+            "selector_state == 0x567B591D"
+          ],
+          "target_rvas": [
+            "0x58C3E"
+          ]
+        },
+        {
+          "partition": "src=0x5FBF4:state=0x20FE0074",
+          "predecessor_eas": [
+            "0x5FBF4"
+          ],
+          "constraints": [
+            "selector_state == 0x20FE0074"
+          ],
+          "target_rvas": [
+            "0x5ACED"
+          ]
+        },
+        {
+          "partition": "src=0x5FC75:state=0x7BF40C05",
+          "predecessor_eas": [
+            "0x5FC75"
+          ],
+          "constraints": [
+            "selector_state == 0x7BF40C05"
+          ],
+          "target_rvas": [
+            "0x5D57E"
+          ]
+        },
+        {
+          "partition": "src=0x5FCA4:state=0x4069AC2F",
+          "predecessor_eas": [
+            "0x5FCA4"
+          ],
+          "constraints": [
+            "selector_state == 0x4069AC2F"
+          ],
+          "target_rvas": [
+            "0x5F6F8"
+          ]
+        },
+        {
+          "partition": "src=0x5FCFF:state=0x4FA2180F",
+          "predecessor_eas": [
+            "0x5FCFF"
+          ],
+          "constraints": [
+            "selector_state == 0x4FA2180F"
+          ],
+          "target_rvas": [
+            "0x58ADD"
+          ]
+        },
+        {
+          "partition": "src=0x5FD33:state=0x360DBB04",
+          "predecessor_eas": [
+            "0x5FD33"
+          ],
+          "constraints": [
+            "selector_state == 0x360DBB04"
+          ],
+          "target_rvas": [
+            "0x5FBFA"
+          ]
+        },
+        {
+          "partition": "src=0x5FD66:state=0x1B990209",
+          "predecessor_eas": [
+            "0x5FD66"
+          ],
+          "constraints": [
+            "selector_state == 0x1B990209"
+          ],
+          "target_rvas": [
+            "0x5FE82"
+          ]
+        },
+        {
+          "partition": "src=0x5FDA6:state=0x6C3DA2F2",
+          "predecessor_eas": [
+            "0x5FDA6"
+          ],
+          "constraints": [
+            "selector_state == 0x6C3DA2F2"
+          ],
+          "target_rvas": [
+            "0x5A1F8"
+          ]
+        },
+        {
+          "partition": "src=0x5FDDD:state=0x5C35E1AE",
+          "predecessor_eas": [
+            "0x5FDDD"
+          ],
+          "constraints": [
+            "selector_state == 0x5C35E1AE"
+          ],
+          "target_rvas": [
+            "0x5FA84"
+          ]
+        },
+        {
+          "partition": "src=0x5FE35:state=0x2580E5D5",
+          "predecessor_eas": [
+            "0x5FE35"
+          ],
+          "constraints": [
+            "selector_state == 0x2580E5D5"
+          ],
+          "target_rvas": [
+            "0x5A493"
+          ]
+        },
+        {
+          "partition": "src=0x5FE3E:state=0x0603DE7F",
+          "predecessor_eas": [
+            "0x5FE3E"
+          ],
+          "constraints": [
+            "selector_state == 0x0603DE7F"
+          ],
+          "target_rvas": [
+            "0x59E86"
+          ]
+        }
+      ],
+      "effects": [],
+      "exits": [],
+      "assumptions": [
+        "the linked function bytes match linked_sha256 exactly",
+        "each transition is named by a committed canonical route claim and proof",
+        "transaction preflight and observed-post-apply validation reject non-state effect or use-def severance",
+        "effects and exits record rewrite deltas, not the whole-function native trace"
+      ],
+      "unresolved": []
+    },
+    {
+      "function": "sub_7FFB0DF992D0",
+      "entry_rva": "0x630B4",
+      "extent": "0x4FE9",
+      "linked_sha256": "7e940fd8eca74f61333a547e3e5cb7834d34ed08bbbf1b8d0071c326d7103c8e",
+      "transitions": [
+        {
+          "partition": "src=0x6313D:state=0x7A524DE1",
+          "predecessor_eas": [
+            "0x6313D"
+          ],
+          "constraints": [
+            "selector_state == 0x7A524DE1"
+          ],
+          "target_rvas": [
+            "0x63E46"
+          ]
+        },
+        {
+          "partition": "src=0x63179:state=0x5E4FA711",
+          "predecessor_eas": [
+            "0x63179"
+          ],
+          "constraints": [
+            "selector_state == 0x5E4FA711"
+          ],
+          "target_rvas": [
+            "0x68067"
+          ]
+        },
+        {
+          "partition": "src=0x63293:state=0x18C95CC5",
+          "predecessor_eas": [
+            "0x63293"
+          ],
+          "constraints": [
+            "selector_state == 0x18C95CC5"
+          ],
+          "target_rvas": [
+            "0x64535"
+          ]
+        },
+        {
+          "partition": "src=0x6342C:state=0x6421426A",
+          "predecessor_eas": [
+            "0x6342C"
+          ],
+          "constraints": [
+            "selector_state == 0x6421426A"
+          ],
+          "target_rvas": [
+            "0x6321C"
+          ]
+        },
+        {
+          "partition": "src=0x634CA:state=0x7C325244",
+          "predecessor_eas": [
+            "0x634CA"
+          ],
+          "constraints": [
+            "selector_state == 0x7C325244"
+          ],
+          "target_rvas": [
+            "0x63F42"
+          ]
+        },
+        {
+          "partition": "src=0x635FA:state=0x34B49413",
+          "predecessor_eas": [
+            "0x635FA"
+          ],
+          "constraints": [
+            "selector_state == 0x34B49413"
+          ],
+          "target_rvas": [
+            "0x6458F"
+          ]
+        },
+        {
+          "partition": "src=0x6366E:state=0x37C2DC89",
+          "predecessor_eas": [
+            "0x6366E"
+          ],
+          "constraints": [
+            "selector_state == 0x37C2DC89"
+          ],
+          "target_rvas": [
+            "0x63E24"
+          ]
+        },
+        {
+          "partition": "src=0x6393F:state=0x6D94145C",
+          "predecessor_eas": [
+            "0x6393F"
+          ],
+          "constraints": [
+            "selector_state == 0x6D94145C"
+          ],
+          "target_rvas": [
+            "0x63E18"
+          ]
+        },
+        {
+          "partition": "src=0x63DE6:state=0x30214AE3",
+          "predecessor_eas": [
+            "0x63DE6"
+          ],
+          "constraints": [
+            "selector_state == 0x30214AE3"
+          ],
+          "target_rvas": [
+            "0x63246"
+          ]
+        },
+        {
+          "partition": "src=0x644FF:state=0x0D2C9BB2",
+          "predecessor_eas": [
+            "0x644FF"
+          ],
+          "constraints": [
+            "selector_state == 0x0D2C9BB2"
+          ],
+          "target_rvas": [
+            "0x642EE"
+          ]
+        },
+        {
+          "partition": "src=0x6457D:state=0x6089ADAD",
+          "predecessor_eas": [
+            "0x6457D"
+          ],
+          "constraints": [
+            "selector_state == 0x6089ADAD"
+          ],
+          "target_rvas": [
+            "0x63E6F"
+          ]
+        },
+        {
+          "partition": "src=0x645DD:state=0x48504345",
+          "predecessor_eas": [
+            "0x645DD"
+          ],
+          "constraints": [
+            "selector_state == 0x48504345"
+          ],
+          "target_rvas": [
+            "0x642C7"
+          ]
+        },
+        {
+          "partition": "src=0x6461B:state=0x3BB000A5",
+          "predecessor_eas": [
+            "0x6461B"
+          ],
+          "constraints": [
+            "selector_state == 0x3BB000A5"
+          ],
+          "target_rvas": [
+            "0x63392"
+          ]
+        },
+        {
+          "partition": "src=0x646F9:state=0x64C63986",
+          "predecessor_eas": [
+            "0x646F9"
+          ],
+          "constraints": [
+            "selector_state == 0x64C63986"
+          ],
+          "target_rvas": [
+            "0x6462D"
+          ]
+        },
+        {
+          "partition": "src=0x64A24:state=0x209130F0",
+          "predecessor_eas": [
+            "0x64A24"
+          ],
+          "constraints": [
+            "selector_state == 0x209130F0"
+          ],
+          "target_rvas": [
+            "0x645F0"
+          ]
+        },
+        {
+          "partition": "src=0x64A4E:state=0x777438BB",
+          "predecessor_eas": [
+            "0x64A4E"
+          ],
+          "constraints": [
+            "selector_state == 0x777438BB"
+          ],
+          "target_rvas": [
+            "0x633D1"
+          ]
+        },
+        {
+          "partition": "src=0x64A9D:state=0x1A8276A1",
+          "predecessor_eas": [
+            "0x64A9D"
+          ],
+          "constraints": [
+            "selector_state == 0x1A8276A1"
+          ],
+          "target_rvas": [
+            "0x634FF"
+          ]
+        },
+        {
+          "partition": "src=0x64AFC:state=0x685CB7F5",
+          "predecessor_eas": [
+            "0x64AFC"
+          ],
+          "constraints": [
+            "selector_state == 0x685CB7F5"
+          ],
+          "target_rvas": [
+            "0x63960"
+          ]
+        },
+        {
+          "partition": "src=0x64B21:state=0x25F3A3BC",
+          "predecessor_eas": [
+            "0x64B21"
+          ],
+          "constraints": [
+            "selector_state == 0x25F3A3BC"
+          ],
+          "target_rvas": [
+            "0x63473"
+          ]
+        },
+        {
+          "partition": "src=0x64B6A:state=0x384B769E",
+          "predecessor_eas": [
+            "0x64B6A"
+          ],
+          "constraints": [
+            "selector_state == 0x384B769E"
+          ],
+          "target_rvas": [
+            "0x63617"
+          ]
+        },
+        {
+          "partition": "src=0x64BE3:state=0x49146E67",
+          "predecessor_eas": [
+            "0x64BE3"
+          ],
+          "constraints": [
+            "selector_state == 0x49146E67"
+          ],
+          "target_rvas": [
+            "0x6368A"
+          ]
+        },
+        {
+          "partition": "src=0x652A0:state=0x0868A01B",
+          "predecessor_eas": [
+            "0x652A0"
+          ],
+          "constraints": [
+            "selector_state == 0x0868A01B"
+          ],
+          "target_rvas": [
+            "0x63E4B"
+          ]
+        },
+        {
+          "partition": "src=0x653EB:state=0x0AA0A7EC",
+          "predecessor_eas": [
+            "0x653EB"
+          ],
+          "constraints": [
+            "selector_state == 0x0AA0A7EC"
+          ],
+          "target_rvas": [
+            "0x6344B"
+          ]
+        },
+        {
+          "partition": "src=0x67958:state=0x2573C89A",
+          "predecessor_eas": [
+            "0x67958"
+          ],
+          "constraints": [
+            "selector_state == 0x2573C89A"
+          ],
+          "target_rvas": [
+            "0x63F50"
+          ]
+        },
+        {
+          "partition": "src=0x67F4E:state=0x5D176687",
+          "predecessor_eas": [
+            "0x67F4E"
+          ],
+          "constraints": [
+            "selector_state == 0x5D176687"
+          ],
+          "target_rvas": [
+            "0x63DFA"
+          ]
+        },
+        {
+          "partition": "src=0x67FA8:state=0x6BB7B627",
+          "predecessor_eas": [
+            "0x67FA8"
+          ],
+          "constraints": [
+            "selector_state == 0x6BB7B627"
+          ],
+          "target_rvas": [
+            "0x64646"
+          ]
+        },
+        {
+          "partition": "src=0x68020:state=0x128FAD48",
+          "predecessor_eas": [
+            "0x68020"
+          ],
+          "constraints": [
+            "selector_state == 0x128FAD48"
+          ],
+          "target_rvas": [
+            "0x631E6"
+          ]
+        },
+        {
+          "partition": "src=0x6805E:state=0x5E519DE4",
+          "predecessor_eas": [
+            "0x6805E"
+          ],
+          "constraints": [
+            "selector_state == 0x5E519DE4"
+          ],
+          "target_rvas": [
+            "0x632B2"
+          ]
+        }
+      ],
+      "effects": [],
+      "exits": [],
+      "assumptions": [
+        "the linked function bytes match linked_sha256 exactly",
+        "each transition is named by a committed canonical route claim and proof",
+        "transaction preflight and observed-post-apply validation reject non-state effect or use-def severance",
+        "effects and exits record rewrite deltas, not the whole-function native trace"
+      ],
+      "unresolved": []
+    },
+    {
+      "function": "sub_7FFB0DFD1D70",
+      "entry_rva": "0x680A0",
+      "extent": "0x1E74C",
+      "linked_sha256": "4ad6639c98385f8970066505c925992da07c9565776b356daa5c63e1a0bddea1",
+      "transitions": [
+        {
+          "partition": "src=0x68114:state=0x58719DBD",
+          "predecessor_eas": [
+            "0x68114"
+          ],
+          "constraints": [
+            "selector_state == 0x58719DBD"
+          ],
+          "target_rvas": [
+            "0x714F0"
+          ]
+        },
+        {
+          "partition": "src=0x68570:state=0x50D04B8F",
+          "predecessor_eas": [
+            "0x68570"
+          ],
+          "constraints": [
+            "selector_state == 0x50D04B8F"
+          ],
+          "target_rvas": [
+            "0x8086F"
+          ]
+        },
+        {
+          "partition": "src=0x68633:state=0x425021A2",
+          "predecessor_eas": [
+            "0x68633"
+          ],
+          "constraints": [
+            "selector_state == 0x425021A2"
+          ],
+          "target_rvas": [
+            "0x7CFEC"
+          ]
+        },
+        {
+          "partition": "src=0x688FA:state=0x38D5B430",
+          "predecessor_eas": [
+            "0x688FA"
+          ],
+          "constraints": [
+            "selector_state == 0x38D5B430"
+          ],
+          "target_rvas": [
+            "0x81840"
+          ]
+        },
+        {
+          "partition": "src=0x70881:state=0x04B3BD7C",
+          "predecessor_eas": [
+            "0x70881"
+          ],
+          "constraints": [
+            "selector_state == 0x04B3BD7C"
+          ],
+          "target_rvas": [
+            "0x838E9"
+          ]
+        },
+        {
+          "partition": "src=0x70954:state=0x21571CAD",
+          "predecessor_eas": [
+            "0x70954"
+          ],
+          "constraints": [
+            "selector_state == 0x21571CAD"
+          ],
+          "target_rvas": [
+            "0x713A9"
+          ]
+        },
+        {
+          "partition": "src=0x70A4E:state=0x6E8699A0",
+          "predecessor_eas": [
+            "0x70A4E"
+          ],
+          "constraints": [
+            "selector_state == 0x6E8699A0"
+          ],
+          "target_rvas": [
+            "0x82F52"
+          ]
+        },
+        {
+          "partition": "src=0x70C96:state=0x010661FB",
+          "predecessor_eas": [
+            "0x70C96"
+          ],
+          "constraints": [
+            "selector_state == 0x010661FB"
+          ],
+          "target_rvas": [
+            "0x6867A"
+          ]
+        },
+        {
+          "partition": "src=0x7104E:state=0x2EA0F706",
+          "predecessor_eas": [
+            "0x7104E"
+          ],
+          "constraints": [
+            "selector_state == 0x2EA0F706"
+          ],
+          "target_rvas": [
+            "0x81719"
+          ]
+        },
+        {
+          "partition": "src=0x711EB:state=0x416A2BA8",
+          "predecessor_eas": [
+            "0x711EB"
+          ],
+          "constraints": [
+            "selector_state == 0x416A2BA8"
+          ],
+          "target_rvas": [
+            "0x82508"
+          ]
+        },
+        {
+          "partition": "src=0x7126F:state=0x58BD35E6",
+          "predecessor_eas": [
+            "0x7126F"
+          ],
+          "constraints": [
+            "selector_state == 0x58BD35E6"
+          ],
+          "target_rvas": [
+            "0x83A08"
+          ]
+        },
+        {
+          "partition": "src=0x712E0:state=0x76AA55B2",
+          "predecessor_eas": [
+            "0x712E0"
+          ],
+          "constraints": [
+            "selector_state == 0x76AA55B2"
+          ],
+          "target_rvas": [
+            "0x8475A"
+          ]
+        },
+        {
+          "partition": "src=0x71363:state=0x2B93D1B6",
+          "predecessor_eas": [
+            "0x71363"
+          ],
+          "constraints": [
+            "selector_state == 0x2B93D1B6"
+          ],
+          "target_rvas": [
+            "0x8174D"
+          ]
+        },
+        {
+          "partition": "src=0x713D8:state=0x03EC0AB6",
+          "predecessor_eas": [
+            "0x713D8"
+          ],
+          "constraints": [
+            "selector_state == 0x03EC0AB6"
+          ],
+          "target_rvas": [
+            "0x83329"
+          ]
+        },
+        {
+          "partition": "src=0x71477:state=0x2EBD561D",
+          "predecessor_eas": [
+            "0x71477"
+          ],
+          "constraints": [
+            "selector_state == 0x2EBD561D"
+          ],
+          "target_rvas": [
+            "0x786F1"
+          ]
+        },
+        {
+          "partition": "src=0x714D1:state=0x1F3D85A4",
+          "predecessor_eas": [
+            "0x714D1"
+          ],
+          "constraints": [
+            "selector_state == 0x1F3D85A4"
+          ],
+          "target_rvas": [
+            "0x7D52D"
+          ]
+        },
+        {
+          "partition": "src=0x784A1:state=0x5111D8E8",
+          "predecessor_eas": [
+            "0x784A1"
+          ],
+          "constraints": [
+            "selector_state == 0x5111D8E8"
+          ],
+          "target_rvas": [
+            "0x6895D"
+          ]
+        },
+        {
+          "partition": "src=0x78622:state=0x23F91961",
+          "predecessor_eas": [
+            "0x78622"
+          ],
+          "constraints": [
+            "selector_state == 0x23F91961"
+          ],
+          "target_rvas": [
+            "0x7C836"
+          ]
+        },
+        {
+          "partition": "src=0x786C7:state=0x35043D45",
+          "predecessor_eas": [
+            "0x786C7"
+          ],
+          "constraints": [
+            "selector_state == 0x35043D45"
+          ],
+          "target_rvas": [
+            "0x8130E"
+          ]
+        },
+        {
+          "partition": "src=0x7C821:state=0x1A528345",
+          "predecessor_eas": [
+            "0x7C821"
+          ],
+          "constraints": [
+            "selector_state == 0x1A528345"
+          ],
+          "target_rvas": [
+            "0x83F1C"
+          ]
+        },
+        {
+          "partition": "src=0x7CA86:state=0x13C955EA",
+          "predecessor_eas": [
+            "0x7CA86"
+          ],
+          "constraints": [
+            "selector_state == 0x13C955EA"
+          ],
+          "target_rvas": [
+            "0x70B07"
+          ]
+        },
+        {
+          "partition": "src=0x7CD59:state=0x5858046A",
+          "predecessor_eas": [
+            "0x7CD59"
+          ],
+          "constraints": [
+            "selector_state == 0x5858046A"
+          ],
+          "target_rvas": [
+            "0x83146"
+          ]
+        },
+        {
+          "partition": "src=0x7CFD0:state=0x66F5AD28",
+          "predecessor_eas": [
+            "0x7CFD0"
+          ],
+          "constraints": [
+            "selector_state == 0x66F5AD28"
+          ],
+          "target_rvas": [
+            "0x82333"
+          ]
+        },
+        {
+          "partition": "src=0x7D10D:state=0x07645E02",
+          "predecessor_eas": [
+            "0x7D10D"
+          ],
+          "constraints": [
+            "selector_state == 0x07645E02"
+          ],
+          "target_rvas": [
+            "0x8396C"
+          ]
+        },
+        {
+          "partition": "src=0x7D178:state=0x634DC949",
+          "predecessor_eas": [
+            "0x7D178"
+          ],
+          "constraints": [
+            "selector_state == 0x634DC949"
+          ],
+          "target_rvas": [
+            "0x71445"
+          ]
+        },
+        {
+          "partition": "src=0x7D387:state=0x6ECB4CEE",
+          "predecessor_eas": [
+            "0x7D387"
+          ],
+          "constraints": [
+            "selector_state == 0x6ECB4CEE"
+          ],
+          "target_rvas": [
+            "0x7D39C"
+          ]
+        },
+        {
+          "partition": "src=0x7D46F:state=0x50C12089",
+          "predecessor_eas": [
+            "0x7D46F"
+          ],
+          "constraints": [
+            "selector_state == 0x50C12089"
+          ],
+          "target_rvas": [
+            "0x82D5D"
+          ]
+        },
+        {
+          "partition": "src=0x7D512:state=0x4741B244",
+          "predecessor_eas": [
+            "0x7D512"
+          ],
+          "constraints": [
+            "selector_state == 0x4741B244"
+          ],
+          "target_rvas": [
+            "0x7D135"
+          ]
+        },
+        {
+          "partition": "src=0x7D526:state=0x31A7453E",
+          "predecessor_eas": [
+            "0x7D526"
+          ],
+          "constraints": [
+            "selector_state == 0x31A7453E"
+          ],
+          "target_rvas": [
+            "0x7D60B"
+          ]
+        },
+        {
+          "partition": "src=0x7D5C7:state=0x37767FC7",
+          "predecessor_eas": [
+            "0x7D5C7"
+          ],
+          "constraints": [
+            "selector_state == 0x37767FC7"
+          ],
+          "target_rvas": [
+            "0x685D1"
+          ]
+        },
+        {
+          "partition": "src=0x7D6D6:state=0x665B904B",
+          "predecessor_eas": [
+            "0x7D6D6"
+          ],
+          "constraints": [
+            "selector_state == 0x665B904B"
+          ],
+          "target_rvas": [
+            "0x82D76"
+          ]
+        },
+        {
+          "partition": "src=0x7D76C:state=0x78C877DB",
+          "predecessor_eas": [
+            "0x7D76C"
+          ],
+          "constraints": [
+            "selector_state == 0x78C877DB"
+          ],
+          "target_rvas": [
+            "0x708BF"
+          ]
+        },
+        {
+          "partition": "src=0x804DB:state=0x6464723B",
+          "predecessor_eas": [
+            "0x804DB"
+          ],
+          "constraints": [
+            "selector_state == 0x6464723B"
+          ],
+          "target_rvas": [
+            "0x80789"
+          ]
+        },
+        {
+          "partition": "src=0x8070C:state=0x511F77EB",
+          "predecessor_eas": [
+            "0x8070C"
+          ],
+          "constraints": [
+            "selector_state == 0x511F77EB"
+          ],
+          "target_rvas": [
+            "0x82EEF"
+          ]
+        },
+        {
+          "partition": "src=0x80780:state=0x2290DF3C",
+          "predecessor_eas": [
+            "0x80780"
+          ],
+          "constraints": [
+            "selector_state == 0x2290DF3C"
+          ],
+          "target_rvas": [
+            "0x83D61"
+          ]
+        },
+        {
+          "partition": "src=0x80789:state=0x7AA445CB",
+          "predecessor_eas": [
+            "0x80789"
+          ],
+          "constraints": [
+            "selector_state == 0x7AA445CB"
+          ],
+          "target_rvas": [
+            "0x714A4"
+          ]
+        },
+        {
+          "partition": "src=0x80865:state=0x4D4FD993",
+          "predecessor_eas": [
+            "0x80865"
+          ],
+          "constraints": [
+            "selector_state == 0x4D4FD993"
+          ],
+          "target_rvas": [
+            "0x711DE"
+          ]
+        },
+        {
+          "partition": "src=0x80993:state=0x47552976",
+          "predecessor_eas": [
+            "0x80993"
+          ],
+          "constraints": [
+            "selector_state == 0x47552976"
+          ],
+          "target_rvas": [
+            "0x80730"
+          ]
+        },
+        {
+          "partition": "src=0x81286:state=0x346DB8EC",
+          "predecessor_eas": [
+            "0x81286"
+          ],
+          "constraints": [
+            "selector_state == 0x346DB8EC"
+          ],
+          "target_rvas": [
+            "0x70CC0"
+          ]
+        },
+        {
+          "partition": "src=0x8128F:state=0x1FCC37CD",
+          "predecessor_eas": [
+            "0x8128F"
+          ],
+          "constraints": [
+            "selector_state == 0x1FCC37CD"
+          ],
+          "target_rvas": [
+            "0x8407E"
+          ]
+        },
+        {
+          "partition": "src=0x81364:state=0x2FB6447C",
+          "predecessor_eas": [
+            "0x81364"
+          ],
+          "constraints": [
+            "selector_state == 0x2FB6447C"
+          ],
+          "target_rvas": [
+            "0x7CF1F"
+          ]
+        },
+        {
+          "partition": "src=0x816BC:state=0x42E6AD8A",
+          "predecessor_eas": [
+            "0x816BC"
+          ],
+          "constraints": [
+            "selector_state == 0x42E6AD8A"
+          ],
+          "target_rvas": [
+            "0x7098A"
+          ]
+        },
+        {
+          "partition": "src=0x816C5:state=0x1C64AA25",
+          "predecessor_eas": [
+            "0x816C5"
+          ],
+          "constraints": [
+            "selector_state == 0x1C64AA25"
+          ],
+          "target_rvas": [
+            "0x709D0"
+          ]
+        },
+        {
+          "partition": "src=0x8172F:state=0x3698F8A0",
+          "predecessor_eas": [
+            "0x8172F"
+          ],
+          "constraints": [
+            "selector_state == 0x3698F8A0"
+          ],
+          "target_rvas": [
+            "0x6848D"
+          ]
+        },
+        {
+          "partition": "src=0x8179C:state=0x7A4FA9BD",
+          "predecessor_eas": [
+            "0x8179C"
+          ],
+          "constraints": [
+            "selector_state == 0x7A4FA9BD"
+          ],
+          "target_rvas": [
+            "0x83094"
+          ]
+        },
+        {
+          "partition": "src=0x81FA5:state=0x5CA6FCAF",
+          "predecessor_eas": [
+            "0x81FA5"
+          ],
+          "constraints": [
+            "selector_state == 0x5CA6FCAF"
+          ],
+          "target_rvas": [
+            "0x82333"
+          ]
+        },
+        {
+          "partition": "src=0x81FAE:state=0x068A8314",
+          "predecessor_eas": [
+            "0x81FAE"
+          ],
+          "constraints": [
+            "selector_state == 0x068A8314"
+          ],
+          "target_rvas": [
+            "0x8679B"
+          ]
+        },
+        {
+          "partition": "src=0x820E8:state=0x6ECD342E",
+          "predecessor_eas": [
+            "0x820E8"
+          ],
+          "constraints": [
+            "selector_state == 0x6ECD342E"
+          ],
+          "target_rvas": [
+            "0x83DE6"
+          ]
+        },
+        {
+          "partition": "src=0x8231F:state=0x77CC7D1D",
+          "predecessor_eas": [
+            "0x8231F"
+          ],
+          "constraints": [
+            "selector_state == 0x77CC7D1D"
+          ],
+          "target_rvas": [
+            "0x807AA"
+          ]
+        },
+        {
+          "partition": "src=0x8237F:state=0x63A20678",
+          "predecessor_eas": [
+            "0x8237F"
+          ],
+          "constraints": [
+            "selector_state == 0x63A20678"
+          ],
+          "target_rvas": [
+            "0x867B8"
+          ]
+        },
+        {
+          "partition": "src=0x82593:state=0x42533E9A",
+          "predecessor_eas": [
+            "0x82593"
+          ],
+          "constraints": [
+            "selector_state == 0x42533E9A"
+          ],
+          "target_rvas": [
+            "0x80715"
+          ]
+        },
+        {
+          "partition": "src=0x825FF:state=0x5AAE0F5F",
+          "predecessor_eas": [
+            "0x825FF"
+          ],
+          "constraints": [
+            "selector_state == 0x5AAE0F5F"
+          ],
+          "target_rvas": [
+            "0x7D4A6"
+          ]
+        },
+        {
+          "partition": "src=0x82608:state=0x2E2FC3D3",
+          "predecessor_eas": [
+            "0x82608"
+          ],
+          "constraints": [
+            "selector_state == 0x2E2FC3D3"
+          ],
+          "target_rvas": [
+            "0x71196"
+          ]
+        },
+        {
+          "partition": "src=0x82D4B:state=0x291D62B3",
+          "predecessor_eas": [
+            "0x82D4B"
+          ],
+          "constraints": [
+            "selector_state == 0x291D62B3"
+          ],
+          "target_rvas": [
+            "0x7D747"
+          ]
+        },
+        {
+          "partition": "src=0x82D8F:state=0x55E813F7",
+          "predecessor_eas": [
+            "0x82D8F"
+          ],
+          "constraints": [
+            "selector_state == 0x55E813F7"
+          ],
+          "target_rvas": [
+            "0x867B8"
+          ]
+        },
+        {
+          "partition": "src=0x82DEB:state=0x5C1733E7",
+          "predecessor_eas": [
+            "0x82DEB"
+          ],
+          "constraints": [
+            "selector_state == 0x5C1733E7"
+          ],
+          "target_rvas": [
+            "0x71311"
+          ]
+        },
+        {
+          "partition": "src=0x82FAE:state=0x15053AC2",
+          "predecessor_eas": [
+            "0x82FAE"
+          ],
+          "constraints": [
+            "selector_state == 0x15053AC2"
+          ],
+          "target_rvas": [
+            "0x78663"
+          ]
+        },
+        {
+          "partition": "src=0x83033:state=0x17F72193",
+          "predecessor_eas": [
+            "0x83033"
+          ],
+          "constraints": [
+            "selector_state == 0x17F72193"
+          ],
+          "target_rvas": [
+            "0x7D4CA"
+          ]
+        },
+        {
+          "partition": "src=0x83110:state=0x5BE146D5",
+          "predecessor_eas": [
+            "0x83110"
+          ],
+          "constraints": [
+            "selector_state == 0x5BE146D5"
+          ],
+          "target_rvas": [
+            "0x825BF"
+          ]
+        },
+        {
+          "partition": "src=0x831FB:state=0x39C5E172",
+          "predecessor_eas": [
+            "0x831FB"
+          ],
+          "constraints": [
+            "selector_state == 0x39C5E172"
+          ],
+          "target_rvas": [
+            "0x80525"
+          ]
+        },
+        {
+          "partition": "src=0x838A6:state=0x64FE0447",
+          "predecessor_eas": [
+            "0x838A6"
+          ],
+          "constraints": [
+            "selector_state == 0x64FE0447"
+          ],
+          "target_rvas": [
+            "0x6862D"
+          ]
+        },
+        {
+          "partition": "src=0x838D9:state=0x26E825EC",
+          "predecessor_eas": [
+            "0x838D9"
+          ],
+          "constraints": [
+            "selector_state == 0x26E825EC"
+          ],
+          "target_rvas": [
+            "0x83591"
+          ]
+        },
+        {
+          "partition": "src=0x83954:state=0x5E87B800",
+          "predecessor_eas": [
+            "0x83954"
+          ],
+          "constraints": [
+            "selector_state == 0x5E87B800"
+          ],
+          "target_rvas": [
+            "0x82FC4"
+          ]
+        },
+        {
+          "partition": "src=0x839E6:state=0x1B298F3D",
+          "predecessor_eas": [
+            "0x839E6"
+          ],
+          "constraints": [
+            "selector_state == 0x1B298F3D"
+          ],
+          "target_rvas": [
+            "0x82618"
+          ]
+        },
+        {
+          "partition": "src=0x83D42:state=0x2AB5BABE",
+          "predecessor_eas": [
+            "0x83D42"
+          ],
+          "constraints": [
+            "selector_state == 0x2AB5BABE"
+          ],
+          "target_rvas": [
+            "0x7CAAF"
+          ]
+        },
+        {
+          "partition": "src=0x83D81:state=0x29BDB807",
+          "predecessor_eas": [
+            "0x83D81"
+          ],
+          "constraints": [
+            "selector_state == 0x29BDB807"
+          ],
+          "target_rvas": [
+            "0x813FB"
+          ]
+        },
+        {
+          "partition": "src=0x83E37:state=0x20A2F9DA",
+          "predecessor_eas": [
+            "0x83E37"
+          ],
+          "constraints": [
+            "selector_state == 0x20A2F9DA"
+          ],
+          "target_rvas": [
+            "0x82662"
+          ]
+        },
+        {
+          "partition": "src=0x8400B:state=0x2D6FDCE3",
+          "predecessor_eas": [
+            "0x8400B"
+          ],
+          "constraints": [
+            "selector_state == 0x2D6FDCE3"
+          ],
+          "target_rvas": [
+            "0x7D773"
+          ]
+        },
+        {
+          "partition": "src=0x840CF:state=0x43623153",
+          "predecessor_eas": [
+            "0x840CF"
+          ],
+          "constraints": [
+            "selector_state == 0x43623153"
+          ],
+          "target_rvas": [
+            "0x78663"
+          ]
+        },
+        {
+          "partition": "src=0x8415B:state=0x78CDB2A8",
+          "predecessor_eas": [
+            "0x8415B"
+          ],
+          "constraints": [
+            "selector_state == 0x78CDB2A8"
+          ],
+          "target_rvas": [
+            "0x82DCE"
+          ]
+        },
+        {
+          "partition": "src=0x8419A:state=0x3B9288D2",
+          "predecessor_eas": [
+            "0x8419A"
+          ],
+          "constraints": [
+            "selector_state == 0x3B9288D2"
+          ],
+          "target_rvas": [
+            "0x713F8"
+          ]
+        },
+        {
+          "partition": "src=0x841A4:state=0x0BBB9E25",
+          "predecessor_eas": [
+            "0x841A4"
+          ],
+          "constraints": [
+            "selector_state == 0x0BBB9E25"
+          ],
+          "target_rvas": [
+            "0x7865D"
+          ]
+        },
+        {
+          "partition": "src=0x84220:state=0x29902E0A",
+          "predecessor_eas": [
+            "0x84220"
+          ],
+          "constraints": [
+            "selector_state == 0x29902E0A"
+          ],
+          "target_rvas": [
+            "0x7090D"
+          ]
+        },
+        {
+          "partition": "src=0x8425F:state=0x11B1A131",
+          "predecessor_eas": [
+            "0x8425F"
+          ],
+          "constraints": [
+            "selector_state == 0x11B1A131"
+          ],
+          "target_rvas": [
+            "0x809C5"
+          ]
+        },
+        {
+          "partition": "src=0x8462C:state=0x050214BC",
+          "predecessor_eas": [
+            "0x8462C"
+          ],
+          "constraints": [
+            "selector_state == 0x050214BC"
+          ],
+          "target_rvas": [
+            "0x78546"
+          ]
+        },
+        {
+          "partition": "src=0x84670:state=0x6789BA70",
+          "predecessor_eas": [
+            "0x84670"
+          ],
+          "constraints": [
+            "selector_state == 0x6789BA70"
+          ],
+          "target_rvas": [
+            "0x7D194"
+          ]
+        },
+        {
+          "partition": "src=0x846C3:state=0x46C53BE1",
+          "predecessor_eas": [
+            "0x846C3"
+          ],
+          "constraints": [
+            "selector_state == 0x46C53BE1"
+          ],
+          "target_rvas": [
+            "0x820B6"
+          ]
+        },
+        {
+          "partition": "src=0x847BC:state=0x722F8597",
+          "predecessor_eas": [
+            "0x847BC"
+          ],
+          "constraints": [
+            "selector_state == 0x722F8597"
+          ],
+          "target_rvas": [
+            "0x712A1"
+          ]
+        },
+        {
+          "partition": "src=0x847F4:state=0x71464DEC",
+          "predecessor_eas": [
+            "0x847F4"
+          ],
+          "constraints": [
+            "selector_state == 0x71464DEC"
+          ],
+          "target_rvas": [
+            "0x82101"
+          ]
+        },
+        {
+          "partition": "src=0x84876:state=0x6DAE7C6F",
+          "predecessor_eas": [
+            "0x84876"
+          ],
+          "constraints": [
+            "selector_state == 0x6DAE7C6F"
+          ],
+          "target_rvas": [
+            "0x71216"
+          ]
+        },
+        {
+          "partition": "src=0x848ED:state=0x6B5B89C6",
+          "predecessor_eas": [
+            "0x848ED"
+          ],
+          "constraints": [
+            "selector_state == 0x6B5B89C6"
+          ],
+          "target_rvas": [
+            "0x81FFA"
+          ]
+        },
+        {
+          "partition": "src=0x8494D:state=0x1C9AFDCD",
+          "predecessor_eas": [
+            "0x8494D"
+          ],
+          "constraints": [
+            "selector_state == 0x1C9AFDCD"
+          ],
+          "target_rvas": [
+            "0x82162"
+          ]
+        },
+        {
+          "partition": "src=0x84978:state=0x7A9EC8E9",
+          "predecessor_eas": [
+            "0x84978"
+          ],
+          "constraints": [
+            "selector_state == 0x7A9EC8E9"
+          ],
+          "target_rvas": [
+            "0x867B8"
+          ]
+        },
+        {
+          "partition": "src=0x849C4:state=0x3FC8DC7D",
+          "predecessor_eas": [
+            "0x849C4"
+          ],
+          "constraints": [
+            "selector_state == 0x3FC8DC7D"
+          ],
+          "target_rvas": [
+            "0x81FAE"
+          ]
+        },
+        {
+          "partition": "src=0x84AC0:state=0x005DE0A6",
+          "predecessor_eas": [
+            "0x84AC0"
+          ],
+          "constraints": [
+            "selector_state == 0x005DE0A6"
+          ],
+          "target_rvas": [
+            "0x7D1DA"
+          ]
+        },
+        {
+          "partition": "src=0x84B0A:state=0x070AD6AD",
+          "predecessor_eas": [
+            "0x84B0A"
+          ],
+          "constraints": [
+            "selector_state == 0x070AD6AD"
+          ],
+          "target_rvas": [
+            "0x8679B"
+          ]
+        }
+      ],
+      "effects": [],
+      "exits": [],
+      "assumptions": [
+        "the linked function bytes match linked_sha256 exactly",
+        "each transition is named by a committed canonical route claim and proof",
+        "transaction preflight and observed-post-apply validation reject non-state effect or use-def severance",
+        "effects and exits record rewrite deltas, not the whole-function native trace"
+      ],
+      "unresolved": []
+    },
+    {
+      "function": "sub_7FFB0E1E69E0",
+      "entry_rva": "0x98D80",
+      "extent": "0x15A",
+      "linked_sha256": "c8f2550d44cf2013f5e6c81cd935be45e8158140490a99251c684e0f8d6fba08",
+      "transitions": [
+        {
+          "partition": "src=0x98DC9:state=0x6E8E902A",
+          "predecessor_eas": [
+            "0x98DC9"
+          ],
+          "constraints": [
+            "selector_state == 0x6E8E902A"
+          ],
+          "target_rvas": [
+            "0x98E14"
+          ]
+        },
+        {
+          "partition": "src=0x98E01:state=0x199A79B7",
+          "predecessor_eas": [
+            "0x98E01"
+          ],
+          "constraints": [
+            "selector_state == 0x199A79B7"
+          ],
+          "target_rvas": [
+            "0x98E74"
+          ]
+        },
+        {
+          "partition": "src=0x98E65:state=0x2E7FCF22",
+          "predecessor_eas": [
+            "0x98E65"
+          ],
+          "constraints": [
+            "selector_state == 0x2E7FCF22"
+          ],
+          "target_rvas": [
+            "0x98E7C"
+          ]
+        }
+      ],
+      "effects": [],
+      "exits": [],
+      "assumptions": [
+        "the linked function bytes match linked_sha256 exactly",
+        "each transition is named by a committed canonical route claim and proof",
+        "transaction preflight and observed-post-apply validation reject non-state effect or use-def severance",
+        "effects and exits record rewrite deltas, not the whole-function native trace"
+      ],
+      "unresolved": []
+    },
+    {
+      "function": "sub_7FFB0E0A2C90",
+      "entry_rva": "0x8F7B0",
+      "extent": "0x95BD",
+      "linked_sha256": "efd306d013d8972a6da44dcf6012fc192cfe141d5198329aafab02a5cd93ba3b",
+      "transitions": [
+        {
+          "partition": "src=0x8F7B0:state=0x306EE133",
+          "predecessor_eas": [
+            "0x8F7B0"
+          ],
+          "constraints": [
+            "selector_state == 0x306EE133"
+          ],
+          "target_rvas": [
+            "0x929E7"
+          ]
+        },
+        {
+          "partition": "src=0x8F7F2:state=0x3D4257E1",
+          "predecessor_eas": [
+            "0x8F7F2"
+          ],
+          "constraints": [
+            "selector_state == 0x3D4257E1"
+          ],
+          "target_rvas": [
+            "0x90729"
+          ]
+        },
+        {
+          "partition": "src=0x909F9:state=0x36E27253",
+          "predecessor_eas": [
+            "0x909F9"
+          ],
+          "constraints": [
+            "selector_state == 0x36E27253"
+          ],
+          "target_rvas": [
+            "0x8F8BE"
+          ]
+        },
+        {
+          "partition": "src=0x90F9E:state=0x34235306",
+          "predecessor_eas": [
+            "0x90F9E"
+          ],
+          "constraints": [
+            "selector_state == 0x34235306"
+          ],
+          "target_rvas": [
+            "0x9242A"
+          ]
+        },
+        {
+          "partition": "src=0x9108F:state=0x0623553A",
+          "predecessor_eas": [
+            "0x9108F"
+          ],
+          "constraints": [
+            "selector_state == 0x0623553A"
+          ],
+          "target_rvas": [
+            "0x98994"
+          ]
+        },
+        {
+          "partition": "src=0x91D7D:state=0x05E6CF9A",
+          "predecessor_eas": [
+            "0x91D7D"
+          ],
+          "constraints": [
+            "selector_state == 0x05E6CF9A"
+          ],
+          "target_rvas": [
+            "0x9881D"
+          ]
+        },
+        {
+          "partition": "src=0x91DA9:state=0x3EAEBC2E",
+          "predecessor_eas": [
+            "0x91DA9"
+          ],
+          "constraints": [
+            "selector_state == 0x3EAEBC2E"
+          ],
+          "target_rvas": [
+            "0x90F89"
+          ]
+        },
+        {
+          "partition": "src=0x921B7:state=0x3908A3C3",
+          "predecessor_eas": [
+            "0x921B7"
+          ],
+          "constraints": [
+            "selector_state == 0x3908A3C3"
+          ],
+          "target_rvas": [
+            "0x9297D"
+          ]
+        },
+        {
+          "partition": "src=0x92265:state=0x2C08CE1D",
+          "predecessor_eas": [
+            "0x92265"
+          ],
+          "constraints": [
+            "selector_state == 0x2C08CE1D"
+          ],
+          "target_rvas": [
+            "0x98910"
+          ]
+        },
+        {
+          "partition": "src=0x92410:state=0x1CCF3368",
+          "predecessor_eas": [
+            "0x92410"
+          ],
+          "constraints": [
+            "selector_state == 0x1CCF3368"
+          ],
+          "target_rvas": [
+            "0x921C1"
+          ]
+        },
+        {
+          "partition": "src=0x9290B:state=0x2FA91DC6",
+          "predecessor_eas": [
+            "0x9290B"
+          ],
+          "constraints": [
+            "selector_state == 0x2FA91DC6"
+          ],
+          "target_rvas": [
+            "0x90FB3"
+          ]
+        },
+        {
+          "partition": "src=0x929B0:state=0x2400097B",
+          "predecessor_eas": [
+            "0x929B0"
+          ],
+          "constraints": [
+            "selector_state == 0x2400097B"
+          ],
+          "target_rvas": [
+            "0x967FC"
+          ]
+        },
+        {
+          "partition": "src=0x93068:state=0x309054FA",
+          "predecessor_eas": [
+            "0x93068"
+          ],
+          "constraints": [
+            "selector_state == 0x309054FA"
+          ],
+          "target_rvas": [
+            "0x921FD"
+          ]
+        },
+        {
+          "partition": "src=0x9413E:state=0x1EFAE5FD",
+          "predecessor_eas": [
+            "0x9413E"
+          ],
+          "constraints": [
+            "selector_state == 0x1EFAE5FD"
+          ],
+          "target_rvas": [
+            "0x9004D"
+          ]
+        },
+        {
+          "partition": "src=0x9515C:state=0x0F33C382",
+          "predecessor_eas": [
+            "0x9515C"
+          ],
+          "constraints": [
+            "selector_state == 0x0F33C382"
+          ],
+          "target_rvas": [
+            "0x9226F"
+          ]
+        },
+        {
+          "partition": "src=0x95CA9:state=0x328251E2",
+          "predecessor_eas": [
+            "0x95CA9"
+          ],
+          "constraints": [
+            "selector_state == 0x328251E2"
+          ],
+          "target_rvas": [
+            "0x905FB"
+          ]
+        },
+        {
+          "partition": "src=0x95CD5:state=0x1CAD449F",
+          "predecessor_eas": [
+            "0x95CD5"
+          ],
+          "constraints": [
+            "selector_state == 0x1CAD449F"
+          ],
+          "target_rvas": [
+            "0x93E69"
+          ]
+        },
+        {
+          "partition": "src=0x966E0:state=0x2A7FEFB2",
+          "predecessor_eas": [
+            "0x966E0"
+          ],
+          "constraints": [
+            "selector_state == 0x2A7FEFB2"
+          ],
+          "target_rvas": [
+            "0x95D1B"
+          ]
+        },
+        {
+          "partition": "src=0x9698D:state=0x0FFEF9A5",
+          "predecessor_eas": [
+            "0x9698D"
+          ],
+          "constraints": [
+            "selector_state == 0x0FFEF9A5"
+          ],
+          "target_rvas": [
+            "0x8FCD2"
+          ]
+        },
+        {
+          "partition": "src=0x9708E:state=0x2620D214",
+          "predecessor_eas": [
+            "0x9708E"
+          ],
+          "constraints": [
+            "selector_state == 0x2620D214"
+          ],
+          "target_rvas": [
+            "0x92179"
+          ]
+        },
+        {
+          "partition": "src=0x971A9:state=0x08D4B0EC",
+          "predecessor_eas": [
+            "0x971A9"
+          ],
+          "constraints": [
+            "selector_state == 0x08D4B0EC"
+          ],
+          "target_rvas": [
+            "0x93A62"
+          ]
+        },
+        {
+          "partition": "src=0x97E9A:state=0x38DA450A",
+          "predecessor_eas": [
+            "0x97E9A"
+          ],
+          "constraints": [
+            "selector_state == 0x38DA450A"
+          ],
+          "target_rvas": [
+            "0x93108"
+          ]
+        },
+        {
+          "partition": "src=0x987B7:state=0x332EB89B",
+          "predecessor_eas": [
+            "0x987B7"
+          ],
+          "constraints": [
+            "selector_state == 0x332EB89B"
+          ],
+          "target_rvas": [
+            "0x929C2"
+          ]
+        },
+        {
+          "partition": "src=0x987E2:state=0x07DD3850",
+          "predecessor_eas": [
+            "0x987E2"
+          ],
+          "constraints": [
+            "selector_state == 0x07DD3850"
+          ],
+          "target_rvas": [
+            "0x9086D"
+          ]
+        }
+      ],
+      "effects": [],
+      "exits": [],
+      "assumptions": [
+        "the linked function bytes match linked_sha256 exactly",
+        "each transition is named by a committed canonical route claim and proof",
+        "transaction preflight and observed-post-apply validation reject non-state effect or use-def severance",
+        "effects and exits record rewrite deltas, not the whole-function native trace"
+      ],
+      "unresolved": []
+    },
+    {
+      "function": "sub_7FFB0E086BE0",
+      "entry_rva": "0x86958",
+      "extent": "0x8CAB",
+      "linked_sha256": "f53e90da1115110ffb01e6825134eaf572680dfcc60b6b307e4e22cc8593d44f",
+      "transitions": [
+        {
+          "partition": "src=0x869BD:state=0x2D86BB91",
+          "predecessor_eas": [
+            "0x869BD"
+          ],
+          "constraints": [
+            "selector_state == 0x2D86BB91"
+          ],
+          "target_rvas": [
+            "0x86DF0"
+          ]
+        },
+        {
+          "partition": "src=0x86B01:state=0x1E8F20D1",
+          "predecessor_eas": [
+            "0x86B01"
+          ],
+          "constraints": [
+            "selector_state == 0x1E8F20D1"
+          ],
+          "target_rvas": [
+            "0x8F059"
+          ]
+        },
+        {
+          "partition": "src=0x86CFA:state=0x7691677A",
+          "predecessor_eas": [
+            "0x86CFA"
+          ],
+          "constraints": [
+            "selector_state == 0x7691677A"
+          ],
+          "target_rvas": [
+            "0x8A9D4"
+          ]
+        },
+        {
+          "partition": "src=0x86DC6:state=0x29D53E89",
+          "predecessor_eas": [
+            "0x86DC6"
+          ],
+          "constraints": [
+            "selector_state == 0x29D53E89"
+          ],
+          "target_rvas": [
+            "0x8AA64"
+          ]
+        },
+        {
+          "partition": "src=0x8A61F:state=0x05805B2B",
+          "predecessor_eas": [
+            "0x8A61F"
+          ],
+          "constraints": [
+            "selector_state == 0x05805B2B"
+          ],
+          "target_rvas": [
+            "0x8A63E"
+          ]
+        },
+        {
+          "partition": "src=0x8A988:state=0x4FE8F50E",
+          "predecessor_eas": [
+            "0x8A988"
+          ],
+          "constraints": [
+            "selector_state == 0x4FE8F50E"
+          ],
+          "target_rvas": [
+            "0x8AFAB"
+          ]
+        },
+        {
+          "partition": "src=0x8AA43:state=0x7ACCC969",
+          "predecessor_eas": [
+            "0x8AA43"
+          ],
+          "constraints": [
+            "selector_state == 0x7ACCC969"
+          ],
+          "target_rvas": [
+            "0x8A5C6"
+          ]
+        },
+        {
+          "partition": "src=0x8AE45:state=0x2880243D",
+          "predecessor_eas": [
+            "0x8AE45"
+          ],
+          "constraints": [
+            "selector_state == 0x2880243D"
+          ],
+          "target_rvas": [
+            "0x8AFF7"
+          ]
+        },
+        {
+          "partition": "src=0x8AFF7:state=0x643B57E8",
+          "predecessor_eas": [
+            "0x8AFF7"
+          ],
+          "constraints": [
+            "selector_state == 0x643B57E8"
+          ],
+          "target_rvas": [
+            "0x86DA2"
+          ]
+        },
+        {
+          "partition": "src=0x8C160:state=0x17E34F85",
+          "predecessor_eas": [
+            "0x8C160"
+          ],
+          "constraints": [
+            "selector_state == 0x17E34F85"
+          ],
+          "target_rvas": [
+            "0x8A918"
+          ]
+        },
+        {
+          "partition": "src=0x8C463:state=0x22DF5749",
+          "predecessor_eas": [
+            "0x8C463"
+          ],
+          "constraints": [
+            "selector_state == 0x22DF5749"
+          ],
+          "target_rvas": [
+            "0x86B46"
+          ]
+        },
+        {
+          "partition": "src=0x8C968:state=0x76711AAE",
+          "predecessor_eas": [
+            "0x8C968"
+          ],
+          "constraints": [
+            "selector_state == 0x76711AAE"
+          ],
+          "target_rvas": [
+            "0x8AFDD"
+          ]
+        },
+        {
+          "partition": "src=0x8CC3D:state=0x51FAE032",
+          "predecessor_eas": [
+            "0x8CC3D"
+          ],
+          "constraints": [
+            "selector_state == 0x51FAE032"
+          ],
+          "target_rvas": [
+            "0x8A988"
+          ]
+        },
+        {
+          "partition": "src=0x8CE57:state=0x6E642F99",
+          "predecessor_eas": [
+            "0x8CE57"
+          ],
+          "constraints": [
+            "selector_state == 0x6E642F99"
+          ],
+          "target_rvas": [
+            "0x8A8F2"
+          ]
+        },
+        {
+          "partition": "src=0x8D0FD:state=0x2244B5ED",
+          "predecessor_eas": [
+            "0x8D0FD"
+          ],
+          "constraints": [
+            "selector_state == 0x2244B5ED"
+          ],
+          "target_rvas": [
+            "0x8AAE9"
+          ]
+        },
+        {
+          "partition": "src=0x8D56A:state=0x7C35A383",
+          "predecessor_eas": [
+            "0x8D56A"
+          ],
+          "constraints": [
+            "selector_state == 0x7C35A383"
+          ],
+          "target_rvas": [
+            "0x8AD5F"
+          ]
+        },
+        {
+          "partition": "src=0x8E9AD:state=0x119A61BA",
+          "predecessor_eas": [
+            "0x8E9AD"
+          ],
+          "constraints": [
+            "selector_state == 0x119A61BA"
+          ],
+          "target_rvas": [
+            "0x8F0CE"
+          ]
+        },
+        {
+          "partition": "src=0x8E9E1:state=0x6B5AB71B",
+          "predecessor_eas": [
+            "0x8E9E1"
+          ],
+          "constraints": [
+            "selector_state == 0x6B5AB71B"
+          ],
+          "target_rvas": [
+            "0x8ABB7"
+          ]
+        },
+        {
+          "partition": "src=0x8EB73:state=0x4C815853",
+          "predecessor_eas": [
+            "0x8EB73"
+          ],
+          "constraints": [
+            "selector_state == 0x4C815853"
+          ],
+          "target_rvas": [
+            "0x8A8B0"
+          ]
+        },
+        {
+          "partition": "src=0x8EC56:state=0x295D4033",
+          "predecessor_eas": [
+            "0x8EC56"
+          ],
+          "constraints": [
+            "selector_state == 0x295D4033"
+          ],
+          "target_rvas": [
+            "0x8A664"
+          ]
+        },
+        {
+          "partition": "src=0x8ECBA:state=0x3076403D",
+          "predecessor_eas": [
+            "0x8ECBA"
+          ],
+          "constraints": [
+            "selector_state == 0x3076403D"
+          ],
+          "target_rvas": [
+            "0x8AA12"
+          ]
+        }
+      ],
+      "effects": [],
+      "exits": [],
+      "assumptions": [
+        "the linked function bytes match linked_sha256 exactly",
+        "each transition is named by a committed canonical route claim and proof",
+        "transaction preflight and observed-post-apply validation reject non-state effect or use-def severance",
+        "effects and exits record rewrite deltas, not the whole-function native trace"
+      ],
+      "unresolved": []
+    }
+  ]
+}

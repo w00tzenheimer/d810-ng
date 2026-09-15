@@ -60,6 +60,7 @@ __all__ = [
 ]
 
 
+
 @dataclass(frozen=True, slots=True)
 class DecodedClosureInstruction:
     """Provider-neutral decoded instruction used by the closure oracle.
@@ -424,6 +425,7 @@ class IndirectLabelPlanRequest:
     install_switch_info: bool
     state_base: int
     state_var_stkoff: int | None
+    additional_dispatch_jump_eas: tuple[int, ...] = ()
 
 
 def _instruction_shape(ea: int) -> NativeInstructionSequenceShape:
@@ -869,6 +871,17 @@ def build_indirect_label_metadata_plan(
     dispatch_jump_ea = request.dispatch_jump_ea
     if dispatch_jump_ea is None:
         raise IndirectLabelPlanBuildError("indirect dispatch jump was not found")
+    dispatch_jump_eas = tuple(
+        dict.fromkeys(
+            (int(dispatch_jump_ea),)
+            + tuple(int(ea) for ea in request.additional_dispatch_jump_eas)
+        )
+    )
+    for jump_ea in dispatch_jump_eas:
+        if str(_instruction_shape(jump_ea).heads[0].mnemonic).lower() != "jmp":
+            raise IndirectLabelPlanBuildError(
+                f"indirect dispatch site is not a jump at {jump_ea:#x}"
+            )
     reader = IdaLiveDatabaseReader()
     executor = IdaMetadataActionExecutor()
     shape = _instruction_shape(int(dispatch_jump_ea))
@@ -1049,18 +1062,19 @@ def build_indirect_label_metadata_plan(
     import idaapi
 
     badaddr = int(getattr(idaapi, "BADADDR", -1))
-    fallthrough_ea = int(ida_bytes.next_head(int(dispatch_jump_ea), badaddr))
-    alternate_source = int(ida_bytes.prev_head(int(dispatch_jump_ea), 0))
     targets_by_source: dict[int, set[int]] = {}
-    for target_ea in request.target_eas:
-        source_ea = int(dispatch_jump_ea)
-        if (
-            int(target_ea) == fallthrough_ea
-            and alternate_source != badaddr
-            and alternate_source < int(dispatch_jump_ea)
-        ):
-            source_ea = alternate_source
-        targets_by_source.setdefault(source_ea, set()).add(int(target_ea))
+    for jump_ea in dispatch_jump_eas:
+        fallthrough_ea = int(ida_bytes.next_head(jump_ea, badaddr))
+        alternate_source = int(ida_bytes.prev_head(jump_ea, 0))
+        for target_ea in request.target_eas:
+            source_ea = jump_ea
+            if (
+                int(target_ea) == fallthrough_ea
+                and alternate_source != badaddr
+                and alternate_source < jump_ea
+            ):
+                source_ea = alternate_source
+            targets_by_source.setdefault(source_ea, set()).add(int(target_ea))
     import idc
 
     # A table label physically adjacent to a no-fallthrough jump needs an

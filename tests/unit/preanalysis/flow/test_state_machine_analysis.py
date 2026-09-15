@@ -911,6 +911,46 @@ def test_resolve_exit_via_condition_chain_default_snapshot_keeps_empty_handler_a
     )
 
 
+def test_condition_chain_exit_prefers_exact_dispatcher_route_over_storage_blind_walk(
+    monkeypatch,
+):
+    """A proven DecisionDag partition survives selector-register aliases."""
+
+    monkeypatch.setattr(
+        sma,
+        "resolve_exit_via_condition_chain_default_snapshot",
+        lambda *_args, **_kwargs: 13,
+    )
+    observed = []
+
+    def fake_can_reach_return(_flow_graph, serial):
+        observed.append(("reach", serial))
+        return True
+
+    def fake_classify_exit_state(**kwargs):
+        observed.append(("classify", kwargs["successor_serial"]))
+        return sma.ExitStateKind.TERMINAL
+
+    monkeypatch.setattr(sma, "can_reach_return_snapshot", fake_can_reach_return)
+    monkeypatch.setattr(sma, "classify_exit_state", fake_classify_exit_state)
+
+    dispatcher = SimpleNamespace(lookup=lambda state: 99 if state == 0x1234 else None)
+    resolved, kind, terminal = sma._resolved_condition_chain_exit_kind(
+        mba=object(),
+        flow_graph=object(),
+        dispatcher_root_serial=5,
+        state_value=0x1234,
+        incoming_state=0x55,
+        state_var_stkoff=0x30,
+        condition_chain_blocks={5, 13},
+        state_machine_blocks={5, 13},
+        dispatcher=dispatcher,
+    )
+
+    assert (resolved, kind, terminal) == (99, sma.ExitStateKind.TERMINAL, True)
+    assert observed == [("reach", 99), ("classify", 99)]
+
+
 def test_condition_chain_evaluator_routes_signed_32_bit_predicates() -> None:
     """Signed dispatcher branches compare the bit-pattern as an int32."""
     assert sma.eval_condition_chain_condition(PredicateKind.SLE, 0x16AA65E9, 0x1888937D)

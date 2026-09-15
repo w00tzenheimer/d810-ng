@@ -387,7 +387,32 @@ def check_effectful_reachability_preserved(
         )
         retained_serials: set[int] = set()
         lost_serials: set[int] = set()
+        remaining_serials: list[int] = []
         for serial in sorted(pre_effectful):
+            required = Counter(
+                _block_effect_identities(pre_cfg.get_block(int(serial)))
+            )
+            projected = (
+                post_cfg.get_block(int(serial))
+                if int(serial) in post_reachable
+                else None
+            )
+            same_owner_effects = Counter(_block_effect_identities(projected))
+            if projected is not None and all(
+                same_owner_effects[key] >= count
+                for key, count in required.items()
+            ):
+                retained_serials.add(int(serial))
+                reachable_effects.subtract(required)
+            else:
+                remaining_serials.append(int(serial))
+
+        # A native effect may legitimately move to a new block serial.  Match
+        # those remaining occurrences only after exact source owners claim
+        # their own reachable copies.  Otherwise duplicate/shared-EA effects
+        # are assigned by source-serial sort order and a surviving owner can be
+        # falsely reported as lost.
+        for serial in remaining_serials:
             required = Counter(
                 _block_effect_identities(pre_cfg.get_block(int(serial)))
             )

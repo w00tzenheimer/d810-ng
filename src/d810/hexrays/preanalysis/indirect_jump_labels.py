@@ -106,6 +106,7 @@ class NativePatchPlanRequest:
     install_switch_info: bool
     state_base: int
     state_var_stkoff: int | None
+    additional_dispatch_jump_eas: tuple[int, ...] = ()
 
 
 NativePatchPlanRequestExecutor = Callable[
@@ -332,6 +333,109 @@ def materialize_indirect_label_targets(
         target_count=len(plan.target_eas),
         materialized_target_count=_count_materialized_targets(func, plan.target_eas),
         dispatch_jump_ea=indirect_jump_ea,
+        jump_xref_count=0,
+        switch_info_installed=False,
+        appended_tail=False,
+        success=False,
+        reason="native_patch_policy_disabled",
+    )
+
+
+def materialize_proven_indirect_label_targets(
+    *,
+    function_ea: int,
+    table_address: int,
+    target_eas: Sequence[int],
+    dispatch_jump_eas: Sequence[int],
+    executor: NativePatchPlanRequestExecutor | None = None,
+) -> IndirectLabelMaterializationResult:
+    """Submit already-decoded, proof-owned targets to the metadata writer."""
+    import ida_funcs  # type: ignore[import-untyped]
+    import ida_nalt  # type: ignore[import-untyped]
+
+    function = ida_funcs.get_func(int(function_ea))
+    ordered_jump_eas = tuple(dict.fromkeys(int(ea) for ea in dispatch_jump_eas))
+    plan = (
+        None
+        if function is None
+        else plan_indirect_label_materialization(
+            function_ea=int(function_ea),
+            table_address=int(table_address),
+            target_eas=tuple(int(ea) for ea in target_eas),
+            configured_label_start=min(int(ea) for ea in target_eas),
+            configured_label_end=int(function.end_ea),
+        )
+    )
+    if plan is None:
+        return IndirectLabelMaterializationResult(
+            function_ea=int(function_ea),
+            table_address=int(table_address),
+            table_count=len(tuple(target_eas)),
+            label_start=None,
+            label_end=None,
+            target_count=len(tuple(target_eas)),
+            materialized_target_count=0,
+            dispatch_jump_ea=(ordered_jump_eas[0] if ordered_jump_eas else None),
+            jump_xref_count=0,
+            switch_info_installed=False,
+            appended_tail=False,
+            success=False,
+            reason="unbounded_label_range",
+        )
+    if not ordered_jump_eas:
+        raise ValueError("dispatch_jump_eas must not be empty")
+    targets_owned = _count_materialized_targets(function, plan.target_eas)
+    existing_switches_match = targets_owned == len(plan.target_eas)
+    for jump_ea in ordered_jump_eas:
+        switch = ida_nalt.switch_info_t()
+        if not ida_nalt.get_switch_info(switch, int(jump_ea)):
+            existing_switches_match = False
+            break
+        if (
+            int(switch.jumps) != int(table_address)
+            or int(switch.elbase) != int(table_address)
+            or int(switch.get_jtable_size()) != len(tuple(target_eas))
+            or int(switch.get_jtable_element_size()) != 4
+        ):
+            existing_switches_match = False
+            break
+    if existing_switches_match:
+        return IndirectLabelMaterializationResult(
+            function_ea=int(function_ea),
+            table_address=int(table_address),
+            table_count=len(tuple(target_eas)),
+            label_start=plan.label_start,
+            label_end=plan.label_end,
+            target_count=len(plan.target_eas),
+            materialized_target_count=targets_owned,
+            dispatch_jump_ea=ordered_jump_eas[0],
+            jump_xref_count=0,
+            switch_info_installed=True,
+            appended_tail=False,
+            success=True,
+            reason="already_materialized_switches",
+        )
+    request = NativePatchPlanRequest(
+        materialization=plan,
+        dispatch_jump_ea=ordered_jump_eas[0],
+        switch_start_ea=None,
+        install_switch_info=False,
+        state_base=1,
+        state_var_stkoff=None,
+        additional_dispatch_jump_eas=ordered_jump_eas[1:],
+    )
+    selected_executor = executor or _INDIRECT_MATERIALIZATION_EXECUTOR
+    if selected_executor is not None:
+        return selected_executor(request)
+    return IndirectLabelMaterializationResult(
+        function_ea=int(function_ea),
+        table_address=int(table_address),
+        table_count=len(plan.target_eas),
+        label_start=plan.label_start,
+        label_end=plan.label_end,
+        target_count=len(plan.target_eas),
+        materialized_target_count=_count_materialized_targets(function, plan.target_eas),
+        dispatch_jump_ea=ordered_jump_eas[0],
         jump_xref_count=0,
         switch_info_installed=False,
         appended_tail=False,

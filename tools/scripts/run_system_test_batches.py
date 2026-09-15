@@ -33,7 +33,7 @@ unadorned invocation behaves exactly as before:
 from __future__ import annotations
 
 import argparse
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 import json
 import os
 import re
@@ -57,10 +57,26 @@ import system_batch_planner as planner  # noqa: E402
 
 Run = Callable[..., subprocess.CompletedProcess]
 
+_HASH_BOUND_MASM_FUNCTIONS = (
+    "sub_7FFB0E53C420",
+    "sub_7FFB0DE51120",
+    "sub_7FFB0DF992D0",
+    "sub_7FFB0DFD1D70",
+    "sub_7FFB0E1E69E0",
+    "sub_7FFB0E0A2C90",
+    "sub_7FFB0E086BE0",
+)
+
 ISOLATED_NODEIDS = frozenset(
     {
         "tests/system/e2e/test_ollvm_fla_bcf_sub_oracle.py::"
         "TestOllvmFlaBcfSubOracle::test_fla_bcf_sub_oracle",
+        *tuple(
+            "tests/system/e2e/test_libdeobfuscated_dsl.py::"
+            "TestDacMasmFixtures::test_dac_masm_fixtures["
+            f"{function}]"
+            for function in _HASH_BOUND_MASM_FUNCTIONS
+        ),
     }
 )
 
@@ -234,6 +250,7 @@ def _stream_and_capture(
     command: Sequence[str],
     *,
     popen: Callable[..., subprocess.Popen] = subprocess.Popen,
+    env: Mapping[str, str] | None = None,
     stdout_sink=None,
     stderr_sink=None,
     rss_reader: Callable[[int], int | None] | None = None,
@@ -255,6 +272,7 @@ def _stream_and_capture(
         stderr=subprocess.PIPE,
         text=True,
         bufsize=1,
+        env=env,
     )
     captured: dict[str, list[str]] = {"stdout": [], "stderr": []}
 
@@ -507,16 +525,39 @@ def run_batches(
             name=f"selection-shard{shard_index}-batch{index}.txt",
         )
         command = [python, "-m", "pytest", "-v", *selection, *augmented_pytest_args]
+        batch_run_id = f"{effective_run_id}-s{shard_index}-b{global_index}"
+        child_env = dict(os.environ)
+        if any(
+            nodeid.endswith(f"[{function}]")
+            for nodeid in batch
+            for function in _HASH_BOUND_MASM_FUNCTIONS
+        ):
+            child_env["D810_DIAG_SNAPSHOT"] = "1"
+        diagnostics_directory: str | None = None
+        if log_dir is not None:
+            diagnostics_directory = os.path.join(
+                log_dir, "runs", batch_run_id, "d810_logs"
+            )
+            os.makedirs(diagnostics_directory, exist_ok=True)
+            child_env["D810_RUN_ID"] = batch_run_id
+            child_env["D810_DIAG_LOG_DIR"] = diagnostics_directory
         start_epoch = now()
         peak_rss_kib: int | None = None
         if log_dir is not None:
-            streamed = _stream_and_capture(command, popen=popen, rss_reader=rss_reader)
+            streamed = _stream_and_capture(
+                command,
+                popen=popen,
+                env=child_env,
+                rss_reader=rss_reader,
+            )
             completed = streamed.completed
             peak_rss_kib = streamed.peak_rss_kib
             end_epoch = now()
             combined_output = (completed.stdout or "") + (completed.stderr or "")
             record = {
                 "run_id": effective_run_id,
+                "batch_run_id": batch_run_id,
+                "diagnostics_directory": diagnostics_directory,
                 "shard": shard_index,
                 "shard_count": shard_count,
                 "batch_index": index,
@@ -538,7 +579,7 @@ def run_batches(
             }
             _write_batch_record(log_dir, record)
         else:
-            completed = run(command, check=False)
+            completed = run(command, check=False, env=child_env)
         ran += len(batch)
         if completed.returncode != 0:
             print(

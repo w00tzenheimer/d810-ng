@@ -1,0 +1,40 @@
+{
+  "schema": "d810.masm-materialized-relative-tables.v1",
+  "masm_sha256": "f85a24406da37b37ee2c49ee0d4986887210c6242164f2311743068f6ddb5a12",
+  "source_image_sha256": "835fe0d11e03b4bb3886b463efc56791db23808c8b80e9cf40193427eff83109",
+  "tables": [
+    {
+      "symbol": "unk_7FFB0FE4ED40",
+      "source_rva": "0x209ED40",
+      "encoding": "signed-dword-delta-from-source-rva",
+      "dwords": [
+        "0xFE25BDD0",
+        "0xFE25BDD0",
+        "0xFE25B17B",
+        "0xFE25AE8E",
+        "0xFE25BDD0",
+        "0xFE25BDD0",
+        "0xFE25BDD0",
+        "0xFE25BDD0",
+        "0xFE25A5EF",
+        "0xFE25B13B",
+        "0xFE25A4AE",
+        "0xFE25A4AE",
+        "0xFE25AE3F",
+        "0xFE25A6D3",
+        "0xFE25887C",
+        "0xFE25887C",
+        "0xFE25887C",
+        "0xFE25A6D3",
+        "0xFE254480",
+        "0xFE25BDD0",
+        "0xFE25A6B0",
+        "0xFE25BDD0",
+        "0xFE25B105",
+        "0xFE25BDD0",
+        "0xFE25B0D5",
+        "0xFE25BDD0"
+      ]
+    }
+  ]
+}

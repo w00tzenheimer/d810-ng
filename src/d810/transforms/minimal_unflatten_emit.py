@@ -26,7 +26,7 @@ emits ``GraphModification`` values compiled to a ``PatchPlan``.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, replace
 import re
 import hashlib
@@ -2999,6 +2999,112 @@ def _flow_graph_reachable_serials(flow_graph) -> frozenset[int]:
         except _PROVIDER_SHAPE_ERRORS:
             return frozenset()
     return frozenset(seen)
+
+
+def _reachable_serials_from(flow_graph, starts: Iterable[int]) -> frozenset[int]:
+    """Return bounded reachability from explicit source-graph roots."""
+    try:
+        pending = [int(serial) for serial in starts]
+        limit = max(1, len(flow_graph.blocks) + 1)
+    except _PROVIDER_SHAPE_ERRORS:
+        return frozenset()
+    seen: set[int] = set()
+    while pending and len(seen) < limit:
+        serial = pending.pop()
+        if serial in seen:
+            continue
+        block = flow_graph.get_block(serial)
+        if block is None:
+            continue
+        seen.add(serial)
+        try:
+            pending.extend(int(successor) for successor in block.succs)
+        except _PROVIDER_SHAPE_ERRORS:
+            return frozenset()
+    return frozenset(seen)
+
+
+def _preserve_entry_only_bootstrap_corridor(
+    flow_graph,
+    modifications: tuple[object, ...],
+    *,
+    transitions: tuple[StateWriteTransition, ...],
+    dispatcher_entry_serial: int,
+    authoritative_handler_serials: frozenset[int],
+    project_modifications: Callable[[tuple[object, ...]], FlowGraph],
+) -> tuple[object, ...]:
+    """Retain an entry-only dispatch when its shortcut would orphan handlers.
+
+    This is a safety fallback, not dispatcher-retirement authority.  It removes
+    only an exact BOOTSTRAP redirect when the remaining plan restores every
+    authoritative handler and no handler can re-enter the retained dispatcher.
+    Later constant cleanup may fold the resulting one-shot entry dispatch.
+    """
+    dispatcher = int(dispatcher_entry_serial)
+    handlers = frozenset(
+        int(serial)
+        for serial in authoritative_handler_serials
+        if flow_graph.get_block(int(serial)) is not None
+    )
+    if not handlers:
+        return modifications
+    bootstrap_subjects = {
+        (
+            int(transition.write_block),
+            dispatcher,
+            int(transition.target_handler),
+        )
+        for transition in transitions
+        if transition.target_handler is not None
+        and transition.semantic_route_fact is not None
+        and transition.semantic_route_fact.kind is SemanticRouteFactKind.BOOTSTRAP
+    }
+    if not bootstrap_subjects:
+        return modifications
+    retained = tuple(
+        modification
+        for modification in modifications
+        if not (
+            isinstance(modification, (RedirectGoto, RedirectBranch))
+            and (
+                int(modification.from_serial),
+                int(modification.old_target),
+                int(modification.new_target),
+            )
+            in bootstrap_subjects
+        )
+    )
+    if len(retained) == len(modifications):
+        return modifications
+    try:
+        fully_projected = project_modifications(modifications)
+        retained_projected = project_modifications(retained)
+    except (TypeError, ValueError):
+        return modifications
+    full_reachable = _flow_graph_reachable_serials(fully_projected)
+    if handlers <= full_reachable:
+        return modifications
+    retained_reachable = _flow_graph_reachable_serials(retained_projected)
+    if not handlers <= retained_reachable or dispatcher not in retained_reachable:
+        return modifications
+    handler_reachable = _reachable_serials_from(retained_projected, handlers)
+    if dispatcher in handler_reachable:
+        return modifications
+    return retained
+
+
+def _delegate_entry_orphan_to_typed_authority(
+    *,
+    closed_typed_route_set: bool,
+    entry_route_would_be_withheld: bool,
+    has_live_entry_carrier: bool,
+) -> bool:
+    """Delegate only when retaining entry would discard uncarried semantics."""
+    return bool(
+        closed_typed_route_set
+        and entry_route_would_be_withheld
+        and not has_live_entry_carrier
+    )
 
 
 def _trusted_source_carrier_entry_route(
@@ -12618,43 +12724,79 @@ def _bind_exact_u32_dispatcher_route_receipt(
     dispatcher_region_serials: frozenset[int],
 ) -> ExactU32DispatcherRouteReceipt | None:
     """Bind exact map rows to this state identity and current dispatcher graph."""
-    if type(state_dispatcher_map) is not StateDispatcherMap:
+    def reject(reason: str, **details: object) -> None:
+        if logger.info_on:
+            logger.info(
+                "exact U32 dispatcher receipt rejected: reason=%s details=%s",
+                reason,
+                details,
+            )
         return None
+
+    if type(state_dispatcher_map) is not StateDispatcherMap:
+        return reject("wrong_map_type", actual=type(state_dispatcher_map).__name__)
     dispatch_map = state_dispatcher_map
     entry = int(dispatcher_entry_serial)
     if int(dispatch_map.dispatcher_entry_block) != entry:
-        return None
+        return reject(
+            "dispatcher_entry_mismatch",
+            expected=entry,
+            actual=int(dispatch_map.dispatcher_entry_block),
+        )
     if state_var_stkoff is not None:
         if (
             dispatch_map.state_var_stkoff != int(state_var_stkoff)
             or dispatch_map.state_var_reg is not None
         ):
-            return None
+            return reject(
+                "stack_state_identity_mismatch",
+                expected_stkoff=int(state_var_stkoff),
+                actual_stkoff=dispatch_map.state_var_stkoff,
+                actual_reg=dispatch_map.state_var_reg,
+            )
     elif state_var_reg is not None:
         if (
             dispatch_map.state_var_stkoff is not None
             or dispatch_map.state_var_reg != int(state_var_reg)
         ):
-            return None
+            return reject(
+                "register_state_identity_mismatch",
+                expected_reg=int(state_var_reg),
+                actual_stkoff=dispatch_map.state_var_stkoff,
+                actual_reg=dispatch_map.state_var_reg,
+            )
         # Current portable branch-witness validation binds stack selectors.
         # A register map needs an equivalently exact register-aware witness
         # before it may become this receipt capability.
-        return None
+        return reject("register_branch_witness_unsupported")
     else:
-        return None
+        return reject("missing_state_identity")
 
     current_serials = frozenset(int(serial) for serial in flow_graph.blocks)
     declared_dispatcher = frozenset(
         {entry, *(int(serial) for serial in dispatch_map.dispatcher_blocks)}
     )
     if not declared_dispatcher.issubset(current_serials):
-        return None
-    if dispatcher_region_serials and not declared_dispatcher.issubset(
+        return reject(
+            "declared_dispatcher_missing_from_graph",
+            missing=tuple(sorted(declared_dispatcher - current_serials)),
+        )
+    current_region = (
         frozenset(int(serial) for serial in dispatcher_region_serials)
-    ):
-        return None
+        if dispatcher_region_serials
+        else declared_dispatcher
+    )
+    if entry not in current_region:
+        return reject("dispatcher_entry_outside_current_region", entry=entry)
+    retired_prefix_serials = declared_dispatcher - current_region
+    if retired_prefix_serials and logger.info_on:
+        logger.info(
+            "exact U32 dispatcher receipt filtering retired prefix rows: blocks=%s",
+            tuple(sorted(retired_prefix_serials)),
+        )
 
     exact_targets_by_state: dict[int, set[int]] = {}
+    filtered_rows = 0
     for row in dispatch_map.rows:
         if not (row.is_handler_row or row.is_dispatcher_self_loop):
             continue
@@ -12663,36 +12805,46 @@ def _bind_exact_u32_dispatcher_route_receipt(
             None if row.compare_block is None else int(row.compare_block)
         )
         target = int(row.target_block)
+        if dispatcher_block not in current_region or (
+            compare_block is not None and compare_block not in current_region
+        ):
+            filtered_rows += 1
+            continue
         if (
             row.router_kind is not dispatch_map.router_kind
             or dispatcher_block not in declared_dispatcher
             or (compare_block is not None and compare_block not in declared_dispatcher)
             or target not in current_serials
-            or (
-                dispatcher_region_serials
-                and (
-                    dispatcher_block not in dispatcher_region_serials
-                    or (
-                        compare_block is not None
-                        and compare_block not in dispatcher_region_serials
-                    )
-                )
-            )
-            or (row.is_dispatcher_self_loop and target not in declared_dispatcher)
+            or (row.is_dispatcher_self_loop and target not in current_region)
             or (row.is_handler_row and target in declared_dispatcher)
         ):
-            return None
+            return reject(
+                "invalid_map_row",
+                state=f"0x{int(row.state_const) & 0xFFFFFFFF:08X}",
+                dispatcher_block=dispatcher_block,
+                compare_block=compare_block,
+                target=target,
+                row_kind=(
+                    "self_loop" if row.is_dispatcher_self_loop else "handler"
+                ),
+            )
         state = int(row.state_const)
         if not 0 <= state <= 0xFFFFFFFF:
-            return None
+            return reject("state_out_of_u32_range", state=state)
         if compare_block is None:
-            return None
+            return reject("missing_compare_block", state=f"0x{state:08X}")
         compare = flow_graph.get_block(compare_block)
         compare_successors = (
             () if compare is None else tuple(int(serial) for serial in compare.succs)
         )
         if len(compare_successors) != 2 or target not in compare_successors:
-            return None
+            return reject(
+                "compare_successor_mismatch",
+                state=f"0x{state:08X}",
+                compare_block=compare_block,
+                target=target,
+                successors=compare_successors,
+            )
         witness = static_witness_for_state(
             flow_graph,
             BranchWitnessRow(
@@ -12710,12 +12862,34 @@ def _bind_exact_u32_dispatcher_route_receipt(
             state_var_stkoff,
         )
         if not isinstance(witness, ExactBranchWitness) or int(witness.target_block) != target:
-            return None
+            return reject(
+                "static_branch_witness_failed",
+                state=f"0x{state:08X}",
+                compare_block=compare_block,
+                target=target,
+                predicate=str(row.branch_kind),
+                witness_type=type(witness).__name__,
+                witness_reason=getattr(witness, "reason_name", None),
+                witness_target=getattr(witness, "target_block", None),
+            )
         exact_targets_by_state.setdefault(state, set()).add(target)
     if not exact_targets_by_state or any(
         len(targets) != 1 for targets in exact_targets_by_state.values()
     ):
-        return None
+        return reject(
+            "non_unique_or_empty_targets",
+            states=len(exact_targets_by_state),
+            conflicts=tuple(
+                f"0x{state:08X}" for state, targets in exact_targets_by_state.items()
+                if len(targets) != 1
+            ),
+        )
+    if filtered_rows and logger.info_on:
+        logger.info(
+            "exact U32 dispatcher receipt retained current suffix: rows=%d filtered=%d",
+            len(exact_targets_by_state),
+            filtered_rows,
+        )
     try:
         return ExactU32DispatcherRouteReceipt(
             tuple(
@@ -12724,7 +12898,7 @@ def _bind_exact_u32_dispatcher_route_receipt(
             )
         )
     except (TypeError, ValueError):
-        return None
+        return reject("receipt_construction_failed")
 
 
 def emit_minimal_unflatten(
@@ -13282,6 +13456,12 @@ def emit_minimal_unflatten(
                 ),
             }
         )
+    proposal_recovered_handler_serials = frozenset(
+        {
+            *(int(serial) for serial in route_handler_serials),
+            *(int(serial) for serial in recovered_dispatch_map_handler_serials),
+        }
+    )
     # Current-DAG replay may terminate at an interval interior that has no
     # exact-row representative.  Keep that source-bound leaf catalogue for
     # route reconciliation only; final handler obligations remain derived from
@@ -14215,7 +14395,16 @@ def emit_minimal_unflatten(
         branch_witness_emu=branch_witness_emu,
         entry_bridge_exit_path_blocks=entry_bridge_exit_path_blocks,
         entry_bridge_requires_witness=entry_bridge_requires_witness,
-        strict_pre_header_prologue=recover_multi_entry_back_edges,
+        strict_pre_header_prologue=(
+            recover_multi_entry_back_edges
+            or any(
+                isinstance(
+                    transition.semantic_route_fact,
+                    SemanticRouteFact,
+                )
+                for transition in transitions
+            )
+        ),
         allow_multi_entry_entry_bridge=recover_multi_entry_back_edges,
         entry_bridge_cut_exit_path_uses=(
             materialized_computed_goto_profile and state_var_reg is not None
@@ -14795,6 +14984,68 @@ def emit_minimal_unflatten(
             "cleanup_source=%s",
             _format_block_label(flow_graph, terminal_switch_cleanup_source),
         )
+    preserved_entry_mods = _preserve_entry_only_bootstrap_corridor(
+        flow_graph,
+        tuple(mods),
+        transitions=tuple(transitions),
+        dispatcher_entry_serial=int(dispatcher_entry_serial),
+        authoritative_handler_serials=route_handler_serials,
+        project_modifications=project_modifications,
+    )
+    # A closed typed route set delegates dead-handler classification to the
+    # proposal's detached-component binder only when the conservative fallback
+    # would withhold an entry route for which no live semantic carrier remains.
+    # A live carrier keeps the one-shot entry corridor available for Hex-Rays
+    # to fold; without one, the typed proposal must publish the entry route.
+    closed_typed_route_set = bool(
+        native_key is not None
+        and state_identity_for_evidence is not None
+        and block_refs_by_serial
+        and route_handler_serials
+        and all(
+            transition.is_return
+            or (
+                transition.next_state is not None
+                and transition.target_handler is not None
+                and transition.semantic_route_fact is not None
+            )
+            for transition in transitions
+        )
+    )
+    delegate_bootstrap_only_to_typed_authority = (
+        _delegate_entry_orphan_to_typed_authority(
+            closed_typed_route_set=closed_typed_route_set,
+            entry_route_would_be_withheld=(
+                len(preserved_entry_mods) != len(mods)
+            ),
+            has_live_entry_carrier=bool(entry_endpoint_liveness_carriers),
+        )
+    )
+    retained_entry_mods = (
+        tuple(mods)
+        if delegate_bootstrap_only_to_typed_authority
+        else preserved_entry_mods
+    )
+    if len(retained_entry_mods) != len(mods):
+        if logger.info_on:
+            logger.info(
+                "unflat entry bridge: PRESERVED_ENTRY_ONLY_DISPATCH "
+                "withheld=%d handlers=%d",
+                len(mods) - len(retained_entry_mods),
+                len(route_handler_serials),
+            )
+        mods = list(retained_entry_mods)
+        # The retained source edge is the original semantic carrier.  A
+        # liveness forecast for the withheld shortcut must not survive into
+        # canonical selection as though that physical redirect were emitted.
+        entry_endpoint_liveness_carriers.clear()
+        held_entry_fact = None
+        concrete_entry_route_forecasts = ()
+        concrete_entry_native_routes = ()
+        materialized_entry_route_mods = []
+        native_bound_entry_route_mods = []
+        entry_route_resolution = None
+        entry_route_source_kinds = ()
     # Temporary bounded diagnostic for exact system fixtures: all exits below
     # occur after the complete redirect set exists but before a typed proposal
     # can be minted.  Keep the values structural; do not render raw evidence.
@@ -14808,9 +15059,10 @@ def emit_minimal_unflatten(
                 len(mods), type(exc).__name__,
             )
         return compile_with_dispatcher_coverage(())
+    projected_reachable_serials = _flow_graph_reachable_serials(projected_alias_graph)
     mods = _omit_unreachable_local_alias_scalarizations(
         list(mods),
-        _flow_graph_reachable_serials(projected_alias_graph),
+        projected_reachable_serials,
     )
     pre_normalization_arm_mods = tuple(arm_mods)
     mods = _normalize_degenerate_branch_redirects(flow_graph, list(mods))
@@ -15112,6 +15364,7 @@ def emit_minimal_unflatten(
         dispatcher_entry_serial=dispatcher_entry_serial,
         semantic_exclusions=candidate_prefix_alternate_corridor_proofs,
     )
+    log_dispatcher_coverage(coverage)
     # Terminal-record counters (ticket d81-rhu6) come from the coverage OBJECT,
     # not from the INFO line: ``log_dispatcher_coverage`` runs only on the
     # legacy path, and it is additionally gated on ``logger.info_on``.
@@ -15155,7 +15408,6 @@ def emit_minimal_unflatten(
     else:
         plan = compile_modifications(list(mods))
         build_dispatcher_removal_forecast_for_plan(plan, coverage)
-        log_dispatcher_coverage(coverage)
     if typed_authority:
         if not block_refs_by_serial:
             return compile_with_dispatcher_coverage(())
@@ -15584,6 +15836,29 @@ def emit_minimal_unflatten(
                             ),
                         )
                     raise
+                if logger.info_on:
+                    logger.info(
+                        "UNFLAT_TRANSITION_PROOF_SELECTED proof=%s W=%s via=%s "
+                        "H=%s state=0x%08X fact_kind=%s fact_source=%s",
+                        proof.proof_id,
+                        _format_block_label(flow_graph, int(transition.write_block)),
+                        (
+                            "none"
+                            if transition.via_block is None
+                            else _format_block_label(
+                                flow_graph, int(transition.via_block)
+                            )
+                        ),
+                        _format_block_label(
+                            flow_graph, int(transition.target_handler)
+                        ),
+                        int(transition.next_state) & 0xFFFFFFFF,
+                        transition.semantic_route_fact.kind.value,
+                        _format_block_label(
+                            flow_graph,
+                            int(transition.semantic_route_fact.source_serial),
+                        ),
+                    )
                 if route_binding.ref_for(proof) not in route_owner_by_proof_ref:
                     selected_transition_proofs.append(proof)
                 select_route("state_write_transition", proof)
@@ -15731,13 +16006,7 @@ def emit_minimal_unflatten(
                     source=flow_graph,
                     source_catalog=route_catalog,
                     block_refs_by_serial=block_refs_by_serial,
-                    recovered_handler_serials=frozenset({
-                        *(int(serial) for serial in route_handler_serials),
-                        *(
-                            int(serial)
-                            for serial in recovered_dispatch_map_handler_serials
-                        ),
-                    }),
+                    recovered_handler_serials=proposal_recovered_handler_serials,
                     caller_handler_serials=authoritative_handler_serials,
                     canonical_route_evidence=canonical_route_evidence,
                     state_identity=state_identity,

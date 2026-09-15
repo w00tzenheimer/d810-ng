@@ -24,9 +24,12 @@ from d810.transforms.unflatten_authority.structural_transaction import (
 )
 
 
-def bind_prepared_unflatten_authority(*, prepared, patch_binding, structural_context=None):
+def bind_prepared_unflatten_authority(
+    *, prepared, patch_binding, structural_context=None
+):
     return _transaction_api.bind_prepared_unflatten_authority(
-        prepared=prepared, patch_binding=patch_binding,
+        prepared=prepared,
+        patch_binding=patch_binding,
         structural_context=structural_context,
     )
 
@@ -35,9 +38,20 @@ def compatibility_projection(verdict, kind):
     return _transaction_api.compatibility_projection(verdict, kind)
 
 
+def serialize_proposal_for_observation(proposal):
+    return _transaction_api.serialize_proposal_for_observation(proposal)
+
+
 def phase_observation(
-    verdict, *, maturity, source_ea, timings=None, views=None,
-    projected_case=None, prepared_authority=None, correlation=None,
+    verdict,
+    *,
+    maturity,
+    source_ea,
+    timings=None,
+    views=None,
+    projected_case=None,
+    prepared_authority=None,
+    correlation=None,
 ):
     return _transaction_api.phase_observation(
         verdict,
@@ -52,7 +66,13 @@ def phase_observation(
 
 
 def prepare_unflatten_authority_timed(
-    *, source, projection, plan, attempt_id, generic_gates, structural_context=None,
+    *,
+    source,
+    projection,
+    plan,
+    attempt_id,
+    generic_gates,
+    structural_context=None,
 ):
     return _transaction_api.prepare_unflatten_authority_timed(
         source=source,
@@ -64,15 +84,24 @@ def prepare_unflatten_authority_timed(
     )
 
 
-def revalidate_bound_patch_plan_against_prepared(prepared, bound_plan, *, structural_context=None):
+def revalidate_bound_patch_plan_against_prepared(
+    prepared, bound_plan, *, structural_context=None
+):
     return _transaction_api.revalidate_bound_patch_plan_against_prepared(
-        prepared, bound_plan, structural_context=structural_context,
+        prepared,
+        bound_plan,
+        structural_context=structural_context,
     )
 
 
 def revalidate_observed_unflatten_authority_timed(
-    *, authority, observed, observed_generation, generic_gates,
-    observed_patch_binding, structural_context=None,
+    *,
+    authority,
+    observed,
+    observed_generation,
+    generic_gates,
+    observed_patch_binding,
+    structural_context=None,
 ):
     return _transaction_api.revalidate_observed_unflatten_authority_timed(
         authority=authority,
@@ -84,11 +113,17 @@ def revalidate_observed_unflatten_authority_timed(
     )
 
 
-def validate_observed_commit_authority(authority, verdict, accepted, *, structural_context=None):
+def validate_observed_commit_authority(
+    authority, verdict, accepted, *, structural_context=None
+):
     """Revalidate the exact observed closure immediately before commit."""
     return _transaction_api.validate_observed_commit_authority(
-        authority, verdict, accepted, structural_context=structural_context,
+        authority,
+        verdict,
+        accepted,
+        structural_context=structural_context,
     )
+
 
 __all__ = (
     "StructuralTransactionContext",
@@ -108,5 +143,6 @@ __all__ = (
     "prepare_unflatten_authority_timed",
     "revalidate_bound_patch_plan_against_prepared",
     "revalidate_observed_unflatten_authority_timed",
+    "serialize_proposal_for_observation",
     "validate_observed_commit_authority",
 )

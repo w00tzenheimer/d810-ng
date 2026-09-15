@@ -1320,6 +1320,15 @@ def resolve_computed_gotos(
         )
         stop_reasons.append(res.stop_reason)
         eas = [e.address for e in res.events if e.kind == CorridorEventKind.INSN]
+        if res.stop_reason != "completed":
+            logger.info(
+                "computed-goto(concolic) stop: func=0x%X seed=%d "
+                "reason=%s trail=%s",
+                int(function_ea),
+                len(stop_reasons) - 1,
+                res.stop_reason,
+                ",".join(f"0x{ea:X}" for ea in eas[-8:]) or "none",
+            )
         total_insns += len(eas)
         for idx, ea in enumerate(eas):
             if not (text_start <= ea < text_end):
@@ -1337,7 +1346,28 @@ def resolve_computed_gotos(
                 jmp_targets.setdefault(ea, set()).add(nxt)
 
     if not jmp_targets:
+        logger.info(
+            "computed-goto(concolic) unresolved: func=0x%X "
+            "arch=%s seeds=%d executed=%d reachable=%d stops=%s",
+            int(function_ea),
+            arch,
+            len(seeds),
+            total_insns,
+            len(reachable),
+            ",".join(stop_reasons) or "none",
+        )
         return None
+    logger.info(
+        "computed-goto(concolic) resolved: func=0x%X "
+        "arch=%s seeds=%d executed=%d sites=%d targets=%d stops=%s",
+        int(function_ea),
+        arch,
+        len(seeds),
+        total_insns,
+        len(jmp_targets),
+        sum(len(targets) for targets in jmp_targets.values()),
+        ",".join(stop_reasons) or "none",
+    )
     return ComputedGotoResolution(
         function_ea=int(function_ea),
         jmp_targets={k: tuple(sorted(v)) for k, v in jmp_targets.items()},
@@ -9322,9 +9352,24 @@ def _has_unresolved_computed_goto(function_ea: int) -> bool:
     if func is None:
         return False
     badaddr = int(getattr(idaapi, "BADADDR", -1))
-    for jmp_ea in _reg_indirect_jump_sites(int(func.start_ea), int(func.end_ea)):
-        if ida_xref.get_first_cref_from(jmp_ea) == badaddr:
+    sites = tuple(
+        _reg_indirect_jump_sites(int(func.start_ea), int(func.end_ea))
+    )
+    for jmp_ea in sites:
+        first_cref = int(ida_xref.get_first_cref_from(jmp_ea))
+        logger.debug(
+            "native computed-goto gate: func=0x%X site=0x%X first_cref=%s",
+            int(function_ea),
+            int(jmp_ea),
+            "none" if first_cref == badaddr else f"0x{first_cref:X}",
+        )
+        if first_cref == badaddr:
             return True
+    logger.debug(
+        "native computed-goto gate: func=0x%X unresolved=false sites=%d",
+        int(function_ea),
+        len(sites),
+    )
     return False
 
 
@@ -9394,7 +9439,25 @@ def stage_computed_goto_preanalysis(
 ) -> ComputedGotoResolution | None:
     """Publish portable computed-goto evidence without native CFG mutation."""
     resolution = _resolve_computed_goto_resolution(function_ea, **kwargs)
-    if resolution is None or not resolution.jmp_targets or not resolution.patch_plans:
+    if resolution is None:
+        logger.info(
+            "computed-goto portable evidence unresolved: func=0x%X "
+            "reason=no_resolution",
+            int(function_ea),
+        )
+        return None
+    if not resolution.jmp_targets or not resolution.patch_plans:
+        logger.info(
+            "computed-goto portable evidence unresolved: func=0x%X "
+            "reason=incomplete_receipt sites=%d targets=%d patch_plans=%d "
+            "executed=%d stops=%s",
+            int(function_ea),
+            resolution.site_count,
+            resolution.target_count,
+            len(resolution.patch_plans),
+            resolution.executed_insns,
+            ",".join(resolution.stop_reasons) or "none",
+        )
         return None
 
     state.begin_materialization(resolution)

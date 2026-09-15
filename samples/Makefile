@@ -98,9 +98,11 @@ CC_BASE := clang
 
 # On Windows host → prefer clang-cl.exe (MSVC-compatible) if it exists
 ifeq ($(HOST_OS),windows)
-    ifneq ($(shell where clang-cl.exe 2>NUL),)
-        CC_BASE     := clang-cl.exe
-        USING_CLANG_CL := 1
+    ifneq ($(USING_CLANG_CL),1)
+        ifneq ($(shell where clang-cl.exe 2>NUL),)
+            CC_BASE     := clang-cl.exe
+            USING_CLANG_CL := 1
+        endif
     endif
 endif
 
@@ -296,6 +298,7 @@ endif
 PYTHON ?= python
 MASM_NORMALIZER := scripts/normalize_masm_for_build.py
 MASM_NORMALIZED_DIR := .build_masm/normalized
+MASM_MATERIALIZED_SIDECARS := $(wildcard src/masm/*.materialized.json)
 
 ifeq ($(USING_CLANG_CL),1)
     # Keep layout-sensitive additions append-only.  The Hodur fixture's
@@ -387,7 +390,7 @@ src/masm/%.obj: $(MASM_NORMALIZED_DIR)/%.asm
 $(MASM_NORMALIZED_DIR):
 	@mkdir -p "$@"
 
-$(MASM_NORMALIZED_DIR)/%.asm: src/masm/%.asm $(MASM_NORMALIZER) | $(MASM_NORMALIZED_DIR)
+$(MASM_NORMALIZED_DIR)/%.asm: src/masm/%.asm $(MASM_NORMALIZER) $(MASM_MATERIALIZED_SIDECARS) | $(MASM_NORMALIZED_DIR)
 	"$(PYTHON)" $(MASM_NORMALIZER) $< $@
 else ifeq ($(CC),cl)
 $(TARGET_LIB): $(OBJS)

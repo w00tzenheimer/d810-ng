@@ -164,6 +164,8 @@ from d810.transforms.minimal_unflatten_emit import (
     _native_bound_route_fact,
     _filter_conditional_arm_pair_for_suppressed_sources,
     _omit_unreachable_local_alias_scalarizations,
+    _delegate_entry_orphan_to_typed_authority,
+    _preserve_entry_only_bootstrap_corridor,
     _reobserve_source_dag_comparisons,
 )
 from d810.transforms.unflatten_authority.producer_api import (
@@ -177,6 +179,201 @@ from d810.analyses.control_flow.semantic_route_evidence import (
 )
 from tests.native_preanalysis import make_native_key
 from tests.typed_patch_authority import emit_minimal_unflatten, graph_modifications
+
+
+def test_preserve_entry_only_bootstrap_corridor_when_direct_bridge_orphans_handlers() -> None:
+    flow_graph = FlowGraph(
+        blocks={
+            0: _b(0, (1,), ()),
+            1: _b(1, (2,), (0,)),
+            2: _b(2, (10, 20), (1, 20)),
+            10: _b(10, (), (2, 20)),
+            20: _b(20, (2,), (2,)),
+        },
+        entry_serial=0,
+        func_ea=0x1000,
+    )
+    bootstrap = SimpleNamespace(
+        write_block=1,
+        target_handler=10,
+        semantic_route_fact=SimpleNamespace(kind=SemanticRouteFactKind.BOOTSTRAP),
+    )
+    modifications = (
+        RedirectGoto(20, 2, 10),
+        RedirectGoto(1, 2, 10),
+    )
+
+    def project(items: tuple[object, ...]) -> FlowGraph:
+        successors = {
+            serial: list(block.succs) for serial, block in flow_graph.blocks.items()
+        }
+        for item in items:
+            successors[item.from_serial] = [
+                item.new_target if target == item.old_target else target
+                for target in successors[item.from_serial]
+            ]
+        predecessors = {serial: [] for serial in flow_graph.blocks}
+        for source, targets in successors.items():
+            for target in targets:
+                predecessors[target].append(source)
+        return replace(
+            flow_graph,
+            blocks={
+                serial: replace(
+                    block,
+                    succs=tuple(successors[serial]),
+                    preds=tuple(predecessors[serial]),
+                )
+                for serial, block in flow_graph.blocks.items()
+            },
+        )
+
+    preserved = _preserve_entry_only_bootstrap_corridor(
+        flow_graph,
+        modifications,
+        transitions=(bootstrap,),
+        dispatcher_entry_serial=2,
+        authoritative_handler_serials=frozenset((10, 20)),
+        project_modifications=project,
+    )
+
+    assert preserved == (RedirectGoto(20, 2, 10),)
+
+
+def test_entry_only_bootstrap_fallback_keeps_bridge_when_handlers_remain_reachable() -> None:
+    flow_graph = FlowGraph(
+        blocks={
+            0: _b(0, (1,), ()),
+            1: _b(1, (2,), (0,)),
+            2: _b(2, (10, 20), (1, 10, 20)),
+            10: _b(10, (2,), (2,)),
+            20: _b(20, (2,), (2,)),
+        },
+        entry_serial=0,
+        func_ea=0x1000,
+    )
+    bootstrap = SimpleNamespace(
+        write_block=1,
+        target_handler=10,
+        semantic_route_fact=SimpleNamespace(kind=SemanticRouteFactKind.BOOTSTRAP),
+    )
+    modifications = (RedirectGoto(1, 2, 10),)
+
+    assert _preserve_entry_only_bootstrap_corridor(
+        flow_graph,
+        modifications,
+        transitions=(bootstrap,),
+        dispatcher_entry_serial=2,
+        authoritative_handler_serials=frozenset((10, 20)),
+        project_modifications=lambda items: flow_graph
+        if items == ()
+        else replace(
+            flow_graph,
+            blocks={
+                **flow_graph.blocks,
+                1: replace(flow_graph.get_block(1), succs=(10,)),
+            },
+        ),
+    ) == modifications
+
+
+def test_entry_bridge_keeps_effect_safety_despite_complete_route_partition() -> None:
+    flow_graph = FlowGraph(
+        blocks={
+            0: _b(0, (1,), ()),
+            1: _b(1, (2,), (0,)),
+            2: _b(2, (10, 20), (1, 20)),
+            10: _b(10, (), (2, 20)),
+            20: _b(20, (2,), (2,)),
+        },
+        entry_serial=0,
+        func_ea=0x1000,
+    )
+    bootstrap = SimpleNamespace(
+        write_block=1,
+        target_handler=10,
+        semantic_route_fact=SimpleNamespace(kind=SemanticRouteFactKind.BOOTSTRAP),
+    )
+    state = 0x12345678
+    fact = SemanticRouteFact(
+        kind=SemanticRouteFactKind.NATIVE_BOUND,
+        owner_serial=20,
+        source_serial=20,
+        source_instruction_ea=0x1020,
+        state_constant=state,
+        target_serial=10,
+        owner_anchor_ea=0x1020,
+        target_anchor_ea=0x1010,
+        path_serials=(20,),
+        path_edges=(),
+    )
+    dead_component_route = StateWriteTransition(
+        20,
+        state,
+        10,
+        False,
+        None,
+        proof=TransitionProof("native_bound_transition_route", "native_bound_route", True),
+        semantic_route_fact=fact,
+    )
+    modifications = (
+        RedirectGoto(20, 2, 10),
+        RedirectGoto(1, 2, 10),
+    )
+
+    def project(items: tuple[object, ...]) -> FlowGraph:
+        successors = {
+            serial: list(block.succs) for serial, block in flow_graph.blocks.items()
+        }
+        for item in items:
+            successors[item.from_serial] = [
+                item.new_target if target == item.old_target else target
+                for target in successors[item.from_serial]
+            ]
+        predecessors = {serial: [] for serial in flow_graph.blocks}
+        for source, targets in successors.items():
+            for target in targets:
+                predecessors[target].append(source)
+        return replace(
+            flow_graph,
+            blocks={
+                serial: replace(
+                    block,
+                    succs=tuple(successors[serial]),
+                    preds=tuple(predecessors[serial]),
+                )
+                for serial, block in flow_graph.blocks.items()
+            },
+        )
+
+    assert _preserve_entry_only_bootstrap_corridor(
+        flow_graph,
+        modifications,
+        transitions=(bootstrap, dead_component_route),
+        dispatcher_entry_serial=2,
+        authoritative_handler_serials=frozenset((10, 20)),
+        project_modifications=project,
+    ) == (RedirectGoto(20, 2, 10),)
+
+
+@pytest.mark.parametrize(
+    ("closed", "withheld", "carrier", "expected"),
+    (
+        (True, True, False, True),
+        (True, True, True, False),
+        (True, False, False, False),
+        (False, True, False, False),
+    ),
+)
+def test_entry_orphan_delegation_requires_missing_live_carrier(
+    closed, withheld, carrier, expected,
+) -> None:
+    assert _delegate_entry_orphan_to_typed_authority(
+        closed_typed_route_set=closed,
+        entry_route_would_be_withheld=withheld,
+        has_live_entry_carrier=carrier,
+    ) is expected
+
 
 NATIVE_KEY = make_native_key()
 
@@ -3744,6 +3941,42 @@ def test_exact_dispatcher_receipt_accepts_bound_current_rows() -> None:
     assert receipt.target_for_u32_state(state) == 10
 
 
+def test_exact_dispatcher_receipt_filters_retired_prefix_rows() -> None:
+    retired_state = 0x11111111
+    current_state = 0x22222222
+    graph = FlowGraph(
+        {
+            0: _b(0, (2,), ()),
+            2: _b(2, (21,), (0, 10, 11)),
+            20: _eq_block(20, retired_state, 10, 21, preds=()),
+            21: _eq_block(21, current_state, 11, 99, preds=(2,)),
+            10: _b(10, (2,), (20,)),
+            11: _b(11, (2,), (21,)),
+            99: replace(_b(99, (), (21,)), kind=BlockKind.STOP),
+        },
+        0,
+        0x180055760,
+    )
+    _dispatcher, dispatch_map = _equality_dispatcher(
+        {retired_state: 10, current_state: 11},
+        entry_block=2,
+        compare_blocks=(20, 21),
+    )
+
+    receipt = minimal_unflatten_emit_module._bind_exact_u32_dispatcher_route_receipt(
+        graph,
+        dispatch_map,
+        dispatcher_entry_serial=2,
+        state_var_stkoff=_STATE,
+        state_var_reg=None,
+        dispatcher_region_serials=frozenset({2, 21}),
+    )
+
+    assert receipt is not None
+    assert receipt.target_for_u32_state(retired_state) is None
+    assert receipt.target_for_u32_state(current_state) == 11
+
+
 def test_emits_back_edge_redirect_and_entry_bridge(_seam) -> None:
     # entry blk0 -> dispatcher blk2; state-write blk10 writes 0x20 -> dispatcher;
     # route(0x10 initial)=blk10, route(0x20)=blk20.  The transition is anchored on
@@ -5387,6 +5620,149 @@ def _typed_entry_native_route_fixture(monkeypatch):
     )
 
 
+def test_complete_typed_routes_delegate_entry_without_live_carrier(
+    monkeypatch, _seam,
+) -> None:
+    """Missing entry-carrier evidence sends the route through proposal authority."""
+
+    include_nonentry_route = True
+
+    class _CleanUseDefSafety:
+        def redirect_use_def_violations(self, *_args, **_kwargs):
+            return ()
+
+    entry_state = 0x16AA65E9
+    loop_state = 0x0BADF00D
+    other_state = 0x13572468
+    entry_write = InsnSnapshot(
+        0,
+        0x1001,
+        (),
+        l=MopSnapshot(kind=OperandKind.NUMBER, size=4, value=entry_state),
+        d=MopSnapshot(
+            kind=OperandKind.STACK,
+            size=4,
+            stkoff=_STATE,
+            stack_refs=(_STATE,),
+        ),
+        kind=InsnKind.MOV,
+        raw_opcode=0,
+    )
+    loop_write = replace(entry_write, ea=0x3001, l=replace(
+        entry_write.l, value=loop_state,
+    ))
+    target_insn = replace(entry_write, ea=0x1281, l=replace(
+        entry_write.l, value=other_state,
+    ))
+    graph = FlowGraph(
+        blocks={
+            0: BlockSnapshot(0, 0, (2,), (), 0, 0x1000, (entry_write,)),
+            2: _b(2, (10, 20), (0, 20)),
+            10: _b(10, (99,), (2,), (target_insn,)),
+            20: BlockSnapshot(20, 0, (2,), (2,), 0, 0x3000, (loop_write,)),
+            99: _b(99, (), (10,)),
+        },
+        entry_serial=0,
+        func_ea=0x1000,
+    )
+    refs = {
+        serial: NativeBlockRef(
+            StableBlockIdentity.from_intervals(
+                (NativeEaInterval(block.start_ea, block.start_ea + 0x20),),
+                native_key=NATIVE_KEY,
+                exact_instruction_eas=tuple(
+                    insn.ea for insn in block.insn_snapshots
+                ),
+            )
+        )
+        for serial, block in graph.blocks.items()
+    }
+    monkeypatch.setattr(
+        minimal_unflatten_emit_module,
+        "recover_state_write_transitions_via_partitioned_fixpoint",
+        lambda *_args, **_kwargs: (
+            (StateWriteTransition(0, None, None, True, None),)
+            + ((StateWriteTransition(
+                20,
+                loop_state,
+                10,
+                False,
+                None,
+                proof=TransitionProof(
+                    "region_partitioned_fixpoint", "global_fold", True,
+                ),
+            ),) if include_nonentry_route else ())
+        ),
+    )
+    original_attach = minimal_unflatten_emit_module._attach_dispatcher_map_route_facts
+
+    def attach_bootstrap_fact(*args, **kwargs):
+        rows = original_attach(*args, **kwargs)
+        return tuple(
+            replace(
+                row,
+                semantic_route_fact=minimal_state_recovery_module._semantic_route_fact_for_transition(
+                    row,
+                    minimal_state_recovery_module._DecisionDagStateRoute(
+                        target=10,
+                        certified_targets=frozenset({10}),
+                        entry_serial=2,
+                        path_serials=(2,),
+                        path_anchors=(graph.get_block(2).start_ea,),
+                        handoff_dispatcher_serial=2,
+                        handoff_dispatcher_anchor_ea=graph.get_block(2).start_ea,
+                    ),
+                    graph,
+                    state_var_stkoff=_STATE,
+                    state_var_reg=None,
+                ),
+            )
+            if row.write_block == 0 and row.semantic_route_fact is not None
+            else row
+            for row in rows
+        )
+
+    monkeypatch.setattr(
+        minimal_unflatten_emit_module,
+        "_attach_dispatcher_map_route_facts",
+        attach_bootstrap_fact,
+    )
+
+    plan = emit_minimal_unflatten(
+        graph,
+        _disp(
+            {
+                entry_state: 10,
+                loop_state: 10,
+                other_state: 20,
+            },
+            exit_block=99,
+        ),
+        state_var_stkoff=_STATE,
+        dispatcher_entry_serial=2,
+        native_key=NATIVE_KEY,
+        block_refs_by_serial=refs,
+        native_bound_transition_routes=(
+            (NativeBoundTransitionRoute(
+                "entry", 0x1001, 0, entry_state, 10,
+            ),)
+            + ((NativeBoundTransitionRoute(
+                "loop", 0x3001, 20, loop_state, 10,
+            ),) if include_nonentry_route else ())
+        ),
+        dispatcher_region_serials=frozenset({2}),
+        authoritative_handler_serials=frozenset({10, 20}),
+        use_def_safety=_CleanUseDefSafety(),
+        live_function=object(),
+    )
+
+    entry_redirect = RedirectGoto(from_serial=0, old_target=2, new_target=10)
+    loop_redirect = RedirectGoto(from_serial=20, old_target=2, new_target=10)
+    assert entry_redirect in graph_modifications(plan)
+    assert (loop_redirect in graph_modifications(plan)) is include_nonentry_route
+    assert plan.unflatten_proposal is not None
+
+
 @pytest.mark.parametrize("copies", (1, 2, 3))
 def test_typed_native_entry_accepts_agreeing_recovery_occurrences(
     monkeypatch, _seam, copies,
@@ -5412,9 +5788,11 @@ def test_typed_native_entry_accepts_agreeing_recovery_occurrences(
     )
     original_select = minimal_unflatten_emit_module.build_state_write_redirects
     selected_rows = []
+    selected_options = []
 
     def observe_selection(flow_graph, dispatcher, transitions, **options):
         selected_rows.extend(row for row in transitions if row.write_block == 0)
+        selected_options.append(options)
         return original_select(flow_graph, dispatcher, transitions, **options)
 
     monkeypatch.setattr(
@@ -5428,6 +5806,7 @@ def test_typed_native_entry_accepts_agreeing_recovery_occurrences(
     assert sum(isinstance(mod, RedirectGoto) and mod.from_serial == 0
                for mod in graph_modifications(plan)) == 1
     assert [row.via_block for row in selected_rows] == [None, *([2] * (copies - 1))]
+    assert selected_options[0]["strict_pre_header_prologue"] is True
     assert rows[0].proof.kind == "global_fold"
     assert all(row.proof.kind == "partial_predecessor_partitioned" for row in rows[1:])
 

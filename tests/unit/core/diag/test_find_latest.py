@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 
-from d810.core.diag import create_diag_database, find_latest_diag_db_path
+from d810.core.diag import _resolve_log_dir, create_diag_database, find_latest_diag_db_path
 
 
 def _create_session_db(path, *, file_func_ea: int, session_func_ea: int) -> None:
@@ -47,3 +47,13 @@ def test_find_latest_uses_session_owner_instead_of_bootstrap_filename(tmp_path) 
     os.utime(authoritative_path, (2.0, 2.0))
 
     assert find_latest_diag_db_path(func_ea, str(tmp_path)) == authoritative_path
+
+
+def test_diagnostic_log_directory_honors_explicit_run_override(
+    tmp_path, monkeypatch
+) -> None:
+    run_directory = tmp_path / "isolated-run"
+    monkeypatch.setenv("D810_DIAG_LOG_DIR", str(run_directory))
+
+    assert _resolve_log_dir() == run_directory
+    assert _resolve_log_dir(str(tmp_path / "call-site")) == tmp_path / "call-site"

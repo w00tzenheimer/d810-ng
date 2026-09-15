@@ -813,9 +813,15 @@ class MutationPlanObserved:
     fragment_atomic_group_id: str = ""
     fragment_plan_json: str = ""
     root_publication_groups: tuple[FragmentRootPublicationGroupObserved, ...] = ()
+    unflatten_authority_json: str = ""
     timestamp: float = 0.0
 
     def __post_init__(self) -> None:
+        if self.unflatten_authority_json:
+            try:
+                json.loads(self.unflatten_authority_json)
+            except (TypeError, ValueError) as exc:
+                raise ValueError("unflatten authority JSON is invalid") from exc
         fragment_fields = (
             bool(self.fragment_plan_id),
             bool(self.fragment_atomic_group_id),

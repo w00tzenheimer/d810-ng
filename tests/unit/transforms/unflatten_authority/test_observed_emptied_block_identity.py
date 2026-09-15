@@ -51,6 +51,46 @@ def test_emptied_physical_anchor_block_keeps_its_native_identity() -> None:
     assert accepted.native_instruction_eas == ()
 
 
+def test_prefix_dce_keeps_identity_when_physical_block_start_survives() -> None:
+    """Removing a proved-dead head instruction does not move the block."""
+
+    catalog, ref, subject = _physical_native_anchor_fixture(
+        anchor_ea=0x1000,
+        exact_instruction_eas=(0x1000, 0x1004, 0x1008),
+    )
+    observed_origins = (0x1004, 0x1008)
+
+    assert not model._phase_native_origin_subset_preserves_anchor(
+        ref,
+        0x1000,
+        observed_origins,
+        (0x1000, 0x1004, 0x1008),
+    )
+    assert model._phase_native_origin_subset_preserves_anchor(
+        ref,
+        0x1000,
+        observed_origins,
+        (0x1000, 0x1004, 0x1008),
+        observed_graph_start_ea=0x1000,
+    )
+
+    (accepted,) = bind.bind_projected_subjects(
+        (subject,),
+        catalog=catalog,
+        phase=model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY,
+        graph_fingerprint=authority_id("prefix-dce-observed"),
+        generation=catalog.generation,
+        serial_by_ref={ref: 18},
+        native_instruction_eas_by_ref={ref: observed_origins},
+        graph_start_eas_by_ref={ref: 0x1000},
+        anchor_loss_owner_refs=frozenset((ref,)),
+    )
+
+    assert accepted.status is model.SubjectBindingStatus.UNIQUE
+    assert accepted.serial == 18
+    assert accepted.native_instruction_eas == observed_origins
+
+
 def test_observed_inventory_accepts_an_emptied_native_block_row() -> None:
     """The inventory row validator owns the same identity question."""
 

@@ -16,7 +16,10 @@ successor lifecycle runs (d81-mcqr).
 
 from __future__ import annotations
 
+import os
 import threading
+from collections.abc import Mapping
+from pathlib import Path
 
 from d810.core.typing import Any, Callable
 from d810.mba.extension_api import (
@@ -28,7 +31,29 @@ from d810.mba.residual_observation_sink import (
     SqliteMbaResidualObservationSink,
 )
 
-__all__ = ["MbaResidualObservationLifecycle"]
+__all__ = [
+    "MbaResidualObservationLifecycle",
+    "resolve_mba_discovery_store_path",
+]
+
+
+def resolve_mba_discovery_store_path(
+    manager_log_dir: str | Path,
+    *,
+    environment: Mapping[str, str] | None = None,
+) -> Path:
+    """Return the discovery DB owned by this diagnostic execution.
+
+    System-test batches set ``D810_DIAG_LOG_DIR`` to a directory unique to the
+    batch.  Keeping the discovery store there prevents concurrent shards from
+    migrating the same user-log database.  Interactive sessions do not set the
+    override and retain the existing manager-log location.
+    """
+
+    active_environment = os.environ if environment is None else environment
+    diagnostic_log_dir = active_environment.get("D810_DIAG_LOG_DIR", "").strip()
+    base = Path(diagnostic_log_dir) if diagnostic_log_dir else Path(manager_log_dir)
+    return base / "d810_mba_discovery.sqlite3"
 
 
 class MbaResidualObservationLifecycle:

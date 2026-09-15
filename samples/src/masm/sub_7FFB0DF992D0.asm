@@ -3360,7 +3360,7 @@ sub_7FFB0DF992D0:
     rol rax, 2Dh
     jmp loc_7FFB0DF9DAA6
     loc_7FFB0DF9AF51:
-    mov rax, qword ptr [60h]
+    mov rax, qword ptr gs:[60h]
     mov rax, qword ptr [rax+20h]
     mov rdx, rax
     not rdx
@@ -3741,7 +3741,7 @@ sub_7FFB0DF992D0:
     add rdx, r9
     jmp rdx
     loc_7FFB0DF9B1B1:
-    mov rax, qword ptr [60h]
+    mov rax, qword ptr gs:[60h]
     mov rdx, qword ptr [rsp+10h]
     xor rdx, qword ptr [rax+18h]
     mov rax, -32C4970E2ECEAE88h
@@ -4303,7 +4303,7 @@ sub_7FFB0DF992D0:
     add edx, eax
     jmp loc_7FFB0DF9E194
     loc_7FFB0DF9B63E:
-    mov rax, qword ptr [60h]
+    mov rax, qword ptr gs:[60h]
     xor rax, qword ptr [rsp+10h]
     mov rdx, rax
     mov rcx, -7156108976D6DFC0h
@@ -5507,7 +5507,7 @@ sub_7FFB0DF992D0:
     add rax, qword ptr [rsp+10h]
     jmp loc_7FFB0DF9DAA6
     loc_7FFB0DF9BD76:
-    mov rdx, qword ptr [60h]
+    mov rdx, qword ptr gs:[60h]
     mov rax, qword ptr [rsp+10h]
     xor rax, qword ptr [rdx+20h]
     mov r8, qword ptr [qword_7FFB0FE9B070]
@@ -5918,7 +5918,7 @@ sub_7FFB0DF992D0:
     nop
     nop
     nop
-    mov rax, qword ptr [60h]
+    mov rax, qword ptr gs:[60h]
     xor rax, qword ptr [rsp+10h]
     mov rdx, qword ptr [qword_7FFB0FE9B0A8]
     mov r8, 24BC8BFB5BE1D971h
@@ -6033,13 +6033,13 @@ sub_7FFB0DF992D0:
     add rax, qword ptr [rsp+10h]
     jmp loc_7FFB0DF9DAA6
     loc_7FFB0DF9C0BB:
-    mov rax, qword ptr [60h]
+    mov rax, qword ptr gs:[60h]
     mov rdx, qword ptr [rsp+10h]
     xor rdx, qword ptr [rax+38h]
     mov rax, -5BE1C35DCC3154A3h
     jmp loc_7FFB0DF9DAA3
     loc_7FFB0DF9C0DC:
-    mov rax, qword ptr [60h]
+    mov rax, qword ptr gs:[60h]
     mov rdx, qword ptr [rsp+10h]
     xor rdx, qword ptr [rax+10h]
     mov rax, 482526FEB7DCC62Ch
@@ -6053,7 +6053,7 @@ sub_7FFB0DF992D0:
     rol rax, 34h
     jmp loc_7FFB0DF9DAA6
     loc_7FFB0DF9C119:
-    mov rdx, qword ptr [60h]
+    mov rdx, qword ptr gs:[60h]
     mov rax, qword ptr [rsp+10h]
     xor rax, qword ptr [rdx+110h]
     mov r8, qword ptr [qword_7FFB0FE9B098]
@@ -6687,7 +6687,7 @@ sub_7FFB0DF992D0:
     inc rax
     jmp loc_7FFB0DF9DAA6
     loc_7FFB0DF9C503:
-    mov rax, qword ptr [60h]
+    mov rax, qword ptr gs:[60h]
     mov rax, qword ptr [rax+18h]
     mov rdx, qword ptr [rsp+10h]
     mov r8, rdx
@@ -7324,7 +7324,7 @@ sub_7FFB0DF992D0:
     rol rax, 25h
     jmp loc_7FFB0DF9DAA6
     loc_7FFB0DF9C92A:
-    mov rdx, qword ptr [60h]
+    mov rdx, qword ptr gs:[60h]
     mov rax, qword ptr [rsp+10h]
     xor rax, qword ptr [rdx+30h]
     mov r8, 7F26E9091C746BBh
@@ -7355,7 +7355,7 @@ sub_7FFB0DF992D0:
     mov qword ptr [rsp+18h], rdi
     jmp loc_7FFB0DF9DAB0
     loc_7FFB0DF9C9BA:
-    mov rax, qword ptr [60h]
+    mov rax, qword ptr gs:[60h]
     nop
     nop
     nop
@@ -7973,20 +7973,20 @@ sub_7FFB0DF992D0:
     nop
     jmp loc_7FFB0DF9D8CD
     loc_7FFB0DF9CD29:
-    mov rax, qword ptr [60h]
+    mov rax, qword ptr gs:[60h]
     mov rdx, qword ptr [rsp+10h]
     xor rdx, qword ptr [rax+30h]
     mov rax, -222E6AF2BE7854E3h
     jmp loc_7FFB0DF9DAA3
     loc_7FFB0DF9CD4A:
-    mov rax, qword ptr [60h]
+    mov rax, qword ptr gs:[60h]
     mov rcx, qword ptr [rsp+10h]
     xor rcx, qword ptr [rax+30h]
     mov rax, 0BD8B2E87812FF0Eh
     xor rax, rcx
     jmp loc_7FFB0DF9DAA6
     loc_7FFB0DF9CD6E:
-    mov rax, qword ptr [60h]
+    mov rax, qword ptr gs:[60h]
     xor rax, qword ptr [rsp+10h]
     mov rdi, qword ptr [qword_7FFB0FE9B0A0]
     mov rdx, -47FDEE75CC6F5EBAh
@@ -8574,7 +8574,7 @@ sub_7FFB0DF992D0:
     nop
     jmp loc_7FFB0DF9DAA6
     loc_7FFB0DF9D161:
-    mov rax, qword ptr [60h]
+    mov rax, qword ptr gs:[60h]
     nop
     nop
     nop
@@ -9444,7 +9444,7 @@ sub_7FFB0DF992D0:
     xor rax, qword ptr [rsp+10h]
     jmp loc_7FFB0DF9DAA6
     loc_7FFB0DF9D715:
-    mov rax, qword ptr [60h]
+    mov rax, qword ptr gs:[60h]
     mov rax, qword ptr [rax+18h]
     nop
     nop
@@ -9744,7 +9744,7 @@ sub_7FFB0DF992D0:
     nop
     nop
     nop
-    mov rax, qword ptr [60h]
+    mov rax, qword ptr gs:[60h]
     mov rcx, qword ptr [rsp+10h]
     xor rcx, qword ptr [rax+10h]
     mov rax, qword ptr [qword_7FFB0FE9B078]
@@ -9853,7 +9853,7 @@ sub_7FFB0DF992D0:
     nop
     nop
     nop
-    mov rax, qword ptr [60h]
+    mov rax, qword ptr gs:[60h]
     mov rdx, qword ptr [rsp+10h]
     xor rdx, qword ptr [rax+110h]
     mov rax, qword ptr [qword_7FFB0FE9B088]
@@ -9868,13 +9868,13 @@ sub_7FFB0DF992D0:
     sub rax, r8
     jmp loc_7FFB0DF9DAA3
     loc_7FFB0DF9D992:
-    mov rax, qword ptr [60h]
+    mov rax, qword ptr gs:[60h]
     mov rdx, qword ptr [rsp+10h]
     xor rdx, qword ptr [rax+10h]
     mov rax, 17D78EF8B3D81F64h
     jmp loc_7FFB0DF9DAA3
     loc_7FFB0DF9D9B3:
-    mov rax, qword ptr [60h]
+    mov rax, qword ptr gs:[60h]
     mov rax, qword ptr [rax+38h]
     mov rdx, rax
     not rdx
@@ -10011,7 +10011,7 @@ sub_7FFB0DF992D0:
     mov qword ptr [rsp+18h], rdx
     jmp loc_7FFB0DF9DAB0
     loc_7FFB0DF9DA87:
-    mov rax, qword ptr [60h]
+    mov rax, qword ptr gs:[60h]
     mov rdx, qword ptr [rsp+10h]
     xor rdx, qword ptr [rax+38h]
     mov rax, 72EEF2FDB76AA029h

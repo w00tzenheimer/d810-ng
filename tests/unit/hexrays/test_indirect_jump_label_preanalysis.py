@@ -1,5 +1,6 @@
 import ast
 import inspect
+import sys
 from types import SimpleNamespace
 
 from d810.hexrays.preanalysis import flowchart_preanalysis
@@ -81,6 +82,56 @@ def test_indirect_label_materialization_plan_rejects_unbounded_range() -> None:
         )
         is None
     )
+
+
+def test_proven_existing_relative_switches_do_not_add_synthetic_edges(
+    monkeypatch,
+) -> None:
+    function_ea = 0x180086948
+    table_ea = 0x180086804
+    jump_eas = (0x18008A588, 0x18008A647)
+    target_eas = (0x18008A58A, 0x18008A6A0)
+    function = SimpleNamespace(start_ea=function_ea, end_ea=0x18008F5DF)
+
+    class _SwitchInfo:
+        jumps = table_ea
+        elbase = table_ea
+
+        @staticmethod
+        def get_jtable_size():
+            return len(target_eas)
+
+        @staticmethod
+        def get_jtable_element_size():
+            return 4
+
+    monkeypatch.setitem(
+        sys.modules,
+        "ida_funcs",
+        SimpleNamespace(get_func=lambda _ea: function),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "ida_nalt",
+        SimpleNamespace(
+            switch_info_t=_SwitchInfo,
+            get_switch_info=lambda _switch, ea: ea in jump_eas,
+        ),
+    )
+
+    result = labels.materialize_proven_indirect_label_targets(
+        function_ea=function_ea,
+        table_address=table_ea,
+        target_eas=target_eas,
+        dispatch_jump_eas=jump_eas,
+        executor=lambda _request: (_ for _ in ()).throw(
+            AssertionError("existing switch metadata must not be rewritten")
+        ),
+    )
+
+    assert result.success
+    assert result.reason == "already_materialized_switches"
+    assert result.materialized_target_count == len(target_eas)
 
 
 def test_direct_writer_is_reduced_to_a_native_patch_plan_request() -> None:

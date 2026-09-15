@@ -51,7 +51,7 @@ from d810.ir.block_identity import (
     StableBlockIdentity,
     stable_block_identity_semantic_anchor,
 )
-from d810.ir.flowgraph import InsnKind
+from d810.ir.flowgraph import FlowGraph, InsnKind
 
 from .model import (
     CorridorCoverageForecast,
@@ -336,6 +336,7 @@ def canonical_patch_step_descriptor(plan: PatchPlan, step_index: int) -> Canonic
 def corridor_coverage_forecast_from_analysis(
     coverage: DispatcherCorridorCoverage,
     *,
+    source: FlowGraph | None = None,
     proposal: ProposedUnflattenContract,
     block_refs_by_serial: dict[int, NativeBlockRef | LogicalBlockRef],
     default_gap_infeasibility_exclusions: tuple[DefaultGapInfeasibilityExclusion, ...] = (),
@@ -351,6 +352,11 @@ def corridor_coverage_forecast_from_analysis(
         raise TypeError("coverage forecast requires a closed proposal")
     if type(coverage) is not DispatcherCorridorCoverage:
         raise TypeError("coverage analysis must be DispatcherCorridorCoverage")
+    if source is not None:
+        if type(source) is not FlowGraph:
+            raise TypeError("coverage source must be a FlowGraph")
+        if int(source.func_ea) != int(coverage.function_ea):
+            raise ValueError("coverage source function differs from analysis")
     catalog = {
         item.block_ref: item for item in proposal.source_identity_catalog.blocks
     }
@@ -360,9 +366,23 @@ def corridor_coverage_forecast_from_analysis(
         serial = int(serial)
         ea = int(ea)
         ref = refs_by_serial.get(serial)
-        if ref is None or ref not in catalog or catalog[ref].anchor_ea != ea:
+        witness = catalog.get(ref)
+        if ref is None or witness is None:
             raise ValueError(f"coverage {label} is foreign to source catalog")
-        return CorridorCoveragePathNode(ref, ea)
+        if source is None:
+            if witness.anchor_ea != ea:
+                raise ValueError(f"coverage {label} is foreign to source catalog")
+        else:
+            block = source.get_block(serial)
+            if block is None or int(block.start_ea) != ea:
+                raise ValueError(f"coverage {label} is foreign to source graph")
+        # Corridor analysis uses the graph's range start.  Logical clone refs
+        # intentionally bind by their exact instruction occurrence, whose
+        # canonical catalog anchor can be the first native instruction
+        # instead.  Seal the forecast in the catalog coordinate namespace
+        # after proving that the raw range anchor belongs to this exact source
+        # serial.
+        return CorridorCoveragePathNode(ref, witness.anchor_ea)
 
     dispatcher_anchor = coverage.dispatcher
     if dispatcher_anchor is None:
@@ -379,7 +399,7 @@ def corridor_coverage_forecast_from_analysis(
     for raw in coverage.semantic_exclusions:
         if type(raw) is not CandidatePrefixAlternateCorridorProof:
             raise TypeError("coverage semantic exclusions must be canonical proofs")
-        source = node_coords(
+        source_node = node_coords(
             raw.source_serial, raw.source_ea,
             "semantic exclusion source",
         )
@@ -401,7 +421,7 @@ def corridor_coverage_forecast_from_analysis(
             "unflatten.corridor-semantic-exclusion.v1",
             int(raw.normalized_state) & 0xFFFFFFFF,
             raw.state_identity,
-            source,
+            source_node,
             feeder,
             prefix,
             root,
@@ -412,7 +432,7 @@ def corridor_coverage_forecast_from_analysis(
             authority_id(("unflatten.corridor-semantic-exclusion-digest.v1", typed)),
             int(raw.normalized_state) & 0xFFFFFFFF,
             raw.state_identity,
-            source,
+            source_node,
             feeder,
             prefix,
             root,
@@ -2119,6 +2139,7 @@ def attach_typed_proposal(
         )
         coverage_forecast = corridor_coverage_forecast_from_analysis(
             dispatcher_removal_forecast,
+            source=source,
             proposal=proposal,
             block_refs_by_serial=source_refs_by_serial,
             default_gap_infeasibility_exclusions=default_gaps,

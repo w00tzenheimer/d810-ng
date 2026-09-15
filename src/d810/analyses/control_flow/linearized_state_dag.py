@@ -1976,6 +1976,27 @@ def _is_range_backed_only_handoff_anchor(
     return True
 
 
+def _is_supplemental_existing_handler_handoff(
+    *,
+    resolved: int,
+    handler_entry_blocks: set[int],
+    condition_chain_blocks: set[int],
+) -> bool:
+    """Return whether a supplemental selector aliases an exact handler.
+
+    A dispatcher may map several selector constants to the same semantic
+    handler.  Resolving a supplemental constant to an already-known handler is
+    therefore a stable handoff, not a reason to discard the supplemental row.
+    Condition-chain blocks remain dispatcher plumbing and are never promoted.
+    """
+
+    resolved_serial = int(resolved)
+    return (
+        resolved_serial in handler_entry_blocks
+        and resolved_serial not in condition_chain_blocks
+    )
+
+
 def _find_exact_cover_row(
     state_value: int,
     report: DispatcherTransitionReport,
@@ -4804,10 +4825,11 @@ def _discover_supplemental_states(
             return cached
         is_terminal = False
         if condition_chain_block_set:
-            resolved = resolve_exit_via_condition_chain_default_snapshot(
+            resolved = _resolve_condition_chain_state(
                 flow_graph,
-                int(report.dispatcher_entry_serial),
-                masked,
+                dispatcher_entry_serial=int(report.dispatcher_entry_serial),
+                state_value=masked,
+                dispatcher=dispatcher,
             )
             state_machine_blocks = (
                 set(report.condition_chain_blocks) | handler_entry_blocks
@@ -4883,24 +4905,32 @@ def _discover_supplemental_states(
             and mba is not None
             and state_var_stkoff is not None
         ):
-            resolved = resolve_exit_via_condition_chain_default_snapshot(
+            resolved = _resolve_condition_chain_state(
                 flow_graph,
-                int(report.dispatcher_entry_serial),
-                masked,
+                dispatcher_entry_serial=int(report.dispatcher_entry_serial),
+                state_value=masked,
+                dispatcher=dispatcher,
             )
             state_machine_blocks = (
                 set(report.condition_chain_blocks) | handler_entry_blocks
             )
-            if resolved is not None and resolved not in state_machine_blocks:
-                resolved_kind = classify_exit_state(
-                    mba=flow_graph,
-                    final_state=masked,
-                    incoming_state=None,
-                    successor_serial=int(resolved),
-                    state_var_stkoff=int(state_var_stkoff),
+            if resolved is not None:
+                if _is_supplemental_existing_handler_handoff(
+                    resolved=int(resolved),
+                    handler_entry_blocks=handler_entry_blocks,
                     condition_chain_blocks=condition_chain_block_set,
-                )
-                result = (resolved_kind, int(resolved))
+                ):
+                    result = (ExitStateKind.STABLE_HANDOFF, int(resolved))
+                elif resolved not in state_machine_blocks:
+                    resolved_kind = classify_exit_state(
+                        mba=flow_graph,
+                        final_state=masked,
+                        incoming_state=None,
+                        successor_serial=int(resolved),
+                        state_var_stkoff=int(state_var_stkoff),
+                        condition_chain_blocks=condition_chain_block_set,
+                    )
+                    result = (resolved_kind, int(resolved))
 
         condition_chain_exit_classification_cache[masked] = result
         return result
@@ -5069,6 +5099,7 @@ def _discover_supplemental_states(
                                         set(condition_chain_block_set)
                                         | handler_entry_blocks
                                     ),
+                                    condition_chain_dispatcher=dispatcher,
                                     _path_state_work_consumer=(
                                         None
                                         if diagnostics_work_budget is None
@@ -5324,6 +5355,30 @@ def _discover_shadowed_range_handlers(
     return shadowed_states
 
 
+def _resolve_condition_chain_state(
+    flow_graph: FlowGraph,
+    *,
+    dispatcher_entry_serial: int,
+    state_value: int,
+    dispatcher: IntervalDispatcher | None,
+) -> int | None:
+    """Prefer the proven interval partition over a storage-blind chain walk."""
+
+    masked = int(state_value) & 0xFFFFFFFF
+    if dispatcher is not None:
+        try:
+            target = dispatcher.lookup(masked)
+        except (AttributeError, TypeError, ValueError):
+            target = None
+        if target is not None:
+            return int(target)
+    return resolve_exit_via_condition_chain_default_snapshot(
+        flow_graph,
+        int(dispatcher_entry_serial),
+        masked,
+    )
+
+
 def build_live_linearized_state_dag_from_graph(
     flow_graph: FlowGraph,
     transition_result: TransitionResult,
@@ -5509,6 +5564,7 @@ def build_live_linearized_state_dag_from_graph(
                         known_handler_states=real_handler_states,
                         dispatcher_root_serial=_dispatcher_root,
                         state_machine_blocks=_sm_blocks,
+                        condition_chain_dispatcher=dispatcher,
                         _path_state_work_consumer=(
                             None
                             if diagnostics_work_budget is None
@@ -5535,6 +5591,7 @@ def build_live_linearized_state_dag_from_graph(
                 known_handler_states=real_handler_states,
                 dispatcher_root_serial=_dispatcher_root,
                 state_machine_blocks=_sm_blocks,
+                condition_chain_dispatcher=dispatcher,
                 _path_state_work_consumer=(
                     None
                     if diagnostics_work_budget is None
@@ -5970,6 +6027,7 @@ def build_live_linearized_state_dag_from_graph(
                             state_machine_blocks=(
                                 set(condition_chain_block_set) | handler_entry_blocks
                             ),
+                            condition_chain_dispatcher=dispatcher,
                             _path_state_work_consumer=(
                                 None
                                 if diagnostics_work_budget is None
@@ -6220,6 +6278,7 @@ def build_live_linearized_state_dag_from_graph(
                             state_machine_blocks=(
                                 set(condition_chain_block_set) | handler_entry_blocks
                             ),
+                            condition_chain_dispatcher=dispatcher,
                             _path_state_work_consumer=(
                                 None
                                 if diagnostics_work_budget is None
@@ -6477,6 +6536,7 @@ def build_live_linearized_state_dag_from_graph(
                             set(report_with_supplemental.condition_chain_blocks)
                             | handler_entry_blocks
                         ),
+                        condition_chain_dispatcher=dispatcher,
                         _path_state_work_consumer=(
                             None
                             if diagnostics_work_budget is None

@@ -98,6 +98,89 @@ def test_merge_keeps_distinct_run_ids_apart(tmp_path) -> None:
     assert len(merge.merge_records([str(path)])) == 2
 
 
+def test_merge_can_select_only_the_latest_run_from_each_shard(tmp_path) -> None:
+    merge = _module()
+    shard_zero = _write(
+        tmp_path / "shard-zero.jsonl",
+        [
+            _record(run_id="old-zero", shard=0, exit_code=1, counts={"failed": 1}),
+            _record(run_id="new-zero", shard=0, counts={"passed": 1}),
+        ],
+    )
+    shard_one = _write(
+        tmp_path / "shard-one.jsonl",
+        [
+            _record(run_id="old-one", shard=1, exit_code=1, counts={"failed": 1}),
+            _record(run_id="new-one", shard=1, counts={"passed": 1}),
+        ],
+    )
+
+    merged = merge.merge_records(
+        [str(shard_zero), str(shard_one)],
+        latest_run_per_input=True,
+    )
+
+    assert [(record["shard"], record["run_id"]) for record in merged] == [
+        (0, "new-zero"),
+        (1, "new-one"),
+    ]
+
+
+def test_merge_can_select_one_explicit_run_without_trusting_final_record(
+    tmp_path,
+) -> None:
+    merge = _module()
+    path = _write(
+        tmp_path / "shard.jsonl",
+        [
+            _record(run_id="current", counts={"passed": 1}),
+            _record(run_id="stale-later", exit_code=1, counts={"failed": 1}),
+        ],
+    )
+
+    merged = merge.merge_records([str(path)], run_id="current")
+
+    assert [record["run_id"] for record in merged] == ["current"]
+
+
+def test_main_latest_run_per_input_excludes_historical_failures(
+    tmp_path, capsys
+) -> None:
+    merge = _module()
+    path = _write(
+        tmp_path / "shard.jsonl",
+        [
+            _record(run_id="old", exit_code=1, counts={"failed": 1}),
+            _record(run_id="current", counts={"passed": 1}),
+        ],
+    )
+    out = tmp_path / "merged.jsonl"
+
+    assert merge.main(["--latest-run-per-input", "--out", str(out), str(path)]) == 0
+    assert "failed" not in capsys.readouterr().out
+    assert [json.loads(line)["run_id"] for line in out.read_text().splitlines()] == [
+        "current"
+    ]
+
+
+def test_main_explicit_run_id_excludes_later_stale_failure(tmp_path, capsys) -> None:
+    merge = _module()
+    path = _write(
+        tmp_path / "shard.jsonl",
+        [
+            _record(run_id="current", counts={"passed": 1}),
+            _record(run_id="stale", exit_code=1, counts={"failed": 1}),
+        ],
+    )
+    out = tmp_path / "merged.jsonl"
+
+    assert merge.main(["--run-id", "current", "--out", str(out), str(path)]) == 0
+    assert "failed" not in capsys.readouterr().out
+    assert [json.loads(line)["run_id"] for line in out.read_text().splitlines()] == [
+        "current"
+    ]
+
+
 def test_merge_skips_a_missing_input(tmp_path) -> None:
     merge = _module()
     path = _write(tmp_path / "a.jsonl", [_record()])
@@ -118,12 +201,27 @@ def test_summarize_adds_counts_across_shards(tmp_path) -> None:
 def test_summarize_reports_wall_as_the_slowest_shard_not_the_sum(tmp_path) -> None:
     merge = _module()
     records = [
-        _record(shard=0, batch_index=1, start_epoch=100.0, end_epoch=160.0,
-                wall_seconds=60.0),
-        _record(shard=0, batch_index=2, start_epoch=160.0, end_epoch=200.0,
-                wall_seconds=40.0),
-        _record(shard=1, batch_index=1, start_epoch=100.0, end_epoch=130.0,
-                wall_seconds=30.0),
+        _record(
+            shard=0,
+            batch_index=1,
+            start_epoch=100.0,
+            end_epoch=160.0,
+            wall_seconds=60.0,
+        ),
+        _record(
+            shard=0,
+            batch_index=2,
+            start_epoch=160.0,
+            end_epoch=200.0,
+            wall_seconds=40.0,
+        ),
+        _record(
+            shard=1,
+            batch_index=1,
+            start_epoch=100.0,
+            end_epoch=130.0,
+            wall_seconds=30.0,
+        ),
     ]
     summary = merge.summarize(records)
     assert summary.per_shard_wall == {0: pytest.approx(100.0), 1: pytest.approx(30.0)}
@@ -136,12 +234,19 @@ def test_summarize_collects_failing_batches_with_their_first_nodeid() -> None:
     merge = _module()
     records = [
         _record(shard=0, batch_index=1),
-        _record(shard=1, batch_index=7, exit_code=1, counts={"failed": 1, "passed": 19},
-                first_nodeid="t.py::Shadow::test_native_shadow"),
+        _record(
+            shard=1,
+            batch_index=7,
+            exit_code=1,
+            counts={"failed": 1, "passed": 19},
+            first_nodeid="t.py::Shadow::test_native_shadow",
+        ),
     ]
     summary = merge.summarize(records)
     assert [(f["shard"], f["batch_index"]) for f in summary.failing_batches] == [(1, 7)]
-    assert summary.failing_batches[0]["first_nodeid"] == "t.py::Shadow::test_native_shadow"
+    assert (
+        summary.failing_batches[0]["first_nodeid"] == "t.py::Shadow::test_native_shadow"
+    )
 
 
 def test_summarize_counts_tests_and_batches() -> None:

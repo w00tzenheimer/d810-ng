@@ -829,6 +829,7 @@ def test_windows_makefile_masm_subset_selects_only_requested_source() -> None:
         text=True,
     )
     assert result.returncode == 0, result.stderr
+    assert not (REPO / "samples" / "NUL").exists()
 
     assignment = next(
         line for line in result.stdout.splitlines() if line.startswith("MASM_ASM := ")
@@ -855,6 +856,7 @@ def test_windows_makefile_assembles_only_derived_normalized_masm() -> None:
         text=True,
     )
     assert result.returncode == 0, result.stderr
+    assert not (REPO / "samples" / "NUL").exists()
     assert (
         "normalize_masm_for_build.py "
         f"src/masm/{requested}.asm .build_masm/normalized/{requested}.asm"
@@ -870,8 +872,10 @@ def test_windows_makefile_creates_normalized_directory_once_for_parallel_builds(
     makefile = (REPO / "samples/Makefile").read_text()
 
     assert "$(MASM_NORMALIZED_DIR):\n" in makefile
+    assert "MASM_MATERIALIZED_SIDECARS := $(wildcard src/masm/*.materialized.json)" in makefile
     assert (
         "$(MASM_NORMALIZED_DIR)/%.asm: src/masm/%.asm $(MASM_NORMALIZER) "
+        "$(MASM_MATERIALIZED_SIDECARS) "
         "| $(MASM_NORMALIZED_DIR)"
     ) in makefile
 

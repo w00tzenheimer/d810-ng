@@ -64,12 +64,37 @@ def read_records(path: str) -> tuple[dict, ...]:
     return tuple(records)
 
 
-def merge_records(paths: Sequence[str]) -> tuple[dict, ...]:
-    """Merge the ledgers at *paths*, newest record per key winning."""
+def merge_records(
+    paths: Sequence[str],
+    *,
+    latest_run_per_input: bool = False,
+    run_id: str | None = None,
+) -> tuple[dict, ...]:
+    """Merge the ledgers at *paths*, newest record per key winning.
+
+    ``latest_run_per_input`` is for live runner summaries over append-only
+    per-shard ledgers.  Each input then contributes only the run named by its
+    final record, while the default retains the historical merge behavior used
+    by cost and profiling consumers.
+    """
     latest: dict[tuple[str, int, int], dict] = {}
     order: list[tuple[str, int, int]] = []
     for path in paths:
-        for record in read_records(path):
+        records = read_records(path)
+        if run_id is not None:
+            records = tuple(
+                record
+                for record in records
+                if str(record.get("run_id", "")) == run_id
+            )
+        if latest_run_per_input and records:
+            latest_run_id = str(records[-1].get("run_id", ""))
+            records = tuple(
+                record
+                for record in records
+                if str(record.get("run_id", "")) == latest_run_id
+            )
+        for record in records:
             shard = _shard_of(record)
             record = {**record, "shard": shard}
             try:
@@ -81,8 +106,7 @@ def merge_records(paths: Sequence[str]) -> tuple[dict, ...]:
                 order.append(key)
             latest[key] = record
     return tuple(
-        latest[key]
-        for key in sorted(order, key=lambda key: (key[1], key[2], key[0]))
+        latest[key] for key in sorted(order, key=lambda key: (key[1], key[2], key[0]))
     )
 
 
@@ -143,7 +167,9 @@ def render(summary: MergeSummary) -> str:
         f"[merge] shards={len(summary.per_shard_wall)} "
         f"batches={summary.batches} tests={summary.tests}",
         "[merge] counts: "
-        + ", ".join(f"{label}={count}" for label, count in sorted(summary.counts.items())),
+        + ", ".join(
+            f"{label}={count}" for label, count in sorted(summary.counts.items())
+        ),
         f"[merge] wall={summary.wall_seconds / 60.0:.2f}min "
         f"(serial batch seconds {summary.serial_seconds / 60.0:.2f}min)",
     ]
@@ -164,11 +190,29 @@ def render(summary: MergeSummary) -> str:
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--latest-run-per-input",
+        action="store_true",
+        help=(
+            "Summarise only the run_id named by the final record in each "
+            "append-only input ledger."
+        ),
+    )
+    parser.add_argument(
+        "--run-id",
+        help="Summarise only records carrying this exact orchestrator run id.",
+    )
     parser.add_argument("--out", required=True, help="Path to write the merged jsonl.")
-    parser.add_argument("inputs", nargs="+", help="Per-shard system_batches.jsonl paths.")
+    parser.add_argument(
+        "inputs", nargs="+", help="Per-shard system_batches.jsonl paths."
+    )
     args = parser.parse_args(argv)
 
-    merged = merge_records(args.inputs)
+    merged = merge_records(
+        args.inputs,
+        latest_run_per_input=args.latest_run_per_input,
+        run_id=args.run_id,
+    )
     directory = os.path.dirname(os.path.abspath(args.out))
     if directory:
         os.makedirs(directory, exist_ok=True)

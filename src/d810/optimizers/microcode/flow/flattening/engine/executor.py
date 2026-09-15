@@ -497,6 +497,24 @@ class TransactionalExecutor:
         results: list[StageResult] = []
 
         for fragment in pipeline:
+            if (
+                fragment.strategy_name == "dead_store_elimination"
+                and any(
+                    result.success and result.edits_applied > 0
+                    for result in results
+                )
+            ):
+                # Guarded removals bind an exact live instruction ordinal.
+                # A preceding CFG transaction may merge or delete that block,
+                # so this fragment's shared source snapshot is no longer a
+                # valid DSE input even when all CFG authority gates passed.
+                # Return the committed change count and let Hex-Rays invoke
+                # the family again against a freshly lifted MBA.
+                executor_logger.info(
+                    "Deferring dead_store_elimination until a fresh snapshot "
+                    "after an earlier pipeline stage committed"
+                )
+                break
             # Pre-execution safeguard gate: check before execute_stage()
             modifications = list(fragment.modifications)
             num_modifications = len(modifications)

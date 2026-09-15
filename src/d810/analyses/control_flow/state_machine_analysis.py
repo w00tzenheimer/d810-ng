@@ -492,6 +492,7 @@ def _resolved_condition_chain_exit_kind(
     state_var_stkoff: int,
     condition_chain_blocks: set[int],
     state_machine_blocks: set[int],
+    dispatcher: object | None = None,
 ) -> tuple[int | None, ExitStateKind | None, bool]:
     """Resolve ``state_value`` through the condition chain and classify the resolved body.
 
@@ -504,11 +505,18 @@ def _resolved_condition_chain_exit_kind(
     handoffs from true return-frontier exits.
     """
 
-    resolved = resolve_exit_via_condition_chain_default_snapshot(
-        flow_graph,
-        int(dispatcher_root_serial),
-        int(state_value) & 0xFFFFFFFF,
-    )
+    resolved = None
+    if dispatcher is not None:
+        try:
+            resolved = dispatcher.lookup(int(state_value) & 0xFFFFFFFF)
+        except (AttributeError, TypeError, ValueError):
+            resolved = None
+    if resolved is None:
+        resolved = resolve_exit_via_condition_chain_default_snapshot(
+            flow_graph,
+            int(dispatcher_root_serial),
+            int(state_value) & 0xFFFFFFFF,
+        )
     if resolved is None or resolved in state_machine_blocks:
         return resolved, None, False
     if not can_reach_return_snapshot(flow_graph, resolved):
@@ -677,10 +685,12 @@ class _SnapshotProjectionCache:
     and constant maps remain path-local and are recomputed for every visit.
     """
 
-    __slots__ = ("_entries",)
+    __slots__ = ("_entries", "hits", "misses")
 
     def __init__(self) -> None:
         self._entries: dict[int, _ProjectedSnapshotProgram] = {}
+        self.hits = 0
+        self.misses = 0
 
     def instructions_for(self, snapshot: InsnSnapshot) -> tuple[Instruction, ...]:
         if not isinstance(snapshot, InsnSnapshot):
@@ -692,6 +702,7 @@ class _SnapshotProjectionCache:
             if entry.source is not snapshot:
                 raise RuntimeError("snapshot projection cache identity collision")
             self._validate(entry)
+            self.hits += 1
             return entry.instructions
 
         instructions = project_instruction_sequence(snapshot)
@@ -701,6 +712,7 @@ class _SnapshotProjectionCache:
         )
         self._validate(entry)
         self._entries[key] = entry
+        self.misses += 1
         return entry.instructions
 
     @staticmethod
@@ -1755,6 +1767,7 @@ def evaluate_handler_paths(
     known_handler_states: "set[int] | None" = None,
     dispatcher_root_serial: "int | None" = None,
     state_machine_blocks: "set[int] | None" = None,
+    condition_chain_dispatcher: object | None = None,
     use_snapshot_state_writes: bool = True,
     classify_condition_chain_exits: bool = True,
     _path_state_work_consumer: Callable[[], None] | None = None,
@@ -2009,6 +2022,7 @@ def evaluate_handler_paths(
                                 state_var_stkoff=state_var_stkoff,
                                 condition_chain_blocks=condition_chain_blocks,
                                 state_machine_blocks=set(_sm_blks),
+                                dispatcher=condition_chain_dispatcher,
                             )
                         )
                         if _resolved is not None and _resolved not in _sm_blks:

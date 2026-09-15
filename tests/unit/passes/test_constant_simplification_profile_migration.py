@@ -29,6 +29,7 @@ LEGACY_KEYS = {
 EXPECTED_MEMORY_POLICIES = {
     "constant_stage_controls.json": AGGRESSIVE_MEMORY_POLICY,
     "dead_store_elimination_fixture.json": AGGRESSIVE_MEMORY_POLICY,
+    "default_constants_and_mba_simplifiers.json": AGGRESSIVE_MEMORY_POLICY,
     "default_instruction_only.json": AGGRESSIVE_MEMORY_POLICY,
     "default_unflattening_ollvm.json": AGGRESSIVE_MEMORY_POLICY,
     "default_unflattening_tigress_engine_transition_facts.json": "strict",
@@ -41,10 +42,17 @@ EXPECTED_MEMORY_POLICIES = {
     "flatfold.json": AGGRESSIVE_MEMORY_POLICY,
     "hodur_flag2_s1a_fixture_constant_simplification.json": AGGRESSIVE_MEMORY_POLICY,
     "hodur_flag2_with_fcp.json": "strict",
+    "hash_bound_v4_user_cfg_const_simplify_solve.json": AGGRESSIVE_MEMORY_POLICY,
 }
 EXPECTED_DISABLED_STAGES = {
     "flatfold.json": frozenset({"forward-constants"}),
 }
+EXPECTED_ENABLED_PREPARATION = frozenset(
+    {
+        "default_constants_and_mba_simplifiers.json",
+        "hash_bound_v4_user_cfg_const_simplify_solve.json",
+    }
+)
 
 
 def _constant_entries() -> tuple[tuple[Path, dict[str, object], dict[str, object]], ...]:
@@ -87,7 +95,9 @@ def test_all_bundled_constant_profiles_are_canonical_and_compile() -> None:
         )
         registry.build_spec(config)
         schedule = compile_constant_simplification_schedule(config)
-        assert schedule.preparation.enabled is False
+        assert schedule.preparation.enabled is (
+            path.name in EXPECTED_ENABLED_PREPARATION
+        )
         assert schedule.preparation.discover_bounded_tables is True
         assert tuple(stage.stage_id for stage in schedule.stages) == CONSTANT_STAGE_IDS
         assert {
@@ -99,6 +109,8 @@ def test_all_bundled_constant_profiles_are_canonical_and_compile() -> None:
         expected_rva_guard = path.name not in {
             "eidolon_v3_const_solve.json",
             "eidolon_v4_const_simplify_solve.json",
+            "default_constants_and_mba_simplifiers.json",
+            "hash_bound_v4_user_cfg_const_simplify_solve.json",
             "hodur_flag2_s1a_fixture_constant_simplification.json",
         }
         assert readonly.options["rva_guard"] is expected_rva_guard

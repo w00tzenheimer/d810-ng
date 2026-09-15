@@ -231,6 +231,16 @@ def run_deobfuscation_test(
         # AFTER: Decompile with d810 (deobfuscated)
         # ==========================================
         state.start_d810()
+        manager = getattr(state, "manager", None)
+        if effective_case.native_patch_opt_in:
+            set_native_patch_opted_in = getattr(
+                manager, "set_native_patch_opted_in", None
+            )
+            if not callable(set_native_patch_opted_in):
+                raise AssertionError(
+                    "native_patch_opt_in requires a manager-owned native writer"
+                )
+            set_native_patch_opted_in(function_addr=func_ea, enabled=True)
         recipe_activation = contextlib.nullcontext()
         if (
             effective_case.state_cff_min_state_constant is not None
@@ -269,15 +279,10 @@ def run_deobfuscation_test(
             # GENERATED/PREOPT graph; a raw one-shot ``idaapi.decompile``
             # cannot consume that request after it unwinds. Manager-less
             # adapter states retain the historical one-shot capability.
-            manager = getattr(state, "manager", None)
             controlled_decompile = getattr(
                 manager,
                 "decompile_with_native_preanalysis",
                 None,
-            )
-            decompiled_after = idaapi.decompile(
-                func_ea,
-                flags=idaapi.DECOMP_NO_CACHE,
             )
             lifecycle = getattr(manager, "decompilation_lifecycle", None)
             has_pending_restart = getattr(
@@ -285,11 +290,7 @@ def run_deobfuscation_test(
                 "has_pending_generated_restart",
                 None,
             )
-            if (
-                callable(controlled_decompile)
-                and callable(has_pending_restart)
-                and has_pending_restart(func_ea)
-            ):
+            if callable(controlled_decompile) and effective_case.eager_native_preanalysis:
                 decompiled_after = controlled_decompile(
                     func_ea,
                     lambda: idaapi.decompile(
@@ -297,11 +298,55 @@ def run_deobfuscation_test(
                         flags=idaapi.DECOMP_NO_CACHE,
                     ),
                     lambda: idaapi.mark_cfunc_dirty(func_ea, False),
+                    eager_native_preanalysis=True,
                 )
-        if decompiled_after is None:
-            raise AssertionError(
-                f"Decompilation with d810 failed for '{effective_case.function}'"
-            )
+            else:
+                decompiled_after = idaapi.decompile(
+                    func_ea,
+                    flags=idaapi.DECOMP_NO_CACHE,
+                )
+                if (
+                    callable(controlled_decompile)
+                    and callable(has_pending_restart)
+                    and has_pending_restart(func_ea)
+                ):
+                    decompiled_after = controlled_decompile(
+                        func_ea,
+                        lambda: idaapi.decompile(
+                            func_ea,
+                            flags=idaapi.DECOMP_NO_CACHE,
+                        ),
+                        lambda: idaapi.mark_cfunc_dirty(func_ea, False),
+                    )
+            if decompiled_after is None:
+                state.stop_d810()
+                failure = idaapi.hexrays_failure_t()
+                failed_function = idaapi.get_func(func_ea)
+                idaapi.decompile_func(
+                    failed_function,
+                    failure,
+                    idaapi.DECOMP_NO_CACHE,
+                )
+                frame_details = "missing_func"
+                if failed_function is not None:
+                    stack_points = ",".join(
+                        f"0x{int(point.ea):X}:{int(point.spd)}"
+                        for point in failed_function.points
+                    )
+                    frame_details = (
+                        f"range=0x{int(failed_function.start_ea):X}-"
+                        f"0x{int(failed_function.end_ea):X} "
+                        f"frsize=0x{int(failed_function.frsize):X} "
+                        f"frregs=0x{int(failed_function.frregs):X} "
+                        f"argsize=0x{int(failed_function.argsize):X} "
+                        f"fpd={int(failed_function.fpd)} "
+                        f"stkpnts={int(failed_function.pntqty)}[{stack_points}]"
+                    )
+                raise AssertionError(
+                    f"Decompilation with d810 failed for '{effective_case.function}': "
+                    f"code={int(failure.code)} ea=0x{int(failure.errea):X} "
+                    f"reason={failure.desc()} frame=({frame_details})"
+                )
 
         code_after = pseudocode_to_string(decompiled_after.get_pseudocode())
 

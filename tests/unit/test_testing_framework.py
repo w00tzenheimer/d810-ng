@@ -111,6 +111,17 @@ class TestDeobfuscationCase:
         assert default_case.allow_missing_baseline_cfunc is False
         assert recovery_case.allow_missing_baseline_cfunc is True
 
+    def test_eager_native_preanalysis_is_explicit_and_survives_override(self):
+        case = DeobfuscationCase(
+            function="native_preanalysis_recovery",
+            eager_native_preanalysis=True,
+            native_patch_opt_in=True,
+            dll_override=BinaryOverride(),
+        )
+
+        assert case.get_effective_config(".dll").eager_native_preanalysis is True
+        assert case.get_effective_config(".dll").native_patch_opt_in is True
+
     def test_sdk_specific_ast_stats_are_exact(self):
         case = DeobfuscationCase(
             function="sdk_rendered_function",

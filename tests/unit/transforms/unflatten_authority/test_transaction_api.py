@@ -7,6 +7,7 @@ from dataclasses import FrozenInstanceError, fields, replace
 from inspect import signature
 import logging
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -1125,6 +1126,51 @@ def test_observed_branch_helper_elision_reuses_the_sealed_route_relation() -> No
         type(evidence.payload) is model.PatchStepEvidencePayload
         and evidence.payload.owner_ref == relation.helper.ref
         for evidence in observed_case.evidence
+    )
+
+
+def test_observed_route_endpoint_covers_only_sealed_pure_origin_fold() -> None:
+    """A route-touched block may fold pure origins only with its patch receipt."""
+    from d810.transforms.unflatten_authority import evaluate, model
+
+    observed_inputs, relation = _rf4_observed_helper_elision_inputs()
+    target_subject = next(
+        subject
+        for subject in observed_inputs.source_inventory.subjects
+        if subject.role is model.SemanticSubjectRole.SOURCE_CATALOG_BLOCK
+        and subject.block_ref == relation.semantic_target.ref
+    )
+    source_binding = next(
+        binding
+        for binding in observed_inputs.source_inventory.bindings
+        if binding.subject.subject_id == target_subject.subject_id
+    )
+    candidate_binding = next(
+        binding
+        for binding in observed_inputs.candidate_inventory.bindings
+        if binding.subject.subject_id == target_subject.subject_id
+    )
+    assert source_binding.native_instruction_eas == candidate_binding.native_instruction_eas
+    folded_pure_ea = source_binding.native_instruction_eas[0] - 1
+    source_with_pure_helper = replace(
+        source_binding,
+        native_instruction_eas=(
+            folded_pure_ea,
+            *source_binding.native_instruction_eas,
+        ),
+    )
+
+    assert evaluate._observed_route_endpoint_origin_fold_covered(
+        observed_inputs,
+        subject=target_subject,
+        source_binding=source_with_pure_helper,
+        candidate_binding=candidate_binding,
+    )
+    assert not evaluate._observed_route_endpoint_origin_fold_covered(
+        replace(observed_inputs, patch_step_facts=()),
+        subject=target_subject,
+        source_binding=source_with_pure_helper,
+        candidate_binding=candidate_binding,
     )
 
 
@@ -2565,6 +2611,298 @@ def test_observed_logical_endpoint_occurrence_rebinds_exact_plan_owned_sink():
         serial_by_ref=serial_by_ref,
         projected_inventory=projected_inventory,
     ) == ()
+
+
+def test_projected_serials_preserve_exact_logical_clone_occurrence() -> None:
+    from d810.core.native_preanalysis_key import NativePreanalysisKey
+    from d810.ir.flowgraph import (
+        BlockKind,
+        BlockSnapshot,
+        FlowGraph,
+        InsnKind,
+        InsnSnapshot,
+    )
+    from d810.transforms.cfg_transaction import LogicalBlockRef
+
+    logical_ref = LogicalBlockRef("session", "clone", 1)
+    instruction = InsnSnapshot(
+        0,
+        0x1004,
+        (),
+        kind=InsnKind.NOP,
+        raw_opcode=0,
+    )
+    block = BlockSnapshot(
+        0,
+        0,
+        (),
+        (),
+        0,
+        0x1000,
+        (instruction,),
+        tail_opcode=instruction.opcode,
+        kind=BlockKind.ZERO_WAY,
+        tail_kind=instruction.kind,
+        raw_tail_opcode=instruction.raw_opcode,
+    )
+    graph = FlowGraph({0: block}, 0, 0x1000)
+    key = NativePreanalysisKey(
+        "input", "x86", 64, 0, "f" * 64, "p" * 64, "s" * 64,
+    )
+    catalog = model.SourceIdentityCatalog(
+        key,
+        0,
+        (model.SourceBlockIdentityWitness(logical_ref, 0x1004, (0x1004,)),),
+    )
+    proposal = SimpleNamespace(
+        source_identity_catalog=catalog,
+        claims=(),
+        route_evidence=None,
+    )
+    plan = SimpleNamespace(
+        source_coordinates=((logical_ref, 0),),
+        new_blocks=(),
+    )
+
+    assert transaction_api._projected_serials(
+        graph,
+        proposal,
+        plan=plan,
+    ) == {logical_ref: 0}
+
+
+def test_logical_clone_catalog_ref_is_not_labeled_as_function_exit() -> None:
+    """Logical refs also name native clone occurrences; they are not exits."""
+    from d810.transforms.cfg_transaction import LogicalBlockRef
+
+    _source, plan, proposal, _inventory, _materialization, _endpoint = (
+        _logical_dag_source_bind_case()
+    )
+    logical_ref = LogicalBlockRef("session", "clone", 1)
+    catalog = model.SourceIdentityCatalog(
+        proposal.source_identity_catalog.native_key,
+        proposal.source_identity_catalog.generation,
+        (*proposal.source_identity_catalog.blocks,
+         model.SourceBlockIdentityWitness(logical_ref, 0x1004, (0x1004,))),
+    )
+    proposal = replace(proposal, source_identity_catalog=catalog)
+    source_serials = {
+        **dict(plan.source_coordinates),
+        logical_ref: 99,
+    }
+
+    subjects = transaction_api._inventory_subjects(
+        proposal,
+        source_serials,
+        (),
+        (),
+        plan,
+    )
+
+    assert not any(
+        subject.role is model.SemanticSubjectRole.SOURCE_LOGICAL_EXIT
+        and subject.block_ref == logical_ref
+        for subject in subjects
+    )
+
+
+def test_observed_logical_clones_rebind_by_exact_predecessor_occurrence() -> None:
+    """Shared native CALL clones retain predecessor-owned observed identity."""
+    from d810.core.native_preanalysis_key import NativePreanalysisKey
+    from d810.ir.flowgraph import (
+        BlockKind,
+        BlockSnapshot,
+        FlowGraph,
+        InsnKind,
+        InsnSnapshot,
+    )
+    from d810.transforms.cfg_transaction import LogicalBlockRef
+
+    refs = {
+        serial: LogicalBlockRef("session", f"block-{serial}", 1)
+        for serial in range(4)
+    }
+    def predecessor(serial, ea, target):
+        return BlockSnapshot(
+            serial, 0, (target,), (), 0, ea,
+            (InsnSnapshot(0, ea, (), kind=InsnKind.GOTO, raw_opcode=0),),
+            tail_opcode=0, kind=BlockKind.ONE_WAY, tail_kind=InsnKind.GOTO,
+            raw_tail_opcode=0, native_start_ea=ea,
+        )
+
+    def clone(serial, predecessor_serial):
+        return BlockSnapshot(
+            serial, 0, (), (predecessor_serial,), 0, 0xF1C0000000000004,
+            (InsnSnapshot(
+                1, 0x3000, (), kind=InsnKind.CALL, raw_opcode=1, is_call=True,
+            ),),
+            tail_opcode=1, kind=BlockKind.ZERO_WAY, tail_kind=InsnKind.CALL,
+            raw_tail_opcode=1, native_start_ea=0x3000,
+        )
+    blocks = {
+        0: predecessor(0, 0x1000, 2),
+        1: predecessor(1, 0x2000, 3),
+        2: clone(2, 0),
+        3: clone(3, 1),
+    }
+    graph = FlowGraph(blocks, 0, 0x1000)
+    key = NativePreanalysisKey(
+        "input", "x86", 64, 0, "f" * 64, "p" * 64, "s" * 64,
+    )
+    catalog = model.SourceIdentityCatalog(
+        key,
+        0,
+        (
+            model.SourceBlockIdentityWitness(refs[0], 0x1000, (0x1000,)),
+            model.SourceBlockIdentityWitness(refs[1], 0x2000, (0x2000,)),
+            model.SourceBlockIdentityWitness(refs[2], 0x3000, (0x3000,)),
+            model.SourceBlockIdentityWitness(refs[3], 0x3000, (0x3000,)),
+        ),
+    )
+    proposal = SimpleNamespace(
+        source_identity_catalog=catalog,
+        claims=(),
+        route_evidence=None,
+    )
+    plan = SimpleNamespace(
+        source_coordinates=tuple((refs[serial], serial) for serial in range(4)),
+        new_blocks=(),
+    )
+    source_inventory = SimpleNamespace(blocks=tuple(
+        SimpleNamespace(
+            serial=serial,
+            block_ref=refs[serial],
+            predecessor_serials=blocks[serial].preds,
+        )
+        for serial in range(4)
+    ))
+
+    resolution = transaction_api._resolve_candidate_identities(
+        graph,
+        proposal,
+        plan=plan,
+        phase=model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY,
+        source_inventory=source_inventory,
+    )
+
+    assert dict(resolution.serial_bindings) == {
+        refs[0]: 0,
+        refs[1]: 1,
+        refs[2]: 2,
+        refs[3]: 3,
+    }
+
+    swapped = FlowGraph(
+        {**blocks, 2: clone(2, 1), 3: clone(3, 0)},
+        0,
+        0x1000,
+    )
+    swapped_resolution = transaction_api._resolve_candidate_identities(
+        swapped,
+        proposal,
+        plan=plan,
+        phase=model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY,
+        source_inventory=source_inventory,
+    )
+    assert dict(swapped_resolution.serial_bindings) == {
+        refs[0]: 0,
+        refs[1]: 1,
+        refs[2]: 3,
+        refs[3]: 2,
+    }
+
+    ambiguous = FlowGraph(
+        {**blocks, 2: clone(2, 0), 3: clone(3, 0)},
+        0,
+        0x1000,
+    )
+    ambiguous_resolution = transaction_api._resolve_candidate_identities(
+        ambiguous,
+        proposal,
+        plan=plan,
+        phase=model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY,
+        source_inventory=source_inventory,
+    )
+    assert dict(ambiguous_resolution.serial_bindings) == {
+        refs[0]: 0,
+        refs[1]: 1,
+    }
+
+
+def test_observed_shared_ea_occurrences_rebind_by_exact_control_shape() -> None:
+    """A table transfer and its synthetic abort CALL are distinct rows."""
+    from d810.core.native_preanalysis_key import NativePreanalysisKey
+    from d810.ir.flowgraph import (
+        BlockKind,
+        BlockSnapshot,
+        FlowGraph,
+        InsnKind,
+        InsnSnapshot,
+    )
+    from d810.transforms.cfg_transaction import LogicalBlockRef
+    from d810.transforms.unflatten_authority import producer_api
+
+    table_ref = LogicalBlockRef("session", "table", 1)
+    abort_ref = LogicalBlockRef("session", "abort", 1)
+    table_insn = InsnSnapshot(
+        1, 0x3000, (), kind=InsnKind.TABLE_JUMP, raw_opcode=1,
+    )
+    abort_insn = InsnSnapshot(
+        2, 0x3000, (), kind=InsnKind.CALL, raw_opcode=2, is_call=True,
+    )
+    blocks = {
+        0: BlockSnapshot(
+            0, 0, (1,), (1,), 0, 0xFFFFFFFFFFFFFFFF, (table_insn,),
+            tail_opcode=1, kind=BlockKind.N_WAY,
+            tail_kind=InsnKind.TABLE_JUMP, raw_tail_opcode=1,
+            native_start_ea=None,
+        ),
+        1: BlockSnapshot(
+            1, 0, (), (0,), 0, 0xF1C0000000000004, (abort_insn,),
+            tail_opcode=2, kind=BlockKind.ZERO_WAY,
+            tail_kind=InsnKind.CALL, raw_tail_opcode=2,
+            native_start_ea=0x3000,
+        ),
+    }
+    graph = FlowGraph(blocks, 0, 0x3000)
+    key = NativePreanalysisKey(
+        "input", "x86", 64, 0, "f" * 64, "p" * 64, "s" * 64,
+    )
+    catalog = model.SourceIdentityCatalog(
+        key,
+        0,
+        (
+            model.SourceBlockIdentityWitness(table_ref, 0x3000, (0x3000,)),
+            model.SourceBlockIdentityWitness(abort_ref, 0x3000, (0x3000,)),
+        ),
+    )
+    proposal = SimpleNamespace(
+        source_identity_catalog=catalog, claims=(), route_evidence=None,
+    )
+    plan = SimpleNamespace(
+        source_coordinates=((table_ref, 0), (abort_ref, 1)), new_blocks=(),
+    )
+    source_inventory = SimpleNamespace(blocks=(
+        producer_api.observe_inventory_block(
+            blocks[0], owner_ref=table_ref, owner_anchor_ea=0x3000,
+        ),
+        producer_api.observe_inventory_block(
+            blocks[1], owner_ref=abort_ref, owner_anchor_ea=0x3000,
+        ),
+    ))
+
+    resolution = transaction_api._resolve_candidate_identities(
+        graph,
+        proposal,
+        plan=plan,
+        phase=model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY,
+        source_inventory=source_inventory,
+    )
+
+    assert dict(resolution.serial_bindings) == {
+        table_ref: 0,
+        abort_ref: 1,
+    }
 
 
 def test_projected_serials_exclude_unsealed_or_malformed_logical_stops():

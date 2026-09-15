@@ -477,6 +477,7 @@ class MbaMutationPlanned:
     fragment_atomic_group_id: str = ""
     fragment_plan_json: str = ""
     root_publication_groups: tuple[MbaMutationRootPublicationGroup, ...] = ()
+    unflatten_authority_json: str = ""
 
 
 @dataclass(frozen=True, slots=True)

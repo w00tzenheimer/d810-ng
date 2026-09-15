@@ -28,6 +28,7 @@ try:
     import ida_allins
     import ida_bytes
     import ida_funcs
+    import ida_gdl
     import ida_idp
     import ida_lines
     import ida_nalt
@@ -84,12 +85,27 @@ class _FunctionMasmEmitter:
         self._names: dict[int, str] = {}
         self.proc_externs: dict[str, int] = {}  # name -> ea (functions/imports)
         self.data_refs: dict[int, str] = {}  # ea -> name (to materialize)
+        try:
+            self._block_starts = frozenset(
+                int(block.start_ea)
+                for block in ida_gdl.FlowChart(self.func, flags=ida_gdl.FC_PREDS)
+                if self.start <= int(block.start_ea) < self.end
+            )
+        except Exception:
+            logger.debug(
+                "failed to enumerate native block labels for %#x",
+                self.start,
+                exc_info=True,
+            )
+            self._block_starts = frozenset()
 
     # -- symbol naming -----------------------------------------------------
     def sym_name(self, ea: int) -> str | None:
         if ea in self._names:
             return self._names[ea]
         name = ida_name.get_ea_name(ea, ida_name.GN_LOCAL)
+        if not name and ea in self._block_starts:
+            name = f"loc_{ea:X}"
         if not name:
             return None
         # Sanitize names ml64 cannot accept verbatim.
@@ -286,7 +302,9 @@ class _FunctionMasmEmitter:
         body = MasmPrinter()
         for ea in idautils.Heads(self.start, self.end):
             flags = ida_bytes.get_full_flags(ea)
-            if ea != self.start and ida_bytes.has_any_name(flags):
+            if ea != self.start and (
+                ida_bytes.has_any_name(flags) or ea in self._block_starts
+            ):
                 name = self.sym_name(ea)
                 if name:
                     body.line(f"{name}:")
@@ -377,8 +395,9 @@ def ida_lines_tag_remove(text: str) -> str:
     return ida_lines.tag_remove(text) if text else ""
 
 
-# Flat-64-bit segment overrides IDA prints but that are meaningless for ml64.
-_SEG_OVERRIDE_RE = re.compile(r"\b(?:cs|ds|es|ss|fs|gs):")
+# Legacy flat segments are inert in long mode. FS and GS are not: their bases
+# remain architecturally active and commonly address the TEB/PEB on Windows.
+_INERT_SEG_OVERRIDE_RE = re.compile(r"\b(?:cs|ds|es|ss):")
 # IDA's zero-displacement-before-index display: `0[rax*8]` -> `[rax*8]`.
 _ZERO_DISP_RE = re.compile(r"(?<![\w)\]])0\[")
 
@@ -386,11 +405,12 @@ _ZERO_DISP_RE = re.compile(r"(?<![\w)\]])0\[")
 def _clean_ida_mem(text: str) -> str:
     """Normalize an IDA operand string into assemblable MASM.
 
-    Drops segment overrides (cs:/ds:/... are no-ops in flat 64-bit) and the
-    `0[idx]` zero-displacement display form (`ds:0[rax*8]` -> `[rax*8]`), which
-    would otherwise be emitted as the index-losing `[0]`.
+    Drops inert long-mode segment overrides (cs:/ds:/es:/ss:) while preserving
+    semantically active fs:/gs: bases. It also normalizes IDA's `0[idx]`
+    zero-displacement display form (`ds:0[rax*8]` -> `[rax*8]`), which would
+    otherwise be emitted as the index-losing `[0]`.
     """
-    return _ZERO_DISP_RE.sub("[", _SEG_OVERRIDE_RE.sub("", text))
+    return _ZERO_DISP_RE.sub("[", _INERT_SEG_OVERRIDE_RE.sub("", text))
 
 
 def generate_masm_for_function(

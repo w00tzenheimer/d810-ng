@@ -265,7 +265,7 @@ class TestMbaSerializerInstructionMeta:
             "m_jle": OperandShape(True, True, True),
             "m_call": OperandShape(True, False, None),
             "m_icall": OperandShape(True, True, None),
-            "m_ext": OperandShape(True, True, True),
+            "m_ext": OperandShape(None, None, None),
         }
         expected: dict[str, OperandShape] = {}
         expected.update({name: OperandShape(False, False, False) for name in zero})
@@ -319,6 +319,8 @@ class TestMbaSerializerInstructionMeta:
                 invalid[required_slots[0]] = None
             else:
                 forbidden_slots = [index for index, required in enumerate((entry.shape.l, entry.shape.r, entry.shape.d)) if required is False]
+                if not forbidden_slots:
+                    continue
                 invalid = list(operands)
                 invalid[forbidden_slots[0]] = stack
             with pytest.raises(ValueError, match="operand shape"):
@@ -335,6 +337,15 @@ class TestMbaSerializerInstructionMeta:
         validate_operand_shape("m_ijmp", l=None, r=register, d=target)
         with pytest.raises(ValueError, match="operand shape"):
             validate_operand_shape("m_ijmp", l=None, r=register, d=None)
+
+    def test_ext_accepts_destination_only_external_instruction(self) -> None:
+        """m_ext has opcode-specific optional slots, including live z,z,d."""
+        from d810.hexrays.instruction_vocabulary import validate_operand_shape
+        from d810.ir.flowgraph import MopSnapshot, OperandKind
+
+        destination = MopSnapshot(kind=OperandKind.REGISTER, size=1, reg=0)
+
+        validate_operand_shape("m_ext", l=None, r=None, d=destination)
 
     def test_conditional_normalizer_keeps_jcnd_unary_and_only_canonicalizes_eq(
         self,

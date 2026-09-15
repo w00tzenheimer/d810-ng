@@ -1699,14 +1699,33 @@ def _semantic_route_fact_for_transition(
     carrier_proof: ExactCarrierStateWrite | None = None,
 ) -> SemanticRouteFact | None:
     """Emit a typed route fact directly from a recovered route witness."""
-    if transition.next_state is None or transition.target_handler is None:
+    def reject(reason: str, **details: object) -> None:
+        logger.info(
+            "semantic route fact rejected: reason=%s owner=%d state=%s target=%s details=%s",
+            reason,
+            int(transition.write_block),
+            (
+                "none"
+                if transition.next_state is None
+                else f"0x{int(transition.next_state) & 0xFFFFFFFF:08X}"
+            ),
+            (
+                "none"
+                if transition.target_handler is None
+                else int(transition.target_handler)
+            ),
+            details,
+        )
         return None
+
+    if transition.next_state is None or transition.target_handler is None:
+        return reject("missing_transition_state_or_target")
     if state_var_stkoff is not None:
         state_identity = StorageIdentity(StorageIdentityKind.STACK, int(state_var_stkoff))
     elif state_var_reg is not None:
         state_identity = StorageIdentity(StorageIdentityKind.REGISTER, int(state_var_reg))
     else:
-        return None
+        return reject("missing_state_identity")
     physical_state_write: SemanticPhysicalStateWriteWitness | None = None
     if isinstance(route, NativeBoundTransitionRoute):
         source_serial = int(route.source_block_serial)
@@ -1717,7 +1736,11 @@ def _semantic_route_fact_for_transition(
             return None
     elif isinstance(route, _DecisionDagStateRoute):
         if int(route.target) != int(transition.target_handler) or int(route.target) not in route.certified_targets:
-            return None
+            return reject(
+                "route_target_mismatch",
+                route_target=int(route.target),
+                certified=tuple(sorted(route.certified_targets)),
+            )
         partition = transition.partition_witness
         # A current exact carrier proof binds the source write, feeder, state,
         # and state identity for this selected operation.  A partition witness
@@ -1733,11 +1756,11 @@ def _semantic_route_fact_for_transition(
                 or len(route.path_serials) != len(route.path_anchors)
                 or route.entry_serial is None
             ):
-                return None
+                return reject("partition_witness_incomplete")
             owner_block = flow_graph.get_block(int(transition.write_block))
             target_block = flow_graph.get_block(int(transition.target_handler))
             if owner_block is None or target_block is None:
-                return None
+                return reject("partition_block_missing")
             return SemanticRouteFact(
                 kind=SemanticRouteFactKind.STATE_PARTITION,
                 owner_serial=int(transition.write_block),
@@ -1987,23 +2010,37 @@ def _semantic_route_fact_for_transition(
             return None
         source_serial, source_ea, source_snapshot = source_candidates[0]
     else:
-        return None
+        return reject("unsupported_route_type", route_type=type(route).__name__)
     owner_serial = int(transition.write_block)
     source_block = flow_graph.get_block(source_serial)
     owner_block = flow_graph.get_block(owner_serial)
     if source_block is None or owner_block is None or not source_block.insn_snapshots:
-        return None
+        return reject(
+            "source_or_owner_block_missing",
+            source_serial=source_serial,
+            source_present=source_block is not None,
+            owner_present=owner_block is not None,
+            source_insns=(0 if source_block is None else len(source_block.insn_snapshots)),
+        )
     if source_serial != owner_serial and source_serial not in owner_block.succs:
-        return None
+        return reject(
+            "source_not_owned_by_delivery_edge",
+            source_serial=source_serial,
+            owner_successors=tuple(owner_block.succs),
+        )
     path_serials = (owner_serial,) if source_serial == owner_serial else (owner_serial, source_serial)
     path_edges = () if source_serial == owner_serial else ((owner_serial, source_serial),)
     target_block = flow_graph.get_block(int(transition.target_handler))
     if target_block is None:
-        return None
+        return reject("target_block_missing")
     owner_anchor = int(owner_block.native_start_ea or owner_block.start_ea)
     target_anchor = int(target_block.native_start_ea or target_block.start_ea)
     if owner_anchor >= 0xFFFFFFFFFFFFFFFF or target_anchor >= 0xFFFFFFFFFFFFFFFF:
-        return None
+        return reject(
+            "invalid_native_anchor",
+            owner_anchor=owner_anchor,
+            target_anchor=target_anchor,
+        )
     decision_dag_witness = None
     recovered_state_write = None
     if kind is SemanticRouteFactKind.NATIVE_BOUND:
@@ -2020,7 +2057,12 @@ def _semantic_route_fact_for_transition(
             or len(route.path_serials) != len(route.path_anchors)
             or int(route.path_serials[0]) != int(route.entry_serial)
         ):
-            return None
+            return reject(
+                "decision_dag_witness_incomplete",
+                entry=route.entry_serial,
+                path=route.path_serials,
+                anchors=route.path_anchors,
+            )
         decision_dag_witness = DecisionDagRouteWitness(
             state_identity=state_identity,
             state_constant=int(transition.next_state),
@@ -3031,6 +3073,10 @@ def _current_u32_route_forest_entry(
     decision_dag: DecisionDag,
     *,
     expected_identities: frozenset[StorageIdentity],
+    permitted_non_state_handler_leaf_catalog: IntervalHandlerLeafReplayCatalog | None = None,
+    block_refs_by_serial: Mapping[int, NativeBlockRef] | None = None,
+    dispatcher: IntervalDispatcher | None = None,
+    source_generation: int = 0,
 ) -> DecisionDag | None:
     """Collect a bounded current comparison closure from one physical entry."""
 
@@ -3039,6 +3085,12 @@ def _current_u32_route_forest_entry(
         entry_serial,
         expected_identities=expected_identities,
         reference_dag=decision_dag,
+        permitted_non_state_handler_leaf_catalog=(
+            permitted_non_state_handler_leaf_catalog
+        ),
+        block_refs_by_serial=block_refs_by_serial,
+        dispatcher=dispatcher,
+        source_generation=source_generation,
     )
     if route_dag is None:
         return None
@@ -3590,7 +3642,21 @@ def _observe_current_u32_decision_forest(
                         expected_state_identities=frozenset({target_identity}),
                         expected_state_width=target_carrier_width,
                     )
+                    and not _is_exact_local_carrier_overwrite_semantic_leaf(
+                        InstructionProjection.from_block(target_block),
+                        expected_state_identities=frozenset({target_identity}),
+                        expected_state_width=target_carrier_width,
+                    )
                 ):
+                    logger.warning(
+                        "current U32 decision forest rejected semantic leaf: "
+                        "source=blk%d target=blk%d identity=%s width=%d "
+                        "reason=state_router_without_exact_carrier_kill",
+                        serial,
+                        target,
+                        target_identity,
+                        target_carrier_width,
+                    )
                     return _CurrentU32DecisionForestObservation(
                         _CurrentU32DecisionForestStatus.INVALID
                     )
@@ -3612,6 +3678,11 @@ def _observe_current_u32_decision_forest(
                                 expected_state_identities=frozenset({target_identity}),
                                 expected_state_width=target_carrier_width,
                             )
+                            or _is_exact_local_carrier_overwrite_semantic_leaf(
+                                InstructionProjection.from_block(target_block),
+                                expected_state_identities=frozenset({target_identity}),
+                                expected_state_width=target_carrier_width,
+                            )
                         )
                     )
                     reference_owned_bridged_semantic_leaf = bool(
@@ -3623,11 +3694,39 @@ def _observe_current_u32_decision_forest(
                             expected_state_width=target_carrier_width,
                         )
                     )
+                    target_instructions = InstructionProjection.from_block(
+                        target_block
+                    )
+                    current_semantic_leaf = bool(
+                        _is_selector_disjoint_table_leaf(
+                            target_block,
+                            target_instructions,
+                            expected_state_identities=frozenset({target_identity}),
+                            expected_state_width=target_carrier_width,
+                        )
+                        or _is_exact_literal_state_overwrite_table_leaf(
+                            target_block,
+                            target_instructions,
+                            expected_state_identities=frozenset({target_identity}),
+                            expected_state_width=target_carrier_width,
+                        )
+                        or _is_call_result_overwrite_semantic_leaf(
+                            target_instructions,
+                            expected_state_identities=frozenset({target_identity}),
+                            expected_state_width=target_carrier_width,
+                        )
+                        or _is_exact_local_carrier_overwrite_semantic_leaf(
+                            target_instructions,
+                            expected_state_identities=frozenset({target_identity}),
+                            expected_state_width=target_carrier_width,
+                        )
+                    )
                     if (
                         target_block is not None
                         and len(tuple(target_block.succs)) == 2
                         and not permitted_non_state_handler_leaf
                         and not reference_owned_bridged_semantic_leaf
+                        and not current_semantic_leaf
                     ):
                         return _CurrentU32DecisionForestObservation(
                             _CurrentU32DecisionForestStatus.INVALID
@@ -3864,6 +3963,10 @@ def _is_ordered_non_state_semantic_branch_leaf(
         instructions,
         expected_state_identities=expected_state_identities,
         expected_state_width=expected_state_width,
+    ) or _is_exact_local_carrier_overwrite_semantic_leaf(
+        instructions,
+        expected_state_identities=expected_state_identities,
+        expected_state_width=expected_state_width,
     ):
         return True
     # A nested CALL can redefine the physical carrier namespace.  When one is
@@ -3900,6 +4003,79 @@ def _is_ordered_non_state_semantic_branch_leaf(
             and not is_u32_storage_predicate
         ):
             return True
+    return False
+
+
+_EXACT_LOCAL_CARRIER_OVERWRITE_OPS = frozenset(
+    {
+        ValueOpKind.ADD,
+        ValueOpKind.SUB,
+        ValueOpKind.MUL,
+        ValueOpKind.OR,
+        ValueOpKind.AND,
+        ValueOpKind.XOR,
+        ValueOpKind.NOT,
+        ValueOpKind.NEG,
+        ValueOpKind.SHL,
+        ValueOpKind.SHR,
+        ValueOpKind.SAR,
+        ValueOpKind.ROL,
+        ValueOpKind.ROR,
+    }
+)
+
+
+def _is_exact_local_carrier_overwrite_semantic_leaf(
+    instructions: tuple[Instruction, ...],
+    *,
+    expected_state_identities: frozenset[StorageIdentity],
+    expected_state_width: int,
+) -> bool:
+    """Prove a full local value definition kills the incoming carrier.
+
+    Register identity is only a physical namespace.  A pure full-width local
+    computation whose inputs do not overlap the incoming selector replaces
+    that selector.  A later predicate over exactly that new definition is
+    semantic control flow.  Partial writes and computations that read any byte
+    of the incoming carrier remain unproved.
+    """
+
+    active_definition: Varnode | None = None
+
+    def overlaps_carrier(value: Varnode) -> bool:
+        identity = storage_identity_from_varnode(value)
+        return identity is not None and any(
+            identity.kind is expected.kind
+            and identity.offset < expected.offset + expected_state_width
+            and expected.offset < identity.offset + value.size
+            for expected in expected_state_identities
+        )
+
+    for instruction in instructions:
+        control = instruction.control
+        state_inputs = tuple(
+            value for value in instruction.inputs if overlaps_carrier(value)
+        )
+        if control is not None and control.predicate is not None:
+            return bool(
+                active_definition is not None
+                and state_inputs
+                and all(value == active_definition for value in state_inputs)
+            )
+        if state_inputs:
+            return False
+        result = instruction.result
+        if result is None or not overlaps_carrier(result):
+            continue
+        result_identity = storage_identity_from_varnode(result)
+        if (
+            instruction.operation not in _EXACT_LOCAL_CARRIER_OVERWRITE_OPS
+            or result_identity not in expected_state_identities
+            or result.size != expected_state_width
+            or not instruction.inputs
+        ):
+            return False
+        active_definition = result
     return False
 
 
@@ -4059,6 +4235,20 @@ def _is_semantic_internal_route_leaf(
     if block is None:
         return False
     instructions = InstructionProjection.from_block(block)
+    if _is_selector_disjoint_table_leaf(
+        block,
+        instructions,
+        expected_state_identities=expected_state_identities,
+        expected_state_width=expected_state_width,
+    ):
+        return True
+    if _is_exact_literal_state_overwrite_table_leaf(
+        block,
+        instructions,
+        expected_state_identities=expected_state_identities,
+        expected_state_width=expected_state_width,
+    ):
+        return True
     if _is_call_result_overwrite_semantic_leaf(
         instructions,
         expected_state_identities=expected_state_identities,
@@ -4081,6 +4271,117 @@ def _is_semantic_internal_route_leaf(
         ):
             return True
     return False
+
+
+def _is_selector_disjoint_table_leaf(
+    block: BlockSnapshot,
+    instructions: tuple[Instruction, ...],
+    *,
+    expected_state_identities: frozenset[StorageIdentity],
+    expected_state_width: int,
+) -> bool:
+    """Prove a multiway semantic branch independent of the selector bytes."""
+
+    if len(tuple(block.succs)) < 2 or not instructions:
+        return False
+    table = instructions[-1]
+    if (
+        table.control is None
+        or table.control.transfer is not ControlTransferKind.TABLE_BRANCH
+        or not table.inputs
+    ):
+        return False
+
+    def overlaps_selector(value: Varnode) -> bool:
+        identity = storage_identity_from_varnode(value)
+        return identity is not None and any(
+            identity.kind is expected.kind
+            and identity.offset < expected.offset + expected_state_width
+            and expected.offset < identity.offset + int(value.size)
+            for expected in expected_state_identities
+        )
+
+    table_identities = tuple(
+        storage_identity_from_varnode(operand) for operand in table.inputs
+    )
+    if not any(identity is not None for identity in table_identities):
+        return False
+    for instruction in instructions:
+        if (
+            instruction.effects
+            or instruction.memory is not None
+            or instruction.attrs.get("nested_sub_kind") == InsnKind.CALL.value
+            or any(overlaps_selector(value) for value in instruction.inputs)
+            or (
+                instruction.result is not None
+                and overlaps_selector(instruction.result)
+            )
+        ):
+            return False
+        if instruction is not table and instruction.control is not None:
+            return False
+    return True
+
+
+def _is_exact_literal_state_overwrite_table_leaf(
+    block: BlockSnapshot,
+    instructions: tuple[Instruction, ...],
+    *,
+    expected_state_identities: frozenset[StorageIdentity],
+    expected_state_width: int,
+) -> bool:
+    """Prove a state-killing handler whose control depends on another input."""
+
+    if len(tuple(block.succs)) < 2 or not instructions:
+        return False
+    table = instructions[-1]
+    if (
+        table.control is None
+        or table.control.transfer is not ControlTransferKind.TABLE_BRANCH
+        or not table.inputs
+        or table.effects
+        or table.memory is not None
+    ):
+        return False
+    table_identities = frozenset(
+        identity
+        for operand in table.inputs
+        if (identity := storage_identity_from_varnode(operand)) is not None
+    )
+    if not table_identities or not table_identities.isdisjoint(
+        expected_state_identities
+    ):
+        return False
+
+    exact_overwrites = 0
+    for instruction in instructions[:-1]:
+        if instruction.effects or instruction.memory is not None or instruction.control:
+            return False
+        input_identities = frozenset(
+            identity
+            for operand in instruction.inputs
+            if (identity := storage_identity_from_varnode(operand)) is not None
+        )
+        if not input_identities.isdisjoint(expected_state_identities):
+            return False
+        result_identity = (
+            None
+            if instruction.result is None
+            else storage_identity_from_varnode(instruction.result)
+        )
+        if result_identity not in expected_state_identities:
+            continue
+        if (
+            instruction.operation is not ValueOpKind.MOVE
+            or instruction.result is None
+            or int(instruction.result.size) != int(expected_state_width)
+            or len(instruction.inputs) != 1
+            or instruction.inputs[0].space is not Space.CONST
+            or int(instruction.inputs[0].size) != int(expected_state_width)
+        ):
+            return False
+        exact_overwrites += 1
+    return exact_overwrites == 1
 
 
 def _pure_move_instruction(instruction: Instruction) -> bool:
@@ -4207,6 +4508,7 @@ def _route_u32_state_through_decision_dag(
     via_block: int | None,
     entry_serial: int | None = None,
     semantic_transition_sources: frozenset[int] = frozenset(),
+    semantic_handler_entries: frozenset[int] = frozenset(),
 ) -> _DecisionDagStateRoute | None:
     """Route one transition state from its exact comparison entry."""
 
@@ -4243,6 +4545,29 @@ def _route_u32_state_through_decision_dag(
     route_aliases: dict[int, int] = {}
     comparison_identities: dict[int, StorageIdentity] = {}
     route_bridges: dict[int, ExactU32XduNamespaceBridge] = {}
+
+    def finish_route(target: int) -> _DecisionDagStateRoute:
+        return _DecisionDagStateRoute(
+            target,
+            frozenset(targets),
+            entry_serial=route_entry,
+            path_serials=tuple(route_path),
+            path_anchors=tuple(
+                int(
+                    flow_graph.get_block(serial).native_start_ea
+                    or flow_graph.get_block(serial).start_ea
+                )
+                for serial in route_path
+                if flow_graph.get_block(serial) is not None
+            ),
+            comparisons=tuple(
+                route_comparisons[serial] for serial in sorted(route_comparisons)
+            ),
+            structural_comparisons=tuple(sorted(structural_comparisons.items())),
+            bridges=tuple(route_bridges[serial] for serial in sorted(route_bridges)),
+            aliases=tuple(sorted(route_aliases.items())),
+        )
+
     for _ in range(8):
         bound_route = _bound_decision_dag_route(
             flow_graph,
@@ -4350,24 +4675,7 @@ def _route_u32_state_through_decision_dag(
             expected_state_identities=expected_state_identities,
         )
         if not step.observed:
-            return _DecisionDagStateRoute(
-                target,
-                frozenset(targets),
-                entry_serial=route_entry,
-                path_serials=tuple(route_path),
-                path_anchors=tuple(
-                    int((flow_graph.get_block(serial).native_start_ea or flow_graph.get_block(serial).start_ea))
-                    for serial in route_path
-                    if flow_graph.get_block(serial) is not None
-                ),
-                comparisons=tuple(
-                    route_comparisons[serial]
-                    for serial in sorted(route_comparisons)
-                ),
-                structural_comparisons=tuple(sorted(structural_comparisons.items())),
-                bridges=tuple(route_bridges[serial] for serial in sorted(route_bridges)),
-                aliases=tuple(sorted(route_aliases.items())),
-            )
+            return finish_route(target)
         if not step.valid and target in semantic_transition_sources:
             # A handler may contain real semantic work and end with the same
             # carrier/state suffix as a pure normalizer.  When this exact leaf
@@ -4376,14 +4684,32 @@ def _route_u32_state_through_decision_dag(
             # outgoing transition is reconciled separately, so any bad state
             # write, carrier, DAG path, or provider evidence still rejects the
             # complete fragment atomically.
-            return _DecisionDagStateRoute(target, frozenset(targets))
+            return finish_route(target)
+        if (
+            step.valid
+            and target in semantic_handler_entries
+            and (
+                via_block is None
+                or step.feeder_serial is None
+                or int(via_block) != int(step.feeder_serial)
+            )
+        ):
+            # This transition proves delivery only to the handler boundary.
+            # The handler's exact normalizer write starts a second selector
+            # epoch and is reconciled by its own transition row.  Folding both
+            # epochs into one DecisionDagRouteWitness would retain the first
+            # state constant while replaying comparisons for the second, which
+            # cannot bind canonically and is not a sound single-DAG proof.
+            return finish_route(target)
         if (
             not step.valid
             or step.state is None
             or step.feeder_serial is None
             or step.dag_entry_serial is None
-            or via_block is None
-            or int(via_block) != int(step.feeder_serial)
+            or (
+                via_block is None
+                or int(via_block) != int(step.feeder_serial)
+            )
         ):
             return reject("normalizer_step", at=target)
         key = (target, int(step.state))
@@ -4404,6 +4730,7 @@ def _route_state_through_decision_dag(
     state_var_reg: int | None,
     entry_serial: int | None = None,
     semantic_transition_sources: frozenset[int] = frozenset(),
+    semantic_handler_entries: frozenset[int] = frozenset(),
 ) -> _DecisionDagStateRoute | None:
     """Route one typed transition through the current decision DAG."""
     if transition.next_state is None:
@@ -4413,6 +4740,7 @@ def _route_state_through_decision_dag(
         state_var_stkoff=state_var_stkoff, state_var_reg=state_var_reg,
         via_block=transition.via_block, entry_serial=entry_serial,
         semantic_transition_sources=semantic_transition_sources,
+        semantic_handler_entries=semantic_handler_entries,
     )
 
 
@@ -4453,19 +4781,19 @@ def _is_weak_region_seeded_interval_state(
 ) -> bool:
     """Return whether carrier evidence may replace this coarse state hint.
 
-    ``region_seeded`` interval-only rows describe the state inferred at a
-    region boundary; they are not a source-local definition.  Every stronger,
-    mixed, malformed, or unattributed provider remains conflict-authoritative.
+    ``region_seeded`` interval-only or as-yet-unrouted rows describe the state
+    inferred at a region boundary; they are not a source-local definition.
+    Every stronger, mixed, or malformed provider remains conflict-authoritative.
     """
 
     proof = transition.proof
-    interval_seed = bool(
+    coarse_seed = bool(
         proof is not None
         and proof.oracle_kind == "region_partitioned_fixpoint"
         and proof.kind == "region_seeded"
-        and tuple(proof.route_source_kinds) == ("interval",)
+        and tuple(proof.route_source_kinds) in {(), ("interval",)}
     )
-    if not interval_seed:
+    if not coarse_seed:
         return False
     if proof is not None and proof.trusted:
         return True
@@ -5036,6 +5364,38 @@ def _reconcile_transition_routes_with_decision_dag(
         ):
             return None
         prefix_authority = candidate_prefix_authority
+    prefix_alternate_target = (
+        None
+        if prefix_authority is None
+        else next(
+            (
+                int(target)
+                for target in (
+                    prefix_authority.comparison.true_target,
+                    prefix_authority.comparison.false_target,
+                )
+                if int(target) != int(prefix_authority.root_serial)
+            ),
+            None,
+        )
+    )
+    prefix_alternate_route_forest = (
+        None
+        if prefix_authority is None or prefix_alternate_target is None
+        else _current_u32_route_forest_entry(
+            flow_graph,
+            int(prefix_alternate_target),
+            route_authority_dag,
+            expected_identities=expected_u32_state_identities(
+                state_var_stkoff=state_var_stkoff,
+                state_var_reg=state_var_reg,
+            ),
+            permitted_non_state_handler_leaf_catalog=replay_leaf_catalog,
+            block_refs_by_serial=block_refs_by_serial,
+            dispatcher=(dispatcher if type(dispatcher) is IntervalDispatcher else None),
+            source_generation=source_generation,
+        )
+    )
     transitions = _complete_unresolved_state_transform_partitions(
         transitions,
         flow_graph,
@@ -5134,6 +5494,7 @@ def _reconcile_transition_routes_with_decision_dag(
                     state_var_reg=state_var_reg,
                     entry_serial=int(route_authority_dag.root),
                     semantic_transition_sources=semantic_transition_sources,
+                    semantic_handler_entries=condition_chain_handlers,
                 )
             )
             if route_fact is None:
@@ -5176,25 +5537,6 @@ def _reconcile_transition_routes_with_decision_dag(
                 flow_graph,
                 transition,
             )
-        if (
-            prefix_authority is not None
-            and prefix_entry.enters_prefix
-            and transition.next_state is not None
-            and transition.proof is not None
-            and transition.proof.oracle_kind == "region_partitioned_fixpoint"
-            and transition.proof.kind == "predecessor_partitioned"
-            and not _candidate_prefix_selects_root(
-                prefix_authority,
-                int(transition.next_state),
-            )
-        ):
-            # This exact physical source partition selects the prefix's
-            # untouched sibling arm.  No redirect will be emitted, so the
-            # feeder need not also be proven safe to bypass.  In particular,
-            # semantic suffix instructions after the state assignment remain
-            # on the original path instead of turning conservative omission
-            # into a fragment-wide rejection.
-            continue
         direct_entry_observation = (
             _DirectDecisionDagEntryObservation(False)
             if prefix_entry.enters_prefix
@@ -5225,6 +5567,7 @@ def _reconcile_transition_routes_with_decision_dag(
             else _stable_flow_block(flow_graph, int(feeder_serial))
         )
         assertion_handler_handoff: int | None = None
+        assertion_handler_handoff_exact = False
         if (
             feeder_serial is not None
             and feeder_block is not None
@@ -5263,13 +5606,58 @@ def _reconcile_transition_routes_with_decision_dag(
                         transition,
                     )
                 _receipt_available, assertion_target = receipt_exact
-                if assertion_target is None or int(assertion_target) != int(feeder_serial):
+                if assertion_target is None:
+                    # The exact receipt is intentionally partial.  Absence is
+                    # not contradictory evidence.  The matching assertion is
+                    # attached to the block this exact physical source edge
+                    # already enters, so preserve that handler boundary rather
+                    # than replaying the state through a reduced DAG whose
+                    # exact comparison may already have been retired.
+                    logger.info(
+                        "assertion handoff accepted without exact row: "
+                        "state=0x%08X observed=blk%d@0x%X",
+                        int(transition.next_state) & 0xFFFFFFFF,
+                        int(feeder_serial),
+                        int(feeder_block.native_start_ea or feeder_block.start_ea),
+                    )
+                    assertion_handler_handoff = int(feeder_serial)
+                elif int(assertion_target) != int(feeder_serial):
+                    exact_target_block = (
+                        flow_graph.get_block(int(assertion_target))
+                    )
+                    logger.info(
+                        "assertion handoff exact-target mismatch: state=0x%08X "
+                        "expected=blk%s@0x%X expected_body=%s "
+                        "observed=blk%d@0x%X observed_body=%s",
+                        int(transition.next_state) & 0xFFFFFFFF,
+                        int(assertion_target),
+                        0
+                        if exact_target_block is None
+                        else int(
+                            exact_target_block.native_start_ea
+                            or exact_target_block.start_ea
+                        ),
+                        ()
+                        if exact_target_block is None
+                        else tuple(
+                            (int(insn.ea), int(insn.raw_opcode or insn.opcode))
+                            for insn in exact_target_block.insn_snapshots
+                        ),
+                        int(feeder_serial),
+                        int(feeder_block.native_start_ea or feeder_block.start_ea),
+                        tuple(
+                            (int(insn.ea), int(insn.raw_opcode or insn.opcode))
+                            for insn in feeder_block.insn_snapshots
+                        ),
+                    )
                     return _reject_decision_dag_reconciliation(
                         "assertion_handoff_exact_target_disagreement",
                         flow_graph,
                         transition,
                     )
-                assertion_handler_handoff = int(feeder_serial)
+                else:
+                    assertion_handler_handoff = int(feeder_serial)
+                    assertion_handler_handoff_exact = True
         source_materializes_transition_state = (
             _source_materializes_exact_transition_state(
                 transition,
@@ -5438,6 +5826,7 @@ def _reconcile_transition_routes_with_decision_dag(
             )
 
         entered_candidate_prefix = False
+        entered_candidate_prefix_via_alternate_forest = False
         if prefix_authority is not None:
             effective_prefix_entry = _candidate_prefix_transition_entry(
                 flow_graph,
@@ -5457,14 +5846,14 @@ def _reconcile_transition_routes_with_decision_dag(
                         flow_graph,
                         effective,
                     )
-                if not _candidate_prefix_selects_root(
+                selects_root = _candidate_prefix_selects_root(
                     prefix_authority,
                     int(effective.next_state),
-                ):
-                    # This physical edge enters the comparison prefix, but its
-                    # concrete state selects the untouched sibling arm.  Omit
-                    # the redirect rather than routing it from the downstream
-                    # DAG root it never reaches.
+                )
+                if not selects_root and prefix_alternate_route_forest is None:
+                    # The physical edge selects the prefix's sibling arm, but
+                    # the current snapshot does not prove that arm through to
+                    # a handler.  Preserve the original corridor.
                     continue
                 if (
                     effective.proof is None
@@ -5480,6 +5869,7 @@ def _reconcile_transition_routes_with_decision_dag(
                         effective,
                     )
                 entered_candidate_prefix = True
+                entered_candidate_prefix_via_alternate_forest = not selects_root
 
         route_entry = int(route_authority_dag.root)
         exact_comparison_entry = (
@@ -5502,6 +5892,10 @@ def _reconcile_transition_routes_with_decision_dag(
         elif direct_entry_proof is not None:
             route_entry = int(direct_entry_proof.entry_serial)
         route_dag = (
+            prefix_alternate_route_forest
+            if entered_candidate_prefix_via_alternate_forest
+            and prefix_alternate_route_forest is not None
+            else (
                 DecisionDag(
                     32,
                     dict(direct_entry_proof.comparisons),
@@ -5514,7 +5908,13 @@ def _reconcile_transition_routes_with_decision_dag(
                 if transform_route_forest is not None
                 else route_authority_dag
             )
+            )
         )
+        if (
+            entered_candidate_prefix_via_alternate_forest
+            and prefix_alternate_target is not None
+        ):
+            route_entry = int(prefix_alternate_target)
         route_transition_sources = set(semantic_transition_sources)
         if effective.next_state is not None:
             provider_target: int | None = None
@@ -5557,6 +5957,7 @@ def _reconcile_transition_routes_with_decision_dag(
                 state_var_reg=state_var_reg,
                 entry_serial=route_entry,
                 semantic_transition_sources=frozenset(route_transition_sources),
+                semantic_handler_entries=condition_chain_handlers,
             )
         )
         if route is None or effective.next_state is None:
@@ -5582,7 +5983,11 @@ def _reconcile_transition_routes_with_decision_dag(
         exact_targets: set[int] = set()
         authority_sources: set[str] = set()
         prior_exact = _transition_has_exact_route_authority(effective)
-        if prior_exact and effective.target_handler is not None:
+        if (
+            prior_exact
+            and effective.target_handler is not None
+            and not entered_candidate_prefix_via_alternate_forest
+        ):
             exact_targets.add(int(effective.target_handler))
             authority_sources.update(_prior_exact_route_sources(effective))
 
@@ -5606,7 +6011,9 @@ def _reconcile_transition_routes_with_decision_dag(
             authority_sources.add("materialized")
 
         physical_route_forest = bool(
-            direct_entry_proof is not None or transform_route_forest is not None
+            direct_entry_proof is not None
+            or transform_route_forest is not None
+            or entered_candidate_prefix_via_alternate_forest
         )
         exact_switch_handoff = False
         if not physical_route_forest:
@@ -5623,8 +6030,8 @@ def _reconcile_transition_routes_with_decision_dag(
                     )
                 _receipt_available, assertion_provider_target = receipt_exact
                 if (
-                    assertion_provider_target is None
-                    or int(assertion_provider_target)
+                    assertion_provider_target is not None
+                    and int(assertion_provider_target)
                     != int(assertion_handler_handoff)
                 ):
                     return _reject_decision_dag_reconciliation(
@@ -5634,7 +6041,14 @@ def _reconcile_transition_routes_with_decision_dag(
                     )
                 provider_targets = frozenset({int(assertion_handler_handoff)})
                 provider_sources = frozenset(
-                    {"assertion_handler_handoff", "exact"}
+                    {
+                        "assertion_handler_handoff",
+                        *(
+                            ("exact",)
+                            if assertion_handler_handoff_exact
+                            else ()
+                        ),
+                    }
                 )
             elif replay_leaf_catalog is not None:
                 sealed_target = _sealed_interval_provider_target(
@@ -8435,6 +8849,16 @@ def _ctx_func_ea(ctx) -> int:
         return 0
 
 
+def _flow_block_label(flow_graph: FlowGraph, serial: int) -> str:
+    """Format one snapshot-local block with its stable native EA anchor."""
+
+    block = flow_graph.get_block(int(serial))
+    if block is None:
+        return f"blk{int(serial)}@?"
+    anchor = int(block.native_start_ea or block.start_ea or 0)
+    return f"blk{int(serial)}@0x{anchor:X}" if anchor else f"blk{int(serial)}@?"
+
+
 def _ctx_block_ea(ctx, serial: int) -> int:
     """Native start EA of ``serial``; the only stable cross-maturity key."""
     try:
@@ -9048,6 +9472,20 @@ def recover_state_write_transitions_via_partitioned_fixpoint(
             )
         )
     out = _upgrade_complete_wide_carrier_partitions(resolver_ctx, out)
+    logger.info(
+        "partitioned-fixpoint transition recovery: dispatcher=%s rows=%s",
+        _flow_block_label(flow_graph, disp),
+        tuple(
+            (
+                _flow_block_label(flow_graph, int(row.write_block)),
+                row.next_state,
+                row.target_handler,
+                row.via_block,
+                None if row.proof is None else row.proof.kind,
+            )
+            for row in out
+        ),
+    )
     return _attach_route_source_kinds(tuple(out), dispatcher)
 
 
@@ -9096,9 +9534,9 @@ def _recover_candidate_prefix_feeder_transition_groups(
     edge.  It never receives seeded/global path authority.  Targetless or
     untrusted concrete rows are retained only so reconciliation can omit an
     exactly selected untouched prefix arm; they cannot authorize a redirect.
-    Any missing or unresolved source partition rejects the scoped fragment
-    atomically.  Malformed authority or contradictory physical topology also
-    rejects globally.
+    Any missing or unresolved source partition rejects only the scoped prefix
+    fragment atomically; independently proven direct-root groups remain valid.
+    Malformed authority or contradictory physical topology rejects globally.
     """
 
     prefix_serial = int(authority.prefix_serial)
@@ -9114,6 +9552,7 @@ def _recover_candidate_prefix_feeder_transition_groups(
     if listed_predecessors != forward_predecessors:
         return None
     groups: list[tuple[int, tuple[StateWriteTransition, ...]]] = []
+    scoped_evidence_complete = True
     for feeder_serial in sorted(listed_predecessors):
         if feeder_serial in already_visited:
             continue
@@ -9132,45 +9571,76 @@ def _recover_candidate_prefix_feeder_transition_groups(
             None,
         )
         if isinstance(resolved, _DeferredSeededResolution):
-            return None
+            logger.info(
+                "candidate-prefix feeder recovery: feeder=%s outcome=deferred "
+                "resolved_predecessors=%s ambiguous=%s",
+                _flow_block_label(flow_graph, feeder_serial),
+                tuple(source for source, _state in resolved.edge_states),
+                resolved.ambiguous,
+            )
+            partial = _provider_partial_predecessor_partitioned(
+                ctx,
+                feeder_serial,
+                feeder,
+                None,
+                dict(resolved.edge_states),
+            )
+            if partial is None:
+                scoped_evidence_complete = False
+                continue
+            resolved = partial
+
+        logger.info(
+            "candidate-prefix feeder recovery: feeder=%s outcome=resolved rows=%s",
+            _flow_block_label(flow_graph, feeder_serial),
+            tuple(
+                (
+                    _flow_block_label(flow_graph, int(edge.write_block)),
+                    edge.next_state,
+                    edge.target_handler,
+                    None if edge.proof is None else edge.proof.kind,
+                )
+                for edge in resolved
+            ),
+        )
 
         partitioned = tuple(
             edge
             for edge in resolved
             if edge.proof is not None
             and edge.proof.oracle_kind == _FIXPOINT_ORACLE
-            and edge.proof.kind == "predecessor_partitioned"
+            and edge.proof.kind
+            in {
+                "predecessor_partitioned",
+                "partial_predecessor_partitioned",
+                "transitive_glue_partitioned",
+            }
         )
         if partitioned:
-            source_serials = tuple(sorted(int(pred) for pred in feeder.preds))
-            rows_by_source = {int(edge.write_block): edge for edge in partitioned}
-            if (
-                len(partitioned) != len(resolved)
-                or len(rows_by_source) != len(partitioned)
-                or tuple(rows_by_source) != source_serials
-            ):
-                return None
-            feeder_groups: list[
-                tuple[int, tuple[StateWriteTransition, ...]]
-            ] = []
-            evidence_complete = True
-            for source_serial in source_serials:
-                source = flow_graph.get_block(source_serial)
-                edge = rows_by_source[source_serial]
-                if (
-                    source is None
-                    or tuple(int(succ) for succ in source.succs) != (feeder_serial,)
-                    or source_serial
-                    not in tuple(int(pred) for pred in feeder.preds)
-                    or edge.via_block != feeder_serial
-                ):
+            if not _candidate_prefix_partition_rows_are_complete(
+                ctx,
+                feeder,
+                partitioned,
+            ) or len(partitioned) != len(resolved):
+                scoped_evidence_complete = False
+                continue
+            feeder_groups = []
+            for edge in sorted(partitioned, key=lambda item: int(item.write_block)):
+                source_serial = int(edge.write_block)
+                entry = _candidate_prefix_transition_entry(
+                    flow_graph,
+                    edge,
+                    authority,
+                )
+                if entry is None or not entry.enters_prefix:
                     return None
                 if edge.next_state is None or edge.proof is None:
-                    evidence_complete = False
+                    scoped_evidence_complete = False
+                    feeder_groups = []
                     break
                 feeder_groups.append((source_serial, (edge,)))
-            if not evidence_complete:
-                return None
+            if not feeder_groups:
+                continue
             groups.extend(feeder_groups)
             continue
 
@@ -9178,7 +9648,8 @@ def _recover_candidate_prefix_feeder_transition_groups(
         # multi-predecessor state writer that did not produce a complete split
         # is an observed feeder, not a direct writer, and must abstain as a group.
         if len(tuple(int(pred) for pred in feeder.preds)) > 1:
-            return None
+            scoped_evidence_complete = False
+            continue
         exact = tuple(
             edge
             for edge in resolved
@@ -9193,7 +9664,8 @@ def _recover_candidate_prefix_feeder_transition_groups(
             (int(edge.next_state), int(edge.target_handler)) for edge in exact
         }
         if len(exact) != 1 or len(routes) != 1:
-            return None
+            scoped_evidence_complete = False
+            continue
         edge = exact[0]
         groups.append(
             (
@@ -9201,7 +9673,67 @@ def _recover_candidate_prefix_feeder_transition_groups(
                 (replace(edge, via_block=prefix_serial, branch_arm=None),),
             )
         )
-    return tuple(groups)
+    return tuple(groups) if scoped_evidence_complete else ()
+
+
+def _candidate_prefix_partition_rows_are_complete(
+    ctx: _ResolverContext,
+    feeder: BlockSnapshot,
+    rows: tuple[StateWriteTransition, ...],
+) -> bool:
+    """Prove complete direct-or-one-level-expanded ownership of a prefix feeder."""
+
+    feeder_serial = int(feeder.serial)
+    if not rows or len({int(row.write_block) for row in rows}) != len(rows):
+        return False
+    consumed: set[int] = set()
+    for predecessor_serial in sorted(int(pred) for pred in feeder.preds):
+        direct = tuple(
+            row
+            for row in rows
+            if int(row.write_block) == predecessor_serial
+            and row.via_block == feeder_serial
+            and row.proof is not None
+            and row.proof.kind
+            in {"predecessor_partitioned", "partial_predecessor_partitioned"}
+        )
+        expanded = tuple(
+            row
+            for row in rows
+            if row.via_block == predecessor_serial
+            and row.proof is not None
+            and row.proof.kind == "transitive_glue_partitioned"
+        )
+        if bool(direct) == bool(expanded):
+            return False
+        if direct:
+            if len(direct) != 1:
+                return False
+            consumed.add(id(direct[0]))
+            continue
+
+        glue = ctx.flow_graph.get_block(predecessor_serial)
+        if glue is None or tuple(int(succ) for succ in glue.succs) != (feeder_serial,):
+            return False
+        expected_sources = {
+            int(source)
+            for source in glue.preds
+            if int(source) != int(ctx.dispatcher_entry)
+        }
+        actual_sources = {int(row.write_block) for row in expanded}
+        if len(expected_sources) < 2 or actual_sources != expected_sources:
+            return False
+        for row in expanded:
+            source = ctx.flow_graph.get_block(int(row.write_block))
+            if source is None or tuple(int(succ) for succ in source.succs) != (
+                predecessor_serial,
+            ):
+                return False
+            consumed.add(id(row))
+
+    return len(consumed) == len(rows) and all(
+        row.next_state is not None and row.proof is not None for row in rows
+    )
 
 
 def _recover_multi_entry_state_write_transitions(
@@ -9931,6 +10463,12 @@ class HandlerTransition:
         return len(self.arms) > 1
 
 
+@dataclass(slots=True)
+class _HandlerScanCounters:
+    popped: int = 0
+    dominated: int = 0
+
+
 def _handler_entries(dispatcher) -> set[int]:
     """Distinct handler blocks the dispatcher routes to (excluding the default/exit)."""
     default = dispatcher.default_target
@@ -9953,6 +10491,8 @@ def _default_corridor_has_state_transition(
     dispatcher_region_serials: frozenset[int],
     handler_entries: set[int],
     max_depth: int,
+    projection_cache: _SnapshotProjectionCache,
+    _counters: _HandlerScanCounters,
 ) -> bool:
     """Return whether the dispatcher's fall-through is a live handler corridor.
 
@@ -9979,6 +10519,8 @@ def _default_corridor_has_state_transition(
         dispatcher_region_serials=dispatcher_region_serials,
         handler_entries=set(handler_entries) | {target},
         max_depth=max_depth,
+        _projection_cache=projection_cache,
+        _counters=_counters,
     )
     for next_state, _branch_block, _ordered_path in paths:
         if next_state is None:
@@ -10011,6 +10553,8 @@ def _scan_handler(
     max_depth: int = _MAX_CORRIDOR_DEPTH,
     initial_stk: dict[int, int] | None = None,
     initial_reg: dict[int, int] | None = None,
+    _projection_cache: _SnapshotProjectionCache | None = None,
+    _counters: _HandlerScanCounters | None = None,
 ) -> list[tuple[int | None, int | None, tuple[int, ...]]]:
     """Strictly handler-local forward scan from *entry*.
 
@@ -10024,6 +10568,23 @@ def _scan_handler(
 
     results: list[tuple[int | None, int | None, tuple[int, ...]]] = []
     effective_stkoff = int(state_var_stkoff) if state_var_stkoff is not None else -1
+    projection_cache = _projection_cache or _SnapshotProjectionCache()
+    counters = _counters or _HandlerScanCounters()
+    initial_popped = counters.popped
+    # A handler scan needs one representative for each abstract state and
+    # currently attributable branch arm, not every syntactic route that
+    # reconverges there.  Keep the shallowest representative so a duplicate can
+    # never be discarded in favour of a path with less remaining depth.
+    shallowest_state_depth: dict[
+        tuple[
+            int,
+            tuple[tuple[int, int], ...],
+            tuple[tuple[int, int], ...],
+            int | None,
+            int | None,
+        ],
+        int,
+    ] = {}
 
     def _current_state(stk: dict, reg: dict) -> int | None:
         if state_var_reg is not None:
@@ -10047,6 +10608,50 @@ def _scan_handler(
 
     while stack:
         blk_serial, stk, reg, branch, visited, depth, path = stack.pop()
+        counters.popped += 1
+        branch_successor: int | None = None
+        if branch is not None:
+            try:
+                branch_index = path.index(int(branch))
+            except ValueError:
+                branch_index = -1
+            if branch_index >= 0 and branch_index + 1 < len(path):
+                branch_successor = int(path[branch_index + 1])
+        state_key = (
+            int(blk_serial),
+            tuple(sorted((int(key), int(value)) for key, value in stk.items())),
+            tuple(sorted((int(key), int(value)) for key, value in reg.items())),
+            None if branch is None else int(branch),
+            branch_successor,
+        )
+        previous_depth = shallowest_state_depth.get(state_key)
+        if previous_depth is not None and previous_depth <= depth:
+            counters.dominated += 1
+            continue
+        shallowest_state_depth[state_key] = int(depth)
+        local_popped = counters.popped - initial_popped
+        if local_popped % 50_000 == 0:
+            entry_block = flow_graph.get_block(int(entry))
+            entry_ea = (
+                None
+                if entry_block is None
+                else getattr(entry_block, "native_start_ea", None)
+            )
+            if entry_ea is None and entry_block is not None:
+                entry_ea = getattr(entry_block, "start_ea", None)
+            logger.warning(
+                "handler recovery scan still active: entry=blk%d@%s "
+                "popped=%d dominated=%d unique_states=%d depth=%d "
+                "stack_cells=%d reg_cells=%d",
+                int(entry),
+                "<unknown>" if entry_ea is None else "0x%X" % int(entry_ea),
+                local_popped,
+                counters.dominated,
+                len(shallowest_state_depth),
+                int(depth),
+                len(stk),
+                len(reg),
+            )
         block = flow_graph.get_block(blk_serial)
         if block is None:
             results.append((_current_state(stk, reg), branch, path))
@@ -10054,11 +10659,23 @@ def _scan_handler(
 
         # Fold this block's state-var write into the carried const env.
         nstk, nreg = _transfer_snapshot_constant_block(
-            block, dict(stk), dict(reg), effective_stkoff
+            block,
+            dict(stk),
+            dict(reg),
+            effective_stkoff,
+            _projection_cache=projection_cache,
         )
         running_state = _current_state(nstk, nreg)
 
         succs = _concrete_successors(block, nstk, nreg)
+        if len(succs) > 2:
+            # This recovery model can publish only binary conditional arms.
+            # Walking through a nested switch both invents unsupported branch
+            # ownership and enumerates its cross-product of case corridors.
+            # Preserve any state already established before the switch, but do
+            # not claim transitions discovered beyond the multiway boundary.
+            results.append((running_state, branch, path))
+            continue
 
         def _is_boundary_succ(s: int) -> bool:
             if dispatcher_entry_serial is not None and s == int(
@@ -10096,7 +10713,7 @@ def _scan_handler(
             and int(dispatcher_entry_serial) in succs
         )
         new_branch = (
-            blk_serial if (len(succs) >= 2 and not branches_to_dispatcher) else branch
+            blk_serial if (len(succs) == 2 and not branches_to_dispatcher) else branch
         )
         for s in onward:
             stack.append(
@@ -10278,6 +10895,8 @@ def recover_handler_transitions(
         return ()
 
     effective_stkoff = int(state_var_stkoff) if state_var_stkoff is not None else -1
+    projection_cache = _SnapshotProjectionCache()
+    scan_counters = _HandlerScanCounters()
     handler_entries = (
         {int(serial) for serial in authoritative_handler_serials}
         if authoritative_handler_serials
@@ -10294,6 +10913,8 @@ def recover_handler_transitions(
         dispatcher_region_serials=dispatcher_region_serials,
         handler_entries=handler_entries,
         max_depth=max_depth,
+        projection_cache=projection_cache,
+        _counters=scan_counters,
     ):
         handler_entries.add(int(default_target))
     states_by_handler = _states_by_handler(dispatcher)
@@ -10307,12 +10928,15 @@ def recover_handler_transitions(
                 {},
                 {},
                 effective_stkoff,
+                _projection_cache=projection_cache,
             )
             if state_var_stkoff is not None:
                 seed_stk.pop(effective_stkoff, None)
     results: list[HandlerTransition] = []
 
     for handler in sorted(handler_entries):
+        handler_start_popped = scan_counters.popped
+        handler_start_dominated = scan_counters.dominated
         paths = _scan_handler(
             flow_graph,
             handler,
@@ -10324,7 +10948,27 @@ def recover_handler_transitions(
             max_depth=max_depth,
             initial_stk=seed_stk,
             initial_reg=seed_reg,
+            _projection_cache=projection_cache,
+            _counters=scan_counters,
         )
+        if logger.info_on:
+            handler_block = flow_graph.get_block(int(handler))
+            handler_ea = (
+                None
+                if handler_block is None
+                else getattr(handler_block, "native_start_ea", None)
+            )
+            if handler_ea is None and handler_block is not None:
+                handler_ea = getattr(handler_block, "start_ea", None)
+            logger.info(
+                "handler recovery scan complete: entry=blk%d@%s popped=%d "
+                "dominated=%d terminal_paths=%d",
+                int(handler),
+                "<unknown>" if handler_ea is None else "0x%X" % int(handler_ea),
+                scan_counters.popped - handler_start_popped,
+                scan_counters.dominated - handler_start_dominated,
+                len(paths),
+            )
         # Dedup arms by next_state: identical next-states on multiple paths are
         # the same edge (a degenerate branch), not a conditional.
         seen: dict[object, TransitionArm] = {}
@@ -10386,6 +11030,14 @@ def recover_handler_transitions(
             )
         )
 
+    logger.info(
+        "handler recovery scan: popped=%d dominated=%d projection_hits=%d "
+        "projection_misses=%d",
+        scan_counters.popped,
+        scan_counters.dominated,
+        projection_cache.hits,
+        projection_cache.misses,
+    )
     return tuple(results)
 
 

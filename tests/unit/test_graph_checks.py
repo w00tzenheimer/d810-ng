@@ -569,6 +569,53 @@ class TestEffectfulReachabilityPreservation:
         assert result.post_reachable_effectful_block_serials == frozenset({1})
         assert result.lost_block_serials == frozenset()
 
+    def test_duplicate_effect_identity_is_retained_by_reachable_source_owner(self):
+        """Shared-EA clones must not steal one another's retained occurrence."""
+        shared_call = InsnSnapshot(
+            opcode=0,
+            ea=0x1010,
+            native_ea=0x401010,
+            operands=(),
+            kind=InsnKind.CALL,
+        )
+        pre_cfg = FlowGraph(
+            blocks={
+                0: _make_block(0, (1,), (), start_ea=0x401000),
+                1: _make_block(
+                    1, (2,), (0,), start_ea=0x401010, insns=(shared_call,)
+                ),
+                2: _make_block(
+                    2, (3,), (1,), start_ea=0x401010, insns=(shared_call,)
+                ),
+                3: _make_block(3, (), (2,), start_ea=0x401020),
+            },
+            entry_serial=0,
+            func_ea=0x401000,
+        )
+        post_cfg = FlowGraph(
+            blocks={
+                0: _make_block(0, (2,), (), start_ea=0x401000),
+                1: _make_block(
+                    1, (2,), (), start_ea=0x401010, insns=(shared_call,)
+                ),
+                2: _make_block(
+                    2, (3,), (0, 1), start_ea=0x401010, insns=(shared_call,)
+                ),
+                3: _make_block(3, (), (2,), start_ea=0x401020),
+            },
+            entry_serial=0,
+            func_ea=0x401000,
+        )
+
+        result = check_effectful_reachability_preserved(
+            pre_cfg,
+            post_cfg=post_cfg,
+        )
+
+        assert not result.passed
+        assert result.post_reachable_effectful_block_serials == frozenset({2})
+        assert result.lost_block_serials == frozenset({1})
+
     def test_rejects_same_serial_when_native_call_identity_changes(self):
         pre_call = InsnSnapshot(
             opcode=0,

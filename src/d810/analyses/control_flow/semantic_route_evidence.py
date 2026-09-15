@@ -9541,7 +9541,16 @@ def _validate_state_dag(
     """Replay the stable DAG witness after resolving current snapshot serials."""
     evidence = dag.evidence
     witness = evidence.witness
-    def reject(_reason: str) -> bool:
+    def reject(reason: str) -> bool:
+        logger.info(
+            "canonical state-DAG replay rejected: proof=%s source=0x%X "
+            "target=0x%X state=0x%08X reason=%s",
+            proof.proof_id,
+            int(evidence.source_anchor_ea),
+            int(evidence.target_anchor_ea),
+            int(witness.state_constant) & 0xFFFFFFFF,
+            reason,
+        )
         return False
     if proof.proof_kind is SemanticRouteProofKind.STATE_DAG:
         state_write = proof.state_write
@@ -9704,13 +9713,13 @@ def _validate_state_dag(
         true_target_serial = _bound_dag_endpoint_serial(graph, index, comparison.true_target)
         false_target_serial = _bound_dag_endpoint_serial(graph, index, comparison.false_target)
         if node is None or true_target_serial is None or false_target_serial is None:
-            return False
+            return reject("comparison_rebind")
         expected_namespace = comparison.state_identity
         if (
             expected_namespace != witness.state_identity
             and not bridge_reaches(expected_namespace, int(node.serial))
         ):
-            return False
+            return reject("comparison_namespace")
         current = current_u32_route_comparison(
             graph,
             int(node.serial),
@@ -9719,7 +9728,7 @@ def _validate_state_dag(
             }),
         )
         if current is None:
-            return False
+            return reject("comparison_replay_missing")
         current_comparison, current_state_identity, _block_ea, _branch_ea = current
         if (
             current_state_identity != expected_namespace
@@ -9728,17 +9737,17 @@ def _validate_state_dag(
             or int(current_comparison.true_target) != true_target_serial
             or int(current_comparison.false_target) != false_target_serial
         ):
-            return False
+            return reject("comparison_replay_mismatch")
         node_serials[comparison.node.identity] = int(node.serial)
     if used_bridges != set(bridges):
-        return False
+        return reject("unused_namespace_bridge")
     nodes: dict[int, RouteComparison] = {}
     for comparison in witness.comparisons:
         node = _unique_bound_block(index, comparison.node.identity, comparison.node.anchor_ea)
         true_target_serial = _bound_dag_endpoint_serial(graph, index, comparison.true_target)
         false_target_serial = _bound_dag_endpoint_serial(graph, index, comparison.false_target)
         if node is None or true_target_serial is None or false_target_serial is None:
-            return False
+            return reject("decision_node_rebind")
         nodes[int(node.serial)] = RouteComparison(
             serial=int(node.serial),
             op=comparison.operation,
@@ -9751,9 +9760,9 @@ def _validate_state_dag(
         source = _unique_bound_block(index, source_point.identity, source_point.anchor_ea)
         target = _unique_bound_block(index, target_point.identity, target_point.anchor_ea)
         if source is None or target is None:
-            return False
+            return reject("alias_rebind")
         if current_u32_route_alias(graph, int(source.serial)) != int(target.serial):
-            return False
+            return reject("alias_replay_mismatch")
         aliases[int(source.serial)] = int(target.serial)
     try:
         current_dag = DecisionDag(
@@ -9771,9 +9780,9 @@ def _validate_state_dag(
             int(dag.entry.serial), int(witness.state_constant),
         )
         if actual_route != expected_route_target:
-            return False
+            return reject("route_target_mismatch")
     except (TypeError, ValueError, KeyError, OverflowError):
-        return False
+        return reject("decision_dag_rebuild")
     route_leaf = (
         dag.target
         if dag.evidence.switch_handoff is None
@@ -9788,7 +9797,7 @@ def _validate_state_dag(
             or int(right.serial) not in left_block.succs
             or int(left.serial) not in right_block.preds
         ):
-            return False
+            return reject("selected_path_topology")
     handoff = dag.evidence.switch_handoff
     if handoff is not None:
         dispatcher = dag.switch_handoff_dispatcher
@@ -9798,7 +9807,7 @@ def _validate_state_dag(
             state_identity=handoff.state_identity,
             state_constant=int(handoff.state_constant),
         ):
-            return False
+            return reject("switch_handoff_replay")
     return True
 
 

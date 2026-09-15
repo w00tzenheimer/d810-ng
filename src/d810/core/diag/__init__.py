@@ -223,7 +223,11 @@ def drain_pending_provenance() -> list:
 
 
 def _resolve_log_dir(log_dir: str | None = None) -> Path:
-    return Path(log_dir or os.path.expanduser("~/.idapro/logs/d810_logs"))
+    return Path(
+        log_dir
+        or os.environ.get("D810_DIAG_LOG_DIR", "").strip()
+        or os.path.expanduser("~/.idapro/logs/d810_logs")
+    )
 
 
 def find_latest_diag_db_path(

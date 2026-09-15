@@ -1,5 +1,6 @@
 {
   "additional_configuration": {
+    "native_patch_enabled": true,
     "pipeline_v2": [
       {
         "analyses": {

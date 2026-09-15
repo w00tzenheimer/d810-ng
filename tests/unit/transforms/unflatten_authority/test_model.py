@@ -2119,7 +2119,7 @@ def test_empty_native_identity_allows_empty_physical_anchor_inventory() -> None:
     assert member.native_instruction_eas == ()
 
 
-def test_source_catalog_shared_anchor_requires_distinct_native_refs() -> None:
+def test_source_catalog_shared_anchor_accepts_distinct_exact_occurrence_refs() -> None:
     model = import_authority_model()
     key = _native_key(model, fingerprint="shared-anchor-identity")
 
@@ -2154,15 +2154,15 @@ def test_source_catalog_shared_anchor_requires_distinct_native_refs() -> None:
         )
 
     logical_b = LogicalBlockRef("shared-anchor", "logical-b", 1)
-    with pytest.raises(ValueError, match="shared|anchor|unique"):
-        model.SourceIdentityCatalog(
-            key,
-            0,
-            (
-                model.SourceBlockIdentityWitness(logical, 0x1000, (0x1000,)),
-                model.SourceBlockIdentityWitness(logical_b, 0x1000, (0x1000,)),
-            ),
-        )
+    catalog = model.SourceIdentityCatalog(
+        key,
+        0,
+        (
+            model.SourceBlockIdentityWitness(logical, 0x1000, (0x1000,)),
+            model.SourceBlockIdentityWitness(logical_b, 0x1000, (0x1000,)),
+        ),
+    )
+    assert tuple(item.block_ref for item in catalog.blocks) == (logical, logical_b)
 
 
 def test_alias_host_text_sha1_is_lowercase_16_hex() -> None:
