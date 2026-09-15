@@ -1,0 +1,192 @@
+{
+  "schema": "d810.masm-fixture-provenance.v1",
+  "function": "VM_ExecutePacket",
+  "source_binary": "Wow_loader-12.1.0.69814-devirt.dll",
+  "source_binary_sha256": "68490027ef8a79dd9f75f75adb9e874c8bffdef4d894d871c4407707f4322d59",
+  "source_idb_sha256": "32feee6876bd04c96844bb49f7f81b71db891a33ea85478a1b31c3d5f67349fc",
+  "original_ea": "0x7fff9937ec90",
+  "original_image_base": "0x7fff99170000",
+  "original_rva": "0x20ec90",
+  "source_instruction_count": 37307,
+  "source_chunks": [
+    [
+      "0x7fff9937ec90",
+      "0x7fff9938ca4c"
+    ]
+  ],
+  "writable_data_items": 156,
+  "writable_data_bytes": 550,
+  "switch_entries": 237,
+  "switch_unique_targets": 28,
+  "transformations": [
+    "Structural MASM export with source-EA labels for instruction audit.",
+    "Preserve 156 mutable data objects byte-for-byte in writable _DATA.",
+    "Relocate signed table-relative switch entries using same-section label differences.",
+    "Place read-only switch table after the body in _TEXT; read-only status preserved, executable permission added.",
+    "Normalize IDA symbolic zero displacement at 0x7FFF9938059B to its encoded zero.",
+    "Retarget direct helper references to distinct opaque jump thunks; helper implementations are not extracted.",
+    "Emit original non-relocating instruction bytes at 21 audited sites: signed IMUL immediates, indexed LEAs, operand ordering, and prefixed NOP."
+  ],
+  "external_boundaries": {
+    "VM_Helper02": {
+      "symbol": "vmexec_69814_VM_Helper02",
+      "source_ea": "0x7fff9a7abf80"
+    },
+    "sub_7FFF9A8503B0": {
+      "symbol": "vmexec_69814_sub_7FFF9A8503B0",
+      "source_ea": "0x7fff9a8503b0"
+    },
+    "VM_Helper03": {
+      "symbol": "vmexec_69814_VM_Helper03",
+      "source_ea": "0x7fff9955dbf0"
+    },
+    "VM_Helper14": {
+      "symbol": "vmexec_69814_VM_Helper14",
+      "source_ea": "0x7fff9aafc7f0"
+    },
+    "VM_Helper08": {
+      "symbol": "vmexec_69814_VM_Helper08",
+      "source_ea": "0x7fff9a43cbc0"
+    },
+    "VM_Helper09": {
+      "symbol": "vmexec_69814_VM_Helper09",
+      "source_ea": "0x7fff9a5993a0"
+    },
+    "VM_Helper05": {
+      "symbol": "vmexec_69814_VM_Helper05",
+      "source_ea": "0x7fff9a5cdac0"
+    },
+    "VM_Helper04": {
+      "symbol": "vmexec_69814_VM_Helper04",
+      "source_ea": "0x7fff9a5ee600"
+    },
+    "VM_Helper13": {
+      "symbol": "vmexec_69814_VM_Helper13",
+      "source_ea": "0x7fff9ad6ebd0"
+    },
+    "VM_Helper11": {
+      "symbol": "vmexec_69814_VM_Helper11",
+      "source_ea": "0x7fff99cc1bc0"
+    },
+    "VM_Helper16": {
+      "symbol": "vmexec_69814_VM_Helper16",
+      "source_ea": "0x7fff9ac49af0"
+    },
+    "VM_Helper06": {
+      "symbol": "vmexec_69814_VM_Helper06",
+      "source_ea": "0x7fff9aa9d6b0"
+    },
+    "VM_Helper12": {
+      "symbol": "vmexec_69814_VM_Helper12",
+      "source_ea": "0x7fff9a1e9bb0"
+    },
+    "sub_7FFF9AB7CDB0": {
+      "symbol": "vmexec_69814_sub_7FFF9AB7CDB0",
+      "source_ea": "0x7fff9ab7cdb0"
+    },
+    "VM_Helper07": {
+      "symbol": "vmexec_69814_VM_Helper07",
+      "source_ea": "0x7fff9a6b8f50"
+    },
+    "__security_check_cookie": {
+      "symbol": "vmexec_69814___security_check_cookie",
+      "source_ea": "0x7fff9b142940"
+    },
+    "VM_Helper15": {
+      "symbol": "vmexec_69814_VM_Helper15",
+      "source_ea": "0x7fff9ab5f600"
+    },
+    "sub_7FFF9A70F140": {
+      "symbol": "vmexec_69814_sub_7FFF9A70F140",
+      "source_ea": "0x7fff9a70f140"
+    }
+  },
+  "limitations": [
+    "Analysis-only, not executable outside original process.",
+    "Whole-function semantic equivalence and reproduction of the 90-minute decompilation are not established by extraction/build.",
+    "Original IDB type and analysis metadata are not embedded in the MASM fixture."
+  ],
+  "assembly_sha256": "cdb3d6fad37582145e007f54f92e3416d42d6ce986e4de09e97ce4dd2a793569",
+  "boundaries_sha256": "704d3f45f971a30973d8d8b7a250ff96e00d360d858df9ec5fe94674cc7c45a4",
+  "exact_byte_sites": [
+    "0x7fff9937ecd3",
+    "0x7fff99380afe",
+    "0x7fff993816f9",
+    "0x7fff99382211",
+    "0x7fff99382af3",
+    "0x7fff99383b5a",
+    "0x7fff99383bc1",
+    "0x7fff99384498",
+    "0x7fff99384538",
+    "0x7fff99385794",
+    "0x7fff99385cfb",
+    "0x7fff99385fd7",
+    "0x7fff993863e5",
+    "0x7fff99388ce0",
+    "0x7fff99389163",
+    "0x7fff993894f1",
+    "0x7fff9938aeed",
+    "0x7fff9938aef7",
+    "0x7fff9938b214",
+    "0x7fff9938bd4f",
+    "0x7fff9938c6a1"
+  ],
+  "machine_audit": {
+    "source_instructions": 37307,
+    "linked_instructions": 37307,
+    "reencoded_instructions": 2504,
+    "unexplained_differences": 0,
+    "differences": [],
+    "data_items_verified": 157,
+    "switch_entries_verified": 237,
+    "opaque_boundaries_verified": 18,
+    "fixture_ea": "0x18001a860",
+    "fixture_rva": "0x1a860",
+    "body_end": "0x180028552",
+    "dll_sha256": "1b002438e8078cb6d11bb061d69ab032363c11c5a6c8a2bdc1fbf02a676a9160"
+  },
+  "artifact_audit": {
+    "previous_exports": 428,
+    "rebuilt_exports": 430,
+    "added_exports": [
+      "VM_ExecutePacket",
+      "VM_ExecutePacket_boundaries"
+    ],
+    "pdb_guid_bytes": "eaa0d4e6fca39446807458bbc3049822",
+    "pdb_age": 2,
+    "pdb_matches_dll": true,
+    "sha256": {
+      "libobfuscated.dll": "1b002438e8078cb6d11bb061d69ab032363c11c5a6c8a2bdc1fbf02a676a9160",
+      "libobfuscated.pdb": "d4ecb6b8e530a8cd502c0224ca5a0dc322e3778ad8365e9e9b4fc5d1fd88641e"
+    }
+  },
+  "binary_idb_audit": {
+    "instructions_checked": 37307,
+    "binary_idb_instruction_differences": [],
+    "data_items_checked": 157,
+    "binary_idb_data_differences": []
+  },
+  "native_smoke": {
+    "function_ea": "0x18001a860",
+    "ida_version": "9.4",
+    "native_decompile_seconds": 4.534165085060522,
+    "total_seconds": 10.522752588964067,
+    "pseudocode_lines": 2905,
+    "switches": [
+      {
+        "ea": "0x18001c153",
+        "cases": 237,
+        "table": "0x180028554"
+      }
+    ],
+    "d810_optimization_requested": false,
+    "timing_is_performance_comparison": false,
+    "requires_explicit_function_creation": true
+  },
+  "analysis_priors": {
+    "function_name": "VM_ExecutePacket",
+    "start_rva": "0x1a860",
+    "end_rva": "0x28552",
+    "policy": "If no function exists at the export, create it using the audited start/end bounds before decompilation. Recompute RVAs from rebuilt artifacts after layout changes."
+  }
+}

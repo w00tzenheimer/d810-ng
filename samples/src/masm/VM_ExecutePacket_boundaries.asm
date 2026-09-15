@@ -1,0 +1,83 @@
+; Analysis-only opaque boundaries for VM_ExecutePacket.
+; These thunks jump to original-image addresses and MUST NOT be executed.
+OPTION PROLOGUE:NONE
+OPTION EPILOGUE:NONE
+_DATA SEGMENT
+vmexec_69814_VM_Helper02_target dq 07FFF9A7ABF80h
+vmexec_69814_sub_7FFF9A8503B0_target dq 07FFF9A8503B0h
+vmexec_69814_VM_Helper03_target dq 07FFF9955DBF0h
+vmexec_69814_VM_Helper14_target dq 07FFF9AAFC7F0h
+vmexec_69814_VM_Helper08_target dq 07FFF9A43CBC0h
+vmexec_69814_VM_Helper09_target dq 07FFF9A5993A0h
+vmexec_69814_VM_Helper05_target dq 07FFF9A5CDAC0h
+vmexec_69814_VM_Helper04_target dq 07FFF9A5EE600h
+vmexec_69814_VM_Helper13_target dq 07FFF9AD6EBD0h
+vmexec_69814_VM_Helper11_target dq 07FFF99CC1BC0h
+vmexec_69814_VM_Helper16_target dq 07FFF9AC49AF0h
+vmexec_69814_VM_Helper06_target dq 07FFF9AA9D6B0h
+vmexec_69814_VM_Helper12_target dq 07FFF9A1E9BB0h
+vmexec_69814_sub_7FFF9AB7CDB0_target dq 07FFF9AB7CDB0h
+vmexec_69814_VM_Helper07_target dq 07FFF9A6B8F50h
+vmexec_69814___security_check_cookie_target dq 07FFF9B142940h
+vmexec_69814_VM_Helper15_target dq 07FFF9AB5F600h
+vmexec_69814_sub_7FFF9A70F140_target dq 07FFF9A70F140h
+_DATA ENDS
+_TEXT SEGMENT ALIGN(16) 'CODE'
+PUBLIC VM_ExecutePacket_boundaries
+VM_ExecutePacket_boundaries:
+PUBLIC vmexec_69814_VM_Helper02
+vmexec_69814_VM_Helper02:
+jmp qword ptr [vmexec_69814_VM_Helper02_target]
+PUBLIC vmexec_69814_sub_7FFF9A8503B0
+vmexec_69814_sub_7FFF9A8503B0:
+jmp qword ptr [vmexec_69814_sub_7FFF9A8503B0_target]
+PUBLIC vmexec_69814_VM_Helper03
+vmexec_69814_VM_Helper03:
+jmp qword ptr [vmexec_69814_VM_Helper03_target]
+PUBLIC vmexec_69814_VM_Helper14
+vmexec_69814_VM_Helper14:
+jmp qword ptr [vmexec_69814_VM_Helper14_target]
+PUBLIC vmexec_69814_VM_Helper08
+vmexec_69814_VM_Helper08:
+jmp qword ptr [vmexec_69814_VM_Helper08_target]
+PUBLIC vmexec_69814_VM_Helper09
+vmexec_69814_VM_Helper09:
+jmp qword ptr [vmexec_69814_VM_Helper09_target]
+PUBLIC vmexec_69814_VM_Helper05
+vmexec_69814_VM_Helper05:
+jmp qword ptr [vmexec_69814_VM_Helper05_target]
+PUBLIC vmexec_69814_VM_Helper04
+vmexec_69814_VM_Helper04:
+jmp qword ptr [vmexec_69814_VM_Helper04_target]
+PUBLIC vmexec_69814_VM_Helper13
+vmexec_69814_VM_Helper13:
+jmp qword ptr [vmexec_69814_VM_Helper13_target]
+PUBLIC vmexec_69814_VM_Helper11
+vmexec_69814_VM_Helper11:
+jmp qword ptr [vmexec_69814_VM_Helper11_target]
+PUBLIC vmexec_69814_VM_Helper16
+vmexec_69814_VM_Helper16:
+jmp qword ptr [vmexec_69814_VM_Helper16_target]
+PUBLIC vmexec_69814_VM_Helper06
+vmexec_69814_VM_Helper06:
+jmp qword ptr [vmexec_69814_VM_Helper06_target]
+PUBLIC vmexec_69814_VM_Helper12
+vmexec_69814_VM_Helper12:
+jmp qword ptr [vmexec_69814_VM_Helper12_target]
+PUBLIC vmexec_69814_sub_7FFF9AB7CDB0
+vmexec_69814_sub_7FFF9AB7CDB0:
+jmp qword ptr [vmexec_69814_sub_7FFF9AB7CDB0_target]
+PUBLIC vmexec_69814_VM_Helper07
+vmexec_69814_VM_Helper07:
+jmp qword ptr [vmexec_69814_VM_Helper07_target]
+PUBLIC vmexec_69814___security_check_cookie
+vmexec_69814___security_check_cookie:
+jmp qword ptr [vmexec_69814___security_check_cookie_target]
+PUBLIC vmexec_69814_VM_Helper15
+vmexec_69814_VM_Helper15:
+jmp qword ptr [vmexec_69814_VM_Helper15_target]
+PUBLIC vmexec_69814_sub_7FFF9A70F140
+vmexec_69814_sub_7FFF9A70F140:
+jmp qword ptr [vmexec_69814_sub_7FFF9A70F140_target]
+_TEXT ENDS
+END
