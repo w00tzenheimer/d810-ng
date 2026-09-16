@@ -43,7 +43,7 @@ def test_release_receipt_records_checked_out_commit_and_pep440_prerelease(tmp_pa
     (source / '__init__.py').write_text(f'__version__ = {version!r}\n')
     for command in (
         ['git', 'init', '-q'], ['git', 'add', 'src'],
-        ['git', '-c', 'user.name=Test', '-c', 'user.email=test@example.org', 'commit', '-qm', 'fixture'],
+        ['git', '-c', 'user.name=Test', '-c', 'user.email=test@example.org', '-c', 'commit.gpgSign=false', 'commit', '-qm', 'fixture'],
         ['git', 'tag', f'v{version}'],
     ):
         subprocess.run(command, cwd=tmp_path, check=True)
@@ -107,9 +107,9 @@ def test_release_rejects_tag_on_different_commit(tmp_path):
     (source / '__init__.py').write_text('__version__ = "1.0.0b2"\n')
     for command in (
         ['git', 'init', '-q'], ['git', 'add', 'src'],
-        ['git', '-c', 'user.name=Test', '-c', 'user.email=test@example.org', 'commit', '-qm', 'tagged'],
+        ['git', '-c', 'user.name=Test', '-c', 'user.email=test@example.org', '-c', 'commit.gpgSign=false', 'commit', '-qm', 'tagged'],
         ['git', 'tag', 'v1.0.0b2'],
-        ['git', '-c', 'user.name=Test', '-c', 'user.email=test@example.org', 'commit', '--allow-empty', '-qm', 'different head'],
+        ['git', '-c', 'user.name=Test', '-c', 'user.email=test@example.org', '-c', 'commit.gpgSign=false', 'commit', '--allow-empty', '-qm', 'different head'],
     ):
         subprocess.run(command, cwd=tmp_path, check=True)
     result = _run('release.yml', 'Record release source', tmp_path, RELEASE_TAG='v1.0.0b2')

@@ -9,6 +9,7 @@ from d810.hexrays.ir.mba_identity_index import (
     PlanBlockReservation,
 )
 from d810.ir.block_identity import RebindStatus
+from d810.ir.maturity import MaturityEnvelope
 from d810.transforms.cfg_transaction import (
     CfgBlockRef,
     LogicalBlockRef,
@@ -160,21 +161,15 @@ def bind_patch_plan(
         reservations.append(identity_index.reserve_plan_block(transaction_attempt, ref))
         bindings.append((ref, planned_coordinates[ref]))
 
-    try:
-        from d810.hexrays.ir_maturity import hexrays_maturity_envelope
-    except ModuleNotFoundError as exc:
-        if exc.name != "ida_hexrays":
-            raise
-        # Portable unit tests do not load the vendor module; retain the exact
-        # provider stage while leaving semantic IR mapping to the live adapter.
-        from d810.ir.maturity import MaturityEnvelope
-
+    provider_id = int(identity_index.maturity or 0)
+    maturity = plan.source_maturity
+    if maturity is None:
         maturity = MaturityEnvelope(
-            ir=None, provider="hexrays", provider_id=int(identity_index.maturity or 0)
+            ir=None,
+            provider="hexrays",
+            provider_id=provider_id,
         )
-    else:
-        maturity = hexrays_maturity_envelope(int(identity_index.maturity))
-    if plan.source_maturity is not None and plan.source_maturity.provider_id != maturity.provider_id:
+    elif maturity.provider_id != provider_id:
         raise PatchBindingRejected("source maturity provider stage differs from live binder")
     bound_plan = BoundPatchPlan(
         plan=plan,

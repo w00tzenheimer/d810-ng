@@ -70,6 +70,8 @@ def test_staged_and_tree_modes_reject_forced_additions(
             "user.name=Policy Test",
             "-c",
             "user.email=policy@example.invalid",
+            "-c",
+            "commit.gpgSign=false",
             "commit",
             "-qm",
             "forced addition",

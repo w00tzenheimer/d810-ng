@@ -452,6 +452,7 @@ def test_plugin_save_preserves_env_precedence_and_persists_checkbox_values(
         combo_capture_post_maturity=_Combo(None),
         edit_capture_post_file=_Edit("/tmp/d810_capture.txt"),
         checkbox_fact_lifecycle=_Check(True),
+        checkbox_preanalysis_collector_timing=_Check(True),
         checkbox_trace_decompile_callers=_Check(False),
         checkbox_native_perf=_Check(False),
         checkbox_nomut_matching=_Check(True),
@@ -474,6 +475,7 @@ def test_plugin_save_preserves_env_precedence_and_persists_checkbox_values(
     saved = json.loads(options_path.read_text(encoding="utf-8"))
     assert saved["native_perf"] is False
     assert saved["nomut_matching"] is True
+    assert saved["preanalysis_collector_timing"] is True
 
     monkeypatch.delenv("D810_NATIVE_PERF")
     monkeypatch.delenv("D810_NOMUT_MATCHING")

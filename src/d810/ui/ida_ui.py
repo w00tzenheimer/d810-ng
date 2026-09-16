@@ -387,6 +387,12 @@ class PluginConfigurationFileForm_t(QtWidgets.QDialog):
                 "fact_lifecycle", runtime_settings.fact_lifecycle
             )
         )
+        self.runtime_preanalysis_collector_timing = bool(
+            self.state.d810_config.get(
+                "preanalysis_collector_timing",
+                runtime_settings.preanalysis_collector_timing,
+            )
+        )
         self.runtime_trace_decompile_callers = bool(
             self.state.d810_config.get(
                 "trace_decompile_callers", runtime_settings.trace_decompile_callers
@@ -623,6 +629,17 @@ class PluginConfigurationFileForm_t(QtWidgets.QDialog):
         self.checkbox_native_perf.setChecked(self.runtime_native_perf)
         performance_layout.addRow(self.checkbox_native_perf)
 
+        self.checkbox_preanalysis_collector_timing = QtWidgets.QCheckBox(
+            "Log preanalysis collector timings", self
+        )
+        self.checkbox_preanalysis_collector_timing.setToolTip(
+            "Log per-collector wall time while profiling FLOWGRAPH_READY."
+        )
+        self.checkbox_preanalysis_collector_timing.setChecked(
+            self.runtime_preanalysis_collector_timing
+        )
+        performance_layout.addRow(self.checkbox_preanalysis_collector_timing)
+
         self.checkbox_nomut_matching = QtWidgets.QCheckBox(
             "Use non-mutating pattern matcher", self
         )
@@ -775,6 +792,9 @@ class PluginConfigurationFileForm_t(QtWidgets.QDialog):
             "capture_post_maturity": self.combo_capture_post_maturity.currentData(),
             "capture_post_file": self.edit_capture_post_file.text().strip(),
             "fact_lifecycle": self.checkbox_fact_lifecycle.isChecked(),
+            "preanalysis_collector_timing": (
+                self.checkbox_preanalysis_collector_timing.isChecked()
+            ),
             "trace_decompile_callers": (
                 self.checkbox_trace_decompile_callers.isChecked()
             ),

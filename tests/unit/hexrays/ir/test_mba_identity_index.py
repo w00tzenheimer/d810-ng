@@ -114,6 +114,7 @@ def test_plan_refs_keep_cloned_native_blocks_as_distinct_logical_versions() -> N
     bound = bind_patch_plan(plan, index, attempt)
     assert dict(bound.bindings)[refs[17]] == 17
     assert dict(bound.bindings)[refs[18]] == 18
+    assert bound.bound_plan.maturity is plan.source_maturity
     index.abort_proxy_transaction(attempt.attempt_id)
 
 
