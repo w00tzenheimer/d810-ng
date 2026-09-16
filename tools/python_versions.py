@@ -11,8 +11,8 @@ from pathlib import Path
 
 
 DEFAULT_PATHS = ("src", "tools", "tests", "setup.py")
-DEFAULT_TARGET = "3.10-"
-SUPPORTED_SYNTAX_VERSIONS = ((3, 10), (3, 11), (3, 12))
+DEFAULT_TARGET = "3.11-"
+SUPPORTED_SYNTAX_VERSIONS = ((3, 11), (3, 12), (3, 13))
 VERMIN_EXCLUDES = (
     "typing.Self",
     "typing.NotRequired",
@@ -197,13 +197,12 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--target",
         default=DEFAULT_TARGET,
-        help="vermin target version expression (default: 3.10-)",
+        help="vermin target version expression (default: 3.11-)",
     )
     parser.add_argument(
-        "--python310",
+        "--syntax-python",
         dest="syntax_python",
-        default=os.environ.get("D810_PYTHON_SYNTAX")
-        or os.environ.get("D810_PYTHON310"),
+        default=os.environ.get("D810_PYTHON_SYNTAX"),
         help="Python interpreter command for parser syntax checks",
     )
     parser.add_argument(

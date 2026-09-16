@@ -3,9 +3,19 @@ from __future__ import annotations
 import pytest
 
 from tools.python_versions import (
+    DEFAULT_TARGET,
+    SUPPORTED_SYNTAX_VERSIONS,
+    _build_parser,
     _run_supported_python_syntax_check,
     _select_syntax_interpreter,
 )
+
+
+def test_default_compatibility_floor_excludes_python310() -> None:
+    assert DEFAULT_TARGET == "3.11-"
+    assert SUPPORTED_SYNTAX_VERSIONS == ((3, 11), (3, 12), (3, 13))
+    assert "3.11-" in _build_parser().format_help()
+    assert "3.10" not in _build_parser().format_help()
 
 
 def test_supported_syntax_check_rejects_pep701_nested_fstring_backslash(tmp_path):
