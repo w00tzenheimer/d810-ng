@@ -67,7 +67,7 @@ jobs:
 
             - name: Install repo-local speedups helper
               run: |
-                  python -m d810.speedups.install
+                  python -m d810.speedups.install --solver-only
             - name: Check import boundaries
               run: |
                   PYTHONPATH=src lint-imports --config .importlinter

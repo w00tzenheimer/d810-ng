@@ -158,6 +158,15 @@ def test_codemod_tool_tests_have_libcst_in_dev_and_ci_dependencies() -> None:
     assert "pytest pytest-cov libcst" in workflow
 
 
+def test_unit_ci_installs_solver_support_without_building_native_speedups() -> None:
+    workflow = (_REPO_ROOT / ".github" / "workflows" / "python.yml").read_text(
+        encoding="utf-8"
+    )
+    unit_job = workflow.split("    build-speedups:", 1)[0]
+
+    assert "python -m d810.speedups.install --solver-only" in unit_job
+
+
 def test_unit_ci_provisions_llvm_opt_for_real_verifier_coverage() -> None:
     workflow = (_REPO_ROOT / ".github" / "workflows" / "python.yml").read_text(
         encoding="utf-8"
