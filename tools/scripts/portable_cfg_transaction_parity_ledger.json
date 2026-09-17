@@ -1,7 +1,9 @@
 {
   "schema_version": 1,
   "donor": {
-    "commit": "ab769f182942f83191d883151d74b78fecac43cb",
+    "commit": "798bada04b79613032086d4a4aa5fec096725fd5",
+    "source_commit": "ab769f182942f83191d883151d74b78fecac43cb",
+    "snapshot_scope": "referenced donor source and test files only",
     "base_commit": "85d567d8c8b969c56839a7bdf251c3a5526f508e",
     "plan": "docs/superpowers/plans/2026-07-24-portable-cfg-transactions.md"
   },

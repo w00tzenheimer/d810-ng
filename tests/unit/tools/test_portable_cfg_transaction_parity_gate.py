@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import subprocess
 from pathlib import Path
 
 
@@ -34,7 +35,22 @@ def test_parity_ledger_is_complete_and_all_anchors_resolve() -> None:
     assert {entry["id"] for entry in ledger["guarantees"]} == set(
         gate.REQUIRED_GUARANTEE_IDS
     )
-    assert ledger["donor"]["commit"] == ("ab769f182942f83191d883151d74b78fecac43cb")
+    assert ledger["donor"]["commit"] == ("798bada04b79613032086d4a4aa5fec096725fd5")
+    assert ledger["donor"]["source_commit"] == (
+        "ab769f182942f83191d883151d74b78fecac43cb"
+    )
+
+
+def test_parity_ledger_donor_is_published_in_current_history() -> None:
+    ledger = _load_gate().load_ledger(LEDGER_PATH)
+
+    result = subprocess.run(
+        ["git", "merge-base", "--is-ancestor", ledger["donor"]["commit"], "HEAD"],
+        cwd=REPO_ROOT,
+        check=False,
+    )
+
+    assert result.returncode == 0
 
 
 def test_strict_gate_accepts_complete_runtime_integration() -> None:

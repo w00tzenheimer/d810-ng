@@ -93,6 +93,17 @@ def _git_show(repo_root: Path, commit: str, path: str) -> str:
     return result.stdout
 
 
+def _git_commit_is_ancestor(repo_root: Path, commit: str) -> bool:
+    result = subprocess.run(
+        ["git", "merge-base", "--is-ancestor", commit, "HEAD"],
+        cwd=repo_root,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    return result.returncode == 0
+
+
 def _check_reference(
     reference: object,
     *,
@@ -148,6 +159,8 @@ def audit_ledger(
     commit = donor.get("commit")
     if not isinstance(commit, str) or len(commit) != 40:
         return AuditReport(("donor.commit must be a full 40-character SHA",), (), False)
+    if not _git_commit_is_ancestor(repo_root, commit):
+        errors.append("donor.commit must be reachable from HEAD ancestry")
 
     guarantees = ledger.get("guarantees")
     if not isinstance(guarantees, list):
