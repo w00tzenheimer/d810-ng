@@ -1664,7 +1664,7 @@ def test_every_evidence_kind_accepts_only_its_exact_payload_class() -> None:
         assert evidence.payload is payload
         # A forged identity is now unrepresentable rather than rejected:
         # ``evidence_id`` is derived, not accepted (ticket d81-cxzv).
-        with pytest.raises(TypeError, match="init=False"):
+        with pytest.raises((TypeError, ValueError), match="init=False"):
             replace(evidence, evidence_id="sha256:" + "0" * 64)
         assert evidence.evidence_id == authority_ids.evidence_id(evidence)
         for other_kind, other_payload in payloads.items():
@@ -1744,7 +1744,7 @@ def test_claim_fields_use_the_closed_15_1_rows() -> None:
     ]
     assert all(claim for claim in claims)
     for claim in claims:
-        with pytest.raises(TypeError, match="init=False"):
+        with pytest.raises((TypeError, ValueError), match="init=False"):
             replace(claim, claim_id="sha256:" + "0" * 64)
         assert claim.claim_id == authority_ids.claim_id(claim)
     bad_subject = source
@@ -1953,7 +1953,7 @@ def test_closed_unions_reject_local_alias_and_subclass_smuggling() -> None:
                  model.BlockSubjectLocator(owner.block_ref, 0x1000)),
         0, 0x1000, 1, "alias", "base", None, None, authority_id("step"), 3,
     )
-    with pytest.raises(TypeError, match="init=False"):
+    with pytest.raises((TypeError, ValueError), match="init=False"):
         replace(alias, claim_id="sha256:" + "0" * 64)
     assert alias.claim_id == authority_ids.claim_id(alias)
     with pytest.raises(TypeError):

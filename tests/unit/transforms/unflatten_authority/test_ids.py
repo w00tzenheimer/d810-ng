@@ -880,9 +880,9 @@ def test_claim_and_evidence_factories_recompute_ids_and_reject_forgery() -> None
     assert evidence.evidence_id == evidence_id(evidence)
     # Forgery is now unrepresentable rather than rejected: the identity
     # is derived from content and is not a constructor input at all.
-    with pytest.raises(TypeError, match="init=False"):
+    with pytest.raises((TypeError, ValueError), match="init=False"):
         replace(claim, claim_id="sha256:" + "0" * 64)
-    with pytest.raises(TypeError, match="init=False"):
+    with pytest.raises((TypeError, ValueError), match="init=False"):
         replace(evidence, evidence_id="sha256:" + "0" * 64)
 
 

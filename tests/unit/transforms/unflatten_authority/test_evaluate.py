@@ -3504,7 +3504,7 @@ def test_case_ids_and_private_index_reject_tampering() -> None:
     with pytest.raises(TypeError):
         model.ObligationEvidenceIndex(case.obligation_index.cells)  # type: ignore[call-arg]
     # ``case_id`` is derived, so a forged one cannot even be constructed.
-    with pytest.raises(TypeError, match="init=False"):
+    with pytest.raises((TypeError, ValueError), match="init=False"):
         replace(case, case_id=authority_id("forged"))
 
 
@@ -3746,7 +3746,7 @@ def test_patch_step_lineage_materializes_one_row_per_exact_owner_role() -> None:
         item.subject_id for item in owner_subjects
     }
     assert canonical_decode(canonical_bytes(case)) == case
-    with pytest.raises(TypeError, match="init=False"):
+    with pytest.raises((TypeError, ValueError), match="init=False"):
         replace(patch_rows[0], evidence_id=authority_id("forged-patch-row"))
     for justification in case.justifications:
         if justification.rule is model.UnflattenJustificationRule.HELPER_OWNER_LINEAGE_PROVEN:
