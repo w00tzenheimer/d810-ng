@@ -2197,15 +2197,16 @@ def test_remote_mode_fails_closed_when_the_probe_cannot_see_the_worktree(
     assert not (repo / ".tmp" / "remote-run.lock").exists()
 
 
-def test_local_mode_never_uses_a_volume_mount_or_docker_host(
+def test_local_mode_uses_only_an_anonymous_temp_volume_and_no_docker_host(
     tmp_path: Path,
 ) -> None:
     result, calls = _run(tmp_path, "exec", "--", "true")
 
     assert result.returncode == 0, result.stderr
     command = _container_run(calls)
-    assert "--mount" not in command
-    assert "type=volume" not in command
+    assert command.count("--mount") == 1
+    assert "type=volume,dst=/d810-test-tmp" in command
+    assert "type=volume,src=" not in command
     assert "run-arg -v" in calls
     assert f"run-arg {tmp_path}:/work" in calls
     assert set(_docker_hosts(calls)) == {""}
@@ -5205,7 +5206,9 @@ def test_cost_ledger_rejects_a_relative_path(tmp_path: Path) -> None:
     assert calls == []
 
 
-def test_shards_one_matches_unsharded_command_except_owned_tempdir(tmp_path: Path) -> None:
+def test_shards_one_matches_unsharded_command_except_anonymous_temp_volume(
+    tmp_path: Path,
+) -> None:
     plain, plain_calls = _run(tmp_path, "system", "--", "-q")
     assert plain.returncode == 0, plain.stderr
     # The harness appends to one docker log per tmp_path, so compare the last
@@ -5213,7 +5216,7 @@ def test_shards_one_matches_unsharded_command_except_owned_tempdir(tmp_path: Pat
     result, calls = _run(tmp_path, "system", "--shards", "1", "--", "-q")
     assert result.returncode == 0, result.stderr
 
-    def arguments_without_temp_mount(log: list[str]) -> tuple[list[str], Path]:
+    def arguments_without_temp_mount(log: list[str]) -> list[str]:
         last_run = max(i for i, line in enumerate(log) if line.startswith("run "))
         arguments: list[str] = []
         for line in log[last_run + 1 :]:
@@ -5223,24 +5226,19 @@ def test_shards_one_matches_unsharded_command_except_owned_tempdir(tmp_path: Pat
                 # Preserve newlines in the shell script argument.
                 arguments[-1] += "\n" + line
 
-        mounts = [i for i, arg in enumerate(arguments) if arg.endswith(":/d810-test-tmp")]
+        mounts = [
+            i
+            for i, arg in enumerate(arguments)
+            if arg == "type=volume,dst=/d810-test-tmp"
+        ]
         assert len(mounts) == 1
         index = mounts[0]
-        assert index > 0 and arguments[index - 1] == "-v"
-        source, destination = arguments[index].rsplit(":", 1)
-        assert destination == "/d810-test-tmp"
-        host_tmp = Path(source)
-        assert host_tmp.is_absolute()
-        assert host_tmp.parent.resolve() == Path("/tmp").resolve()
-        assert host_tmp.name.startswith("d810-test-tmp.")
-        assert tmp_path.resolve() not in host_tmp.resolve().parents
-        assert not host_tmp.exists(), "runner-owned temporary files must be cleaned on exit"
+        assert index > 0 and arguments[index - 1] == "--mount"
         del arguments[index - 1 : index + 1]
-        return arguments, host_tmp
+        return arguments
 
-    plain_arguments, plain_tempdir = arguments_without_temp_mount(plain_calls)
-    shard_arguments, shard_tempdir = arguments_without_temp_mount(calls)
-    assert plain_tempdir != shard_tempdir
+    plain_arguments = arguments_without_temp_mount(plain_calls)
+    shard_arguments = arguments_without_temp_mount(calls)
     assert plain_arguments == shard_arguments
 
 
@@ -5409,7 +5407,7 @@ def test_fast_lanes_refused_outside_system_mode(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize("mode", ["system", "test", "exec"])
 @pytest.mark.parametrize("docker_status", [0, 7])
-def test_local_runner_mounts_external_temporary_storage(
+def test_local_runner_mounts_docker_managed_temporary_storage(
     tmp_path: Path, mode: str, docker_status: int
 ) -> None:
     result, calls = _run(
@@ -5419,8 +5417,8 @@ def test_local_runner_mounts_external_temporary_storage(
     assert result.returncode == docker_status, result.stderr
     command = _container_run(calls)
     assert "TMPDIR=/d810-test-tmp" in command
-    mount = next(line.removeprefix("run-arg ") for line in calls
-                 if line.startswith("run-arg ") and line.endswith(":/d810-test-tmp"))
-    host_tmp = Path(mount.rsplit(":", 1)[0])
-    assert tmp_path.resolve() not in host_tmp.resolve().parents
-    assert not host_tmp.exists(), "runner-owned temporary files must be cleaned on exit"
+    assert "run-arg --mount" in calls
+    assert "run-arg type=volume,dst=/d810-test-tmp" in calls
+    assert not any(
+        line.startswith("run-arg /tmp/d810-test-tmp.") for line in calls
+    )

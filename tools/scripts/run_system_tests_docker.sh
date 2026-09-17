@@ -2289,14 +2289,15 @@ _d810_quote_args() {
 }
 
 _run_docker_container() {
-  local temporary_dir="" status=0
+  local status=0
   local -a temporary_args=()
   if [ "$REMOTE_MODE" != "1" ]; then
-    # Host-backed storage avoids filling Docker's writable layer. It must be
-    # outside both the host checkout and /work for disposable-IDB isolation.
-    # Each container owns its directory, including concurrently running shards.
-    temporary_dir=$(mktemp -d /tmp/d810-test-tmp.XXXXXX) || return 1
-    temporary_args=(-v "$temporary_dir:/d810-test-tmp" -e TMPDIR=/d810-test-tmp)
+    # An anonymous Docker volume keeps disposable IDBs outside both the image's
+    # writable layer and the checkout. ``docker run --rm`` owns its lifecycle,
+    # so root-created descendants cannot strand an undeletable host directory
+    # when the daemon and runner use different UIDs (as on GitHub Linux hosts).
+    # Every container, including concurrent shards, receives a distinct volume.
+    temporary_args=(--mount type=volume,dst=/d810-test-tmp -e TMPDIR=/d810-test-tmp)
   fi
   printf '[docker] starting container; native speedup builds may take several minutes\n'
   if docker "$1" "${temporary_args[@]}" "${@:2}"; then
@@ -2304,9 +2305,6 @@ _run_docker_container() {
   else
     status=$?
     printf '[docker] container failed with exit status %s\n' "$status" >&2
-  fi
-  if [ -n "$temporary_dir" ]; then
-    rm -rf -- "$temporary_dir"
   fi
   return "$status"
 }
