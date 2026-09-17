@@ -7,6 +7,8 @@ the boundary that cannot be faked: Hex-Rays must accept the value-producing
 
 from __future__ import annotations
 
+import dataclasses
+
 import pytest
 
 import ida_hexrays
@@ -614,6 +616,11 @@ class TestRotateIdiomRecoveryNative:
                 if rule.name == "RotateIdiomRecoveryBlockRule"
             ]
             assert len(state.current_blk_rules) == 1
+            state.current_project_runtime_snapshot = dataclasses.replace(
+                state.get_project_runtime_snapshot(),
+                activated_implementations=(),
+                external_implementation_restart_recipes=(),
+            )
             state.manager.configure_external_implementation_bindings({})
             # This test deliberately narrows the live rule collections to the
             # native block rule.  Keep the manager's compiled schedule in the

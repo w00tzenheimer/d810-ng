@@ -1156,11 +1156,15 @@ def test_started_activation_failure_restores_real_pattern_storage_objects(
                 return {
                     "pattern_storage": child.pattern_storage,
                     "pattern_depth": child.pattern_storage.depth,
-                    "pattern_layers": _capture_live_container(
-                        child.pattern_storage.next_layer_patterns
+                    # The rollback contract retains the registered child
+                    # storage objects; only the owning mapping is snapshotted.
+                    "pattern_layers": (
+                        child.pattern_storage.next_layer_patterns,
+                        dict(child.pattern_storage.next_layer_patterns),
                     ),
-                    "pattern_resolved": _capture_live_container(
-                        child.pattern_storage.rule_resolved
+                    "pattern_resolved": (
+                        child.pattern_storage.rule_resolved,
+                        list(child.pattern_storage.rule_resolved),
                     ),
                     "indexed_storage": child._indexed_storage,
                     "indexed_by_opcode": _capture_live_container(

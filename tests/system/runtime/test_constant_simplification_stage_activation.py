@@ -211,6 +211,9 @@ def _prepare_actual_started_manager(state) -> None:
         def clear(self):
             self._rules.clear()
 
+        def add(self, rule):
+            self._rules.setdefault(rule, None)
+
     class Analyzer:
         def __init__(self):
             self.rules = RuleStore()

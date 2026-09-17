@@ -170,27 +170,34 @@ def test_plan_build_abstention_records_a_typed_diagnostic(tmp_path) -> None:
     journal.close()
 
 
-def _first_non_successor_target(function_ea: int) -> tuple[int, int]:
-    """Find two item heads whose source has no existing edge to the target."""
+def _first_jump_non_successor_target() -> tuple[int, int, int]:
+    """Find a jump and an in-function item it does not already reference."""
     metadata = IdaMetadataActionExecutor()
-    function = ida_funcs.get_func(function_ea)
-    assert function is not None
-    source_ea = int(function.start_ea)
-    current = metadata.read_state(NativeMetadataActionKind.UPDATE_XREF, source_ea)
-    existing_targets = {
-        int(row.partition("@")[0], 16)
-        for row in current.removeprefix("cref3:").split(",")
-        if row
-    }
-    candidate = int(ida_bytes.next_head(source_ea, int(function.end_ea)))
-    while candidate < int(function.end_ea):
-        if candidate not in existing_targets:
-            return source_ea, candidate
-        next_candidate = int(ida_bytes.next_head(candidate, int(function.end_ea)))
-        if next_candidate <= candidate:
-            break
-        candidate = next_candidate
-    pytest.skip("no in-function target without an existing source xref")
+    for raw_function_ea in idautils.Functions():
+        function_ea = int(raw_function_ea)
+        function = ida_funcs.get_func(function_ea)
+        assert function is not None
+        item_heads = tuple(
+            int(ea) for ea in idautils.Heads(function_ea, int(function.end_ea))
+        )
+        for source_ea in item_heads:
+            if str(idc.print_insn_mnem(source_ea)).lower() != "jmp":
+                continue
+            current = metadata.read_state(
+                NativeMetadataActionKind.UPDATE_XREF, source_ea
+            )
+            existing_targets = {
+                int(row.partition("@")[0], 16)
+                for row in current.removeprefix("cref3:").split(",")
+                if row
+            }
+            for candidate in item_heads:
+                # Never delete the function entry: IDA may retire the whole
+                # function, which would test ownership loss instead of item
+                # recreation.  A later head preserves the owning function.
+                if candidate > source_ea and candidate not in existing_targets:
+                    return function_ea, source_ea, candidate
+    pytest.skip("no jump with an unreferenced in-function item target")
 
 
 def test_unknown_item_target_fails_closed_without_metadata_drift(copy_of_idb) -> None:
@@ -201,8 +208,7 @@ def test_unknown_item_target_fails_closed_without_metadata_drift(copy_of_idb) ->
     lossless proof, the planner must preserve the complete captured target
     evidence and abstain before the gateway starts a transaction.
     """
-    function_ea = next(int(ea) for ea in idautils.Functions())
-    source_ea, target_ea = _first_non_successor_target(function_ea)
+    function_ea, source_ea, target_ea = _first_jump_non_successor_target()
     function = ida_funcs.get_func(function_ea)
     assert function is not None
     size = int(ida_bytes.get_item_size(target_ea))
@@ -257,8 +263,7 @@ def test_enabled_request_applies_real_metadata_plan_and_records_child_effects(
     copy_of_idb, tmp_path
 ) -> None:
     """The migrated path reaches live IDA only through the authorized gateway."""
-    function_ea = next(int(ea) for ea in idautils.Functions())
-    source_ea, target_ea = _first_non_successor_target(function_ea)
+    function_ea, source_ea, target_ea = _first_jump_non_successor_target()
     function = ida_funcs.get_func(function_ea)
     assert function is not None
     request = NativePatchPlanRequest(

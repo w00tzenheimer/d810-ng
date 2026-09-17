@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import os
 
 import pytest
@@ -107,6 +108,11 @@ class TestModularProductNonzeroNative:
                 if rule.name == "ModularProductNonzeroBlockRule"
             ]
             assert len(state.current_blk_rules) == 1
+            state.current_project_runtime_snapshot = dataclasses.replace(
+                state.get_project_runtime_snapshot(),
+                activated_implementations=(),
+                external_implementation_restart_recipes=(),
+            )
             state.manager.configure_external_implementation_bindings({})
             # This test deliberately narrows the live rule collections to the
             # native block rule.  Do the same for the compiled bundle schedule;

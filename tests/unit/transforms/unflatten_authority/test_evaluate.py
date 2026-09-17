@@ -16,7 +16,9 @@ from d810.analyses.control_flow.semantic_route_evidence import BoundSemanticRout
 from d810.analyses.control_flow.semantic_route_evidence import BoundSemanticRouteDestination
 from d810.analyses.control_flow.semantic_route_evidence import (
     CanonicalRouteAssessmentPhase, CanonicalRouteMaterialization,
-    assess_canonical_route,
+    SemanticRouteDestination, SemanticRouteProof, SemanticRouteProofKind,
+    SemanticRouteShape, SemanticStateWriteDeliveryKind,
+    SemanticStateWriteProof, assess_canonical_route,
 )
 from d810.ir.maturity import MaturityEnvelope
 from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
@@ -466,6 +468,126 @@ def test_semantic_handler_discovery_cannot_satisfy_physical_delivery() -> None:
         for item in case.justifications
     )
     assert evaluate_case(case).accepted is False
+
+
+def test_retained_indirect_dispatcher_satisfies_handler_delivery() -> None:
+    """A sealed live residual dispatcher supplies the missing indirect edge."""
+
+    from .test_bind import _corridor_inventories
+
+    proposal, _source, candidate = _corridor_inventories(
+        candidate_full=True,
+        disposition=model.CorridorPathDisposition.RESIDUAL,
+    )
+    handler = next(
+        subject
+        for subject in candidate.subjects
+        if subject.role is model.SemanticSubjectRole.AUTHORITATIVE_HANDLER
+    )
+    handler_binding = next(
+        binding for binding in candidate.bindings if binding.subject == handler
+    )
+    assert handler_binding.serial in candidate.reachable_serials
+    dispatcher = next(
+        binding
+        for binding in candidate.bindings
+        if binding.subject.role is model.SemanticSubjectRole.DISPATCHER_ENTRY
+    )
+    writer = next(
+        witness
+        for witness in proposal.source_identity_catalog.blocks
+        if type(witness.block_ref) is NativeBlockRef
+    )
+    write = SemanticStateWriteProof(
+        identity=writer.block_ref.identity,
+        instruction_ea=writer.anchor_ea,
+        state_variable=proposal.plan_inputs.state_identity,
+        width=4,
+        state_constant=handler.locator.normalized_states[0],
+        corridor_instruction_eas=(writer.anchor_ea,),
+        authority_transfer_ea=None,
+        preserved_call_instruction_eas=(),
+        delivery_kind=SemanticStateWriteDeliveryKind.INDIRECT,
+    )
+    indirect_proof = SemanticRouteProof(
+        proof_id="retained-indirect-handler",
+        atomic_group_id="retained-indirect-group",
+        proof_kind=SemanticRouteProofKind.STATE_ASSIGNMENT,
+        shape=SemanticRouteShape.DIRECT,
+        source_identity=writer.block_ref.identity,
+        source_anchor_ea=writer.anchor_ea,
+        delivery_region=NativeEaInterval(
+            writer.anchor_ea, writer.anchor_ea + 1,
+        ),
+        destinations=(SemanticRouteDestination(
+            role=model.SemanticEdgeRole.DIRECT,
+            state_constant=handler.locator.normalized_states[0],
+            target_identity=handler.block_ref.identity,
+            target_anchor_ea=next(iter(
+                handler.block_ref.identity.exact_instruction_eas
+            )),
+        ),),
+        state_write=write,
+    )
+
+    path = evaluator._retained_dispatcher_handler_delivery_path(
+        phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        subject=handler,
+        candidate_serial=handler_binding.serial,
+        candidate_semantic_reachable=frozenset(candidate.reachable_serials),
+        candidate_physical_entry_reachable=frozenset((0, 1)),
+        candidate_bindings={
+            binding.subject.subject_id: binding
+            for binding in candidate.bindings
+        },
+        plan_inputs=proposal.plan_inputs,
+        route_proofs=(indirect_proof,),
+    )
+    assert path == (
+        dispatcher.subject.subject_id,
+        handler.subject_id,
+    )
+    direct_proof = replace(
+        indirect_proof,
+        state_write=replace(
+            write, delivery_kind=SemanticStateWriteDeliveryKind.DIRECT,
+        ),
+    )
+    assert evaluator._retained_dispatcher_handler_delivery_path(
+        phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        subject=handler,
+        candidate_serial=handler_binding.serial,
+        candidate_semantic_reachable=frozenset(candidate.reachable_serials),
+        candidate_physical_entry_reachable=frozenset((0, 1)),
+        candidate_bindings={
+            binding.subject.subject_id: binding
+            for binding in candidate.bindings
+        },
+        plan_inputs=proposal.plan_inputs,
+        route_proofs=(direct_proof,),
+    ) == ()
+    observed_dispatcher = replace(
+        dispatcher, phase=model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY,
+    )
+    assert evaluator._retained_dispatcher_handler_delivery_path(
+        phase=model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY,
+        subject=handler,
+        candidate_serial=handler_binding.serial,
+        candidate_semantic_reachable=frozenset(candidate.reachable_serials),
+        candidate_physical_entry_reachable=frozenset((0, 1)),
+        candidate_bindings={
+            **{
+                binding.subject.subject_id: binding
+                for binding in candidate.bindings
+            },
+            observed_dispatcher.subject.subject_id: observed_dispatcher,
+        },
+        plan_inputs=proposal.plan_inputs,
+        route_proofs=(indirect_proof,),
+    ) == (
+        dispatcher.subject.subject_id,
+        handler.subject_id,
+    )
 
 
 def test_equivalent_route_positive_marks_one_stable_subject_route_equivalence() -> None:

@@ -92,7 +92,7 @@ def test_lowering_preserves_live_leafs_paths_and_rebuilds_supported_island():
     assert lowering.profile.island_class is MbaIslandClass.LINEAR_MBA
     assert lowering.profile.blockers == ()
     assert isinstance(lowering.leafs, MappingProxyType)
-    assert () not in lowering.native_nodes_by_path
+    assert lowering.native_nodes_by_path[()] is expression
     assert lowering.native_nodes_by_path[(0, 0)].is_constant()
     assert lowering.native_nodes_by_path[(0, 0)].value == 7
     assert lowering.native_nodes_by_path[(0, 1)].mop == x.mop

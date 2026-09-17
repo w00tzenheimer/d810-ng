@@ -8,6 +8,11 @@ from dataclasses import dataclass, replace
 import re
 from d810.core.typing import Iterable
 
+from d810.analyses.control_flow.semantic_route_evidence import (
+    SemanticRouteProof,
+    SemanticRouteProofKind,
+    SemanticStateWriteDeliveryKind,
+)
 from d810.ir.block_identity import StableBlockIdentity
 from d810.transforms.cfg_transaction import LogicalBlockRef, NativeBlockRef, PatchStepKind, PlanBlockRef
 
@@ -2632,6 +2637,90 @@ def _observed_route_endpoint_origin_fold_covered(
     )
 
 
+def _retained_dispatcher_handler_delivery_path(
+    *,
+    phase: model.UnflattenAuthorityPhase,
+    subject: model.SemanticSubjectRef,
+    candidate_serial: int | None,
+    candidate_semantic_reachable: frozenset[int],
+    candidate_physical_entry_reachable: frozenset[int],
+    candidate_bindings: dict[str, model.PhaseSubjectBinding],
+    plan_inputs: model.UnflattenPlanInputCatalog,
+    route_proofs: tuple[SemanticRouteProof, ...],
+) -> tuple[str, str]:
+    """Return the sealed indirect-dispatch path for one retained handler.
+
+    The portable CFG cannot contain the dispatcher's computed target edges.
+    A handler outside its physical closure is nevertheless delivered when an
+    unchanged dispatcher remains physically reachable and canonical route
+    evidence proves the handler is one of that dispatcher's indirect targets.
+    Semantic discovery alone is intentionally insufficient.
+    """
+
+    if (
+        phase is model.UnflattenAuthorityPhase.PRODUCER_FORECAST
+        or subject.role is not model.SemanticSubjectRole.AUTHORITATIVE_HANDLER
+        or type(subject.locator) is not model.HandlerSubjectLocator
+        or not subject.locator.normalized_states
+        or type(candidate_serial) is not int
+        or candidate_serial not in candidate_semantic_reachable
+        or candidate_serial in candidate_physical_entry_reachable
+        or plan_inputs.shape is not model.UnflattenPlanShape.PARTIAL_REWRITE
+    ):
+        return ()
+    handler = next(
+        (
+            item
+            for item in plan_inputs.authoritative_handlers
+            if item.block_ref == subject.locator.block_ref
+            and item.anchor_ea == subject.locator.anchor_ea
+            and item.normalized_states == subject.locator.normalized_states
+        ),
+        None,
+    )
+    if handler is None:
+        return ()
+    dispatcher_matches = tuple(
+        binding
+        for binding in candidate_bindings.values()
+        if binding.subject.role
+        is model.SemanticSubjectRole.DISPATCHER_ENTRY
+        and binding.subject.block_ref == plan_inputs.dispatcher_entry_ref
+    )
+    dispatcher = dispatcher_matches[0] if len(dispatcher_matches) == 1 else None
+    if (
+        dispatcher is None
+        or dispatcher.status is not model.SubjectBindingStatus.UNIQUE
+        or dispatcher.phase is not phase
+        or type(dispatcher.serial) is not int
+        or dispatcher.serial not in candidate_physical_entry_reachable
+    ):
+        return ()
+    has_matching_proof = any(
+        proof
+        for proof in route_proofs
+        if proof.proof_kind is SemanticRouteProofKind.STATE_ASSIGNMENT
+        and proof.state_write is not None
+        and proof.state_write.delivery_kind
+        is SemanticStateWriteDeliveryKind.INDIRECT
+        and proof.state_write.state_variable == plan_inputs.state_identity
+        and int(proof.state_write.width) == 4
+        and int(proof.state_write.state_constant)
+        in subject.locator.normalized_states
+        and any(
+            destination.target_identity == handler.block_ref.identity
+            and destination.target_anchor_ea
+            in handler.block_ref.identity.exact_instruction_eas
+            and int(destination.state_constant)
+            == int(proof.state_write.state_constant)
+            for destination in proof.destinations
+        )
+    )
+    if not has_matching_proof:
+        return ()
+    return dispatcher.subject.subject_id, subject.subject_id
+
+
 def _evaluator_fact_evidence(
     inputs: model.DerivedUnflattenPreparationInputs,
     phase: model.UnflattenAuthorityPhase,
@@ -3249,13 +3338,37 @@ def _evaluator_fact_evidence(
         # dispatcher.  These delivery obligations instead prove a physical
         # path from the source entry, so semantic discovery cannot satisfy
         # one by construction.
-        reachable = bool(
+        physically_reachable = bool(
             type(candidate_serial) is int
             and candidate_serial in candidate_physical_entry_reachable
         )
+        retained_dispatch_path = (
+            ()
+            if physically_reachable
+            else _retained_dispatcher_handler_delivery_path(
+                phase=phase,
+                subject=subject,
+                candidate_serial=candidate_serial,
+                candidate_semantic_reachable=frozenset(
+                    candidate.reachable_serials
+                ),
+                candidate_physical_entry_reachable=(
+                    candidate_physical_entry_reachable
+                ),
+                candidate_bindings=candidate_binding_by_id,
+                plan_inputs=inputs.proposal.plan_inputs,
+                route_proofs=inputs.proposal.route_evidence.route_proofs,
+            )
+        )
+        reachable = physically_reachable or bool(retained_dispatch_path)
         path_subject_ids = (
             (source_entry.subject_id,)
             if reachable and subject.subject_id == source_entry.subject_id
+            else (
+                source_entry.subject_id,
+                *retained_dispatch_path,
+            )
+            if retained_dispatch_path
             else (source_entry.subject_id, subject.subject_id)
             if reachable else ()
         )

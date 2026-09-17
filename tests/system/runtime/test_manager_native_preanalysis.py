@@ -1373,7 +1373,7 @@ def test_interactive_decompile_does_not_run_eager_native_preanalysis(
 def test_decompile_controller_runs_one_followup_for_pending_generated_restart(
     monkeypatch,
 ) -> None:
-    calls: list[tuple[str, int]] = []
+    calls: list[tuple[object, ...]] = []
     pending = iter((True, False))
 
     class _Lifecycle:
@@ -1395,7 +1395,10 @@ def test_decompile_controller_runs_one_followup_for_pending_generated_restart(
     monkeypatch.setattr(
         manager,
         "prepare_native_preanalysis",
-        lambda function_ea: calls.append(("prepare", function_ea)) or 0,
+        lambda function_ea, *, force_computed_goto_probe=False: calls.append(
+            ("prepare", function_ea, force_computed_goto_probe)
+        )
+        or 0,
     )
 
     rounds = iter(("first", "final"))
@@ -1408,11 +1411,11 @@ def test_decompile_controller_runs_one_followup_for_pending_generated_restart(
 
     assert result == "final"
     assert calls == [
-        ("prepare", 0x401000),
+        ("prepare", 0x401000, True),
         ("invalidate", 0x401000),
         ("decompile", 0x401000),
         ("pending", 0x401000),
-        ("prepare", 0x401000),
+        ("prepare", 0x401000, True),
         ("invalidate", 0x401000),
         ("decompile", 0x401000),
         ("pending", 0x401000),
@@ -1422,7 +1425,7 @@ def test_decompile_controller_runs_one_followup_for_pending_generated_restart(
 def test_preparation_runs_once_before_native_preanalysis_and_generated_retries(
     monkeypatch,
 ) -> None:
-    calls: list[tuple[str, int]] = []
+    calls: list[tuple[object, ...]] = []
     pending = iter((True, False))
 
     class _Lifecycle:
@@ -1451,7 +1454,10 @@ def test_preparation_runs_once_before_native_preanalysis_and_generated_retries(
     monkeypatch.setattr(
         manager,
         "prepare_native_preanalysis",
-        lambda function_ea: calls.append(("native", function_ea)) or 0,
+        lambda function_ea, *, force_computed_goto_probe=False: calls.append(
+            ("native", function_ea, force_computed_goto_probe)
+        )
+        or 0,
     )
 
     rounds = iter(("first", "final"))
@@ -1465,9 +1471,9 @@ def test_preparation_runs_once_before_native_preanalysis_and_generated_retries(
     assert result == "final"
     assert calls == [
         ("preparation", 0x401000),
-        ("native", 0x401000),
+        ("native", 0x401000, True),
         ("hexrays", 0x401000),
-        ("native", 0x401000),
+        ("native", 0x401000, True),
         ("hexrays", 0x401000),
     ]
 
@@ -1629,6 +1635,7 @@ def test_decompile_controller_routes_poison_to_manager_fresh_recovery(
     consumed: list[GeneratedRestartConsumer] = []
     collectors: list[object] = []
     prepares: list[int] = []
+    forced_probes: list[bool] = []
 
     class _Lifecycle:
         @staticmethod
@@ -1662,7 +1669,11 @@ def test_decompile_controller_routes_poison_to_manager_fresh_recovery(
     monkeypatch.setattr(
         manager,
         "prepare_native_preanalysis",
-        lambda ea: prepares.append(ea) or 0,
+        lambda ea, *, force_computed_goto_probe=False: (
+            prepares.append(ea)
+            or forced_probes.append(force_computed_goto_probe)
+            or 0
+        ),
     )
     monkeypatch.setattr(manager, "_stage_c_collection_enabled", lambda _ea: True)
 
@@ -1698,6 +1709,7 @@ def test_decompile_controller_routes_poison_to_manager_fresh_recovery(
     assert collectors[1].closed is True
     assert consumed == [GeneratedRestartConsumer.MANAGER]
     assert prepares == [function_ea]
+    assert forced_probes == [True]
     assert normalizer_calls == []
 
 

@@ -1209,6 +1209,24 @@ class AstProxy(AstBase):
         self._target.ast_index = value
 
 
+def _mop_geometry_key(mop: ida_hexrays.mop_t | None) -> tuple:
+    """Capture operand/result widths omitted by Hex-Rays ``dstr()`` output."""
+    if mop is None:
+        return ()
+    operand_type = mop.t
+    if operand_type != ida_hexrays.mop_d or mop.d is None:
+        return (operand_type, mop.size)
+    instruction = mop.d
+    return (
+        operand_type,
+        mop.size,
+        instruction.opcode,
+        _mop_geometry_key(instruction.l),
+        _mop_geometry_key(instruction.r),
+        _mop_geometry_key(instruction.d),
+    )
+
+
 def _get_mop_key_impl(mop: ida_hexrays.mop_t) -> tuple:
     """
     Generates a fast, hashable key from a mop_t's essential attributes.
@@ -1242,7 +1260,10 @@ def _get_mop_key_impl(mop: ida_hexrays.mop_t) -> tuple:
             # which is identical for identical expressions regardless of SSA
             # copy location.
             try:
-                return key + (mop.dstr(),)
+                # ``dstr()`` carries the expression values but not every
+                # nested result width.  Include the recursive geometry so
+                # templates such as setnz.1(x) and setnz.2(x) cannot alias.
+                return key + (mop.dstr(), _mop_geometry_key(mop))
             except Exception:
                 # As a last resort fall back to EA.
                 return key + (mop.d.ea if mop.d else idaapi.BADADDR,)

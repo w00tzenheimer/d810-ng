@@ -396,7 +396,7 @@ class TestStorageParity:
     binary_name = _get_default_binary()
 
     @pytest.mark.ida_required
-    def test_legacy_lookup_reuses_candidate_set_for_same_frozen_shape(
+    def test_legacy_lookup_does_not_cache_full_term_shape(
         self,
         real_asts,
         monkeypatch,
@@ -423,7 +423,9 @@ class TestStorageParity:
 
         assert [entry.rule.name for entry in first] == ["shape_cache_rule"]
         assert [entry.rule.name for entry in second] == ["shape_cache_rule"]
-        assert traversals == 1
+        # The full-term cache was intentionally removed: constructing and
+        # hashing its deep AST key cost more than rewalking this bounded trie.
+        assert traversals == 2
 
     @pytest.fixture(scope="class")
     def populated_storages(self, real_asts):
