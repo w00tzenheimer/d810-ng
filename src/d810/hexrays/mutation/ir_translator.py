@@ -1,0 +1,1704 @@
+"""IDA-specific CFGBackend implementation.
+
+Wraps existing IDA infrastructure:
+- lift() -> flowgraph snapshot lift(mba)
+- lower() -> materializes PatchPlan -> DeferredGraphModifier queue calls
+- verify() -> calls safe_verify(mba)
+"""
+from __future__ import annotations
+
+from d810.core.logging import getLogger
+from d810.core.typing import TYPE_CHECKING, Callable
+
+from d810.hexrays.contracts import CfgContractViolationError, IDACfgContract
+from d810.hexrays.ir_maturity import (
+    hexrays_maturity_envelope,
+    ida_maturity_to_ir,
+    maturity_name_to_ida,
+)
+
+from d810.ir.flowgraph import (
+    BlockKind,
+    BlockSnapshot,
+    FlowGraph,
+    InsnKind,
+    InsnSnapshot,
+    OperandKind,
+)
+from d810.ir.maturity import SnapshotForm, snapshot_form_for_maturity
+from d810.ir.flowgraph import MopSnapshot as CfgMopSnapshot
+from d810.ir.semantics import CallKind, ControlTransferKind, PredicateKind
+from d810.transforms.plan import (
+    ExecutionPolicy,
+    PatchBypassDispatcherTrampoline,
+    PatchCanonicalizeJumpTableCaseOverlap,
+    PatchCloneConditionalAsGoto,
+    PatchCloneConditionalAsGotoFromBranchArm,
+    PatchConditionalRedirect,
+    PatchConvertToGoto,
+    PatchDuplicateBlock,
+    PatchDuplicateReplayAndRedirect,
+    PatchEdgeSplitCorridor,
+    PatchEdgeSplitTrampoline,
+    PatchInsertBlock,
+    PatchLowerConditionalStateTransition,
+    PatchNormalizeNWayDispatcherExit,
+    PatchNopInstructions,
+    PatchPhaseCycleLowering,
+    PatchZeroStateWrite,
+    PatchPromoteOperandToScalar,
+    PatchPlan,
+    PatchPrivateTerminalSuffix,
+    PatchPrivateTerminalSuffixGroup,
+    PatchExitPathLoweringGroup,
+    PatchReorderBlocks,
+    PatchRedirectBranch,
+    PatchRedirectGoto,
+    PatchRemoveEdge,
+    PatchRetargetOutputStore,
+    PatchScalarizeLocalAliasAccess,
+    PatchStep,
+)
+from d810.hexrays.ir.block_helpers import get_pred_serials, get_succ_serials
+from d810.hexrays.ir.mop_snapshot import MopSnapshot
+from d810.hexrays import opcode_lift
+from d810.hexrays.mutation.insn_snapshot_materializer import (
+    insn_snapshots_from_captured_body,
+    validate_captured_block_body,
+    validate_insn_snapshots,
+)
+from d810.hexrays.mutation.mba_mutation_events import MbaMutationGateway
+from d810.hexrays.mutation.mba_mutation_events import StructuralMutationKind
+from d810.hexrays.mutation.patch_binding import (
+    BoundModifier,
+    PatchBindingRejected,
+    bind_patch_plan,
+)
+from d810.transforms.cfg_transaction import TransactionAttemptId
+
+if TYPE_CHECKING:
+    import ida_hexrays
+    from d810.hexrays.mutation.deferred_modifier import DeferredGraphModifier as DeferredGraphModifierType
+    from d810.hexrays.mutation.cfg_verify import safe_verify as safe_verify_type
+
+logger = getLogger(__name__)
+
+import os
+
+import ida_hexrays
+import idaapi
+
+from d810.hexrays.utils.hexrays_formatters import maturity_to_string
+
+
+def _block_kind_from_hexrays(block_type: int) -> BlockKind:
+    block_type = int(block_type)
+    if block_type == int(ida_hexrays.BLT_NONE):
+        return BlockKind.NONE
+    if block_type == int(ida_hexrays.BLT_STOP):
+        return BlockKind.STOP
+    if block_type == int(ida_hexrays.BLT_XTRN):
+        return BlockKind.EXTERNAL
+    if block_type == int(ida_hexrays.BLT_0WAY):
+        return BlockKind.ZERO_WAY
+    if block_type == int(ida_hexrays.BLT_1WAY):
+        return BlockKind.ONE_WAY
+    if block_type == int(ida_hexrays.BLT_2WAY):
+        return BlockKind.TWO_WAY
+    if block_type == int(ida_hexrays.BLT_NWAY):
+        return BlockKind.N_WAY
+    return BlockKind.UNKNOWN
+
+
+def is_hexrays_opcode(opcode: int, name: str) -> bool:
+    return opcode_lift.is_hexrays_opcode(opcode, name)
+
+
+# ``_branch_predicate_from_hexrays`` (BranchPredicate) retired (llr-lxas):
+# ``_branch_predicate_only_from_hexrays`` below is the identical m_jX mapping in
+# the single ``PredicateKind`` vocabulary -- callers use it directly.
+
+
+def _compare_width_from_operands(*operands: object) -> int | None:
+    widths: list[int] = []
+    for operand in operands:
+        try:
+            width = int(getattr(operand, "size", 0) or 0)
+        except (TypeError, ValueError):
+            width = 0
+        if width > 0:
+            widths.append(width)
+    return max(widths) if widths else None
+
+
+def _insn_kind_from_hexrays(opcode: int) -> InsnKind:
+    opcode = int(opcode)
+    if opcode == int(ida_hexrays.m_nop):
+        return InsnKind.NOP
+    if opcode == int(ida_hexrays.m_mov):
+        return InsnKind.MOV
+    if opcode == int(ida_hexrays.m_ldx):
+        return InsnKind.LOAD
+    if opcode == int(ida_hexrays.m_xdu):
+        return InsnKind.XDU
+    if opcode == int(ida_hexrays.m_xds):
+        return InsnKind.XDS
+    if opcode == int(ida_hexrays.m_add):
+        return InsnKind.ADD
+    if opcode == int(ida_hexrays.m_sub):
+        return InsnKind.SUB
+    if opcode == int(ida_hexrays.m_and):
+        return InsnKind.AND
+    if opcode == int(ida_hexrays.m_stx):
+        return InsnKind.STORE
+    if opcode == int(ida_hexrays.m_goto):
+        return InsnKind.GOTO
+    if is_hexrays_opcode(opcode, "m_call") or is_hexrays_opcode(opcode, "m_icall"):
+        return InsnKind.CALL
+    if is_hexrays_opcode(opcode, "m_ret"):
+        return InsnKind.RET
+    # E3-prep: ``m_jtbl`` is a multi-target jump-table tail.  Map
+    # BEFORE the binary-conditional fallback so it lands in the
+    # portable ``TABLE_JUMP`` kind rather than being swept into
+    # ``COND_JUMP`` if the predicate helper grows to cover it.
+    if is_hexrays_opcode(opcode, "m_jtbl"):
+        return InsnKind.TABLE_JUMP
+    # ``m_ijmp`` is a single-target indirect jump (no branch predicate).
+    # Map BEFORE the conditional fallback so it lands in the portable
+    # ``INDIRECT_JUMP`` kind instead of ``UNKNOWN``.
+    if is_hexrays_opcode(opcode, "m_ijmp"):
+        return InsnKind.INDIRECT_JUMP
+    if opcode in (int(ida_hexrays.m_jnz), int(ida_hexrays.m_jz)):
+        return InsnKind.EQUALITY_JUMP
+    if _branch_predicate_only_from_hexrays(opcode) is not None:
+        return InsnKind.COND_JUMP
+    return InsnKind.UNKNOWN
+
+
+def _operand_kind_from_hexrays(operand_type: int) -> OperandKind:
+    operand_type = int(operand_type)
+    mapping = {
+        int(ida_hexrays.mop_z): OperandKind.EMPTY,
+        int(ida_hexrays.mop_r): OperandKind.REGISTER,
+        int(ida_hexrays.mop_n): OperandKind.NUMBER,
+        int(ida_hexrays.mop_str): OperandKind.STRING,
+        int(ida_hexrays.mop_d): OperandKind.SUBINSN,
+        int(ida_hexrays.mop_S): OperandKind.STACK,
+        int(ida_hexrays.mop_v): OperandKind.GLOBAL,
+        int(ida_hexrays.mop_b): OperandKind.BLOCK,
+        int(ida_hexrays.mop_f): OperandKind.ARG_LIST,
+        int(ida_hexrays.mop_l): OperandKind.LVAR,
+        int(ida_hexrays.mop_a): OperandKind.ADDRESS,
+        int(ida_hexrays.mop_h): OperandKind.HELPER,
+        int(ida_hexrays.mop_c): OperandKind.CASE_LIST,
+        int(ida_hexrays.mop_fn): OperandKind.FP_CONST,
+        int(ida_hexrays.mop_p): OperandKind.PAIR,
+        int(ida_hexrays.mop_sc): OperandKind.SCATTERED,
+    }
+    return mapping.get(operand_type, OperandKind.UNKNOWN)
+
+
+def is_control_flow_opcode(opcode: int) -> bool:
+    """Return True if ``opcode`` is any Hex-Rays control-flow microcode op.
+
+    Covers gotos, conditional jumps (signed / unsigned / equality), indirect
+    jumps (``m_ijmp``), jump tables (``m_jtbl``), and direct / indirect calls
+    (``m_call`` / ``m_icall``).  Use this to ask "is this instruction control
+    flow?" without enumerating ``InsnKind`` cases at every call site.
+    """
+    if _branch_predicate_only_from_hexrays(opcode) is not None:
+        return True
+    for name in ("m_goto", "m_ijmp", "m_jtbl", "m_call", "m_icall"):
+        if is_hexrays_opcode(opcode, name):
+            return True
+    return False
+
+
+def classify_live_insn_kind(insn: object) -> InsnKind | None:
+    """Return backend-neutral instruction semantics for a live Hex-Rays insn."""
+    try:
+        return _insn_kind_from_hexrays(int(getattr(insn, "opcode")))
+    except (AttributeError, TypeError, ValueError):
+        return None
+
+
+def classify_live_operand_kind(mop: object) -> OperandKind | None:
+    """Return backend-neutral operand semantics for a live Hex-Rays operand."""
+    try:
+        return _operand_kind_from_hexrays(int(getattr(mop, "t")))
+    except (AttributeError, TypeError, ValueError):
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Portable semantic-IR adapter (Hex-Rays mcode_t -> d810.ir.semantics enums)
+# ---------------------------------------------------------------------------
+#
+# These functions are the Hex-Rays side of the backend-neutral semantic
+# vocabulary defined in `d810.ir.semantics`.  They take a live Hex-Rays
+# instruction and return a portable kind enum -- so consumers in
+# `d810.preanalysis` and elsewhere can branch on `PredicateKind.ULT` /
+# `ControlTransferKind.GOTO` without learning `m_jb` / `m_goto` / the
+# numeric mcode_t opcode values.  The mapping below is the ONLY place
+# the project ties Hex-Rays opcode names to portable semantics.
+#
+# Implementation scope: minimum-viable for current axis-C consumers.
+# Add new family enums + adapter functions in lockstep with the
+# consumers that need them; do NOT preload all of mcode_t.
+#
+# All lookups go through `is_hexrays_opcode(opcode, "m_X")` so the
+# vendor names live as STRING LITERALS (the
+# `no-vendor-identifier-in-portable-core` ast-grep rule targets
+# attribute access on aliased ida_hexrays / idaapi modules, not
+# string contents).
+
+
+def _branch_predicate_only_from_hexrays(opcode: int) -> PredicateKind | None:
+    """Branch-only predicate mapping: ``m_jX`` opcodes ONLY.
+
+    Excludes ``m_set*`` byte materializations -- those carry a
+    predicate but are NOT control transfers.  Use this when the
+    caller is specifically deciding "is this a conditional branch?".
+    ``classify_predicate`` (below) is the broader entry-point that
+    also recognises ``m_set*``.
+
+    Returns ``None`` for non-branch opcodes.
+    """
+    return opcode_lift.branch_predicate_from_opcode(int(opcode))
+
+
+def _set_predicate_only_from_hexrays(opcode: int) -> PredicateKind | None:
+    """Set-only predicate mapping: ``m_setX`` byte materializations.
+
+    Conceptually mirrors ``_branch_predicate_only_from_hexrays`` but
+    on the materialization side: each ``m_set*`` opcode produces a
+    byte carrying the predicate result rather than transferring
+    control.  Kept separate so the ``ControlTransferKind`` dispatch
+    in ``_control_transfer_from_hexrays`` cannot misclassify a
+    materialization as a conditional branch.
+
+    Returns ``None`` for non-set opcodes.
+    """
+    return opcode_lift.set_predicate_from_opcode(int(opcode))
+
+
+def _predicate_kind_from_hexrays(opcode: int) -> PredicateKind | None:
+    """Map any predicate-carrying opcode (branch OR set) to its
+    portable ``PredicateKind``.
+
+    Composes the two narrow mappers so callers that want "what
+    comparison is this instruction asking?" don't need to know
+    whether the result is consumed as branch direction or as a
+    materialized byte.
+    """
+    return opcode_lift.predicate_from_opcode(int(opcode))
+
+
+def _control_transfer_from_hexrays(opcode: int) -> ControlTransferKind | None:
+    """Map a Hex-Rays control-flow opcode int to its transfer kind.
+
+    Covers gotos, conditional branches, jump tables, indirect jumps,
+    and returns.  Calls (``m_call`` / ``m_icall``) are explicitly NOT
+    included -- they are classified by the sibling ``CallKind`` family.
+    ``m_set*`` byte materializations are
+    explicitly NOT control transfers -- the dispatch uses
+    ``_branch_predicate_only_from_hexrays`` (NOT the broader
+    ``_predicate_kind_from_hexrays``) so a materialization can never
+    be misclassified as ``CONDITIONAL_BRANCH``.
+
+    Returns ``None`` for non-transfer opcodes.
+    """
+    return opcode_lift.control_transfer_from_opcode(int(opcode))
+
+
+def classify_branch_predicate(insn: object) -> PredicateKind | None:
+    "Return the portable predicate carried by a live conditional\n    branch / set instruction, or ``None`` for non-predicate opcodes.\n\n    Note that this covers BOTH conditional branches (``m_jX``) and\n    byte-materialized predicates (``m_setX``); they share the\n    predicate semantic and the call site decides whether the\n    result is consumed as branch direction (pair with\n    ``classify_control_transfer``) or as a materialized byte (no\n    associated transfer kind).\n\n    Use this at the preanalysis-side seam where a file previously did\n    ``if insn.opcode == ida_hexrays.m_jbe`` -- now ask\n    ``if classify_branch_predicate(insn) is PredicateKind.ULE``.\n    "
+    try:
+        return _predicate_kind_from_hexrays(int(getattr(insn, "opcode")))
+    except (AttributeError, TypeError, ValueError):
+        return None
+
+
+def classify_control_transfer(insn: object) -> ControlTransferKind | None:
+    """Return the portable transfer kind for a live control-flow
+    instruction, or ``None`` for non-transfer opcodes.
+
+    ``m_set*`` byte materializations return ``None`` -- they carry
+    a predicate but no transfer; ``classify_branch_predicate``
+    is the function that recognises them.
+
+    Pair with ``classify_branch_predicate(insn)`` when the consumer
+    needs both "is this a conditional branch?" and "what predicate
+    does it test?".
+    """
+    try:
+        return _control_transfer_from_hexrays(int(getattr(insn, "opcode")))
+    except (AttributeError, TypeError, ValueError):
+        return None
+
+
+def classify_call_kind(insn: object) -> CallKind | None:
+    """Return the portable call family for a live call instruction."""
+
+    try:
+        return opcode_lift.call_kind_from_opcode(int(getattr(insn, "opcode")))
+    except (AttributeError, TypeError, ValueError):
+        return None
+
+
+def _stack_refs_from_mop(
+    mop: object | None,
+    *,
+    visited_mops: set[int] | None = None,
+    visited_insns: set[int] | None = None,
+) -> tuple[int, ...]:
+    if mop is None:
+        return ()
+    if visited_mops is None:
+        visited_mops = set()
+    if visited_insns is None:
+        visited_insns = set()
+    mop_identity = id(mop)
+    if mop_identity in visited_mops:
+        return ()
+    visited_mops.add(mop_identity)
+
+    if getattr(mop, "t", None) == ida_hexrays.mop_S:
+        stack_ref = getattr(mop, "s", None)
+        offset = getattr(stack_ref, "off", None)
+        return () if offset is None else (int(offset),)
+    if getattr(mop, "t", None) == ida_hexrays.mop_a:
+        return _stack_refs_from_mop(
+            _address_inner_mop(mop),
+            visited_mops=visited_mops,
+            visited_insns=visited_insns,
+        )
+    if getattr(mop, "t", None) != ida_hexrays.mop_d:
+        return ()
+
+    inner = getattr(mop, "d", None)
+    if inner is None:
+        return ()
+    insn_identity = id(inner)
+    if insn_identity in visited_insns:
+        return ()
+    visited_insns.add(insn_identity)
+
+    refs: list[int] = []
+    for child in (
+        getattr(inner, "l", None),
+        getattr(inner, "r", None),
+        getattr(inner, "d", None),
+    ):
+        refs.extend(
+            _stack_refs_from_mop(
+                child,
+                visited_mops=visited_mops,
+                visited_insns=visited_insns,
+            )
+        )
+    return tuple(dict.fromkeys(refs))
+
+
+def _address_inner_mop(mop: object | None) -> object | None:
+    addr = getattr(mop, "a", None)
+    if addr is None:
+        return None
+    inner = getattr(addr, "v", None)
+    return inner if inner is not None else addr
+
+
+def capture_mop_snapshot(
+    mop: "ida_hexrays.mop_t",
+    lvar_stkoff_map: dict[int, int] | None = None,
+) -> CfgMopSnapshot | None:
+    """Capture a lightweight ``CfgMopSnapshot`` from a live ``mop_t``.
+
+    Returns ``None`` for empty (``mop_z``) operands.
+
+    ``lvar_stkoff_map`` (ticket llr-lxas S1) maps ``lvar_idx -> frame stkoff``
+    so a ``mop_l`` operand can carry its real frame stack offset
+    (``mba.vars[idx].location.stkoff()``) on the snapshot instead of forcing a
+    live ``mba.vars`` read downstream.  ``None`` keeps the legacy behavior (the
+    snapshot's ``lvar_stkoff`` stays ``None``); callers without a function-scope
+    ``mba`` (e.g. unit tests building a single mop) pass nothing.
+    """
+    if mop is None or mop.t == ida_hexrays.mop_z:
+        return None
+    t = mop.t
+    size = mop.size
+    kind = _operand_kind_from_hexrays(t)
+    if t == ida_hexrays.mop_n:
+        nnn = mop.nnn
+        return CfgMopSnapshot(t=t, size=size, value=int(nnn.value) if nnn is not None else 0, kind=kind)
+    if t == ida_hexrays.mop_S:
+        s = mop.s
+        stkoff = s.off if s is not None else None
+        return CfgMopSnapshot(
+            t=t,
+            size=size,
+            stkoff=stkoff,
+            stack_refs=() if stkoff is None else (int(stkoff),),
+            kind=kind,
+        )
+    if t == ida_hexrays.mop_d:
+        # Capture the nested sub-operation portably (ticket llr-lxas) so
+        # analyses can read the compared/computed expression structure, not
+        # just the flattened ``stack_refs``.  ``sub_l``/``sub_r`` recurse.
+        inner = getattr(mop, "d", None)
+        sub_kind = sub_value_op_kind = sub_l = sub_r = None
+        if inner is not None:
+            # Match the defensive ``getattr`` used for ``l``/``r`` below so a
+            # partial sub-instruction (a minsn without an opcode, or a test
+            # mock that models only operands) degrades ``sub_kind`` to None
+            # instead of raising -- ``_insn_kind_from_hexrays`` does
+            # ``int(opcode)`` and would crash on a missing/None opcode.
+            sub_opcode = getattr(inner, "opcode", None)
+            sub_kind = (
+                None if sub_opcode is None else _insn_kind_from_hexrays(sub_opcode)
+            )
+            sub_value_op_kind = (
+                None if sub_opcode is None else opcode_lift.value_op_from_opcode(sub_opcode)
+            )
+            sub_l = capture_mop_snapshot(getattr(inner, "l", None), lvar_stkoff_map)
+            sub_r = capture_mop_snapshot(getattr(inner, "r", None), lvar_stkoff_map)
+        return CfgMopSnapshot(
+            t=t,
+            size=size,
+            stack_refs=_stack_refs_from_mop(mop),
+            sub_kind=sub_kind,
+            sub_value_op_kind=sub_value_op_kind,
+            sub_l=sub_l,
+            sub_r=sub_r,
+            kind=kind,
+        )
+    if t == ida_hexrays.mop_a:
+        # Address-of operands are not sub-instructions, but they still name the
+        # addressed operand. Preserve that stack evidence portably so analyses
+        # can recognize narrow ``reg = &stack_slot`` shapes without reading
+        # Hex-Rays-owned operand_slots.
+        inner = capture_mop_snapshot(_address_inner_mop(mop), lvar_stkoff_map)
+        return CfgMopSnapshot(
+            t=t,
+            size=size,
+            stack_refs=_stack_refs_from_mop(mop),
+            sub_l=inner,
+            kind=kind,
+        )
+    if t == ida_hexrays.mop_r:
+        return CfgMopSnapshot(t=t, size=size, reg=mop.r, kind=kind)
+    if t == ida_hexrays.mop_b:
+        return CfgMopSnapshot(t=t, size=size, block_ref=mop.b, kind=kind)
+    if t == ida_hexrays.mop_v:
+        # E2a: carry the global address across the snapshot boundary so
+        # portable dispatcher-state analyses can key by ``gaddr`` instead
+        # of reaching back into the live ``mop_t``.
+        return CfgMopSnapshot(t=t, size=size, gaddr=int(mop.g), kind=kind)
+    if t == ida_hexrays.mop_l:
+        # E2a: carry the lvar offset across the snapshot boundary so
+        # portable dispatcher-state analyses can key by ``lvar_off``
+        # instead of reaching back into the live ``mop_t``.
+        lref = mop.l
+        lvar_idx = int(lref.idx) if lref is not None else None
+        # llr-lxas S1: resolve the lvar's FRAME stack offset once at lift via
+        # the prebuilt ``lvar_idx -> stkoff`` map, so downstream analyses never
+        # have to reach back into the live ``mba.vars`` table.
+        lvar_stkoff = (
+            lvar_stkoff_map.get(lvar_idx)
+            if lvar_stkoff_map is not None and lvar_idx is not None
+            else None
+        )
+        return CfgMopSnapshot(
+            t=t,
+            size=size,
+            lvar_off=int(lref.off) if lref is not None else None,
+            lvar_stkoff=lvar_stkoff,
+            kind=kind,
+        )
+    if t == ida_hexrays.mop_c:
+        cases = getattr(mop, "c", None)
+        case_rows: list[tuple[tuple[int, ...], int]] = []
+        if cases is not None:
+            for values, target in zip(cases.values, cases.targets):
+                case_rows.append(
+                    (
+                        tuple(int(value) for value in values),
+                        int(target),
+                    )
+                )
+        return CfgMopSnapshot(
+            t=t,
+            size=size,
+            switch_cases=tuple(case_rows),
+            kind=kind,
+        )
+    if t == ida_hexrays.mop_f:
+        call_info = getattr(mop, "f", None)
+        args = getattr(call_info, "args", ()) if call_info is not None else ()
+        return CfgMopSnapshot(
+            t=t,
+            size=size,
+            args=tuple(
+                arg_snapshot
+                for arg in args
+                if (arg_snapshot := capture_mop_snapshot(arg, lvar_stkoff_map)) is not None
+            ),
+            kind=kind,
+        )
+    return CfgMopSnapshot(t=t, size=size, kind=kind)
+
+
+def capture_insn_snapshot(
+    insn: "ida_hexrays.minsn_t",
+    lvar_stkoff_map: dict[int, int] | None = None,
+    *,
+    native_ea: int | None = None,
+) -> InsnSnapshot:
+    """Capture a rich ``InsnSnapshot`` from a live ``minsn_t``.
+
+    Populates both the legacy ``operands``/``operand_slots`` fields and the
+    new typed ``l``/``r``/``d`` fields.
+
+    ``lvar_stkoff_map`` (ticket llr-lxas S1) is threaded down to
+    ``capture_mop_snapshot`` so ``mop_l`` operands carry their frame stack
+    offset.  ``None`` keeps legacy behavior; external callers that capture a
+    single instruction without a function-scope ``mba`` pass nothing.
+    """
+    opcode = insn.opcode
+    ea = insn.ea
+    try:
+        display_text = str(insn.dstr())
+    except Exception:
+        display_text = ""
+
+    operand_slots = tuple(
+        (slot_name, MopSnapshot.from_mop(mop))
+        for slot_name, mop in (
+            ("l", insn.l),
+            ("r", insn.r),
+            ("d", insn.d),
+        )
+        if mop.t != ida_hexrays.mop_z  # type: ignore[attr-defined]
+    )
+    operands = tuple(operand for _, operand in operand_slots)
+    branch_predicate = _branch_predicate_only_from_hexrays(opcode)
+    insn_kind = _insn_kind_from_hexrays(opcode)
+    lifted_opcode = opcode_lift.lift_opcode(opcode)
+    left = capture_mop_snapshot(insn.l, lvar_stkoff_map)
+    right = capture_mop_snapshot(insn.r, lvar_stkoff_map)
+    dest = capture_mop_snapshot(insn.d, lvar_stkoff_map)
+
+    return InsnSnapshot(
+        opcode=opcode,
+        ea=ea,
+        operands=operands,
+        native_ea=native_ea,
+        operand_slots=operand_slots,
+        display_text=display_text,
+        l=left,
+        r=right,
+        d=dest,
+        kind=insn_kind,
+        raw_opcode=int(opcode),
+        value_op_kind=opcode_lift.value_op_from_opcode(opcode),
+        control_transfer_kind=opcode_lift.control_transfer_from_opcode(opcode),
+        call_kind=opcode_lift.call_kind_from_opcode(opcode),
+        predicate_kind=opcode_lift.predicate_from_opcode(opcode),
+        opcode_attrs=lifted_opcode.attrs,
+        branch_predicate=branch_predicate,
+        compare_width=_compare_width_from_operands(left, right),
+        is_conditional_jump=branch_predicate is not None,
+        is_unconditional_jump=insn_kind is InsnKind.GOTO,
+        is_call=insn_kind is InsnKind.CALL,
+    )
+
+
+def lift_block(
+    blk: "ida_hexrays.mblock_t",
+    lvar_stkoff_map: dict[int, int] | None = None,
+    *,
+    map_fict_ea: Callable[[int], int],
+) -> BlockSnapshot:
+    serial = blk.serial
+    block_type = blk.type
+    flags = blk.flags
+    start_ea = blk.start
+
+    succs = get_succ_serials(blk)
+    preds = get_pred_serials(blk)
+
+    insn_snapshots: list[InsnSnapshot] = []
+    insn = blk.head
+    while insn:
+        insn_snapshots.append(
+            capture_insn_snapshot(
+                insn,
+                lvar_stkoff_map,
+                native_ea=int(map_fict_ea(int(insn.ea))),
+            )
+        )
+        insn = insn.next
+
+    mapped_start_ea = int(map_fict_ea(int(start_ea)))
+    return BlockSnapshot(
+        serial=serial,
+        block_type=block_type,
+        succs=succs,
+        preds=preds,
+        flags=flags,
+        start_ea=start_ea,
+        native_start_ea=(
+            mapped_start_ea
+            if 0 <= mapped_start_ea < 0xFFFFFFFFFFFFFFFF
+            else None
+        ),
+        insn_snapshots=tuple(insn_snapshots),
+        kind=_block_kind_from_hexrays(block_type),
+        raw_block_type=int(block_type),
+    )
+
+
+def _snapshot_form_for_maturity_name(maturity_name: str) -> SnapshotForm:
+    maturity_id = maturity_name_to_ida(maturity_name)
+    if maturity_id is None:
+        return SnapshotForm.UNKNOWN
+    return _snapshot_form_for_maturity_int(maturity_id)
+
+
+def _snapshot_form_for_maturity_int(maturity: int) -> SnapshotForm:
+    try:
+        return snapshot_form_for_maturity(ida_maturity_to_ir(maturity))
+    except ValueError:
+        return SnapshotForm.UNKNOWN
+
+
+def _snapshot_stage_for_maturity_name(maturity_name: str) -> SnapshotForm:
+    """Retired helper name; prefer ``_snapshot_form_for_maturity_name``."""
+
+    return _snapshot_form_for_maturity_name(maturity_name)
+
+
+def _build_lvar_stkoff_map(mba: "ida_hexrays.mba_t") -> dict[int, int]:
+    """Resolve ``lvar_idx -> frame stkoff`` once per function (llr-lxas S1).
+
+    ``mba.vars`` is valid only from ``MMAT_LVARS`` onward.  Earlier optimizer
+    maturities therefore return an empty map without touching the SWIG vector.
+    At ``MMAT_LVARS`` and later, reads
+    ``mba.vars[idx].location.stkoff()`` only after ``is_stkoff()`` proves
+    the location is stack-based.  The SDK requires that precondition; calling
+    ``stkoff()`` on a register location can cross a fatal SWIG/C++ assertion
+    rather than raising a catchable Python exception.  A failure on any single
+    var still must not gate the lift, so each checked lookup is guarded.
+    """
+    stkoff_map: dict[int, int] = {}
+    try:
+        if int(mba.maturity) < int(ida_hexrays.MMAT_LVARS):
+            return stkoff_map
+    except Exception:
+        return stkoff_map
+    try:
+        var_qty = mba.vars.size()
+    except Exception:
+        return stkoff_map
+    for idx in range(var_qty):
+        try:
+            location = mba.vars[idx].location
+            if not location.is_stkoff():
+                continue
+            stkoff_map[idx] = int(location.stkoff())
+        except Exception:
+            # Invalid/transient lvar metadata must not gate portable lifting.
+            continue
+    return stkoff_map
+
+
+def lift(mba: "ida_hexrays.mba_t") -> FlowGraph:
+    # llr-lxas S1: capture the lvar frame offsets once up front so per-operand
+    # snapshots carry a portable STACK identity without a live ``mba.vars`` read.
+    lvar_stkoff_map = _build_lvar_stkoff_map(mba)
+    blocks = {}
+    for i in range(mba.qty):
+        blk = mba.get_mblock(i)
+        blocks[blk.serial] = lift_block(
+            blk,
+            lvar_stkoff_map,
+            map_fict_ea=mba.map_fict_ea,
+        )
+
+    # E2b: pin a small, portable metadata contract on every lifted
+    # ``FlowGraph`` so preanalysis consumers never have to reach back into
+    # the live ``mba_t`` for these values:
+    #
+    # * ``maturity``        -- int, raw ``mba.maturity`` (already present)
+    # * ``maturity_name``   -- str, ``MMAT_*`` name (or ``Unknown maturity: N``)
+    # * ``cpu_arch_name``   -- str, IDA processor module name
+    #                          (``metapc``, ``ARM``, ``PPC``, ...)
+    #
+    # ``cpu_arch_name`` lookup is wrapped because ``inf_get_procname``
+    # can return bytes on some IDA builds and we want a clean ``str``.
+    # A lookup failure here MUST NOT gate decompilation -- fall back
+    # to ``"unknown"`` (deterministic non-empty sentinel so consumers
+    # can do string compares without special-casing ``""``).
+    try:
+        raw_proc = idaapi.inf_get_procname()
+    except Exception:
+        raw_proc = None
+    if isinstance(raw_proc, bytes):
+        try:
+            cpu_arch_name = raw_proc.decode("ascii", "replace") or "unknown"
+        except Exception:
+            cpu_arch_name = "unknown"
+    else:
+        cpu_arch_name = str(raw_proc) if raw_proc else "unknown"
+
+    maturity_int = int(mba.maturity)
+    maturity_name = maturity_to_string(maturity_int)
+    maturity_envelope = hexrays_maturity_envelope(maturity_int)
+    try:
+        ir_maturity = ida_maturity_to_ir(maturity_int)
+    except ValueError:
+        ir_maturity = None
+        snapshot_form = SnapshotForm.UNKNOWN
+    else:
+        snapshot_form = snapshot_form_for_maturity(ir_maturity)
+    return FlowGraph(
+        blocks=blocks,
+        entry_serial=0,
+        func_ea=mba.entry_ea,
+        metadata={
+            # Provider-neutral stage metadata (canonical; E2d). Portable
+            # analyses read these, never the MMAT_* aliases below.
+            "producer": "hexrays",
+            "producer_stage_id": maturity_int,
+            "producer_stage_name": maturity_name,
+            "ir_maturity": ir_maturity,
+            "snapshot_form": snapshot_form,
+            "snapshot_stage": snapshot_form,
+            "maturity_envelope": maturity_envelope.to_dict(),
+            "cpu_arch_name": cpu_arch_name,
+            # E2b transition aliases (retained for legacy callers; proven
+            # equal to the neutral fields by the lifter parity test).
+            "maturity": maturity_int,
+            "maturity_name": maturity_name,
+        },
+    )
+
+
+def _unsupported_insert_block_reason(step: PatchInsertBlock) -> str | None:
+    if step.captured_body is not None:
+        if step.captured_body.summary.contains_call:
+            return (
+                f"PatchInsertBlock({step.pred_serial}->{step.succ_serial}) "
+                "cannot replay call-containing captured body"
+            )
+        reason = validate_captured_block_body(step.captured_body)
+    else:
+        reason = validate_insn_snapshots(step.instructions)
+    if reason is not None:
+        return (
+            f"PatchInsertBlock({step.pred_serial}->{step.succ_serial}) "
+            f"cannot rebuild instructions: {reason}"
+        )
+    return None
+
+
+def _unsupported_duplicate_block_reason(step: PatchDuplicateBlock) -> str | None:
+    if step.pred_serial is None:
+        return f"PatchDuplicateBlock(source={step.source_serial}) missing predecessor"
+    if step.pred_redirect_kind not in {"one_way", "conditional"}:
+        return (
+            f"PatchDuplicateBlock(source={step.source_serial}, pred={step.pred_serial}) "
+            f"unsupported predecessor edge kind: {step.pred_redirect_kind}"
+        )
+    if len(step.source_successors) > 2:
+        return (
+            f"PatchDuplicateBlock(source={step.source_serial}) "
+            f"unsupported successor count: {len(step.source_successors)}"
+        )
+    if len(step.source_successors) == 2:
+        if step.fallthrough_block_id is None:
+            return (
+                f"PatchDuplicateBlock(source={step.source_serial}) "
+                "missing duplicated fallthrough serial"
+            )
+        if step.fallthrough_target is None:
+            return (
+                f"PatchDuplicateBlock(source={step.source_serial}) "
+                "missing duplicated fallthrough target"
+            )
+        if step.target_serial is None and step.conditional_target is None:
+            return (
+                f"PatchDuplicateBlock(source={step.source_serial}) "
+                "missing duplicated conditional target"
+            )
+    return None
+
+
+def _unsupported_duplicate_replay_reason(
+    step: PatchDuplicateReplayAndRedirect,
+) -> str | None:
+    if len(step.per_pred_replays) < 2:
+        return (
+            f"PatchDuplicateReplayAndRedirect(source={step.source_serial}) "
+            "requires at least two predecessor replay rows"
+        )
+    seen_preds: set[int] = set()
+    for entry in step.per_pred_replays:
+        if entry.pred_serial in seen_preds:
+            return (
+                f"PatchDuplicateReplayAndRedirect(source={step.source_serial}) "
+                f"duplicates predecessor {entry.pred_serial}"
+            )
+        seen_preds.add(entry.pred_serial)
+        if entry.captured_body.summary.contains_call:
+            return (
+                "PatchDuplicateReplayAndRedirect("
+                f"source={step.source_serial}, pred={entry.pred_serial}) "
+                "cannot replay call-containing captured body"
+            )
+        reason = validate_captured_block_body(entry.captured_body)
+        if reason is not None:
+            return (
+                "PatchDuplicateReplayAndRedirect("
+                f"source={step.source_serial}, pred={entry.pred_serial}) "
+                f"cannot rebuild replay body: {reason}"
+            )
+    return None
+
+
+
+class IDAIRTranslator:
+    """CFGBackend implementation for IDA Pro's Hex-Rays microcode.
+
+    Translates between the FlowGraph representation and IDA's
+    mblock_t/mba_t structures using DeferredGraphModifier.
+
+    Example:
+        >>> backend = IDAIRTranslator()
+        >>> cfg = backend.lift(mba)
+        >>> modifications = [ConvertToGoto(block_serial=3, goto_target=5)]
+        >>> count = backend.lower(
+        ...     modifications,
+        ...     mba,
+        ...     mutation_gateway=mutation_gateway,
+        ... )
+        >>> backend.verify(mba)
+        True
+    """
+
+    def __init__(
+        self,
+        *,
+        contract: IDACfgContract | None = None,
+    ) -> None:
+        self._contract = contract
+        self._last_lowering_phase: str | None = None
+        self._last_lowering_subphase: str | None = None
+
+    @property
+    def contract(self) -> IDACfgContract | None:
+        return self._contract
+
+    @contract.setter
+    def contract(self, value: IDACfgContract | None) -> None:
+        self._contract = value
+
+    @property
+    def last_lowering_phase(self) -> str | None:
+        """Phase of last failure from lower(), or None if lower() succeeded."""
+        return self._last_lowering_phase
+
+    @property
+    def last_lowering_subphase(self) -> str | None:
+        """Most specific subphase reported by the backend, when available."""
+        return self._last_lowering_subphase
+
+    @property
+    def name(self) -> str:
+        """Unique identifier for the backend."""
+        return "ida"
+
+    def lift(self, mba: "ida_hexrays.mba_t") -> FlowGraph:
+        """Convert IDA's mba_t to FlowGraph snapshot.
+
+        Args:
+            mba: IDA microcode block array to snapshot.
+
+        Returns:
+            FlowGraph snapshot capturing current topology.
+        """
+        return lift(mba)
+
+    def lower(
+        self,
+        patch_plan: PatchPlan,
+        mba: "ida_hexrays.mba_t",
+        *,
+        mutation_gateway: MbaMutationGateway,
+        post_apply_hook=None,
+    ) -> int:
+        """Apply a PatchPlan to mba via DeferredGraphModifier.
+
+        ``PatchPlan`` concrete operations are lowered directly. Supported
+        block-creating steps are materialized through backend queue/apply
+        operations. Unsupported typed operations are rejected before mutation.
+
+        Args:
+            patch_plan: Finalized backend execution plan.
+            mba: IDA microcode block array to modify.
+
+        Returns:
+            Count of successfully applied modifications.
+
+        Example:
+            >>> patch_plan = PatchPlan(
+            ...     steps=(PatchRedirectGoto(from_serial=10, old_target=20, new_target=30),)
+            ... )
+            >>> count = backend.lower(
+            ...     patch_plan,
+            ...     mba,
+            ...     mutation_gateway=mutation_gateway,
+            ... )
+            >>> count
+            1
+        """
+        # Import here to make it patchable in tests
+        from d810.hexrays.mutation import deferred_modifier
+
+        self._last_lowering_phase = None
+        self._last_lowering_subphase = None
+
+        if not isinstance(patch_plan, PatchPlan):
+            raise TypeError(
+                "IDAIRTranslator.lower() now requires PatchPlan; "
+                "compile GraphModification lists before lowering"
+            )
+        unsupported_reasons = self._unsupported_patch_plan_reasons(patch_plan)
+        if unsupported_reasons:
+            logger.warning(
+                "PatchPlan contains unsupported lowering step(s): %s",
+                ", ".join(unsupported_reasons),
+            )
+            self._last_lowering_phase = "lowering"
+            return 0
+
+        # Derive execution policy from the plan itself (not a translator flag).
+        relaxed = patch_plan.execution_policy in (
+            ExecutionPolicy.NOP_CLEANUP_RELAXED,
+            ExecutionPolicy.NOP_MERGE_BLOCKS_RELAXED,
+        )
+        merge_blocks_cleanup = (
+            patch_plan.execution_policy == ExecutionPolicy.NOP_MERGE_BLOCKS_RELAXED
+        )
+
+        # Safety gate: relaxed NOP policies only permit instruction-local
+        # NOP cleanup.  Reject any plan containing block-creating, edge-changing,
+        # or redirect steps so relaxed mode cannot silently bypass the verifier
+        # for structural mutations.
+        if relaxed:
+            _NOP_ONLY_ALLOWED = (PatchNopInstructions, PatchZeroStateWrite)
+            disallowed = [
+                type(s).__name__
+                for s in patch_plan.steps
+                if not isinstance(s, _NOP_ONLY_ALLOWED)
+            ]
+            if disallowed:
+                logger.error(
+                    "relaxed NOP plan contains non-NOP steps "
+                    "(%s); rejecting to prevent verifier bypass on structural edits",
+                    ", ".join(disallowed),
+                )
+                self._last_lowering_phase = "lowering"
+                return 0
+
+        if patch_plan.contains_block_creation:
+            logger.info(
+                "Lowering PatchPlan with %d typed ops and %d planned block creations",
+                len(patch_plan.concrete_operations),
+                len(patch_plan.new_blocks),
+            )
+
+        modifier = self._bind_and_queue_patch_plan(
+            patch_plan,
+            mba,
+            mutation_gateway=mutation_gateway,
+            deferred_modifier_module=deferred_modifier,
+        )
+
+        # Build effective post-apply hook: caller hook + contract check
+        effective_hook: Callable[[], None] | None = None
+        # NOP cleanup intentionally creates a transient CFG/successor mismatch
+        # that Hex-Rays resolves in the apply tail via optimize_local().
+        # Running the live post-contract before that cleanup would abort the
+        # maintenance step, leaving the MBA in the transient state.
+        if post_apply_hook is not None or (self.contract is not None and not relaxed):
+
+            def _combined_post_apply_hook() -> None:
+                if post_apply_hook is not None:
+                    post_apply_hook()
+                if self.contract is not None and not relaxed:
+                    self.contract.verify(mba, plan=patch_plan, phase="post")
+
+            effective_hook = _combined_post_apply_hook
+
+        verify_each_mod = not patch_plan.contains_block_creation
+
+        # Apply all queued modifications with snapshot rollback enabled.
+        # Under relaxed NOP cleanup, disable rollback so the NOPs survive
+        # even if IDA's GLBOPT1 verifier complains (INTERR 50846).
+        enable_rollback = not relaxed
+        # Opt-in transactional mode: gates the batch with pre-apply conflict
+        # detection and rolls back on any mid-batch abort. Off by default to
+        # preserve existing behavior; enable for probes that want all-or-nothing.
+        use_transactional = os.getenv(
+            "D810_DEFERRED_TRANSACTIONAL", ""
+        ).strip() == "1" and enable_rollback
+        # Opt-in staged atomic mode: destructive mods lowered to copy-and-swap
+        # via mba.copy_block so intermediate state is invisible to IDA-level
+        # observers. Composable with transactional.
+        use_staged_atomic = os.getenv(
+            "D810_DEFERRED_STAGED_ATOMIC", ""
+        ).strip() == "1"
+        try:
+            result_count = modifier.apply(
+                run_optimize_local=not merge_blocks_cleanup,
+                run_deep_cleaning=merge_blocks_cleanup,
+                verify_each_mod=verify_each_mod and enable_rollback,
+                rollback_on_verify_failure=verify_each_mod and enable_rollback,
+                continue_on_verify_failure=verify_each_mod,
+                enable_snapshot_rollback=enable_rollback,
+                post_apply_hook=effective_hook,
+                transactional=use_transactional,
+                staged_atomic=use_staged_atomic,
+            )
+        except Exception:
+            self._last_lowering_phase = modifier.last_apply_phase or "backend_apply"
+            self._last_lowering_subphase = modifier.last_apply_subphase
+            raise
+
+        # If verify failed (even after rollback attempt), signal the pipeline
+        # to stop by returning 0. A positive result with verify_failed=True
+        # means rollback also failed - the MBA may be corrupted.
+        if modifier.verify_failed:
+            self._last_lowering_phase = modifier.last_apply_phase or "native_verify"
+            self._last_lowering_subphase = modifier.last_apply_subphase
+            if relaxed and result_count > 0:
+                logger.info(
+                    "DeferredGraphModifier.verify_failed is set after apply "
+                    "but execution_policy=%s; "
+                    "returning %d applied modifications",
+                    patch_plan.execution_policy.value,
+                    result_count,
+                )
+            else:
+                logger.warning(
+                    "DeferredGraphModifier.verify_failed is set after apply; "
+                    "returning 0 to prevent pipeline from treating changes as successful"
+                )
+                return 0
+
+        if result_count == 0 and self._last_lowering_phase is None:
+            self._last_lowering_phase = modifier.last_apply_phase
+            self._last_lowering_subphase = modifier.last_apply_subphase
+
+        return result_count
+
+    def _bind_and_queue_patch_plan(
+        self,
+        patch_plan: PatchPlan,
+        mba: "ida_hexrays.mba_t",
+        *,
+        mutation_gateway: MbaMutationGateway,
+        deferred_modifier_module: object,
+    ) -> "DeferredGraphModifierType":
+        """Prepare a plan without leaving identity residue on prewrite failure."""
+        patch_gateway = mutation_gateway.new_transaction()
+        transaction_attempt = TransactionAttemptId.new(patch_plan.plan_id)
+        try:
+            patch_gateway.begin_batch(
+                StructuralMutationKind.BLOCK_REPLACE,
+                serial_quantity=int(mba.qty),
+                description=f"PatchPlan {patch_plan.plan_id}",
+                planned_operation_count=len(patch_plan.steps),
+                transaction_attempt=transaction_attempt,
+                patch_plan_id=patch_plan.plan_id,
+                patch_plan_refs=tuple(
+                    spec.block_id for spec in patch_plan.new_blocks
+                ),
+            )
+            bound_patch_plan = bind_patch_plan(
+                patch_plan,
+                patch_gateway.identity_index,
+                transaction_attempt,
+            )
+            patch_gateway.register_patch_plan_reservations(
+                bound_patch_plan.reservations
+            )
+            modifier = deferred_modifier_module.DeferredGraphModifier(
+                mba,
+                mutation_gateway=patch_gateway,
+            )
+            modifier.configure_patch_bindings(bound_patch_plan)
+            bound_modifier = BoundModifier(modifier, bound_patch_plan)
+            for step in patch_plan.steps:
+                self._queue_patch_step(bound_modifier, step)
+            return modifier
+        except Exception as exc:
+            if patch_gateway.active:
+                patch_gateway.abort(
+                    reason=(
+                        "PatchPlan prewrite preparation failed: "
+                        f"{type(exc).__name__}: {exc}"
+                    )
+                )
+            self._last_lowering_phase = (
+                "binding" if isinstance(exc, PatchBindingRejected) else "queueing"
+            )
+            raise
+
+    def _unsupported_patch_plan_reasons(self, patch_plan: PatchPlan) -> list[str]:
+        reasons: list[str] = []
+        for step in patch_plan.steps:
+            match step:
+                case PatchRedirectGoto() | PatchRedirectBranch() | PatchConvertToGoto():
+                    continue
+                case PatchNopInstructions() | PatchZeroStateWrite() | PatchEdgeSplitTrampoline() | PatchEdgeSplitCorridor() | PatchConditionalRedirect() | PatchCloneConditionalAsGoto() | PatchCloneConditionalAsGotoFromBranchArm():
+                    continue
+                case PatchPromoteOperandToScalar():
+                    continue
+                case (
+                    PatchLowerConditionalStateTransition()
+                    | PatchNormalizeNWayDispatcherExit()
+                    | PatchBypassDispatcherTrampoline()
+                    | PatchCanonicalizeJumpTableCaseOverlap()
+                    | PatchScalarizeLocalAliasAccess()
+                    | PatchRetargetOutputStore()
+                    | PatchPhaseCycleLowering()
+                ):
+                    continue
+                case PatchPrivateTerminalSuffix():
+                    continue
+                case PatchPrivateTerminalSuffixGroup():
+                    continue
+                case PatchExitPathLoweringGroup():
+                    continue
+                case PatchReorderBlocks():
+                    continue
+                case PatchInsertBlock() as insert_step:
+                    reason = _unsupported_insert_block_reason(insert_step)
+                    if reason is not None:
+                        reasons.append(reason)
+                case PatchDuplicateBlock() as duplicate_step:
+                    reason = _unsupported_duplicate_block_reason(duplicate_step)
+                    if reason is not None:
+                        reasons.append(reason)
+                case PatchDuplicateReplayAndRedirect() as replay_step:
+                    reason = _unsupported_duplicate_replay_reason(replay_step)
+                    if reason is not None:
+                        reasons.append(reason)
+                case PatchRemoveEdge():
+                    continue
+                case _:
+                    reasons.append(type(step).__name__)
+        return reasons
+
+
+    def _queue_patch_step(
+        self,
+        modifier: "DeferredGraphModifierType",
+        step: PatchStep,
+    ) -> None:
+        match step:
+            case PatchRedirectBranch(
+                from_serial=src,
+                old_target=old,
+                new_target=new,
+                fallthrough_helper_block_id=helper,
+            ):
+                modifier.queue_conditional_target_change(
+                    src,
+                    new,
+                    old_target=old,
+                    expected_helper_serial=helper,
+                    description=f"redirect branch {src}: {old}->{new}",
+                )
+
+            case PatchRedirectGoto(from_serial=src, old_target=old, new_target=new):
+                modifier.queue_goto_change(
+                    src,
+                    new,
+                    description=f"redirect goto {src}: {old}->{new}",
+                )
+
+            case PatchConvertToGoto(block_serial=serial, goto_target=target):
+                modifier.queue_convert_to_goto(
+                    serial,
+                    target,
+                    description=f"convert {serial} to goto {target}",
+                )
+
+            case PatchRemoveEdge(from_serial=src, to_serial=dst):
+                modifier.queue_remove_edge(
+                    src,
+                    dst,
+                    description=f"remove edge {src}->{dst}",
+                )
+
+            case PatchNopInstructions(block_serial=serial, insn_eas=eas):
+                for ea in eas:
+                    modifier.queue_insn_nop(
+                        serial,
+                        ea,
+                        description=f"nop {hex(ea)} in block {serial}",
+                    )
+
+            case PatchZeroStateWrite(block_serial=serial, insn_ea=ea):
+                modifier.queue_zero_state_write(
+                    serial,
+                    ea,
+                    description=f"zero state write {hex(ea)} in block {serial}",
+                )
+
+            case PatchPromoteOperandToScalar(
+                block_serial=serial,
+                host_ea=host_ea,
+                host_opcode=opcode,
+                operand_side=side,
+            ):
+                modifier.queue_promote_operand_to_scalar(
+                    serial,
+                    host_ea,
+                    opcode,
+                    side,
+                    description=(
+                        f"promote operand {side} of insn at {hex(host_ea)} "
+                        f"in block {serial}"
+                    ),
+                )
+
+            case PatchLowerConditionalStateTransition(
+                source_serial=src,
+                old_dispatcher_serial=dispatcher,
+                rewrite_from_ea=ea,
+                condition_operand=condition,
+                false_target_serial=false_target,
+                true_target_serial=true_target,
+                proof_id=proof_id,
+                state_register=state_register,
+                state_size=state_size,
+                false_state=false_state,
+                true_state=true_state,
+                false_state_write_ea=false_state_write_ea,
+                true_state_write_ea=true_state_write_ea,
+            ):
+                modifier.queue_lower_conditional_state_transition(
+                    source_serial=src,
+                    old_dispatcher_serial=dispatcher,
+                    rewrite_from_ea=ea,
+                    condition_operand=condition,
+                    false_target_serial=false_target,
+                    true_target_serial=true_target,
+                    proof_id=proof_id,
+                    state_register=state_register,
+                    state_size=state_size,
+                    false_state=false_state,
+                    true_state=true_state,
+                    false_state_write_ea=false_state_write_ea,
+                    true_state_write_ea=true_state_write_ea,
+                    description=(
+                        f"lower conditional state transition {src}: "
+                        f"{dispatcher}->{false_target}/{true_target}"
+                    ),
+                )
+
+            case PatchNormalizeNWayDispatcherExit(
+                block_serial=serial,
+                dispatcher_entry_serial=dispatcher,
+                keep_target_serial=keep,
+            ):
+                modifier.queue_normalize_nway_dispatcher_exit(
+                    serial,
+                    dispatcher,
+                    keep_target_serial=keep,
+                    description=(
+                        f"normalize NWAY dispatcher exit {serial}: "
+                        f"drop dispatcher {dispatcher}"
+                    ),
+                )
+
+            case PatchBypassDispatcherTrampoline(
+                source_serial=src,
+                trampoline_serial=trampoline,
+                target_serial=target,
+            ):
+                modifier.queue_bypass_dispatcher_trampoline(
+                    src,
+                    trampoline,
+                    target,
+                    description=(
+                        f"bypass dispatcher trampoline {src}: "
+                        f"{trampoline}->{target}"
+                    ),
+                )
+
+            case PatchCanonicalizeJumpTableCaseOverlap(
+                jtbl_serial=serial,
+                retarget_map=retarget_map,
+                deduplicate=deduplicate,
+            ):
+                modifier.queue_canonicalize_jtbl_case_overlap(
+                    serial,
+                    retarget_map,
+                    deduplicate=deduplicate,
+                    description=(
+                        f"canonicalize jump-table overlap {serial}: "
+                        f"{len(retarget_map)} retargets"
+                    ),
+                )
+
+            case PatchScalarizeLocalAliasAccess(
+                block_serial=serial,
+                host_ea=host_ea,
+                host_opcode=opcode,
+                alias_token=alias,
+                base_token=base,
+                host_text_sha1=host_text_sha1,
+                value_size=value_size,
+            ):
+                modifier.queue_scalarize_local_alias_access(
+                    serial,
+                    host_ea,
+                    opcode,
+                    alias,
+                    base,
+                    host_text_sha1=host_text_sha1,
+                    value_size=value_size,
+                    description=(
+                        f"scalarize local alias {alias}->{base} at "
+                        f"{hex(host_ea)} in block {serial}"
+                    ),
+                )
+
+            case PatchRetargetOutputStore(
+                block_serial=serial,
+                host_ea=host_ea,
+                host_opcode=opcode,
+                alias_token=alias,
+                output_token=output,
+                host_text_sha1=host_text_sha1,
+                value_size=value_size,
+            ):
+                modifier.queue_retarget_output_store(
+                    serial,
+                    host_ea,
+                    opcode,
+                    alias,
+                    output,
+                    host_text_sha1=host_text_sha1,
+                    value_size=value_size,
+                    description=(
+                        f"retarget output store {alias}->{output} at "
+                        f"{hex(host_ea)} in block {serial}"
+                    ),
+                )
+
+            case PatchPhaseCycleLowering(
+                header_entries=header_entries,
+                header_target=header_target,
+                body_entries=body_entries,
+                body_target=body_target,
+                next_phase_entries=next_phase_entries,
+                next_phase_target=next_phase_target,
+                terminal_entries=terminal_entries,
+                terminal_target=terminal_target,
+            ):
+                modifier.queue_phase_cycle_lowering(
+                    header_entries=header_entries,
+                    header_target=header_target,
+                    body_entries=body_entries,
+                    body_target=body_target,
+                    next_phase_entries=next_phase_entries,
+                    next_phase_target=next_phase_target,
+                    terminal_entries=terminal_entries,
+                    terminal_target=terminal_target,
+                    description="lower dispatcher phase cycle",
+                )
+
+            case PatchEdgeSplitTrampoline(
+                block_id=assigned,
+                source_serial=src,
+                via_pred=pred,
+                apply_old_target=old,
+                new_target=new,
+            ):
+                modifier.queue_edge_split_trampoline(
+                    source_block=src,
+                    via_pred=pred,
+                    old_target=old,
+                    new_target=new,
+                    expected_serial=assigned,
+                    description=(
+                        f"edge-split trampoline pred={pred} src={src} "
+                        f"{old}->{new} via {assigned}"
+                    ),
+                )
+
+            case PatchEdgeSplitCorridor(
+                source_serial=src,
+                via_pred=pred,
+                old_target=old,
+                new_target=new,
+                clone_until=clone_until,
+                source_new_target=source_new_target,
+                rule_priority=priority,
+            ):
+                modifier.queue_edge_redirect(
+                    src_block=src,
+                    old_target=old,
+                    new_target=new,
+                    via_pred=pred,
+                    clone_until=clone_until,
+                    source_new_target=source_new_target,
+                    rule_priority=priority,
+                    description=(
+                        f"edge-split corridor pred={pred} src={src} "
+                        f"{old}->{new} until {clone_until}"
+                    ),
+                )
+
+            case PatchConditionalRedirect(
+                block_id=assigned,
+                fallthrough_block_id=fallthrough_serial,
+                source_serial=src,
+                ref_block=ref,
+                conditional_target=conditional_target,
+                fallthrough_target=fallthrough_target,
+                old_target_serial=old_target,
+                instructions=instructions,
+            ):
+                modifier.queue_create_conditional_redirect(
+                    source_blk_serial=src,
+                    ref_blk_serial=ref,
+                    conditional_target_serial=conditional_target,
+                    fallthrough_target_serial=fallthrough_target,
+                    old_target_serial=old_target,
+                    instructions_to_copy=instructions,
+                    expected_conditional_serial=assigned,
+                    expected_fallthrough_serial=fallthrough_serial,
+                    description=(
+                        f"conditional redirect src={src} ref={ref} "
+                        f"cond={conditional_target} ft={fallthrough_target} "
+                        f"via {assigned}/{fallthrough_serial}"
+                    ),
+                )
+
+            case PatchInsertBlock(
+                block_id=assigned,
+                pred_serial=pred,
+                succ_serial=succ,
+                instructions=instructions,
+                old_target_serial=old_target,
+                captured_body=captured_body,
+            ):
+                if captured_body is not None:
+                    instructions = insn_snapshots_from_captured_body(captured_body)
+                modifier.queue_create_and_redirect(
+                    source_block_serial=pred,
+                    final_target_serial=succ,
+                    instructions_to_copy=list(instructions),
+                    is_0_way=False,
+                    expected_serial=assigned,
+                    old_target_serial=old_target,
+                    description=(
+                        f"insert block {pred}->{assigned}->{succ} "
+                        f"with {len(instructions)} instructions "
+                        f"(old_target={old_target})"
+                    ),
+                )
+
+            case PatchDuplicateBlock(
+                block_id=assigned,
+                fallthrough_block_id=fallthrough_serial,
+                source_serial=src,
+                pred_serial=pred,
+                target_serial=target,
+                conditional_target=conditional_target,
+                fallthrough_target=fallthrough_target,
+            ):
+                modifier.queue_duplicate_block(
+                    source_block_serial=src,
+                    pred_serial=pred,
+                    target_serial=target,
+                    conditional_target=conditional_target,
+                    fallthrough_target=fallthrough_target,
+                    expected_serial=assigned,
+                    expected_secondary_serial=fallthrough_serial,
+                    description=(
+                        f"duplicate block src={src} pred={pred} "
+                        f"target={target} cond={conditional_target} "
+                        f"ft={fallthrough_target} via {assigned}"
+                    ),
+                )
+
+            case PatchDuplicateReplayAndRedirect(
+                source_serial=src,
+                dispatcher_entry=dispatcher,
+                per_pred_replays=per_pred_replays,
+            ):
+                replay_entries = []
+                for entry in per_pred_replays:
+                    replay_entries.append(
+                        (
+                            entry.pred_serial,
+                            entry.target_serial,
+                            entry.replay_block_id,
+                            entry.clone_block_id,
+                            tuple(insn_snapshots_from_captured_body(entry.captured_body)),
+                        )
+                    )
+                modifier.queue_duplicate_replay_and_redirect(
+                    source_block_serial=src,
+                    dispatcher_entry_serial=dispatcher,
+                    per_pred_replays=tuple(replay_entries),
+                    description=(
+                        f"duplicate replay source={src} dispatcher={dispatcher} "
+                        f"rows={len(replay_entries)}"
+                    ),
+                )
+
+            case PatchCloneConditionalAsGoto(
+                block_id=assigned,
+                source_serial=src,
+                pred_serial=pred,
+                goto_target=target,
+                reason=reason,
+            ):
+                modifier.queue_clone_conditional_as_goto(
+                    source_block_serial=src,
+                    pred_serial=pred,
+                    goto_target_serial=target,
+                    expected_serial=assigned,
+                    description=(
+                        f"clone conditional as goto pred={pred} src={src} "
+                        f"target={target} via {assigned}: {reason}"
+                    ),
+                )
+
+            case PatchCloneConditionalAsGotoFromBranchArm(
+                block_id=assigned,
+                source_serial=src,
+                pred_serial=pred,
+                pred_arm=arm,
+                goto_target=target,
+                reason=reason,
+            ):
+                modifier.queue_clone_conditional_as_goto_from_branch_arm(
+                    source_block_serial=src,
+                    pred_serial=pred,
+                    pred_arm=arm,
+                    goto_target_serial=target,
+                    expected_serial=assigned,
+                    description=(
+                        f"clone conditional as goto from arm pred={pred} arm={arm} "
+                        f"src={src} target={target} via {assigned}: {reason}"
+                    ),
+                )
+
+            case PatchPrivateTerminalSuffix(
+                anchor_serial=anchor,
+                shared_entry_serial=shared_entry,
+                return_block_serial=return_block,
+                suffix_serials=suffix,
+                clone_block_ids=clone_serials,
+            ):
+                modifier.queue_private_terminal_suffix(
+                    anchor_serial=anchor,
+                    shared_entry_serial=shared_entry,
+                    return_block_serial=return_block,
+                    suffix_serials=suffix,
+                    clone_expected_serials=clone_serials,
+                    description=(
+                        f"private terminal suffix anchor={anchor} "
+                        f"shared_entry={shared_entry} return={return_block} "
+                        f"suffix={suffix} clones={clone_serials}"
+                    ),
+                )
+
+            case PatchPrivateTerminalSuffixGroup(
+                shared_entry_serial=shared_entry,
+                return_block_serial=return_block,
+                suffix_serials=suffix_serials,
+                anchors=anchors,
+                per_anchor_clone_block_ids=per_anchor_serials,
+            ):
+                modifier.queue_private_terminal_suffix_group(
+                    anchors=anchors,
+                    shared_entry_serial=shared_entry,
+                    return_block_serial=return_block,
+                    suffix_serials=suffix_serials,
+                    per_anchor_clone_expected_serials=per_anchor_serials,
+                )
+
+            case PatchExitPathLoweringGroup(
+                shared_entry_serial=shared_entry,
+                return_block_serial=return_block,
+                suffix_serials=suffix_serials,
+                sites=sites,
+            ):
+                modifier.queue_direct_terminal_lowering_group(
+                    shared_entry_serial=shared_entry,
+                    return_block_serial=return_block,
+                    suffix_serials=suffix_serials,
+                    sites=sites,
+                )
+
+            case PatchReorderBlocks(
+                dfs_block_order=order,
+                copy_lineage=old_to_new_pairs,
+                two_way_trampoline_lineage=two_way_tramp_pairs,
+            ):
+                modifier.queue_reorder_blocks(
+                    dfs_block_order=order,
+                    old_to_new=dict(old_to_new_pairs) if old_to_new_pairs else None,
+                    old_to_trampoline=dict(two_way_tramp_pairs) if two_way_tramp_pairs else None,
+                    description=f"reorder {len(order)} blocks in DFS order",
+                )
+
+            case _:
+                logger.warning("Unknown PatchPlan step type: %s", type(step).__name__)
+
+    def verify(self, mba: "ida_hexrays.mba_t") -> bool:
+        """Verify mba consistency after modifications.
+
+        Args:
+            mba: IDA microcode block array to verify.
+
+        Returns:
+            True if verification passed, False if corruption detected.
+
+        Raises:
+            RuntimeError: If verification fails (propagated from safe_verify).
+        """
+        # Import here to make it patchable in tests
+        from d810.hexrays.mutation import cfg_verify
+
+        try:
+            cfg_verify.safe_verify(mba, "IDAIRTranslator.verify()")
+            return True
+        except RuntimeError:
+            return False
+
+
+__all__ = [
+    "IDAIRTranslator",
+    "classify_branch_predicate",
+    "classify_control_transfer",
+    "classify_live_insn_kind",
+    "classify_live_operand_kind",
+    "is_control_flow_opcode",
+    "is_hexrays_opcode",
+    "capture_insn_snapshot",
+    "capture_mop_snapshot",
+    "lift",
+    "lift_block",
+]

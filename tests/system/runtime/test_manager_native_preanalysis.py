@@ -1,0 +1,781 @@
+"""Manager gate for session-owned pre-decompile resolver evidence."""
+
+from __future__ import annotations
+
+import json
+from types import SimpleNamespace
+
+import ida_hexrays
+import pytest
+
+from d810.analyses.control_flow.native_preanalysis_session import (
+    NativePreanalysisSessionState,
+)
+from d810.core.observability_events import (
+    IdentityDecisionObserved,
+    MutationReceiptObserved,
+    SemanticFragmentFailureObserved,
+)
+from d810.hexrays.ir.mba_identity_index import MbaBlockIdentityIndex
+from d810.hexrays.ir.logical_block_proxy import (
+    LogicalBlockVersion,
+    LogicalBlockVersionId,
+)
+from d810.hexrays.mutation.fragment_publication_lifecycle import (
+    FragmentPublicationLifecycleAuthority,
+)
+from d810.hexrays.mutation.mba_mutation_events import (
+    MbaMutationAborted,
+    MbaMutationRootPublicationGroup,
+    StructuralMutationKind,
+)
+from d810.hexrays.mutation.semantic_fragment_failure import (
+    MbaSemanticFragmentFailure,
+)
+from d810.ir.semantic_edge import SemanticEdgeRole
+from d810.ir.block_identity import (
+    CurrentMbaBlockIdentityBinding,
+    CurrentMbaIdentityBindingSnapshot,
+    MbaBlockHandle,
+    NativeEaInterval,
+    StableBlockIdentity,
+)
+from d810.manager.manager import (
+    D810Manager,
+    _build_current_mba_identity_index,
+    _initialize_resolver_attachment,
+    _new_current_mba_mutation_gateway,
+    _new_semantic_native_body_materializer,
+)
+from d810.manager.decompilation_lifecycle import DecompilationSessionContext
+from d810.optimizers.microcode.flow.jumps import computed_goto_resolver
+from d810.optimizers.microcode.flow.jumps.resolver_session_state import (
+    resolver_session_state,
+)
+from tests.native_preanalysis import make_native_key
+
+
+NATIVE_KEY = make_native_key()
+
+
+def _current_mba_identity_binding() -> CurrentMbaIdentityBindingSnapshot:
+    live_ea = 0xFFFFFFFFFFFFFF01
+    native_ea = 0x40A70E
+    return CurrentMbaIdentityBindingSnapshot(
+        instruction_origins=((live_ea, native_ea),),
+        block_bindings=(
+            CurrentMbaBlockIdentityBinding(
+                stable_identity=StableBlockIdentity.from_intervals(
+                    (NativeEaInterval(0x40A700, 0x40A720),),
+                    native_key=NATIVE_KEY,
+                    exact_instruction_eas=(native_ea,),
+                ),
+                live_instruction_eas=frozenset({live_ea}),
+            ),
+        ),
+    )
+
+
+def test_resolver_attachment_reads_manager_owned_normalization_plan_port() -> None:
+    session = DecompilationSessionContext(
+        function_ea=0x40A560,
+        database_identity="test",
+        top_level_epoch=1,
+        native_key=NATIVE_KEY,
+    )
+
+    state = _initialize_resolver_attachment(session)
+
+    assert (
+        state.frontend_normalization_plan_provider
+        is session.frontend_normalization_plan_authority
+    )
+
+
+def test_current_mba_identity_index_uses_only_current_mba_publication_binding(
+    monkeypatch,
+) -> None:
+    native_preanalysis = NativePreanalysisSessionState()
+    binding = _current_mba_identity_binding()
+    session = SimpleNamespace(
+        native_preanalysis=native_preanalysis,
+        native_key=NATIVE_KEY,
+        resolver_attachment=None,
+        identity_key="test-session",
+        function_ea=0x40A560,
+    )
+    state = resolver_session_state(session)
+    events: list[str] = []
+    mba = SimpleNamespace(
+        maturity=0,
+        this=0x1234,
+        build_graph=lambda: events.append("build_graph"),
+    )
+    assert state.bind_current_imported_publication(0x1234, binding)
+    captured: dict[str, object] = {}
+    index = SimpleNamespace(
+        evidence_generation=native_preanalysis.evidence_generation,
+        generation=0,
+    )
+
+    def build_index(current_mba, **kwargs):
+        events.append("index")
+        captured["mba"] = current_mba
+        captured.update(kwargs)
+        return index
+
+    monkeypatch.setattr(
+        MbaBlockIdentityIndex,
+        "from_mba",
+        staticmethod(build_index),
+    )
+
+    assert _build_current_mba_identity_index(session=session, mba=mba) is index
+    assert captured["mba"] is mba
+    assert captured["current_mba_identity_binding"] is binding
+    assert "imported_instruction_origins" not in captured
+    assert state.identity_index is index
+    assert events == ["build_graph", "index"]
+
+
+def test_current_mba_identity_index_rejects_previous_mba_binding(monkeypatch) -> None:
+    native_preanalysis = NativePreanalysisSessionState()
+    session = SimpleNamespace(
+        native_preanalysis=native_preanalysis,
+        native_key=NATIVE_KEY,
+        resolver_attachment=None,
+        identity_key="test-session",
+        function_ea=0x40A560,
+    )
+    state = resolver_session_state(session)
+    assert state.bind_current_imported_publication(
+        0x1234,
+        _current_mba_identity_binding(),
+    )
+    captured: dict[str, object] = {}
+    index = SimpleNamespace(evidence_generation=0, generation=0)
+
+    def build_index(_mba, **kwargs):
+        captured.update(kwargs)
+        return index
+
+    monkeypatch.setattr(MbaBlockIdentityIndex, "from_mba", staticmethod(build_index))
+
+    _build_current_mba_identity_index(
+        session=session,
+        mba=SimpleNamespace(
+            maturity=0,
+            this=0x5678,
+            build_graph=lambda: None,
+        ),
+    )
+
+    assert captured["current_mba_identity_binding"] is None
+    assert "imported_instruction_origins" not in captured
+
+
+def test_current_mba_identity_index_reports_ambiguous_candidate_owners(
+    monkeypatch,
+) -> None:
+    import d810.core.observability as observability
+
+    native_preanalysis = NativePreanalysisSessionState()
+    session = SimpleNamespace(
+        native_preanalysis=native_preanalysis,
+        native_key=NATIVE_KEY,
+        resolver_attachment=None,
+        identity_key="test-session",
+        function_ea=0x40A560,
+    )
+
+    class Insn:
+        ea = 0x40D348
+        next = None
+
+    blocks = tuple(
+        SimpleNamespace(
+            serial=serial,
+            start=0x40D348,
+            head=Insn(),
+        )
+        for serial in (0, 1)
+    )
+    mba = SimpleNamespace(
+        qty=len(blocks),
+        maturity=0,
+        this=0x1234,
+        build_graph=lambda: None,
+        get_mblock=lambda serial: blocks[int(serial)],
+        map_fict_ea=lambda ea: int(ea),
+    )
+    events: list[object] = []
+    monkeypatch.setattr(observability, "emit", events.append)
+
+    index = _build_current_mba_identity_index(session=session, mba=mba)
+    identity = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x40D348, 0x40D349),),
+        native_key=NATIVE_KEY,
+        exact_instruction_eas=(0x40D348,),
+    )
+
+    assert index.rebind_identity(identity).status.name == "AMBIGUOUS"
+    (event,) = tuple(
+        event for event in events if isinstance(event, IdentityDecisionObserved)
+    )
+    candidates = json.loads(event.candidates_json)
+    assert tuple(candidate["block"] for candidate in candidates) == (
+        "blk0@0x40D348",
+        "blk1@0x40D348",
+    )
+    assert all(candidate["stable_identity"] == identity.to_dict() for candidate in candidates)
+
+
+def test_current_mba_mutation_gateway_uses_session_lifecycle_authority() -> None:
+    native_preanalysis = NativePreanalysisSessionState(evidence_generation=2)
+    session = SimpleNamespace(
+        native_preanalysis=native_preanalysis,
+        native_key=NATIVE_KEY,
+        identity_key="test-session",
+        function_ea=0x40A560,
+    )
+    index = MbaBlockIdentityIndex.from_bindings(
+        session_id=session.identity_key,
+        generation=7,
+        evidence_generation=2,
+        native_key=NATIVE_KEY,
+        bindings=(),
+    )
+    event_emitter = object()
+
+    gateway = _new_current_mba_mutation_gateway(
+        session=session,
+        identity_index=index,
+        maturity=3,
+        event_emitter=event_emitter,
+    )
+
+    assert isinstance(
+        gateway.lifecycle_authority,
+        FragmentPublicationLifecycleAuthority,
+    )
+    assert gateway.lifecycle_authority is not native_preanalysis
+    assert gateway.lifecycle_authority.evidence_generation == 2
+    assert gateway.identity_index is index
+    assert gateway.event_emitter is event_emitter
+
+
+def test_manager_constructs_the_semantic_native_body_materializer() -> None:
+    from d810.hexrays.mutation.detached_handler_island import (
+        PreoptUnionSemanticNativeBodyMaterializer,
+    )
+
+    mba = SimpleNamespace(maturity=ida_hexrays.MMAT_PREOPTIMIZED)
+    materializer = _new_semantic_native_body_materializer(
+        session=SimpleNamespace(function_ea=0x40A560),
+        mba=mba,
+    )
+
+    assert isinstance(
+        materializer,
+        PreoptUnionSemanticNativeBodyMaterializer,
+    )
+    assert materializer.mba is mba
+    assert materializer.function_ea == 0x40A560
+
+
+def test_manager_constructs_the_calls_native_body_materializer() -> None:
+    from d810.hexrays.mutation.detached_handler_island import (
+        CallsSemanticNativeBodyMaterializer,
+    )
+
+    mba = SimpleNamespace(maturity=ida_hexrays.MMAT_CALLS)
+    materializer = _new_semantic_native_body_materializer(
+        session=SimpleNamespace(function_ea=0x40A560),
+        mba=mba,
+    )
+
+    assert isinstance(
+        materializer,
+        CallsSemanticNativeBodyMaterializer,
+    )
+    assert materializer.mba is mba
+    assert materializer.function_ea == 0x40A560
+
+
+def test_calls_native_body_companion_request_queues_range_and_restart(
+    monkeypatch,
+) -> None:
+    import d810.core.observability as observability
+
+    session = DecompilationSessionContext(
+        function_ea=0x40A560,
+        database_identity="test",
+        top_level_epoch=1,
+        native_key=NATIVE_KEY,
+    )
+    events: list[object] = []
+    monkeypatch.setattr(observability, "emit", events.append)
+    materializer = _new_semantic_native_body_materializer(
+        session=session,
+        mba=SimpleNamespace(maturity=ida_hexrays.MMAT_CALLS),
+    )
+    native_range = (0x40B9A6, 0x40BB75)
+
+    assert materializer.request_call_companions is not None
+    assert materializer.request_call_companions((native_range,))
+
+    state = resolver_session_state(session)
+    assert state.pending_call_companion_ranges == (native_range,)
+    assert session.native_preanalysis.has_pending_generated_restart
+    assert len(events) == 1
+    event = events[0]
+    assert event.event_kind == "semantic_native_body_companion_request"
+    assert event.payload == {
+        "ranges": [
+            {
+                "start_ea": native_range[0],
+                "end_ea": native_range[1],
+            }
+        ],
+        "queue_changed": True,
+        "restart_requested": True,
+        "accepted": True,
+    }
+
+
+def test_manager_rejects_unsupported_native_body_materializer_maturity() -> None:
+    mba = SimpleNamespace(maturity=ida_hexrays.MMAT_GLBOPT1)
+
+    with pytest.raises(
+        ValueError,
+        match="unsupported semantic native-body materializer maturity",
+    ):
+        _new_semantic_native_body_materializer(
+            session=SimpleNamespace(function_ea=0x40A560),
+            mba=mba,
+        )
+
+
+def test_manager_preserves_applied_work_on_aborted_mutation_receipt(
+    monkeypatch,
+) -> None:
+    observed: list[MutationReceiptObserved] = []
+    monkeypatch.setattr("d810.core.observability.emit", observed.append)
+
+    D810Manager._on_mutation_aborted(
+        MbaMutationAborted(
+            session_id="terminal-fragment-session",
+            function_ea=0x40A560,
+            maturity=1,
+            mba_generation=7,
+            evidence_generation=3,
+            mutation_batch_id="terminal-fragment-batch",
+            kind=StructuralMutationKind.FRAGMENT_PUBLICATION,
+            planned_operation_count=8,
+            applied_operation_count=8,
+            description="publish terminal semantic fragment",
+            reason=(
+                "postpublication semantic validation failed: "
+                "observable_return_carrier:return-value"
+            ),
+            discarded_versions=(
+                LogicalBlockVersion(
+                    version_id=LogicalBlockVersionId("logical-terminal", 1),
+                    handle=MbaBlockHandle.synthetic(
+                        session_id="terminal-fragment-session",
+                        token="physical-terminal-v1",
+                    ),
+                    generation=8,
+                    predecessor_version_id=LogicalBlockVersionId(
+                        "logical-terminal",
+                        0,
+                    ),
+                ),
+            ),
+            fragment_plan_id="terminal-fragment",
+            fragment_atomic_group_id="terminal-group",
+            root_publication_groups=(
+                MbaMutationRootPublicationGroup(
+                    group_id="root-group:entry",
+                    predecessor_block_id="entry",
+                    predecessor_anchor_ea=0x40A560,
+                    edge_ids=("replacement:entry:direct",),
+                    edge_roles=(SemanticEdgeRole.DIRECT,),
+                    original_block_ids=("original",),
+                    replacement_block_ids=("replacement",),
+                    publication_attempted=True,
+                    publication_succeeded=True,
+                    rollback_attempted=True,
+                    rollback_succeeded=True,
+                ),
+            ),
+            fragment_staged=True,
+            root_publication_attempted=True,
+            root_publication_succeeded=True,
+            rollback_attempted=True,
+            rollback_succeeded=True,
+            fragment_failures=(
+                MbaSemanticFragmentFailure(
+                    failure_kind="stage",
+                    phase="stage",
+                    error_type="SemanticFragmentBackendRejected",
+                    error_message=(
+                        "fragment plan requires an imported native-body materializer"
+                    ),
+                ),
+                MbaSemanticFragmentFailure(
+                    failure_kind="verifier",
+                    phase="stage_cleanup",
+                    error_type="RuntimeError",
+                    error_message="INTERR: 50856",
+                    interr_code=50856,
+                    verification_context=(
+                        "staged semantic fragment rollback sweep"
+                    ),
+                ),
+            ),
+        )
+    )
+
+    assert len(observed) == 1
+    assert observed[0].mutation_batch_id == "terminal-fragment-batch"
+    assert observed[0].planned_operation_count == 8
+    assert observed[0].applied_operation_count == 8
+    assert observed[0].outcome == "aborted"
+    assert "observable_return_carrier:return-value" in observed[0].reason
+    assert observed[0].fragment_plan_id == "terminal-fragment"
+    assert observed[0].fragment_atomic_group_id == "terminal-group"
+    assert observed[0].fragment_staged
+    assert observed[0].root_publication_succeeded
+    assert observed[0].rollback_succeeded
+    assert observed[0].fragment_failures == (
+        SemanticFragmentFailureObserved(
+            failure_kind="stage",
+            phase="stage",
+            error_type="SemanticFragmentBackendRejected",
+            error_message=(
+                "fragment plan requires an imported native-body materializer"
+            ),
+        ),
+        SemanticFragmentFailureObserved(
+            failure_kind="verifier",
+            phase="stage_cleanup",
+            error_type="RuntimeError",
+            error_message="INTERR: 50856",
+            interr_code=50856,
+            verification_context="staged semantic fragment rollback sweep",
+        ),
+    )
+    assert observed[0].root_publication_groups[0].rollback_succeeded
+    assert len(observed[0].version_transitions) == 1
+    transition = observed[0].version_transitions[0]
+    assert transition.proxy_token == "logical-terminal"
+    assert transition.version == 1
+    assert transition.physical_handle_token == "physical-terminal-v1"
+    assert transition.generation == 8
+    assert transition.provenance == "synthetic"
+    assert transition.stable_identity_json is None
+    assert transition.anchor_ea is None
+    assert transition.predecessor_version == 0
+    assert (transition.from_state, transition.to_state) == ("staged", "aborted")
+
+
+def test_preflight_starts_one_session_and_hands_its_state_to_the_resolver(
+    monkeypatch,
+) -> None:
+    session = SimpleNamespace(
+        native_preanalysis=NativePreanalysisSessionState(),
+        native_key=NATIVE_KEY,
+        resolver_attachment=None,
+        event=SimpleNamespace(function_ea=0x401000),
+    )
+    events: list[tuple[object, object]] = []
+    calls: list[object] = []
+
+    class _Lifecycle:
+        def ensure_hexrays_session(self, **kwargs):
+            calls.append(("ensure", kwargs))
+            return session, True
+
+        def begin_native_preanalysis(self, current_session):
+            calls.append(("preanalysis.begin", current_session))
+
+        def finish_native_preanalysis(self, current_session):
+            calls.append(("preanalysis.finish", current_session))
+
+    manager = D810Manager.__new__(D810Manager)
+    manager.decompilation_lifecycle = _Lifecycle()
+    manager._database_identity = "sample.i64"
+    manager.event_emitter = SimpleNamespace(
+        emit=lambda event, payload: events.append((event, payload))
+    )
+    resolution = SimpleNamespace(jmp_targets=(0x401100,))
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "_has_unresolved_computed_goto",
+        lambda function_ea: function_ea == 0x401000,
+    )
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "stage_computed_goto_preanalysis",
+        lambda function_ea, *, state: calls.append(("stage", state)) or resolution,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "prepare_detached_handler_snippets",
+        lambda state: calls.append(("prepare", state)) or 3,
+    )
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "prepare_terminal_return_carrier_evidence",
+        lambda state: calls.append(("prepare-carriers", state)) or 2,
+    )
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "discover_static_native_bootstrap_routes",
+        lambda function_ea, state: calls.append(
+            ("discover-bootstrap", function_ea, state)
+        )
+        or True,
+    )
+
+    assert manager.prepare_native_preanalysis(0x401000) == 5
+
+    state = resolver_session_state(session)
+    # Session events belong to the coordinator. The manager must not mirror
+    # the event when its preflight reuses that permanent lifecycle port.
+    assert events == []
+    assert calls == [
+        (
+            "ensure",
+            {"function_ea": 0x401000, "database_identity": "sample.i64"},
+        ),
+        ("stage", state),
+        ("preanalysis.begin", session),
+        ("prepare-carriers", state),
+        ("prepare", state),
+        ("discover-bootstrap", 0x401000, state),
+        ("preanalysis.finish", session),
+    ]
+    assert state.materialization is not None
+    assert state.materialization.resolution is resolution
+
+
+def test_preflight_records_complete_call_companion_mismatch(
+    monkeypatch,
+) -> None:
+    import d810.core.observability as observability
+
+    session = DecompilationSessionContext(
+        function_ea=0x401000,
+        database_identity="sample.i64",
+        top_level_epoch=1,
+        native_key=NATIVE_KEY,
+    )
+
+    class _Lifecycle:
+        @staticmethod
+        def ensure_hexrays_session(**_kwargs):
+            return session, True
+
+        @staticmethod
+        def begin_native_preanalysis(_session):
+            return None
+
+        @staticmethod
+        def finish_native_preanalysis(_session):
+            return None
+
+    manager = D810Manager.__new__(D810Manager)
+    manager.decompilation_lifecycle = _Lifecycle()
+    manager._database_identity = "sample.i64"
+    resolution = SimpleNamespace(jmp_targets=(0x401100,))
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "_has_unresolved_computed_goto",
+        lambda _function_ea: True,
+    )
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "stage_computed_goto_preanalysis",
+        lambda _function_ea, *, state: resolution,
+    )
+    mismatch = computed_goto_resolver.CallCompanionPreparationOutcome(
+        native_range=(0x40C26D, 0x40C2FB),
+        calls_native_ranges=((0x40C26D, 0x40C2F9),),
+        component_target_ea=0x40C26D,
+        captured=False,
+        preopt_call_eas=(0x40C2A9, 0x40C2BE),
+        calls_call_eas=(0x40C2A9, 0x40C2F0),
+        mismatch_ea=0x40C2BE,
+        reason="call_ea_set_mismatch",
+    )
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "prepare_requested_detached_call_companions",
+        lambda _state: (mismatch,),
+    )
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "prepare_terminal_return_carrier_evidence",
+        lambda _state: 0,
+    )
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "prepare_detached_handler_snippets",
+        lambda _state: 0,
+    )
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "discover_static_native_bootstrap_routes",
+        lambda _function_ea, _state: False,
+    )
+    events: list[object] = []
+    monkeypatch.setattr(observability, "emit", events.append)
+
+    assert manager.prepare_native_preanalysis(0x401000) == 0
+
+    assert len(events) == 1
+    event = events[0]
+    assert event.event_kind == "semantic_native_body_companion_prepared"
+    assert event.payload["calls_native_ranges"] == [
+        {"start_ea": 0x40C26D, "end_ea": 0x40C2F9}
+    ]
+    assert event.payload["preopt_call_eas"] == [0x40C2A9, 0x40C2BE]
+    assert event.payload["calls_call_eas"] == [0x40C2A9, 0x40C2F0]
+    assert event.payload["mismatch_ea"] == 0x40C2BE
+
+
+def test_decompile_controller_runs_one_followup_for_pending_generated_restart(
+    monkeypatch,
+) -> None:
+    calls: list[tuple[str, int]] = []
+    pending = iter((True, False))
+
+    class _Lifecycle:
+        @staticmethod
+        def has_pending_generated_restart(function_ea: int) -> bool:
+            calls.append(("pending", function_ea))
+            return next(pending)
+
+    manager = D810Manager.__new__(D810Manager)
+    manager.decompilation_lifecycle = _Lifecycle()
+    monkeypatch.setattr(
+        manager,
+        "prepare_native_preanalysis",
+        lambda function_ea: calls.append(("prepare", function_ea)) or 0,
+    )
+
+    rounds = iter(("first", "final"))
+    result = manager.decompile_with_native_preanalysis(
+        0x401000,
+        lambda: calls.append(("decompile", 0x401000)) or next(rounds),
+        lambda: calls.append(("invalidate", 0x401000)),
+    )
+
+    assert result == "final"
+    assert calls == [
+        ("prepare", 0x401000),
+        ("invalidate", 0x401000),
+        ("decompile", 0x401000),
+        ("pending", 0x401000),
+        ("prepare", 0x401000),
+        ("invalidate", 0x401000),
+        ("decompile", 0x401000),
+        ("pending", 0x401000),
+    ]
+
+
+def test_decompile_controller_services_poison_restart_from_second_round(
+    monkeypatch,
+) -> None:
+    calls: list[tuple[str, int]] = []
+    pending = iter((True, True, False))
+
+    class _Lifecycle:
+        @staticmethod
+        def has_pending_generated_restart(function_ea: int) -> bool:
+            calls.append(("pending", function_ea))
+            return next(pending)
+
+    manager = D810Manager.__new__(D810Manager)
+    manager.decompilation_lifecycle = _Lifecycle()
+    monkeypatch.setattr(
+        manager,
+        "prepare_native_preanalysis",
+        lambda function_ea: calls.append(("prepare", function_ea)) or 0,
+    )
+    rounds = iter(("first", "poisoned-second", "fresh-third"))
+
+    result = manager.decompile_with_native_preanalysis(
+        0x401000,
+        lambda: calls.append(("decompile", 0x401000)) or next(rounds),
+        lambda: calls.append(("invalidate", 0x401000)),
+    )
+
+    assert result == "fresh-third"
+    assert [kind for kind, _ea in calls].count("decompile") == 3
+    assert [kind for kind, _ea in calls].count("pending") == 3
+
+
+def test_decompile_controller_fails_loudly_if_restart_remains_after_poison_retry(
+    monkeypatch,
+) -> None:
+    class _Lifecycle:
+        @staticmethod
+        def has_pending_generated_restart(_function_ea: int) -> bool:
+            return True
+
+    manager = D810Manager.__new__(D810Manager)
+    manager.decompilation_lifecycle = _Lifecycle()
+    monkeypatch.setattr(manager, "prepare_native_preanalysis", lambda _ea: 0)
+    rounds: list[str] = []
+
+    with pytest.raises(RuntimeError, match="restart budget exhausted"):
+        manager.decompile_with_native_preanalysis(
+            0x401000,
+            lambda: rounds.append("decompile"),
+            lambda: None,
+        )
+
+    assert rounds == ["decompile", "decompile", "decompile"]
+
+
+def test_decompile_controller_fails_on_distinct_post_recovery_poison(
+    monkeypatch,
+) -> None:
+    state = NativePreanalysisSessionState(evidence_generation=5)
+    assert state.request_generated_restart()
+    assert state.consume_generated_restart()
+
+    class _Lifecycle:
+        @staticmethod
+        def has_pending_generated_restart(_function_ea: int) -> bool:
+            return state.has_pending_generated_restart
+
+        @staticmethod
+        def has_exhausted_poison_restart(_function_ea: int) -> bool:
+            return state.has_exhausted_poison_restart
+
+    manager = D810Manager.__new__(D810Manager)
+    manager.decompilation_lifecycle = _Lifecycle()
+    monkeypatch.setattr(manager, "prepare_native_preanalysis", lambda _ea: 0)
+    rounds = 0
+
+    def decompile():
+        nonlocal rounds
+        rounds += 1
+        if rounds == 1:
+            assert state.request_poisoned_generation_restart(reason="first poison")
+        else:
+            assert state.consume_generated_restart()
+            assert not state.request_poisoned_generation_restart(
+                reason="fresh third-round poison"
+            )
+        return f"round-{rounds}"
+
+    with pytest.raises(RuntimeError, match="poison restart exhausted"):
+        manager.decompile_with_native_preanalysis(0x401000, decompile, lambda: None)
+
+    assert rounds == 2
