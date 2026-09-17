@@ -338,6 +338,7 @@ def _run(
     env = os.environ.copy()
     env.pop("D810_DOCKER_IMAGE", None)
     env.pop("D810_API_TOKEN", None)
+    env.pop("D810_BUILD_SPEEDUPS", None)
     env.pop("D810_EGGLOG_ROOT", None)
     env.pop("D810_COBRA_ROOT", None)
     env.pop("D810_COBRA_WHEEL", None)
@@ -1611,7 +1612,9 @@ def test_native_speedups_build_cleans_extensions_and_fails_closed(
 
 def test_python_mode_cleans_extensions_without_building(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setenv("D810_BUILD_SPEEDUPS", "1")
     result, calls = _run(tmp_path, "test", "--", "-q", no_cython="1")
 
     assert result.returncode == 0, result.stderr
