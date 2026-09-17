@@ -143,15 +143,19 @@ jobs:
                   pytest tests/unit/ -v --tb=short
 
     system-tests:
-        name: "system-tests (idapro-9.2, pure-python)"
-        runs-on: ubuntu-24.04
+        name: "system-tests (idapro-9.4, pure-python)"
+        runs-on: ubuntu-24.04-arm
+        timeout-minutes: 360
         env:
-            PYTHONPATH: ${{ github.workspace }}
+            D810_DOCKER_IMAGE: ghcr.io/w00tzenheimer/idapro-9.4-speedups:x11
+            D810_DOCKER_MEMORY: 4g
+            D810_NO_CYTHON: "1"
         steps:
             - name: "Checkout ${{ github.ref }} ( ${{ github.sha }} )"
               uses: actions/checkout@v4
               with:
                   persist-credentials: false
+                  fetch-depth: 0
 
             - name: Login to GHCR
               uses: docker/login-action@v3
@@ -160,58 +164,28 @@ jobs:
                   username: ${{ github.actor }}
                   password: ${{ secrets.GHCR_TOKEN }}
 
-            - name: Cache Docker image
-              id: docker-cache
-              uses: actions/cache@v4
-              with:
-                  path: /tmp/docker-cache
-                  key: docker-image-${{ runner.os }}-idapro-tests-9.2-${{ hashFiles('docker-compose.yml') }}
-                  restore-keys: |
-                      docker-image-${{ runner.os }}-idapro-tests-9.2-
-
-            - name: Load cached Docker image
-              if: steps.docker-cache.outputs.cache-hit == 'true'
+            - name: Pull IDA 9.4 ARM64 runtime
               run: |
-                  echo "Loading Docker image from cache..."
-                  docker load -i /tmp/docker-cache/idapro-tests-9.2.tar || echo "No cached image to load."
+                  docker pull "$D810_DOCKER_IMAGE"
+                  test "$(docker image inspect "$D810_DOCKER_IMAGE" --format '{{.Architecture}}')" = arm64
 
-            - name: Run system tests
-              run: |
-                  set -e
-                  docker compose run --rm --entrypoint bash idapro-tests-9.2 -c "
-                      set -e
-                      cd /work
-                      LLVM_OPT_PATH=\"\$(command -v opt 2>/dev/null || find /usr/lib/llvm-*/bin -name opt -type f -perm /111 2>/dev/null | sort -V | tail -1 || true)\"
-                      if [ -n \"\$LLVM_OPT_PATH\" ]; then
-                          export LLVM_OPT=\"\$LLVM_OPT_PATH\"
-                          echo \"LLVM opt: \$LLVM_OPT\"
-                          \"\$LLVM_OPT\" --version | head -n 1
-                      else
-                          echo 'LLVM opt: not found; LLVM-backed system tests will skip'
-                      fi
-                      pip install -e .[dev] -q
-                      pip install 'z3-solver>=4.13,<4.15.5' -q
-                      D810_TEST_BINARY=libobfuscated.dll pytest tests/system/ -v --tb=short --forked
-                  "
-
-            - name: Save Docker image to cache
-              if: steps.docker-cache.outputs.cache-hit != 'true'
-              run: |
-                  echo "Caching docker image for next run..."
-                  mkdir -p /tmp/docker-cache
-                  IMAGE_ID=$(docker images --format '{{.Repository}}:{{.Tag}}' | grep idapro-linux | head -1)
-                  docker save "$IMAGE_ID" -o /tmp/docker-cache/idapro-tests-9.2.tar || echo "Failed to save image."
+            - name: Run system tests through the canonical harness
+              run: ./tools/scripts/run_system_tests_docker.sh system --shards 3 -- -q
 
     system-tests-speedups:
-        name: "system-tests (idapro-9.2, speedups)"
-        runs-on: ubuntu-24.04
+        name: "system-tests (idapro-9.4, speedups)"
+        runs-on: ubuntu-24.04-arm
+        timeout-minutes: 360
         env:
-            PYTHONPATH: ${{ github.workspace }}
+            D810_DOCKER_IMAGE: ghcr.io/w00tzenheimer/idapro-9.4-speedups:x11
+            D810_DOCKER_MEMORY: 4g
+            D810_NO_CYTHON: "0"
         steps:
             - name: "Checkout ${{ github.ref }} ( ${{ github.sha }} )"
               uses: actions/checkout@v4
               with:
                   persist-credentials: false
+                  fetch-depth: 0
 
             - name: Login to GHCR
               uses: docker/login-action@v3
@@ -220,48 +194,10 @@ jobs:
                   username: ${{ github.actor }}
                   password: ${{ secrets.GHCR_TOKEN }}
 
-            - name: Cache Docker image
-              id: docker-cache
-              uses: actions/cache@v4
-              with:
-                  path: /tmp/docker-cache
-                  key: docker-image-${{ runner.os }}-idapro-tests-9.2-${{ hashFiles('docker-compose.yml') }}
-                  restore-keys: |
-                      docker-image-${{ runner.os }}-idapro-tests-9.2-
-
-            - name: Load cached Docker image
-              if: steps.docker-cache.outputs.cache-hit == 'true'
+            - name: Pull IDA 9.4 ARM64 runtime
               run: |
-                  echo "Loading Docker image from cache..."
-                  docker load -i /tmp/docker-cache/idapro-tests-9.2.tar || echo "No cached image to load."
+                  docker pull "$D810_DOCKER_IMAGE"
+                  test "$(docker image inspect "$D810_DOCKER_IMAGE" --format '{{.Architecture}}')" = arm64
 
-            - name: Build speedups and run system tests
-              run: |
-                  set -e
-                  docker compose run --rm --entrypoint bash idapro-tests-9.2 -c "
-                      set -e
-                      LLVM_OPT_PATH=\"\$(command -v opt 2>/dev/null || find /usr/lib/llvm-*/bin -name opt -type f -perm /111 2>/dev/null | sort -V | tail -1 || true)\"
-                      if [ -n \"\$LLVM_OPT_PATH\" ]; then
-                          export LLVM_OPT=\"\$LLVM_OPT_PATH\"
-                          echo \"LLVM opt: \$LLVM_OPT\"
-                          \"\$LLVM_OPT\" --version | head -n 1
-                      else
-                          echo 'LLVM opt: not found; LLVM-backed system tests will skip'
-                      fi
-                      apt-get update -qq && apt-get install -y -qq g++ >/dev/null
-                      cd /work
-                      pip install setuptools wheel Cython>=3.0.0 -q
-                      D810_BUILD_SPEEDUPS=1 pip install --no-build-isolation -e '.[dev]' -q
-                      pip install 'z3-solver>=4.13,<4.15.5' -q
-                      echo 'Speedups .so files built:'
-                      find /work/src/d810/speedups -name '*.so' -type f
-                      D810_TEST_BINARY=libobfuscated.dll pytest tests/system/ -v --tb=short --forked
-                  "
-
-            - name: Save Docker image to cache
-              if: steps.docker-cache.outputs.cache-hit != 'true'
-              run: |
-                  echo "Caching docker image for next run..."
-                  mkdir -p /tmp/docker-cache
-                  IMAGE_ID=$(docker images --format '{{.Repository}}:{{.Tag}}' | grep idapro-linux | head -1)
-                  docker save "$IMAGE_ID" -o /tmp/docker-cache/idapro-tests-9.2.tar || echo "Failed to save image."
+            - name: Build current speedups and run system tests through the canonical harness
+              run: ./tools/scripts/run_system_tests_docker.sh system --shards 3 -- -q

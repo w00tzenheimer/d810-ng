@@ -195,16 +195,23 @@ def test_unit_ci_provisions_llvm_opt_for_real_verifier_coverage() -> None:
     assert workflow.count('echo "LLVM_OPT=$(command -v opt)" >> "$GITHUB_ENV"') >= 2
 
 
-def test_system_ci_allows_llvm_backed_tests_to_skip_when_opt_is_unavailable() -> None:
+def test_system_ci_uses_ida94_arm64_runner_and_tracked_harness() -> None:
     workflow = (_REPO_ROOT / ".github" / "workflows" / "python.yml").read_text(
         encoding="utf-8"
     )
+    system_jobs = workflow.split("    system-tests:", 1)[1]
 
-    assert "system-tests (idapro-9.2, pure-python)" in workflow
-    assert "system-tests (idapro-9.2, speedups)" in workflow
-    assert 'LLVM_OPT_PATH=\\"\\$(command -v opt' in workflow
-    assert workflow.count('LLVM_OPT_PATH=\\"\\$(command -v opt') >= 2
-    assert 'export LLVM_OPT=\\"\\$LLVM_OPT_PATH\\"' in workflow
-    assert "LLVM opt: not found; LLVM-backed system tests will skip" in workflow
-    assert "ERROR: system tests require LLVM opt for verifier coverage" not in workflow
-    assert "export D810_REQUIRE_LLVM_OPT=1" not in workflow
+    assert "system-tests (idapro-9.4, pure-python)" in system_jobs
+    assert "system-tests (idapro-9.4, speedups)" in system_jobs
+    assert system_jobs.count("runs-on: ubuntu-24.04-arm") == 2
+    assert system_jobs.count(
+        "ghcr.io/w00tzenheimer/idapro-9.4-speedups:x11"
+    ) == 2
+    assert system_jobs.count(
+        "./tools/scripts/run_system_tests_docker.sh system --shards 3"
+    ) == 2
+    assert 'D810_NO_CYTHON: "1"' in system_jobs
+    assert 'D810_NO_CYTHON: "0"' in system_jobs
+    assert "idapro-9.2" not in system_jobs
+    assert "docker compose run" not in system_jobs
+    assert "--enable-llvm-opt" not in system_jobs
