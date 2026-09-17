@@ -201,9 +201,10 @@ if [ -z "$(echo "$MASM_FUNCS" | tr -d ' ')" ]; then
 fi
 
 # Keep layout-sensitive additions append-only, matching the authoritative
-# Windows Makefile.  Preserve discovery/selection order for every other source.
+# Windows Makefile.  Preserve discovery/selection order for every other source,
+# but use MASM_LINK_LAST_FUNCS itself as the canonical order for the tail.  A
+# filesystem glob is not portable here: APFS and ext4 order case differently.
 masm_link_first=()
-masm_link_last=()
 for f in $MASM_FUNCS; do
     pin_at_tail=0
     for tail_func in $MASM_LINK_LAST_FUNCS; do
@@ -212,11 +213,18 @@ for f in $MASM_FUNCS; do
             break
         fi
     done
-    if [ "$pin_at_tail" -eq 1 ]; then
-        masm_link_last+=("$f")
-    else
+    if [ "$pin_at_tail" -eq 0 ]; then
         masm_link_first+=("$f")
     fi
+done
+masm_link_last=()
+for tail_func in $MASM_LINK_LAST_FUNCS; do
+    for f in $MASM_FUNCS; do
+        if [ "$f" = "$tail_func" ]; then
+            masm_link_last+=("$tail_func")
+            break
+        fi
+    done
 done
 MASM_FUNCS="${masm_link_first[*]} ${masm_link_last[*]}"
 

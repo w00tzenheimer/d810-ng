@@ -167,6 +167,23 @@ def test_unit_ci_installs_solver_support_without_building_native_speedups() -> N
     assert "python -m d810.speedups.install --solver-only" in unit_job
 
 
+def test_all_unit_ci_jobs_install_emulation_and_checkout_provenance_history() -> None:
+    workflow = (_REPO_ROOT / ".github" / "workflows" / "python.yml").read_text(
+        encoding="utf-8"
+    )
+    unit_job = workflow.split("    unit-tests:", 1)[1].split(
+        "    build-speedups:", 1
+    )[0]
+    speedups_job = workflow.split("    build-speedups:", 1)[1].split(
+        "    system-tests:", 1
+    )[0]
+
+    assert "fetch-depth: 0" in unit_job
+    assert 'uv pip install --system -e ".[emulation]"' in unit_job
+    assert "fetch-depth: 0" in speedups_job
+    assert '-e ".[speedups,emulation]"' in speedups_job
+
+
 def test_unit_ci_provisions_llvm_opt_for_real_verifier_coverage() -> None:
     workflow = (_REPO_ROOT / ".github" / "workflows" / "python.yml").read_text(
         encoding="utf-8"

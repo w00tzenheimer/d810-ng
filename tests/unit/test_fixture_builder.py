@@ -791,12 +791,12 @@ def test_masm_builder_pins_layout_sensitive_object_at_link_tail(tmp_path) -> Non
     assert len(linked_masm) == len(source_names)
     assert linked_masm[-7:] == [
         "sub_7FF855576B50",
+        "WardenScanModule_DecryptAndDispatchRequest",
         "warden_mixed_source",
         "warden_v55_index_lookup",
         "warden_v55_index_offset",
         "warden_v57_value_mba",
         "warden_v85_value_mba",
-        "WardenScanModule_DecryptAndDispatchRequest",
     ]
     assert "/SECTION:HODCONST,R" in args
     assembled_sources = [
