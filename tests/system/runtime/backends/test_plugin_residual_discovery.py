@@ -44,6 +44,9 @@ from d810.mba.provider_outcome import ProviderOutcomeStatus  # noqa: E402
 from d810.mba.provider_routing import MbaProviderKind  # noqa: E402
 from d810.mba.typed_term import term_fingerprint  # noqa: E402
 from d810.mba.residual_observation_sink import SqliteMbaResidualObservationSink  # noqa: E402
+from d810.mba.residual_observation_lifecycle import (  # noqa: E402
+    resolve_mba_discovery_store_path,
+)
 from d810.mba.native_callback_lease import native_mba_callback_scope  # noqa: E402
 from d810.optimizers.microcode.instructions.handler import InstructionOptimizer  # noqa: E402
 from d810.hexrays.hooks.optinsn_adapter import InstructionOptimizerManager  # noqa: E402
@@ -555,11 +558,11 @@ def _live_provider_state(tmp_path: Path, pass_id: str):
     config = D810Configuration(ida_user_dir=tmp_path / "ida-user")
     config["log_dir"] = str(tmp_path / "logs")
     config["erase_logs_on_reload"] = False
-    db_path = (
+    manager_log_dir = (
         Path(config["log_dir"])
         / D810_LOG_DIR_NAME
-        / "d810_mba_discovery.sqlite3"
     )
+    db_path = resolve_mba_discovery_store_path(manager_log_dir)
     db_path.parent.mkdir(parents=True, exist_ok=True)
     db_path.unlink(missing_ok=True)
     project_path = config.config_dir / f"task12-live-{pass_id}.json"
