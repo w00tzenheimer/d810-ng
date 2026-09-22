@@ -12,11 +12,11 @@ from __future__ import annotations
 from d810._vendor.peewee import SqliteDatabase
 from d810.core.diag.models import DiagnosticSchemaVersion, MODELS
 
-# Per-site dead-store rejection facts are persisted in
-# ``dead_store_rejections`` (ticket d81-dfnh). Existing databases are
-# disposable and must be recreated; there is deliberately no v15 -> v16
-# backfill.
-DIAGNOSTIC_SCHEMA_VERSION = 16
+# Per-site dead-store rejection destination identities now use the same
+# lossless hex + signed-i64 representation as other unsigned native values.
+# Existing databases are disposable and must be recreated; there is
+# deliberately no v16 -> v17 backfill.
+DIAGNOSTIC_SCHEMA_VERSION = 17
 
 # Recovered-CFG tables were historically named ``dag_*``.  The modeled
 # schema now owns ``state_cfg_*`` tables; this mapping is retained for the

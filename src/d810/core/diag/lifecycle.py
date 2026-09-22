@@ -1035,11 +1035,12 @@ def persist_dead_store_rejection(
         "INSERT INTO dead_store_rejections "
         "(event_id,session_id,func_ea_hex,func_ea_i64,maturity,strategy,"
         "authoritative,block_serial,block_start_ea_hex,block_start_ea_i64,"
-        "insn_ea_hex,insn_ea_i64,ordinal,opcode,destination_kind,destination_id,"
+        "insn_ea_hex,insn_ea_i64,ordinal,opcode,destination_kind,"
+        "destination_id_hex,destination_id_i64,"
         "destination_width,reason,detail,use_block_serial,use_block_start_ea_hex,"
         "use_block_start_ea_i64,use_insn_ea_hex,use_insn_ea_i64,use_ordinal,"
         "use_opcode,use_operand_path,use_kind) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,"
-        "?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (
             event_id,
             session_id,
@@ -1056,7 +1057,8 @@ def persist_dead_store_rejection(
             int(event.ordinal),
             int(event.opcode),
             event.destination_kind,
-            event.destination_id,
+            optional_hex(event.destination_id),
+            _sqlite_i64(event.destination_id),
             int(event.destination_width),
             event.reason,
             event.detail,

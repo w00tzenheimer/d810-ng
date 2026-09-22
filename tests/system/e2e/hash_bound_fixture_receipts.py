@@ -210,13 +210,13 @@ def load_hash_bound_fixture_receipt(
             rows = connection.execute(
                 "SELECT block_start_ea_i64,insn_ea_i64,ordinal "
                 "FROM dead_store_rejections WHERE session_id=? AND func_ea_i64=? "
-                "AND destination_kind=? AND destination_id=? "
+                "AND destination_kind=? AND destination_id_hex=? "
                 "AND destination_width=?",
                 (
                     session_id,
                     int(session["func_ea_i64"]),
                     selector.kind,
-                    selector.identifier,
+                    f"0x{int(selector.identifier) & 0xFFFFFFFFFFFFFFFF:016x}",
                     selector.width,
                 ),
             ).fetchall()

@@ -110,7 +110,7 @@ def test_dead_store_rejection_persists_per_site_evidence(fake_conn):
 
     row = fake_conn.execute(
         "SELECT session_id,func_ea_hex,maturity,strategy,authoritative,block_serial,"
-        "block_start_ea_hex,insn_ea_hex,destination_kind,destination_id,"
+        "block_start_ea_hex,insn_ea_hex,destination_kind,destination_id_i64,"
         "destination_width,reason,use_block_serial,use_block_start_ea_hex,"
         "use_insn_ea_hex,use_operand_path,use_kind "
         "FROM dead_store_rejections"
@@ -143,6 +143,41 @@ def test_dead_store_rejection_persists_per_site_evidence(fake_conn):
     )
     assert payload["source"]["ea"] == 0x1FBE5EC3C0F
     assert payload["use"]["operand_path"] == "l.d.r"
+
+
+def test_dead_store_rejection_persists_unsigned_stack_destination(fake_conn):
+    destination_id = 0xFFFFFFFFFFFFFFF0
+    emit(
+        DeadStoreRejectionObserved(
+            func_ea=0x13BA322A0,
+            maturity="MMAT_GLBOPT2",
+            strategy="dead_store_elimination",
+            authoritative=True,
+            block_serial=7,
+            block_start_ea=0x13BA322A0,
+            insn_ea=0x13BA322A8,
+            ordinal=0,
+            opcode=0x55,
+            destination_kind="stack",
+            destination_id=destination_id,
+            destination_width=8,
+            reason="reached_use",
+        )
+    )
+
+    row = fake_conn.execute(
+        "SELECT destination_id_hex,destination_id_i64 "
+        "FROM dead_store_rejections"
+    ).fetchone()
+    assert row == ("0xfffffffffffffff0", -0x10)
+
+    payload = json.loads(
+        fake_conn.execute(
+            "SELECT payload_json FROM lifecycle_events "
+            "WHERE event_kind='dead_store_rejection'"
+        ).fetchone()[0]
+    )
+    assert payload["source"]["destination_id"] == destination_id
 
 
 def request_capture_mba_snapshot(

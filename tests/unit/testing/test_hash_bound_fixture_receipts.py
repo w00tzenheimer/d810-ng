@@ -123,7 +123,8 @@ def test_receipt_parser_correlates_terminal_and_per_site_diagnostics(
         );
         CREATE TABLE dead_store_rejections (
             session_id TEXT, block_start_ea_i64 INTEGER, insn_ea_i64 INTEGER,
-            ordinal INTEGER, destination_kind TEXT, destination_id INTEGER,
+            ordinal INTEGER, destination_kind TEXT, destination_id_hex TEXT,
+            destination_id_i64 INTEGER,
             destination_width INTEGER, func_ea_i64 INTEGER
         );
         INSERT INTO diagnostic_sessions VALUES ('s1', 6442455040, 1.0);
@@ -145,11 +146,11 @@ def test_receipt_parser_correlates_terminal_and_per_site_diagnostics(
         INSERT INTO mutation_receipts VALUES
             (19, 100, 1, 'failed', 'stale-batch');
         INSERT INTO dead_store_rejections VALUES
-            ('s1', 6442455296, 6442455300, 0, 'stack', 60, 4, 6442455040);
+            ('s1', 6442455296, 6442455300, 0, 'stack', '0x000000000000003c', 60, 4, 6442455040);
         INSERT INTO dead_store_rejections VALUES
-            ('stale', 6442455396, 6442455400, 0, 'stack', 60, 4, 6442455040);
+            ('stale', 6442455396, 6442455400, 0, 'stack', '0x000000000000003c', 60, 4, 6442455040);
         INSERT INTO dead_store_rejections VALUES
-            ('s1', 6442455296, 6442455300, 0, 'stack', 60, 4, 6442455040);
+            ('s1', 6442455296, 6442455300, 0, 'stack', '0x000000000000003c', 60, 4, 6442455040);
         """
     )
     conn.commit()
