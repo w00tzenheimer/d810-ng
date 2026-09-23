@@ -96,6 +96,7 @@ from d810.manager.workbench_recipe_models import (
 from d810.optimizers.microcode.flow.handler import FlowOptimizationRule
 from d810.optimizers.microcode.instructions.handler import InstructionOptimizationRule
 from d810.optimizers.microcode.handler import configure_rule_with_maturity_contract
+from d810.optimizers import load_optimizer_registries
 from d810.hexrays.utils.hexrays_formatters import string_to_maturity
 from d810.passes.constant_simplification import (
     CONSTANT_SIMPLIFICATION_PASS_ID,
@@ -238,9 +239,9 @@ class D810State(metaclass=SingletonMeta):
     current_project: ProjectConfiguration
 
     #: When set, ``__init__`` skips its own ``reset()`` call. Only the plugin
-    #: reloader sets this, around a construction it *knows* ``load()`` will
-    #: immediately follow (ticket d81-43c8) -- it avoids building a
-    #: ``D810Manager`` (~20s) just to discard it a few lines later. Every
+    #: reloader sets this, around a construction that will be explicitly loaded
+    #: later (ticket d81-43c8) -- it avoids building a ``D810Manager`` (~20s)
+    #: before the user activates D810. Every
     #: other ``D810State()`` call site (tests, headless, first construction
     #: outside the reloader) is unaffected and gets a fully reset instance.
     _defer_initial_reset: typing.ClassVar[bool] = False
@@ -248,8 +249,7 @@ class D810State(metaclass=SingletonMeta):
     def __init__(self):
         self.gui = None  # Set by load(gui=True)
         if type(self)._defer_initial_reset:
-            # A guaranteed load() call follows immediately; leave the state
-            # unresolved (no manager) rather than build-then-discard one.
+            # Leave the state unresolved (no manager) until explicit activation.
             self._initialized = False
             self._is_loaded = False
         else:
@@ -1941,6 +1941,10 @@ class D810State(metaclass=SingletonMeta):
         d810_config: D810Configuration | None = None,
     ):
         self.reset(d810_config=d810_config)
+        # Project activation validates every concrete hook binding before the
+        # manager starts.  Populate the registries first so a cold IDA process
+        # sees the same catalogue as a warm/reloaded process.
+        load_optimizer_registries()
         raw_index = self.d810_config.get("last_project_index", 0)
         try:
             self.current_project_index = int(raw_index)

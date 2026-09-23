@@ -1063,12 +1063,11 @@ class ReloadablePluginBase(LateInitPlugin):
         self.plugin_module, self.plugin_class_name = self.plugin_class.rsplit(".", 1)
         mod = importlib.import_module(self.plugin_module)
         plugin_cls = getattr(mod, self.plugin_class_name)
-        # Both call sites (first construction here, and plugin_setup_reload()
-        # below) invoke .load() on the result immediately after. If the
-        # plugin class exposes a "defer_initial_reset" context manager, use
-        # it so construction does not do a full reset just to have load()
-        # discard it a few lines later (d810 ticket d81-43c8). Plugins
-        # without that hook behave exactly as before.
+        # A plugin may defer its first load until explicitly activated; reload
+        # loads the replacement after construction. If the plugin class exposes
+        # a "defer_initial_reset" context manager, use it to avoid a reset
+        # that load() would discard (d810 ticket d81-43c8). Plugins without
+        # that hook behave exactly as before.
         defer_initial_reset = getattr(plugin_cls, "defer_initial_reset", None)
         if callable(defer_initial_reset):
             with defer_initial_reset():

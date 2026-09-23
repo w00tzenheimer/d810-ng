@@ -74,9 +74,9 @@ def ensure_hexrays_available(force_load: bool = False) -> bool:
     return False
 
 
-# NOTE: the decompiler load is DEFERRED off plugin init(): late_init() starts
-# D810 after IDA has completed the plugin-init path, and start_d810() loads the
-# matching decompiler on demand immediately before installing microcode hooks.
+# Plugin init and IDA's ready event only register the plugin. The hotkey calls
+# run(), which loads D810 on first use; start_d810() then loads the matching
+# decompiler on demand immediately before installing microcode hooks.
 
 
 class _UIHooks(idaapi.UI_Hooks):
@@ -111,7 +111,7 @@ class D810Plugin(
             plugin_class="d810.manager.D810State",
             hook_cls=_UIHooks,
             skip_code=idaapi.PLUGIN_SKIP,
-            ok_code=idaapi.PLUGIN_OK,
+            ok_code=idaapi.PLUGIN_KEEP,
         )
         self.suppress_reload_errors = False
 
@@ -144,18 +144,19 @@ class D810Plugin(
     @override
     def late_init(self):
         super().late_init()
+        print(f"{self.wanted_name} available (version {D810_VERSION})")
+
+    @override
+    def run(self, args):
         loaded = self.plugin.is_loaded()
         if not loaded:
             self.plugin.load()
             loaded = self.plugin.is_loaded()
+        if not loaded:
+            return
         manager = getattr(self.plugin, "manager", None)
-        if loaded and manager is not None and not manager.started:
+        if manager is not None and not manager.started:
             self.plugin.start_d810()
-        print(f"{self.wanted_name} initialized (version {D810_VERSION})")
-
-    @override
-    def run(self, args):
-        self.reload()
 
     @override
     def term(self):

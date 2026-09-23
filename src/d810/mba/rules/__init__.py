@@ -15,7 +15,7 @@ Usage:
         print(f"{name}: {rule_cls}")
 
 Note on hot-reload:
-    When d810 is reloaded (Ctrl-Shift-D in IDA), new/modified rules are picked up.
+    When d810 is reloaded via the Reload plugin action, new/modified rules are picked up.
     However, DELETED rules remain in the registry until IDA restarts.
     TODO: Consider adding a registry cleanup mechanism on reload if this becomes an issue.
 """

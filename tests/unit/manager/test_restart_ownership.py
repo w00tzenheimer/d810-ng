@@ -80,6 +80,7 @@ def _class_methods(path: Path, class_name: str) -> dict[str, object]:
             )
         ),
         "ensure_hexrays_available": lambda **_kwargs: True,
+        "load_optimizer_registries": lambda: None,
         "logger": SimpleNamespace(
             debug=lambda *_args, **_kwargs: None,
             error=lambda *_args, **_kwargs: None,
@@ -96,6 +97,45 @@ _STATE_METHODS = _class_methods(_ROOT / "src/d810/manager/state.py", "D810State"
 _MANAGER_METHODS = _class_methods(
     _ROOT / "src/d810/manager/manager.py", "D810Manager"
 )
+
+
+def test_state_load_populates_optimizer_registry_before_project_activation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+
+    class ProjectManager:
+        def __len__(self) -> int:
+            return 1
+
+    class Config:
+        def get(self, name: str, default=None):
+            assert name == "last_project_index"
+            return 0
+
+    state = SimpleNamespace()
+
+    def reset(*, d810_config=None) -> None:
+        events.append("reset")
+        state.d810_config = Config()
+        state.project_manager = ProjectManager()
+        state.invalid_projects = {}
+
+    state.reset = reset
+    state._build_known_instruction_rules = lambda: events.append("instruction") or []
+    state._build_known_block_rules = lambda: events.append("block") or []
+    state._load_first_valid_project = (
+        lambda _preferred: events.append("activate") or object()
+    )
+    monkeypatch.setitem(
+        _STATE_METHODS["load"].__globals__,
+        "load_optimizer_registries",
+        lambda: events.append("registry"),
+    )
+
+    _STATE_METHODS["load"](state, gui=False)
+
+    assert events == ["reset", "registry", "instruction", "block", "activate"]
 
 
 class _Host:
