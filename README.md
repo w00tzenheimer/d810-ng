@@ -530,8 +530,10 @@ is not available; set `IDA_SDK=/path/to/ida-sdk` to use a local SDK explicitly.
 
 D-810 includes optional [Cython](https://cython.org) extensions for
 performance-critical paths. Every native module has a pure-Python fallback,
-but the editable bootstrap is the supported path for building and verifying
-the native extensions.
+so an editable checkout whose runtime package is loaded from its own `src`
+directory can start without them. The editable bootstrap is the supported path
+for building and verifying native extensions. Managed HCLI wheel installations
+still require their bundled native modules.
 
 For packaging or advanced builds, the direct form remains available:
 

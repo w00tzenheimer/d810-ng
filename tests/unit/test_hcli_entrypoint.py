@@ -66,6 +66,8 @@ def _clean_bootstrap_modules():
         "_test_d810_hcli_missing",
         "_test_d810_hcli_missing_export",
         "_test_d810_hcli_native_failure",
+        "_test_d810_editable_fallback",
+        "_test_d810_editable_wheel_mismatch",
     ):
         sys.modules.pop(name, None)
 
@@ -126,6 +128,57 @@ def test_bootstrap_rejects_failed_native_probe_before_loading_and_cleans_cache(
 
     assert not loaded_marker.exists()
     assert "_d810_hcli_entrypoint_impl" not in sys.modules
+
+
+def test_editable_checkout_loads_python_fallback_without_native_extensions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plugin = tmp_path / "checkout"
+    (plugin / ".git").mkdir(parents=True)
+    source_package = plugin / "src" / "d810" / "__init__.py"
+    source_package.parent.mkdir(parents=True)
+    source_package.write_text("", encoding="utf-8")
+    shutil.copy2(BOOTSTRAP, plugin / "d810ng.py")
+    (plugin / "src" / "d810ng.py").write_text(
+        "class D810Plugin:\n    pass\n"
+        "def PLUGIN_ENTRY():\n    return D810Plugin()\n",
+        encoding="utf-8",
+    )
+    source_runtime = _install_fake_runtime(
+        monkeypatch,
+        marker="source",
+        native_ok=False,
+        native_detail="d810.speedups.c_simd: no compatible native extension found",
+    )
+    source_runtime.__file__ = str(source_package)
+    installed_link = tmp_path / "installed-plugin"
+    installed_link.symlink_to(plugin, target_is_directory=True)
+
+    loaded = _load(installed_link / "d810ng.py", "_test_d810_editable_fallback")
+
+    assert isinstance(loaded.PLUGIN_ENTRY(), loaded.D810Plugin)
+    assert sys.modules["d810"] is source_runtime
+
+
+def test_checkout_entrypoint_does_not_waive_native_gate_for_a_separate_wheel(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plugin = tmp_path / "checkout"
+    (plugin / ".git").mkdir(parents=True)
+    source_package = plugin / "src" / "d810" / "__init__.py"
+    source_package.parent.mkdir(parents=True)
+    source_package.write_text("", encoding="utf-8")
+    shutil.copy2(BOOTSTRAP, plugin / "d810ng.py")
+    (plugin / "src" / "d810ng.py").write_text(
+        "class D810Plugin:\n    pass\n"
+        "def PLUGIN_ENTRY():\n    return D810Plugin()\n",
+        encoding="utf-8",
+    )
+    wheel_runtime = _install_fake_runtime(monkeypatch, native_ok=False)
+    wheel_runtime.__file__ = str(tmp_path / "site-packages" / "d810" / "__init__.py")
+
+    with pytest.raises(ImportError, match="native speedups are unavailable"):
+        _load(plugin / "d810ng.py", "_test_d810_editable_wheel_mismatch")
 
 
 def test_bootstrap_reports_missing_implementation_and_cleans_private_module(

@@ -19,13 +19,26 @@ _NATIVE_PROBE = importlib.import_module(
 ).inspect_native_extensions
 
 
+def _uses_editable_checkout() -> bool:
+    """Only waive the wheel contract when the loaded runtime is this checkout."""
+    checkout = Path(__file__).resolve().parent
+    runtime_file = getattr(_RUNTIME_PACKAGE, "__file__", None)
+    return (
+        isinstance(runtime_file, str)
+        and (checkout / ".git").exists()
+        and Path(runtime_file).resolve()
+        == (checkout / "src" / "d810" / "__init__.py").resolve()
+    )
+
+
 def _load_implementation() -> ModuleType:
-    native_probe = _NATIVE_PROBE()
-    if not native_probe.ok:
-        raise ImportError(
-            "D810 HCLI bootstrap refused to load the plugin because native "
-            f"speedups are unavailable: {native_probe.detail}"
-        )
+    if not _uses_editable_checkout():
+        native_probe = _NATIVE_PROBE()
+        if not native_probe.ok:
+            raise ImportError(
+                "D810 HCLI bootstrap refused to load the plugin because native "
+                f"speedups are unavailable: {native_probe.detail}"
+            )
 
     if not _IMPLEMENTATION_PATH.is_file():
         raise ImportError(
