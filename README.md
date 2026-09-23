@@ -541,6 +541,24 @@ For packaging or advanced builds, the direct form remains available:
 D810_BUILD_SPEEDUPS=1 python -m pip install -e ".[speedups]" --no-build-isolation
 ```
 
+With `uv`, build the native extensions into the editable checkout without
+modifying the `uv`-managed Python installation. Run this from the repository
+root on macOS or Linux, and replace `3.13` with the Python major/minor version
+configured for IDAPython:
+
+```bash
+CXXFLAGS=-std=c++17 D810_BUILD_SPEEDUPS=1 uv pip install \
+  --python 3.13 \
+  --target ~/.d810-speedups \
+  --reinstall-package d810-ng \
+  -e ".[speedups]"
+```
+
+The editable build places the compiled modules in `src/d810/speedups`, where
+IDA loads D-810 from this checkout. Restart IDA after the build. The `CXXFLAGS`
+setting enables C++17 for IDA SDK headers; on Windows, use the compiler's
+equivalent setting instead.
+
 To compile extensions in place without installing:
 
 ```bash
