@@ -281,6 +281,11 @@ class DispatcherCorridorCoverage:
         """Topology coverage alone is never a semantic full-unflattening proof."""
         return False
 
+    @property
+    def whole_function_proof_status(self) -> str:
+        """Human-facing status; lack of a claim is not a failed coverage test."""
+        return "claimed" if self.full_unflattening_claim else "not_claimed"
+
     def to_metadata(self) -> dict[str, object]:
         metadata = {
             "function_ea": int(self.function_ea),

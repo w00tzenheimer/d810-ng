@@ -553,7 +553,7 @@ def test_log_line_is_one_dense_anchored_line():
     assert line == (
         "UNFLAT_OUTCOME func=0x7ffb0eb06e50 maturity=GLBOPT1 "
         "disposition=not_submitted_safe_bail reason=residual_dispatcher_corridor "
-        "handlers=85/85 dag=59/20 coverage=0/158 "
+        "preplan_reachable_handlers=85/85 dag=59/20 coverage=0/158 "
         "unresolved=blk330@0x7FFB0EB15239 "
         'next="python -m d810.diagnostics unflat-why --db D --func 0x7ffb0eb06e50"'
     )
@@ -573,7 +573,7 @@ def test_log_line_renders_unknown_counters_as_question_marks():
         next_hint="python -m d810.diagnostics unflat-why --db D --func 0x7ffb0f2726e0",
     )
     line = format_unflat_outcome(record)
-    assert "handlers=?/? dag=?/? coverage=?/? unresolved=none" in line
+    assert "preplan_reachable_handlers=?/? dag=?/? coverage=?/? unresolved=none" in line
 
 
 # ---------------------------------------------------------------------------

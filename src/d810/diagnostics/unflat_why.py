@@ -319,7 +319,8 @@ def _format_run(run: dict) -> str:
     coverage = _pair(row["coverage_covered"], row["coverage_residual"])
     return (
         f"{attempt_desc}: disposition={disposition} reason={reason} "
-        f"plan_id={plan_id} handlers={handlers} dag={dag} coverage={coverage}"
+        f"plan_id={plan_id} preplan_reachable_handlers={handlers} "
+        f"dag={dag} coverage={coverage}"
     )
 
 

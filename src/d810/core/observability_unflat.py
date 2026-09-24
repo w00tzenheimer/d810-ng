@@ -52,6 +52,10 @@ _NO_ACTIVE_CAPTURE = "<diag-db>"
 class UnflattenOutcomeCounters:
     """Counters a terminal record quotes.  Never a decision input.
 
+    ``handlers_recovered``/``handlers_total`` come from the emitter's
+    pre-plan reachability projection. They do not describe final native CFG
+    reachability after a typed transaction (including edge-split corridors).
+
     ``weakref_slot=True`` lets tests observe that a finished session's
     counters are ordinary garbage once dropped (ticket d81-pqrc), not
     retained by any module-level cache.
@@ -247,7 +251,7 @@ def format_unflat_outcome(record: UnflattenCandidateOutcomeObserved) -> str:
     return (
         f"UNFLAT_OUTCOME func=0x{record.func_ea:x} maturity={maturity} "
         f"disposition={record.disposition} reason={record.reason} "
-        f"handlers={_pair(record.handlers_recovered, record.handlers_total)} "
+        f"preplan_reachable_handlers={_pair(record.handlers_recovered, record.handlers_total)} "
         f"dag={_pair(record.dag_nodes, record.dag_edges)} "
         f"coverage={_pair(record.coverage_covered, record.coverage_residual)} "
         f"unresolved={unresolved} "

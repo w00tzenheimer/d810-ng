@@ -1103,6 +1103,9 @@ class UnflattenCandidateOutcomeObserved:
     transaction poisoned after earlier batches already committed.  The record
     is append-only; it never back-fills the corridor coverage summary it
     closes (readers join on ``plan_id``).
+
+    The persisted ``handlers_recovered``/``handlers_total`` fields are a
+    pre-plan reachability projection, not a final native-graph verdict.
     """
 
     session_id: str

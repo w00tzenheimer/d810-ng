@@ -13107,13 +13107,13 @@ def emit_minimal_unflatten(
         logger.info(
             "unflat dispatcher corridor coverage: status=%s planned_status=%s "
             "covered=%d residual=%d "
-            "enumeration_complete=%s full_unflattening_claim=%s residual_paths=%s",
+            "enumeration_complete=%s whole_function_proof=%s residual_paths=%s",
             coverage.completion_status,
             coverage.planned_completion_status,
             len(coverage.covered_corridors),
             len(coverage.residual_corridors),
             coverage.enumeration_complete,
-            coverage.full_unflattening_claim,
+            coverage.whole_function_proof_status,
             residual_labels or "none",
         )
 
@@ -14860,6 +14860,9 @@ def emit_minimal_unflatten(
                     len(exit_path_effect_plan.exit_path_effect_summaries),
                     ",".join(str(anchor) for anchor in sorted(terminal_anchors)),
                 )
+    # This is a pre-plan projection over ``mods``. Later typed steps such as
+    # PatchEdgeSplitCorridor can restore paths that this projection cannot see;
+    # the count must not be presented as final native handler reachability.
     try:
         reached_handlers, total_handlers, _ = _reachability(
             flow_graph, dispatcher, mods, int(dispatcher_entry_serial)
@@ -14882,7 +14885,8 @@ def emit_minimal_unflatten(
         logger.info(
             "unflat minimal unflatten: back_edges=%d return_edges=%d "
             "transition_rows_unresolved=%d "
-            "redirects=%d reachable_handlers=%d/%d unreached=%s",
+            "redirects=%d preplan_reachable_handlers=%d/%d "
+            "preplan_unreached=%s",
             len(transitions),
             n_return,
             n_transition_rows_unresolved,
@@ -16045,12 +16049,12 @@ def emit_minimal_unflatten(
 
 
 def _reachability(flow_graph, dispatcher, mods, dispatcher_entry_serial):
-    """Faithful post-redirect reachability: apply the redirects to the CFG, then
-    BFS from the function entry with the (now-bypassed) dispatcher removed.
+    """Pre-plan reachability over preliminary redirects, excluding dispatcher.
 
-    A dispatcher target (handler entry) that is NOT reached here will be DCE'd by
-    IDA once the dispatcher is gone -- i.e. its real work is dropped. Returns
-    ``(reached_handler_count, total_handler_count, sorted_unreached_handlers)``.
+    This projection does not model later typed transaction steps such as
+    ``PatchEdgeSplitCorridor``, nor Hex-Rays' final native graph. An unreached
+    target here is a lead for investigation, not proof that DCE will drop the
+    handler. Returns ``(reached_count, total_count, sorted_unreached_serials)``.
     """
     rewired: dict[int, list[int]] = {}
     for serial in flow_graph.blocks:

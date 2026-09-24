@@ -817,6 +817,7 @@ def test_coverage_marks_both_nested_corridors_covered_only_after_bypass() -> Non
     assert report.completion_status == "pending_patch_application"
     assert report.planned_completion_status == "planned_dispatcher_corridors_covered"
     assert report.full_unflattening_claim is False
+    assert report.whole_function_proof_status == "not_claimed"
     assert not report.residual_corridors
     assert {
         tuple(anchor.serial for anchor in corridor.path)

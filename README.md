@@ -1084,6 +1084,9 @@ PYTHONPATH=src python3 -m d810.diagnostics return-paths --db $DB
 
 Run `PYTHONPATH=src python3 -m d810.diagnostics --help` for the full set of query subcommands.
 
+For unflattening reports, read [the outcome-counter interpretation](UNFLATTEN_OUTCOME.md)
+before treating a pre-plan handler count as a final native-graph result.
+
 ### Cross-session persistence
 
 Beyond the per-run diagnostic snapshots, D-810 keeps persistent optimization

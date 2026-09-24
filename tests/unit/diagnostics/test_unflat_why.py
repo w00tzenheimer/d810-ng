@@ -874,7 +874,7 @@ class TestSessionSelection:
         assert "disposition=not_submitted_safe_bail" in text
         # The older session's row must not leak into the newer session's report.
         assert "disposition=applied_observed" not in text
-        assert "handlers=85/85" not in text
+        assert "preplan_reachable_handlers=85/85" not in text
 
     def test_explicit_session_overrides_the_default(self, tmp_path):
         conn, _ = _make_db(tmp_path)
@@ -883,7 +883,7 @@ class TestSessionSelection:
         text = "\n".join(render_unflat_why(conn, FUNC_EA, session_id="s-old"))
         assert "session=s-old" in text
         assert "disposition=applied_observed" in text
-        assert "handlers=85/85" in text
+        assert "preplan_reachable_handlers=85/85" in text
         assert "disposition=not_submitted_safe_bail" not in text
 
     def test_active_session_is_not_selected_as_the_default(self, tmp_path):
@@ -906,7 +906,7 @@ class TestSessionSelection:
 
         text = "\n".join(render_unflat_why(conn, FUNC_EA))
         assert "session=s-new" in text
-        assert "handlers=1/" not in text
+        assert "preplan_reachable_handlers=1/" not in text
 
     def test_no_diagnostic_sessions_table_falls_back_to_merged_history(self, tmp_path):
         conn, _ = _make_db(tmp_path)
