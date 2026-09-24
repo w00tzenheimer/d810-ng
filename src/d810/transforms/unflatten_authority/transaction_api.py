@@ -2039,6 +2039,32 @@ def _resolve_candidate_identities(
                 "observed helper coordinates must be exact PlanBlockRef rows"
             )
     planned_serial_set = set(planned_serials.values())
+    if (
+        phase is model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT
+        and plan is not None
+        and plan.new_blocks
+        and sealed_source_ref_by_serial
+    ):
+        # The portable projector inserts helpers immediately before the
+        # source STOP, shifting that one retained source occurrence after the
+        # helpers.  Translate its sealed coordinate before excluding unsealed
+        # candidate blocks from source-identity rebinding.
+        relocation = getattr(plan, "relocation_map", None)
+        source_stop_ref = getattr(relocation, "source_stop", None)
+        if source_stop_ref is None:
+            stop_before = max(
+                int(serial) for _ref, serial in plan.source_coordinates
+            )
+            source_stop_ref = sealed_source_ref_by_serial.get(stop_before)
+        else:
+            stop_before = dict(plan.source_coordinates).get(source_stop_ref)
+        if (
+            stop_before is not None
+            and sealed_source_ref_by_serial.get(int(stop_before)) == source_stop_ref
+        ):
+            sealed_source_ref_by_serial[int(stop_before) + len(plan.new_blocks)] = (
+                source_stop_ref
+            )
     candidate_identities = []
     for block in block_values.values():
         if block.serial in planned_serial_set:
@@ -2046,29 +2072,51 @@ def _resolve_candidate_identities(
         sealed_ref = sealed_source_ref_by_serial.get(int(block.serial))
         if (
             phase is model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT
-            and type(sealed_ref) is LogicalBlockRef
+            and plan is not None
+            and sealed_ref is None
+        ):
+            # A newly generated projected block is not a source occurrence,
+            # even if it copies every native coordinate of a changed owner.
+            # Post-apply observations deliberately rebind independently.
+            continue
+        if (
+            phase is model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT
+            and type(sealed_ref) in (NativeBlockRef, LogicalBlockRef)
             and sealed_ref in catalog_by_ref
         ):
             witness = catalog_by_ref[sealed_ref]
             try:
                 projected_origins = producer_api.native_instruction_origins(block)
             except ValueError as exc:
-                raise ValueError(
-                    "projected logical source occurrence lost native origins"
-                ) from exc
-            if projected_origins != witness.native_instruction_eas:
-                raise ValueError(
-                    "projected logical source occurrence changed native origins"
+                if type(sealed_ref) is LogicalBlockRef:
+                    raise ValueError(
+                        "projected logical source occurrence lost native origins"
+                    ) from exc
+            else:
+                explicit_native_start = getattr(block, "native_start_ea", None)
+                native_start_compatible = (
+                    type(sealed_ref) is LogicalBlockRef
+                    or explicit_native_start is None
+                    or sealed_ref.identity.native_ranges.contains(
+                        explicit_native_start
+                    )
                 )
-            # A logical ref is emitted only when several live blocks share one
-            # native identity.  Generic anchor matching cannot distinguish
-            # those clones (and their graph range start may differ from the
-            # catalog's first-instruction anchor).  The immutable PatchPlan's
-            # exact source coordinate is the occurrence authority in the
-            # projected graph; retain it after independently checking the
-            # complete native instruction inventory.
-            result[sealed_ref] = int(block.serial)
-            continue
+                if (
+                    projected_origins == witness.native_instruction_eas
+                    and native_start_compatible
+                ):
+                    # The sealed coordinate identifies this retained source
+                    # occurrence even when a projected graph uses a synthetic
+                    # start EA. Require its complete native-origin inventory;
+                    # observed post-apply blocks rebind independently below.
+                    result[sealed_ref] = int(block.serial)
+                    continue
+                if type(sealed_ref) is LogicalBlockRef:
+                    raise ValueError(
+                        "projected logical source occurrence changed native origins"
+                    )
+            # A changed physical block must still match its own sealed ref
+            # exactly below; its serial cannot borrow another source owner.
         if type(
             sealed_ref
         ) is LogicalBlockRef and producer_api.is_exact_logical_function_exit(
@@ -2142,6 +2190,10 @@ def _resolve_candidate_identities(
     for anchor_ea, witnesses in witnesses_by_anchor.items():
         remaining_witnesses = list(witnesses)
         remaining_candidates = list(candidates_by_anchor.get(anchor_ea, ()))
+        require_sealed_ref = (
+            phase is model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT
+            and plan is not None
+        )
 
         # Exact native origins disambiguate distinct physical blocks that share
         # an anchor.  Accept only mutual-unique pairs so this resolution stays
@@ -2152,6 +2204,11 @@ def _resolve_candidate_identities(
                     candidate
                     for candidate in remaining_candidates
                     if candidate[1] == witness.native_instruction_eas
+                    and (
+                        not require_sealed_ref
+                        or sealed_source_ref_by_serial.get(candidate[0])
+                        == witness.block_ref
+                    )
                 )
                 for witness in remaining_witnesses
             }
@@ -2160,6 +2217,11 @@ def _resolve_candidate_identities(
                     witness
                     for witness in remaining_witnesses
                     if candidate[1] == witness.native_instruction_eas
+                    and (
+                        not require_sealed_ref
+                        or sealed_source_ref_by_serial.get(candidate[0])
+                        == witness.block_ref
+                    )
                 )
                 for candidate in remaining_candidates
             }
@@ -2177,9 +2239,15 @@ def _resolve_candidate_identities(
                 remaining_candidates.remove(candidate)
 
         # Observed folding may remove instructions from a surviving owner.
-        # After exact identities have been consumed, only a final 1:1
-        # remainder is strong enough to preserve that physical identity.
-        if len(remaining_witnesses) == len(remaining_candidates) == 1:
+        # Keep the historical planless matcher for callers with no sealed
+        # coordinates, but a planned projection requires exact source origins.
+        if (
+            (
+                phase is model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY
+                or plan is None
+            )
+            and len(remaining_witnesses) == len(remaining_candidates) == 1
+        ):
             result[remaining_witnesses[0].block_ref] = int(remaining_candidates[0][0])
 
     if (

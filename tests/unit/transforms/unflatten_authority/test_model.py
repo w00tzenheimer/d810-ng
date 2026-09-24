@@ -2143,15 +2143,15 @@ def test_source_catalog_shared_anchor_accepts_distinct_exact_occurrence_refs() -
     assert tuple(item.anchor_ea for item in catalog.blocks) == (0x1000, 0x1000)
 
     logical = LogicalBlockRef("shared-anchor", "logical", 1)
-    with pytest.raises(ValueError, match="shared|anchor"):
-        model.SourceIdentityCatalog(
-            key,
-            0,
-            (
-                model.SourceBlockIdentityWitness(native_a, 0x1000, (0x1004,)),
-                model.SourceBlockIdentityWitness(logical, 0x1000, (0x1000,)),
-            ),
-        )
+    mixed_catalog = model.SourceIdentityCatalog(
+        key,
+        0,
+        (
+            model.SourceBlockIdentityWitness(native_a, 0x1000, (0x1004,)),
+            model.SourceBlockIdentityWitness(logical, 0x1000, (0x1000,)),
+        ),
+    )
+    assert {item.block_ref for item in mixed_catalog.blocks} == {native_a, logical}
 
     logical_b = LogicalBlockRef("shared-anchor", "logical-b", 1)
     catalog = model.SourceIdentityCatalog(

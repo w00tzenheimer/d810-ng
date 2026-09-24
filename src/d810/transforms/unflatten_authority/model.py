@@ -4476,15 +4476,18 @@ class SourceIdentityCatalog:
                 # blocks injective; rejecting them here makes typed lowering
                 # impossible precisely when clone disambiguation succeeded.
                 continue
-            if row_ref_types != {NativeBlockRef}:
-                raise ValueError(
-                    "shared source anchor requires one homogeneous ref family"
-                )
-            if len({row.block_ref for row in rows}) != len(rows):
+            # Native physical entries and logical clone occurrences may share
+            # an EA without denoting the same block.  The typed references are
+            # distinct catalog coordinates; anchor-only consumers must still
+            # reject an ambiguous lookup rather than collapse those rows.
+            native_rows = tuple(
+                row for row in rows if type(row.block_ref) is NativeBlockRef
+            )
+            if len({row.block_ref for row in native_rows}) != len(native_rows):
                 raise ValueError("shared source anchor requires distinct native refs")
             if any(
                 not row.block_ref.identity.native_ranges.contains(row.anchor_ea)
-                for row in rows
+                for row in native_rows
             ):
                 raise ValueError("shared native anchor is outside native identity range")
         object.__setattr__(self, "blocks", blocks)

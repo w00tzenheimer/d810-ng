@@ -2686,6 +2686,130 @@ def test_projected_serials_preserve_exact_logical_clone_occurrence() -> None:
     ) == {logical_ref: 0}
 
 
+def test_projected_native_source_with_synthetic_start_keeps_sealed_owner() -> None:
+    """A retained CALL block uses its source coordinate, not a fictitious EA."""
+    from d810.core.native_preanalysis_key import NativePreanalysisKey
+    from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
+    from d810.ir.flowgraph import BlockKind, BlockSnapshot, FlowGraph, InsnKind, InsnSnapshot
+    from d810.transforms.cfg_transaction import NativeBlockRef
+
+    key = NativePreanalysisKey(
+        "input", "x86", 64, 0, "f" * 64, "p" * 64, "s" * 64,
+    )
+    owner = NativeBlockRef(StableBlockIdentity.from_intervals(
+        (
+            NativeEaInterval(0x1000, 0x1001),
+            NativeEaInterval(0x1004, 0x1005),
+            NativeEaInterval(0x1008, 0x1009),
+        ),
+        native_key=key,
+        exact_instruction_eas=(0x1004, 0x1008),
+    ))
+    instructions = (
+        InsnSnapshot(1, 0x1004, (), kind=InsnKind.CALL, raw_opcode=1),
+        InsnSnapshot(2, 0x1008, (), kind=InsnKind.CALL, raw_opcode=2),
+    )
+    projected_block = BlockSnapshot(
+        0, 0, (), (), 0, 0xF1C0000000000020, instructions,
+        tail_opcode=2, kind=BlockKind.ZERO_WAY, tail_kind=InsnKind.CALL,
+        raw_tail_opcode=2, native_start_ea=None,
+    )
+    graph = FlowGraph({0: projected_block}, 0, 0x1000)
+    catalog = model.SourceIdentityCatalog(
+        key, 0, (model.SourceBlockIdentityWitness(owner, 0x1000, (0x1004, 0x1008)),),
+    )
+    proposal = SimpleNamespace(source_identity_catalog=catalog, claims=(), route_evidence=None)
+    plan = SimpleNamespace(source_coordinates=((owner, 0),), new_blocks=())
+
+    resolution = transaction_api._resolve_candidate_identities(
+        graph, proposal, plan=plan,
+        phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+    )
+
+    assert dict(resolution.serial_bindings) == {owner: 0}
+
+    # An edited native inventory is not the sealed source occurrence. Native
+    # candidates still use ordinary rebinding; they do not inherit the strict
+    # logical-clone rejection rule merely because their serial was retained.
+    changed = replace(
+        projected_block,
+        insn_snapshots=(instructions[0], InsnSnapshot(3, 0x100C, (), kind=InsnKind.CALL, raw_opcode=3)),
+    )
+    changed_graph = FlowGraph({0: changed}, 0, 0x1000)
+    changed_resolution = transaction_api._resolve_candidate_identities(
+        changed_graph, proposal, plan=plan,
+        phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+    )
+    assert dict(changed_resolution.serial_bindings) == {}
+
+    # An unsealed generated CALL occurrence with the same native origins
+    # cannot borrow the retained source block's typed identity.
+    generated = replace(projected_block, serial=1, start_ea=0xF1C0000000000024)
+    graph_with_generated_call = FlowGraph(
+        {0: projected_block, 1: generated}, 0, 0x1000,
+    )
+    generated_resolution = transaction_api._resolve_candidate_identities(
+        graph_with_generated_call, proposal, plan=plan,
+        phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+    )
+    assert dict(generated_resolution.serial_bindings) == {owner: 0}
+
+    # A changed retained owner and an unsealed CALL with the old source
+    # coordinates must not let the generated occurrence inherit that owner.
+    generated_collision = replace(generated, start_ea=0x1000)
+    collided_graph = FlowGraph(
+        {0: changed, 1: generated_collision}, 0, 0x1000,
+    )
+    collided_resolution = transaction_api._resolve_candidate_identities(
+        collided_graph, proposal, plan=plan,
+        phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+    )
+    assert dict(collided_resolution.serial_bindings) == {}
+
+    # An explicit native start that contradicts the sealed identity must not
+    # be hidden by matching instruction origins and a synthetic graph start.
+    contradictory_start = replace(projected_block, native_start_ea=0x1010)
+    contradictory_graph = FlowGraph({0: contradictory_start}, 0, 0x1000)
+    contradictory_resolution = transaction_api._resolve_candidate_identities(
+        contradictory_graph, proposal, plan=plan,
+        phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+    )
+    assert dict(contradictory_resolution.serial_bindings) == {}
+
+    # A changed block at A's sealed serial cannot acquire B's catalog ref
+    # merely because B's original occurrence disappeared from the projection.
+    other = NativeBlockRef(StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x2000, 0x2001), NativeEaInterval(0x2004, 0x2005)),
+        native_key=key, exact_instruction_eas=(0x2004,),
+    ))
+    two_owner_catalog = model.SourceIdentityCatalog(
+        key, 0,
+        (
+            model.SourceBlockIdentityWitness(owner, 0x1000, (0x1004, 0x1008)),
+            model.SourceBlockIdentityWitness(other, 0x2000, (0x2004,)),
+        ),
+    )
+    replaced_owner = replace(
+        projected_block,
+        native_start_ea=0x2000,
+        insn_snapshots=(InsnSnapshot(4, 0x2004, (), kind=InsnKind.CALL, raw_opcode=4),),
+        tail_opcode=4,
+        raw_tail_opcode=4,
+    )
+    cross_ref_resolution = transaction_api._resolve_candidate_identities(
+        FlowGraph({0: replaced_owner}, 0, 0x1000),
+        SimpleNamespace(
+            source_identity_catalog=two_owner_catalog,
+            claims=(), route_evidence=None,
+        ),
+        plan=SimpleNamespace(
+            source_coordinates=((owner, 0), (other, 1)), new_blocks=(),
+        ),
+        phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+    )
+    assert dict(cross_ref_resolution.serial_bindings) == {}
+
+
 def test_logical_clone_catalog_ref_is_not_labeled_as_function_exit() -> None:
     """Logical refs also name native clone occurrences; they are not exits."""
     from d810.transforms.cfg_transaction import LogicalBlockRef

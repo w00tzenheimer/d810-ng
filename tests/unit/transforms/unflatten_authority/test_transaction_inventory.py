@@ -1390,7 +1390,12 @@ def test_projected_inventory_does_not_emit_observed_native_origin_diagnostic(
         phase=model.UnflattenAuthorityPhase.PRODUCER_FORECAST,
     )
 
-    with pytest.raises(ValueError, match="native identity instruction EAs"):
+    # Projected rebinding no longer grants source ownership to a block whose
+    # native origins changed. The reachable CALL fails the effect gate before
+    # a later native-identity mismatch check would run.
+    with pytest.raises(
+        ValueError, match="candidate reachable effects are missing subjects"
+    ):
         transaction_api._build_semantic_graph_inventory(
             candidate, proposal, plan, source=False,
             phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,

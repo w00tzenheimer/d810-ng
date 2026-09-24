@@ -943,9 +943,7 @@ def _validate_proposal(
                         stage=ProposalValidationStage.RETIREMENT_CATALOG,
                     )
         source_blocks = proposal.source_identity_catalog.blocks
-        if source_blocks and all(
-            type(block.block_ref) is NativeBlockRef for block in source_blocks
-        ):
+        if source_blocks:
             source_serial_by_ref = {
                 block.block_ref: serial
                 for serial, block in enumerate(source_blocks)

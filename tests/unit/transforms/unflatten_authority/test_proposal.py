@@ -1325,6 +1325,57 @@ def _proposal_and_plan_ids():
     return proposal, proposal.plan_id
 
 
+def test_mixed_source_catalog_still_validates_exact_effect_claims(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A logical clone must not disable native exact-effect correlation."""
+    from .helpers import exact_fixture
+    from d810.transforms.cfg_transaction import LogicalBlockRef
+    from d810.transforms.plan import PatchRedirectGoto
+    from d810.transforms.unflatten_authority import model, producer_api
+    from d810.transforms.unflatten_authority.proposal import (
+        ProposalAccepted, ProposalValidationStage, canonical_redirect_manifest,
+        validate_proposal,
+    )
+
+    _source, proposal, _exclusion, refs = exact_fixture()
+    native_witness = proposal.source_identity_catalog.blocks[0]
+    logical_witness = model.SourceBlockIdentityWitness(
+        LogicalBlockRef("mixed-catalog", "clone", 1),
+        native_witness.anchor_ea,
+        native_witness.native_instruction_eas,
+    )
+    mixed_catalog = replace(
+        proposal.source_identity_catalog,
+        blocks=(*proposal.source_identity_catalog.blocks, logical_witness),
+    )
+    proposal = replace(proposal, source_identity_catalog=mixed_catalog)
+    plan = PatchPlan(
+        plan_id=proposal.plan_id,
+        snapshot_id="mixed-catalog-test",
+        source_generation=mixed_catalog.generation,
+        steps=(PatchRedirectGoto(refs[0], refs[1], refs[2]),),
+    )
+    manifest = canonical_redirect_manifest(plan)
+    proposal = replace(
+        proposal,
+        use_def_witness=replace(
+            proposal.use_def_witness,
+            redirect_owner_refs=manifest.owner_refs,
+            redirect_digest=manifest.digest,
+        ),
+    )
+    plan = replace(plan, unflatten_proposal=proposal)
+    assert any(type(claim) is model.ExactInfeasibleEffectClaim for claim in proposal.claims)
+    assert type(validate_proposal(plan, proposal)) is ProposalAccepted
+
+    monkeypatch.setattr(
+        producer_api, "validate_exact_effect_claim_semantics", lambda **_kwargs: None,
+    )
+    rejected = validate_proposal(plan, proposal)
+    assert rejected.stage is ProposalValidationStage.EXACT_EFFECT_CORRELATION
+
+
 def _typed_plan(proposal):
     from d810.transforms.plan import PatchRedirectGoto
     from d810.transforms.unflatten_authority.proposal import canonical_redirect_manifest
