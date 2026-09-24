@@ -270,3 +270,87 @@ def test_default_entry_boundary_is_bottom() -> None:
         predecessors_of=pred,
     )
     assert res.in_states[0] == frozenset()
+
+
+@pytest.mark.parametrize("direction", [Direction.FORWARD, Direction.BACKWARD])
+def test_initial_nodes_visit_generators_beyond_identity_boundary(
+    direction: Direction,
+) -> None:
+    nodes, succ, pred = _topology({0: [1], 1: [2], 2: [3]})
+    res = run_fixpoint(
+        ReachingDefinitionsDomain({1: ("x", "x@1"), 2: ("y", "y@2")}),
+        nodes=nodes,
+        entry_nodes={0 if direction is Direction.FORWARD else 3},
+        initial_nodes=nodes,
+        successors_of=succ,
+        predecessors_of=pred,
+        config=FixpointConfiguration(direction=direction),
+        raise_on_nonconvergence=True,
+    )
+
+    destination = 3 if direction is Direction.FORWARD else 0
+    assert res.converged is True
+    assert res.out_states[destination] == {"x@1", "y@2"}
+
+
+def test_initial_nodes_do_not_receive_boundary_facts() -> None:
+    nodes, succ, pred = _topology({0: [1, 2], 1: [], 2: [2]})
+    res = run_fixpoint(
+        ReachingDefinitionsDomain({}),
+        nodes=nodes,
+        entry_nodes={1},
+        entry_state=frozenset({"result@exit"}),
+        initial_nodes=nodes,
+        successors_of=succ,
+        predecessors_of=pred,
+        config=FixpointConfiguration(direction=Direction.BACKWARD),
+        raise_on_nonconvergence=True,
+    )
+
+    assert res.out_states[0] == {"result@exit"}
+    assert res.out_states[1] == {"result@exit"}
+    assert res.out_states[2] == frozenset()
+
+
+def test_initial_nodes_can_schedule_a_graph_without_boundaries() -> None:
+    nodes, succ, pred = _topology({0: [1], 1: [0]})
+    res = run_fixpoint(
+        ReachingDefinitionsDomain({1: ("x", "x@1")}),
+        nodes=nodes,
+        entry_nodes=(),
+        initial_nodes=nodes,
+        successors_of=succ,
+        predecessors_of=pred,
+        raise_on_nonconvergence=True,
+    )
+
+    assert res.converged is True
+    assert res.out_states[0] == {"x@1"}
+
+
+def test_default_scheduling_remains_entry_only() -> None:
+    nodes, succ, pred = _topology({0: [1]})
+    res = run_fixpoint(
+        ReachingDefinitionsDomain({1: ("x", "x@1")}),
+        nodes=nodes,
+        entry_nodes={0},
+        successors_of=succ,
+        predecessors_of=pred,
+        raise_on_nonconvergence=True,
+    )
+
+    assert res.out_states[1] == frozenset()
+
+
+def test_empty_initial_nodes_do_not_fall_back_to_entries() -> None:
+    nodes, succ, pred = _topology({0: []})
+    res = run_fixpoint(
+        ReachingDefinitionsDomain({0: ("x", "x@0")}),
+        nodes=nodes,
+        entry_nodes={0},
+        initial_nodes=(),
+        successors_of=succ,
+        predecessors_of=pred,
+    )
+
+    assert res.out_states[0] == frozenset()

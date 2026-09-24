@@ -32,6 +32,7 @@ def run_fixpoint(
     nodes: Collection[NodeId],
     entry_nodes: Collection[NodeId],
     entry_state: Optional[StateT] = None,
+    initial_nodes: Optional[Collection[NodeId]] = None,
     successors_of: Callable[[NodeId], Iterable[NodeId]],
     predecessors_of: Callable[[NodeId], Iterable[NodeId]],
     config: FixpointConfiguration = FixpointConfiguration(),
@@ -61,11 +62,15 @@ def run_fixpoint(
     Args:
         domain: The abstract domain (bottom/meet/transfer/equals/widen).
         nodes: Every node id in the graph (seeds the state maps).
-        entry_nodes: Boundary nodes enqueued first (function entry for a
-            forward run, exits for a backward run).
+        entry_nodes: Semantic boundary nodes (function entry for a forward
+            run, exits for a backward run).
         entry_state: Initial boundary IN-state for ``entry_nodes`` (the fact
             at the function entry / exit boundary).  Defaults to
             ``domain.bottom()`` when not supplied.
+        initial_nodes: Nodes initially scheduled, independently of the
+            semantic boundaries. Defaults to ``entry_nodes``. Pass all
+            ``nodes`` to evaluate local generators even when boundary
+            transfers leave bottom unchanged or components have no boundary.
         successors_of: Maps a node to its successor ids.
         predecessors_of: Maps a node to its predecessor ids.
         config: Iteration cap, widening threshold, and direction.
@@ -92,7 +97,7 @@ def run_fixpoint(
     visits: dict[NodeId, int] = {}
 
     entry_set = set(entry_nodes)
-    worklist = WorkingSet(entry_nodes)
+    worklist = WorkingSet(entry_nodes if initial_nodes is None else initial_nodes)
     iterations = 0
     max_iterations = config.max_iterations
 

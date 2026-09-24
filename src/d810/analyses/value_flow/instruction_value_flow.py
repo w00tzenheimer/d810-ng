@@ -132,19 +132,6 @@ def _reaching_facts(
     return facts_by_node, frozenset(definitions)
 
 
-def _nodes_reaching_exit(graph: InstructionFlowGraph) -> frozenset[InsnHandle]:
-    """Return nodes with at least one finite path to a function exit."""
-    reachable = set(graph.exit_nodes)
-    pending = list(graph.exit_nodes)
-    while pending:
-        node = pending.pop()
-        for predecessor in graph.predecessors(node):
-            if predecessor not in reachable:
-                reachable.add(predecessor)
-                pending.append(predecessor)
-    return frozenset(reachable)
-
-
 def analyze_instruction_value_flow(
     graph: InstructionFlowGraph,
     *,
@@ -167,6 +154,7 @@ def analyze_instruction_value_flow(
         nodes=graph.nodes,
         entry_nodes=graph.exit_nodes,
         entry_state=live_at_exit,
+        initial_nodes=graph.nodes,
         successors_of=graph.successors,
         predecessors_of=graph.predecessors,
         config=_fixpoint_configuration(
@@ -182,6 +170,7 @@ def analyze_instruction_value_flow(
         ReachingDefsDomain(reaching_facts),
         nodes=graph.nodes,
         entry_nodes=graph.entry_nodes,
+        initial_nodes=graph.nodes,
         successors_of=graph.successors,
         predecessors_of=graph.predecessors,
         config=_fixpoint_configuration(
@@ -207,22 +196,8 @@ def analyze_instruction_value_flow(
                     if use not in consumers:
                         consumers.append(use)
 
-    tracked_locations = set(live_at_exit)
-    for access in graph.facts_by_node.values():
-        tracked_locations.update(access.uses)
-        tracked_locations.update(access.must_defs)
-        tracked_locations.update(access.may_defs)
-    reaches_exit = _nodes_reaching_exit(graph)
-
     return InstructionValueFlowResult(
-        live_out={
-            node: (
-                liveness.in_states[node]
-                if node in reaches_exit
-                else frozenset(tracked_locations)
-            )
-            for node in graph.nodes
-        },
+        live_out={node: liveness.in_states[node] for node in graph.nodes},
         def_use=DefUseFacts(
             uses_by_def={
                 definition: tuple(uses) for definition, uses in uses_by_def.items()

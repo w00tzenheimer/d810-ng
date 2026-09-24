@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import pytest
+
+from d810.analyses.data_flow import FixpointDidNotConverge
+from d810.analyses.value_flow import instruction_value_flow
 from d810.analyses.value_flow.instruction_value_flow import (
     InstructionAccessFacts,
     InstructionFlowGraph,
@@ -158,7 +162,10 @@ def test_reaching_definitions_from_both_entries_wire_to_join_use() -> None:
     assert result.def_use.uses_of(DefinitionRef(slot, version=1)) == expected_use
 
 
-def test_definition_in_closed_cycle_fails_closed_as_live() -> None:
+@pytest.mark.parametrize("successors", [{0: (1,), 1: (0,)}, {0: (0,), 1: (1,)}])
+def test_unused_definition_in_closed_cycle_is_dead(
+    successors: dict[int, tuple[int, ...]],
+) -> None:
     slot = StackSlot(offset=0x40, size=8)
     result = analyze_instruction_value_flow(
         _graph(
@@ -166,12 +173,154 @@ def test_definition_in_closed_cycle_fails_closed_as_live() -> None:
                 InstructionAccessFacts(must_defs=frozenset({slot})),
                 InstructionAccessFacts(),
             ),
-            {0: (1,), 1: (0,)},
+            successors,
         ),
         live_at_exit=frozenset(),
     )
 
-    assert result.is_definition_dead(DefinitionRef(slot, version=0)) is False
+    assert result.is_definition_dead(DefinitionRef(slot, version=0)) is True
+    assert result.live_out[InsnHandle(0)] == frozenset()
+
+
+@pytest.mark.parametrize("partial", [False, True])
+def test_closed_cycle_retains_actual_consumers(partial: bool) -> None:
+    slot = StackSlot(offset=0x40, size=8)
+    consumer = (
+        InstructionAccessFacts(may_defs=frozenset({slot}))
+        if partial
+        else InstructionAccessFacts(uses=frozenset({slot}))
+    )
+    result = analyze_instruction_value_flow(
+        _graph(
+            (
+                InstructionAccessFacts(),
+                InstructionAccessFacts(must_defs=frozenset({slot})),
+                consumer,
+                InstructionAccessFacts(),
+            ),
+            {0: (1,), 1: (2,), 2: (3,), 3: (0,)},
+        ),
+        live_at_exit=frozenset(),
+    )
+
+    definition = DefinitionRef(slot, version=1)
+    kind = (
+        InstructionUseKind.PARTIAL_DEFINITION if partial else InstructionUseKind.READ
+    )
+    assert result.is_definition_dead(definition) is False
+    assert result.live_out[InsnHandle(1)] == frozenset({slot})
+    assert result.def_use.uses_of(definition) == (
+        InstructionUseRef(InsnHandle(2), kind=kind),
+    )
+
+
+def test_full_overwrite_in_closed_cycle_kills_old_value() -> None:
+    slot = StackSlot(offset=0x40, size=8)
+    result = analyze_instruction_value_flow(
+        _graph(
+            (
+                InstructionAccessFacts(must_defs=frozenset({slot})),
+                InstructionAccessFacts(must_defs=frozenset({slot})),
+                InstructionAccessFacts(uses=frozenset({slot})),
+            ),
+            {0: (1,), 1: (2,), 2: (0,)},
+        ),
+        live_at_exit=frozenset(),
+    )
+
+    assert result.is_definition_dead(DefinitionRef(slot, version=0)) is True
+    assert result.def_use.uses_of(DefinitionRef(slot, version=0)) == ()
+    assert result.is_definition_dead(DefinitionRef(slot, version=1)) is False
+    assert result.def_use.uses_of(DefinitionRef(slot, version=1)) == (
+        InstructionUseRef(InsnHandle(2), kind=InstructionUseKind.READ),
+    )
+
+
+def test_identity_entry_and_exit_do_not_hide_internal_definition_and_read() -> None:
+    slot = StackSlot(offset=0x40, size=8)
+    result = analyze_instruction_value_flow(
+        _graph(
+            (
+                InstructionAccessFacts(),
+                InstructionAccessFacts(must_defs=frozenset({slot})),
+                InstructionAccessFacts(uses=frozenset({slot})),
+                InstructionAccessFacts(),
+            ),
+            {0: (1,), 1: (2,), 2: (3,), 3: ()},
+        ),
+        live_at_exit=frozenset(),
+    )
+
+    definition = DefinitionRef(slot, version=1)
+    assert result.is_definition_dead(definition) is False
+    assert result.live_out[InsnHandle(1)] == frozenset({slot})
+    assert result.def_use.uses_of(definition) == (
+        InstructionUseRef(InsnHandle(2), kind=InstructionUseKind.READ),
+    )
+
+
+def test_disconnected_component_retains_its_definition_read() -> None:
+    slot = StackSlot(offset=0x40, size=8)
+    result = analyze_instruction_value_flow(
+        _graph(
+            (
+                InstructionAccessFacts(),
+                InstructionAccessFacts(must_defs=frozenset({slot})),
+                InstructionAccessFacts(uses=frozenset({slot})),
+                InstructionAccessFacts(),
+            ),
+            {0: (), 1: (2,), 2: (3,), 3: ()},
+        ),
+        live_at_exit=frozenset(),
+    )
+
+    definition = DefinitionRef(slot, version=1)
+    assert result.is_definition_dead(definition) is False
+    assert result.def_use.uses_of(definition) == (
+        InstructionUseRef(InsnHandle(2), kind=InstructionUseKind.READ),
+    )
+
+
+def test_real_exit_boundary_does_not_make_exitless_branch_live() -> None:
+    register = RegisterLocation(register_id=7, size=8)
+    result = analyze_instruction_value_flow(
+        _graph(
+            (
+                InstructionAccessFacts(),
+                InstructionAccessFacts(must_defs=frozenset({register})),
+                InstructionAccessFacts(must_defs=frozenset({register})),
+            ),
+            {0: (1, 2), 1: (), 2: (2,)},
+        ),
+        live_at_exit=frozenset({register}),
+    )
+
+    assert result.is_definition_dead(DefinitionRef(register, version=1)) is False
+    assert result.is_definition_dead(DefinitionRef(register, version=2)) is True
+    assert result.live_out[InsnHandle(1)] == frozenset({register})
+    assert result.live_out[InsnHandle(2)] == frozenset()
+
+
+@pytest.mark.parametrize("has_read", [False, True])
+def test_exhausted_iteration_budget_raises_instead_of_returning_dead_facts(
+    monkeypatch: pytest.MonkeyPatch,
+    has_read: bool,
+) -> None:
+    slot = StackSlot(offset=0x40, size=8)
+    monkeypatch.setattr(instruction_value_flow, "_MAX_FIXPOINT_ITERATIONS", 1)
+    with pytest.raises(FixpointDidNotConverge):
+        analyze_instruction_value_flow(
+            _graph(
+                (
+                    InstructionAccessFacts(
+                        must_defs=frozenset({slot}),
+                        uses=frozenset({slot}) if has_read else frozenset(),
+                    ),
+                ),
+                {0: (0,)},
+            ),
+            live_at_exit=frozenset(),
+        )
 
 
 def test_linear_instruction_graph_larger_than_default_solver_budget_converges() -> None:

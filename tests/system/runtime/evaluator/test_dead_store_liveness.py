@@ -354,15 +354,78 @@ def test_use_on_one_branch_keeps_the_definition() -> None:
     assert DeadStoreRejectionReason.REACHED_USE in _reasons(evidence)
 
 
-def test_closed_cycle_with_live_definition_fails_closed() -> None:
+def test_closed_cycle_with_unused_stack_definition_is_dead() -> None:
     target = _Mop(ida_hexrays.mop_S, stack_offset=0x40)
     dead = _Insn(0x401010, destination=target)
     evidence = HexRaysDeadStoreLivenessBackend().collect(
         _Mba((_Block(0, (dead,), successors=(0,)),))
     )
 
+    assert [candidate.insn_ea for candidate in evidence.candidates] == [0x401010]
+    assert evidence.rejections == ()
+
+
+@pytest.mark.parametrize("use_size", [4, 8])
+def test_closed_cycle_with_stack_read_keeps_the_definition(use_size) -> None:
+    target = _Mop(ida_hexrays.mop_S, stack_offset=0x40)
+    read = _Mop(ida_hexrays.mop_S, stack_offset=0x40, size=use_size)
+    definition = _Insn(0x401010, destination=target)
+    use = _Insn(0x401020, uses=(read,), opcode=ida_hexrays.m_call)
+    evidence = HexRaysDeadStoreLivenessBackend().collect(
+        _Mba((_Block(0, (definition, use), successors=(0,)),))
+    )
+
     assert evidence.candidates == ()
-    assert DeadStoreRejectionReason.CHAIN_UNAVAILABLE in _reasons(evidence)
+    assert DeadStoreRejectionReason.REACHED_USE in _reasons(evidence)
+
+
+def test_closed_cycle_with_partial_overwrite_keeps_wide_definition() -> None:
+    target = _Mop(ida_hexrays.mop_S, stack_offset=0x40)
+    partial = _Mop(ida_hexrays.mop_S, stack_offset=0x40, size=4)
+    definition = _Insn(0x401010, destination=target)
+    overwrite = _Insn(0x401020, destination=partial, effectful=True)
+    evidence = HexRaysDeadStoreLivenessBackend().collect(
+        _Mba((_Block(0, (definition, overwrite), successors=(0,)),))
+    )
+
+    assert evidence.candidates == ()
+    assert DeadStoreRejectionReason.PARTIAL_DEFINITION in _reasons(evidence)
+
+
+@pytest.mark.parametrize(
+    ("guard", "reason"),
+    [
+        ("effectful", DeadStoreRejectionReason.EFFECTFUL_RHS),
+        ("nodel", DeadStoreRejectionReason.NODEL_STORAGE),
+    ],
+)
+def test_closed_cycle_does_not_bypass_store_safety_guards(guard, reason) -> None:
+    target = _Mop(ida_hexrays.mop_S, stack_offset=0x40)
+    definition = _Insn(0x401010, destination=target, effectful=guard == "effectful")
+    evidence = HexRaysDeadStoreLivenessBackend().collect(
+        _Mba(
+            (_Block(0, (definition,), successors=(0,)),),
+            nodel_offsets=(0x40,) if guard == "nodel" else (),
+        )
+    )
+
+    assert evidence.candidates == ()
+    assert reason in _reasons(evidence)
+
+
+def test_closed_cycle_keeps_stack_storage_whose_exact_address_escapes() -> None:
+    target = _Mop(ida_hexrays.mop_S, stack_offset=0x40)
+    address = _Mop(ida_hexrays.mop_a, address_of=target)
+    definition = _Insn(0x401010, destination=target)
+    escape = _Insn(0x401020, uses=(address,), opcode=ida_hexrays.m_call)
+    escape.l = address
+
+    evidence = HexRaysDeadStoreLivenessBackend().collect(
+        _Mba((_Block(0, (definition, escape), successors=(0,)),))
+    )
+
+    assert evidence.candidates == ()
+    assert DeadStoreRejectionReason.ALIASED_STORAGE in _reasons(evidence)
 
 
 def test_instruction_flow_nonconvergence_abstains_without_escaping(monkeypatch) -> None:
