@@ -17452,12 +17452,14 @@ def test_native_entry_receipt_upgrades_exact_carrier_delivery_to_typed_fact() ->
     # rather than a descriptive carrier hint.
     missing_source = dict(source_witnesses)
     del missing_source[refs[1]]
-    comparison_drift = replace(
-        carrier,
-        comparison_entry_identity=carrier.feeder_identity,
-        comparison_entry_anchor_ea=carrier.feeder_anchor_ea,
-        corridor=carrier.corridor[:2] + (carrier.corridor[1],),
-    )
+    # Duplicate corridor identities are rejected before the entry matcher.
+    with pytest.raises(semantic_route_evidence_module.SemanticRouteEvidenceRejected, match="corridor"):
+        replace(
+            carrier,
+            comparison_entry_identity=carrier.feeder_identity,
+            comparison_entry_anchor_ea=carrier.feeder_anchor_ea,
+            corridor=carrier.corridor[:2] + (carrier.corridor[1],),
+        )
     non_instruction_source_anchor = next(
         point
         for interval in carrier.source_identity.native_ranges.intervals
@@ -17484,7 +17486,6 @@ def test_native_entry_receipt_upgrades_exact_carrier_delivery_to_typed_fact() ->
         ("state-production source", {"state_production_source_ref": refs[3]}),
         ("redirect owner", {"redirect_owner_ref": refs[3]}),
         ("dispatcher feeder", {"dispatcher_old_target_ref": refs[4]}),
-        ("comparison corridor", {"proof": replace(proof, state_carrier=comparison_drift)}),
         (
             "paired carrier source proof and allowance EA",
             {

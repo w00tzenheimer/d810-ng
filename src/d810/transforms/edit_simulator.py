@@ -891,7 +891,10 @@ def _project_created_blocks(
                 if template_instructions
                 else int(getattr(template_block, "start_ea", pre_cfg.func_ea))
             )
-            if template_instructions:
+            # Native corridor cloning removes only a terminal GOTO. A
+            # fallthrough block's final value instruction is payload, not a
+            # terminator, and must survive before the synthetic branch.
+            if template_instructions and template_instructions[-1].kind is InsnKind.GOTO:
                 template_instructions = template_instructions[:-1]
             instructions = template_instructions + (
                 InsnSnapshot(

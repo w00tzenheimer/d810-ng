@@ -50,6 +50,7 @@ __all__ = [
     "prove_exact_state_transform_feeder",
     "prove_exact_u32_state_delivery",
     "prove_exact_u32_state_transform_feeder",
+    "prove_u32_state_setup_tail",
 ]
 
 
@@ -171,6 +172,19 @@ _MAX_POST_STATE_SETUP_BLOCKS = 4
 _MAX_POST_STATE_SETUP_INSTRUCTIONS = 16
 
 
+def _overlaps_u32_state(
+    value: Varnode,
+    identities: frozenset[StorageIdentity],
+) -> bool:
+    identity = storage_identity_from_varnode(value)
+    return identity is not None and any(
+        identity.kind is state.kind
+        and int(value.offset) < int(state.offset) + 4
+        and int(state.offset) < int(value.offset) + int(value.size)
+        for state in identities
+    )
+
+
 def _is_pure_non_state_setup_assignment(
     instruction: Instruction,
     expected_identities: frozenset[StorageIdentity],
@@ -190,7 +204,8 @@ def _is_pure_non_state_setup_assignment(
         and not instruction.effects
         and result is not None
         and result.space in {Space.REGISTER, Space.STACK, Space.LVAR, Space.TEMP}
-        and storage_identity_from_varnode(result) not in expected_identities
+        and int(result.size) > 0
+        and not _overlaps_u32_state(result, expected_identities)
         and len(instruction.inputs) <= 1
         and (
             not instruction.inputs
@@ -268,6 +283,34 @@ def _prove_post_state_setup_corridor(
             return None
         clone_until = cursor
         previous, cursor = cursor, successor
+
+
+def prove_u32_state_setup_tail(
+    flow_graph: FlowGraph,
+    source_serial: int,
+    first_serial: int,
+    *,
+    comparison_serial: int,
+    state_var_stkoff: int | None,
+    state_var_reg: int | None,
+) -> int | None:
+    """Return the last pure setup block to preserve, not state-value authority."""
+    source = flow_graph.get_block(int(source_serial))
+    identities = expected_u32_state_identities(
+        state_var_stkoff=state_var_stkoff, state_var_reg=state_var_reg,
+    )
+    if (
+        source is None
+        or not identities
+        or tuple(int(serial) for serial in source.succs) != (int(first_serial),)
+    ):
+        return None
+    corridor = _prove_post_state_setup_corridor(
+        flow_graph, feeder_serial=int(source_serial), first_serial=int(first_serial),
+        required_comparison_serials=frozenset({int(comparison_serial)}),
+        expected_identities=identities,
+    )
+    return None if corridor is None else corridor[1]
 
 
 def observes_u32_state_feeder_candidate(
@@ -984,6 +1027,61 @@ def prove_exact_u32_state_transform_feeder(
     )
 
 
+def _prove_direct_state_setup_carrier(
+    flow_graph: FlowGraph,
+    source_serial: int,
+    feeder_serial: int,
+    expected_identities: frozenset[StorageIdentity],
+    required_comparison_serials: frozenset[int],
+) -> ExactCarrierStateWrite | None:
+    """The state cell itself carries a source literal through cloned setup.
+
+    Unlike a shared delivery redirect, this receipt retains the writer and
+    requires a predecessor-local copy of every setup instruction.
+    """
+    source = flow_graph.get_block(source_serial)
+    if source is None:
+        return None
+    corridor = _prove_post_state_setup_corridor(
+        flow_graph, feeder_serial=source_serial, first_serial=feeder_serial,
+        required_comparison_serials=required_comparison_serials,
+        expected_identities=expected_identities,
+    )
+    if corridor is None or corridor[1] is None:
+        return None
+    instructions = InstructionProjection.from_block(source)
+    candidates = tuple(
+        (index, instruction)
+        for index, instruction in enumerate(instructions)
+        if instruction.result is not None
+        and storage_identity_from_varnode(instruction.result) in expected_identities
+        and _is_exact_const_carrier_definition(instruction, instruction.result)
+    )
+    if not candidates:
+        return None
+    index, definition = candidates[-1]
+    if any(
+        instruction.control is not None and instruction.control.transfer is not None
+        for instruction in instructions[:index]
+    ) or any(
+        not _pure_goto_to(instruction, feeder_serial)
+        for instruction in instructions[index + 1:]
+    ):
+        return None
+    ea = definition.attrs.get("native_ea", definition.attrs.get("ea"))
+    if type(ea) is not int:
+        return None
+    carrier = definition.result
+    assert carrier is not None
+    identity = storage_identity_from_varnode(carrier)
+    assert identity is not None
+    return ExactCarrierStateWrite(
+        int(definition.inputs[0].offset) & 0xFFFFFFFF,
+        source_serial, ea, feeder_serial, corridor[0], carrier, identity,
+        requires_feeder_clone=True, clone_until_serial=corridor[1],
+    )
+
+
 def prove_exact_u32_carrier_state_write(
     flow_graph: FlowGraph,
     source_serial: int,
@@ -1027,6 +1125,12 @@ def prove_exact_u32_carrier_state_write(
     )
     if not expected_identities:
         return None
+    direct = _prove_direct_state_setup_carrier(
+        flow_graph, source_serial, feeder_serial, expected_identities,
+        required_comparison_serials,
+    )
+    if direct is not None:
+        return direct
     setup_corridor = _prove_post_state_setup_corridor(
         flow_graph,
         feeder_serial=feeder_serial,
@@ -1092,9 +1196,10 @@ def prove_exact_u32_carrier_state_write(
         or instruction.memory is not None
         or instruction.control is not None
         or instruction.result is None
-        or storage_identity_from_varnode(instruction.result) in expected_identities
+        or _overlaps_u32_state(instruction.result, expected_identities)
         or len(instruction.inputs) != 1
-        or instruction.inputs[0].space not in {Space.REGISTER, Space.TEMP, Space.STACK}
+        or instruction.inputs[0].space
+        not in {Space.REGISTER, Space.TEMP, Space.STACK, Space.CONST}
         or instruction.result.space not in {Space.REGISTER, Space.TEMP}
         or int(instruction.inputs[0].size) != int(instruction.result.size)
         for instruction in semantic_suffix

@@ -5626,6 +5626,108 @@ def test_shared_store_partitions_foldable_edges_despite_one_bottom_pred(
     assert not unresolved, "shared store must not fall back to an unresolved return"
 
 
+@pytest.mark.parametrize("unsafe", (False, True))
+def test_state_carrier_partition_preserves_unknown_register_setup(_seam, unsafe) -> None:
+    """69814: two carrier owners and two direct writes share an unknown MOV tail."""
+    tail = _mov(0x4310, _reg(12), _reg(13))
+    if unsafe:
+        tail = _mov(0x4310, _reg(12), _stk(_STATE_OFF))
+    graph = FlowGraph(
+        {
+            2: _blk(2, (10, 20, 50, 60), (40,), ()),
+            10: _blk(10, (30,), (2,), (_mov(0x1000, _num(0x11), _reg(8)),)),
+            20: _blk(20, (30,), (2,), (_mov(0x2000, _num(0x22), _reg(8)),)),
+            30: _blk(30, (40,), (10, 20), (
+                _mov(0x3000, _reg(8), _stk(_STATE_OFF)),
+                _mov(0x3004, _reg(13), _reg(16)),
+            )),
+            40: _blk(40, (2,), (30, 50, 60), (tail, _goto(0x4314, 2))),
+            50: _blk(50, (40,), (2,), (_mov(0x5000, _num(0x33), _stk(_STATE_OFF)),)),
+            60: _blk(60, (40,), (2,), (_mov(0x6000, _num(0x44), _stk(_STATE_OFF)),)),
+            70: _blk(70, (), (), ()),
+            80: _blk(80, (), (), ()),
+        }, 2, 0x1000,
+    )
+    rows = recover_state_write_transitions_via_partitioned_fixpoint(
+        graph, _dispatcher({0x11: 70, 0x22: 80, 0x33: 70, 0x44: 80}, exit_block=99),
+        _STATE_OFF, dispatcher_entry_serial=2,
+    )
+    by_source = {row.write_block: row for row in rows if row.next_state is not None}
+    if unsafe:
+        assert not ({10, 20} & set(by_source))
+        assert not any(row.preserve_via_block for row in rows)
+        return
+    assert set(by_source) == {10, 20, 50, 60}
+    for source, state in ((10, 0x11), (20, 0x22), (50, 0x33), (60, 0x44)):
+        row = by_source[source]
+        assert row.next_state == state
+        assert row.preserve_via_block is True
+        assert row.via_block == (30 if source in (10, 20) else 40)
+        assert row.preserve_via_until == 40
+
+
+@pytest.mark.parametrize("space", ("stack", "register"))
+@pytest.mark.parametrize("offset,size,accepted", ((1, 1, False), (-2, 8, False), (4, 4, True), (-4, 4, True)))
+def test_setup_tail_rejects_state_byte_overlap(space, offset, size, accepted) -> None:
+    operand = _stk if space == "stack" else _reg
+    graph = FlowGraph({
+        1: _blk(1, (2,), (), ()),
+        2: _blk(2, (3,), (1,), (
+            _mov(0x2000, replace(_num(0xFF), size=size), replace(operand(100 + offset), size=size)),
+        )),
+        3: _blk(3, (), (2,), ()),
+    }, 1, 0x1000)
+    result = state_carrier.prove_u32_state_setup_tail(
+        graph, 1, 2, comparison_serial=3,
+        state_var_stkoff=100 if space == "stack" else None,
+        state_var_reg=100 if space == "register" else None,
+    )
+    assert (result == 2) is accepted
+
+
+@pytest.mark.parametrize("unsafe", (None, "overlap", "late_write", "branch"))
+def test_direct_state_write_preserves_shared_setup_with_source_owned_proof(unsafe) -> None:
+    """A direct state writer must clone shared setup, never redirect it globally."""
+    from d810.ir.storage_identity import storage_identity_from_varnode
+    source = (_mov(0x1000, _num(0x33), _stk(_STATE_OFF)), _goto(0x1004, 2))
+    setup = _mov(0x2000, _reg(12), _reg(16))
+    if unsafe == "overlap":
+        setup = _mov(0x2000, replace(_num(1), size=1), replace(_stk(_STATE_OFF + 1), size=1))
+    if unsafe == "late_write":
+        source = source[:1] + (_mov(0x1002, _reg(12), _stk(_STATE_OFF)), source[-1])
+    graph = FlowGraph({
+        1: _blk(1, (2,), (), source),
+        2: _blk(2, (3, 4) if unsafe == "branch" else (3,), (1, 4), (setup, _goto(0x2004, 3))),
+        3: _blk(3, (), (2,), ()),
+        4: _blk(4, (2,), (), ()),
+    }, 1, 0x1000)
+    proof = state_carrier.prove_exact_u32_carrier_state_write(
+        graph, 1, 2, state_var_stkoff=_STATE_OFF, state_var_reg=None,
+        required_comparison_serials=frozenset({3}),
+    )
+    if unsafe is not None:
+        assert proof is None
+        return
+    assert proof is not None
+    assert proof.state == 0x33
+    assert proof.source_serial == 1
+    assert proof.requires_feeder_clone
+    assert proof.clone_until_serial == 2
+    assert proof.state_identity == storage_identity_from_varnode(proof.carrier)
+    transition = StateWriteTransition(1, 0x33, 4, False, None, via_block=2)
+    fact = minimal_state_recovery._semantic_route_fact_for_transition(
+        transition,
+        minimal_state_recovery._DecisionDagStateRoute(
+            target=4, certified_targets=frozenset({4}), entry_serial=3,
+            path_serials=(3,), path_anchors=(0x3000,),
+        ),
+        graph, state_var_stkoff=_STATE_OFF, state_var_reg=None, carrier_proof=proof,
+    )
+    assert fact is not None
+    assert fact.kind is SemanticRouteFactKind.STATE_CARRIER
+    assert fact.source_serial == fact.owner_serial == 1
+
+
 def test_shared_store_partitions_through_a_bottom_glue_merge(_seam) -> None:
     """A ⊥ predecessor that is pure state-glue is partitioned one level further.
 
@@ -7394,6 +7496,169 @@ def test_local_full_width_overwrite_kills_incoming_route_carrier(
         ),
         expected_state_width=8,
     ) is expected
+
+
+def test_local_counter_move_then_increment_kills_incoming_route_carrier() -> None:
+    """A loop-index read after a full overwrite is not the old selector."""
+
+    carrier = Varnode(Space.REGISTER, 8, 8)
+    counter = Varnode(Space.STACK, 1648, 8)
+    bound = Varnode(Space.STACK, 2056, 8)
+    instructions = (
+        Instruction(operation=ValueOpKind.MOVE, inputs=(counter,), result=carrier),
+        Instruction(
+            operation=ValueOpKind.ADD,
+            inputs=(carrier, Varnode(Space.CONST, 1, 8)),
+            result=carrier,
+        ),
+        Instruction(
+            operation=ValueOpKind.MOVE,
+            inputs=(carrier, bound),
+            control=InstructionControl(predicate=PredicateKind.NE),
+        ),
+    )
+
+    assert minimal_state_recovery._is_exact_local_carrier_overwrite_semantic_leaf(
+        instructions,
+        expected_state_identities=frozenset(
+            {StorageIdentity(StorageIdentityKind.REGISTER, 8)}
+        ),
+        expected_state_width=8,
+        selector_source_identities=frozenset(
+            {StorageIdentity(StorageIdentityKind.STACK, 56)}
+        ),
+    )
+
+
+@pytest.mark.parametrize("mode", ["full", "partial", "before_overwrite", "selector_read"])
+def test_fresh_counter_payload_reads_do_not_revive_incoming_carrier(mode: str) -> None:
+    """A full RAX overwrite makes later AL/address reads semantic payload."""
+    carrier = Varnode(Space.REGISTER, 8, 8)
+    counter = Varnode(Space.STACK, 808, 8)
+    selector = Varnode(Space.STACK, 40, 4)
+    overwrite = Instruction(
+        operation=ValueOpKind.MOVE, inputs=(counter,),
+        result=carrier if mode != "partial" else Varnode(Space.REGISTER, 8, 4),
+    )
+    low_byte_read = Instruction(
+        operation=ValueOpKind.ADD,
+        inputs=(Varnode(Space.REGISTER, 8, 1), Varnode(Space.CONST, 1, 1)),
+        result=Varnode(Space.TEMP, 0, 1),
+    )
+    address_read = Instruction(
+        operation=ValueOpKind.ADD,
+        inputs=(carrier, Varnode(Space.CONST, 1, 8)),
+        result=Varnode(Space.TEMP, 1, 8),
+    )
+    prefix = (overwrite, low_byte_read, address_read)
+    if mode == "before_overwrite":
+        prefix = (low_byte_read, overwrite, address_read)
+    elif mode == "selector_read":
+        prefix += (Instruction(operation=ValueOpKind.MOVE, inputs=(selector,),
+                               result=Varnode(Space.TEMP, 2, 4)),)
+    instructions = prefix + (
+        Instruction(operation=ValueOpKind.ADD,
+                    inputs=(carrier, Varnode(Space.CONST, 2, 8)), result=carrier),
+        Instruction(operation=ValueOpKind.MOVE,
+                    inputs=(carrier, Varnode(Space.STACK, 48, 8)),
+                    control=InstructionControl(predicate=PredicateKind.NE)),
+    )
+    assert minimal_state_recovery._is_exact_local_carrier_overwrite_semantic_leaf(
+        instructions,
+        expected_state_identities=frozenset({StorageIdentity(StorageIdentityKind.REGISTER, 8)}),
+        expected_state_width=8,
+        selector_source_identities=frozenset({StorageIdentity(StorageIdentityKind.STACK, 40)}),
+    ) is (mode == "full")
+
+
+@pytest.mark.parametrize("read_before_kill", [False, True])
+def test_nested_store_payload_reads_fresh_carrier_after_projection(read_before_kill: bool) -> None:
+    """Nested byte rotation/address inputs stay visible across projection."""
+    from d810.ir.insn_projection import InstructionProjection
+
+    carrier = replace(_reg(8), size=8)
+    low = replace(_reg(8), size=1)
+    address = replace(
+        _nested_value(ValueOpKind.ADD, carrier, replace(_num(1), size=8)), size=8,
+    )
+    value = replace(
+        _nested_value(ValueOpKind.ROL, low, replace(_num(4), size=1)),
+        size=1, sub_kind=InsnKind.VALUE,
+    )
+    store = InsnSnapshot(
+        opcode=_OP_STORE, ea=0x1204, operands=(), kind=InsnKind.STORE,
+        value_op_kind=ValueOpKind.STORE, l=value, r=replace(_reg(104), size=2), d=address,
+    )
+    overwrite = _mov(0x1200, replace(_stk(816), size=8), carrier)
+    prefix = (store, overwrite) if read_before_kill else (overwrite, store)
+    branch = InsnSnapshot(
+        opcode=_OP_JZ, ea=0x120C, operands=(), kind=InsnKind.EQUALITY_JUMP,
+        l=carrier, r=replace(_stk(48), size=8),
+        d=MopSnapshot(kind=OperandKind.BLOCK, block_ref=3),
+        is_conditional_jump=True, branch_predicate=PredicateKind.NE,
+        control_transfer_kind=ControlTransferKind.CONDITIONAL_BRANCH,
+    )
+    block = _blk(1, (2, 3), (), prefix + (branch,), ea=0x1200)
+    instructions = InstructionProjection.from_block(block)
+    assert any(insn.operation is ValueOpKind.STORE for insn in instructions)
+    assert minimal_state_recovery._is_exact_local_carrier_overwrite_semantic_leaf(
+        instructions,
+        expected_state_identities=frozenset({StorageIdentity(StorageIdentityKind.REGISTER, 8)}),
+        expected_state_width=8,
+        selector_source_identities=frozenset({StorageIdentity(StorageIdentityKind.STACK, 40)}),
+    ) is (not read_before_kill)
+
+
+def test_stack_move_cannot_kill_carrier_without_selector_provenance() -> None:
+    """An unrelated stack address alone does not prove a fresh semantic value."""
+
+    carrier = Varnode(Space.REGISTER, 8, 8)
+    instructions = (
+        Instruction(
+            operation=ValueOpKind.MOVE,
+            inputs=(Varnode(Space.STACK, 1648, 8),),
+            result=carrier,
+        ),
+        Instruction(
+            operation=ValueOpKind.MOVE,
+            inputs=(carrier, Varnode(Space.STACK, 2056, 8)),
+            control=InstructionControl(predicate=PredicateKind.NE),
+        ),
+    )
+
+    assert not minimal_state_recovery._is_exact_local_carrier_overwrite_semantic_leaf(
+        instructions,
+        expected_state_identities=frozenset(
+            {StorageIdentity(StorageIdentityKind.REGISTER, 8)}
+        ),
+        expected_state_width=8,
+    )
+
+
+def test_selector_stack_copy_does_not_kill_incoming_route_carrier() -> None:
+    """A full-width copy of the selector remains a state router."""
+
+    carrier = Varnode(Space.REGISTER, 8, 8)
+    selector = Varnode(Space.STACK, 56, 8)
+    instructions = (
+        Instruction(operation=ValueOpKind.MOVE, inputs=(selector,), result=carrier),
+        Instruction(
+            operation=ValueOpKind.MOVE,
+            inputs=(carrier, Varnode(Space.CONST, 0, 8)),
+            control=InstructionControl(predicate=PredicateKind.NE),
+        ),
+    )
+
+    assert not minimal_state_recovery._is_exact_local_carrier_overwrite_semantic_leaf(
+        instructions,
+        expected_state_identities=frozenset(
+            {StorageIdentity(StorageIdentityKind.REGISTER, 8)}
+        ),
+        expected_state_width=8,
+        selector_source_identities=frozenset(
+            {StorageIdentity(StorageIdentityKind.STACK, 56)}
+        ),
+    )
 
 
 @pytest.mark.parametrize("branch_width,overwrite", ((1, False), (4, False), (1, True)))
@@ -14493,15 +14758,18 @@ def test_candidate_prefix_selected_carrier_preserves_semantic_feeder_body(
     assert "preserved_feeder_clone" in resolved[0].proof.route_source_kinds
 
 
-def test_selected_carrier_preserves_pure_stack_read_feeder_suffix(
-    _seam,
+@pytest.mark.parametrize("suffix_source", ["stack", "constant"])
+def test_selected_carrier_preserves_pure_move_feeder_suffix(
+    _seam, suffix_source: str,
 ) -> None:
-    """A cloned carrier feeder may retain one pure stack-to-register move.
+    """A cloned feeder retains a stack read or constant register setup.
 
     Target B's ``blk355@0x180042823 -> blk383@0x180044249`` route writes the
     concrete state through ``eax``, then the shared feeder loads an unrelated
     stack value into ``r12`` before entering the comparison DAG.  The feeder
-    clone preserves that load; it is not state or route authority.
+    clone preserves that load; it is not state or route authority. The same
+    contract applies to constant setup, as at blk289@0x7FFF99499CAE in the
+    loader: the constant write must execute on both predecessor-local routes.
     """
 
     graph, dag = _candidate_prefix_partitioned_feeder_fixture()
@@ -14520,7 +14788,9 @@ def test_selected_carrier_preserves_pure_stack_read_feeder_suffix(
             _mov(int(feeder.start_ea) + 4, _reg(8), _stk(_STATE_OFF)),
             _mov(
                 int(feeder.start_ea) + 8,
-                MopSnapshot(
+                replace(_num(0x0D915A190F589E30), size=8)
+                if suffix_source == "constant"
+                else MopSnapshot(
                     t=_T_STK,
                     size=8,
                     stkoff=808,
@@ -14560,6 +14830,52 @@ def test_selected_carrier_preserves_pure_stack_read_feeder_suffix(
     assert resolved[0].preserve_via_block is True
     assert resolved[0].proof is not None
     assert "preserved_feeder_clone" in resolved[0].proof.route_source_kinds
+
+
+@pytest.mark.parametrize("mutation", ["none", "width", "state", "memory", "multiple"])
+def test_constant_carrier_suffix_requires_preserved_exact_move(mutation: str) -> None:
+    """Constant setup is clone authority, not permission to drop or alter writes."""
+
+    suffix = _mov(
+        0x1204,
+        replace(_num(0x0D915A190F589E30), size=8),
+        replace(_reg(104), size=8),
+    )
+    if mutation == "width":
+        suffix = _mov(0x1204, _num(1), replace(_reg(104), size=8))
+    elif mutation == "state":
+        suffix = _mov(0x1204, _num(1), _stk(_STATE_OFF))
+    elif mutation == "memory":
+        suffix = _mov(0x1204, replace(_num(1), size=8), _addr(0x8800))
+    suffixes = (suffix, suffix) if mutation == "multiple" else (suffix,)
+    graph = FlowGraph(
+        {
+            1: _blk(
+                1, (2,), (),
+                (_mov(0x1100, _num(0x1BCCBCFE), _reg(8)),), ea=0x1100,
+            ),
+            2: _blk(
+                2, (3,), (1,),
+                (_mov(0x1200, _reg(8), _stk(_STATE_OFF)),) + suffixes, ea=0x1200,
+            ),
+            3: _blk(3, (), (2,), (), ea=0x1300),
+        },
+        entry_serial=1,
+        func_ea=0x1000,
+    )
+    proof = state_carrier.prove_exact_u32_carrier_state_write(
+        graph, 1, 2,
+        state_var_stkoff=_STATE_OFF,
+        state_var_reg=None,
+        required_comparison_serials=frozenset({3}),
+    )
+    if mutation != "none":
+        assert proof is None
+    else:
+        assert proof is not None
+        assert proof.state == 0x1BCCBCFE
+        assert proof.requires_feeder_clone is True
+        assert proof.feeder_serial == 2
 
 
 def test_selected_carrier_preserves_post_state_setup_corridor(_seam) -> None:

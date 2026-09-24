@@ -503,6 +503,18 @@ def _upstream_corridor_paths(
         if predecessor in seen:
             if is_terminal_dispatcher_reentry(predecessor, suffix):
                 append(suffix)
+            elif (
+                len(suffix) >= 3
+                and predecessor == int(suffix[0])
+                and set(successors.get(predecessor, ()))
+                == {predecessor, int(suffix[1])}
+            ):
+                # A payload self-loop has one finite exit corridor regardless
+                # of how many times its body runs. Keep that body as the path
+                # boundary, without repeating its identity or classifying it
+                # as single-successor state plumbing. This proves coverage of
+                # the exit only; it does not authorize removing the loop.
+                append(suffix)
             else:
                 complete = False
             return

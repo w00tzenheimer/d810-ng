@@ -5156,12 +5156,16 @@ def _state_carrier_helper_corridor_coordinates_match(
         and step.old_target == comparison_ref
         and step.new_target == destination_ref
         and step.clone_until == clone_until_ref
-        and len(step.corridor_serials) == 1
+        and len(step.corridor_serials) == len(carrier.corridor) - 2
         and step.corridor_serials[0] == feeder_ref
-        and clone_until_ref == feeder_ref
+        and clone_until_ref == step.corridor_serials[-1]
+        and all(
+            _ref_matches_identity(ref, point.identity)
+            for ref, point in zip(step.corridor_serials, carrier.corridor[1:-1], strict=True)
+        )
         and _ref_matches_identity(source_ref, carrier.source_identity)
         and _ref_matches_identity(feeder_ref, carrier.feeder_identity)
-        and _ref_matches_identity(comparison_ref, carrier.comparison_entry_identity)
+        and _ref_matches_identity(comparison_ref, carrier.corridor[2].identity)
         and _ref_matches_identity(destination_ref, destination.target_identity)
     )
 
@@ -6932,14 +6936,29 @@ def _legacy_structural_projected_routes(*, source_authority: model.SourceBoundRo
                     active_stage = model.RouteRealizationFailureStage.EFFECT_TERMINAL_PRESERVATION
                     source_obs = source_row_corridor.instruction_observations
                     clone_obs = clone_row.instruction_observations
-                    if not source_obs or not clone_obs or len(source_obs) != len(clone_obs):
+                    if not source_obs or not clone_obs:
                         raise ValueError("corridor prefix observations differ")
                     source_tail = source_obs[-1]
                     clone_tail = clone_obs[-1]
+                    source_has_goto = (
+                        source_tail.instruction_kind is InsnKind.GOTO
+                        and source_tail.control_transfer_kind is ControlTransferKind.GOTO
+                    )
+                    # The exact carrier replay also admits a sole-successor
+                    # implicit fallthrough. Preserve its final MOVE, recording
+                    # that no source GOTO existed rather than inventing one.
+                    if not source_has_goto and (
+                        not state_carrier_helper_corridor_match
+                        or any(obs.control_transfer_kind is not None for obs in source_obs)
+                    ):
+                        raise ValueError("corridor source lacks a proven fallthrough")
+                    source_prefix = source_obs[:-1] if source_has_goto else source_obs
+                    prefix_length = len(source_prefix)
+                    source_goto_ordinal = prefix_length if source_has_goto else None
+                    if len(clone_obs) != prefix_length + 1:
+                        raise ValueError("corridor prefix observations differ")
                     if (
-                        source_tail.instruction_kind is not InsnKind.GOTO
-                        or source_tail.control_transfer_kind is not ControlTransferKind.GOTO
-                        or clone_tail.opcode != -1
+                        clone_tail.opcode != -1
                         or clone_tail.raw_opcode is not None
                         or clone_tail.width != 0
                         or clone_tail.instruction_kind is not InsnKind.GOTO
@@ -6956,7 +6975,7 @@ def _legacy_structural_projected_routes(*, source_authority: model.SourceBoundRo
                         raise ValueError("corridor source/clone tails must be GOTO")
                     prefixes_origins = []
                     expected_origins = []
-                    for ordinal, (source_observation, clone_observation) in enumerate(zip(source_obs[:-1], clone_obs[:-1])):
+                    for ordinal, (source_observation, clone_observation) in enumerate(zip(source_prefix, clone_obs[:-1], strict=True)):
                         if source_observation != clone_observation:
                             raise ValueError("corridor semantic prefix differs")
                         observation_digest = cloned_semantic_observation_digest(source_observation)
@@ -6978,13 +6997,13 @@ def _legacy_structural_projected_routes(*, source_authority: model.SourceBoundRo
                     prefix_successor = model.AnchoredBlockRef(successor_ref, _inventory_block(projected_inventory, successor_ref).anchor_ea)
                     expected_prefixes.append((
                         model.ClonedSemanticPrefix.__name__, index, prefix_owner,
-                        prefix_clone, 0, len(source_obs) - 1,
-                        tuple(expected_origins), len(source_obs) - 1,
+                        prefix_clone, 0, prefix_length,
+                        tuple(expected_origins), source_goto_ordinal,
                         len(clone_obs) - 1, prefix_successor, creation,
                     ))
-                    prefix_preimage = ("cloned_semantic_prefix", index, prefix_owner, prefix_clone, 0, len(source_obs) - 1, tuple(prefixes_origins), len(source_obs) - 1, len(clone_obs) - 1, prefix_successor, creation)
+                    prefix_preimage = ("cloned_semantic_prefix", index, prefix_owner, prefix_clone, 0, prefix_length, tuple(prefixes_origins), source_goto_ordinal, len(clone_obs) - 1, prefix_successor, creation)
                     prefixes.append(_mint(model.ClonedSemanticPrefix, {
-                        "ordinal": index, "source_owner": prefix_owner, "clone_owner": prefix_clone, "source_start_ordinal": 0, "source_end_ordinal_exclusive": len(source_obs) - 1, "instruction_origins": tuple(prefixes_origins), "source_trailing_goto_ordinal": len(source_obs) - 1, "projected_synthetic_goto_ordinal": len(clone_obs) - 1, "projected_successor": prefix_successor, "creation_spec_row": creation, "prefix_id": cloned_semantic_prefix_id(prefix_preimage),
+                        "ordinal": index, "source_owner": prefix_owner, "clone_owner": prefix_clone, "source_start_ordinal": 0, "source_end_ordinal_exclusive": prefix_length, "instruction_origins": tuple(prefixes_origins), "source_trailing_goto_ordinal": source_goto_ordinal, "projected_synthetic_goto_ordinal": len(clone_obs) - 1, "projected_successor": prefix_successor, "creation_spec_row": creation, "prefix_id": cloned_semantic_prefix_id(prefix_preimage),
                     }, "prefix_id"))
                 anchored_predecessor = model.AnchoredBlockRef(
                     predecessor_ref,
@@ -7015,8 +7034,8 @@ def _legacy_structural_projected_routes(*, source_authority: model.SourceBoundRo
                     )
                     anchored_physical_feeder = anchored_source_corridor[0]
                     anchored_comparison_entry = model.AnchoredBlockRef(
-                        descriptor_old_ref,
-                        _inventory_block(source_inventory, descriptor_old_ref).anchor_ea,
+                        terminal_ref,
+                        _inventory_block(source_inventory, terminal_ref).anchor_ea,
                     )
                     carrier_roles = (
                         anchored_proof_source, anchored_physical_feeder,
@@ -8717,7 +8736,10 @@ def _make_route_kernels():
                         relation.proof_source != expected_proof_owner
                         or relation.physical_feeder != expected_feeder
                         or relation.comparison_entry != expected_comparison
-                        or relation.source_corridor != (expected_feeder,)
+                        or relation.source_corridor != tuple(
+                            identity_owner(point.identity, point.anchor_ea)
+                            for point in carrier.corridor[1:-1]
+                        )
                         or relation.semantic_target.ref != selected_target
                     ):
                         raise ValueError(

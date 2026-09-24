@@ -2400,7 +2400,15 @@ class SemanticStateCarrierProof:
                 self.comparison_entry_anchor_ea,
             ),
         )
-        if points != expected:
+        if (
+            len(points) < 3
+            or points[:2] != expected[:2]
+            or points[-1] != expected[-1]
+            or any(type(point) is not SemanticCorridorPoint for point in points)
+            or len({point.identity for point in points}) != len(points)
+            or any(point.identity.native_key != self.source_identity.native_key for point in points)
+            or (len(points) > 3 and not self.requires_feeder_clone)
+        ):
             raise SemanticRouteEvidenceRejected(
                 "state-carrier proof corridor does not match its identities"
             )
@@ -5425,11 +5433,20 @@ def build_canonical_semantic_evidence(
                     abstain(CanonicalSemanticEvidenceProductionReason.CARRIER_SOURCE_ANCHOR_MISSING)
                 if int(fact.source_instruction_ea) not in source.exact_instruction_eas:
                     abstain(CanonicalSemanticEvidenceProductionReason.CARRIER_SOURCE_INSTRUCTION_MISSING)
-                anchors = (
-                    (source, int(fact.source_instruction_ea)),
-                    (feeder, stable_block_identity_semantic_anchor(feeder)),
-                    (comparison, stable_block_identity_semantic_anchor(comparison)),
+                carrier_corridor = _exact_source_to_dag_entry_corridor(
+                    blocks, identities,
+                    source_serial=int(witness.source_serial),
+                    source_anchor_ea=int(fact.source_instruction_ea),
+                    entry_serial=int(witness.comparison_entry_serial),
+                    entry_anchor_ea=stable_block_identity_semantic_anchor(comparison),
                 )
+                if carrier_corridor is None or len(carrier_corridor) < 3:
+                    abstain(CanonicalSemanticEvidenceProductionReason.CARRIER_FACT_IDENTITY_MISMATCH)
+                if witness.clone_until_serial is not None and (
+                    carrier_corridor[-2].identity != identities.get(int(witness.clone_until_serial))
+                ):
+                    abstain(CanonicalSemanticEvidenceProductionReason.CARRIER_FACT_IDENTITY_MISMATCH)
+                anchors = tuple((point.identity, point.anchor_ea) for point in carrier_corridor)
                 if any(
                     not identity.native_ranges.contains(int(anchor))
                     for identity, anchor in anchors
@@ -9468,6 +9485,7 @@ def _validate_state_carrier(
     graph: FlowGraph,
     proof: SemanticRouteProof,
     carrier: BoundSemanticStateCarrier,
+    points: tuple[BoundSemanticBlock, ...],
 ) -> bool:
     """Replay the one shared CONST32 carrier prover against bound blocks."""
     evidence = carrier.evidence
@@ -9479,11 +9497,6 @@ def _validate_state_carrier(
         or carrier.source.serial != carrier.owner.serial
     ):
         return False
-    points = (
-        carrier.source,
-        carrier.feeder,
-        carrier.comparison_entry,
-    )
     if tuple(point.identity for point in evidence.corridor) != tuple(
         point.identity for point in points
     ) or not _topology_path(graph, points):
@@ -9514,6 +9527,11 @@ def _validate_state_carrier(
         and int(replayed.source_serial) == int(carrier.source.serial)
         and int(replayed.feeder_serial) == int(carrier.feeder.serial)
         and int(replayed.comparison_entry_serial) == int(carrier.comparison_entry.serial)
+        and (
+            replayed.clone_until_serial is None and len(points) == 3
+            or replayed.clone_until_serial is not None
+            and int(replayed.clone_until_serial) == int(points[-2].serial)
+        )
     )
 
 
@@ -10572,12 +10590,13 @@ def _bind_canonical_route(
         source_block = _unique_bound_block(index, carrier.source_identity, carrier.source_anchor_ea)
         feeder = _unique_bound_block(index, carrier.feeder_identity, carrier.feeder_anchor_ea)
         comparison = _unique_bound_block(index, carrier.comparison_entry_identity, carrier.comparison_entry_anchor_ea)
-        if owner is None or source_block is None or feeder is None or comparison is None:
+        corridor = tuple(_bound_corridor_point(index, point) for point in carrier.corridor)
+        if owner is None or source_block is None or feeder is None or comparison is None or any(point is None for point in corridor):
             return failure(CanonicalRouteBindingStage.STATE_CARRIER)
         bound_state_carrier = BoundSemanticStateCarrier(
             carrier, owner, source_block, feeder, comparison,
         )
-        if not _validate_state_carrier(graph, proof, bound_state_carrier):
+        if not _validate_state_carrier(graph, proof, bound_state_carrier, corridor):
             return failure(CanonicalRouteBindingStage.STATE_CARRIER)
 
     bound_state_partition = None

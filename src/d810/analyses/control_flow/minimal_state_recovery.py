@@ -136,6 +136,7 @@ from d810.analyses.control_flow.state_carrier import (
     observes_u32_state_feeder_candidate,
     observes_u32_state_transform_feeder_candidate,
     prove_exact_u32_carrier_state_write,
+    prove_u32_state_setup_tail,
     prove_exact_u32_state_transform_feeder,
 )
 from d810.capabilities.providers import get_condition_chain_walkers
@@ -1832,7 +1833,18 @@ def _semantic_route_fact_for_transition(
                 and int(instruction.result.size) == 4
                 and storage_identity_from_varnode(instruction.result) == state_identity
             )
-            if len(feeder_candidates) != 1:
+            if storage_identity_from_varnode(carrier_proof.carrier) == state_identity:
+                # A direct writer carries the state cell unchanged through a
+                # pure setup tail. Replay the same source-owned clone proof;
+                # the shared setup block is not global redirect authority.
+                if prove_exact_u32_carrier_state_write(
+                    flow_graph, int(carrier_proof.source_serial),
+                    int(carrier_proof.feeder_serial),
+                    state_var_stkoff=state_var_stkoff, state_var_reg=state_var_reg,
+                    required_comparison_serials=frozenset({carrier_proof.comparison_entry_serial}),
+                ) != carrier_proof:
+                    return None
+            elif len(feeder_candidates) != 1:
                 return None
             source_anchor = int(source_block.native_start_ea or source_block.start_ea)
             target_anchor = int(target_block.native_start_ea or target_block.start_ea)
@@ -3646,6 +3658,7 @@ def _observe_current_u32_decision_forest(
                         InstructionProjection.from_block(target_block),
                         expected_state_identities=frozenset({target_identity}),
                         expected_state_width=target_carrier_width,
+                        selector_source_identities=expected_identities,
                     )
                 ):
                     logger.warning(
@@ -3682,6 +3695,7 @@ def _observe_current_u32_decision_forest(
                                 InstructionProjection.from_block(target_block),
                                 expected_state_identities=frozenset({target_identity}),
                                 expected_state_width=target_carrier_width,
+                                selector_source_identities=expected_identities,
                             )
                         )
                     )
@@ -3719,6 +3733,7 @@ def _observe_current_u32_decision_forest(
                             target_instructions,
                             expected_state_identities=frozenset({target_identity}),
                             expected_state_width=target_carrier_width,
+                            selector_source_identities=expected_identities,
                         )
                     )
                     if (
@@ -4030,14 +4045,15 @@ def _is_exact_local_carrier_overwrite_semantic_leaf(
     *,
     expected_state_identities: frozenset[StorageIdentity],
     expected_state_width: int,
+    selector_source_identities: frozenset[StorageIdentity] = frozenset(),
 ) -> bool:
     """Prove a full local value definition kills the incoming carrier.
 
-    Register identity is only a physical namespace.  A pure full-width local
-    computation whose inputs do not overlap the incoming selector replaces
-    that selector.  A later predicate over exactly that new definition is
-    semantic control flow.  Partial writes and computations that read any byte
-    of the incoming carrier remain unproved.
+    Register identity is only a physical namespace.  A full-width local
+    definition whose inputs do not overlap the incoming selector replaces it.
+    A pure full-width computation may then consume that fresh definition; a
+    later predicate over the final definition is semantic control flow.
+    Partial writes and reads of the incoming carrier remain unproved.
     """
 
     active_definition: Varnode | None = None
@@ -4051,8 +4067,32 @@ def _is_exact_local_carrier_overwrite_semantic_leaf(
             for expected in expected_state_identities
         )
 
+    def reads_separate_selector_source(value: Varnode) -> bool:
+        if overlaps_carrier(value):
+            return False
+        identity = storage_identity_from_varnode(value)
+        return identity is not None and any(
+            identity.kind is expected.kind
+            and identity.offset < expected.offset + expected_state_width
+            and expected.offset < identity.offset + value.size
+            for expected in selector_source_identities
+        )
+
+    def reads_fresh_definition(value: Varnode) -> bool:
+        # Once the whole carrier is overwritten, contained reads (AL/AH,
+        # EAX, or RAX) all consume the new value, not the incoming selector.
+        return bool(
+            active_definition is not None
+            and value.space is active_definition.space
+            and active_definition.offset <= value.offset
+            and value.offset + value.size
+            <= active_definition.offset + active_definition.size
+        )
+
     for instruction in instructions:
         control = instruction.control
+        if any(reads_separate_selector_source(value) for value in instruction.inputs):
+            return False
         state_inputs = tuple(
             value for value in instruction.inputs if overlaps_carrier(value)
         )
@@ -4062,18 +4102,50 @@ def _is_exact_local_carrier_overwrite_semantic_leaf(
                 and state_inputs
                 and all(value == active_definition for value in state_inputs)
             )
-        if state_inputs:
-            return False
         result = instruction.result
+        if state_inputs and (
+            any(not reads_fresh_definition(value) for value in state_inputs)
+        ):
+            return False
         if result is None or not overlaps_carrier(result):
+            # Payload may consume the fresh counter without redefining it.
+            # The block is retained intact; these operations are not skipped.
             continue
         result_identity = storage_identity_from_varnode(result)
         if (
-            instruction.operation not in _EXACT_LOCAL_CARRIER_OVERWRITE_OPS
-            or result_identity not in expected_state_identities
+            result_identity not in expected_state_identities
             or result.size != expected_state_width
             or not instruction.inputs
+            or instruction.effects
+            or instruction.memory is not None
         ):
+            return False
+        if state_inputs:
+            if instruction.operation not in _EXACT_LOCAL_CARRIER_OVERWRITE_OPS:
+                return False
+        elif instruction.operation is ValueOpKind.MOVE:
+            source_identity = (
+                storage_identity_from_varnode(instruction.inputs[0])
+                if len(instruction.inputs) == 1
+                else None
+            )
+            if (
+                active_definition is not None
+                or len(instruction.inputs) != 1
+                or result.space is not Space.REGISTER
+                or source_identity is None
+                or source_identity.kind is not StorageIdentityKind.STACK
+                or instruction.inputs[0].size != expected_state_width
+                or not selector_source_identities
+                or any(
+                    source_identity.kind is identity.kind
+                    and source_identity.offset < identity.offset + expected_state_width
+                    and identity.offset < source_identity.offset + expected_state_width
+                    for identity in selector_source_identities
+                )
+            ):
+                return False
+        elif instruction.operation not in _EXACT_LOCAL_CARRIER_OVERWRITE_OPS:
             return False
         active_definition = result
     return False
@@ -5777,7 +5849,11 @@ def _reconcile_transition_routes_with_decision_dag(
                     flow_graph,
                     transition,
                 )
-        elif carrier_observed:
+        elif carrier_observed or (
+            source_materializes_transition_state
+            and transition.preserve_via_block
+            and feeder_serial is not None
+        ):
             carrier_proof = prove_exact_u32_carrier_state_write(
                 flow_graph,
                 int(transition.write_block),
@@ -8599,6 +8675,12 @@ def _provider_partial_predecessor_partitioned(ctx, pred, block, arm, edge_states
     for ip, state in sorted(edge_states.items()):
         target, is_ret = ctx.classify(state)
         ip_arm = ctx.arm_of(ctx.flow_graph.get_block(int(ip)), pred)
+        setup_tail = prove_u32_state_setup_tail(
+            ctx.flow_graph, int(ip), int(pred),
+            comparison_serial=int(ctx.dispatcher_entry),
+            state_var_stkoff=(ctx.effective_stkoff if ctx.state_var_reg is None else None),
+            state_var_reg=ctx.state_var_reg,
+        )
         out.append(
             StateWriteTransition(
                 int(ip),
@@ -8607,6 +8689,8 @@ def _provider_partial_predecessor_partitioned(ctx, pred, block, arm, edge_states
                 is_ret,
                 ip_arm,
                 via_block=pred,
+                preserve_via_block=setup_tail is not None,
+                preserve_via_until=setup_tail,
                 proof=TransitionProof(
                     _FIXPOINT_ORACLE, "partial_predecessor_partitioned", not is_ret
                 ),
@@ -8809,6 +8893,32 @@ def _transitive_glue_partition_transitions(ctx, pred, block, edge_states):
         grandparents = sorted(int(gp) for gp in glue.preds
                               if int(gp) != int(ctx.dispatcher_entry))
         if len(grandparents) < 2:
+            continue
+        # A carrier-to-state MOVE followed by unrelated register setup does
+        # not require those setup values to be concrete: clone them verbatim.
+        # Use the existing exact corridor proof, never the loose abstract map,
+        # and require the whole owner partition before replacing this path.
+        carrier_receipts = tuple(
+            prove_exact_u32_carrier_state_write(
+                ctx.flow_graph, gp, ip,
+                state_var_stkoff=(ctx.effective_stkoff if ctx.state_var_reg is None else None),
+                state_var_reg=ctx.state_var_reg,
+                required_comparison_serials=frozenset({int(ctx.dispatcher_entry)}),
+            )
+            for gp in grandparents
+        )
+        if all(receipt is not None for receipt in carrier_receipts):
+            for receipt in carrier_receipts:
+                assert receipt is not None
+                target, is_ret = ctx.classify(receipt.state)
+                out.append(StateWriteTransition(
+                    receipt.source_serial, receipt.state, target, is_ret,
+                    ctx.arm_of(ctx.flow_graph.get_block(receipt.source_serial), ip),
+                    via_block=ip,
+                    preserve_via_block=receipt.requires_feeder_clone,
+                    preserve_via_until=receipt.clone_until_serial,
+                    proof=TransitionProof(_FIXPOINT_ORACLE, "transitive_glue_partitioned", not is_ret),
+                ))
             continue
         resolved: dict[int, int] = {}
         for gp in grandparents:

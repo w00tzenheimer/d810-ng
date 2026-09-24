@@ -419,6 +419,24 @@ class TestMbaSerializerInstructionMeta:
                 opcode_name, l=left, r=right, d=dest,
             )
 
+    def test_equality_branch_accepts_preoptimized_direct_address_target(self) -> None:
+        """A live PREOPT m_jz may still target mop_v instead of mop_b."""
+        from d810.hexrays.instruction_vocabulary import validate_operand_shape
+        from d810.ir.flowgraph import MopSnapshot, OperandKind
+
+        register = MopSnapshot(kind=OperandKind.REGISTER, size=8, reg=1)
+        zero = MopSnapshot(kind=OperandKind.NUMBER, size=8, value=0)
+        direct_address = MopSnapshot(
+            kind=OperandKind.GLOBAL, size=0, gaddr=0x7FFF99192E7B,
+        )
+        assert validate_operand_shape(
+            "m_jz", l=register, r=zero, d=direct_address,
+        ) is not None
+        with pytest.raises(ValueError, match="non-block target"):
+            validate_operand_shape(
+                "m_jz", l=register, r=zero, d=register,
+            )
+
     def test_direct_call_accepts_target_only_but_rejects_non_argument_destination(
         self,
     ) -> None:

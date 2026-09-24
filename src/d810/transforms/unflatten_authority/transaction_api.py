@@ -3079,10 +3079,49 @@ def _normalize_observed_plan_helper_allocation_origins(
         observed.successor_serials
     ) != len(projected.successor_serials):
         raise ValueError("observed helper topology shape differs from projected helper")
-    if len(projected.instruction_observations) != len(
-        observed.instruction_observations
-    ):
-        raise ValueError("observed helper body differs from projected helper body")
+    projected_rows = projected.instruction_observations
+    # optimize_local may remove the synthetic GOTO between consecutive
+    # corridor clones. Admit only that exact, bound physical fallthrough;
+    # payload rows still pass the ordinary equality checks below.
+    bound_serials = dict(observed_patch_binding.bindings)
+    adjacent_corridor_exit = any(
+        left == owner_ref and bound_serials.get(right) == observed.serial + 1
+        for step in observed_patch_binding.bound_plan.plan.steps
+        if type(step) is PatchEdgeSplitCorridor
+        for left, right in zip(step.clone_block_ids, step.clone_block_ids[1:])
+    )
+    elided_synthetic_goto = bool(
+        adjacent_corridor_exit
+        and observed.block_kind is BlockKind.ONE_WAY
+        and observed.successor_serials == projected.successor_serials
+        == (observed.serial + 1,)
+        and len(projected_rows) == len(observed.instruction_observations) + 1
+        and observed.instruction_observations
+        and len(block.insn_snapshots) == len(observed.instruction_observations)
+        and projected_rows[-1].opcode == -1
+        and projected_rows[-1].raw_opcode is None
+        and projected_rows[-1].instruction_kind is InsnKind.GOTO
+        and projected_rows[-1].control_transfer_kind is ControlTransferKind.GOTO
+        and projected_rows[-1].width == 0
+        and not projected_rows[-1].is_call
+        and projected_rows[-1].call_kind is None
+        and projected_rows[-1].predicate_observation is None
+        and all(
+            row.control_transfer_kind is None
+            and not row.is_call
+            and not row.is_conditional_jump
+            and not row.is_unconditional_jump
+            for row in block.insn_snapshots
+        )
+    )
+    compared_projected_rows = projected_rows[:-1] if elided_synthetic_goto else projected_rows
+    if len(compared_projected_rows) != len(observed.instruction_observations):
+        raise ValueError(
+            "observed helper body differs from projected helper body: "
+            f"helper={owner_ref.local_block_id} serial={observed.serial} "
+            f"observed_rows={len(observed.instruction_observations)} "
+            f"projected_rows={len(projected_rows)}"
+        )
     raw_origins = tuple(
         row.native_ea
         if type(row.native_ea) is int and 0 <= row.native_ea < 0xFFFFFFFFFFFFFFFF
@@ -3096,12 +3135,12 @@ def _normalize_observed_plan_helper_allocation_origins(
         and observed.transfer_ea is None
     )
     normalized_rows = []
-    normalized_synthetic_tail = False
+    normalized_synthetic_tail = elided_synthetic_goto
     last_ordinal = len(observed.instruction_observations) - 1
     for ordinal, (live_row, projected_row_instruction) in enumerate(
         zip(
             observed.instruction_observations,
-            projected.instruction_observations,
+            compared_projected_rows,
             strict=True,
         )
     ):
@@ -3197,6 +3236,8 @@ def _normalize_observed_plan_helper_allocation_origins(
                 )
             normalized_synthetic_tail = True
         normalized_rows.append(normalized_row)
+    if elided_synthetic_goto:
+        normalized_rows.append(projected_rows[-1])
     return replace(
         observed,
         native_instruction_eas=projected.native_instruction_eas,
@@ -6558,8 +6599,12 @@ def bind_entry_endpoint_liveness_allowances(
         is not model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT
     ):
         raise ValueError("entry liveness inventories have invalid authority phases")
-    facts_by_index = {fact.step_index: fact for fact in patch_step_facts}
-    if len(facts_by_index) != len(patch_step_facts):
+    # A corridor clone has one fact per cloned block at the same step index.
+    # Only the entry redirect selected by an allowance requires a single fact.
+    entry_indices = {item.patch_step_index for item in allowances}
+    entry_facts = tuple(fact for fact in patch_step_facts if fact.step_index in entry_indices)
+    facts_by_index = {fact.step_index: fact for fact in entry_facts}
+    if len(facts_by_index) != len(entry_facts):
         raise ValueError("entry liveness patch facts must have unique step indices")
     proof_by_id = {
         proof.proof_id: proof for proof in proposal.route_evidence.route_proofs
@@ -6793,8 +6838,10 @@ def _admit_bound_entry_endpoint_liveness(
         raise ValueError(
             "entry liveness admission requires an exact allowance receipt bijection"
         )
-    facts = {(item.step_index, item.step_digest): item for item in patch_step_facts}
-    if len(facts) != len(patch_step_facts):
+    entry_indices = {item.allowance.patch_step_index for item in receipts}
+    entry_facts = tuple(item for item in patch_step_facts if item.step_index in entry_indices)
+    facts = {(item.step_index, item.step_digest): item for item in entry_facts}
+    if len(facts) != len(entry_facts):
         raise ValueError("entry liveness admission patch facts are ambiguous")
     for receipt in receipts:
         if type(receipt) is not model.BoundEntryEndpointLivenessAllowance:

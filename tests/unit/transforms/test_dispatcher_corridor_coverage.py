@@ -477,6 +477,53 @@ def test_unrelated_reverse_cycle_keeps_corridor_enumeration_incomplete() -> None
     assert not report.enumeration_complete
 
 
+@pytest.mark.parametrize("redirect", (False, True))
+def test_payload_self_loop_has_finite_exit_corridor_without_retiring_loop(redirect) -> None:
+    """69814: blk391 loops locally before blk392 returns to the dispatcher."""
+    graph = FlowGraph({
+        0: _block(0, (1,), (), 0x1000),
+        1: _block(1, (1, 2), (0, 1, 3), 0x1010),
+        2: _block(2, (3,), (1,), 0x1020),
+        3: _block(3, (1,), (2,), 0x1030),
+        4: _block(4, (), (), 0x1040),
+    }, entry_serial=0, func_ea=0x1000)
+    edits = (RedirectGoto(from_serial=2, old_target=3, new_target=4),) if redirect else ()
+    report = analyze_dispatcher_corridor_coverage(graph, modifications=edits, dispatcher_entry_serial=3)
+    assert report.enumeration_complete
+    assert bool(report.residual_corridors) is not redirect
+    corridors = (*report.covered_corridors, *report.residual_corridors)
+    assert any(tuple(point.serial for point in row.path) == (1, 2, 3) for row in corridors)
+    assert all(len({point.serial for point in row.path}) == len(row.path) for row in corridors)
+    assert all(row.state_merge_anchor is None for row in corridors)
+    # Only the exit is redirected; the payload's self-loop is still executable.
+    assert corridor_module._rewired_successors(graph, edits)[1] == (1, 2)
+
+
+def test_payload_self_loop_replacement_return_remains_residual() -> None:
+    graph = FlowGraph({
+        0: _block(0, (1,), (), 0x1000),
+        1: _block(1, (1, 2), (0, 1, 3), 0x1010),
+        2: _block(2, (3,), (1,), 0x1020),
+        3: _block(3, (1,), (2, 4), 0x1030),
+        4: _block(4, (3,), (), 0x1040),
+    }, entry_serial=0, func_ea=0x1000)
+    report = analyze_dispatcher_corridor_coverage(
+        graph, modifications=(RedirectGoto(from_serial=2, old_target=3, new_target=4),),
+        dispatcher_entry_serial=3,
+    )
+    assert report.enumeration_complete
+    assert report.residual_corridors
+    assert not report.full_unflattening_claim
+
+
+def test_payload_self_loop_with_additional_exit_is_not_this_bounded_shape() -> None:
+    paths, complete = corridor_module._upstream_corridor_paths(
+        {0: (1,), 1: (1, 2, 4), 2: (3,), 3: (1,), 4: ()},
+        feeder_serial=2, dispatcher_serial=3,
+    )
+    assert not complete
+
+
 def test_repeated_merge_node_keeps_corridor_enumeration_incomplete() -> None:
     graph = _dispatcher_self_reentry_corridor_graph(merge_reverse_cycle=True)
     report = analyze_dispatcher_corridor_coverage(

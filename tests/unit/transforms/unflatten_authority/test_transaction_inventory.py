@@ -16,6 +16,82 @@ from d810.transforms.unflatten_authority.ids import authority_id, semantic_graph
 _BADADDR = 0xFFFFFFFFFFFFFFFF
 
 
+@pytest.mark.parametrize("drift", [None, "payload", "missing_payload", "extra_payload", "foreign_successor", "nonadjacent", "different_corridor", "native_goto"])
+def test_observed_corridor_helper_accepts_only_exact_synthetic_fallthrough(drift):
+    from d810.ir.flowgraph import InsnKind, InsnSnapshot, MopSnapshot, OperandKind
+    from d810.ir.maturity import MaturityEnvelope
+    from d810.ir.semantics import ControlTransferKind
+    from d810.transforms.cfg_transaction import TransactionAttemptId
+    from d810.transforms.patch_binding import BoundPatchPlan, iter_refs, observed_patch_binding
+    from d810.transforms.plan import PatchBlockSpec, PatchEdgeSplitCorridor, PatchPlan
+    from tests.unit.transforms.unflatten_authority.test_bind import _exact_fixture
+
+    source, proposal, _exclusion, refs = _exact_fixture()
+    helper = PlanBlockRef(proposal.plan_id, "fallthrough-first")
+    following = PlanBlockRef(proposal.plan_id, "fallthrough-second")
+    step = PatchEdgeSplitCorridor(
+        (helper, following), refs[1], refs[0], refs[2], refs[0], refs[2], (refs[1], refs[2]),
+    )
+    plan = PatchPlan(
+        plan_id=proposal.plan_id, snapshot_id=authority_id("fallthrough-test"), steps=(step,),
+        source_coordinates=tuple((ref, serial) for serial, ref in refs.items()),
+        new_blocks=(PatchBlockSpec(helper, "edge_split_corridor_clone", template_block=refs[1]),
+                    PatchBlockSpec(following, "edge_split_corridor_clone", template_block=refs[2])),
+    )
+    if drift == "different_corridor":
+        plan = replace(plan, steps=(replace(step, clone_block_ids=(helper,)), replace(step, clone_block_ids=(following,))))
+    attempt = TransactionAttemptId(plan.plan_id, "fallthrough-test", 1, "exact")
+    next_serial = 11 if drift == "nonadjacent" else 10
+    serials = {ref: serial for serial, ref in refs.items()}
+    serials.update({helper: 9, following: next_serial})
+    ordered_refs = tuple(ref for ref in dict.fromkeys(iter_refs((plan.steps, plan.new_blocks, plan.relocation_map))) if type(ref) is not PlanBlockRef) + (helper, following)
+    bound = BoundPatchPlan(
+        plan, attempt, attempt.session_id, attempt.generation,
+        MaturityEnvelope(ir=None, provider="test", provider_id=0),
+        tuple((ref, serials[ref]) for ref in ordered_refs),
+    )
+    binding = observed_patch_binding(bound, ((helper, 9), (following, next_serial)))
+    payload = InsnSnapshot(
+        4, 0x401010, (), kind=InsnKind.MOV, raw_opcode=4, native_ea=0x401010,
+        l=MopSnapshot(kind=OperandKind.REGISTER, reg=8, size=4),
+        d=MopSnapshot(kind=OperandKind.REGISTER, reg=16, size=4),
+    )
+    tail = InsnSnapshot(
+        -1, 0x401014, (), kind=InsnKind.GOTO,
+        control_transfer_kind=ControlTransferKind.GOTO, is_unconditional_jump=True,
+        d=MopSnapshot(kind=OperandKind.BLOCK, block_ref=next_serial),
+    )
+    if drift == "native_goto":
+        tail = replace(tail, opcode=55, raw_opcode=55)
+    projected_block = BlockSnapshot(
+        serial=9, block_type=0, succs=(next_serial,), preds=(), flags=0,
+        start_ea=0x401010, insn_snapshots=(payload, tail),
+        tail_opcode=tail.opcode, raw_tail_opcode=tail.raw_opcode,
+        tail_kind=InsnKind.GOTO, kind=BlockKind.ONE_WAY,
+    )
+    live_payload = replace(payload, ea=source.func_ea, native_ea=source.func_ea)
+    if drift == "payload":
+        live_payload = replace(live_payload, opcode=5, raw_opcode=5)
+    body = () if drift == "missing_payload" else (live_payload,)
+    if drift == "extra_payload":
+        body += (live_payload,)
+    live = replace(
+        projected_block, insn_snapshots=body,
+        succs=(0,) if drift == "foreign_successor" else (next_serial,),
+        tail_opcode=live_payload.opcode if body else None,
+        raw_tail_opcode=live_payload.raw_opcode if body else None,
+        tail_kind=InsnKind.MOV if body else None,
+    )
+    expected = producer_api.observe_inventory_block(projected_block, owner_ref=helper, owner_anchor_ea=0x401010)
+    actual = producer_api.observe_inventory_block(live, owner_ref=helper, owner_anchor_ea=0x401010)
+    kwargs = dict(block=live, observed=actual, projected=expected, owner_ref=helper, observed_patch_binding=binding, function_ea=source.func_ea)
+    if drift is None:
+        assert transaction_api._normalize_observed_plan_helper_allocation_origins(**kwargs) == expected
+    else:
+        with pytest.raises(ValueError):
+            transaction_api._normalize_observed_plan_helper_allocation_origins(**kwargs)
+
+
 def test_observe_inventory_block_preserves_raw_graph_start_ea() -> None:
     block = BlockSnapshot(
         serial=3,

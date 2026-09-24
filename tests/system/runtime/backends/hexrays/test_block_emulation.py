@@ -136,6 +136,62 @@ class TestAbstainContract:
         assert isinstance(outcome, ExactResult)
         assert outcome.value_for(_STATE_CELL) == real_write.value
 
+    def test_state_write_uses_current_swig_wrapper_not_python_identity(
+        self, monkeypatch,
+    ) -> None:
+        """A second traversal may wrap the same native instruction anew."""
+        state_mop = SimpleNamespace(
+            t=ida_hexrays.mop_S,
+            s=SimpleNamespace(off=_STATE_STKOFF),
+        )
+
+        class _FreshWrapperBlock:
+            @property
+            def head(self):
+                return _FakeInsn(
+                    opcode=ida_hexrays.m_mov,
+                    d=state_mop,
+                    ea=0x7FFF99194149,
+                    value=0x3B6CCB62,
+                )
+
+        class _Environment:
+            value = None
+
+            def lookup(self, _mop, *, raise_exception=False):
+                return self.value
+
+        class _Interpreter:
+            abstain_causes = SimpleNamespace(
+                dominant=lambda: None,
+                def_sites=lambda: (),
+            )
+
+            def __init__(self, *, symbolic_mode):
+                assert symbolic_mode is False
+
+            def eval_instruction(self, _block, insn, *, environment, raise_exception):
+                environment.value = insn.value
+                return True
+
+            def eval_mop(self, _mop, *, environment, raise_exception):
+                return environment.value
+
+        monkeypatch.setattr(
+            "d810.backends.hexrays.evidence.emulation.MicroCodeEnvironment",
+            _Environment,
+        )
+        monkeypatch.setattr(
+            "d810.backends.hexrays.evidence.emulation.MicroCodeInterpreter",
+            _Interpreter,
+        )
+
+        outcome = _emulator().eval_block(
+            _FreshWrapperBlock(), ConcreteStore.of({}),
+        )
+        assert isinstance(outcome, ExactResult), outcome
+        assert outcome.value_for(_STATE_CELL) == 0x3B6CCB62
+
     def test_eval_uses_non_state_assertion_as_carrier_fact(self, monkeypatch) -> None:
         state_mop = SimpleNamespace(
             t=ida_hexrays.mop_S,

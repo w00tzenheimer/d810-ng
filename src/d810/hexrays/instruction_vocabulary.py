@@ -331,12 +331,10 @@ def _validate_roles(name: str, *, l: Any, r: Any, d: Any) -> None:
     canonical = canonical_opcode_name(name)
     if canonical == "m_goto" and getattr(l, "kind", None) not in _DIRECT_TARGET_KINDS:
         raise ValueError(f"opcode {name} operand shape rejects non-block target")
-    # The SDK documents m_jcnd.d as mop_v or mop_b.  Preserve both target
-    # encodings at capture because direct-address branches occur in live
-    # microcode before they are normalized to local CFG block references.
-    if canonical == "m_jcnd" and getattr(d, "kind", None) not in _DIRECT_TARGET_KINDS:
-        raise ValueError(f"opcode {name} operand shape rejects non-block target")
-    if canonical in _CONDITIONALS - {"m_jcnd"} and getattr(d, "kind", None) is not OperandKind.BLOCK:
+    # Hex-Rays emits mop_v direct targets for ordinary conditionals too: the
+    # 69814 loader has a PREOPT m_jz whose destination is $loc_7FFF99192E7B.
+    # Capture that form before it is normalized to a local CFG block reference.
+    if canonical in _CONDITIONALS and getattr(d, "kind", None) not in _DIRECT_TARGET_KINDS:
         raise ValueError(f"opcode {name} operand shape rejects non-block target")
     if canonical == "m_jtbl" and getattr(r, "kind", None) is not OperandKind.CASE_LIST:
         raise ValueError(f"opcode {name} operand shape rejects non-case-list table")

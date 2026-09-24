@@ -230,6 +230,21 @@ def test_binds_no_provider_entry_endpoint_liveness_to_its_exact_redirect_fact() 
 
     assert bound[0].allowance is allowance
     assert bound[0].patch_step_fact is fact
+    with pytest.raises(ValueError, match="unique step indices"):
+        transaction_api.bind_entry_endpoint_liveness_allowances(
+            plan=plan, allowances=(allowance,), patch_step_facts=(*patch_step_facts, fact),
+            source=source, projected=projected, source_inventory=source_inventory,
+            projected_inventory=transaction_api._build_semantic_graph_inventory(
+                projected, plan.unflatten_proposal, plan, source=False,
+                phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+                source_subjects=source_inventory.subjects,
+            ),
+        )
+    with pytest.raises(ValueError, match="ambiguous"):
+        transaction_api._admit_bound_entry_endpoint_liveness(
+            proposal=plan.unflatten_proposal, receipts=bound,
+            patch_step_facts=(*patch_step_facts, fact),
+        )
     assert not hasattr(
         transaction_api.authority_bind,
         "mint_bound_entry_endpoint_liveness_allowance",
@@ -7247,29 +7262,14 @@ def test_entry_liveness_carrier_matcher_requires_the_exact_typed_corridor() -> N
         source_owner_identity=carrier.feeder_identity,
         source_owner_anchor_ea=carrier.feeder_anchor_ea,
     )
-    carrier_with_collapsed_comparison = replace(
-        carrier,
-        comparison_entry_identity=carrier.feeder_identity,
-        comparison_entry_anchor_ea=carrier.feeder_anchor_ea,
-        corridor=(
-            route.SemanticCorridorPoint(
-                carrier.source_identity,
-                carrier.source_anchor_ea,
-            ),
-            route.SemanticCorridorPoint(
-                carrier.feeder_identity,
-                carrier.feeder_anchor_ea,
-            ),
-            route.SemanticCorridorPoint(
-                carrier.feeder_identity,
-                carrier.feeder_anchor_ea,
-            ),
-        ),
-    )
-    proof_with_collapsed_comparison = replace(
-        proof,
-        state_carrier=carrier_with_collapsed_comparison,
-    )
+    # Repeated identities now fail at construction, before route matching.
+    with pytest.raises(route.SemanticRouteEvidenceRejected, match="corridor"):
+        replace(
+            carrier,
+            comparison_entry_identity=carrier.feeder_identity,
+            comparison_entry_anchor_ea=carrier.feeder_anchor_ea,
+            corridor=(carrier.corridor[0], carrier.corridor[1], carrier.corridor[1]),
+        )
     drifted_cases = (
         ("source catalogue witness", {"source_witnesses": source_witnesses_without_source}),
         ("source identity", {"state_production_source_ref": feeder_ref}),
@@ -7283,10 +7283,6 @@ def test_entry_liveness_carrier_matcher_requires_the_exact_typed_corridor() -> N
             {"proof": proof_with_foreign_route_owner},
         ),
         ("feeder identity", {"dispatcher_old_target_ref": comparison_ref}),
-        (
-            "comparison entry identity and corridor",
-            {"proof": proof_with_collapsed_comparison},
-        ),
         ("state namespace", {"state_identity": object()}),
         ("state constant", {"normalized_state": carrier.state_constant + 1}),
         ("destination identity", {"replacement_ref": feeder_ref}),
@@ -7408,6 +7404,9 @@ def test_cloned_state_carrier_corridor_is_selected_by_its_typed_relation() -> No
 
 def _exact_cloned_state_carrier_preparation_case(
     *,
+    setup_tail: bool = False,
+    implicit_feeder: bool = False,
+    direct_state: bool = False,
     direct_source_bypass: bool = False,
     feeder_direct: bool = False,
     shared_source_bypass: bool = False,
@@ -7541,6 +7540,36 @@ def _exact_cloned_state_carrier_preparation_case(
             tail_opcode=0, kind=BlockKind.ONE_WAY,
             tail_kind=InsnKind.GOTO, raw_tail_opcode=0,
         )
+    if setup_tail:
+        source_blocks[3] = replace(
+            source_blocks[3], succs=(7,),
+            insn_snapshots=source_blocks[3].insn_snapshots[:-1] + (goto(0x1302, 7),),
+        )
+        source_blocks[7] = replace(
+            source_blocks[3], serial=7, start_ea=0x1700, preds=(3,), succs=(4,),
+            insn_snapshots=(replace(source_blocks[3].insn_snapshots[1], ea=0x1700), goto(0x1701, 4)),
+        )
+        source_blocks[4] = replace(source_blocks[4], preds=(7,))
+        source_blocks[8] = replace(
+            source_blocks[5], serial=8, start_ea=0x1800, preds=(),
+            insn_snapshots=(replace(source_blocks[5].insn_snapshots[0], ea=0x1800),),
+        )
+    if direct_state:
+        source_blocks[2] = replace(
+            source_blocks[2],
+            insn_snapshots=(replace(source_blocks[2].insn_snapshots[0], d=state_mop), *source_blocks[2].insn_snapshots[1:]),
+        )
+        source_blocks[3] = replace(
+            source_blocks[3], insn_snapshots=(
+                replace(source_blocks[3].insn_snapshots[1], ea=0x1300),
+                *source_blocks[3].insn_snapshots[2:],
+            ),
+        )
+    if implicit_feeder:
+        source_blocks[3] = replace(
+            source_blocks[3], insn_snapshots=source_blocks[3].insn_snapshots[:-1],
+            tail_kind=InsnKind.MOV,
+        )
     source = FlowGraph(source_blocks, entry_serial=1, func_ea=0x1000)
     identities = {
         serial: stable_block_identity_from_snapshot(block, native_key=NATIVE_KEY)
@@ -7553,11 +7582,12 @@ def _exact_cloned_state_carrier_preparation_case(
             carrier_witness=ExactCarrierStateWrite(
                 state=7, source_serial=2, source_instruction_ea=0x1200,
                 feeder_serial=3, comparison_entry_serial=4,
-                carrier=Varnode(Space.REGISTER, 16, 4),
+                carrier=Varnode(Space.STACK, 0x40, 4) if direct_state else Varnode(Space.REGISTER, 16, 4),
                 state_identity=state,
                 requires_feeder_clone=(
                     not feeder_direct and not shared_source_bypass
                 ),
+                clone_until_serial=7 if setup_tail else 3 if direct_state else None,
             ),
         )]
     if unclaimed_shared_bypass:
@@ -7689,8 +7719,8 @@ def _exact_cloned_state_carrier_preparation_case(
     authority, plan, source_inventory, projected_inventory, facts, attempt = (
         test_bind._compile_corridor_from_canonical_evidence(
             source=source, evidence=produced.evidence,
-            from_serial=3, old_target=4, new_target=5,
-            predecessor_serial=2, clone_until=3, state_identity=state,
+            from_serial=3, old_target=7 if setup_tail else 4, new_target=5,
+            predecessor_serial=2, clone_until=7 if setup_tail else 3, state_identity=state,
             tag="exact-cloned-carrier",
         )
     )
@@ -7918,13 +7948,14 @@ def test_public_prepare_consumes_shared_carrier_source_bypass_relation() -> None
     assert type(row.relation) is model.SharedCarrierSourceBypassRouteRealization
 
 
-def test_realization_mints_exact_cloned_carrier_with_distinct_semantic_source() -> None:
+@pytest.mark.parametrize("setup_tail,implicit_feeder,direct_state", ((False, False, False), (True, False, False), (True, True, False), (False, False, True), (True, True, True)))
+def test_realization_mints_exact_cloned_carrier_with_distinct_semantic_source(setup_tail, implicit_feeder, direct_state) -> None:
     """Exact cloned carrier keeps semantic source distinct from physical feeder."""
     from d810.transforms.unflatten_authority import model
     from . import test_bind
 
     authority, plan, source, projected, facts, attempt, refs = (
-        _exact_cloned_state_carrier_preparation_case()
+        _exact_cloned_state_carrier_preparation_case(setup_tail=setup_tail, implicit_feeder=implicit_feeder, direct_state=direct_state)
     )
     result = test_bind.realize_projected_routes_for_test(
         source_authority=authority,
@@ -7940,10 +7971,29 @@ def test_realization_mints_exact_cloned_carrier_with_distinct_semantic_source() 
     assert type(relation).__name__ == "ClonedCarrierRouteCorridorRealization"
     assert relation.proof_source.ref == refs[2]
     assert relation.physical_feeder.ref == refs[3]
-    assert tuple(item.ref for item in relation.source_corridor) == (refs[3],)
+    assert tuple(item.ref for item in relation.source_corridor) == (
+        (refs[3], refs[7]) if setup_tail else (refs[3],)
+    )
     assert tuple(item.ref for item in relation.cloned_corridor) == plan.steps[0].clone_block_ids
     assert relation.comparison_entry.ref == refs[4]
     assert relation.semantic_target.ref == refs[5]
+
+
+def test_entry_liveness_binding_allows_unrelated_multi_block_clone_facts() -> None:
+    """One corridor step has one fact per cloned block, not an ambiguous entry."""
+    from d810.transforms.edit_simulator import project_post_state
+    values = _exact_cloned_state_carrier_preparation_case(setup_tail=True, include_graphs=True)
+    _authority, plan, source_inventory, projected_inventory, facts, _attempt, _refs, source, _ = values
+    assert len({fact.step_index for fact in facts}) < len(facts)
+    projected = project_post_state(source, plan)
+    assert transaction_api.bind_entry_endpoint_liveness_allowances(
+        plan=plan, allowances=(), patch_step_facts=facts,
+        source=source, projected=projected, source_inventory=source_inventory,
+        projected_inventory=projected_inventory,
+    ) == ()
+    assert transaction_api._admit_bound_entry_endpoint_liveness(
+        proposal=plan.unflatten_proposal, receipts=(), patch_step_facts=facts,
+    ) == ()
 
 
 @pytest.mark.parametrize(

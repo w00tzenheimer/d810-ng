@@ -122,16 +122,15 @@ class HexRaysBlockEmulator:
         """
         if block is None:
             return Abstain("no live block")
-        write_insn = self._find_first_state_write(block)
-        if write_insn is None or getattr(write_insn, "d", None) is None:
-            return Abstain("no state-var write in block")
         interpreter = MicroCodeInterpreter(symbolic_mode=False)
+        found_write = False
         try:
             self._apply_predecessor_context(interpreter, block, pred_serial)
             env = MicroCodeEnvironment()
             resolved: Optional[int] = None
             insn = getattr(block, "head", None)
             while insn is not None:
+                is_state_write = self._is_executable_state_write(insn)
                 if (
                     int(getattr(insn, "iprops", 0)) & ida_hexrays.IPROP_ASSERT
                     and self._mop_is_state_var(getattr(insn, "d", None))
@@ -145,17 +144,18 @@ class HexRaysBlockEmulator:
                 ok = interpreter.eval_instruction(
                     block, insn, environment=env, raise_exception=False
                 )
-                if insn is write_insn:
+                if is_state_write and not found_write:
+                    found_write = True
                     if ok:
                         # Both fetches are EXACT-or-``None``: a next-state derived
                         # from a call the emulator MODELED rather than computed is
                         # refused by the emulator itself and reported as
                         # ``synthetic_taint`` (tickets d81-0xzp, d81-1t9x), so this
                         # consumer needs no taint check of its own.
-                        value = env.lookup(write_insn.d, raise_exception=False)
+                        value = env.lookup(insn.d, raise_exception=False)
                         if value is None:
                             value = interpreter.eval_mop(
-                                write_insn.d, environment=env, raise_exception=False
+                                insn.d, environment=env, raise_exception=False
                             )
                         if value is not None:
                             resolved = int(value)
@@ -170,6 +170,8 @@ class HexRaysBlockEmulator:
                 cause=CAUSE_EMULATOR_RAISED,
                 def_sites=interpreter.abstain_causes.def_sites(),
             )
+        if not found_write:
+            return Abstain("no state-var write in block")
         if resolved is None:
             # Name WHY, so a residual dispatcher corridor decomposes by cause
             # instead of being one opaque "could not resolve" (d81-qt4v).
@@ -181,6 +183,14 @@ class HexRaysBlockEmulator:
         return ExactResult({self.state_cell: int(resolved) & 0xFFFFFFFFFFFFFFFF})
 
     # -- internal ----------------------------------------------------------
+    def _is_executable_state_write(self, insn: object) -> bool:
+        d = getattr(insn, "d", None)
+        return (
+            not (int(getattr(insn, "iprops", 0)) & ida_hexrays.IPROP_ASSERT)
+            and d is not None
+            and self._mop_is_state_var(d)
+        )
+
     @staticmethod
     def _apply_predecessor_context(
         interpreter: MicroCodeInterpreter,
@@ -233,12 +243,7 @@ class HexRaysBlockEmulator:
         """
         insn = getattr(block, "head", None)
         while insn is not None:
-            d = getattr(insn, "d", None)
-            if (
-                not (int(getattr(insn, "iprops", 0)) & ida_hexrays.IPROP_ASSERT)
-                and d is not None
-                and self._mop_is_state_var(d)
-            ):
+            if self._is_executable_state_write(insn):
                 return insn
             insn = getattr(insn, "next", None)
         return None

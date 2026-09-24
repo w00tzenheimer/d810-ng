@@ -98,6 +98,55 @@ def _assert_reciprocal_topology(graph: FlowGraph) -> None:
             assert block.serial in graph.blocks[predecessor].succs
 
 
+@pytest.mark.parametrize("explicit_goto", [False, True])
+def test_corridor_clone_preserves_final_constant_setup(explicit_goto: bool) -> None:
+    """Projection must copy fallthrough payload just as the native clone does."""
+    setup = InsnSnapshot(
+        opcode=4, ea=0x1204, operands=(), kind=InsnKind.MOV,
+        value_op_kind=ValueOpKind.MOVE,
+        l=MopSnapshot(kind=OperandKind.NUMBER, size=8, value=0x0D915A190F589E30),
+        d=MopSnapshot(kind=OperandKind.REGISTER, size=8, reg=104),
+    )
+    body = (setup,)
+    if explicit_goto:
+        body += (_expected_synthetic_goto(ea=0x1208, target=2),)
+
+    def block(serial, succs, preds, instructions=()):
+        return BlockSnapshot(
+            serial=serial, block_type=1 if succs else 0, succs=succs,
+            preds=preds, flags=0, start_ea=0x1100 + serial * 0x100,
+            insn_snapshots=instructions,
+            kind=BlockKind.ONE_WAY if succs else BlockKind.ZERO_WAY,
+            tail_kind=instructions[-1].kind if instructions else InsnKind.NOP,
+        )
+
+    graph = FlowGraph(
+        blocks={
+            0: block(0, (1,), ()),
+            1: block(1, (2,), (0,), body),
+            2: block(2, (4,), (1,)),
+            3: block(3, (4,), ()),
+            4: block(4, (), (2, 3)),
+        },
+        entry_serial=0, func_ea=0x1100,
+    )
+    plan = compile_patch_plan([
+        EdgeRedirectViaPredSplit(
+            src_block=1, old_target=2, new_target=3, via_pred=0, clone_until=1,
+        ),
+    ], graph)
+    projected = project_post_state(graph, plan)
+    clone_serial = _projected_plan_serial(graph, plan, plan.new_blocks[0].block_id)
+    clone = projected.blocks[clone_serial]
+    assert len(clone.insn_snapshots) == 2
+    assert clone.insn_snapshots[0] == setup
+    assert clone.insn_snapshots[1].control_transfer_kind is ControlTransferKind.GOTO
+    assert clone.insn_snapshots[1].d.block_ref == 3
+    assert projected.blocks[1].insn_snapshots == body
+    assert projected.blocks[0].succs == (clone_serial,)
+    _assert_reciprocal_topology(projected)
+
+
 def test_project_post_state_forecasts_exact_local_alias_scalarization() -> None:
     source = FlowGraph(
         blocks={

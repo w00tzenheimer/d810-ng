@@ -9377,7 +9377,7 @@ class ClonedSemanticPrefix:
     source_start_ordinal: int
     source_end_ordinal_exclusive: int
     instruction_origins: tuple[ClonedSemanticInstructionOrigin, ...]
-    source_trailing_goto_ordinal: int
+    source_trailing_goto_ordinal: int | None
     projected_synthetic_goto_ordinal: int
     projected_successor: AnchoredBlockRef
     creation_spec_row: tuple[PlanBlockRef, str]
@@ -9399,14 +9399,15 @@ class ClonedSemanticPrefix:
             raise TypeError("instruction_origins must contain exact origins")
         _nonnegative(self.source_start_ordinal, "source_start_ordinal")
         _nonnegative(self.source_end_ordinal_exclusive, "source_end_ordinal_exclusive")
-        _nonnegative(self.source_trailing_goto_ordinal, "source_trailing_goto_ordinal")
+        if self.source_trailing_goto_ordinal is not None:
+            _nonnegative(self.source_trailing_goto_ordinal, "source_trailing_goto_ordinal")
         _nonnegative(self.projected_synthetic_goto_ordinal, "projected_synthetic_goto_ordinal")
         if self.source_start_ordinal != 0:
             raise ValueError("cloned semantic prefixes must start at ordinal zero")
         length = self.source_end_ordinal_exclusive
         if length != len(self.instruction_origins):
             raise ValueError("prefix end ordinal must equal origin count")
-        if self.source_trailing_goto_ordinal != length or self.projected_synthetic_goto_ordinal != length:
+        if self.source_trailing_goto_ordinal not in (None, length) or self.projected_synthetic_goto_ordinal != length:
             raise ValueError("prefix trailing GOTO ordinals must equal prefix length")
         _validate_route_anchor(self.projected_successor, "prefix projected_successor")
         if type(self.creation_spec_row) is not tuple or len(self.creation_spec_row) != 2:
@@ -9633,15 +9634,16 @@ class ClonedCarrierRouteCorridorRealization:
         ):
             raise TypeError("carrier corridors and prefixes must be exact tuples")
         if (
-            self.source_corridor != (self.physical_feeder,)
-            or len(self.cloned_corridor) != 1
-            or len(self.semantic_prefixes) != 1
+            not self.source_corridor
+            or self.source_corridor[0] != self.physical_feeder
+            or len(self.cloned_corridor) != len(self.source_corridor)
+            or len(self.semantic_prefixes) != len(self.source_corridor)
         ):
-            raise ValueError("exact carrier relation requires one feeder clone")
+            raise ValueError("exact carrier relation requires matching feeder corridor clones")
         if self.proof_source == self.physical_feeder:
             raise ValueError("carrier proof source and physical feeder must differ")
         primary_roles = (
-            self.proof_source, self.physical_feeder,
+            self.proof_source, *self.source_corridor,
             self.comparison_entry, self.semantic_target,
             *self.cloned_corridor,
         )
@@ -9649,20 +9651,24 @@ class ClonedCarrierRouteCorridorRealization:
             raise ValueError("carrier relation roles are incoherent")
         if set(self.source_corridor) & set(self.cloned_corridor):
             raise ValueError("carrier source and clone corridors must be disjoint")
-        prefix = self.semantic_prefixes[0]
-        if type(prefix) is not ClonedSemanticPrefix:
-            raise TypeError("carrier semantic prefix must be exact")
         _validate_creation_spec_rows(
-            self.creation_spec_digests, (self.cloned_corridor[0].ref,),
+            self.creation_spec_digests, tuple(point.ref for point in self.cloned_corridor),
         )
-        if (
-            prefix.ordinal != 0
-            or prefix.source_owner != self.physical_feeder
-            or prefix.clone_owner != self.cloned_corridor[0]
-            or prefix.projected_successor != self.semantic_target
-            or prefix.creation_spec_row != self.creation_spec_digests[0]
-        ):
-            raise ValueError("carrier prefix does not follow the exact feeder clone")
+        for index, prefix in enumerate(self.semantic_prefixes):
+            if type(prefix) is not ClonedSemanticPrefix:
+                raise TypeError("carrier semantic prefix must be exact")
+            successor = (
+                self.cloned_corridor[index + 1]
+                if index + 1 < len(self.cloned_corridor) else self.semantic_target
+            )
+            if (
+                prefix.ordinal != index
+                or prefix.source_owner != self.source_corridor[index]
+                or prefix.clone_owner != self.cloned_corridor[index]
+                or prefix.projected_successor != successor
+                or prefix.creation_spec_row != self.creation_spec_digests[index]
+            ):
+                raise ValueError("carrier prefix does not follow the exact feeder clone")
         _id(self.relation_id, "relation_id")
         expected = route_realization_id((
             "cloned_carrier_route_corridor", self.proof_source,
