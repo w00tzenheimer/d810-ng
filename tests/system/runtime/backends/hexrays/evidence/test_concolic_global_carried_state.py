@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import os
 import platform
+from types import SimpleNamespace
 
 import pytest
 
@@ -46,12 +47,84 @@ from d810.backends.hexrays.evidence.concolic_emulation_engine import (
 from d810.backends.hexrays.evidence.dispatcher_anchor_discovery import discover_anchors
 from d810.backends.hexrays.lifter import lift_function
 from d810.capabilities.providers import register_condition_chain_walkers
+from d810.analyses.value_flow import state_write
+from d810.backends.hexrays.evidence import emulation_dispatcher_resolver
+from d810.ir.expressions import ValueOpKind
+from d810.ir.instructions import Instruction, InstructionMemoryAccess, InstructionMemoryAccessKind
+from d810.ir.varnode import Space, Varnode
 
 #: The entry-state handler's global-carried next-state (Approov source line
 #: ``opcode = (int)(approov_qword |= 1010208)`` -> 0xF6A20).
 _ENTRY_STATE = 0xF6A1F
 _GLOBAL_CARRIED_NEXT = 0xF6A20
 _STATE_B_NEXT = 0xF6A1E  # case 0xF6A20: opcode = 0xF6A1E (direct write)
+
+
+def test_whole_block_fold_forgets_state_after_aliasing_store(monkeypatch) -> None:
+    state_stkoff = 0x364
+    first = SimpleNamespace(
+        snapshot=Instruction(
+            ValueOpKind.MOVE,
+            inputs=(Varnode(Space.CONST, 0x12345678, 4),),
+            result=Varnode(Space.STACK, state_stkoff, 4),
+        ),
+        next=None,
+    )
+    second = SimpleNamespace(
+        snapshot=Instruction(
+            ValueOpKind.STORE,
+            memory=InstructionMemoryAccess(
+                InstructionMemoryAccessKind.INDIRECT,
+                target=Varnode(Space.REGISTER, 16, 8),
+                value=Varnode(Space.CONST, 0x5A, 1),
+                width=1,
+            ),
+        ),
+        next=None,
+    )
+    first.next = second
+    provider = SimpleNamespace(
+        forward_eval_insn=lambda insn, stk, reg, off, **_kwargs:
+            state_write.forward_eval_insn(insn.snapshot, stk, reg, off)
+    )
+    monkeypatch.setattr(
+        emulation_dispatcher_resolver, "get_condition_chain_walkers", lambda: provider
+    )
+    resolver = emulation_dispatcher_resolver.EmulationDispatcherResolver(mba=None)
+
+    assert resolver._fold_state_write_whole_block(
+        SimpleNamespace(head=first), state_stkoff, {}
+    ) is None
+
+
+def test_concolic_arm_collector_rejects_literal_before_alias_store() -> None:
+    state_dest = SimpleNamespace(t=ida_hexrays.mop_S, s=SimpleNamespace(off=0x364))
+    literal = SimpleNamespace(t=ida_hexrays.mop_n, nnn=SimpleNamespace(value=0x12345678))
+    first = SimpleNamespace(opcode=ida_hexrays.m_mov, d=state_dest, l=literal, next=None)
+    second = SimpleNamespace(opcode=ida_hexrays.m_stx, d=None, l=None, next=None)
+    first.next = second
+    host = SimpleNamespace(
+        _as_self_update=lambda _insn: None,
+        _mov_const_to_stkoff=lambda _blk, _off: 0x12345678,
+        _writes_stkoff=lambda _blk, _off: True,
+        _fold_state_write_in_block=lambda *_args, **_kwargs: 0x12345678,
+    )
+
+    assert ConcolicEmulationEngine._block_state_arms(
+        host, SimpleNamespace(head=first, serial=1), 0x364, {}
+    ) == []
+
+
+def test_concolic_arm_collector_rejects_partial_literal_after_alias_store() -> None:
+    state_dest = SimpleNamespace(t=ida_hexrays.mop_S, s=SimpleNamespace(off=0x364), size=1)
+    literal = SimpleNamespace(t=ida_hexrays.mop_n, nnn=SimpleNamespace(value=0x78), size=1)
+    first = SimpleNamespace(opcode=ida_hexrays.m_stx, d=None, l=None, next=None)
+    second = SimpleNamespace(opcode=ida_hexrays.m_mov, d=state_dest, l=literal, next=None)
+    first.next = second
+
+    assert ConcolicEmulationEngine._block_state_arms(
+        SimpleNamespace(), SimpleNamespace(head=first, serial=1), 0x364, {}
+    ) == []
 
 
 def _get_default_binary() -> str:

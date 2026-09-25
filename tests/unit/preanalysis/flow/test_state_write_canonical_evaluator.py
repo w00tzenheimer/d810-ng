@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from d810.analyses.value_flow.state_write import (
+    _forward_eval_instruction_sequence,
     forward_eval_insn,
     forward_eval_instruction,
     get_mop_const_value,
@@ -318,6 +319,128 @@ def test_canonical_store_to_global_state_cell() -> None:
 
     assert result == 0x12345678
     assert stk[global_state] == 0x12345678
+
+
+def test_indirect_store_invalidates_stack_facts_instead_of_writing_pointer_slot() -> None:
+    pointer_slot = 0x70
+    stk = {_STATE_STKOFF: 0x12345678, pointer_slot: 0x4000}
+    reg = {32: 0xCAFEBABE}
+    instruction = Instruction(
+        ValueOpKind.STORE,
+        inputs=(_const(0x5A, size=1), _reg(256, size=2), _stack(pointer_slot, size=8)),
+        memory=InstructionMemoryAccess(
+            InstructionMemoryAccessKind.INDIRECT,
+            target=_stack(pointer_slot, size=8),
+            segment=_reg(256, size=2),
+            value=_const(0x5A, size=1),
+            width=1,
+        ),
+    )
+
+    result = forward_eval_instruction(instruction, stk, reg, _STATE_STKOFF)
+
+    assert result is None
+    assert stk == {}
+    assert reg == {32: 0xCAFEBABE}
+
+
+def test_lifted_indirect_store_invalidates_state_fact() -> None:
+    pointer_slot = 0x70
+    stk = {_STATE_STKOFF: 0x12345678, pointer_slot: 0x4000}
+    snapshot = InsnSnapshot(
+        opcode=0,
+        ea=0x7FFF99AD0E97,
+        operands=(),
+        kind=InsnKind.STORE,
+        value_op_kind=ValueOpKind.STORE,
+        l=_num_mop(0x5A, size=1),
+        r=_reg_mop(256, size=2),
+        d=_stk_mop(pointer_slot, size=8),
+    )
+
+    result = forward_eval_insn(snapshot, stk, {}, _STATE_STKOFF)
+
+    assert result is None
+    assert stk == {}
+
+
+def test_lifted_store_without_segment_still_writes_through_address() -> None:
+    pointer_slot = 0x70
+    stk = {_STATE_STKOFF: 0x12345678, pointer_slot: 0x4000}
+    snapshot = InsnSnapshot(
+        opcode=0,
+        ea=0x7FFF99AD0E97,
+        operands=(),
+        kind=InsnKind.STORE,
+        value_op_kind=ValueOpKind.STORE,
+        l=_num_mop(0x5A, size=1),
+        d=_stk_mop(pointer_slot, size=8),
+    )
+
+    result = forward_eval_insn(snapshot, stk, {}, _STATE_STKOFF)
+
+    assert result is None
+    assert stk == {}
+
+
+def test_unknown_store_target_invalidates_stack_facts() -> None:
+    stk = {_STATE_STKOFF: 0x12345678}
+    instruction = Instruction(
+        ValueOpKind.STORE,
+        inputs=(_const(0x5A, size=1),),
+        memory=InstructionMemoryAccess(
+            InstructionMemoryAccessKind.UNKNOWN,
+            target=None,
+            value=_const(0x5A, size=1),
+            width=1,
+        ),
+    )
+
+    result = forward_eval_instruction(instruction, stk, {}, _STATE_STKOFF)
+
+    assert result is None
+    assert stk == {}
+
+
+def test_store_without_memory_access_metadata_invalidates_stack_facts() -> None:
+    stk = {_STATE_STKOFF: 0x12345678}
+    instruction = Instruction(
+        ValueOpKind.STORE,
+        inputs=(_const(0x5A, size=1),),
+        result=_stack(0x70, size=8),
+    )
+
+    result = forward_eval_instruction(instruction, stk, {}, _STATE_STKOFF)
+
+    assert result is None
+    assert stk == {}
+
+
+def test_sequence_forgets_state_result_after_unknown_alias_store() -> None:
+    stk: dict[int, int] = {}
+    reg: dict[int, int] = {}
+    sequence = (
+        Instruction(
+            ValueOpKind.MOVE,
+            inputs=(_const(0x12345678),),
+            result=_stack(_STATE_STKOFF),
+        ),
+        Instruction(
+            ValueOpKind.STORE,
+            inputs=(_const(0x5A, size=1),),
+            memory=InstructionMemoryAccess(
+                InstructionMemoryAccessKind.INDIRECT,
+                target=_reg(16, size=8),
+                value=_const(0x5A, size=1),
+                width=1,
+            ),
+        ),
+    )
+
+    result = _forward_eval_instruction_sequence(sequence, stk, reg, _STATE_STKOFF)
+
+    assert result is None
+    assert _STATE_STKOFF not in stk
 
 
 def test_canonical_global_read_can_use_reaching_initializer() -> None:

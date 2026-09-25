@@ -598,6 +598,22 @@ def test_instruction_projection_store_has_typed_effect_not_result():
     )
 
 
+def test_native_store_without_segment_remains_indirect() -> None:
+    store = project_instruction(
+        InsnSnapshot(
+            opcode=0x21,
+            ea=0x1000,
+            operands=(),
+            kind=InsnKind.STORE,
+            l=_num(0x5A, size=1),
+            d=_stk(0x70, size=8),
+        )
+    )
+
+    assert store.memory is not None
+    assert store.memory.kind is InstructionMemoryAccessKind.INDIRECT
+
+
 def test_instruction_projection_records_address_constants_as_attrs():
     address = MopSnapshot(
         kind=OperandKind.ADDRESS,

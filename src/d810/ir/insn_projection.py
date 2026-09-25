@@ -516,7 +516,14 @@ def _instruction_memory_access(
         segment = projector.one(insn.r)
         value = projector.one(insn.l)
         return InstructionMemoryAccess(
-            kind=_memory_access_kind(target, segment),
+            # A native STORE (m_stx) writes *through* ``d``. Even with no
+            # explicit segment, a STACK/GLOBAL ``d`` is an address operand,
+            # not proof that the pointed-to cell equals that operand.
+            kind=(
+                InstructionMemoryAccessKind.INDIRECT
+                if target is not None
+                else InstructionMemoryAccessKind.UNKNOWN
+            ),
             target=target,
             segment=segment,
             value=value,

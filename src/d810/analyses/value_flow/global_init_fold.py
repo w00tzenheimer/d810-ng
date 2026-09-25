@@ -43,6 +43,10 @@ from d810.analyses.value_flow.reaching_defs import (
     reaching_defs_of,
 )
 from d810.analyses.data_flow.worklist import run_fixpoint
+from d810.ir.expressions import ValueOpKind
+from d810.ir.flowgraph import InsnKind
+from d810.ir.insn_projection import project_instruction
+from d810.ir.instructions import InstructionMemoryAccessKind
 from d810.ir.varnode import Space, varnode_from_mop_snapshot
 
 logger = getLogger(__name__)
@@ -115,6 +119,17 @@ def _store_gaddr(insn: object) -> Optional[int]:
     return None
 
 
+def _may_alias_global_store(insn: object) -> bool:
+    """An unproved store address may denote any tracked writable global."""
+
+    if getattr(insn, "kind", None) is not InsnKind.STORE and getattr(
+        insn, "value_op_kind", None
+    ) is not ValueOpKind.STORE:
+        return False
+    access = project_instruction(insn).memory
+    return access is None or access.kind is not InstructionMemoryAccessKind.DIRECT_CELL
+
+
 @dataclass(frozen=True, slots=True)
 class _BlockGlobalFacts:
     """Per-block ordered global stores/reads, captured once for reuse."""
@@ -126,12 +141,15 @@ class _BlockGlobalFacts:
     reads: tuple
     # (insn_index, gaddr) store sites in program order.
     stores: tuple
+    # Instruction indices of stores whose destination may alias any global.
+    may_alias_stores: tuple[int, ...]
 
 
 def _collect_block_facts(block: object) -> _BlockGlobalFacts:
     defs: set[int] = set()
     reads: list[tuple[int, int, int, int]] = []
     stores: list[tuple[int, int]] = []
+    may_alias_stores: list[int] = []
     for idx, insn in enumerate(getattr(block, "insn_snapshots", ()) or ()):
         ea = int(getattr(insn, "ea", 0) or 0)
         for gaddr, size in _iter_source_gaddrs(insn):
@@ -140,8 +158,13 @@ def _collect_block_facts(block: object) -> _BlockGlobalFacts:
         if sg is not None:
             stores.append((idx, sg))
             defs.add(sg)
+        if _may_alias_global_store(insn):
+            may_alias_stores.append(idx)
     return _BlockGlobalFacts(
-        defs=frozenset(defs), reads=tuple(reads), stores=tuple(stores)
+        defs=frozenset(defs),
+        reads=tuple(reads),
+        stores=tuple(stores),
+        may_alias_stores=tuple(may_alias_stores),
     )
 
 
@@ -259,10 +282,14 @@ def compute_initializer_stable_global_reads(
     # block serial (sufficient: we only ask "does ANY store reach?", not which);
     # intra-block ordering is handled by the per-instruction walk below.
     reaching_facts: dict[int, BlockReachingFacts] = {}
+    read_gaddrs = frozenset(
+        gaddr for facts in block_facts.values() for _, _, gaddr, _ in facts.reads
+    )
     for serial, facts in block_facts.items():
-        if facts.defs:
+        defs = facts.defs | read_gaddrs if facts.may_alias_stores else facts.defs
+        if defs:
             reaching_facts[serial] = BlockReachingFacts(
-                gen={g: frozenset({serial}) for g in facts.defs}
+                gen={g: frozenset({serial}) for g in defs}
             )
     domain = ReachingDefsDomain(reaching_facts)
 
@@ -295,13 +322,21 @@ def compute_initializer_stable_global_reads(
         # see).  A read folds iff no store reaches it from either the block IN
         # state OR an earlier store in this block.
         stored_before: dict[int, int] = {}
+        may_alias_before = False
         store_iter = iter(facts.stores)
         next_store = next(store_iter, None)
+        alias_iter = iter(facts.may_alias_stores)
+        next_alias = next(alias_iter, None)
         for read_idx, read_ea, gaddr, size in facts.reads:
             # Advance the intra-block store cursor up to (not including) the read.
             while next_store is not None and next_store[0] < read_idx:
                 stored_before[next_store[1]] = stored_before.get(next_store[1], 0) + 1
                 next_store = next(store_iter, None)
+            while next_alias is not None and next_alias < read_idx:
+                may_alias_before = True
+                next_alias = next(alias_iter, None)
+            if may_alias_before:
+                continue  # a prior unproved store may have written this global
             if stored_before.get(gaddr):
                 continue  # an earlier store in this block reaches the read
             if reaching_defs_of(in_state, gaddr):

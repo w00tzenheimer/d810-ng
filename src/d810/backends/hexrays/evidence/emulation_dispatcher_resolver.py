@@ -107,6 +107,21 @@ _MIN_HANDLER_BLOCKS = 2
 #: states; one row is indistinguishable from an accidental match.
 _MIN_RECOVERED_ROWS = 2
 
+
+def _has_unproved_store(blk: object) -> bool:
+    """Whether a pointer-addressed store prevents a block-level state fold.
+
+    A later apparent literal assignment is not enough here: without the
+    independently recovered state-cell width, it could be a partial write.
+    """
+
+    insn = getattr(blk, "head", None)
+    while insn is not None:
+        if insn.opcode == ida_hexrays.m_stx:
+            return True
+        insn = insn.next
+    return False
+
 #: Iteration caps -- a flattened dispatcher chain has O(handlers) compare/handler-region
 #: blocks, so a few dozen is already far past any real obfuscated function.
 _MAX_DISPATCH_STEPS = 256
@@ -908,6 +923,8 @@ class EmulationDispatcherResolver:
         blk = self.mba.get_mblock(int(blk_serial))
         if blk is None:
             return None
+        if _has_unproved_store(blk):
+            return None
         if foldable_global_reads is not None:
             folded = self._fold_state_write_whole_block(
                 blk, int(stkoff), foldable_global_reads
@@ -983,6 +1000,10 @@ class EmulationDispatcherResolver:
                 return None
             if val is not None:
                 result = int(val)
+            elif result is not None and int(stkoff) not in stk_map:
+                # An unproved intervening store can invalidate the earlier
+                # state-slot value; do not return a stale block-level fold.
+                result = None
             insn = insn.next
         if result is None:
             return None

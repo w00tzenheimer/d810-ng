@@ -11,10 +11,12 @@ from __future__ import annotations
 from d810.ir.flowgraph import (
     BlockSnapshot,
     FlowGraph,
+    InsnKind,
     InsnSnapshot,
     MopSnapshot,
     OperandKind,
 )
+from d810.ir.expressions import ValueOpKind
 from d810.analyses.value_flow.global_init_fold import (
     compute_initializer_stable_global_reads,
 )
@@ -133,6 +135,110 @@ def test_read_after_reaching_store_is_rejected():
 
     foldable = compute_initializer_stable_global_reads(fg, _fetch_zero)
     assert read_ea not in foldable, "read with a reaching store must NOT fold"
+
+
+def test_register_addressed_store_may_alias_later_global_read() -> None:
+    read_ea = 0x2100
+    b0 = _block(
+        0,
+        succs=(1,),
+        preds=(),
+        insns=[
+            InsnSnapshot(
+                opcode=0,
+                ea=0x2000,
+                operands=(),
+                kind=InsnKind.STORE,
+                value_op_kind=ValueOpKind.STORE,
+                l=_const(7, size=1),
+                d=MopSnapshot(t=1, size=8, reg=16, kind=OperandKind.REGISTER),
+            ),
+        ],
+    )
+    b1 = _block(
+        1,
+        succs=(),
+        preds=(0,),
+        insns=[
+            InsnSnapshot(
+                opcode=_OP_OR,
+                ea=read_ea,
+                operands=(),
+                l=_gread(),
+                r=_const(0x40),
+                d=MopSnapshot(t=1, size=8, reg=0),
+            ),
+        ],
+    )
+    fg = FlowGraph(blocks={0: b0, 1: b1}, entry_serial=0, func_ea=0x1000)
+
+    assert read_ea not in compute_initializer_stable_global_reads(fg, _fetch_zero)
+
+
+def test_register_addressed_store_blocks_only_later_read_in_same_block() -> None:
+    first_read, later_read = 0x2000, 0x2010
+    b0 = _block(
+        0,
+        succs=(),
+        preds=(),
+        insns=[
+            InsnSnapshot(opcode=_OP_OR, ea=first_read, operands=(), l=_gread(), r=_const(1)),
+            InsnSnapshot(
+                opcode=0,
+                ea=0x2008,
+                operands=(),
+                kind=InsnKind.STORE,
+                value_op_kind=ValueOpKind.STORE,
+                l=_const(7, size=1),
+                d=MopSnapshot(t=1, size=8, reg=16, kind=OperandKind.REGISTER),
+            ),
+            InsnSnapshot(opcode=_OP_OR, ea=later_read, operands=(), l=_gread(), r=_const(2)),
+        ],
+    )
+    fg = FlowGraph(blocks={0: b0}, entry_serial=0, func_ea=0x1000)
+
+    folds = compute_initializer_stable_global_reads(fg, _fetch_zero)
+    assert folds[first_read][_GADDR] == 0
+    assert later_read not in folds
+
+
+def test_segmented_global_address_store_may_alias_different_global() -> None:
+    read_ea = 0x2100
+    b0 = _block(
+        0,
+        succs=(1,),
+        preds=(),
+        insns=[
+            InsnSnapshot(
+                opcode=0,
+                ea=0x2000,
+                operands=(),
+                kind=InsnKind.STORE,
+                value_op_kind=ValueOpKind.STORE,
+                l=_const(7, size=1),
+                r=MopSnapshot(t=1, size=2, reg=16, kind=OperandKind.REGISTER),
+                d=_gwrite(),
+            ),
+        ],
+    )
+    b1 = _block(
+        1,
+        succs=(),
+        preds=(0,),
+        insns=[
+            InsnSnapshot(
+                opcode=_OP_OR,
+                ea=read_ea,
+                operands=(),
+                l=_gread(_OTHER),
+                r=_const(0x40),
+                d=MopSnapshot(t=1, size=8, reg=0),
+            ),
+        ],
+    )
+    fg = FlowGraph(blocks={0: b0, 1: b1}, entry_serial=0, func_ea=0x1000)
+
+    assert read_ea not in compute_initializer_stable_global_reads(fg, _fetch_zero)
 
 
 def test_intra_block_store_before_read_rejects():

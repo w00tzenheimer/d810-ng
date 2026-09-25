@@ -18,6 +18,8 @@ from d810.analyses.value_flow import state_write as portable_state_write
 from d810.analyses.control_flow import state_machine_analysis as sma
 from d810.ir.expressions import ValueOpKind
 from d810.ir.insn_projection import project_instruction_sequence
+from d810.ir.instructions import Instruction, InstructionMemoryAccess, InstructionMemoryAccessKind
+from d810.ir.varnode import Space, Varnode
 
 
 def test_state_machine_analysis_does_not_import_live_hexrays():
@@ -41,6 +43,112 @@ def _mop_r(register_id: int, *, size: int = 4):
 
 def _mop_g(address: int, *, size: int = 4):
     return MopSnapshot(kind=OperandKind.GLOBAL, size=size, gaddr=address)
+
+
+def test_projected_snapshot_forgets_write_after_unknown_alias_store() -> None:
+    state_stkoff = 0x364
+    snapshot = InsnSnapshot(opcode=0, ea=0x180011000, operands=())
+    instructions = (
+        Instruction(
+            ValueOpKind.MOVE,
+            inputs=(Varnode(Space.CONST, 0x12345678, 4),),
+            result=Varnode(Space.STACK, state_stkoff, 4),
+        ),
+        Instruction(
+            ValueOpKind.STORE,
+            memory=InstructionMemoryAccess(
+                InstructionMemoryAccessKind.INDIRECT,
+                target=Varnode(Space.REGISTER, 16, 8),
+                value=Varnode(Space.CONST, 0x5A, 1),
+                width=1,
+            ),
+        ),
+    )
+    cache = SimpleNamespace(instructions_for=lambda _snapshot: instructions)
+
+    assert sma._forward_eval_projected_snapshot(
+        snapshot, {}, {}, state_stkoff, projection_cache=cache
+    ) is None
+
+
+def test_path_forgets_prior_state_site_after_aliasing_store() -> None:
+    state_stkoff = 0x364
+    write = InsnSnapshot(
+        opcode=1,
+        ea=0x180011000,
+        operands=(),
+        kind=InsnKind.MOV,
+        l=_mop_n(0x12345678),
+        d=_mop_s(state_stkoff),
+    )
+    indirect_store = InsnSnapshot(
+        opcode=0,
+        ea=0x180011100,
+        operands=(),
+        kind=InsnKind.STORE,
+        value_op_kind=ValueOpKind.STORE,
+        l=_mop_n(0x5A),
+        r=_mop_r(256, size=2),
+        d=_mop_r(16, size=8),
+    )
+    graph = FlowGraph(
+        blocks={
+            1: _block_with_insns(1, (2,), (), write),
+            2: _block_with_insns(2, (), (1,), indirect_store),
+        },
+        entry_serial=1,
+        func_ea=0x180011000,
+    )
+
+    assert sma.find_last_state_write_site_on_path_snapshot(
+        graph, (1, 2), state_stkoff
+    ) is None
+
+
+def test_path_accepts_new_full_state_write_after_aliasing_store() -> None:
+    state_stkoff = 0x364
+    write = InsnSnapshot(
+        opcode=1,
+        ea=0x180011000,
+        operands=(),
+        kind=InsnKind.MOV,
+        l=_mop_n(0x12345678),
+        d=_mop_s(state_stkoff),
+    )
+    indirect_store = InsnSnapshot(
+        opcode=0,
+        ea=0x180011100,
+        operands=(),
+        kind=InsnKind.STORE,
+        value_op_kind=ValueOpKind.STORE,
+        l=_mop_n(0x5A),
+        r=_mop_r(256, size=2),
+        d=_mop_r(16, size=8),
+    )
+    restored = InsnSnapshot(
+        opcode=1,
+        ea=0x180011200,
+        operands=(),
+        kind=InsnKind.MOV,
+        l=_mop_n(0xCAFEBABE),
+        d=_mop_s(state_stkoff),
+    )
+    graph = FlowGraph(
+        blocks={
+            1: _block_with_insns(1, (2,), (), write),
+            2: _block_with_insns(2, (3,), (1,), indirect_store),
+            3: _block_with_insns(3, (), (2,), restored),
+        },
+        entry_serial=1,
+        func_ea=0x180011000,
+    )
+
+    result = sma.find_last_state_write_site_on_path_snapshot(
+        graph, (1, 2, 3), state_stkoff
+    )
+    assert result is not None
+    assert result[0] == 3
+    assert result[1].state_value == 0xCAFEBABE
 
 
 def _block_with_insns(

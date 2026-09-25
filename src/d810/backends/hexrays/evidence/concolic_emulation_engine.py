@@ -66,6 +66,7 @@ from d810.analyses.value_flow.global_init_fold import (
 from d810.capabilities.providers import get_condition_chain_walkers
 from d810.backends.hexrays.evidence.emulation_dispatcher_resolver import (
     _SELF_UPDATE_OPS,
+    _has_unproved_store,
     EmulationDispatcherResolver,
     _Discovery,
 )
@@ -610,6 +611,11 @@ class ConcolicEmulationEngine:
         ``state OP #const`` arm is still preferred; the whole-block fold only adds the
         global-carried arm the single-instruction fold abstains on.
         """
+        # A pointer-addressed store may overwrite the state cell. No arm from
+        # this block is admitted until a width-aware alias proof exists.
+        if _has_unproved_store(blk):
+            return []
+
         out: list[tuple[int | None, int | None]] = []
         insn = blk.head
         while insn is not None:

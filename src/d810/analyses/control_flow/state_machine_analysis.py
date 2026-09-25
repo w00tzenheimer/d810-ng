@@ -742,6 +742,7 @@ def _forward_eval_projected_snapshot(
         return None
 
     resolved_state: int | None = None
+    state_key = int(state_var_gaddr) if state_var_gaddr is not None else int(state_var_stkoff)
     for instruction in projection_cache.instructions_for(snapshot):
         resolved = _forward_eval_insn(
             instruction,
@@ -755,6 +756,8 @@ def _forward_eval_projected_snapshot(
         )
         if resolved is not None:
             resolved_state = int(resolved)
+        elif resolved_state is not None and state_key not in stk_map:
+            resolved_state = None
     return resolved_state
 
 
@@ -1129,7 +1132,7 @@ def find_last_state_write_site_on_path_snapshot(
     for block_serial in path:
         block = flow_graph.get_block(block_serial)
         if block is None:
-            return last_site
+            return None
 
         site = find_last_state_write_site_snapshot(
             flow_graph,
@@ -1149,6 +1152,10 @@ def find_last_state_write_site_on_path_snapshot(
             state_var_stkoff,
             _projection_cache=projection_cache,
         )
+        if int(state_var_stkoff) not in stk_map:
+            # A later unknown-alias store (or other unresolved overwrite)
+            # can invalidate the earlier path-local write witness.
+            last_site = None
 
     return last_site
 

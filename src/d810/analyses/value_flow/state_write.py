@@ -26,7 +26,11 @@ from d810.core.typing import Callable, Dict, List, Optional
 from d810.ir.expressions import ValueOpKind
 from d810.ir.flowgraph import InsnSnapshot
 from d810.ir.insn_projection import project_instruction_sequence
-from d810.ir.instructions import Instruction, InstructionEffectKind
+from d810.ir.instructions import (
+    Instruction,
+    InstructionEffectKind,
+    InstructionMemoryAccessKind,
+)
 from d810.ir.varnode import Space, Varnode, varnode_from_mop_snapshot
 
 
@@ -298,6 +302,17 @@ def forward_eval_instruction(
     val: Optional[int] = None
 
     if operation is ValueOpKind.STORE:
+        if (
+            instruction.memory is None
+            or instruction.memory.kind is not InstructionMemoryAccessKind.DIRECT_CELL
+            or instruction.memory.target is None
+        ):
+            # ``memory.target`` is the address operand, not the cell written.
+            # Without an alias proof the store may clobber any tracked stack
+            # cell; it must neither assign the pointer slot nor preserve a
+            # stale dispatcher-state constant.
+            stk_map.clear()
+            return None
         dest = _instruction_store_target(instruction)
         val = resolve(_instruction_store_value(instruction))
     elif operation is ValueOpKind.MOVE:
@@ -409,6 +424,7 @@ def _forward_eval_instruction_sequence(
     fetch_stable_global_value: Callable[[int, int], Optional[int]] | None = None,
 ) -> Optional[int]:
     result: Optional[int] = None
+    state_key = int(state_var_gaddr) if state_var_gaddr is not None else int(state_var_stkoff)
     for instruction in instructions:
         value = forward_eval_instruction(
             instruction,
@@ -422,6 +438,10 @@ def _forward_eval_instruction_sequence(
         )
         if value is not None:
             result = value
+        elif result is not None and state_key not in stk_map:
+            # A later unproved memory store invalidated the previously
+            # recovered state write within this projected instruction sequence.
+            result = None
     return result
 
 
