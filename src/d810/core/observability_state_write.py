@@ -315,6 +315,9 @@ class StateWriteConsult:
 
 _OUTCOME_KINDS: Mapping[str, str] = {
     "ExactResult": "exact_result",
+    # The emulator returned an exact value, but partition-level edge mapping
+    # could not admit it. Keep the true emulator outcome in diagnostics.
+    "PartitionGuard": "exact_result",
     "Abstain": "abstain",
     "Unsupported": "unsupported",
 }

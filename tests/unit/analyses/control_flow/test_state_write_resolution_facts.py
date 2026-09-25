@@ -80,7 +80,7 @@ def _graph(preds_of):
 
 
 class TestBlk330Corridors:
-    """329 resolves; 355>398 resolves; 355>397 exhausts the hop bound."""
+    """329 resolves; 355>398 resolves; 355>397>178 exhausts the bound."""
 
     def _run(self, emu):
         live_block_for = _graph(
@@ -108,8 +108,8 @@ class TestBlk330Corridors:
         assert by_corridor[(329,)].folded_value == 0x4BCC8BEE
         assert by_corridor[(355, 398)].cause == CAUSE_RESOLVED
         assert by_corridor[(355, 398)].folded_value == 0x1B3EE0EF
-        assert by_corridor[(355, 397)].cause == CAUSE_NO_DEF_WITHIN_HOP_BOUND
-        assert set(by_corridor) == {(329,), (355, 398), (355, 397)}
+        assert by_corridor[(355, 397, 178)].cause == CAUSE_NO_DEF_WITHIN_HOP_BOUND
+        assert set(by_corridor) == {(329,), (355, 398), (355, 397, 178)}
 
         assert decompose_by_cause(captured) == {
             CAUSE_RESOLVED: 2,
@@ -124,7 +124,7 @@ class TestBlk330Corridors:
             for event in captured
             if event.contributed_to_unresolved_transition
         }
-        assert flagged == {(355, 397)}
+        assert flagged == {(355, 397, 178)}
 
     def test_every_fact_names_the_state_write_block(self, captured):
         self._run(_Emu({(329,): 1, (355, 398): 2}))
@@ -153,6 +153,152 @@ class TestResolvedPartition:
         assert not any(
             event.contributed_to_unresolved_transition for event in captured
         )
+
+
+class TestSharedGlueCompleteness:
+    """A glue predecessor must account for every incoming physical path."""
+
+    @staticmethod
+    def _run(answers):
+        live_block_for = _graph(
+            {330: (355,), 355: (398,), 398: (321, 322), 321: (), 322: ()}
+        )
+        fp = _Fixpoint({355: {}})
+        emu = _Emu(answers)
+        result = msr._emulate_partition_states(
+            emu,
+            live_block_for,
+            STATE_CELL,
+            fp,
+            _Block(330, preds=(355,)),
+            330,
+            func_ea=0x1000,
+            block_ea=0x2000,
+        )
+        return result, emu.paths
+
+    def test_distinct_grandparents_are_both_resolved(self):
+        result, paths = self._run(
+            {(355, 398, 321): 0x1111, (355, 398, 322): 0x2222}
+        )
+        assert result == (
+            {321: 0x1111, 322: 0x2222},
+            {321: 398, 322: 398},
+        )
+        assert (355, 398, 321) in paths
+        assert (355, 398, 322) in paths
+
+    def test_one_unresolved_grandparent_abstains_whole_partition(self, captured):
+        result, paths = self._run({(355, 398, 321): 0x1111})
+        assert result is None
+        assert (355, 398, 321) in paths
+        assert (355, 398, 322) in paths
+        by_corridor = {event.corridor: event for event in captured}
+        assert by_corridor[(355, 398, 322)].contributed_to_unresolved_transition
+
+    def test_cycle_does_not_become_exact_because_an_acyclic_sibling_resolves(self, captured):
+        live_block_for = _graph({330: (355,), 355: (355, 398), 398: ()})
+        emu = _Emu({(355, 355): 0x1111, (355, 398): 0x1111})
+        result = msr._emulate_partition_states(
+            emu,
+            live_block_for,
+            STATE_CELL,
+            _Fixpoint({355: {}}),
+            _Block(330, preds=(355,)),
+            330,
+            func_ea=0x1000,
+            block_ea=0x2000,
+        )
+        assert result is None
+        assert (355, 398) in emu.paths
+        cycle = next(event for event in captured if event.corridor == (355, 355))
+        assert cycle.outcome == "abstain"
+        assert cycle.cause == "unresolved"
+        assert cycle.reason == "cyclic corridor"
+        assert cycle.contributed_to_unresolved_transition
+
+    def test_same_source_reached_through_two_hops_abstains(self, captured):
+        live_block_for = _graph(
+            {330: (355,), 355: (398, 399), 398: (321,), 399: (321, 322),
+             321: (), 322: ()}
+        )
+        emu = _Emu(
+            {(355, 398, 321): 0x1111,
+             (355, 399, 321): 0x1111,
+             (355, 399, 322): 0x2222}
+        )
+        result = msr._emulate_partition_states(
+            emu,
+            live_block_for,
+            STATE_CELL,
+            _Fixpoint({355: {}}),
+            _Block(330, preds=(355,)),
+            330,
+            func_ea=0x1000,
+            block_ea=0x2000,
+        )
+        assert result is None
+        assert (355, 398, 321) in emu.paths
+        assert (355, 399, 321) in emu.paths
+        collision = next(
+            event for event in captured if event.corridor == (355, 399, 321)
+        )
+        assert collision.outcome == "exact_result"
+        assert collision.folded_value == 0x1111
+        assert collision.reason == "source has multiple next hops"
+        assert collision.contributed_to_unresolved_transition
+
+    def test_same_source_with_conflicting_states_has_causal_fact(self, captured):
+        live_block_for = _graph(
+            {330: (355,), 355: (398, 399), 398: (321,), 399: (321,), 321: ()}
+        )
+        emu = _Emu(
+            {(355, 398, 321): 0x1111, (355, 399, 321): 0x2222}
+        )
+        result = msr._emulate_partition_states(
+            emu, live_block_for, STATE_CELL, _Fixpoint({355: {}}),
+            _Block(330, preds=(355,)), 330, func_ea=0x1000, block_ea=0x2000,
+        )
+        assert result is None
+        collision = next(
+            event for event in captured if event.corridor == (355, 399, 321)
+        )
+        assert collision.outcome == "exact_result"
+        assert collision.folded_value == 0x2222
+        assert collision.reason == "source has conflicting next states"
+        assert collision.contributed_to_unresolved_transition
+
+    def test_consult_budget_abstains_before_omitting_a_sibling(
+        self, monkeypatch, captured
+    ):
+        monkeypatch.setattr(msr, "_GLUE_CONSULT_BOUND", 3, raising=False)
+        result, paths = self._run(
+            {(355, 398, 321): 0x1111, (355, 398, 322): 0x2222}
+        )
+        assert result is None
+        assert len(paths) == 3
+        assert any(
+            event.reason == "corridor consult budget exhausted"
+            and event.contributed_to_unresolved_transition
+            for event in captured
+        )
+
+    @pytest.mark.parametrize("case", ["cycle", "budget"])
+    def test_diagnostic_failure_does_not_change_abstention(self, monkeypatch, case):
+        def broken_note(*args, **kwargs):
+            raise RuntimeError("diagnostic sink failed")
+
+        monkeypatch.setattr(msr.StateWriteResolutionRecorder, "note", broken_note)
+        if case == "budget":
+            monkeypatch.setattr(msr, "_GLUE_CONSULT_BOUND", 0)
+            result, _ = self._run({})
+        else:
+            live_block_for = _graph({330: (355,), 355: (355,)})
+            result = msr._emulate_partition_states(
+                _Emu({}), live_block_for, STATE_CELL, _Fixpoint({355: {}}),
+                _Block(330, preds=(355,)), 330, func_ea=0x1000, block_ea=0x2000,
+            )
+        assert result is None
 
 
 class TestEmulatorCauseIsCarried:

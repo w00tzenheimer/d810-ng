@@ -10656,11 +10656,18 @@ def _emulate_partition_states(
         block_ea=int(block_ea),
         maturity=str(maturity),
     )
+    remaining_paths = _GLUE_CONSULT_BOUND
     for ip in sorted(int(p) for p in block.preds):
         seeded_store = _seed_concrete_store(
             dict(fp.out_stk_maps.get(ip, {})),
             dict(fp.out_reg_maps.get(ip, {})),
         )
+
+        def claim_path(path: tuple[int, ...]) -> None:
+            nonlocal remaining_paths
+            if remaining_paths <= 0:
+                raise _CorridorConsultBudgetExhausted(path)
+            remaining_paths -= 1
 
         def consult(path: tuple[int, ...]) -> int | None:
             return _emulate_unresolved_state(
@@ -10672,26 +10679,50 @@ def _emulate_partition_states(
                 recorder=recorder,
             )
 
-        resolved = _resolve_incoming_corridor(
-            consult,
-            live_block_for,
-            int(ip),
-            int(pred),
-            bool(seeded_store.cells),
-            recorder=recorder,
-        )
+        try:
+            resolved = _resolve_incoming_corridor(
+                consult,
+                live_block_for,
+                int(ip),
+                int(pred),
+                bool(seeded_store.cells),
+                recorder=recorder,
+                claim_path=claim_path,
+            )
+        except _CorridorConsultBudgetExhausted as exc:
+            _note_consult(
+                recorder,
+                exc.path,
+                outcome_kind="Abstain",
+                resolved=False,
+                reason="corridor consult budget exhausted",
+            )
+            return _abstain_partition(recorder)
         if resolved is None:
             # any ⊥ residual -> abstain wholesale (stay seeded/unresolved)
             return _abstain_partition(recorder)
         for path, concrete in resolved:
             source = int(path[-1])
             state = int(concrete) & 0xFFFFFFFF
+            hop = int(path[-2]) if len(path) > 1 else int(pred)
             if source in edge_states and edge_states[source] != state:
                 # The same source reached through two corridors with two different
                 # next-states: nothing here says which one an edge takes.
+                _note_consult(
+                    recorder, path, outcome_kind="PartitionGuard", resolved=False,
+                    reason="source has conflicting next states", folded_value=state,
+                )
+                return _abstain_partition(recorder)
+            if source in next_hops and next_hops[source] != hop:
+                # One source can enter two different glue blocks. The emitter
+                # holds only one (source, next-hop) edge, so do not discard one.
+                _note_consult(
+                    recorder, path, outcome_kind="PartitionGuard", resolved=False,
+                    reason="source has multiple next hops", folded_value=state,
+                )
                 return _abstain_partition(recorder)
             edge_states[source] = state
-            next_hops[source] = int(path[-2]) if len(path) > 1 else int(pred)
+            next_hops[source] = hop
     if not edge_states:
         return _abstain_partition(recorder)
     recorder.emit()
@@ -10719,6 +10750,16 @@ def _abstain_partition(recorder: StateWriteResolutionRecorder) -> None:
 #: How far above an immediate predecessor the concrete leg follows a corridor
 #: before giving up (ticket d81-182q).
 _GLUE_HOP_BOUND = 2
+# At most this many corridor paths per state-write partition, including cycles
+# that are rejected without native emulation. The recorder retains 256 facts;
+# fail closed well before diagnostics can truncate.
+_GLUE_CONSULT_BOUND = 128
+
+
+class _CorridorConsultBudgetExhausted(Exception):
+    def __init__(self, path: tuple[int, ...]) -> None:
+        self.path = path
+        super().__init__("corridor consult budget exhausted")
 
 
 def _live_preds(live_block_for, serial: int) -> tuple[int, ...]:
@@ -10743,6 +10784,7 @@ def _resolve_incoming_corridor(
     has_store: bool,
     *,
     recorder: "StateWriteResolutionRecorder | None" = None,
+    claim_path: Callable[[tuple[int, ...]], None] | None = None,
 ) -> list[tuple[tuple[int, ...], int]] | None:
     """Resolve one incoming edge of the state-write block, or ``None`` to abstain.
 
@@ -10756,6 +10798,8 @@ def _resolve_incoming_corridor(
     Returns ``[(path, state), ...]`` -- one entry per distinct incoming corridor,
     kept SEPARATE because the state write may legitimately differ per path.
     """
+    if claim_path is not None:
+        claim_path((ip,))
     direct = consult((ip,))
     if direct is not None:
         return [((ip,), direct)]
@@ -10766,39 +10810,42 @@ def _resolve_incoming_corridor(
     _drop_consult(recorder, (ip,))
     results: list[tuple[tuple[int, ...], int]] = []
     unresolved: list[tuple[int, ...]] = []
-    for parent in _live_preds(live_block_for, ip):
-        path = (ip, int(parent))
-        state = consult(path)
-        hops = 1
-        while state is None and hops < _GLUE_HOP_BOUND:
-            extended = None
-            for grandparent in _live_preds(live_block_for, path[-1]):
-                if grandparent in path:
-                    continue  # a cycle in the corridor proves nothing
-                candidate = path + (int(grandparent),)
-                state = consult(candidate)
-                if state is not None:
-                    extended = candidate
-                    break
-                # A failed extension is a probe, not this corridor's verdict.
-                _drop_consult(recorder, candidate)
-            if extended is None:
-                break
-            _drop_consult(recorder, path)  # superseded by the deeper path
-            path = extended
-            hops += 1
-        if state is None:
-            # Record and keep going: every corridor is consulted so the log names
-            # ALL of them, and so one dead corridor does not hide a resolvable
-            # sibling.  The verdict below is still all-or-nothing.
+    cyclic: set[tuple[int, ...]] = set()
+
+    def walk(path: tuple[int, ...]) -> None:
+        if claim_path is not None:
+            claim_path(path)
+        if len(set(path)) != len(path):
             unresolved.append(path)
-            continue
-        results.append((path, state))
+            cyclic.add(path)
+            _note_consult(
+                recorder, path, outcome_kind="Abstain", resolved=False,
+                reason="cyclic corridor",
+            )
+            return
+        state = consult(path)
+        if state is not None:
+            results.append((path, state))
+            return
+        if len(path) <= _GLUE_HOP_BOUND:
+            parents = _live_preds(live_block_for, path[-1])
+            if parents:
+                _drop_consult(recorder, path)  # superseded by incoming paths
+                for parent in parents:
+                    walk(path + (int(parent),))
+                return
+        # Every physical path must resolve before the partition can redirect.
+        unresolved.append(path)
+
+    for parent in _live_preds(live_block_for, ip):
+        walk((ip, int(parent)))
     if unresolved:
         if recorder is not None:
             # The walk -- not the last consult on it -- is what knows this
             # corridor has no defining block within the hop bound.
             for path in unresolved:
+                if path in cyclic:
+                    continue  # the cycle, not the hop limit, caused this abstention
                 try:
                     recorder.mark_corridor_exhausted(path)
                 except Exception:  # noqa: BLE001 — diagnostics never break a run
