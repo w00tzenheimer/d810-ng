@@ -3369,6 +3369,7 @@ def _observe_current_u32_decision_forest(
     block_refs_by_serial: Mapping[int, NativeBlockRef] | None = None,
     dispatcher: IntervalDispatcher | None = None,
     source_generation: int = 0,
+    allow_source_bound_semantic_leaf: bool = False,
 ) -> _CurrentU32DecisionForestObservation:
     """Rebuild one bounded pure U32 comparison forest from the current CFG.
 
@@ -3735,6 +3736,23 @@ def _observe_current_u32_decision_forest(
                             expected_state_width=target_carrier_width,
                             selector_source_identities=expected_identities,
                         )
+                        or (
+                            allow_source_bound_semantic_leaf
+                            and (
+                                _is_source_bound_new_state_handler_leaf(
+                                    target_block,
+                                    target_instructions,
+                                    expected_state_identities=frozenset({target_identity}),
+                                    expected_state_width=target_carrier_width,
+                                )
+                                or _is_source_bound_disjoint_semantic_leaf(
+                                    target_block,
+                                    target_instructions,
+                                    expected_state_identities=frozenset({target_identity}),
+                                    expected_state_width=target_carrier_width,
+                                )
+                            )
+                        )
                     )
                     if (
                         target_block is not None
@@ -3799,6 +3817,7 @@ def build_current_u32_decision_forest(
     block_refs_by_serial: Mapping[int, NativeBlockRef] | None = None,
     dispatcher: IntervalDispatcher | None = None,
     source_generation: int = 0,
+    allow_source_bound_semantic_leaf: bool = False,
 ) -> DecisionDag | None:
     """Compatibility wrapper around the detailed current-forest observation."""
     observation = _observe_current_u32_decision_forest(
@@ -3812,8 +3831,59 @@ def build_current_u32_decision_forest(
         block_refs_by_serial=block_refs_by_serial,
         dispatcher=dispatcher,
         source_generation=source_generation,
+        allow_source_bound_semantic_leaf=allow_source_bound_semantic_leaf,
     )
     return observation.decision_dag if observation.status is _CurrentU32DecisionForestStatus.VALID else None
+
+
+def _source_bound_forest_preserves_proven_state(
+    flow_graph: FlowGraph,
+    route_forest: DecisionDag,
+    proven_identity: StorageIdentity,
+) -> bool:
+    """Do not replay a feeder value past a comparison-local state write.
+
+    The general comparison extractor permits an exact literal state write
+    before a branch.  That is valid for forest discovery, but this source-bound
+    replay uses the feeder's earlier value and cannot silently skip the write.
+    Check every comparison node, including descendants of the entry.
+    """
+
+    for serial in route_forest.nodes:
+        block = flow_graph.get_block(int(serial))
+        if block is None:
+            return False
+        instructions = InstructionProjection.from_block(block)
+        branches = tuple(
+            (index, instruction)
+            for index, instruction in enumerate(instructions)
+            if instruction.control is not None
+            and instruction.control.predicate is not None
+        )
+        if len(branches) != 1 or not branches[0][1].inputs:
+            return False
+        branch_index, branch = branches[0]
+        compared_identity = storage_identity_from_varnode(branch.inputs[0])
+        if compared_identity is None:
+            return False
+        for instruction in instructions[:branch_index]:
+            result = instruction.result
+            result_identity = (
+                storage_identity_from_varnode(result)
+                if result is not None else None
+            )
+            if result_identity is None:
+                continue
+            if any(
+                result_identity.kind is identity.kind
+                and result_identity.offset < identity.offset + 4
+                and identity.offset < result_identity.offset + int(result.size)
+                for identity in (proven_identity, compared_identity)
+            ):
+                return False
+    return True
+
+
 def _observe_direct_internal_decision_dag_entry(
     transition: StateWriteTransition,
     flow_graph: FlowGraph,
@@ -3890,6 +3960,7 @@ def _observe_direct_internal_decision_dag_entry(
         entry_serial,
         expected_identities=expected_identities,
         reference_dag=decision_dag,
+        allow_source_bound_semantic_leaf=True,
     )
     if route_forest is None:
         # This direct source edge is already bound below to one trusted state
@@ -3910,6 +3981,12 @@ def _observe_direct_internal_decision_dag_entry(
         except (AttributeError, KeyError, TypeError, ValueError, OverflowError):
             return _DirectDecisionDagEntryObservation(True)
     comparison, state_identity, entry_ea, branch_ea = current
+    if not _source_bound_forest_preserves_proven_state(
+        flow_graph,
+        route_forest,
+        state_identity,
+    ):
+        return _DirectDecisionDagEntryObservation(True)
 
     projected = InstructionProjection.from_block(source)
     if not any(
@@ -4343,6 +4420,330 @@ def _is_semantic_internal_route_leaf(
         ):
             return True
     return False
+
+
+def _is_source_bound_new_state_handler_leaf(
+    block: BlockSnapshot | None,
+    instructions: tuple[Instruction, ...],
+    *,
+    expected_state_identities: frozenset[StorageIdentity],
+    expected_state_width: int,
+) -> bool:
+    """Stop a source-bound route before an intact new-state handler.
+
+    The preceding comparison is already tied to one trusted source state.
+    Nothing in this block is evaluated or removed.  Requiring its first
+    instruction to establish a new literal state separates the next selector
+    epoch from the comparison forest being bypassed.
+    """
+
+    if block is None or len(tuple(block.succs)) != 2 or len(instructions) < 2:
+        return False
+    first, branch = instructions[0], instructions[-1]
+    if (
+        first.operation is not ValueOpKind.MOVE
+        or first.attrs.get("is_assert", False)
+        or first.result is None
+        or first.result.size != expected_state_width
+        or storage_identity_from_varnode(first.result) not in expected_state_identities
+        or len(first.inputs) != 1
+        or first.inputs[0].space is not Space.CONST
+        or first.inputs[0].size != expected_state_width
+        or first.effects
+        or first.memory is not None
+        or first.control is not None
+        or branch.control is None
+        or branch.control.predicate is None
+        or _raw_branch_mentions_state_identity(block, expected_state_identities)
+    ):
+        return False
+    directly_disjoint_predicate = any(
+        (identity := storage_identity_from_varnode(value)) is not None
+        and identity not in expected_state_identities
+        for value in branch.inputs
+    )
+    locally_loaded_predicate = any(
+        instruction.operation is ValueOpKind.LOAD
+        and instruction.result in branch.inputs
+        for instruction in instructions[1:-1]
+    )
+    if not directly_disjoint_predicate and not locally_loaded_predicate:
+        return False
+    for instruction in instructions[1:]:
+        if instruction is not branch and instruction.control is not None:
+            return False
+        if any(
+            storage_identity_from_varnode(value) in expected_state_identities
+            for value in instruction.inputs
+        ):
+            return False
+        if (
+            instruction.result is not None
+            and storage_identity_from_varnode(instruction.result)
+            in expected_state_identities
+        ):
+            return False
+    return True
+
+
+def _is_source_bound_disjoint_semantic_leaf(
+    block: BlockSnapshot | None,
+    instructions: tuple[Instruction, ...],
+    *,
+    expected_state_identities: frozenset[StorageIdentity],
+    expected_state_width: int,
+) -> bool:
+    """Stop at an intact non-state branch below a source-bound state route.
+
+    The selected predecessor's state is already fixed, so the comparison
+    prefix may be bypassed.  This block and all of its effects remain in the
+    CFG; indirect memory aliasing is *not* treated as a state invariant.
+    """
+
+    if block is None or len(tuple(block.succs)) != 2 or not instructions:
+        return False
+    branch = instructions[-1]
+    if (
+        branch.control is None
+        or branch.control.predicate is None
+        or branch.attrs.get("is_assert", False)
+        or branch.effects
+        or branch.memory is not None
+        or _raw_branch_mentions_state_identity(block, expected_state_identities)
+        or any(instruction.control is not None for instruction in instructions[:-1])
+    ):
+        return False
+
+    def overlaps_state(value: Varnode) -> bool:
+        identity = storage_identity_from_varnode(value)
+        return identity is not None and any(
+            identity.kind is expected.kind
+            and identity.offset < expected.offset + expected_state_width
+            and expected.offset < identity.offset + value.size
+            for expected in expected_state_identities
+        )
+
+    def address_references_state(instruction: Instruction) -> bool:
+        return any(
+            expected.kind is StorageIdentityKind.STACK
+            and expected.offset <= int(offset) < expected.offset + expected_state_width
+            for offset in instruction.attrs.get("address_stack_refs", ())
+            for expected in expected_state_identities
+        )
+
+    if any(
+        address_references_state(instruction)
+        or any(overlaps_state(value) for value in (
+            *instruction.inputs,
+            *((instruction.result,) if instruction.result is not None else ()),
+        ))
+        for instruction in instructions
+        if not instruction.attrs.get("is_assert", False)
+    ):
+        return False
+
+    # A nested call feeding LOW and then a conditional branch has no stable
+    # storage identity for its temporary predicate.  It is nevertheless a
+    # disjoint semantic leaf when that exact local value chain is present.
+    # The call and branch remain in the graph; this only stops the state-route
+    # search from mistaking the predicate for another dispatcher comparison.
+    executable = tuple(
+        instruction for instruction in instructions
+        if not instruction.attrs.get("is_assert", False)
+    )
+    call_result_branch = (
+        len(executable) == 3
+        and executable[-1] is branch
+        and executable[0].operation is ValueOpKind.VENDOR
+        and executable[0].attrs.get("nested_sub_kind") == InsnKind.CALL.value
+        and executable[0].result is not None
+        and executable[0].result.space is Space.TEMP
+        and executable[0].control is None
+        and executable[0].memory is None
+        and executable[1].operation is ValueOpKind.LOW
+        and executable[1].inputs == (executable[0].result,)
+        and executable[1].result is not None
+        and executable[1].result.space is Space.TEMP
+        and executable[1].control is None
+        and executable[1].memory is None
+        and len(branch.inputs) == 2
+        and executable[1].result in branch.inputs
+        and any(value.space is Space.CONST for value in branch.inputs)
+    )
+    return bool(
+        call_result_branch
+        or
+        any(
+            storage_identity_from_varnode(value) is not None
+            and value.space is not Space.CONST
+            for value in branch.inputs
+        )
+        or any(
+            instruction.operation is ValueOpKind.LOAD
+            and instruction.result in branch.inputs
+            for instruction in instructions[:-1]
+        )
+    )
+
+
+def _is_source_bound_disjoint_handler_prelude(
+    flow_graph: FlowGraph,
+    block: BlockSnapshot | None,
+    *,
+    expected_state_identities: frozenset[StorageIdentity],
+    expected_state_width: int,
+    accepted_handlers: frozenset[int] = frozenset(),
+) -> bool:
+    """Keep a pure setup block or bounded MOV chain after a selected route."""
+
+    def overlaps_state(value: Varnode) -> bool:
+        identity = storage_identity_from_varnode(value)
+        return identity is not None and any(
+            identity.kind is expected.kind
+            and identity.offset < expected.offset + expected_state_width
+            and expected.offset < identity.offset + value.size
+            for expected in expected_state_identities
+        )
+
+    def pure_setup(current: BlockSnapshot) -> tuple[Instruction, ...] | None:
+        if len(tuple(current.succs)) != 1:
+            return None
+        successor = flow_graph.get_block(int(current.succs[0]))
+        if successor is None or int(current.serial) not in tuple(int(p) for p in successor.preds):
+            return None
+        instructions = InstructionProjection.from_block(current)
+        if (
+            not instructions
+            or project_instruction_effect_sites(current)
+            or any(
+                not is_effect_free_operand_tree(operand)
+                for raw_instruction in current.insn_snapshots
+                for operand in operand_snapshots(raw_instruction)
+            )
+        ):
+            return None
+        values = tuple(instruction for instruction in instructions if instruction.control is None)
+        controls = tuple(instruction for instruction in instructions if instruction.control is not None)
+        if (
+            not values
+            or any(instruction.operation not in {ValueOpKind.MOVE, ValueOpKind.ADD} for instruction in values)
+            or len(controls) > 1
+            or (
+                controls
+                and (
+                    instructions[-1] is not controls[0]
+                    or controls[0].control is None
+                    or controls[0].control.transfer is not ControlTransferKind.GOTO
+                    or controls[0].control.target is None
+                    or int(controls[0].control.target) != int(current.succs[0])
+                    or controls[0].inputs
+                    or controls[0].result is not None
+                    or controls[0].effects
+                    or controls[0].memory is not None
+                )
+            )
+        ):
+            return None
+        if any(
+            instruction.effects
+            or instruction.memory is not None
+            or instruction.operation is ValueOpKind.LOAD
+            or any(
+                expected.kind is StorageIdentityKind.STACK
+                and expected.offset <= int(offset) < expected.offset + expected_state_width
+                for offset in instruction.attrs.get("address_stack_refs", ())
+                for expected in expected_state_identities
+            )
+            or any(overlaps_state(value) for value in instruction.inputs)
+            or (
+                instruction.result is not None
+                and overlaps_state(instruction.result)
+            )
+            for instruction in values
+        ):
+            return None
+        return values
+
+    if block is None or (instructions := pure_setup(block)) is None:
+        return False
+    # Preserve the existing narrow ADD prelude rule.  A MOV-only block needs
+    # the stronger proof that its pure one-way chain reaches an admitted
+    # handler or stop, rather than guessing from the instruction shape.
+    if any(
+        instruction.operation is ValueOpKind.ADD
+        and instruction.result is not None
+        and storage_identity_from_varnode(instruction.result) is not None
+        for instruction in instructions
+    ):
+        return True
+    visited = {int(block.serial)}
+    current = block
+    for _ in range(4):
+        if any(
+            instruction.operation is not ValueOpKind.MOVE
+            for instruction in instructions
+        ):
+            return False
+        if not any(
+            instruction.operation is ValueOpKind.MOVE
+            and instruction.result is not None
+            and storage_identity_from_varnode(instruction.result) is not None
+            for instruction in instructions
+        ):
+            return False
+        successor = flow_graph.get_block(int(current.succs[0]))
+        if successor is None:
+            return False
+        if int(successor.serial) in accepted_handlers or _is_stop_block(successor):
+            return True
+        if int(successor.serial) in visited:
+            return False
+        visited.add(int(successor.serial))
+        current = successor
+        if (instructions := pure_setup(current)) is None:
+            return False
+    return False
+
+
+def _is_source_bound_exact_next_state_transition(
+    flow_graph: FlowGraph,
+    block: BlockSnapshot | None,
+    *,
+    state_var_stkoff: int | None,
+    state_var_reg: int | None,
+) -> bool:
+    """Recognize a selected route that retains an exact next-state writer.
+
+    This is only a leaf classification: the redirect still enters ``block``
+    and executes its source assignment, shared state feeder, and dispatcher.
+    It does not shortcut the second dispatch or use its state as authority for
+    the current route.
+    """
+
+    if block is None or len(tuple(block.succs)) != 1:
+        return False
+    feeder_serial = int(block.succs[0])
+    feeder = flow_graph.get_block(feeder_serial)
+    if feeder is None or len(tuple(feeder.succs)) != 1:
+        return False
+    comparison_entry = int(feeder.succs[0])
+    proof = prove_exact_u32_carrier_state_write(
+        flow_graph,
+        int(block.serial),
+        feeder_serial,
+        state_var_stkoff=state_var_stkoff,
+        state_var_reg=state_var_reg,
+        required_comparison_serials=frozenset({comparison_entry}),
+    )
+    return bool(
+        proof is not None
+        and proof.comparison_entry_serial == comparison_entry
+        and _current_u32_route_comparison(
+            flow_graph,
+            comparison_entry,
+            expected_identities=frozenset({proof.state_identity}),
+        ) is not None
+    )
 
 
 def _is_selector_disjoint_table_leaf(
@@ -5800,6 +6201,7 @@ def _reconcile_transition_routes_with_decision_dag(
             )
         )
         transform_route_forest: DecisionDag | None = None
+        source_bound_transform_proof: ExactStateTransformFeeder | None = None
         if transform_observed and feeder_serial is not None:
             if (
                 len(feeder_successors) == 1
@@ -5815,6 +6217,56 @@ def _reconcile_transition_routes_with_decision_dag(
                         state_var_reg=state_var_reg,
                     ),
                 )
+                if (
+                    transform_route_forest is None
+                    and transition.next_state is not None
+                    and _has_exact_state_transform_proof(transition)
+                ):
+                    # The physical feeder may enter a current comparison
+                    # forest whose terminal handlers are not reference-DAG
+                    # nodes.  Prove this source's state before allowing those
+                    # intact semantic leaves to terminate the forest.
+                    candidate = prove_exact_u32_state_transform_feeder(
+                        flow_graph,
+                        int(transition.write_block),
+                        int(feeder_serial),
+                        state_var_stkoff=state_var_stkoff,
+                        state_var_reg=state_var_reg,
+                        required_comparison_serials=frozenset(
+                            {*required_comparison_serials, comparison_entry}
+                        ),
+                        expected_state=int(transition.next_state),
+                    )
+                    if (
+                        candidate is not None
+                        and candidate.comparison_entry_serial == comparison_entry
+                        and _current_u32_route_comparison(
+                            flow_graph,
+                            comparison_entry,
+                            expected_identities=frozenset(
+                                {candidate.state_identity}
+                            ),
+                        ) is not None
+                    ):
+                        source_bound_forest = build_current_u32_decision_forest(
+                            flow_graph,
+                            comparison_entry,
+                            expected_identities=frozenset(
+                                {candidate.state_identity}
+                            ),
+                            reference_dag=route_authority_dag,
+                            allow_source_bound_semantic_leaf=True,
+                        )
+                        if (
+                            source_bound_forest is not None
+                            and _source_bound_forest_preserves_proven_state(
+                                flow_graph,
+                                source_bound_forest,
+                                candidate.state_identity,
+                            )
+                        ):
+                            transform_route_forest = source_bound_forest
+                            source_bound_transform_proof = candidate
                 if transform_route_forest is not None:
                     required_comparison_serials.add(comparison_entry)
         carrier_observed = bool(
@@ -5834,15 +6286,17 @@ def _reconcile_transition_routes_with_decision_dag(
                     transition,
                 )
             assert transition.next_state is not None
-            transform_proof = prove_exact_u32_state_transform_feeder(
-                flow_graph,
-                int(transition.write_block),
-                int(feeder_serial),
-                state_var_stkoff=state_var_stkoff,
-                state_var_reg=state_var_reg,
-                required_comparison_serials=frozenset(required_comparison_serials),
-                expected_state=int(transition.next_state),
-            )
+            transform_proof = source_bound_transform_proof
+            if transform_proof is None:
+                transform_proof = prove_exact_u32_state_transform_feeder(
+                    flow_graph,
+                    int(transition.write_block),
+                    int(feeder_serial),
+                    state_var_stkoff=state_var_stkoff,
+                    state_var_reg=state_var_reg,
+                    required_comparison_serials=frozenset(required_comparison_serials),
+                    expected_state=int(transition.next_state),
+                )
             if transform_proof is None:
                 return _reject_decision_dag_reconciliation(
                     "state_transform_feeder_proof",
@@ -6266,6 +6720,19 @@ def _reconcile_transition_routes_with_decision_dag(
                 and not _is_semantic_internal_route_leaf(
                     route_target_block,
                     expected_state_identities=expected_state_identities,
+                )
+                and not _is_source_bound_disjoint_handler_prelude(
+                    flow_graph,
+                    route_target_block,
+                    expected_state_identities=expected_state_identities,
+                    expected_state_width=4,
+                    accepted_handlers=condition_chain_handlers,
+                )
+                and not _is_source_bound_exact_next_state_transition(
+                    flow_graph,
+                    route_target_block,
+                    state_var_stkoff=state_var_stkoff,
+                    state_var_reg=state_var_reg,
                 )
             ):
                 return _reject_decision_dag_reconciliation(

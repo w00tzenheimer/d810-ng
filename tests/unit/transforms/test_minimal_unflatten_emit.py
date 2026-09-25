@@ -18232,9 +18232,11 @@ def _nested_source_scoped_entry_transition(
     )
 
 
+@pytest.mark.parametrize("default_target", (200, 304))
 def test_nested_source_scoped_entry_route_uses_reconciled_transition(
     monkeypatch,
     _seam,
+    default_target: int,
 ) -> None:
     """A shared feeder is bridged only on its exact initial source partition."""
 
@@ -18253,7 +18255,7 @@ def test_nested_source_scoped_entry_route_uses_reconciled_transition(
     dispatcher = _DualRouteDispatcher(
         exact_targets={},
         interval_rows=(IntervalRow(0x6FB5D126, 0x709608EC, 304),),
-        default_target=200,
+        default_target=default_target,
     )
 
     plan = emit_minimal_unflatten(
@@ -18289,6 +18291,54 @@ def test_nested_source_scoped_entry_route_uses_reconciled_transition(
         for modification in graph_modifications(plan)
     )
     _assert_no_legacy_plan_metadata(plan)
+
+
+def test_source_scoped_entry_proof_can_route_to_default_handler(_seam) -> None:
+    graph, _dag = _nested_source_scoped_entry_fixture()
+    dispatcher = _DualRouteDispatcher(
+        exact_targets={},
+        interval_rows=(),
+        default_target=304,
+    )
+
+    resolution = minimal_unflatten_emit_module._resolve_entry_state_route_resolution(
+        dispatcher,
+        0x704FAFF6,
+        materialized_state_routes=(),
+        condition_chain_handlers=frozenset({100}),
+        dispatcher_entry_serial=5,
+        flow_graph=graph,
+        state_write_transitions=(_nested_source_scoped_entry_transition(),),
+        dispatcher_region_serials=frozenset({5}),
+    )
+
+    assert resolution.source_scoped is True
+    assert resolution.route is not None
+    assert resolution.route.target_block == 304
+
+
+def test_untrusted_source_scoped_default_route_is_not_an_entry_proof(_seam) -> None:
+    graph, _dag = _nested_source_scoped_entry_fixture()
+    dispatcher = _DualRouteDispatcher(
+        exact_targets={},
+        interval_rows=(),
+        default_target=304,
+    )
+
+    resolution = minimal_unflatten_emit_module._resolve_entry_state_route_resolution(
+        dispatcher,
+        0x704FAFF6,
+        materialized_state_routes=(),
+        condition_chain_handlers=frozenset({100}),
+        dispatcher_entry_serial=5,
+        flow_graph=graph,
+        state_write_transitions=(
+            _nested_source_scoped_entry_transition(trusted=False),
+        ),
+        dispatcher_region_serials=frozenset({5}),
+    )
+
+    assert resolution.route is None
 
 
 def test_nested_source_scoped_entry_route_conflict_abstains_atomically(

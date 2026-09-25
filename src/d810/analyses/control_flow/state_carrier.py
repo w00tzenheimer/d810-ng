@@ -156,6 +156,7 @@ def _is_exact_const_carrier_definition(
     )
     return bool(
         instruction.operation is ValueOpKind.MOVE
+        and not instruction.attrs.get("is_assert", False)
         and not instruction.effects
         and instruction.memory is None
         and instruction.control is None
@@ -199,6 +200,7 @@ def _is_pure_non_state_setup_assignment(
     result = instruction.result
     return bool(
         instruction.operation is ValueOpKind.MOVE
+        and not instruction.attrs.get("is_assert", False)
         and instruction.control is None
         and instruction.memory is None
         and not instruction.effects
@@ -423,6 +425,7 @@ def _exact_const_definition(
 ) -> bool:
     return bool(
         instruction.operation is ValueOpKind.MOVE
+        and not instruction.attrs.get("is_assert", False)
         and instruction.control is None
         and instruction.memory is None
         and not instruction.effects
@@ -455,6 +458,7 @@ def _is_exact_value_instruction(
 ) -> bool:
     return bool(
         instruction.operation in FORWARD_EVAL_SUPPORTED_BINARY_OPS
+        and not instruction.attrs.get("is_assert", False)
         and instruction.control is None
         and instruction.memory is None
         and not instruction.effects
@@ -487,6 +491,7 @@ def _is_exact_u32_zext_shell(
     return bool(
         source is not None
         and instruction.operation is ValueOpKind.ZEXT
+        and not instruction.attrs.get("is_assert", False)
         and instruction.control is None
         and instruction.memory is None
         and not instruction.effects
@@ -502,6 +507,7 @@ def _is_pure_const_assignment(instruction: Instruction) -> bool:
     result = instruction.result
     return bool(
         instruction.operation is ValueOpKind.MOVE
+        and not instruction.attrs.get("is_assert", False)
         and instruction.control is None
         and instruction.memory is None
         and not instruction.effects
@@ -514,11 +520,17 @@ def _is_pure_const_assignment(instruction: Instruction) -> bool:
     )
 
 
-def _same_register_or_temp_storage(left: Varnode, right: Varnode) -> bool:
+def _overlaps_register_or_temp_storage(left: Varnode, right: Varnode) -> bool:
+    if left.space is not right.space:
+        return False
+    if left.space is Space.TEMP:
+        # TEMP offsets are distinct projection-local identities, not byte
+        # addresses. Consecutive temp IDs can have multi-byte values.
+        return int(left.offset) == int(right.offset)
     return bool(
-        left.space is right.space
-        and left.space in {Space.REGISTER, Space.TEMP}
-        and int(left.offset) == int(right.offset)
+        left.space is Space.REGISTER
+        and int(left.offset) < int(right.offset) + int(right.size)
+        and int(right.offset) < int(left.offset) + int(left.size)
     )
 
 
@@ -711,6 +723,7 @@ def prove_exact_state_transform_feeder(
     if state_move is not None:
         if (
             state_move.operation is not ValueOpKind.MOVE
+            or state_move.attrs.get("is_assert", False)
             or state_move.effects
             or state_move.memory is not None
             or len(state_move.inputs) != 1
@@ -755,6 +768,18 @@ def prove_exact_state_transform_feeder(
     program_values = values + (
         () if split_state_transform is None else (split_state_transform,)
     )
+    program_results = tuple(
+        instruction.result for instruction in program_values
+        if instruction.result is not None
+    )
+    if any(
+        _overlaps_register_or_temp_storage(left, right)
+        for position, left in enumerate(program_results)
+        for right in program_results[position + 1 :]
+    ):
+        # Forward evaluation keys whole varnodes. Overlapping subregister
+        # writes in the feeder would require byte-level alias versions.
+        return None
     feeder_producer_indexes: dict[Varnode, int] = {}
     for index, instruction in enumerate(program_values):
         result = instruction.result
@@ -773,6 +798,21 @@ def prove_exact_state_transform_feeder(
         if operand.space is not Space.CONST
         and feeder_producer_indexes.get(operand, index) >= index
     )
+    if any(
+        result != operand
+        and _overlaps_register_or_temp_storage(result, operand)
+        and any(
+            operand in later.inputs for later in program_values[index + 1 :]
+        )
+        for index, instruction in enumerate(program_values)
+        if (result := instruction.result) is not None
+        for operand in external_operands
+    ):
+        # A feeder write can partially kill an old source binding. This is
+        # unsafe only if a subsequent instruction still reads that binding;
+        # a final widening shell may reuse the low register after its last
+        # old-value read.
+        return None
     if not external_operands:
         return None
     source_instructions = InstructionProjection.from_block(source)
@@ -841,7 +881,26 @@ def prove_exact_state_transform_feeder(
     selected_indexes = frozenset((*selected_constants.values(), *selected_arithmetic))
     if not selected_indexes:
         return None
+    selected_results = tuple(
+        source_instructions[index].result for index in sorted(selected_indexes)
+    )
+    if any(
+        _overlaps_register_or_temp_storage(left, right)
+        for position, left in enumerate(selected_results)
+        for right in selected_results[position + 1 :]
+        if left is not None and right is not None
+    ):
+        # The replay binds whole operands, not byte-level subregister versions.
+        return None
     first_definition = min(selected_indexes)
+    if any(
+        instruction.control is not None
+        and instruction.control.transfer is not None
+        for instruction in source_instructions[:first_definition]
+    ):
+        # The selected definitions are not necessarily executed if control
+        # can leave the source block before reaching them.
+        return None
     protected_definition_indexes = dict(selected_constants)
     protected_definition_indexes.update(
         {
@@ -860,7 +919,7 @@ def prove_exact_state_transform_feeder(
         clobbers_selected_input = bool(
             result is not None
             and any(
-                _same_register_or_temp_storage(result, operand)
+                _overlaps_register_or_temp_storage(result, operand)
                 and absolute_index > definition_index
                 for operand, definition_index in protected_definition_indexes.items()
             )
@@ -1163,6 +1222,7 @@ def prove_exact_u32_carrier_state_write(
     )
     if (
         feeder_move.operation is not ValueOpKind.MOVE
+        or feeder_move.attrs.get("is_assert", False)
         or feeder_move.effects
         or feeder_move.memory is not None
         or feeder_move.result is None

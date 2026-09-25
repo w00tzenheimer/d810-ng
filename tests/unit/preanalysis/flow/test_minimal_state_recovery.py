@@ -10377,19 +10377,19 @@ def _arithmetic_state_feeder_fixture(
         ValueOpKind.SHR,
         ValueOpKind.SAR,
     }
-    right_operand = replace(_reg(9), size=1) if shift_operation else _reg(9)
+    right_operand = replace(_reg(24), size=1) if shift_operation else _reg(24)
     if operation is ValueOpKind.XOR:
-        transform = _xor(feeder_ea, _reg(8), _reg(9), _stk(_STATE_OFF))
+        transform = _xor(feeder_ea, _reg(8), _reg(24), _stk(_STATE_OFF))
     elif operation is ValueOpKind.ADD:
-        transform = _add(feeder_ea, _reg(8), _reg(9), _stk(_STATE_OFF))
+        transform = _add(feeder_ea, _reg(8), _reg(24), _stk(_STATE_OFF))
     elif operation is ValueOpKind.SUB:
-        transform = _sub(feeder_ea, _reg(8), _reg(9), _stk(_STATE_OFF))
+        transform = _sub(feeder_ea, _reg(8), _reg(24), _stk(_STATE_OFF))
     elif operation is ValueOpKind.AND:
-        transform = _and(feeder_ea, _reg(8), _reg(9), _stk(_STATE_OFF))
+        transform = _and(feeder_ea, _reg(8), _reg(24), _stk(_STATE_OFF))
     elif operation is ValueOpKind.OR:
-        transform = _or(feeder_ea, _reg(8), _reg(9), _stk(_STATE_OFF))
+        transform = _or(feeder_ea, _reg(8), _reg(24), _stk(_STATE_OFF))
     elif operation is ValueOpKind.MUL:
-        transform = _mul(feeder_ea, _reg(8), _reg(9), _stk(_STATE_OFF))
+        transform = _mul(feeder_ea, _reg(8), _reg(24), _stk(_STATE_OFF))
     elif operation in {ValueOpKind.SHL, ValueOpKind.SHR, ValueOpKind.SAR}:
         transform = _shift(
             feeder_ea,
@@ -11234,6 +11234,183 @@ def test_state_transform_feeder_routes_from_reciprocal_internal_dag_entry(
     )
 
 
+def test_state_transform_feeder_binds_source_before_semantic_route_forest(
+    _seam,
+) -> None:
+    """A computed-state edge may enter a newly split dispatcher forest."""
+
+    graph, _, transition, _dispatcher = _arithmetic_state_feeder_fixture()
+    blocks = dict(graph.blocks)
+    feeder = blocks[403]
+    blocks[403] = replace(
+        feeder,
+        succs=(16,),
+        insn_snapshots=(feeder.insn_snapshots[0], _goto(0x18002672F, 16)),
+    )
+    blocks[15] = replace(blocks[15], succs=(100, 102), preds=())
+    blocks[16] = _blk(
+        16, (101, 100), (403,),
+        (_jz_stack_const(
+            0x180015280, _STATE_OFF, _ARITHMETIC_FEEDER_STATE, 101,
+        ),),
+        ea=0x180015280,
+    )
+    blocks[100] = replace(blocks[100], preds=(15, 16))
+    blocks[102] = _blk(102, (200,), (15,), (), ea=0x180016082)
+    blocks[101] = _blk(
+        101, (200, 201), (16,),
+        (
+            _mov(0x180016065, _num(0x23B90BE5), _stk(_STATE_OFF)),
+            _store(0x180016069, replace(_num(1), size=1), _reg(24)),
+            _jz_stack_const(0x18001606D, _STATE_OFF + 4, 0, 201),
+        ),
+        ea=0x180016065,
+    )
+    blocks[200] = replace(blocks[200], preds=(100, 101, 102))
+    blocks[201] = _stop(201, (101,))
+    graph = FlowGraph(blocks, graph.entry_serial, graph.func_ea)
+    dag = DecisionDag(
+        32,
+        {15: RouteComparison(
+            15, "jz", _ARITHMETIC_FEEDER_STATE, 100, 102,
+        )},
+        root=15,
+    )
+    dispatcher = _DualRouteDispatcher(
+        exact_targets={},
+        interval_rows=(IntervalRow(
+            _ARITHMETIC_FEEDER_STATE,
+            _ARITHMETIC_FEEDER_STATE + 1,
+            101,
+        ),),
+        default_target=200,
+    )
+
+    expected_identity = frozenset({
+        StorageIdentity(StorageIdentityKind.STACK, _STATE_OFF)
+    })
+    assert state_carrier.prove_exact_u32_state_transform_feeder(
+        graph, 349, 403,
+        state_var_stkoff=_STATE_OFF,
+        state_var_reg=None,
+        required_comparison_serials=frozenset({16}),
+        expected_state=_ARITHMETIC_FEEDER_STATE,
+    ) is not None
+    assert minimal_state_recovery.build_current_u32_decision_forest(
+        graph, 16,
+        expected_identities=expected_identity,
+        reference_dag=dag,
+    ) is None
+    assert minimal_state_recovery.build_current_u32_decision_forest(
+        graph, 16,
+        expected_identities=expected_identity,
+        reference_dag=dag,
+        allow_source_bound_semantic_leaf=True,
+    ) is not None
+
+    def resolve(candidate_graph: FlowGraph, candidate: StateWriteTransition):
+        return resolve_materialized_indirect_transfer_targets(
+            (candidate,),
+            candidate_graph,
+            dispatcher,
+            (),
+            condition_chain_dag=dag,
+            condition_chain_handlers=frozenset({100, 101, 102}),
+            state_var_stkoff=_STATE_OFF,
+        )
+
+    selected = replace(transition, target_handler=101)
+    resolved = resolve(graph, selected)
+
+    assert len(resolved) == 1
+    assert resolved[0].target_handler == 101
+    assert resolved[0].proof is not None
+    assert "state_transform_feeder" in resolved[0].proof.route_source_kinds
+    assert resolve(
+        graph,
+        replace(selected, next_state=_ARITHMETIC_FEEDER_STATE + 1),
+    ) == ()
+    bad_blocks = dict(blocks)
+    bad_blocks[101] = replace(blocks[101], preds=())
+    assert resolve(
+        FlowGraph(bad_blocks, graph.entry_serial, graph.func_ea),
+        selected,
+    ) == ()
+
+    # Proving a STACK state write must not authorize a route comparison
+    # against a different, unknown REGISTER carrier.
+    wrong_carrier_blocks = dict(blocks)
+    wrong_carrier_blocks[16] = replace(
+        blocks[16],
+        insn_snapshots=(replace(blocks[16].insn_snapshots[0], l=_reg(50)),),
+    )
+    wrong_carrier_graph = FlowGraph(
+        wrong_carrier_blocks, graph.entry_serial, graph.func_ea,
+    )
+    assert resolve_materialized_indirect_transfer_targets(
+        (selected,),
+        wrong_carrier_graph,
+        dispatcher,
+        (),
+        condition_chain_dag=dag,
+        condition_chain_handlers=frozenset({100, 101, 102}),
+        state_var_stkoff=_STATE_OFF,
+        state_var_reg=50,
+    ) == ()
+
+    # Even an exact comparison of the proved cell is unsafe if the route
+    # block overwrites that cell before branching.
+    changed_state_blocks = dict(blocks)
+    changed_state_blocks[16] = replace(
+        blocks[16],
+        insn_snapshots=(
+            _mov(
+                0x18001527C,
+                _num(_ARITHMETIC_FEEDER_STATE + 1),
+                _stk(_STATE_OFF),
+            ),
+            *blocks[16].insn_snapshots,
+        ),
+    )
+    assert resolve(
+        FlowGraph(changed_state_blocks, graph.entry_serial, graph.func_ea),
+        selected,
+    ) == ()
+
+    downstream_write_blocks = dict(blocks)
+    downstream_write_blocks[16] = replace(
+        blocks[16],
+        succs=(17, 100),
+        insn_snapshots=(
+            _jz_stack_const(
+                0x180015280, _STATE_OFF, _ARITHMETIC_FEEDER_STATE, 17,
+            ),
+        ),
+    )
+    downstream_write_blocks[17] = _blk(
+        17, (101, 100), (16,),
+        (
+            _mov(
+                0x180015290,
+                _num(_ARITHMETIC_FEEDER_STATE + 1),
+                _stk(_STATE_OFF),
+            ),
+            _jz_stack_const(
+                0x180015294, _STATE_OFF, _ARITHMETIC_FEEDER_STATE, 101,
+            ),
+        ),
+        ea=0x180015290,
+    )
+    downstream_write_blocks[101] = replace(blocks[101], preds=(17,))
+    downstream_write_blocks[100] = replace(blocks[100], preds=(15, 16, 17))
+    assert resolve(
+        FlowGraph(
+            downstream_write_blocks, graph.entry_serial, graph.func_ea,
+        ),
+        selected,
+    ) == ()
+
+
 def _captured_direct_internal_dag_entry_fixture():
     """Live source243 -> comparison67 after the outer dispatcher is peeled."""
 
@@ -11372,6 +11549,28 @@ def test_captured_direct_writer_routes_from_physical_internal_dag_entry(
     assert "internal_decision_dag_entry" in resolved[0].proof.route_source_kinds
 
 
+def test_direct_internal_entry_rejects_comparison_local_state_overwrite(
+    _seam,
+) -> None:
+    graph, dag, transition, dispatcher = _captured_direct_internal_dag_entry_fixture()
+    blocks = dict(graph.blocks)
+    entry = blocks[67]
+    blocks[67] = replace(
+        entry,
+        insn_snapshots=(
+            _mov(
+                0x18001639D,
+                _num(int(transition.next_state) + 1),
+                _stk(_STATE_OFF),
+            ),
+            *entry.insn_snapshots,
+        ),
+    )
+    assert _resolve_arithmetic_state_feeder(
+        replace(graph, blocks=blocks), dag, transition, dispatcher,
+    ) == ()
+
+
 def test_direct_internal_dag_entry_accepts_trusted_multi_entry_state(
     _seam,
 ) -> None:
@@ -11428,6 +11627,670 @@ def test_direct_internal_route_forest_accepts_different_identity_semantic_leaf(
     assert resolved[0].target_handler == 68
     assert resolved[0].proof is not None
     assert "internal_decision_dag_entry" in resolved[0].proof.route_source_kinds
+
+
+@pytest.mark.parametrize(
+    "handler_kind,accepted",
+    (
+        ("new_state", True),
+        ("disjoint", True),
+        ("prelude", True),
+        ("move_chain", True),
+        ("carrier_transition", True),
+        ("state_router", False),
+        ("partial_state_router", False),
+    ),
+)
+def test_direct_internal_route_forest_keeps_nested_effectful_handler_leaf(
+    _seam,
+    handler_kind: str,
+    accepted: bool,
+) -> None:
+    """The selected comparison path may end at an intact semantic handler."""
+
+    graph, dag, transition, dispatcher = _captured_direct_internal_dag_entry_fixture()
+    state = int(transition.next_state)
+    blocks = dict(graph.blocks)
+    blocks[67] = _blk(
+        67, (69, 390), blocks[67].preds,
+        (_jz_stack_const(0x1800163A0, _STATE_OFF, state, 69),),
+        ea=0x18001639B,
+    )
+    blocks[69] = _blk(
+        69, (68, 391), (67,),
+        (_jz_stack_const(0x1800163B0, _STATE_OFF, state, 68),),
+        ea=0x1800163B0,
+    )
+    leaf_instructions = (
+        (
+            _mov(0x1800163C0, _num(0x23B90BE5), _stk(_STATE_OFF)),
+            _store(0x1800163C4, replace(_num(1), size=1), _reg(24)),
+            _jz_stack_const(0x1800163C8, _STATE_OFF + 4, 0, 500),
+        )
+        if handler_kind == "new_state"
+        else (
+            _add(0x1800163C0, replace(_reg(56), size=8), replace(_num(0x374), size=8), replace(_stk(_STATE_OFF + 0x100), size=8)),
+            _mov(0x1800163C8, replace(_stk(_STATE_OFF + 0x104), size=8), replace(_reg(8), size=8)),
+        )
+        if handler_kind == "prelude"
+        else (
+            _mov(0x1800163C0, _stk(_STATE_OFF + 0x100), _reg(8)),
+        )
+        if handler_kind == "move_chain"
+        else (
+            _mov(0x1800163C0, _num(0x5A2B17C3), _reg(8)),
+            _goto(0x1800163C4, 70),
+        )
+        if handler_kind == "carrier_transition"
+        else (
+            _store(0x1800163C4, replace(_num(1), size=1), _reg(24)),
+            _jz_stack_const(
+                0x1800163C8,
+                (
+                    _STATE_OFF
+                    if handler_kind == "state_router"
+                    else _STATE_OFF + 1
+                    if handler_kind == "partial_state_router"
+                    else _STATE_OFF + 4
+                ),
+                0,
+                500,
+            ),
+        )
+    )
+    blocks[68] = _blk(
+        68, (70,) if handler_kind in {"move_chain", "carrier_transition"} else (500,) if handler_kind == "prelude" else (500, 391), (69,),
+        leaf_instructions,
+        ea=0x1800163C0,
+    )
+    if handler_kind == "move_chain":
+        blocks[70] = _blk(
+            70, (500,), (68,),
+            (_mov(0x1800163C8, _reg(8), _stk(_STATE_OFF + 0x104)),),
+            ea=0x1800163C8,
+        )
+    if handler_kind == "carrier_transition":
+        blocks[70] = _blk(
+            70, (5,), (68,),
+            (
+                _mov(0x1800163C8, _reg(8), _stk(_STATE_OFF)),
+                _goto(0x1800163CC, 5),
+            ),
+            ea=0x1800163C8,
+        )
+        blocks[5] = replace(blocks[5], preds=(70,))
+    blocks[390] = replace(blocks[390], preds=(5, 67))
+    blocks[391] = replace(
+        blocks[391],
+        preds=(5, 69) if handler_kind in {"prelude", "move_chain", "carrier_transition"} else (5, 69, 68),
+    )
+    blocks[500] = replace(
+        blocks[500],
+        preds=(390, 391) if handler_kind == "carrier_transition" else (390, 391, 70 if handler_kind == "move_chain" else 68),
+    )
+    graph = replace(graph, blocks=blocks)
+
+    resolved = _resolve_arithmetic_state_feeder(graph, dag, transition, dispatcher)
+
+    if not accepted:
+        assert resolved == ()
+        return
+    assert len(resolved) == 1
+    assert resolved[0].target_handler == 68
+    assert resolved[0].proof is not None
+    assert "internal_decision_dag_entry" in resolved[0].proof.route_source_kinds
+
+
+def test_source_bound_new_state_leaf_requires_a_new_state_epoch(_seam) -> None:
+    expected = frozenset({StorageIdentity(StorageIdentityKind.STACK, _STATE_OFF)})
+    leaf = _blk(
+        68, (500, 391), (69,),
+        (
+            _mov(0x1800163C0, _num(0x23B90BE5), _stk(_STATE_OFF)),
+            _store(0x1800163C4, replace(_num(1), size=1), _reg(24)),
+            _jz_stack_const(0x1800163C8, _STATE_OFF + 4, 0, 500),
+        ),
+        ea=0x1800163C0,
+    )
+
+    def admitted(block: BlockSnapshot) -> bool:
+        return minimal_state_recovery._is_source_bound_new_state_handler_leaf(
+            block,
+            minimal_state_recovery.InstructionProjection.from_block(block),
+            expected_state_identities=expected,
+            expected_state_width=4,
+        )
+
+    assert admitted(leaf)
+    assert not admitted(replace(leaf, insn_snapshots=(
+        replace(leaf.insn_snapshots[0], is_assert=True),
+        *leaf.insn_snapshots[1:],
+    )))
+    assert not admitted(replace(leaf, insn_snapshots=leaf.insn_snapshots[1:]))
+    assert admitted(replace(
+        leaf,
+        insn_snapshots=(
+            leaf.insn_snapshots[0],
+            _jz_stack_const(0x1800163C8, _STATE_OFF + 4, 0, 500),
+        ),
+    ))
+    assert admitted(replace(
+        leaf,
+        insn_snapshots=(
+            leaf.insn_snapshots[0],
+            _mov(0x1800163C4, _stk(_STATE_OFF + 4), _stk(_STATE_OFF + 8)),
+            _jz_stack_const(0x1800163C8, _STATE_OFF + 4, 0, 500),
+        ),
+    ))
+    assert not admitted(replace(
+        leaf,
+        insn_snapshots=(
+            *leaf.insn_snapshots[:-1],
+            _jz_stack_const(0x1800163C8, _STATE_OFF, 0, 500),
+        ),
+    ))
+    assert not admitted(replace(
+        leaf,
+        insn_snapshots=(
+            leaf.insn_snapshots[0],
+            _mov(0x1800163C2, _stk(_STATE_OFF), _reg(40)),
+            *leaf.insn_snapshots[1:],
+        ),
+    ))
+
+    load = MopSnapshot(
+        t=-1,
+        kind=OperandKind.SUBINSN,
+        size=4,
+        sub_kind=InsnKind.LOAD,
+        sub_value_op_kind=ValueOpKind.LOAD,
+        sub_l=replace(_reg(256), size=2),
+        sub_r=replace(_stk(_STATE_OFF + 0x100), size=8),
+    )
+    read_only = replace(
+        leaf,
+        insn_snapshots=(
+            leaf.insn_snapshots[0],
+            replace(leaf.insn_snapshots[-1], l=load),
+        ),
+    )
+    assert admitted(read_only)
+
+
+def test_source_bound_load_branch_is_disjoint_semantic_leaf(_seam) -> None:
+    expected = frozenset({StorageIdentity(StorageIdentityKind.STACK, _STATE_OFF)})
+    address = replace(
+        _nested_value(ValueOpKind.ADD, replace(_stk(200), size=8), replace(_num(28), size=8)),
+        size=8,
+    )
+    load = InsnSnapshot(
+        opcode=2,
+        ea=0x1800163C0,
+        operands=(),
+        kind=InsnKind.LOAD,
+        l=replace(_reg(256), size=2),
+        r=address,
+        d=_reg(8),
+    )
+    branch = InsnSnapshot(
+        opcode=_OP_JZ,
+        ea=0x1800163C8,
+        operands=(),
+        kind=InsnKind.EQUALITY_JUMP,
+        l=_reg(8),
+        r=_num(16),
+        d=MopSnapshot(t=-1, size=0, block_ref=500, kind=OperandKind.BLOCK),
+        branch_predicate=PredicateKind.EQ,
+        is_conditional_jump=True,
+    )
+    leaf = _blk(68, (500, 391), (69,), (load, branch), ea=0x1800163C0)
+
+    def admitted(block: BlockSnapshot) -> bool:
+        return minimal_state_recovery._is_source_bound_disjoint_semantic_leaf(
+            block,
+            minimal_state_recovery.InstructionProjection.from_block(block),
+            expected_state_identities=expected,
+            expected_state_width=4,
+        )
+
+    assert admitted(leaf)
+    assert not admitted(replace(leaf, insn_snapshots=(
+        replace(load, r=replace(address, sub_l=replace(_stk(_STATE_OFF), size=8))),
+        branch,
+    )))
+    assert not admitted(replace(leaf, insn_snapshots=(
+        load,
+        replace(branch, l=_stk(_STATE_OFF)),
+    )))
+    hidden_state_address = MopSnapshot(
+        kind=OperandKind.ADDRESS,
+        size=8,
+        stack_refs=(_STATE_OFF,),
+    )
+    assert not admitted(replace(leaf, insn_snapshots=(
+        replace(load, r=hidden_state_address),
+        branch,
+    )))
+
+
+def test_source_bound_prelude_rejects_nested_effect(_seam) -> None:
+    expected = frozenset({StorageIdentity(StorageIdentityKind.STACK, _STATE_OFF)})
+    nested_call = MopSnapshot(
+        kind=OperandKind.SUBINSN,
+        size=8,
+        sub_kind=InsnKind.CALL,
+    )
+    prelude = _blk(
+        68, (500,), (),
+        (_add(
+            0x1800163C0,
+            nested_call,
+            replace(_num(0x374), size=8),
+            replace(_stk(_STATE_OFF + 0x100), size=8),
+        ),),
+        ea=0x1800163C0,
+    )
+    graph = FlowGraph(
+        {68: prelude, 500: _stop(500, (68,))},
+        68,
+        0x1800163C0,
+    )
+    assert not minimal_state_recovery._is_source_bound_disjoint_handler_prelude(
+        graph,
+        prelude,
+        expected_state_identities=expected,
+        expected_state_width=4,
+    )
+    opaque = replace(prelude, insn_snapshots=(
+        InsnSnapshot(
+            opcode=0xDEAD,
+            ea=0x1800163BE,
+            operands=(),
+            kind=InsnKind.UNKNOWN,
+        ),
+        _add(
+            0x1800163C0,
+            replace(_reg(56), size=8),
+            replace(_num(0x374), size=8),
+            replace(_stk(_STATE_OFF + 0x100), size=8),
+        ),
+    ))
+    assert not minimal_state_recovery._is_source_bound_disjoint_handler_prelude(
+        FlowGraph({68: opaque, 500: _stop(500, (68,))}, 68, 0x1800163C0),
+        opaque,
+        expected_state_identities=expected,
+        expected_state_width=4,
+    )
+
+
+def test_source_bound_move_chain_requires_pure_terminal_path(_seam) -> None:
+    expected = frozenset({StorageIdentity(StorageIdentityKind.STACK, _STATE_OFF)})
+    first = _blk(
+        68, (69,), (),
+        (_mov(0x1800163C0, _stk(_STATE_OFF + 0x100), _reg(8)),),
+        ea=0x1800163C0,
+    )
+    second = _blk(
+        69, (500,), (68,),
+        (_mov(0x1800163C8, _reg(8), _stk(_STATE_OFF + 0x104)),),
+        ea=0x1800163C8,
+    )
+    stop = _stop(500, (69,))
+
+    def admitted(candidate: BlockSnapshot, terminal: BlockSnapshot = stop) -> bool:
+        graph = FlowGraph(
+            {68: first, 69: candidate, 500: terminal},
+            68,
+            0x1800163C0,
+        )
+        return minimal_state_recovery._is_source_bound_disjoint_handler_prelude(
+            graph,
+            first,
+            expected_state_identities=expected,
+            expected_state_width=4,
+        )
+
+    assert admitted(second)
+    assert admitted(replace(second, insn_snapshots=(
+        *second.insn_snapshots,
+        _goto(0x1800163CC, 500),
+    )))
+    assert not admitted(replace(second, insn_snapshots=(
+        *second.insn_snapshots,
+        _goto(0x1800163CC, 68),
+    )))
+    assert not admitted(replace(second, insn_snapshots=(
+        _mov(0x1800163C8, _stk(_STATE_OFF), _stk(_STATE_OFF + 0x104)),
+    )))
+    assert not admitted(replace(second, insn_snapshots=(
+        _store(0x1800163C8, replace(_num(1), size=1), _reg(24)),
+    )))
+    assert not admitted(replace(second, insn_snapshots=(
+        InsnSnapshot(
+            opcode=0xDEAD,
+            ea=0x1800163C7,
+            operands=(),
+            kind=InsnKind.UNKNOWN,
+        ),
+        *second.insn_snapshots,
+    )))
+    assert not admitted(replace(second, succs=(68,)), replace(stop, preds=()))
+
+
+def test_source_bound_carrier_transition_requires_exact_delivery(_seam) -> None:
+    carrier = _blk(
+        68, (70,), (),
+        (
+            _mov(0x1800163C0, _num(0x5A2B17C3), _reg(8)),
+            _goto(0x1800163C4, 70),
+        ),
+        ea=0x1800163C0,
+    )
+    feeder = _blk(
+        70, (5,), (68, 69),
+        (
+            _mov(0x1800163C8, _reg(8), _stk(_STATE_OFF)),
+            _goto(0x1800163CC, 5),
+        ),
+        ea=0x1800163C8,
+    )
+    comparison = _blk(
+        5, (390, 391), (70,),
+        (_jz_stack_const(0x1800151E6, _STATE_OFF, 0x5A2B17C3, 390),),
+        ea=0x1800151E6,
+    )
+
+    def admitted(
+        candidate_carrier: BlockSnapshot = carrier,
+        candidate_feeder: BlockSnapshot = feeder,
+        candidate_comparison: BlockSnapshot = comparison,
+    ) -> bool:
+        graph = FlowGraph(
+            {
+                68: candidate_carrier,
+                69: _blk(69, (70,), (), (), ea=0x1800163B0),
+                70: candidate_feeder,
+                5: candidate_comparison,
+                390: _stop(390, (5,)),
+                391: _stop(391, (5,)),
+            },
+            68,
+            0x1800163C0,
+        )
+        return minimal_state_recovery._is_source_bound_exact_next_state_transition(
+            graph,
+            candidate_carrier,
+            state_var_stkoff=_STATE_OFF,
+            state_var_reg=None,
+        )
+
+    assert admitted()
+    assert not admitted(candidate_carrier=replace(
+        carrier,
+        insn_snapshots=(
+            replace(carrier.insn_snapshots[0], is_assert=True),
+            carrier.insn_snapshots[1],
+        ),
+    ))
+    assert not admitted(candidate_feeder=replace(
+        feeder,
+        insn_snapshots=(
+            replace(feeder.insn_snapshots[0], is_assert=True),
+            feeder.insn_snapshots[1],
+        ),
+    ))
+    assert not admitted(candidate_feeder=replace(feeder, preds=(69,)))
+    assert not admitted(candidate_carrier=replace(
+        carrier,
+        insn_snapshots=(carrier.insn_snapshots[0], _goto(0x1800163C4, 5)),
+    ))
+    assert not admitted(candidate_feeder=replace(
+        feeder,
+        insn_snapshots=(
+            _mov(0x1800163C8, _reg(12), _stk(_STATE_OFF)),
+            feeder.insn_snapshots[1],
+        ),
+    ))
+    assert not admitted(candidate_comparison=replace(
+        comparison,
+        insn_snapshots=(replace(comparison.insn_snapshots[0], l=_reg(50)),),
+    ))
+    assert not admitted(candidate_carrier=replace(
+        carrier,
+        insn_snapshots=(
+            _mov(0x1800163C0, _num(0x5A2B17C3), _reg(8)),
+            _store(0x1800163C2, replace(_num(1), size=1), _reg(24)),
+            carrier.insn_snapshots[-1],
+        ),
+    ))
+
+
+def test_arithmetic_feeder_rejects_partial_register_aliases(_seam) -> None:
+    graph, _, _, _ = _arithmetic_state_feeder_fixture()
+
+    def proof(candidate: FlowGraph):
+        return state_carrier.prove_exact_u32_state_transform_feeder(
+            candidate,
+            349,
+            403,
+            state_var_stkoff=_STATE_OFF,
+            state_var_reg=None,
+            required_comparison_serials=frozenset({15}),
+            expected_state=None,
+        )
+
+    assert proof(graph) is not None
+    blocks = dict(graph.blocks)
+    source = blocks[349]
+    blocks[349] = replace(source, insn_snapshots=(
+        *source.insn_snapshots[:2],
+        _mov(source.start_ea + 7, replace(_num(0xAA), size=1), replace(_reg(10), size=1)),
+        source.insn_snapshots[-1],
+    ))
+    assert proof(replace(graph, blocks=blocks)) is None
+
+    blocks[349] = replace(source, insn_snapshots=(
+        source.insn_snapshots[0],
+        replace(source.insn_snapshots[1], d=_reg(10)),
+        source.insn_snapshots[-1],
+    ))
+    feeder = blocks[403]
+    blocks[403] = replace(feeder, insn_snapshots=(
+        replace(feeder.insn_snapshots[0], r=_reg(10)),
+        *feeder.insn_snapshots[1:],
+    ))
+    assert proof(replace(graph, blocks=blocks)) is None
+
+
+def test_arithmetic_feeder_rejects_overlapping_feeder_results(_seam) -> None:
+    graph, _, _, _ = _arithmetic_state_feeder_fixture()
+    source = graph.blocks[349]
+    feeder = graph.blocks[403]
+    blocks = dict(graph.blocks)
+    blocks[349] = replace(source, insn_snapshots=(
+        _mov(source.start_ea, _num(0x12345678), _reg(100)),
+        _mov(source.start_ea + 5, _num(0x87654321), _reg(200)),
+        source.insn_snapshots[-1],
+    ))
+    blocks[403] = replace(feeder, insn_snapshots=(
+        _xor(feeder.start_ea, _reg(100), _reg(200), _reg(300)),
+        _add(feeder.start_ea + 1, _reg(100), _reg(200), _reg(302)),
+        _xor(feeder.start_ea + 2, _reg(300), _reg(302), _stk(_STATE_OFF)),
+        feeder.insn_snapshots[-1],
+    ))
+    assert state_carrier.prove_exact_u32_state_transform_feeder(
+        replace(graph, blocks=blocks),
+        349,
+        403,
+        state_var_stkoff=_STATE_OFF,
+        state_var_reg=None,
+        required_comparison_serials=frozenset({15}),
+        expected_state=None,
+    ) is None
+
+
+def test_arithmetic_feeder_rejects_result_aliasing_source_binding(_seam) -> None:
+    graph, _, _, _ = _arithmetic_state_feeder_fixture()
+    source = graph.blocks[349]
+    feeder = graph.blocks[403]
+    blocks = dict(graph.blocks)
+    blocks[349] = replace(source, insn_snapshots=(
+        _mov(source.start_ea, _num(0x12345678), _reg(100)),
+        _mov(source.start_ea + 5, _num(0x87654321), _reg(200)),
+        source.insn_snapshots[-1],
+    ))
+    blocks[403] = replace(feeder, insn_snapshots=(
+        _xor(feeder.start_ea, _reg(100), _reg(200), _reg(102)),
+        _xor(feeder.start_ea + 1, _reg(100), _reg(102), _stk(_STATE_OFF)),
+        feeder.insn_snapshots[-1],
+    ))
+    assert state_carrier.prove_exact_u32_state_transform_feeder(
+        replace(graph, blocks=blocks),
+        349,
+        403,
+        state_var_stkoff=_STATE_OFF,
+        state_var_reg=None,
+        required_comparison_serials=frozenset({15}),
+        expected_state=None,
+    ) is None
+
+
+def test_arithmetic_feeder_rejects_assertions_and_early_control(_seam) -> None:
+    graph, _, _, _ = _arithmetic_state_feeder_fixture()
+
+    def proof(candidate: FlowGraph):
+        return state_carrier.prove_exact_u32_state_transform_feeder(
+            candidate,
+            349,
+            403,
+            state_var_stkoff=_STATE_OFF,
+            state_var_reg=None,
+            required_comparison_serials=frozenset({15}),
+            expected_state=None,
+        )
+
+    assert proof(graph) is not None
+    source = graph.blocks[349]
+    feeder = graph.blocks[403]
+    blocks = dict(graph.blocks)
+    blocks[403] = replace(feeder, insn_snapshots=(
+        replace(feeder.insn_snapshots[0], is_assert=True),
+        *feeder.insn_snapshots[1:],
+    ))
+    assert proof(replace(graph, blocks=blocks)) is None
+
+    blocks[403] = feeder
+    blocks[349] = replace(source, insn_snapshots=(
+        replace(source.insn_snapshots[0], is_assert=True),
+        *source.insn_snapshots[1:],
+    ))
+    assert proof(replace(graph, blocks=blocks)) is None
+
+    blocks[349] = replace(source, insn_snapshots=(
+        _goto(source.start_ea - 1, 403),
+        *source.insn_snapshots,
+    ))
+    assert proof(replace(graph, blocks=blocks)) is None
+
+
+def test_source_bound_disjoint_semantic_leaf_preserves_payload(_seam) -> None:
+    expected = frozenset({StorageIdentity(StorageIdentityKind.STACK, _STATE_OFF)})
+    leaf = _blk(
+        68, (500, 391), (69,),
+        (
+            _store(0x1800163C0, replace(_num(1), size=1), _reg(24)),
+            _jz_stack_const(0x1800163C8, _STATE_OFF + 4, 0, 500),
+        ),
+        ea=0x1800163C0,
+    )
+
+    def admitted(block: BlockSnapshot) -> bool:
+        return minimal_state_recovery._is_source_bound_disjoint_semantic_leaf(
+            block,
+            minimal_state_recovery.InstructionProjection.from_block(block),
+            expected_state_identities=expected,
+            expected_state_width=4,
+        )
+
+    assert admitted(leaf)
+    assert admitted(replace(leaf, insn_snapshots=leaf.insn_snapshots[1:]))
+    asserted_state = replace(
+        _mov(0x1800163BE, _num(0x112ABC8C), _stk(_STATE_OFF)),
+        is_assert=True,
+    )
+    assert admitted(replace(leaf, insn_snapshots=(
+        asserted_state,
+        leaf.insn_snapshots[-1],
+    )))
+    assert not admitted(replace(leaf, insn_snapshots=(
+        _mov(0x1800163BE, _num(0x112ABC8C), _stk(_STATE_OFF)),
+        leaf.insn_snapshots[-1],
+    )))
+    assert not admitted(replace(leaf, insn_snapshots=(
+        leaf.insn_snapshots[0],
+        _jz_stack_const(0x1800163C8, _STATE_OFF, 0, 500),
+    )))
+    assert not admitted(replace(leaf, insn_snapshots=(
+        _mov(0x1800163BE, _stk(_STATE_OFF), _reg(40)),
+        *leaf.insn_snapshots,
+    )))
+
+
+def test_source_bound_nested_call_result_branch_is_a_semantic_leaf(_seam) -> None:
+    expected = frozenset({StorageIdentity(StorageIdentityKind.STACK, _STATE_OFF)})
+    nested_call = MopSnapshot(
+        kind=OperandKind.SUBINSN,
+        size=8,
+        sub_kind=InsnKind.CALL,
+        sub_l=replace(_reg(240), size=2),
+        sub_r=replace(_stk(_STATE_OFF + 0x100), size=8),
+    )
+    low_result = MopSnapshot(
+        kind=OperandKind.SUBINSN,
+        size=4,
+        sub_kind=InsnKind.VALUE,
+        sub_value_op_kind=ValueOpKind.LOW,
+        sub_l=nested_call,
+    )
+    branch = InsnSnapshot(
+        opcode=_OP_JZ,
+        ea=0x1800163C8,
+        operands=(),
+        kind=InsnKind.EQUALITY_JUMP,
+        l=low_result,
+        r=_num(0),
+        d=MopSnapshot(kind=OperandKind.BLOCK, block_ref=500),
+        branch_predicate=PredicateKind.EQ,
+        is_conditional_jump=True,
+        control_transfer_kind=ControlTransferKind.CONDITIONAL_BRANCH,
+    )
+    assertion = replace(
+        _mov(0x1800163BE, _num(0x112ABC8C), _stk(_STATE_OFF)),
+        is_assert=True,
+    )
+    leaf = _blk(68, (500, 391), (69,), (assertion, branch), ea=0x1800163C0)
+
+    def admitted(candidate: BlockSnapshot) -> bool:
+        return minimal_state_recovery._is_source_bound_disjoint_semantic_leaf(
+            candidate,
+            minimal_state_recovery.InstructionProjection.from_block(candidate),
+            expected_state_identities=expected,
+            expected_state_width=4,
+        )
+
+    assert admitted(leaf)
+    assert not admitted(replace(leaf, insn_snapshots=(
+        assertion,
+        replace(branch, l=replace(low_result, sub_l=replace(
+            nested_call, sub_r=_stk(_STATE_OFF),
+        ))),
+    )))
+    assert not admitted(replace(leaf, insn_snapshots=(
+        assertion,
+        replace(branch, l=replace(low_result, sub_l=replace(
+            nested_call, sub_kind=InsnKind.UNKNOWN,
+        ))),
+    )))
 
 
 def test_direct_internal_route_forest_accepts_pure_xdu_prefix_before_comparison(
@@ -12626,14 +13489,14 @@ def _captured_six_transform_fixture() -> tuple[
     feeder_preds: dict[int, list[int]] = {403: [], 490: [], 495: []}
     for source, feeder, operation, left, right, state, target, trusted in rows:
         feeder_preds[feeder].append(source)
-        feeder_rows.setdefault(feeder, (operation, (8, 9)))
+        feeder_rows.setdefault(feeder, (operation, (8, 24)))
         blocks[source] = _blk(
             source,
             (feeder,),
             (),
             (
                 _mov(source_eas[source], _num(left), _reg(8)),
-                _mov(source_eas[source] + 5, _num(right), _reg(9)),
+                _mov(source_eas[source] + 5, _num(right), _reg(24)),
                 _goto(source_eas[source] + 10, feeder),
             ),
             ea=source_eas[source],
@@ -13593,7 +14456,7 @@ def _candidate_prefix_partitioned_feeder_fixture() -> tuple[FlowGraph, DecisionD
                 330,
                 (4,),
                 (401, 402),
-                (_xor(0x180042930, _reg(8), _reg(9), _stk(_STATE_OFF)),),
+                (_xor(0x180042930, _reg(8), _reg(24), _stk(_STATE_OFF)),),
                 ea=0x180042900,
             ),
             401: _blk(
@@ -13605,7 +14468,7 @@ def _candidate_prefix_partitioned_feeder_fixture() -> tuple[FlowGraph, DecisionD
                     _mov(
                         0x180046F04,
                         _num(alternate_left ^ _PREFIX_ALTERNATE_STATE),
-                        _reg(9),
+                        _reg(24),
                     ),
                 ),
                 ea=0x180046EF0,
@@ -13619,7 +14482,7 @@ def _candidate_prefix_partitioned_feeder_fixture() -> tuple[FlowGraph, DecisionD
                     _mov(
                         0x180047004,
                         _num(selected_left ^ _PREFIX_SELECTED_STATE),
-                        _reg(9),
+                        _reg(24),
                     ),
                 ),
                 ea=0x180046FF0,
@@ -14168,7 +15031,7 @@ def test_candidate_prefix_recovers_complete_transitive_feeder_partition(
             _mov(
                 0x180047004,
                 _num(selected_left ^ _PREFIX_SELECTED_STATE),
-                _reg(9),
+                _reg(24),
             ),
         ),
     )
@@ -14181,7 +15044,7 @@ def test_candidate_prefix_recovers_complete_transitive_feeder_partition(
             _mov(
                 0x180047204,
                 _num(dag_left ^ _DAG_COMPARE_STATE),
-                _reg(9),
+                _reg(24),
             ),
         ),
         ea=0x1800471F0,
@@ -15058,7 +15921,7 @@ def test_candidate_prefix_reconciliation_replays_each_exact_feeder_kind(
             if feeder_kind == "carrier"
             else (
                 _mov(int(source_block.start_ea) + 4, _num(state), _reg(8)),
-                _mov(int(source_block.start_ea) + 8, _num(0), _reg(9)),
+                _mov(int(source_block.start_ea) + 8, _num(0), _reg(24)),
             )
         )
         blocks[source] = replace(source_block, insn_snapshots=source_insns)
@@ -15072,7 +15935,7 @@ def test_candidate_prefix_reconciliation_replays_each_exact_feeder_kind(
                 else _sub(
                     int(feeder.start_ea) + 4,
                     _reg(8),
-                    _reg(9),
+                    _reg(24),
                     _stk(_STATE_OFF),
                 )
             ),
