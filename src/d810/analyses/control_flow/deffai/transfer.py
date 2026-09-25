@@ -298,21 +298,16 @@ def _compare_const_and_cell(
     """Split a compare tail into ``(const, condvar_cell)``.
 
     One compared operand is a literal, the other names the condition variable's
-    cell.  Read off the slot-aligned canonical
-    :func:`~d810.ir.insn_projection.operand_storages` views (was ``tail.l`` /
-    ``tail.r``): a ``Space.CONST`` view is the literal; the other view's named
-    cell is the condvar.  Returns ``(None, None)`` when neither side is a plain
-    constant.
+    cell.  A nested expression may *reference* a stack cell without being
+    equal to that cell, so only direct storage operands establish comparison
+    identity.  Returns ``(None, None)`` when neither side is a plain constant.
     """
     left, right, _dest = operand_storages(tail)
-    left_off, right_off, _dest_off = operand_stack_offsets(tail)
-    for (const_view, _c_off), (cell_view, cell_off) in (
-        ((left, left_off), (right, right_off)),
-        ((right, right_off), (left, left_off)),
-    ):
+    for const_view, cell_view in ((left, right), (right, left)):
         const = _const_of(const_view)
         if const is not None:
-            return const & _U32_MASK, _slot_cell(cell_view, cell_off)
+            cell = mop_cell(cell_view) if isinstance(cell_view, Varnode) else None
+            return const & _U32_MASK, cell
     return None, None
 
 
@@ -563,10 +558,6 @@ def transfer_block_set(
         if taken is not None and fallthrough is not None:
             pred = branch_predicate(tail)
             const, cmp_cell = _compare_const_and_cell(tail)
-            if cmp_cell is None and pred in (PredicateKind.EQ, PredicateKind.NE):
-                # The compare did not name a tracked cell directly; assume it is
-                # the dispatcher state cell (the common ``s == K`` dispatch arm).
-                cmp_cell = state_cell
             # Only an equality compare yields a sound per-arm const refinement
             # (meet_const / exclude); other predicates keep both arms unrefined.
             if pred is PredicateKind.EQ:

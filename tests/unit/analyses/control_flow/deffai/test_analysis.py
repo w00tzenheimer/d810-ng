@@ -10,12 +10,15 @@ from __future__ import annotations
 
 import pytest
 
-from d810.ir.flowgraph import BlockKind
+from d810.ir.flowgraph import BlockKind, InsnKind, MopSnapshot, OperandKind
 from d810.ir.semantics import PredicateKind
 from d810.analyses.control_flow.state_transition_domain import StateValue
 from d810.analyses.data_flow.concolic.refs import LocationRef
 
-from d810.analyses.control_flow.deffai.analysis import analyze_kswitch
+from d810.analyses.control_flow.deffai.analysis import (
+    _routing_case_const,
+    analyze_kswitch,
+)
 from d810.analyses.control_flow.deffai.context import ContextPolicy, KContext
 from d810.analyses.control_flow.deffai.powerset_store import PowersetStore
 
@@ -146,6 +149,56 @@ def test_context_keeps_two_handlers_distinct():
         if 1 in result.s_hash.get(ctx, {})
     ]
     assert any(sv == StateValue.of(10) for sv in h1_states)
+
+
+def test_comparison_without_named_state_cell_does_not_mint_case_context():
+    blk = block(
+        0, (jcc(num(1), num(10), taken=2, pred=PredicateKind.EQ),), (1, 2)
+    )
+    graph = make_graph([blk, block(1, (ret(),), ()), block(2, (ret(),), ())])
+    assert _routing_case_const(graph, 0, 2, STATE) is None
+
+
+def test_masked_state_reference_does_not_mint_direct_state_case_context():
+    masked_state = MopSnapshot(
+        t=5,
+        size=8,
+        kind=OperandKind.SUBINSN,
+        stack_refs=(STATE_OFF,),
+        sub_kind=InsnKind.AND,
+        sub_l=stk(STATE_OFF),
+        sub_r=num(0xFF),
+    )
+    blk = block(
+        0, (jcc(masked_state, num(10), taken=2, pred=PredicateKind.EQ),), (1, 2)
+    )
+    graph = make_graph([blk, block(1, (ret(),), ()), block(2, (ret(),), ())])
+    assert _routing_case_const(graph, 0, 2, STATE) is None
+
+
+def test_full_analysis_does_not_prune_unknown_comparison_as_state_case():
+    # Both comparisons are true, but neither directly compares the state cell.
+    # The analysis may retain extra paths; it must not delete the true arm.
+    for compared in (
+        num(10),
+        MopSnapshot(
+            t=5,
+            size=8,
+            kind=OperandKind.SUBINSN,
+            stack_refs=(STATE_OFF,),
+            sub_kind=InsnKind.AND,
+            sub_l=stk(STATE_OFF),
+            sub_r=num(0xFF),
+        ),
+    ):
+        state = 20 if compared.kind is OperandKind.NUMBER else 266
+        blk = block(
+            0, (jcc(compared, num(10), taken=2, pred=PredicateKind.EQ),), (1, 2)
+        )
+        graph = make_graph([blk, block(1, (ret(),), ()), block(2, (ret(),), ())])
+        result = _analyze(graph, initial=state)
+        assert result.converged
+        assert result.store_at(KContext(()), 2).get(STATE) == StateValue.of(state)
 
 
 def test_contexts_bounded_by_policy():

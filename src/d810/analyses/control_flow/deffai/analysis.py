@@ -127,7 +127,7 @@ def _routing_case_const(
     const, cmp_cell = _compare_const_and_cell(tail)
     if const is None:
         return None
-    if cmp_cell is not None and cmp_cell != state_cell:
+    if cmp_cell != state_cell:
         return None
     taken, fallthrough = _arm_targets(blk)
     eq_arm = taken if pred is PredicateKind.EQ else fallthrough
@@ -267,10 +267,8 @@ class _ProductDomain:
         if pred not in (PredicateKind.EQ, PredicateKind.NE):
             return out_state
         const, cmp_cell = _compare_const_and_cell(tail)
-        if const is None:
+        if const is None or cmp_cell is None:
             return out_state
-        if cmp_cell is None:
-            cmp_cell = self._state_cell
         taken, fallthrough = _arm_targets(blk)
         eq_arm = taken if pred is PredicateKind.EQ else fallthrough
         is_equal_arm = int(succ) == eq_arm

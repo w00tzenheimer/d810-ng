@@ -88,10 +88,8 @@ def _arm_feasible(
     if pred not in (PredicateKind.EQ, PredicateKind.NE):
         return True
     const, cmp_cell = _compare_const_and_cell(tail)
-    if const is None:
+    if const is None or cmp_cell is None:
         return True
-    if cmp_cell is None:
-        cmp_cell = state_cell
     store = result.store_at(ctx, int(block))
     sv = store.get(cmp_cell)
     if sv.is_top:

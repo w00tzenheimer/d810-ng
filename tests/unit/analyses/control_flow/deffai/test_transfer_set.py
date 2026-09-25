@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from d810.ir.flowgraph import BlockKind
+from d810.ir.flowgraph import BlockKind, InsnKind, MopSnapshot, OperandKind
 from d810.ir.semantics import PredicateKind
 from d810.analyses.control_flow.state_transition_domain import StateValue
 from d810.analyses.data_flow.concolic.refs import LocationRef
@@ -150,6 +150,39 @@ def test_ne_arm_refinement():
     # NE: the fallthrough (1) is the equal arm -> {10}; taken (2) excludes 10.
     assert arms[1].get(STATE) == StateValue.of(10)
     assert arms[2].get(STATE) == StateValue.of_many([20, 30])
+
+
+def test_comparison_without_named_cell_does_not_refine_dispatcher_state():
+    # Neither operand identifies the dispatcher state cell. The branch may be
+    # refined by some other analysis, but this transfer cannot assume it is a
+    # state comparison merely because one operand is constant.
+    blk = block(
+        0, (jcc(num(1), num(10), taken=2, pred=PredicateKind.EQ),), (1, 2)
+    )
+    in_store = PowersetStore.of({STATE: StateValue.of_many([10, 20])})
+    arms = _transfer(blk, in_store)
+    assert arms[1].get(STATE) == StateValue.of_many([10, 20])
+    assert arms[2].get(STATE) == StateValue.of_many([10, 20])
+
+
+def test_masked_state_reference_does_not_refine_whole_state_cell():
+    # 266 & 0xff == 10 is feasible; treating the nested reference as direct
+    # state==10 would incorrectly make the equal arm unreachable.
+    masked_state = MopSnapshot(
+        t=5,
+        size=8,
+        kind=OperandKind.SUBINSN,
+        stack_refs=(STATE_OFF,),
+        sub_kind=InsnKind.AND,
+        sub_l=stk(STATE_OFF),
+        sub_r=num(0xFF),
+    )
+    blk = block(
+        0, (jcc(masked_state, num(10), taken=2, pred=PredicateKind.EQ),), (1, 2)
+    )
+    arms = _transfer(blk, PowersetStore.singleton(STATE, 266))
+    assert arms[1].get(STATE) == StateValue.of(266)
+    assert arms[2].get(STATE) == StateValue.of(266)
 
 
 def test_multi_value_product_joins_results():

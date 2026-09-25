@@ -13,9 +13,10 @@ from d810.ir.semantics import PredicateKind
 from d810.analyses.control_flow.state_transition_domain import StateValue
 from d810.analyses.data_flow.concolic.refs import LocationRef
 
-from d810.analyses.control_flow.deffai.analysis import analyze_kswitch
+from d810.analyses.control_flow.deffai.analysis import AnalysisResult, analyze_kswitch
 from d810.analyses.control_flow.deffai.ccm import build_ccm
 from d810.analyses.control_flow.deffai.context import ContextPolicy, KContext
+from d810.analyses.control_flow.deffai.powerset_store import PowersetStore
 
 from tests.unit.analyses.control_flow.deffai._helpers import (
     block,
@@ -125,3 +126,25 @@ def test_ccm_empty_for_unreached_context():
     bogus = KContext((0xDEAD,))
     assert ccm.get(bogus).num_blocks == 0
     assert ccm.get(bogus).edges == frozenset()
+
+
+def test_ccm_does_not_prune_arm_for_comparison_without_named_cell():
+    graph = make_graph(
+        [
+            block(0, (jcc(num(10), num(10), taken=2, pred=PredicateKind.EQ),), (1, 2)),
+            block(1, (ret(),), ()),
+            block(2, (ret(),), ()),
+        ]
+    )
+    ctx = KContext.empty()
+    store = PowersetStore.singleton(STATE, 20)
+    result = AnalysisResult(
+        s_hash={ctx: {0: store, 1: store, 2: store}},
+        out_hash={ctx: {0: store, 1: store, 2: store}},
+        reachable_contexts=frozenset({ctx}),
+        top_density=0.0,
+        converged=True,
+        iterations=1,
+    )
+    edges = build_ccm(result, graph, state_cell=STATE).get(ctx).edges
+    assert (0, 2) in edges
