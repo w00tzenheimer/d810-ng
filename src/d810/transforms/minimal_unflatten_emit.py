@@ -10486,6 +10486,42 @@ def _correlate_surviving_conditional_arm_forecasts(
     return tuple(selected)
 
 
+def _conditional_arm_reuses_transition_route(
+    flow_graph: FlowGraph,
+    forecast: ConditionalArmRouteForecast,
+    transitions: tuple[StateWriteTransition, ...],
+) -> bool:
+    """Recognize one arm forecast for an already-selected physical redirect.
+
+    This only coalesces a one-way source's exact same edge, state and target.
+    Conditional branch arms and shared feeder paths retain separate ownership.
+    The caller must additionally establish that both adapters selected the
+    *same canonical proof reference* from the current evidence bundle.
+    """
+
+    modification = forecast.modification
+    if type(modification) is not RedirectGoto:
+        return False
+    source = int(modification.from_serial)
+    old_target = int(modification.old_target)
+    block = flow_graph.get_block(source)
+    if block is None or tuple(int(succ) for succ in block.succs) != (old_target,):
+        return False
+    matches = tuple(
+        transition
+        for transition in transitions
+        if int(transition.write_block) == source
+        and transition.via_block is None
+        and transition.branch_arm is None
+        and not transition.is_return
+        and transition.next_state is not None
+        and int(transition.next_state) == int(forecast.state_constant)
+        and transition.target_handler is not None
+        and int(transition.target_handler) == int(modification.new_target)
+    )
+    return len(matches) == 1
+
+
 def _complete_local_semantic_route_facts(
     backedge_facts: tuple[SemanticRouteFact, ...],
     entry_fact: SemanticRouteFact | None,
@@ -15518,6 +15554,7 @@ def emit_minimal_unflatten(
             route_binding = route_join_binding(canonical_route_evidence)
             route_owner_by_proof_ref: dict[RuntimeAuthorityRef, str] = {}
             selected_transition_proofs: list[SemanticRouteProof] = []
+            selected_transition_rows: list[StateWriteTransition] = []
             entry_liveness_proof: SemanticRouteProof | None = None
             terminal_delivery_by_redirect: dict[
                 tuple[int, int, int], SemanticRouteProof,
@@ -15559,6 +15596,15 @@ def emit_minimal_unflatten(
                 prior_owner = route_owner_by_proof_ref.get(ref)
                 if prior_owner is not None:
                     if prior_owner != owner:
+                        logger.info(
+                            "canonical route proof ownership conflict: proof=%s "
+                            "prior_owner=%s new_owner=%s kind=%s source_ea=0x%X",
+                            proof.proof_id,
+                            prior_owner,
+                            owner,
+                            proof.proof_kind.value,
+                            int(proof.source_anchor_ea),
+                        )
                         raise ValueError(
                             "canonical route proof selected by multiple owners"
                         )
@@ -15868,6 +15914,7 @@ def emit_minimal_unflatten(
                 if route_binding.ref_for(proof) not in route_owner_by_proof_ref:
                     selected_transition_proofs.append(proof)
                 select_route("state_write_transition", proof)
+                selected_transition_rows.append(transition)
 
             if (
                 entry_liveness_proof is not None
@@ -15916,7 +15963,26 @@ def emit_minimal_unflatten(
                     canonical_evidence=canonical_route_evidence,
                     state_identity=state_identity,
                 )
-                select_route(owner, proof)
+                prior_owner = route_owner_by_proof_ref.get(
+                    route_binding.ref_for(proof)
+                )
+                if (
+                    prior_owner == "state_write_transition"
+                    and _conditional_arm_reuses_transition_route(
+                        flow_graph, forecast, tuple(selected_transition_rows)
+                    )
+                ):
+                    # The arm pass observed the same final RedirectGoto as
+                    # transition recovery. It does not own a second route.
+                    logger.info(
+                        "conditional arm reuses selected transition proof: "
+                        "proof=%s source=%s target=%s",
+                        proof.proof_id,
+                        _format_block_label(flow_graph, int(modification.from_serial)),
+                        _format_block_label(flow_graph, int(modification.new_target)),
+                    )
+                else:
+                    select_route(owner, proof)
                 selected_arm_proofs.append(proof)
             if (
                 len(selected_arm_proofs) != len(surviving_arm_forecasts)

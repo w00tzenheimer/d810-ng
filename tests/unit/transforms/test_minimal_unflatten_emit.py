@@ -2558,6 +2558,45 @@ def _forecast_direct_arm(graph: FlowGraph, arm: TransitionArm, dag: DecisionDag)
     )
 
 
+def test_identical_arm_and_backedge_share_one_physical_route_owner() -> None:
+    state, graph, arm, dag = _direct_conditional_arm_fixture()
+    forecast = _forecast_direct_arm(graph, arm, dag)
+    assert forecast is not None
+    transition = StateWriteTransition(1, state, 3, False, None)
+    assert minimal_unflatten_emit_module._conditional_arm_reuses_transition_route(
+        graph, forecast, (transition,)
+    )
+    assert not minimal_unflatten_emit_module._conditional_arm_reuses_transition_route(
+        graph, forecast, ()
+    )
+    assert not minimal_unflatten_emit_module._conditional_arm_reuses_transition_route(
+        graph, forecast, (transition, transition)
+    )
+    assert not minimal_unflatten_emit_module._conditional_arm_reuses_transition_route(
+        graph, forecast, (replace(transition, next_state=state + 1),)
+    )
+    assert not minimal_unflatten_emit_module._conditional_arm_reuses_transition_route(
+        graph, forecast, (replace(transition, target_handler=4),)
+    )
+    assert not minimal_unflatten_emit_module._conditional_arm_reuses_transition_route(
+        graph, forecast, (replace(transition, via_block=2),)
+    )
+
+
+def test_arm_cannot_share_transition_owner_when_old_edge_differs() -> None:
+    state, graph, arm, dag = _direct_conditional_arm_fixture()
+    forecast = _forecast_direct_arm(graph, arm, dag)
+    assert forecast is not None
+    transition = StateWriteTransition(1, state, 3, False, None)
+    wrong_edge = replace(
+        forecast,
+        modification=RedirectGoto(1, 5, 3),
+    )
+    assert not minimal_unflatten_emit_module._conditional_arm_reuses_transition_route(
+        graph, wrong_edge, (transition,)
+    )
+
+
 @pytest.mark.parametrize("kind", (InsnKind.VALUE, InsnKind.ADD, InsnKind.SUB))
 def test_conditional_arm_forecast_accepts_recovered_non_mov_state_write(kind: InsnKind) -> None:
     """The recovered arm state, not a re-parsed expression, owns the route."""
