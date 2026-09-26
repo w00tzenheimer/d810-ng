@@ -223,7 +223,7 @@ from d810.ir.insn_projection import (
     operand_storages,
     project_instruction_effect_sites,
 )
-from d810.ir.semantics import PredicateKind
+from d810.ir.semantics import ControlTransferKind, PredicateKind
 from d810.ir.storage_identity import StorageIdentity, StorageIdentityKind, storage_identity_from_mop_snapshot
 from d810.transforms.exit_path_liveness_policy import (
     block_defined_variables,
@@ -6387,6 +6387,56 @@ def _corridor_pred_split_preserves_handler_inputs(
         if current == int(modification.clone_until):
             break
         current = successor
+    if not state_write_seen:
+        # The setup-tail proof covers only preserved non-state instructions.
+        # When the cloned body has no witnessed state write, require the
+        # predecessor itself to contain the current exact U32 assignment.
+        # A stale trusted transition or a matching DAG route is insufficient.
+        try:
+            if project_instruction_effect_sites(predecessor):
+                return _reject("source_state_write_effect")
+            exact_writes = tuple(
+                index for index, insn in enumerate(predecessor.insn_snapshots)
+                if _is_exact_u32_literal_state_move(
+                    insn,
+                    state_identity=state_identity,
+                    state_constant=int(matches[0].next_state),
+                )
+            )
+            if len(exact_writes) != 1:
+                return _reject("source_state_write_missing")
+            suffix = predecessor.insn_snapshots[exact_writes[0] + 1:]
+            for index, insn in enumerate(suffix):
+                # A broad unconditional-jump hint is not enough: UNKNOWN
+                # instructions can carry it. Only exact empty NOPs and one
+                # terminal GOTO to the physical clone entry are harmless.
+                no_data_or_effect = bool(
+                    insn.r is None and not insn.is_call
+                    and insn.call_kind is None
+                    and insn.value_op_kind is None
+                    and not insn.is_assert
+                )
+                empty_nop = bool(
+                    no_data_or_effect
+                    and insn.kind is InsnKind.NOP
+                    and insn.control_transfer_kind is None
+                    and insn.l is None
+                    and insn.d is None
+                )
+                exact_goto = bool(
+                    no_data_or_effect
+                    and index == len(suffix) - 1
+                    and insn.kind is InsnKind.GOTO
+                    and insn.control_transfer_kind is ControlTransferKind.GOTO
+                    and insn.l is not None
+                    and insn.l.kind is OperandKind.BLOCK
+                    and insn.l.block_ref == int(modification.src_block)
+                    and insn.d is None
+                )
+                if not (empty_nop or exact_goto):
+                    return _reject("source_state_write_clobbered")
+        except (TypeError, ValueError, OverflowError):
+            return _reject("source_state_write_projection")
     # The backend copies the corridor from live microcode when this edit runs.
     # A peer instruction edit can therefore invalidate the portable witness
     # even when the edge shape remains unchanged. Treat every edit whose

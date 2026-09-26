@@ -19435,6 +19435,91 @@ def test_candidate_prefix_preserved_setup_corridor_uses_multi_block_clone(
     ]
 
 
+@pytest.mark.parametrize(
+    ("predecessor_state", "trailing_state", "expected"),
+    (
+        (None, None, False),
+        (_PREFIX_ALTERNATE_STATE, None, False),
+        (_PREFIX_SELECTED_STATE, None, True),
+        (_PREFIX_SELECTED_STATE, _PREFIX_ALTERNATE_STATE, False),
+        (_PREFIX_SELECTED_STATE, "opaque", False),
+        (_PREFIX_SELECTED_STATE, "opaque_jump", False),
+        (_PREFIX_SELECTED_STATE, "goto", True),
+        (_PREFIX_SELECTED_STATE, "wrong_goto", False),
+        (_PREFIX_SELECTED_STATE, "operandless_goto", False),
+    ),
+)
+def test_cloned_corridor_requires_current_exact_state_production(
+    monkeypatch: pytest.MonkeyPatch,
+    predecessor_state: int | None,
+    trailing_state: int | str | None,
+    expected: bool,
+) -> None:
+    # Isolate the final production obligation from the separately tested
+    # handler-live-in suffix check.
+    monkeypatch.setattr(
+        minimal_unflatten_emit_module,
+        "_skipped_prefix_preserves_handler_live_ins",
+        lambda *_args, **_kwargs: True,
+    )
+    graph, dag = _candidate_prefix_partitioned_emitter_fixture()
+    blocks = dict(graph.blocks)
+    if trailing_state is None:
+        trailing = ()
+    elif trailing_state in {"opaque", "opaque_jump"}:
+        trailing = (
+            InsnSnapshot(
+                opcode=0, ea=0x180047001, operands=(), kind=InsnKind.UNKNOWN,
+                is_unconditional_jump=(trailing_state == "opaque_jump"),
+            ),
+        )
+    elif trailing_state in {"goto", "wrong_goto", "operandless_goto"}:
+        target = None if trailing_state == "operandless_goto" else (
+            4 if trailing_state == "wrong_goto" else 330
+        )
+        trailing = (
+            InsnSnapshot(
+                opcode=0x37, ea=0x180047001, operands=(),
+                kind=InsnKind.GOTO,
+                l=(
+                    None if target is None
+                    else MopSnapshot(kind=OperandKind.BLOCK, block_ref=target)
+                ),
+            ),
+        )
+    else:
+        trailing = (_mov_state(0x180047001, trailing_state),)
+    blocks[402] = replace(
+        blocks[402],
+        insn_snapshots=(
+            () if predecessor_state is None
+            else (_mov_state(0x180047000, predecessor_state),)
+        ) + trailing,
+    )
+    blocks[330] = replace(blocks[330], insn_snapshots=())
+    graph = FlowGraph(blocks, graph.entry_serial, graph.func_ea)
+    modification = EdgeRedirectViaPredSplit(
+        src_block=330, old_target=4, new_target=101,
+        via_pred=402, clone_until=330,
+    )
+    transition = StateWriteTransition(
+        402, _PREFIX_SELECTED_STATE, 101, False, None,
+        via_block=330,
+        proof=TransitionProof(
+            "decision_dag_state_route_reconciliation",
+            "decision_dag_reconciled", True,
+        ),
+        preserve_via_block=True,
+    )
+
+    assert minimal_unflatten_emit_module._corridor_pred_split_preserves_handler_inputs(
+        graph, dag, modification, (modification,), (transition,),
+        state_identity=StorageIdentity(StorageIdentityKind.STACK, _STATE),
+        state_var_stkoff=_STATE, state_var_reg=None,
+        live_in_by_serial=None, storage_live_in_by_serial=None,
+    ) is expected
+
+
 def test_candidate_prefix_incomplete_feeder_partition_stays_residual(
     monkeypatch,
     _seam,
