@@ -8,6 +8,11 @@ from types import SimpleNamespace
 import pytest
 
 from d810.analyses.control_flow.interval_map import IntervalDispatcher, IntervalRow
+from d810.analyses.control_flow.minimal_state_recovery import (
+    StateWriteTransition,
+    TransitionProof,
+)
+from d810.analyses.control_flow.route_predicate import DecisionDag, RouteComparison
 from d810.ir.expressions import ValueOpKind
 from d810.ir.flowgraph import (
     BlockKind,
@@ -29,12 +34,17 @@ from d810.transforms.dispatcher_corridor_coverage import (
 )
 from d810.transforms.unflatten_authority.legacy_keys import LEGACY_UNFLATTEN_KEYS
 from d810.transforms.graph_modification import (
+    ConvertToGoto,
     EdgeRedirectViaPredSplit,
     LowerConditionalStateTransition,
+    NopInstructions,
     PreserveLivePredicateCondition,
     RedirectGoto,
+    RedirectBranch,
     SyntheticRegisterNonzeroCondition,
+    ZeroStateWrite,
 )
+from d810.ir.storage_identity import StorageIdentity, StorageIdentityKind
 from d810.transforms.use_def_redirect_filter import (
     UseDefSeveranceAudit,
     audit_use_def_severances,
@@ -116,8 +126,664 @@ def test_coverage_projects_predecessor_scoped_feeder_clone() -> None:
     assert coverage.residual_corridors == ()
 
 
+@pytest.mark.parametrize("route", ("direct", "via", "entry", "branch", "convert", "replay"))
+def test_final_load_leaf_redirect_requires_exact_direct_delivery(route: str) -> None:
+    """Check the final emitted edge, including post-reconciliation entry routes."""
+
+    write = InsnSnapshot(
+        opcode=4,
+        ea=0x1100,
+        operands=(),
+        kind=InsnKind.MOV,
+        l=MopSnapshot(kind=OperandKind.NUMBER, size=4, value=7),
+        d=MopSnapshot(kind=OperandKind.STACK, size=4, stkoff=100),
+    )
+    source_target = 5 if route == "via" else 2
+    blocks = {
+        1: _block(1, (source_target,), (), 0x1100, insns=(write,)),
+        2: _block(2, (3,), (1, 6) if route == "entry" else (5,) if route == "via" else (1,), 0x1200),
+        3: _block(3, (), (2,), 0x1300),
+    }
+    if route == "via":
+        blocks[5] = _block(5, (2,), (1,), 0x1500)
+    if route == "entry":
+        blocks[6] = _block(6, (2,), (), 0x1600)
+    graph = FlowGraph(blocks, entry_serial=1, func_ea=0x1000)
+    transition = StateWriteTransition(
+        write_block=1,
+        next_state=7,
+        target_handler=3,
+        is_return=False,
+        branch_arm=None,
+        via_block=5 if route == "via" else None,
+    )
+    modification = (
+        EdgeRedirectViaPredSplit(5, 2, 3, 1)
+        if route == "via"
+        else RedirectBranch(1, 2, 3)
+        if route == "branch"
+        else ConvertToGoto(1, 3)
+        if route == "convert"
+        else SimpleNamespace(per_pred_replays=(SimpleNamespace(target_serial=3),))
+        if route == "replay"
+        else RedirectGoto(6 if route == "entry" else 1, 2, 3)
+    )
+
+    assert emit_module._fresh_load_leaf_modifications_have_direct_delivery(
+        graph,
+        (modification,),
+        (transition,),
+        leaf_serials=frozenset({3}),
+        root_serial=2,
+        state_identity=StorageIdentity(StorageIdentityKind.STACK, 100),
+    ) is (route == "direct")
+    if route == "direct":
+        assert emit_module._fresh_load_leaf_modifications_have_direct_delivery(
+            graph,
+            (modification,),
+            (),
+            leaf_serials=frozenset({3}),
+            root_serial=2,
+            state_identity=StorageIdentity(StorageIdentityKind.STACK, 100),
+            entry_state=7,
+            entry_target=3,
+        )
 
 
+def test_reference_dag_semantic_branch_leaf_needs_final_delivery_guard() -> None:
+    """A shortcut cannot skip a pre-root write read by a semantic branch."""
+
+    source_write = InsnSnapshot(
+        opcode=4,
+        ea=0x1100,
+        operands=(),
+        kind=InsnKind.MOV,
+        l=MopSnapshot(kind=OperandKind.NUMBER, size=4, value=7),
+        d=MopSnapshot(kind=OperandKind.STACK, size=4, stkoff=100),
+    )
+    alias_write = InsnSnapshot(
+        opcode=4,
+        ea=0x1700,
+        operands=(),
+        kind=InsnKind.MOV,
+        l=MopSnapshot(kind=OperandKind.NUMBER, size=4, value=1),
+        d=MopSnapshot(kind=OperandKind.STACK, size=4, stkoff=200),
+    )
+    graph = FlowGraph(
+        {
+            1: _block(1, (7,), (), 0x1100, insns=(source_write,)),
+            7: _block(7, (2,), (1,), 0x1700, insns=(alias_write,)),
+            2: _block(2, (3, 4), (7,), 0x1200),
+            3: _block(
+                3,
+                (5, 6),
+                (2,),
+                0x1300,
+                kind=BlockKind.TWO_WAY,
+                insns=(InsnSnapshot(
+                    opcode=4,
+                    ea=0x1300,
+                    operands=(),
+                    kind=InsnKind.MOV,
+                    l=MopSnapshot(kind=OperandKind.STACK, size=4, stkoff=200),
+                    d=MopSnapshot(kind=OperandKind.REGISTER, size=4, reg=0),
+                ),),
+            ),
+            4: _block(4, (), (2,), 0x1400),
+            5: _block(5, (), (3,), 0x1500),
+            6: _block(6, (), (3,), 0x1600),
+        },
+        entry_serial=1,
+        func_ea=0x1000,
+    )
+    reference = DecisionDag(
+        32,
+        {2: RouteComparison(2, "jz", 7, 3, 4)},
+        root=2,
+    )
+
+    leaves = emit_module._semantic_branch_leaf_serials(graph, reference)
+    assert leaves == frozenset({3})
+    assert not emit_module._fresh_load_leaf_modifications_have_direct_delivery(
+        graph,
+        (RedirectGoto(1, 7, 3),),
+        (StateWriteTransition(1, 7, 3, False, None),),
+        leaf_serials=leaves,
+        root_serial=2,
+        state_identity=StorageIdentity(StorageIdentityKind.STACK, 100),
+    )
+
+
+def test_skipped_prefix_preserves_one_way_handler_live_ins() -> None:
+    """A one-way DAG leaf may feed a later branch that reads a skipped write."""
+
+    alias_write = InsnSnapshot(
+        opcode=4,
+        ea=0x1700,
+        operands=(),
+        kind=InsnKind.MOV,
+        l=MopSnapshot(kind=OperandKind.NUMBER, size=4, value=1),
+        d=MopSnapshot(kind=OperandKind.REGISTER, size=4, reg=12),
+    )
+    branch = InsnSnapshot(
+        opcode=0x71,
+        ea=0x1500,
+        operands=(),
+        kind=InsnKind.COND_JUMP,
+        l=MopSnapshot(kind=OperandKind.REGISTER, size=4, reg=12),
+        r=MopSnapshot(kind=OperandKind.NUMBER, size=4, value=0),
+        branch_predicate=PredicateKind.NE,
+    )
+    graph = FlowGraph(
+        {
+            1: _block(1, (7,), (), 0x1100),
+            7: _block(7, (2,), (1,), 0x1700, insns=(alias_write,)),
+            2: _block(2, (3, 4), (7,), 0x1200),
+            3: _block(3, (5,), (2,), 0x1300),
+            4: _block(4, (), (2,), 0x1400),
+            5: _block(5, (6, 8), (3,), 0x1500, kind=BlockKind.TWO_WAY, insns=(branch,)),
+            6: _block(6, (), (5,), 0x1600),
+            8: _block(8, (), (5,), 0x1800),
+        },
+        entry_serial=1,
+        func_ea=0x1000,
+    )
+    reference = DecisionDag(
+        32,
+        {2: RouteComparison(2, "jz", 7, 3, 4)},
+        root=2,
+    )
+
+    assert not emit_module._skipped_prefix_preserves_handler_live_ins(
+        graph, reference, old_target=7, leaf_serial=3, state_var_stkoff=100,
+    )
+    safe_alias = replace(
+        alias_write,
+        d=MopSnapshot(kind=OperandKind.REGISTER, size=4, reg=20),
+    )
+    safe_graph = FlowGraph(
+        {**graph.blocks, 7: _block(7, (2,), (1,), 0x1700, insns=(safe_alias,))},
+        entry_serial=1,
+        func_ea=0x1000,
+    )
+    assert emit_module._skipped_prefix_preserves_handler_live_ins(
+        safe_graph, reference, old_target=7, leaf_serial=3, state_var_stkoff=100,
+    )
+
+    partial_alias = replace(
+        alias_write,
+        d=MopSnapshot(kind=OperandKind.REGISTER, size=1, reg=13),
+    )
+    wide_branch = replace(
+        branch,
+        l=MopSnapshot(kind=OperandKind.REGISTER, size=8, reg=12),
+    )
+    partial_graph = FlowGraph(
+        {
+            **graph.blocks,
+            7: _block(7, (2,), (1,), 0x1700, insns=(partial_alias,)),
+            5: _block(5, (6, 8), (3,), 0x1500, kind=BlockKind.TWO_WAY, insns=(wide_branch,)),
+        },
+        entry_serial=1,
+        func_ea=0x1000,
+    )
+    assert not emit_module._skipped_prefix_preserves_handler_live_ins(
+        partial_graph, reference, old_target=7, leaf_serial=3, state_var_stkoff=100,
+        state_var_reg=13,
+    )
+
+    unknown_width_branch = replace(
+        branch,
+        l=MopSnapshot(kind=OperandKind.REGISTER, size=0, reg=12),
+    )
+    unknown_width_graph = FlowGraph(
+        {
+            **graph.blocks,
+            5: _block(
+                5, (6, 8), (3,), 0x1500,
+                kind=BlockKind.TWO_WAY, insns=(unknown_width_branch,),
+            ),
+        },
+        entry_serial=1,
+        func_ea=0x1000,
+    )
+    assert not emit_module._skipped_prefix_preserves_handler_live_ins(
+        unknown_width_graph, reference,
+        old_target=7, leaf_serial=3, state_var_stkoff=100,
+    )
+
+    unknown_width_write = replace(
+        alias_write,
+        d=MopSnapshot(kind=OperandKind.REGISTER, size=0, reg=12),
+    )
+    unknown_write_graph = FlowGraph(
+        {
+            **graph.blocks,
+            7: _block(7, (2,), (1,), 0x1700, insns=(unknown_width_write,)),
+        },
+        entry_serial=1,
+        func_ea=0x1000,
+    )
+    assert not emit_module._skipped_prefix_preserves_handler_live_ins(
+        unknown_write_graph, reference,
+        old_target=7, leaf_serial=3, state_var_stkoff=100,
+    )
+
+    nested_call = replace(
+        safe_alias,
+        l=MopSnapshot(kind=OperandKind.SUBINSN, size=4, sub_kind=InsnKind.CALL),
+    )
+    nested_call_graph = FlowGraph(
+        {**graph.blocks, 7: _block(7, (2,), (1,), 0x1700, insns=(nested_call,))},
+        entry_serial=1,
+        func_ea=0x1000,
+    )
+    assert not emit_module._skipped_prefix_preserves_handler_live_ins(
+        nested_call_graph, reference, old_target=7, leaf_serial=3, state_var_stkoff=100,
+    )
+
+    partial_stack_write = replace(
+        alias_write,
+        d=MopSnapshot(kind=OperandKind.STACK, size=1, stkoff=104),
+    )
+    wide_stack_branch = replace(
+        branch,
+        l=MopSnapshot(kind=OperandKind.STACK, size=8, stkoff=100),
+    )
+    partial_stack_graph = FlowGraph(
+        {
+            **graph.blocks,
+            7: _block(7, (2,), (1,), 0x1700, insns=(partial_stack_write,)),
+            5: _block(5, (6, 8), (3,), 0x1500, kind=BlockKind.TWO_WAY, insns=(wide_stack_branch,)),
+        },
+        entry_serial=1,
+        func_ea=0x1000,
+    )
+    assert not emit_module._skipped_prefix_preserves_handler_live_ins(
+        partial_stack_graph, reference, old_target=7, leaf_serial=3, state_var_stkoff=100,
+    )
+
+    leaf_store = InsnSnapshot(
+        opcode=0x27,
+        ea=0x1500,
+        operands=(),
+        kind=InsnKind.STORE,
+        l=MopSnapshot(kind=OperandKind.NUMBER, size=4, value=1),
+        d=MopSnapshot(kind=OperandKind.REGISTER, size=8, reg=12),
+    )
+    store_graph = FlowGraph(
+        {
+            **graph.blocks,
+            5: _block(5, (6, 8), (3,), 0x1500, kind=BlockKind.TWO_WAY, insns=(leaf_store,)),
+        },
+        entry_serial=1,
+        func_ea=0x1000,
+    )
+    assert not emit_module._skipped_prefix_preserves_handler_live_ins(
+        store_graph, reference, old_target=7, leaf_serial=3, state_var_stkoff=100,
+    )
+
+    leaf_call = InsnSnapshot(
+        opcode=0x28,
+        ea=0x1500,
+        operands=(),
+        kind=InsnKind.CALL,
+        d=MopSnapshot(
+            kind=OperandKind.ARG_LIST,
+            args=(MopSnapshot(kind=OperandKind.REGISTER, size=8, reg=12),),
+        ),
+    )
+    call_graph = FlowGraph(
+        {
+            **graph.blocks,
+            5: _block(5, (6, 8), (3,), 0x1500, kind=BlockKind.TWO_WAY, insns=(leaf_call,)),
+        },
+        entry_serial=1,
+        func_ea=0x1000,
+    )
+    assert not emit_module._skipped_prefix_preserves_handler_live_ins(
+        call_graph, reference, old_target=7, leaf_serial=3, state_var_stkoff=100,
+    )
+
+    state_overwrite = replace(
+        alias_write,
+        d=MopSnapshot(kind=OperandKind.STACK, size=4, stkoff=100),
+    )
+    state_overwrite_graph = FlowGraph(
+        {**graph.blocks, 7: _block(7, (2,), (1,), 0x1700, insns=(state_overwrite,))},
+        entry_serial=1,
+        func_ea=0x1000,
+    )
+    assert not emit_module._skipped_prefix_preserves_handler_live_ins(
+        state_overwrite_graph, reference, old_target=7, leaf_serial=3,
+        state_var_stkoff=100,
+    )
+
+
+def test_final_guard_admits_only_source_bound_corridor_pred_split() -> None:
+    """The cloned feeder executes; an empty pred-split trampoline does not."""
+
+    write = InsnSnapshot(
+        opcode=4,
+        ea=0x1100,
+        operands=(),
+        kind=InsnKind.MOV,
+        l=MopSnapshot(kind=OperandKind.NUMBER, size=4, value=7),
+        d=MopSnapshot(kind=OperandKind.STACK, size=4, stkoff=100),
+    )
+    feeder = InsnSnapshot(
+        opcode=4,
+        ea=0x1500,
+        operands=(),
+        kind=InsnKind.MOV,
+        l=MopSnapshot(kind=OperandKind.NUMBER, size=4, value=1),
+        d=MopSnapshot(kind=OperandKind.REGISTER, size=4, reg=20),
+    )
+    graph = FlowGraph(
+        {
+            1: _block(1, (5,), (), 0x1100, insns=(write,)),
+            5: _block(5, (2,), (1,), 0x1500, insns=(feeder,)),
+            2: _block(2, (3, 4), (5,), 0x1200),
+            3: _block(3, (), (2,), 0x1300),
+            4: _block(4, (), (2,), 0x1400),
+        },
+        entry_serial=1,
+        func_ea=0x1000,
+    )
+    reference = DecisionDag(32, {2: RouteComparison(2, "jz", 7, 3, 4)}, root=2)
+    transition = StateWriteTransition(
+        write_block=1,
+        next_state=7,
+        target_handler=3,
+        is_return=False,
+        branch_arm=None,
+        via_block=5,
+        preserve_via_block=True,
+        preserve_via_until=5,
+        proof=TransitionProof("test", "predecessor_partitioned", True),
+    )
+    kwargs = dict(
+        leaf_serials=frozenset({3}),
+        root_serial=2,
+        state_identity=StorageIdentity(StorageIdentityKind.STACK, 100),
+        reference_dag=reference,
+        state_var_stkoff=100,
+    )
+    corridor = EdgeRedirectViaPredSplit(5, 2, 3, 1, clone_until=5)
+    assert emit_module._all_reference_leaf_pred_splits_preserve_handler_inputs(
+        graph, reference, (corridor,), (transition,),
+        state_identity=kwargs["state_identity"],
+        state_var_stkoff=100, state_var_reg=None,
+        live_in_by_serial=None, storage_live_in_by_serial=None,
+    )
+    assert not emit_module._all_reference_leaf_pred_splits_preserve_handler_inputs(
+        graph, reference, (ZeroStateWrite(5, 0x1500), corridor),
+        (transition,), state_identity=kwargs["state_identity"],
+        state_var_stkoff=100, state_var_reg=None,
+        live_in_by_serial=None, storage_live_in_by_serial=None,
+    )
+    assert emit_module._fresh_load_leaf_modifications_have_direct_delivery(
+        graph, (corridor,), (transition,), **kwargs,
+    )
+    assert not emit_module._fresh_load_leaf_modifications_have_direct_delivery(
+        graph, (replace(corridor, clone_until=None),), (transition,), **kwargs,
+    )
+    assert not emit_module._fresh_load_leaf_modifications_have_direct_delivery(
+        graph, (corridor,), (replace(transition, next_state=8),), **kwargs,
+    )
+    # A one-block clone copies the same instructions even if another proven
+    # route retargets the original shared feeder's outgoing edge.
+    assert emit_module._fresh_load_leaf_modifications_have_direct_delivery(
+        graph, (RedirectGoto(5, 2, 4), corridor), (transition,), **kwargs,
+    )
+    assert not emit_module._fresh_load_leaf_modifications_have_direct_delivery(
+        graph, (RedirectGoto(1, 5, 4), corridor), (transition,), **kwargs,
+    )
+    assert not emit_module._fresh_load_leaf_modifications_have_direct_delivery(
+        graph, (ZeroStateWrite(5, 0x1500), corridor), (transition,), **kwargs,
+    )
+    assert not emit_module._fresh_load_leaf_modifications_have_direct_delivery(
+        graph, (NopInstructions(5, (0x1500,)), corridor), (transition,), **kwargs,
+    )
+    shared_graph = FlowGraph(
+        {
+            **graph.blocks,
+            5: _block(5, (2,), (1, 6), 0x1500, insns=(feeder,)),
+            6: _block(6, (5,), (), 0x1600),
+        },
+        entry_serial=1, func_ea=0x1000,
+    )
+    independent_clone = EdgeRedirectViaPredSplit(5, 2, 4, 6, clone_until=5)
+    assert emit_module._corridor_pred_split_preserves_handler_inputs(
+        shared_graph, reference, corridor, (corridor, independent_clone),
+        (transition,), state_identity=kwargs["state_identity"],
+        state_var_stkoff=100, state_var_reg=None,
+        live_in_by_serial=None, storage_live_in_by_serial=None,
+    )
+    assert not emit_module._corridor_pred_split_preserves_handler_inputs(
+        shared_graph, reference, corridor,
+        (corridor, replace(independent_clone, source_new_target=4)),
+        (transition,), state_identity=kwargs["state_identity"],
+        state_var_stkoff=100, state_var_reg=None,
+        live_in_by_serial=None, storage_live_in_by_serial=None,
+    )
+    effectful_feeder = replace(
+        feeder,
+        l=MopSnapshot(kind=OperandKind.SUBINSN, size=4, sub_kind=InsnKind.CALL),
+    )
+    effectful_graph = FlowGraph(
+        {**graph.blocks, 5: _block(5, (2,), (1,), 0x1500, insns=(effectful_feeder,))},
+        entry_serial=1,
+        func_ea=0x1000,
+    )
+    assert not emit_module._fresh_load_leaf_modifications_have_direct_delivery(
+        effectful_graph, (corridor,), (transition,), **kwargs,
+    )
+
+
+
+
+
+
+def test_cloned_constant_carrier_feeder_preserves_state_read_by_handler() -> None:
+    """A source-local clone must execute the exact state MOVE before the leaf."""
+
+    source_write = InsnSnapshot(
+        opcode=4, ea=0x1100, operands=(), kind=InsnKind.MOV,
+        l=MopSnapshot(kind=OperandKind.NUMBER, size=4, value=7),
+        d=MopSnapshot(kind=OperandKind.REGISTER, size=4, reg=8),
+    )
+    feeder_write = InsnSnapshot(
+        opcode=4, ea=0x1500, operands=(), kind=InsnKind.MOV,
+        l=MopSnapshot(kind=OperandKind.REGISTER, size=4, reg=8),
+        d=MopSnapshot(kind=OperandKind.STACK, size=4, stkoff=100),
+    )
+    handler_read = InsnSnapshot(
+        opcode=4, ea=0x1300, operands=(), kind=InsnKind.MOV,
+        l=MopSnapshot(kind=OperandKind.STACK, size=4, stkoff=100),
+        d=MopSnapshot(kind=OperandKind.REGISTER, size=4, reg=40),
+    )
+    graph = FlowGraph(
+        {
+            1: _block(1, (5,), (), 0x1100, insns=(source_write,)),
+            5: _block(5, (2,), (1,), 0x1500, insns=(feeder_write,)),
+            2: _block(2, (3, 4), (5,), 0x1200),
+            3: _block(3, (), (2,), 0x1300, insns=(handler_read,)),
+            4: _block(4, (), (2,), 0x1400),
+        },
+        entry_serial=1, func_ea=0x1000,
+    )
+    reference = DecisionDag(32, {2: RouteComparison(2, "jz", 7, 3, 4)}, root=2)
+    transition = StateWriteTransition(
+        1, 7, 3, False, None, via_block=5,
+        proof=TransitionProof("test", "source_carrier_decision_dag_reconciled", True),
+    )
+    (transition,) = emit_module._preserve_live_state_carrier_feeders(
+        graph, reference, (transition,), state_var_stkoff=100, state_var_reg=None,
+    )
+    assert transition.preserve_via_block is True
+    kwargs = dict(
+        leaf_serials=frozenset({3}), root_serial=2,
+        state_identity=StorageIdentity(StorageIdentityKind.STACK, 100),
+        reference_dag=reference, state_var_stkoff=100,
+    )
+    assert not emit_module._fresh_load_leaf_modifications_have_direct_delivery(
+        graph, (RedirectGoto(1, 5, 3),), (transition,), **kwargs,
+    )
+    split = EdgeRedirectViaPredSplit(5, 2, 3, 1, clone_until=5)
+    assert emit_module._fresh_load_leaf_modifications_have_direct_delivery(
+        graph, (split,), (transition,), **kwargs,
+    )
+    changed_feeder = replace(
+        feeder_write, l=MopSnapshot(kind=OperandKind.NUMBER, size=4, value=8),
+    )
+    changed_graph = FlowGraph(
+        {**graph.blocks, 5: _block(
+            5, (2,), (1,), 0x1500, insns=(changed_feeder,),
+        )},
+        entry_serial=1, func_ea=0x1000,
+    )
+    assert not emit_module._fresh_load_leaf_modifications_have_direct_delivery(
+        changed_graph,
+        (split,), (transition,), **kwargs,
+    )
+    unpromoted = replace(transition, preserve_via_block=False)
+    assert emit_module._preserve_live_state_carrier_feeders(
+        changed_graph, reference, (unpromoted,),
+        state_var_stkoff=100, state_var_reg=None,
+    ) == (unpromoted,)
+    state_dead_graph = FlowGraph(
+        {**graph.blocks, 3: _block(3, (), (2,), 0x1300, insns=(
+            replace(handler_read, l=MopSnapshot(
+                kind=OperandKind.STACK, size=4, stkoff=200,
+                stack_refs=(200,),
+            )),
+        ))},
+        entry_serial=1, func_ea=0x1000,
+    )
+    assert emit_module._preserve_live_state_carrier_feeders(
+        state_dead_graph, reference, (unpromoted,),
+        state_var_stkoff=100, state_var_reg=None,
+    ) == (unpromoted,)
+
+    hidden_read = InsnSnapshot(
+        opcode=7, ea=0x1300, operands=(), kind=InsnKind.LOAD,
+        l=MopSnapshot(kind=OperandKind.ADDRESS, size=8, stack_refs=(100,)),
+        d=MopSnapshot(kind=OperandKind.REGISTER, size=4, reg=40),
+    )
+    hidden_read_graph = FlowGraph(
+        {**graph.blocks, 3: _block(3, (), (2,), 0x1300, insns=(hidden_read,))},
+        entry_serial=1, func_ea=0x1000,
+    )
+    (hidden_promoted,) = emit_module._preserve_live_state_carrier_feeders(
+        hidden_read_graph, reference, (unpromoted,),
+        state_var_stkoff=100, state_var_reg=None,
+    )
+    assert hidden_promoted.preserve_via_block is True
+
+    # A generic pointer LOAD may alias a stack state slot even when its
+    # portable address tree has no explicit frame reference.
+    unknown_address = replace(hidden_read, l=MopSnapshot(
+        kind=OperandKind.ADDRESS, size=8,
+    ))
+    unknown_read_graph = FlowGraph(
+        {**graph.blocks, 3: _block(3, (), (2,), 0x1300, insns=(unknown_address,))},
+        entry_serial=1, func_ea=0x1000,
+    )
+    (unknown_promoted,) = emit_module._preserve_live_state_carrier_feeders(
+        unknown_read_graph, reference, (unpromoted,),
+        state_var_stkoff=100, state_var_reg=None,
+    )
+    assert unknown_promoted.preserve_via_block is True
+
+    call_leaf = replace(unknown_address, kind=InsnKind.CALL, is_call=True)
+    call_graph = FlowGraph(
+        {**graph.blocks, 3: _block(3, (), (2,), 0x1300, insns=(call_leaf,))},
+        entry_serial=1, func_ea=0x1000,
+    )
+    (call_promoted,) = emit_module._preserve_live_state_carrier_feeders(
+        call_graph, reference, (unpromoted,),
+        state_var_stkoff=100, state_var_reg=None,
+    )
+    assert call_promoted.preserve_via_block is True
+
+    nested_call = replace(
+        call_leaf, kind=InsnKind.MOV, value_op_kind=ValueOpKind.MOVE,
+        is_call=False,
+        l=MopSnapshot(kind=OperandKind.SUBINSN, size=8, sub_kind=InsnKind.CALL),
+    )
+    nested_call_graph = FlowGraph(
+        {**graph.blocks, 3: _block(3, (), (2,), 0x1300, insns=(nested_call,))},
+        entry_serial=1, func_ea=0x1000,
+    )
+    (nested_call_promoted,) = emit_module._preserve_live_state_carrier_feeders(
+        nested_call_graph, reference, (unpromoted,),
+        state_var_stkoff=100, state_var_reg=None,
+    )
+    assert nested_call_promoted.preserve_via_block is True
+
+
+@pytest.mark.parametrize(
+    ("operation", "second_value"),
+    ((ValueOpKind.SUB, 10), (ValueOpKind.XOR, 4)),
+)
+def test_cloned_state_transform_feeder_preserves_state_read_by_handler(
+    operation: ValueOpKind, second_value: int,
+) -> None:
+    """The same source-local rule covers a proven arithmetic state feeder."""
+
+    source = (
+        InsnSnapshot(
+            opcode=4, ea=0x1100, operands=(), kind=InsnKind.MOV,
+            l=MopSnapshot(kind=OperandKind.NUMBER, size=4, value=3),
+            d=MopSnapshot(kind=OperandKind.REGISTER, size=4, reg=8),
+        ),
+        InsnSnapshot(
+            opcode=4, ea=0x1104, operands=(), kind=InsnKind.MOV,
+            l=MopSnapshot(kind=OperandKind.NUMBER, size=4, value=second_value),
+            d=MopSnapshot(kind=OperandKind.REGISTER, size=4, reg=12),
+        ),
+    )
+    feeder = InsnSnapshot(
+        opcode=0x40, ea=0x1500, operands=(),
+        kind=InsnKind.SUB if operation is ValueOpKind.SUB else InsnKind.VALUE,
+        value_op_kind=operation,
+        l=MopSnapshot(kind=OperandKind.REGISTER, size=4, reg=12),
+        r=MopSnapshot(kind=OperandKind.REGISTER, size=4, reg=8),
+        d=MopSnapshot(kind=OperandKind.STACK, size=4, stkoff=100),
+    )
+    read = InsnSnapshot(
+        opcode=4, ea=0x1300, operands=(), kind=InsnKind.MOV,
+        l=MopSnapshot(kind=OperandKind.STACK, size=4, stkoff=100),
+        d=MopSnapshot(kind=OperandKind.REGISTER, size=4, reg=40),
+    )
+    graph = FlowGraph(
+        {
+            1: _block(1, (5,), (), 0x1100, insns=source),
+            5: _block(5, (2,), (1,), 0x1500, insns=(feeder,)),
+            2: _block(2, (3, 4), (5,), 0x1200),
+            3: _block(3, (), (2,), 0x1300, insns=(read,)),
+            4: _block(4, (), (2,), 0x1400),
+        },
+        entry_serial=1, func_ea=0x1000,
+    )
+    reference = DecisionDag(32, {2: RouteComparison(2, "jz", 7, 3, 4)}, root=2)
+    unpromoted = StateWriteTransition(
+        1, 7, 3, False, None, via_block=5,
+        proof=TransitionProof("test", "state_transform_feeder_decision_dag_reconciled", True),
+    )
+    (promoted,) = emit_module._preserve_live_state_carrier_feeders(
+        graph, reference, (unpromoted,), state_var_stkoff=100, state_var_reg=None,
+    )
+    assert promoted.preserve_via_block is True
+    assert emit_module._fresh_load_leaf_modifications_have_direct_delivery(
+        graph,
+        (EdgeRedirectViaPredSplit(5, 2, 3, 1, clone_until=5),),
+        (promoted,),
+        leaf_serials=frozenset({3}), root_serial=2,
+        state_identity=StorageIdentity(StorageIdentityKind.STACK, 100),
+        reference_dag=reference, state_var_stkoff=100,
+    )
 
 
 def _conditional_observation_fixture(
@@ -462,6 +1128,60 @@ def test_dispatcher_self_reentry_corridor_is_enumerated_completely() -> None:
             f"blk{anchor.serial}@0x{anchor.ea:x}" for anchor in corridor.path
         )
 
+
+def test_single_block_handler_loop_before_feeder_is_finite_corridor() -> None:
+    """A retained handler self-loop does not create a second feeder exit.
+
+    The 69814 loader has blk223@0x7FFF9918A4D0 looping to itself before
+    exiting through blk224@0x7FFF9918AC92 to the dispatcher. Redirecting
+    the feeder exit leaves the loop executable; enumerating loop iterations
+    is unnecessary for corridor coverage.
+    """
+
+    graph = FlowGraph(
+        blocks={
+            0: _block(0, (1,), (), 0x1000),
+            1: _block(1, (2, 9), (0, 4), 0x1010),
+            2: _block(2, (2, 4), (1, 2), 0x1020),
+            4: _block(4, (1,), (2,), 0x1040),
+            9: _block(9, (), (1,), 0x1090, kind=BlockKind.STOP),
+        },
+        entry_serial=0,
+        func_ea=0x1000,
+    )
+    report = analyze_dispatcher_corridor_coverage(
+        graph,
+        modifications=(RedirectGoto(from_serial=4, old_target=1, new_target=9),),
+        dispatcher_entry_serial=1,
+    )
+
+    assert report.enumeration_complete
+    assert tuple(tuple(anchor.serial for anchor in row.path) for row in report.residual_corridors) == (
+        (0, 1),
+    )
+    assert tuple(tuple(anchor.serial for anchor in row.path) for row in report.covered_corridors) == (
+        (2, 4, 1),
+    )
+
+
+def test_handler_loop_with_another_exit_remains_incomplete() -> None:
+    graph = FlowGraph(
+        blocks={
+            0: _block(0, (1,), (), 0x1000),
+            1: _block(1, (2, 9), (0, 4), 0x1010),
+            2: _block(2, (2, 4, 9), (1, 2), 0x1020),
+            4: _block(4, (1,), (2,), 0x1040),
+            9: _block(9, (), (1, 2), 0x1090, kind=BlockKind.STOP),
+        },
+        entry_serial=0,
+        func_ea=0x1000,
+    )
+    report = analyze_dispatcher_corridor_coverage(
+        graph,
+        modifications=(RedirectGoto(from_serial=4, old_target=1, new_target=9),),
+        dispatcher_entry_serial=1,
+    )
+    assert not report.enumeration_complete
 
 def test_unrelated_reverse_cycle_keeps_corridor_enumeration_incomplete() -> None:
     graph = _dispatcher_self_reentry_corridor_graph(reverse_cycle=True)

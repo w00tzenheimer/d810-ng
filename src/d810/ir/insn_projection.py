@@ -23,6 +23,7 @@ they need.
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import replace
 from types import MappingProxyType
 
 from d810.ir.expressions import Add, And, Const, ExprRef, Move, Mul, Sub, ValueOpKind
@@ -73,6 +74,7 @@ __all__ = [
     "project_instruction_sequence",
     "project_instruction_effect_sites",
     "instruction_references_stack_identity",
+    "instruction_source_trees_supported_for_semantic_load",
     "project_operand_expr",
     "result_storage",
 ]
@@ -358,6 +360,65 @@ def _source_operands_for_instruction(
     if insn.value_op_kind is not None or insn.predicate_kind is not None:
         return (insn.l, insn.r)
     return (insn.l, insn.r)
+
+
+_SEMANTIC_LOAD_PURE_OPS = frozenset(
+    {
+        ValueOpKind.MOVE,
+        ValueOpKind.ADD,
+        ValueOpKind.SUB,
+        ValueOpKind.MUL,
+        ValueOpKind.AND,
+        ValueOpKind.OR,
+        ValueOpKind.XOR,
+        ValueOpKind.SHL,
+        ValueOpKind.SHR,
+        ValueOpKind.SAR,
+        ValueOpKind.ROL,
+        ValueOpKind.ROR,
+    }
+)
+
+
+def _supported_semantic_load_source_tree(operand: MopSnapshot | None) -> bool:
+    """Reject source shapes whose dependencies the canonical lift may omit."""
+    if operand is None or operand.kind is OperandKind.EMPTY:
+        return True
+    if operand.kind is OperandKind.REGISTER:
+        return operand.reg is not None and operand.size > 0
+    if operand.kind is OperandKind.STACK:
+        return operand.stkoff is not None and operand.size > 0
+    if operand.kind is OperandKind.NUMBER:
+        return operand.value is not None and operand.size > 0
+    if operand.kind is OperandKind.GLOBAL:
+        return operand.gaddr is not None and operand.size > 0
+    if operand.kind is OperandKind.ADDRESS:
+        inner = operand.sub_l
+        return bool(
+            operand.size > 0
+            and inner is not None
+            and inner.kind is OperandKind.GLOBAL
+            and inner.gaddr is not None
+        )
+    if operand.kind is OperandKind.SUBINSN:
+        return bool(
+            operand.size > 0
+            and operand.sub_value_op_kind
+            in _SEMANTIC_LOAD_PURE_OPS | {ValueOpKind.LOAD}
+            and _supported_semantic_load_source_tree(operand.sub_l)
+            and _supported_semantic_load_source_tree(operand.sub_r)
+        )
+    return False
+
+
+def instruction_source_trees_supported_for_semantic_load(
+    insn: InsnSnapshot,
+) -> bool:
+    """Guard the load-leaf proof against unprojected source dependencies."""
+    return all(
+        _supported_semantic_load_source_tree(operand)
+        for operand in _source_operands_for_instruction(insn)
+    )
 
 
 def _instruction_result(
@@ -708,6 +769,43 @@ class InstructionProjection:
             for insn in block.insn_snapshots
             for instruction in project_instruction_sequence(insn)
         )
+
+    @classmethod
+    def from_block_for_semantic_load_proof(
+        cls, block: BlockSnapshot,
+    ) -> tuple[Instruction, ...]:
+        """Keep hidden writes and sources visible to reaching-definition proof."""
+        projected: list[Instruction] = []
+        for insn in block.insn_snapshots:
+            sequence = project_instruction_sequence(insn)
+            parent = sequence[-1]
+            attrs = dict(parent.attrs)
+            if not instruction_source_trees_supported_for_semantic_load(insn):
+                attrs["unprojected_source"] = True
+            raw_result = result_storage(insn)
+            has_result_operand = bool(
+                insn.d is not None
+                and insn.d.kind
+                not in {
+                    OperandKind.EMPTY,
+                    OperandKind.BLOCK,
+                    OperandKind.ARG_LIST,
+                    OperandKind.CASE_LIST,
+                }
+            )
+            if (
+                has_result_operand
+                and insn.value_op_kind is not ValueOpKind.STORE
+                and raw_result != parent.result
+            ):
+                attrs["unprojected_write"] = True
+                if isinstance(raw_result, Varnode) and raw_result.space is not Space.UNKNOWN:
+                    parent = replace(
+                        parent, operation=ValueOpKind.VENDOR, result=raw_result,
+                    )
+            projected.extend(sequence[:-1])
+            projected.append(replace(parent, attrs=attrs) if attrs != parent.attrs else parent)
+        return tuple(projected)
 
     @classmethod
     def from_flowgraph(cls, graph: FlowGraph) -> Mapping[int, tuple[Instruction, ...]]:

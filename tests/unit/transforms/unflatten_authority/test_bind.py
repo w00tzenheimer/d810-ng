@@ -22947,6 +22947,267 @@ def test_state_transform_feeder_direct_selects_exact_comparison_bypass() -> None
         )
 
 
+def test_state_transform_helper_corridor_selects_only_exact_cloned_feeder() -> None:
+    """The transform source may own a private copy of its proved feeder."""
+    from d810.transforms.unflatten_authority.proposal import (
+        canonical_patch_step_descriptors,
+    )
+
+    authority, original_plan, source_inventory, *_ = _compiler_corridor_unsupported_case(
+        proof_kind=route_model.SemanticRouteProofKind.STATE_TRANSFORM,
+    )
+    proof = authority.proposal.route_evidence.route_proofs[0]
+    transform = proof.state_transform
+    assert transform is not None
+
+    def ref_for(identity):
+        return next(
+            row.block_ref for row in source_inventory.blocks
+            if row.block_ref.identity == identity
+        )
+
+    source_ref = ref_for(transform.source_identity)
+    feeder_ref = ref_for(transform.feeder_identity)
+    comparison_ref = ref_for(transform.comparison_entry_identity)
+    destination_ref = ref_for(proof.destinations[0].target_identity)
+    original_step = original_plan.steps[0]
+    helper_ref = original_step.clone_block_ids[0]
+    step = replace(
+        original_step,
+        clone_block_ids=(helper_ref,),
+        source_serial=feeder_ref,
+        via_pred=source_ref,
+        old_target=comparison_ref,
+        new_target=destination_ref,
+        clone_until=feeder_ref,
+        corridor_serials=(feeder_ref,),
+    )
+    plan = replace(
+        original_plan,
+        steps=(step,),
+        new_blocks=(replace(original_plan.new_blocks[0], template_block=feeder_ref),),
+    )
+    descriptor = canonical_patch_step_descriptors(plan)[0]
+
+    assert bind._state_transform_helper_corridor_coordinates_match(
+        plan, proof, descriptor,
+    )
+    lineage_index = bind._index_lineage_fact_groups(
+        plan, transaction_api._derive_patch_lineage_facts(source_inventory, plan),
+    )
+    route_claim = next(
+        claim for claim in authority.proposal.claims
+        if type(claim) is model.EquivalentSemanticRouteClaim
+    )
+    selected = bind._select_lineage_fact_group(
+        lineage_index, plan=plan, claim=route_claim,
+        proof=proof, source_inventory=source_inventory,
+    )
+    assert selected.descriptor.step_index == 0
+
+    for drifted_step in (
+        replace(step, via_pred=feeder_ref),
+        replace(step, source_serial=source_ref),
+        replace(step, old_target=feeder_ref),
+        replace(step, new_target=comparison_ref),
+        replace(step, clone_until=source_ref),
+        replace(step, source_new_target=destination_ref),
+    ):
+        drifted_plan = replace(plan, steps=(drifted_step,))
+        assert not bind._state_transform_helper_corridor_coordinates_match(
+            drifted_plan, proof,
+            canonical_patch_step_descriptors(drifted_plan)[0],
+        )
+
+
+def test_state_transform_helper_corridor_realizes_exact_cloned_feeder() -> None:
+    authority, plan, source, projected, facts, attempt = (
+        _compiler_corridor_unsupported_case(
+            proof_kind=route_model.SemanticRouteProofKind.STATE_TRANSFORM,
+            exact_transform_feeder=True,
+        )
+    )
+    result = realize_projected_routes_for_test(
+        source_authority=authority, plan=plan, source_inventory=source,
+        projected_inventory=projected, patch_step_facts=facts,
+        attempt_id=attempt,
+    )
+    assert type(result) is model.ProjectedRouteRealizationAccepted
+    assert len(result.realization.rows) == 1
+    assert type(result.realization.rows[0].relation) is model.ClonedCarrierRouteCorridorRealization
+
+
+def test_state_transform_helper_corridor_realizes_split_state_feeder() -> None:
+    """The first old edge can enter a proved state feeder before comparison."""
+    authority, plan, source, projected, facts, attempt = (
+        _compiler_corridor_unsupported_case(
+            proof_kind=route_model.SemanticRouteProofKind.STATE_TRANSFORM,
+            split_transform_state_move=True,
+        )
+    )
+    proof = authority.proposal.route_evidence.route_proofs[0]
+    assert proof.state_transform is not None
+    assert proof.state_transform.state_feeder_identity is not None
+    assert len(proof.state_transform.corridor) == 4
+    assert len(plan.steps[0].corridor_serials) == 2
+    result = realize_projected_routes_for_test(
+        source_authority=authority, plan=plan, source_inventory=source,
+        projected_inventory=projected, patch_step_facts=facts,
+        attempt_id=attempt,
+    )
+    assert type(result) is model.ProjectedRouteRealizationAccepted
+    assert type(result.realization.rows[0].relation) is model.ClonedCarrierRouteCorridorRealization
+    from d810.transforms.unflatten_authority.proposal import (
+        canonical_patch_step_descriptors,
+    )
+
+    assert bind._state_transform_helper_corridor_coordinates_match(
+        plan, proof, canonical_patch_step_descriptors(plan)[0],
+    )
+    step = plan.steps[0]
+    comparison_ref = next(
+        ref for ref in source.serial_by_ref
+        if ref.identity == proof.state_transform.comparison_entry_identity
+    )
+    for invalid in (
+        replace(step, old_target=comparison_ref),
+        replace(step, old_target=step.new_target),
+        replace(step, clone_until=step.corridor_serials[0]),
+        replace(step, corridor_serials=tuple(reversed(step.corridor_serials))),
+    ):
+        invalid_plan = replace(plan, steps=(invalid,))
+        assert not bind._state_transform_helper_corridor_coordinates_match(
+            invalid_plan, proof,
+            canonical_patch_step_descriptors(invalid_plan)[0],
+        )
+
+
+def test_state_transform_helper_corridor_admits_rewired_orphan_only_after_complete_clone() -> None:
+    """A dead original feeder may be retargeted after its sole incoming arm is cloned."""
+    authority, plan, source, projected, _facts, attempt = (
+        _compiler_corridor_unsupported_case(
+            proof_kind=route_model.SemanticRouteProofKind.STATE_TRANSFORM,
+            exact_transform_feeder=True,
+            extra_feeder_redirect_to=200,
+        )
+    )
+    clone = plan.steps[0]
+    feeder_ref = clone.source_serial
+    old_ref = clone.old_target
+    target_ref = plan.steps[-1].new_target
+    feeder_serial = source.serial_by_ref[feeder_ref]
+    feeder_row = next(row for row in projected.blocks if row.block_ref == feeder_ref)
+    assert feeder_row.predecessor_serials == ()
+    assert feeder_serial not in projected.physical_entry_reachable_serials
+    assert feeder_row.successor_serials == (projected.serial_by_ref[target_ref],)
+    assert type(plan.steps[-1]) is PatchRedirectGoto
+    assert plan.steps[-1].old_target == old_ref
+    facts = transaction_api._derive_patch_lineage_facts(source, plan)
+    result = realize_projected_routes_for_test(
+        source_authority=authority,
+        plan=plan,
+        source_inventory=source,
+        projected_inventory=projected,
+        patch_step_facts=facts,
+        attempt_id=attempt,
+    )
+    assert type(result) is model.ProjectedRouteRealizationAccepted
+    assert type(result.realization.rows[0].relation) is model.ClonedCarrierRouteCorridorRealization
+
+
+def test_rewired_corridor_source_requires_exact_clone_and_rewire_coverage() -> None:
+    """An unowned or incomplete feeder rewrite must not bypass retention."""
+    from d810.transforms.unflatten_authority.proposal import (
+        canonical_patch_step_descriptors,
+    )
+
+    authority, plan, source, projected, _facts, _attempt = (
+        _compiler_corridor_unsupported_case(
+            proof_kind=route_model.SemanticRouteProofKind.STATE_TRANSFORM,
+            exact_transform_feeder=True,
+            extra_feeder_redirect_to=200,
+        )
+    )
+    clone, rewire = plan.steps
+    proofs = authority.proposal.route_evidence.route_proofs
+    claims = authority.proposal.claims
+    def descriptors_for(candidate):
+        return {
+            descriptor.step_index: descriptor
+            for descriptor in canonical_patch_step_descriptors(candidate)
+        }
+
+    assert bind._is_fully_cloned_orphaned_corridor_source(
+        plan, source, projected, clone.source_serial,
+        descriptors=descriptors_for(plan),
+        route_proofs=proofs, route_claims=claims,
+    )
+    for invalid_steps in (
+        (rewire,),
+        (clone,),
+        (clone, replace(rewire, old_target=clone.new_target)),
+        (replace(clone, via_pred=clone.source_serial), rewire),
+        (clone, rewire, rewire),
+    ):
+        invalid_plan = replace(plan, steps=invalid_steps)
+        assert not bind._is_fully_cloned_orphaned_corridor_source(
+            invalid_plan, source, projected,
+            clone.source_serial,
+            descriptors=descriptors_for(invalid_plan),
+            route_proofs=proofs, route_claims=claims,
+        )
+    assert not bind._is_fully_cloned_orphaned_corridor_source(
+        plan, source, projected, clone.source_serial,
+        descriptors=descriptors_for(plan),
+        route_proofs=(), route_claims=claims,
+    )
+    assert not bind._is_fully_cloned_orphaned_corridor_source(
+        plan, source, projected, clone.source_serial,
+        descriptors=descriptors_for(plan),
+        route_proofs=proofs, route_claims=(),
+    )
+
+
+def test_state_carrier_helper_corridor_can_preserve_optional_shared_feeder() -> None:
+    """A proved clone remains valid when the carrier receipt does not require it."""
+    authority, plan, source, projected, facts, attempt = (
+        _compiler_corridor_unsupported_case(
+            proof_kind=route_model.SemanticRouteProofKind.STATE_CARRIER,
+            carrier_clone_optional=True,
+        )
+    )
+    proof = authority.proposal.route_evidence.route_proofs[0]
+    assert proof.state_carrier is not None
+    assert not proof.state_carrier.requires_feeder_clone
+    feeder = next(row for row in source.blocks if row.block_ref == plan.steps[0].source_serial)
+    assert len(feeder.predecessor_serials) == 2
+    result = realize_projected_routes_for_test(
+        source_authority=authority, plan=plan, source_inventory=source,
+        projected_inventory=projected, patch_step_facts=facts,
+        attempt_id=attempt,
+    )
+    assert type(result) is model.ProjectedRouteRealizationAccepted
+    assert type(result.realization.rows[0].relation) is model.ClonedCarrierRouteCorridorRealization
+    from d810.transforms.unflatten_authority.proposal import (
+        canonical_patch_step_descriptors,
+    )
+
+    descriptor = canonical_patch_step_descriptors(plan)[0]
+    assert bind._state_carrier_helper_corridor_coordinates_match(
+        plan, proof, descriptor,
+    )
+    for invalid in (
+        replace(plan.steps[0], via_pred=plan.steps[0].source_serial),
+        replace(plan.steps[0], old_target=plan.steps[0].source_serial),
+        replace(plan.steps[0], new_target=plan.steps[0].old_target),
+    ):
+        invalid_plan = replace(plan, steps=(invalid,))
+        assert not bind._state_carrier_helper_corridor_coordinates_match(
+            invalid_plan, proof,
+            canonical_patch_step_descriptors(invalid_plan)[0],
+        )
+
+
 @pytest.mark.parametrize("step_type", (PatchRedirectGoto, PatchRedirectBranch))
 def test_owner_bound_direct_route_selects_exact_proof_source_edge(step_type) -> None:
     """A typed owner/source/destination triple selects one direct edge rewrite."""
@@ -26974,12 +27235,13 @@ def _physical_split_x_canonical_replay_case(proof_kind):
 def _compile_corridor_from_canonical_evidence(
     *, source, evidence, from_serial: int, old_target: int, new_target: int,
     predecessor_serial: int, clone_until: int, state_identity, tag: str,
+    extra_feeder_redirect_to: int | None = None,
 ):
     """Compile one real corridor plan around already-produced canonical evidence."""
     from d810.ir.block_identity import stable_block_identity_from_snapshot
     from d810.transforms.cfg_transaction import NativeBlockRef, TransactionAttemptId
     from d810.transforms.edit_simulator import project_post_state
-    from d810.transforms.graph_modification import EdgeRedirectViaPredSplit
+    from d810.transforms.graph_modification import EdgeRedirectViaPredSplit, RedirectGoto
     from tests.typed_patch_authority import compile_patch_plan
 
     # Canonical source normalization belongs in each producer fixture, before
@@ -27014,11 +27276,14 @@ def _compile_corridor_from_canonical_evidence(
         authoritative_handler_serials=(), state_identity=state_identity,
         use_def_witness=witness,
     )
-    compiled = compile_patch_plan(
-        [EdgeRedirectViaPredSplit(
+    modifications = [EdgeRedirectViaPredSplit(
             from_serial, old_target, new_target, predecessor_serial,
             clone_until=clone_until,
-        )], source, plan_id=proposal.plan_id,
+        )]
+    if extra_feeder_redirect_to is not None:
+        modifications.append(RedirectGoto(from_serial, old_target, extra_feeder_redirect_to))
+    compiled = compile_patch_plan(
+        modifications, source, plan_id=proposal.plan_id,
         source_generation=evidence.generation, block_refs_by_serial=refs,
     )
     plan = replace(
@@ -27299,7 +27564,12 @@ def _compiler_exact_terminal_corridor_case():
     )
 
 
-def _compiler_corridor_unsupported_case(*, proof_kind):
+def _compiler_corridor_unsupported_case(
+    *, proof_kind, exact_transform_feeder=False,
+    extra_feeder_redirect_to=None,
+    carrier_clone_optional=False,
+    split_transform_state_move=False,
+):
     """Build a compiler-produced corridor with a real SOURCE proof of each U kind."""
     from d810.ir.flowgraph import BlockSnapshot, FlowGraph, InsnKind, InsnSnapshot
     from d810.ir.storage_identity import StorageIdentity, StorageIdentityKind
@@ -27341,6 +27611,56 @@ def _compiler_corridor_unsupported_case(*, proof_kind):
             },
             source.entry_serial, source.func_ea,
         )
+        if split_transform_state_move:
+            from d810.ir.expressions import ValueOpKind
+
+            feeder = source.blocks[446]
+            arithmetic, goto = feeder.insn_snapshots
+            carrier = MopSnapshot(
+                t=1, size=4, reg=120, kind=OperandKind.REGISTER,
+                raw_operand_type=1,
+            )
+            state_destination = arithmetic.d
+            state_feeder_ea = 0x70002000
+            state_feeder = BlockSnapshot(
+                serial=447, block_type=0, succs=(4,), preds=(446,),
+                flags=0, start_ea=state_feeder_ea,
+                insn_snapshots=(
+                    InsnSnapshot(
+                        opcode=0, ea=state_feeder_ea, operands=(),
+                        l=carrier, d=state_destination,
+                        kind=InsnKind.MOV, value_op_kind=ValueOpKind.MOVE,
+                        raw_opcode=0,
+                    ),
+                    InsnSnapshot(
+                        opcode=0, ea=state_feeder_ea + 1, operands=(),
+                        l=MopSnapshot(kind=OperandKind.BLOCK, block_ref=4),
+                        kind=InsnKind.GOTO, raw_opcode=0,
+                    ),
+                ),
+                tail_opcode=0, kind=BlockKind.ONE_WAY,
+                tail_kind=InsnKind.GOTO, raw_tail_opcode=0,
+            )
+            source = type(source)(
+                {
+                    **source.blocks,
+                    446: replace(
+                        feeder, succs=(447,),
+                        insn_snapshots=(
+                            replace(arithmetic, d=carrier),
+                            replace(
+                                goto,
+                                l=MopSnapshot(
+                                    kind=OperandKind.BLOCK, block_ref=447,
+                                ),
+                            ),
+                        ),
+                    ),
+                    447: state_feeder,
+                    4: replace(source.blocks[4], preds=(447,)),
+                },
+                source.entry_serial, source.func_ea,
+            )
         source = _normalize_corridor_source(source)
         witness = prove_exact_u32_state_transform_feeder(
             source, 285, 446, state_var_stkoff=0x64, state_var_reg=None,
@@ -27368,10 +27688,21 @@ def _compiler_corridor_unsupported_case(*, proof_kind):
         assert produced.evidence is not None
         evidence = produced.evidence
         return _compile_corridor_from_canonical_evidence(
-            source=source, evidence=evidence, from_serial=285, old_target=446,
-            new_target=4, predecessor_serial=999, clone_until=446,
+            source=source, evidence=evidence,
+            from_serial=446 if exact_transform_feeder or split_transform_state_move else 285,
+            old_target=(447 if split_transform_state_move else 4) if exact_transform_feeder or split_transform_state_move else 446,
+            new_target=118 if exact_transform_feeder or split_transform_state_move else 4,
+            predecessor_serial=285 if exact_transform_feeder or split_transform_state_move else 999,
+            clone_until=447 if split_transform_state_move else 446,
             state_identity=StorageIdentity(StorageIdentityKind.STACK, 0x64),
-            tag="corridor-state-transform",
+            tag=(
+                "corridor-state-transform-split"
+                if split_transform_state_move else
+                "corridor-state-transform-exact"
+                if exact_transform_feeder else
+                "corridor-state-transform"
+            ),
+            extra_feeder_redirect_to=extra_feeder_redirect_to,
         )
 
     if proof_kind is route_model.SemanticRouteProofKind.STATE_CARRIER:
@@ -27397,6 +27728,25 @@ def _compiler_corridor_unsupported_case(*, proof_kind):
                 6: BlockSnapshot(6, 0, (), (4,), 0, 0x1600, (InsnSnapshot(0, 0x1600, (), kind=InsnKind.NOP, raw_opcode=0),)),
             }, entry_serial=1, func_ea=0x1000,
         )
+        if carrier_clone_optional:
+            shared_predecessor = BlockSnapshot(
+                7, 0, (3,), (), 0, 0x1700,
+                (InsnSnapshot(
+                    0, 0x1700, (),
+                    l=MopSnapshot(kind=OperandKind.BLOCK, block_ref=3),
+                    kind=InsnKind.GOTO, raw_opcode=0,
+                ),),
+                tail_opcode=0, kind=BlockKind.ONE_WAY,
+                tail_kind=InsnKind.GOTO, raw_tail_opcode=0,
+            )
+            source = FlowGraph(
+                {
+                    **source.blocks,
+                    3: replace(source.blocks[3], preds=(2, 7)),
+                    7: shared_predecessor,
+                },
+                source.entry_serial, source.func_ea,
+            )
         source = _normalize_corridor_source(source)
         storage = StorageIdentity(StorageIdentityKind.STACK, 0x40)
         fact = SemanticRouteFact(
@@ -27423,8 +27773,12 @@ def _compiler_corridor_unsupported_case(*, proof_kind):
         assert produced.evidence is not None
         evidence = produced.evidence
         return _compile_corridor_from_canonical_evidence(
-            source=source, evidence=evidence, from_serial=2, old_target=3,
-            new_target=5, predecessor_serial=1, clone_until=3,
+            source=source, evidence=evidence,
+            from_serial=3 if carrier_clone_optional else 2,
+            old_target=4 if carrier_clone_optional else 3,
+            new_target=5,
+            predecessor_serial=2 if carrier_clone_optional else 1,
+            clone_until=3,
             state_identity=StorageIdentity(StorageIdentityKind.STACK, 0x40),
             tag="corridor-state-carrier",
         )

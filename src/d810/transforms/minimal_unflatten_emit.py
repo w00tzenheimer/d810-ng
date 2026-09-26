@@ -68,6 +68,14 @@ from d810.analyses.control_flow.minimal_state_recovery import (
     StateWriteTransition,
     TransitionArm,
     _route_u32_state_through_decision_dag,
+    _fresh_load_leaf_transition_has_direct_entry,
+    _has_exact_current_direct_state_write,
+    _is_exact_u32_literal_state_move,
+    _revalidate_candidate_scoped_prefix_authority,
+    _candidate_prefix_selects_root,
+    _resolved_dispatcher_target,
+    _observe_current_u32_decision_forest,
+    _CurrentU32DecisionForestStatus,
     TransitionProof,
     _source_local_constant_register_write,
     _is_goto_insn,
@@ -178,6 +186,7 @@ from d810.analyses.control_flow.state_carrier import (
     expected_u32_state_identities,
     observes_u32_carrier_feeder_candidate,
     prove_exact_u32_carrier_state_write,
+    prove_exact_u32_state_transform_feeder,
 )
 from d810.analyses.value_flow import (
     LOOP_PREDICATE_VALUE_FACT_TYPE,
@@ -205,13 +214,19 @@ from d810.ir.block_identity import (
     stable_block_identity_semantic_anchor,
 )
 from d810.ir.flowgraph import BlockKind, FlowGraph, InsnKind, OperandKind
+from d810.ir.expressions import ValueOpKind
 from d810.ir.graph_fingerprint import InsnRecord, _instruction_projection
 from d810.ir.maturity import MaturityEnvelope
 from d810.ir.varnode import Space, Varnode
-from d810.ir.insn_projection import operand_kinds, operand_storages
+from d810.ir.insn_projection import (
+    operand_kinds,
+    operand_storages,
+    project_instruction_effect_sites,
+)
 from d810.ir.semantics import PredicateKind
 from d810.ir.storage_identity import StorageIdentity, StorageIdentityKind, storage_identity_from_mop_snapshot
 from d810.transforms.exit_path_liveness_policy import (
+    block_defined_variables,
     exit_path_blocks_live_violations,
     evaluate_exit_path_shortcut,
     live_in_variables,
@@ -5508,6 +5523,1173 @@ def _rebind_materialized_state_route_sources(
             ],
         )
     return tuple(dict.fromkeys(rebound))
+
+
+_FRESH_LOAD_MOD_TARGET_FIELDS = (
+    "new_target", "source_new_target", "goto_target", "conditional_target",
+    "fallthrough_target", "target_block", "target_serial",
+    "true_target_serial", "false_target_serial", "keep_target_serial",
+    "header_target", "body_target", "next_phase_target", "terminal_target",
+    "succ_serial", "return_block_serial", "shared_entry_serial",
+)
+
+
+def _semantic_branch_leaf_serials(
+    flow_graph: FlowGraph,
+    reference_dag: DecisionDag,
+) -> frozenset[int]:
+    """Find routed handler entries whose own branch retains live inputs.
+
+    The portable U32 replay may stop at a native-owned comparison before it
+    visits a handler.  Even a complete replay does not label every fresh
+    definition: a branch can read a stack value moved into the old carrier
+    register without containing a LOAD instruction.  Use the reference DAG's
+    leaf targets and current CFG shape instead of treating the replay's load
+    marker as a complete inventory.
+    """
+
+    return frozenset(
+        serial
+        for serial in reference_dag.leaves()
+        if (block := flow_graph.get_block(serial)) is not None
+        and len(tuple(block.succs)) == 2
+    )
+
+
+_STORAGE_UNKNOWN_BYTE = -(1 << 65)
+
+
+def _storage_bytes(
+    operand: object | None, *, include_stack_refs: bool = False,
+) -> set[tuple[str, int]]:
+    """Read byte-addressed register and stack slices of a portable operand tree."""
+
+    found: set[tuple[str, int]] = set()
+    seen: set[int] = set()
+
+    def _walk(current: object | None) -> None:
+        if current is None or id(current) in seen:
+            return
+        seen.add(id(current))
+        identity = storage_identity_from_mop_snapshot(current)
+        refs = getattr(current, "stack_refs", ()) or ()
+        direct_stack_ref = bool(
+            identity is not None
+            and identity.kind is StorageIdentityKind.STACK
+            and getattr(current, "kind", None) in {
+                OperandKind.STACK, OperandKind.LVAR,
+            }
+            and {int(ref) for ref in refs} == {int(identity.offset)}
+        )
+        if include_stack_refs and refs and not direct_stack_ref:
+            # A frame reference inside a load/address tree is not necessarily
+            # a direct stack operand. Its accessed width may be unknown, so
+            # never use it to prove that an unrelated state slot is dead.
+            found.add(("stk", _STORAGE_UNKNOWN_BYTE))
+        if include_stack_refs and (
+            getattr(current, "sub_kind", None) in {
+                InsnKind.LOAD, InsnKind.CALL, InsnKind.UNKNOWN,
+            }
+            or getattr(current, "sub_value_op_kind", None) is ValueOpKind.LOAD
+        ):
+            # Fused expressions may conceal a load/call beneath an ordinary
+            # MOV; the outer instruction kind alone is not an effect bound.
+            found.add(("stk", _STORAGE_UNKNOWN_BYTE))
+        if identity is not None and identity.kind in {
+            StorageIdentityKind.REGISTER, StorageIdentityKind.STACK,
+        }:
+            size = getattr(current, "size", None)
+            kind = "reg" if identity.kind is StorageIdentityKind.REGISTER else "stk"
+            if type(size) is not int or not 1 <= size <= 64:
+                # A widthless backend operand may still designate storage.
+                # Treat its entire storage class as live, never as empty.
+                # The sentinel is not a kill: its width is unknown.
+                found.add((kind, _STORAGE_UNKNOWN_BYTE))
+            else:
+                found.update(
+                    (kind, offset)
+                    for offset in range(int(identity.offset), int(identity.offset) + size)
+                )
+        for child in (
+            getattr(current, "sub_l", None),
+            getattr(current, "sub_r", None),
+            *(getattr(current, "args", ()) or ()),
+        ):
+            _walk(child)
+
+    _walk(operand)
+    return found
+
+
+def _storage_bytes_overlap(
+    left: set[tuple[str, int]], right: set[tuple[str, int]],
+) -> bool:
+    if left & right:
+        return True
+    return any(
+        (kind, _STORAGE_UNKNOWN_BYTE) in left
+        and any(other_kind == kind for other_kind, _ in right)
+        or (kind, _STORAGE_UNKNOWN_BYTE) in right
+        and any(other_kind == kind for other_kind, _ in left)
+        for kind in ("reg", "stk")
+    )
+
+
+def _storage_live_in_bytes(flow_graph: FlowGraph) -> dict[int, set[tuple[str, int]]]:
+    """Compute byte-precise stack/register liveness for skipped prefixes."""
+
+    generated: dict[int, set[tuple[str, int]]] = {}
+    killed: dict[int, set[tuple[str, int]]] = {}
+    for serial, block in flow_graph.blocks.items():
+        gen: set[tuple[str, int]] = set()
+        kill: set[tuple[str, int]] = set()
+        for insn in block.insn_snapshots:
+            try:
+                uses = (
+                    _storage_bytes(insn.l, include_stack_refs=True)
+                    | _storage_bytes(insn.r, include_stack_refs=True)
+                )
+                if (
+                    insn.kind in {InsnKind.LOAD, InsnKind.CALL, InsnKind.UNKNOWN}
+                    or insn.value_op_kind is ValueOpKind.LOAD
+                    or insn.is_call or insn.call_kind is not None
+                ):
+                    # A generic pointer read or call may access escaped frame
+                    # storage even without a projected stack reference.
+                    uses.add(("stk", _STORAGE_UNKNOWN_BYTE))
+                destination_kind = None if insn.d is None else insn.d.kind
+                destination_is_input = (
+                    insn.kind is InsnKind.STORE
+                    or insn.value_op_kind is ValueOpKind.STORE
+                    or destination_kind is OperandKind.ARG_LIST
+                    or destination_kind not in {
+                        None, OperandKind.REGISTER, OperandKind.STACK,
+                        OperandKind.LVAR,
+                    }
+                )
+                if destination_is_input:
+                    # STORE d is an address and CALL d may be an argument list.
+                    uses.update(_storage_bytes(insn.d, include_stack_refs=True))
+                else:
+                    gen.update(uses - kill)
+                    kill.update(
+                        item for item in _storage_bytes(insn.d)
+                        if item[1] != _STORAGE_UNKNOWN_BYTE
+                    )
+                    continue
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    "byte liveness projection failed at "
+                    f"{block_label(flow_graph, int(serial))} "
+                    f"insn=0x{int(insn.native_ea or insn.ea):X}: {exc}"
+                ) from exc
+            gen.update(uses - kill)
+        generated[int(serial)] = gen
+        killed[int(serial)] = kill
+    live_in: dict[int, set[tuple[str, int]]] = {
+        int(serial): set() for serial in flow_graph.blocks
+    }
+    changed = True
+    while changed:
+        changed = False
+        for serial, block in flow_graph.blocks.items():
+            current = int(serial)
+            live_out: set[tuple[str, int]] = set()
+            for successor in block.succs:
+                live_out.update(live_in.get(int(successor), ()))
+            new_in = generated[current] | (live_out - killed[current])
+            if new_in != live_in[current]:
+                live_in[current] = new_in
+                changed = True
+    return live_in
+
+
+def _preserve_live_state_carrier_feeders(
+    flow_graph: FlowGraph,
+    reference_dag: DecisionDag | None,
+    transitions: tuple[StateWriteTransition, ...],
+    *,
+    state_var_stkoff: int | None,
+    state_var_reg: int | None,
+) -> tuple[StateWriteTransition, ...]:
+    """Keep a source's exact feeder write when its routed leaf needs state.
+
+    Ordinary source-carrier routes may bypass a pure feeder when that state
+    write is dead. A live or unknown-width state read requires a predecessor-
+    local clone of the feeder instead; the exact carrier witness supplies the
+    selected value and the original MOVE remains executable.
+    """
+
+    if reference_dag is None or not reference_dag.nodes:
+        return transitions
+    if state_var_stkoff is not None:
+        identity = StorageIdentity(StorageIdentityKind.STACK, int(state_var_stkoff))
+        kind = "stk"
+    elif state_var_reg is not None:
+        identity = StorageIdentity(StorageIdentityKind.REGISTER, int(state_var_reg))
+        kind = "reg"
+    else:
+        return transitions
+    try:
+        live_in = _storage_live_in_bytes(flow_graph)
+        leaves = reference_dag.leaves()
+    except (TypeError, ValueError, OverflowError):
+        return transitions
+    state_bytes = {
+        (kind, offset)
+        for offset in range(int(identity.offset), int(identity.offset) + 4)
+    }
+    promoted: list[StateWriteTransition] = []
+    for transition in transitions:
+        if (
+            transition.preserve_via_block
+            or transition.via_block is None
+            or transition.next_state is None
+            or transition.target_handler is None
+            or int(transition.target_handler) not in leaves
+            or transition.proof is None
+            or not transition.proof.trusted
+            or not _storage_bytes_overlap(
+                state_bytes,
+                live_in.get(int(transition.target_handler), set()),
+            )
+        ):
+            promoted.append(transition)
+            continue
+        witness = prove_exact_u32_carrier_state_write(
+            flow_graph,
+            int(transition.write_block),
+            int(transition.via_block),
+            state_var_stkoff=state_var_stkoff,
+            state_var_reg=state_var_reg,
+            required_comparison_serials=frozenset({int(reference_dag.root)}),
+        )
+        transform_witness = None
+        if witness is None:
+            transform_witness = prove_exact_u32_state_transform_feeder(
+                flow_graph,
+                int(transition.write_block),
+                int(transition.via_block),
+                state_var_stkoff=state_var_stkoff,
+                state_var_reg=state_var_reg,
+                required_comparison_serials=frozenset({int(reference_dag.root)}),
+                expected_state=int(transition.next_state),
+            )
+        selected = witness if witness is not None else transform_witness
+        try:
+            valid = (
+                selected is not None
+                and selected.state_identity == identity
+                and int(selected.state) == (int(transition.next_state) & 0xFFFFFFFF)
+                and int(reference_dag.route(int(transition.next_state)))
+                == int(transition.target_handler)
+            )
+        except (KeyError, TypeError, ValueError, OverflowError):
+            valid = False
+        if not valid or selected is None:
+            if logger.info_on:
+                logger.info(
+                    "unflat live feeder clone abstained: source=%s feeder=%s "
+                    "leaf=%s state=0x%x reason=exact_witness_absent_or_mismatch",
+                    block_label(flow_graph, int(transition.write_block)),
+                    block_label(flow_graph, int(transition.via_block)),
+                    block_label(flow_graph, int(transition.target_handler)),
+                    int(transition.next_state) & 0xFFFFFFFF,
+                )
+            promoted.append(transition)
+            continue
+        proof = transition.proof
+        source_kind = "preserved_feeder_clone"
+        promoted.append(replace(
+            transition,
+            preserve_via_block=True,
+            preserve_via_until=(
+                witness.clone_until_serial
+                if witness is not None
+                else transform_witness.state_feeder_serial
+                if transform_witness is not None
+                else None
+            ),
+            proof=replace(
+                proof,
+                reason=(
+                    f"{proof.reason};{source_kind}" if proof.reason else source_kind
+                ),
+                route_source_kinds=tuple(sorted({
+                    *proof.route_source_kinds, source_kind,
+                })),
+            ),
+        ))
+    return tuple(promoted)
+
+
+def _skipped_prefix_preserves_handler_live_ins(
+    flow_graph: FlowGraph,
+    reference_dag: DecisionDag,
+    *,
+    old_target: int,
+    leaf_serial: int,
+    state_var_stkoff: int | None,
+    state_var_reg: int | None = None,
+    live_in_by_serial: Mapping[int, set[tuple[str, int]]] | None = None,
+    storage_live_in_by_serial: Mapping[int, set[tuple[str, int]]] | None = None,
+) -> bool:
+    """Check the exact skipped path against live inputs at a DAG leaf.
+
+    A handler leaf may only be a one-way wrapper for a later semantic branch.
+    Its live-in set includes that downstream branch's register and stack reads.
+    This therefore checks the source-specific pre-root path as well as every
+    reference-DAG path to the leaf, without guessing a leaf's opcode shape.
+    """
+
+    skipped: set[int] = set()
+    current = int(old_target)
+    seen: set[int] = set()
+    root = int(reference_dag.root)
+    while current != root:
+        if current in seen:
+            return False
+        seen.add(current)
+        block = flow_graph.get_block(current)
+        if block is None or len(tuple(block.succs)) != 1:
+            return False
+        successor = int(block.succs[0])
+        target = flow_graph.get_block(successor)
+        if target is None or current not in tuple(int(pred) for pred in target.preds):
+            return False
+        skipped.add(current)
+        current = successor
+    try:
+        routes = tuple(
+            path for path in reference_dag.resolve_paths()
+            if int(path.target) == int(leaf_serial)
+        )
+    except (AttributeError, KeyError, TypeError, ValueError, OverflowError):
+        return False
+    if not routes:
+        return False
+    for route in routes:
+        nodes = tuple(int(serial) for serial in route.path)
+        if not nodes or nodes[0] != root or len(set(nodes)) != len(nodes):
+            return False
+        for source_serial, target_serial in zip(
+            nodes, (*nodes[1:], int(leaf_serial)), strict=True,
+        ):
+            source = flow_graph.get_block(source_serial)
+            target = flow_graph.get_block(target_serial)
+            if (
+                source is None
+                or target is None
+                or target_serial not in tuple(int(succ) for succ in source.succs)
+                or source_serial not in tuple(int(pred) for pred in target.preds)
+            ):
+                return False
+            skipped.add(source_serial)
+    if live_in_by_serial is None:
+        live_in_by_serial = live_in_variables(flow_graph, state_var_stkoff)
+    live_at_leaf = live_in_by_serial.get(int(leaf_serial))
+    if live_at_leaf is None:
+        return False
+    try:
+        if storage_live_in_by_serial is None:
+            storage_live_in_by_serial = _storage_live_in_bytes(flow_graph)
+        live_storage_bytes = storage_live_in_by_serial[int(leaf_serial)]
+    except (KeyError, TypeError, ValueError):
+        return False
+    state_bytes: set[tuple[str, int]] = set()
+    if state_var_stkoff is not None:
+        state_bytes.update(
+            ("stk", offset)
+            for offset in range(int(state_var_stkoff), int(state_var_stkoff) + 4)
+        )
+    if state_var_reg is not None:
+        state_bytes.update(
+            ("reg", offset)
+            for offset in range(int(state_var_reg), int(state_var_reg) + 4)
+        )
+    for serial in skipped:
+        block = flow_graph.get_block(serial)
+        if block is None:
+            return False
+        try:
+            if any(
+                raw.is_call or raw.call_kind is not None
+                or raw.kind is InsnKind.STORE
+                or raw.value_op_kind is ValueOpKind.STORE
+                for raw in block.insn_snapshots
+            ) or project_instruction_effect_sites(block):
+                return False
+        except (TypeError, ValueError, OverflowError):
+            return False
+        definitions = block_defined_variables(block, state_var_stkoff)
+        if definitions & live_at_leaf:
+            return False
+        try:
+            if any(
+                _storage_bytes_overlap(
+                    _storage_bytes(raw.d), live_storage_bytes | state_bytes,
+                )
+                for raw in block.insn_snapshots
+            ):
+                return False
+        except (TypeError, ValueError):
+            return False
+    return True
+
+
+def _one_way_path_to(
+    flow_graph: FlowGraph, start: int, destination: int,
+) -> tuple[int, ...] | None:
+    """Return the reciprocal, one-way prefix, excluding its destination."""
+
+    path: list[int] = []
+    seen: set[int] = set()
+    current = int(start)
+    while current != int(destination):
+        if current in seen:
+            return None
+        seen.add(current)
+        block = flow_graph.get_block(current)
+        if block is None or len(tuple(block.succs)) != 1:
+            return None
+        successor = int(block.succs[0])
+        target = flow_graph.get_block(successor)
+        if target is None or current not in tuple(int(pred) for pred in target.preds):
+            return None
+        path.append(current)
+        current = successor
+    return tuple(path)
+
+
+def _source_bound_non_dag_leaf_delivery(
+    flow_graph: FlowGraph,
+    dispatcher: object,
+    reference_dag: DecisionDag,
+    modification: RedirectGoto,
+    transitions: tuple[StateWriteTransition, ...],
+    *,
+    state_identity: StorageIdentity,
+    candidate_prefix_authority: CandidateScopedPrefixAuthority | None,
+    dispatcher_entry_serial: int,
+    state_var_stkoff: int | None,
+    state_var_reg: int | None,
+    live_in_by_serial: Mapping[int, set[tuple[str, int]]] | None,
+    storage_live_in_by_serial: Mapping[int, set[tuple[str, int]]] | None,
+) -> bool:
+    """Handle only two proved routes which do not have a one-way DAG entry.
+
+    The ordinary connected prefix is deliberately not handled here.  This
+    prevents a materialized-dispatch or candidate-prefix label from exempting
+    an ordinary corridor from its skipped-instruction check.
+    """
+
+    old_target = int(modification.old_target)
+    root = int(reference_dag.root)
+    leaf = int(modification.new_target)
+    if _one_way_path_to(flow_graph, old_target, root) is not None:
+        return False
+    source = flow_graph.get_block(int(modification.from_serial))
+    old = flow_graph.get_block(old_target)
+    if (
+        source is None or old is None
+        or tuple(int(succ) for succ in source.succs) != (old_target,)
+        or int(source.serial) not in tuple(int(pred) for pred in old.preds)
+    ):
+        return False
+    matches = tuple(
+        row for row in transitions
+        if int(row.write_block) == int(source.serial)
+        and row.next_state is not None
+        and row.target_handler == leaf
+        and row.proof is not None and row.proof.trusted
+        and not row.is_return
+    )
+    if len(matches) != 1:
+        return False
+    transition = matches[0]
+    state = int(transition.next_state) & 0xFFFFFFFF
+    try:
+        if (
+            int(reference_dag.route(state)) != leaf
+            or _resolved_dispatcher_target(dispatcher, state) != leaf
+        ):
+            return False
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return False
+
+    if candidate_prefix_authority is None:
+        # A separate materialized dispatcher can be unrelated to the typed
+        # comparison DAG.  Admit only its exact, instructionless entry block,
+        # with a current literal state write on the source edge.  A real
+        # dispatcher body needs a separate skipped-effect proof.
+        return bool(
+            old_target == int(dispatcher_entry_serial)
+            and not old.insn_snapshots
+            and transition.via_block is None
+            and _has_exact_current_direct_state_write(
+                transition, flow_graph,
+                state_identity=state_identity,
+                entry_serial=old_target,
+            )
+            and _skipped_prefix_preserves_handler_live_ins(
+                flow_graph, reference_dag,
+                old_target=root, leaf_serial=leaf,
+                state_var_stkoff=state_var_stkoff,
+                state_var_reg=state_var_reg,
+                live_in_by_serial=live_in_by_serial,
+                storage_live_in_by_serial=storage_live_in_by_serial,
+            )
+        )
+
+    authority = candidate_prefix_authority
+    prefix = int(authority.prefix_serial)
+    source_state_writes = tuple(
+        insn for insn in source.insn_snapshots
+        if _is_exact_u32_literal_state_move(
+            insn, state_identity=state_identity, state_constant=state,
+        )
+    )
+    if (
+        len(source_state_writes) != 1
+        or
+        authority.state_identity != state_identity
+        or int(authority.root_serial) != root
+        or not _revalidate_candidate_scoped_prefix_authority(
+            flow_graph, authority,
+            root_serial=root,
+            state_var_stkoff=state_var_stkoff,
+            state_var_reg=state_var_reg,
+        )
+        or not _candidate_prefix_selects_root(authority, state)
+        or not {"candidate_scoped_prefix_arm", "decision_dag"}.issubset(
+            set(transition.proof.route_source_kinds)
+        )
+    ):
+        return False
+    feeder_path = _one_way_path_to(flow_graph, old_target, prefix)
+    if feeder_path is None:
+        return False
+    # Each skipped feeder is allowed to restate only the same literal selector.
+    # Any other instruction/effect or a changed selector needs its own proof.
+    for serial in feeder_path:
+        block = flow_graph.get_block(serial)
+        if block is None:
+            return False
+        writes = tuple(
+            insn for insn in block.insn_snapshots
+            if _is_exact_u32_literal_state_move(
+                insn, state_identity=state_identity, state_constant=state,
+            )
+        )
+        if len(writes) != 1 or any(
+            insn is not writes[0] and insn.kind is not InsnKind.NOP
+            for insn in block.insn_snapshots
+        ):
+            return False
+        try:
+            if project_instruction_effect_sites(block):
+                return False
+        except (TypeError, ValueError, OverflowError):
+            return False
+    if transition.via_block not in {old_target, prefix}:
+        return False
+    return _skipped_prefix_preserves_handler_live_ins(
+        flow_graph, reference_dag,
+        old_target=root, leaf_serial=leaf,
+        state_var_stkoff=state_var_stkoff,
+        state_var_reg=state_var_reg,
+        live_in_by_serial=live_in_by_serial,
+        storage_live_in_by_serial=storage_live_in_by_serial,
+    )
+
+
+def _source_bound_carrier_leaf_delivery(
+    flow_graph: FlowGraph,
+    dispatcher: object,
+    reference_dag: DecisionDag,
+    modification: RedirectGoto,
+    transitions: tuple[StateWriteTransition, ...],
+    *,
+    state_identity: StorageIdentity,
+    entry_state: int | None,
+    entry_target: int | None,
+    state_var_stkoff: int | None,
+    state_var_reg: int | None,
+    live_in_by_serial: Mapping[int, set[tuple[str, int]]] | None,
+    storage_live_in_by_serial: Mapping[int, set[tuple[str, int]]] | None,
+) -> bool:
+    """Re-prove one constant-carrier feeder before bypassing its state write."""
+
+    source_serial = int(modification.from_serial)
+    feeder_serial = int(modification.old_target)
+    root = int(reference_dag.root)
+    leaf = int(modification.new_target)
+    if _one_way_path_to(flow_graph, feeder_serial, root) is None:
+        if logger.info_on:
+            logger.info(
+                "unflat carrier leaf veto: source=%s feeder=%s leaf=%s reason=no_root_path",
+                source_serial, feeder_serial, leaf,
+            )
+        return False
+    witness = prove_exact_u32_carrier_state_write(
+        flow_graph,
+        source_serial,
+        feeder_serial,
+        state_var_stkoff=state_var_stkoff,
+        state_var_reg=state_var_reg,
+        required_comparison_serials=frozenset({root}),
+    )
+    if (
+        witness is None
+        or witness.requires_feeder_clone
+        or int(witness.source_serial) != source_serial
+        or int(witness.feeder_serial) != feeder_serial
+        or int(witness.comparison_entry_serial) != root
+        or witness.state_identity != state_identity
+    ):
+        if logger.info_on:
+            logger.info(
+                "unflat carrier leaf veto: source=%s feeder=%s leaf=%s "
+                "reason=witness_shape witness=%s",
+                source_serial, feeder_serial, leaf, witness,
+            )
+        return False
+    state = int(witness.state) & 0xFFFFFFFF
+    try:
+        if (
+            int(reference_dag.route(state)) != leaf
+            or _resolved_dispatcher_target(dispatcher, state) != leaf
+        ):
+            if logger.info_on:
+                logger.info(
+                    "unflat carrier leaf veto: source=%s feeder=%s leaf=%s "
+                    "reason=route state=0x%x",
+                    source_serial, feeder_serial, leaf, state,
+                )
+            return False
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return False
+    # The feeder's exact state-cell MOVE is omitted by this redirect.  It is
+    # safe to omit only when the selected handler (including downstream CFG)
+    # cannot consume those four bytes as ordinary program state.
+    if storage_live_in_by_serial is None:
+        return False
+    live_storage = storage_live_in_by_serial.get(leaf)
+    if live_storage is None:
+        return False
+    kind = "stk" if state_identity.kind is StorageIdentityKind.STACK else "reg"
+    state_bytes = {
+        (kind, offset)
+        for offset in range(int(state_identity.offset), int(state_identity.offset) + 4)
+    }
+    if _storage_bytes_overlap(state_bytes, live_storage):
+        if logger.info_on:
+            logger.info(
+                "unflat carrier leaf veto: source=%s feeder=%s leaf=%s "
+                "reason=state_live exact=%s wildcard=%s",
+                source_serial, feeder_serial, leaf,
+                sorted(live_storage.intersection(state_bytes)),
+                (kind, _STORAGE_UNKNOWN_BYTE) in live_storage,
+            )
+        return False
+    source_rows = tuple(
+        row for row in transitions if int(row.write_block) == source_serial
+    )
+    if source_rows:
+        if (
+            len(source_rows) != 1
+            or source_rows[0].next_state != state
+            or source_rows[0].target_handler != leaf
+            or source_rows[0].proof is None
+            or not source_rows[0].proof.trusted
+        ):
+            if logger.info_on:
+                logger.info(
+                    "unflat carrier leaf veto: source=%s feeder=%s leaf=%s "
+                    "reason=transition_rows count=%s",
+                    source_serial, feeder_serial, leaf, len(source_rows),
+                )
+            return False
+    else:
+        entry = flow_graph.get_block(int(flow_graph.entry_serial))
+        source = flow_graph.get_block(source_serial)
+        if (
+            entry_state != state or entry_target != leaf
+            or entry is None or source is None
+            or tuple(int(succ) for succ in entry.succs) != (source_serial,)
+            or int(entry.serial) not in tuple(int(pred) for pred in source.preds)
+            or entry.insn_snapshots
+        ):
+            if logger.info_on:
+                logger.info(
+                    "unflat carrier leaf veto: source=%s feeder=%s leaf=%s "
+                    "reason=entry_authority",
+                    source_serial, feeder_serial, leaf,
+                )
+            return False
+    return _skipped_prefix_preserves_handler_live_ins(
+        flow_graph, reference_dag,
+        old_target=root, leaf_serial=leaf,
+        state_var_stkoff=state_var_stkoff,
+        state_var_reg=state_var_reg,
+        live_in_by_serial=live_in_by_serial,
+        storage_live_in_by_serial=storage_live_in_by_serial,
+    )
+
+
+def _corridor_pred_split_preserves_handler_inputs(
+    flow_graph: FlowGraph,
+    reference_dag: DecisionDag,
+    modification: EdgeRedirectViaPredSplit,
+    modifications: tuple[object, ...],
+    transitions: tuple[StateWriteTransition, ...],
+    *,
+    state_identity: StorageIdentity,
+    state_var_stkoff: int | None,
+    state_var_reg: int | None,
+    live_in_by_serial: Mapping[int, set[tuple[str, int]]] | None,
+    storage_live_in_by_serial: Mapping[int, set[tuple[str, int]]] | None,
+) -> bool:
+    """Admit only a source-bound cloned corridor, never an empty trampoline."""
+
+    def _reject(reason: str) -> bool:
+        if logger.info_on:
+            logger.info(
+                "unflat cloned-corridor delivery rejected: reason=%s via=%s "
+                "source=%s until=%s old=%s leaf=%s",
+                reason,
+                block_label(flow_graph, modification.via_pred),
+                block_label(flow_graph, modification.src_block),
+                block_label(flow_graph, modification.clone_until),
+                block_label(flow_graph, modification.old_target),
+                block_label(flow_graph, modification.new_target),
+            )
+        return False
+
+    if modification.clone_until is None or modification.source_new_target is not None:
+        return _reject("not_exact_clone_shape")
+    matches = tuple(
+        transition for transition in transitions
+        if transition.write_block == modification.via_pred
+        and transition.via_block == modification.src_block
+        and transition.target_handler == modification.new_target
+        and transition.preserve_via_block
+        and (
+            transition.preserve_via_until
+            if transition.preserve_via_until is not None
+            else transition.via_block
+        ) == modification.clone_until
+        and transition.next_state is not None
+        and transition.proof is not None
+        and transition.proof.trusted
+        and not transition.is_return
+    )
+    if len(matches) != 1:
+        return _reject("transition_binding")
+    try:
+        if int(reference_dag.route(int(matches[0].next_state))) != modification.new_target:
+            return _reject("decision_dag_target")
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return _reject("decision_dag_route_error")
+    predecessor = flow_graph.get_block(int(modification.via_pred))
+    source = flow_graph.get_block(int(modification.src_block))
+    if (
+        predecessor is None or source is None
+        or tuple(int(succ) for succ in predecessor.succs) != (modification.src_block,)
+        or modification.via_pred not in tuple(int(pred) for pred in source.preds)
+        or tuple(int(succ) for succ in source.succs) != (modification.old_target,)
+    ):
+        return _reject("physical_predecessor_edge")
+    carrier_witness = prove_exact_u32_carrier_state_write(
+        flow_graph,
+        int(modification.via_pred),
+        int(modification.src_block),
+        state_var_stkoff=state_var_stkoff,
+        state_var_reg=state_var_reg,
+        required_comparison_serials=frozenset({int(reference_dag.root)}),
+    )
+    transform_witness = None
+    if carrier_witness is None:
+        transform_witness = prove_exact_u32_state_transform_feeder(
+            flow_graph,
+            int(modification.via_pred),
+            int(modification.src_block),
+            state_var_stkoff=state_var_stkoff,
+            state_var_reg=state_var_reg,
+            required_comparison_serials=frozenset({int(reference_dag.root)}),
+            expected_state=int(matches[0].next_state),
+        )
+    state_write_seen = False
+    current = int(modification.src_block)
+    seen: set[int] = set()
+    while True:
+        if current in seen:
+            return _reject("corridor_cycle")
+        seen.add(current)
+        block = flow_graph.get_block(current)
+        if block is None or len(tuple(block.succs)) != 1:
+            return _reject("corridor_shape")
+        try:
+            if any(
+                insn.is_call or insn.call_kind is not None
+                or insn.kind is InsnKind.STORE
+                or insn.value_op_kind is ValueOpKind.STORE
+                for insn in block.insn_snapshots
+            ) or project_instruction_effect_sites(block):
+                return _reject("corridor_effect")
+        except (TypeError, ValueError, OverflowError):
+            return _reject("corridor_effect_projection")
+        for insn in block.insn_snapshots:
+            destination = storage_identity_from_mop_snapshot(insn.d)
+            if destination is not None and destination.kind is state_identity.kind:
+                size = getattr(insn.d, "size", None)
+                if type(size) is not int or not 1 <= size <= 64:
+                    return _reject("corridor_state_write_width")
+                if (
+                    int(destination.offset) < int(state_identity.offset) + 4
+                    and int(state_identity.offset) < int(destination.offset) + size
+                ):
+                    carrier_write = bool(
+                        carrier_witness is not None
+                        and current == int(modification.src_block)
+                        and carrier_witness.state_identity == state_identity
+                        and int(carrier_witness.state)
+                        == (int(matches[0].next_state) & 0xFFFFFFFF)
+                        and (
+                            carrier_witness.clone_until_serial is None
+                            or int(carrier_witness.clone_until_serial)
+                            == int(modification.clone_until)
+                        )
+                    )
+                    transform_write = bool(
+                        transform_witness is not None
+                        and current == int(
+                            transform_witness.state_feeder_serial
+                            if transform_witness.state_feeder_serial is not None
+                            else modification.src_block
+                        )
+                        and transform_witness.state_identity == state_identity
+                        and int(transform_witness.state)
+                        == (int(matches[0].next_state) & 0xFFFFFFFF)
+                        and int(modification.clone_until) == int(
+                            transform_witness.state_feeder_serial
+                            if transform_witness.state_feeder_serial is not None
+                            else modification.src_block
+                        )
+                    )
+                    if state_write_seen or not (carrier_write or transform_write):
+                        return _reject("corridor_state_write")
+                    state_write_seen = True
+        successor = int(block.succs[0])
+        next_block = flow_graph.get_block(successor)
+        if next_block is None or current not in tuple(int(pred) for pred in next_block.preds):
+            return _reject("corridor_reciprocity")
+        if current == int(modification.clone_until):
+            break
+        current = successor
+    # The backend copies the corridor from live microcode when this edit runs.
+    # A peer instruction edit can therefore invalidate the portable witness
+    # even when the edge shape remains unchanged. Treat every edit whose
+    # source/body coordinate touches this template as conflicting.
+    protected = seen | {int(modification.via_pred)}
+    for peer in modifications:
+        if peer is modification:
+            continue
+        if type(peer) is EdgeRedirectViaPredSplit:
+            # A second predecessor-local clone reads the same original
+            # template without editing it. Only a rewire of our predecessor
+            # or a write to the shared source can interfere with this clone.
+            if (
+                peer.source_new_target is None
+                and peer.clone_until is not None
+                and int(peer.via_pred) not in protected
+            ):
+                continue
+            return _reject("batch_edits_clone_template")
+        if (
+            type(peer) is RedirectGoto
+            and int(modification.clone_until) == int(modification.src_block)
+            and int(peer.from_serial) == int(modification.src_block)
+            and int(peer.old_target) == int(modification.old_target)
+        ):
+            # The native one-block clone explicitly accepts outgoing-edge
+            # drift of the original shared feeder. RedirectGoto edits only
+            # that edge, not the instructions copied into this private clone.
+            continue
+        try:
+            if any(
+                int(value) in protected
+                for field in (
+                    "block_serial", "from_serial", "src_block", "via_pred",
+                    "source_serial",
+                )
+                if (value := getattr(peer, field, None)) is not None
+            ):
+                if logger.info_on:
+                    logger.info(
+                        "unflat cloned-corridor conflicting peer: type=%s "
+                        "block=%s from=%s source=%s via=%s ea=%s",
+                        type(peer).__name__,
+                        getattr(peer, "block_serial", None),
+                        getattr(peer, "from_serial", None),
+                        getattr(peer, "src_block", getattr(peer, "source_serial", None)),
+                        getattr(peer, "via_pred", None),
+                        getattr(peer, "insn_ea", getattr(peer, "host_ea", None)),
+                    )
+                return _reject("batch_edits_clone_template")
+        except (TypeError, ValueError, OverflowError):
+            return _reject("batch_edit_coordinate_unknown")
+    safe_suffix = _skipped_prefix_preserves_handler_live_ins(
+        flow_graph,
+        reference_dag,
+        old_target=successor,
+        leaf_serial=int(modification.new_target),
+        state_var_stkoff=state_var_stkoff,
+        state_var_reg=state_var_reg,
+        live_in_by_serial=live_in_by_serial,
+        storage_live_in_by_serial=storage_live_in_by_serial,
+    )
+    return safe_suffix or _reject("skipped_suffix")
+
+
+def _all_reference_leaf_pred_splits_preserve_handler_inputs(
+    flow_graph: FlowGraph,
+    reference_dag: DecisionDag,
+    modifications: tuple[object, ...],
+    transitions: tuple[StateWriteTransition, ...],
+    *,
+    state_identity: StorageIdentity | None,
+    state_var_stkoff: int | None,
+    state_var_reg: int | None,
+    live_in_by_serial: Mapping[int, set[tuple[str, int]]] | None,
+    storage_live_in_by_serial: Mapping[int, set[tuple[str, int]]] | None,
+) -> bool:
+    """Check cloned routes to every DAG leaf, including one-way wrappers."""
+
+    leaves = reference_dag.leaves()
+    valid = True
+    for modification in modifications:
+        if (
+            type(modification) is not EdgeRedirectViaPredSplit
+            or int(modification.new_target) not in leaves
+        ):
+            continue
+        if state_identity is None:
+            return False
+        if not _corridor_pred_split_preserves_handler_inputs(
+            flow_graph,
+            reference_dag,
+            modification,
+            modifications,
+            transitions,
+            state_identity=state_identity,
+            state_var_stkoff=state_var_stkoff,
+            state_var_reg=state_var_reg,
+            live_in_by_serial=live_in_by_serial,
+            storage_live_in_by_serial=storage_live_in_by_serial,
+        ):
+            # Report every independent conflicting clone in one diagnostic
+            # run; no patch is emitted unless every member passes.
+            valid = False
+    return valid
+
+
+def _fresh_load_leaf_modifications_have_direct_delivery(
+    flow_graph: FlowGraph,
+    modifications: tuple[object, ...],
+    transitions: tuple[StateWriteTransition, ...],
+    *,
+    dispatcher: object | None = None,
+    candidate_prefix_authority: CandidateScopedPrefixAuthority | None = None,
+    dispatcher_entry_serial: int | None = None,
+    leaf_serials: frozenset[int],
+    root_serial: int,
+    state_identity: StorageIdentity,
+    entry_state: int | None = None,
+    entry_target: int | None = None,
+    reference_dag: DecisionDag | None = None,
+    state_var_stkoff: int | None = None,
+    state_var_reg: int | None = None,
+    live_in_by_serial: Mapping[int, set[tuple[str, int]]] | None = None,
+    storage_live_in_by_serial: Mapping[int, set[tuple[str, int]]] | None = None,
+) -> bool:
+    """Fail closed on every emitted shortcut to a semantic branch leaf.
+
+    Reconciliation precedes native-route enrichment, and entry bridges are
+    emitted independently of back-edge transitions.  Inspect the final patch
+    batch instead of assuming the earlier transition tuple is complete.  A
+    pred-split or synthesized edge needs a separate source-bound prefix proof.
+    """
+
+    if not leaf_serials:
+        return True
+    for modification in modifications:
+        targets = {
+            int(value)
+            for name in _FRESH_LOAD_MOD_TARGET_FIELDS
+            if type(value := getattr(modification, name, None)) is int
+        }
+        targets.update(
+            int(new_target)
+            for _old_target, new_target in getattr(modification, "retarget_map", ())
+            if type(new_target) is int
+        )
+        targets.update(
+            int(target)
+            for replay in getattr(modification, "per_pred_replays", ())
+            if type(target := getattr(replay, "target_serial", None)) is int
+        )
+        if not targets.intersection(leaf_serials):
+            continue
+        if type(modification) is EdgeRedirectViaPredSplit:
+            if (
+                reference_dag is not None
+                and int(modification.new_target) in leaf_serials
+                and _corridor_pred_split_preserves_handler_inputs(
+                    flow_graph,
+                    reference_dag,
+                    modification,
+                    modifications,
+                    transitions,
+                    state_identity=state_identity,
+                    state_var_stkoff=state_var_stkoff,
+                    state_var_reg=state_var_reg,
+                    live_in_by_serial=live_in_by_serial,
+                    storage_live_in_by_serial=storage_live_in_by_serial,
+                )
+            ):
+                continue
+            return False
+        if (
+            type(modification) is not RedirectGoto
+            or int(modification.new_target) not in leaf_serials
+        ):
+            if logger.info_on:
+                logger.info(
+                    "unflat semantic branch final-route rejected: reason=shape "
+                    "mod=%s source=%s old=%s new=%s",
+                    type(modification).__name__,
+                    getattr(modification, "from_serial", None),
+                    getattr(modification, "old_target", None),
+                    getattr(modification, "new_target", None),
+                )
+            return False
+        if int(modification.old_target) != int(root_serial):
+            route_matches = tuple(
+                transition for transition in transitions
+                if transition.target_handler == int(modification.new_target)
+                and int(transition.write_block) == int(modification.from_serial)
+            )
+            if (
+                len(route_matches) == 1
+                and reference_dag is not None
+                and _skipped_prefix_preserves_handler_live_ins(
+                    flow_graph,
+                    reference_dag,
+                    old_target=int(modification.old_target),
+                    leaf_serial=int(modification.new_target),
+                    state_var_stkoff=state_var_stkoff,
+                    state_var_reg=state_var_reg,
+                    live_in_by_serial=live_in_by_serial,
+                    storage_live_in_by_serial=storage_live_in_by_serial,
+                )
+            ):
+                continue
+            if (
+                reference_dag is not None
+                and dispatcher is not None
+                and dispatcher_entry_serial is not None
+                and _source_bound_non_dag_leaf_delivery(
+                    flow_graph,
+                    dispatcher,
+                    reference_dag,
+                    modification,
+                    transitions,
+                    state_identity=state_identity,
+                    candidate_prefix_authority=candidate_prefix_authority,
+                    dispatcher_entry_serial=dispatcher_entry_serial,
+                    state_var_stkoff=state_var_stkoff,
+                    state_var_reg=state_var_reg,
+                    live_in_by_serial=live_in_by_serial,
+                    storage_live_in_by_serial=storage_live_in_by_serial,
+                )
+            ):
+                continue
+            if (
+                reference_dag is not None
+                and dispatcher is not None
+                and _source_bound_carrier_leaf_delivery(
+                    flow_graph,
+                    dispatcher,
+                    reference_dag,
+                    modification,
+                    transitions,
+                    state_identity=state_identity,
+                    entry_state=entry_state,
+                    entry_target=entry_target,
+                    state_var_stkoff=state_var_stkoff,
+                    state_var_reg=state_var_reg,
+                    live_in_by_serial=live_in_by_serial,
+                    storage_live_in_by_serial=storage_live_in_by_serial,
+                )
+            ):
+                continue
+            if logger.info_on:
+                logger.info(
+                    "unflat semantic branch final-route rejected: reason=skipped_prefix "
+                    "source=%s old=%s new=%s matches=%d",
+                    modification.from_serial,
+                    modification.old_target,
+                    modification.new_target,
+                    len(route_matches),
+                )
+            return False
+        matches = tuple(
+            transition for transition in transitions
+            if transition.target_handler == int(modification.new_target)
+            and int(transition.write_block) == int(modification.from_serial)
+            and _fresh_load_leaf_transition_has_direct_entry(
+                transition,
+                flow_graph,
+                state_identity=state_identity,
+                entry_serial=root_serial,
+            )
+        )
+        if len(matches) == 1:
+            continue
+        # The initial entry bridge is emitted outside the back-edge transition
+        # list. It has the same exact direct-entry obligation, bound to the
+        # independently resolved initial state and DAG destination.
+        entry_matches = bool(
+            not matches
+            and entry_state is not None
+            and entry_target == int(modification.new_target)
+            and _fresh_load_leaf_transition_has_direct_entry(
+                StateWriteTransition(
+                    int(modification.from_serial),
+                    int(entry_state),
+                    int(modification.new_target),
+                    False,
+                    None,
+                ),
+                flow_graph,
+                state_identity=state_identity,
+                entry_serial=root_serial,
+            )
+        )
+        if not entry_matches:
+            if logger.info_on:
+                logger.info(
+                    "unflat semantic branch final-route rejected: reason=delivery "
+                    "source=%s root=%s leaf=%s transition_matches=%d entry_state=%s",
+                    modification.from_serial,
+                    root_serial,
+                    modification.new_target,
+                    len(matches),
+                    entry_state,
+                )
+            return False
+    return True
 
 
 def build_state_write_redirects(
@@ -13664,6 +14846,13 @@ def emit_minimal_unflatten(
         flow_graph,
         tuple(transitions),
     )
+    transitions = _preserve_live_state_carrier_feeders(
+        flow_graph,
+        condition_chain_dag,
+        tuple(transitions),
+        state_var_stkoff=_soff,
+        state_var_reg=state_var_reg,
+    )
     nonreturn_transitions = tuple(
         transition for transition in transitions if not transition.is_return
     )
@@ -15381,6 +16570,178 @@ def emit_minimal_unflatten(
                             type(exc).__name__ + ":" + str(exc),
                         )
                     return compile_with_dispatcher_coverage(())
+    reference_dag_leaves = (
+        frozenset()
+        if condition_chain_dag is None or not condition_chain_dag.nodes
+        else condition_chain_dag.leaves()
+    )
+    if logger.info_on:
+        logger.info(
+            "UNFLAT_PREPROPOSAL_STAGE stage=route_facts_bound mods=%d leaves=%d",
+            len(mods), len(reference_dag_leaves),
+        )
+    semantic_branch_leaves = (
+        frozenset()
+        if condition_chain_dag is None or not condition_chain_dag.nodes
+        else _semantic_branch_leaf_serials(flow_graph, condition_chain_dag)
+    )
+    live_in_by_serial = (
+        live_in_variables(flow_graph, _soff)
+        if reference_dag_leaves else None
+    )
+    try:
+        storage_live_in_by_serial = (
+            _storage_live_in_bytes(flow_graph)
+            if reference_dag_leaves else None
+        )
+    except (TypeError, ValueError) as exc:
+        if logger.info_on:
+            logger.info("unflat byte-liveness veto: %s", exc)
+        return compile_with_dispatcher_coverage(())
+    if logger.info_on:
+        logger.info("UNFLAT_PREPROPOSAL_STAGE stage=byte_liveness_done")
+    if condition_chain_dag is not None and live_in_by_serial is not None:
+        for modification in mods:
+            if (
+                type(modification) in {RedirectGoto, RedirectBranch}
+                and int(modification.new_target) in reference_dag_leaves
+                and not _skipped_prefix_preserves_handler_live_ins(
+                    flow_graph,
+                    condition_chain_dag,
+                    old_target=int(modification.old_target),
+                    leaf_serial=int(modification.new_target),
+                    state_var_stkoff=_soff,
+                    state_var_reg=state_var_reg,
+                    live_in_by_serial=live_in_by_serial,
+                    storage_live_in_by_serial=storage_live_in_by_serial,
+                )
+                and not (
+                    type(modification) is RedirectGoto
+                    and state_identity_for_evidence is not None
+                    and _source_bound_non_dag_leaf_delivery(
+                        flow_graph,
+                        dispatcher,
+                        condition_chain_dag,
+                        modification,
+                        tuple(transitions),
+                        state_identity=state_identity_for_evidence,
+                        candidate_prefix_authority=candidate_prefix_authority,
+                        dispatcher_entry_serial=int(dispatcher_entry_serial),
+                        state_var_stkoff=_soff,
+                        state_var_reg=state_var_reg,
+                        live_in_by_serial=live_in_by_serial,
+                        storage_live_in_by_serial=storage_live_in_by_serial,
+                    )
+                )
+                and not (
+                    type(modification) is RedirectGoto
+                    and state_identity_for_evidence is not None
+                    and _source_bound_carrier_leaf_delivery(
+                        flow_graph,
+                        dispatcher,
+                        condition_chain_dag,
+                        modification,
+                        tuple(transitions),
+                        state_identity=state_identity_for_evidence,
+                        entry_state=initial_state,
+                        entry_target=(
+                            None if initial_state is None
+                            else int(condition_chain_dag.route(int(initial_state)))
+                        ),
+                        state_var_stkoff=_soff,
+                        state_var_reg=state_var_reg,
+                        live_in_by_serial=live_in_by_serial,
+                        storage_live_in_by_serial=storage_live_in_by_serial,
+                    )
+                )
+            ):
+                if logger.info_on:
+                    logger.info(
+                        "unflat handler skipped-prefix veto: source=%s old=%s leaf=%s",
+                        modification.from_serial,
+                        modification.old_target,
+                        modification.new_target,
+                    )
+                return compile_with_dispatcher_coverage(())
+    if logger.info_on:
+        logger.info("UNFLAT_PREPROPOSAL_STAGE stage=skipped_prefix_done")
+    if (
+        condition_chain_dag is not None
+        and reference_dag_leaves
+        and not _all_reference_leaf_pred_splits_preserve_handler_inputs(
+            flow_graph,
+            condition_chain_dag,
+            tuple(mods),
+            tuple(transitions),
+            state_identity=state_identity_for_evidence,
+            state_var_stkoff=_soff,
+            state_var_reg=state_var_reg,
+            live_in_by_serial=live_in_by_serial,
+            storage_live_in_by_serial=storage_live_in_by_serial,
+        )
+    ):
+        return compile_with_dispatcher_coverage(())
+    if semantic_branch_leaves:
+        if state_identity_for_evidence is None:
+            return compile_with_dispatcher_coverage(())
+        final_load_forest = _observe_current_u32_decision_forest(
+            flow_graph,
+            int(condition_chain_dag.root),
+            expected_identities=frozenset({state_identity_for_evidence}),
+            reference_dag=condition_chain_dag,
+            permitted_non_state_handler_leaf_catalog=(
+                normalized_condition_chain_handlers
+                if type(normalized_condition_chain_handlers)
+                is IntervalHandlerLeafReplayCatalog
+                else None
+            ),
+            block_refs_by_serial={
+                int(serial): ref for serial, ref in block_refs_by_serial.items()
+                if type(ref) is NativeBlockRef
+            },
+            dispatcher=(
+                dispatcher if type(dispatcher) is IntervalDispatcher else None
+            ),
+            source_generation=0 if source_generation is None else int(source_generation),
+        )
+        guarded_branch_leaves = (
+            final_load_forest.fresh_load_leaf_serials
+            | semantic_branch_leaves
+        )
+        direct_entry_target = (
+            None if initial_state is None
+            else int(condition_chain_dag.route(int(initial_state)))
+        )
+        if (
+            final_load_forest.status is _CurrentU32DecisionForestStatus.INVALID
+            or not _fresh_load_leaf_modifications_have_direct_delivery(
+                flow_graph,
+                tuple(mods),
+                tuple(transitions),
+                dispatcher=dispatcher,
+                candidate_prefix_authority=candidate_prefix_authority,
+                dispatcher_entry_serial=int(dispatcher_entry_serial),
+                leaf_serials=guarded_branch_leaves,
+                root_serial=int(condition_chain_dag.root),
+                state_identity=state_identity_for_evidence,
+                entry_state=initial_state,
+                entry_target=direct_entry_target,
+                reference_dag=condition_chain_dag,
+                state_var_stkoff=_soff,
+                state_var_reg=state_var_reg,
+                live_in_by_serial=live_in_by_serial,
+                storage_live_in_by_serial=storage_live_in_by_serial,
+            )
+        ):
+            if logger.info_on:
+                logger.info(
+                    "unflat fresh-load final-route veto: forest=%s leaves=%s",
+                    final_load_forest.status.value,
+                    tuple(sorted(guarded_branch_leaves)),
+                )
+            return compile_with_dispatcher_coverage(())
+    if logger.info_on:
+        logger.info("UNFLAT_PREPROPOSAL_STAGE stage=final_leaf_delivery_done")
     legacy_severance_bail = severance_bail_enabled()
     use_def_audit = audit_use_def_severances(
         mods,

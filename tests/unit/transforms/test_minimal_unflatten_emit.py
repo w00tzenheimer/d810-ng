@@ -18272,12 +18272,12 @@ def _nested_source_scoped_entry_transition(
 
 
 @pytest.mark.parametrize("default_target", (200, 304))
-def test_nested_source_scoped_entry_route_uses_reconciled_transition(
+def test_nested_source_scoped_entry_route_rejects_overwritten_selector(
     monkeypatch,
     _seam,
     default_target: int,
 ) -> None:
-    """A shared feeder is bridged only on its exact initial source partition."""
+    """A trusted mocked route cannot bypass a feeder that rewrites its state."""
 
     graph, dag = _nested_source_scoped_entry_fixture()
     transition = _nested_source_scoped_entry_transition()
@@ -18319,7 +18319,7 @@ def test_nested_source_scoped_entry_route_uses_reconciled_transition(
         for modification in graph_modifications(plan)
         if isinstance(modification, RedirectGoto)
     )
-    assert RedirectGoto(2, 3, 304) in redirects
+    assert RedirectGoto(2, 3, 304) not in redirects
     assert not any(
         modification.from_serial == 3 and modification.old_target == 5
         for modification in graph_modifications(plan)
@@ -19547,7 +19547,7 @@ def _captured_incomplete_emitter_provider_rows(
     }
 
 
-def test_candidate_prefix_concrete_alternate_rows_reach_reconciliation(
+def test_candidate_prefix_concrete_alternate_rows_reach_reconciliation_but_stale_feeder_abstains(
     monkeypatch,
     _seam,
 ) -> None:
@@ -19615,14 +19615,10 @@ def test_candidate_prefix_concrete_alternate_rows_reach_reconciliation(
     assert reconcile_inputs == [
         (2, 230, 351, 404, 305, 491, 365, 496)
     ]
-    assert tuple(modification.from_serial for modification in redirects) == (
-        351,
-        404,
-        305,
-        491,
-        365,
-        496,
-    )
+    # The mocked provider claims six distinct states, while the physical
+    # feeder in each route writes literal zero. Reconciliation still sees the
+    # rows, but shortcutting those feeders would change the actual selector.
+    assert redirects == ()
     assert not any(
         modification.from_serial in {4, 405, 492, 497}
         and modification.old_target == 15

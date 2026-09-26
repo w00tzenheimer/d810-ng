@@ -4616,6 +4616,105 @@ def _require_corridor_source_retention(
             raise ValueError("projected corridor source prefix differs from source")
 
 
+def _is_fully_cloned_orphaned_corridor_source(
+    plan: PatchPlan,
+    source_inventory: model.SemanticGraphInventory,
+    projected_inventory: model.SemanticGraphInventory,
+    source_ref: NativeBlockRef,
+    *,
+    descriptors: Mapping[int, CanonicalPatchStepDescriptor],
+    route_proofs: tuple[route_model.SemanticRouteProof, ...],
+    route_claims: tuple[object, ...],
+) -> bool:
+    """Prove that a rewired one-way feeder has no remaining incoming path.
+
+    The proof is deliberately plan-wide: a corridor step may clone one incoming
+    arm while sibling steps clone the others and retarget the now-dead source.
+    Merely seeing zero projected predecessors is insufficient; every original
+    predecessor must be accounted for by one exact one-block corridor split.
+    """
+    source_by_ref = source_inventory.serial_by_ref
+    projected_by_ref = projected_inventory.serial_by_ref
+    source_row = _inventory_block(source_inventory, source_ref)
+    projected_row = _inventory_block(projected_inventory, source_ref)
+    if (
+        type(source_ref) is not NativeBlockRef
+        or source_row.serial == source_inventory.entry_serial
+        or source_row.serial in projected_inventory.physical_entry_reachable_serials
+        or projected_row.predecessor_serials
+        or not source_row.predecessor_serials
+        or len(set(source_row.predecessor_serials)) != len(source_row.predecessor_serials)
+        or len(source_row.successor_serials) != 1
+        or len(projected_row.successor_serials) != 1
+    ):
+        return False
+    old_ref, _ = _ref_and_serial(source_row.successor_serials[0], source_by_ref)
+    rewires = tuple(
+        step for step in plan.steps
+        if type(step) is PatchRedirectGoto
+        and step.from_serial == source_ref
+    )
+    if (
+        len(rewires) != 1
+        or rewires[0].old_target != old_ref
+        or projected_by_ref.get(rewires[0].new_target)
+        != projected_row.successor_serials[0]
+    ):
+        return False
+    clones = tuple(
+        (index, step) for index, step in enumerate(plan.steps)
+        if type(step) is PatchEdgeSplitCorridor
+        and step.source_serial == source_ref
+    )
+    if len(clones) != len(source_row.predecessor_serials):
+        return False
+    for predecessor_serial in source_row.predecessor_serials:
+        predecessor_ref, _ = _ref_and_serial(predecessor_serial, source_by_ref)
+        matching = tuple(
+            (index, step) for index, step in clones
+            if step.via_pred == predecessor_ref
+            and step.old_target == old_ref
+            and step.clone_until == source_ref
+            and step.corridor_serials == (source_ref,)
+            and len(step.clone_block_ids) == 1
+            and step.source_new_target is None
+        )
+        if len(matching) != 1:
+            return False
+        clone_index, clone_step = matching[0]
+        descriptor = descriptors.get(clone_index)
+        if descriptor is None:
+            return False
+        matched_proofs = tuple(
+            proof for proof in route_proofs
+            if _state_transform_helper_corridor_coordinates_match(
+                plan, proof, descriptor,
+            )
+        )
+        if len(matched_proofs) != 1 or sum(
+            type(claim) is model.EquivalentSemanticRouteClaim
+            and matched_proofs[0].proof_id in claim.route_proof_ids
+            for claim in route_claims
+        ) != 1:
+            return False
+        clone_ref = clone_step.clone_block_ids[0]
+        clone_serial = projected_by_ref.get(clone_ref)
+        if clone_serial is None:
+            return False
+        source_predecessor = _inventory_block(source_inventory, predecessor_ref)
+        projected_predecessor = _inventory_block(projected_inventory, predecessor_ref)
+        projected_clone = _inventory_block(projected_inventory, clone_ref)
+        if (
+            source_predecessor.successor_serials != (source_row.serial,)
+            or projected_predecessor.successor_serials != (clone_serial,)
+            or projected_clone.predecessor_serials != (predecessor_serial,)
+            or projected_clone.successor_serials
+            != (projected_by_ref.get(clone_step.new_target),)
+        ):
+            return False
+    return True
+
+
 def _ref_and_serial(value: object, serial_by_ref: Mapping[object, int]) -> tuple[object, int]:
     if value in serial_by_ref:
         return value, serial_by_ref[value]
@@ -5140,7 +5239,6 @@ def _state_carrier_helper_corridor_coordinates_match(
         or proof.proof_kind is not route_model.SemanticRouteProofKind.STATE_CARRIER
         or proof.shape is not route_model.SemanticRouteShape.DIRECT
         or carrier is None
-        or not carrier.requires_feeder_clone
         or len(proof.destinations) != 1
         or proof.destinations[0].role is not SemanticEdgeRole.DIRECT
     ):
@@ -5167,6 +5265,78 @@ def _state_carrier_helper_corridor_coordinates_match(
         and _ref_matches_identity(feeder_ref, carrier.feeder_identity)
         and _ref_matches_identity(comparison_ref, carrier.corridor[2].identity)
         and _ref_matches_identity(destination_ref, destination.target_identity)
+    )
+
+
+def _state_transform_helper_corridor_coordinates_match(
+    plan: PatchPlan,
+    proof: route_model.SemanticRouteProof,
+    descriptor: CanonicalPatchStepDescriptor,
+) -> bool:
+    """Match a private copy of an exact transform feeder corridor.
+
+    The proof source is the predecessor; the cloned physical path begins at
+    the arithmetic feeder and ends before the comparison entry.  No other
+    helper-corridor shape inherits this transform authority.
+    """
+
+    transform = proof.state_transform
+    if (
+        descriptor.step_kind is not PatchStepKind.HELPER_CORRIDOR
+        or descriptor.step_index < 0
+        or descriptor.step_index >= len(plan.steps)
+        or type(plan.steps[descriptor.step_index]) is not PatchEdgeSplitCorridor
+        or len(descriptor.route_refs) < 6
+        or not descriptor.helper_refs
+        or proof.proof_kind is not route_model.SemanticRouteProofKind.STATE_TRANSFORM
+        or proof.shape is not route_model.SemanticRouteShape.DIRECT
+        or transform is None
+        or proof.source_identity != transform.source_identity
+        or len(proof.destinations) != 1
+        or proof.destinations[0].role is not SemanticEdgeRole.DIRECT
+    ):
+        return False
+    step = plan.steps[descriptor.step_index]
+    feeder_ref, source_ref, old_target_ref, destination_ref, clone_until_ref = (
+        descriptor.route_refs[:5]
+    )
+    middle = transform.corridor[1:-1]
+    return bool(
+        step.source_new_target is None
+        and step.source_serial == feeder_ref
+        and step.via_pred == source_ref
+        and step.old_target == old_target_ref
+        and step.new_target == destination_ref
+        and step.clone_until == clone_until_ref
+        and len(step.corridor_serials) == len(middle)
+        and len(middle) in {1, 2}
+        and transform.corridor[-1].identity
+        == transform.comparison_entry_identity
+        and (
+            (len(middle) == 1 and transform.state_feeder_identity is None)
+            or (
+                len(middle) == 2
+                and transform.state_feeder_identity
+                == transform.corridor[2].identity
+            )
+        )
+        and len(step.clone_block_ids) == len(step.corridor_serials)
+        and descriptor.helper_refs == step.clone_block_ids
+        and descriptor.route_refs[5:] == step.corridor_serials
+        and step.corridor_serials[0] == feeder_ref
+        and step.corridor_serials[-1] == clone_until_ref
+        and all(
+            _ref_matches_identity(ref, point.identity)
+            for ref, point in zip(step.corridor_serials, middle, strict=True)
+        )
+        and _ref_matches_identity(source_ref, transform.source_identity)
+        and _ref_matches_identity(feeder_ref, transform.feeder_identity)
+        and _ref_matches_identity(
+            old_target_ref, transform.corridor[2].identity,
+        )
+        and _ref_matches_identity(
+            destination_ref, proof.destinations[0].target_identity,
+        )
     )
 
 
@@ -5663,6 +5833,12 @@ def _select_lineage_fact_group(
             plan, proof, entry.descriptor,
         )
     ) if not is_conditional else ()
+    state_transform_helper_corridor = tuple(
+        entry for entry in kind_entries(PatchStepKind.HELPER_CORRIDOR)
+        if _state_transform_helper_corridor_coordinates_match(
+            plan, proof, entry.descriptor,
+        )
+    ) if not is_conditional else ()
     entry_liveness = tuple(
         entry for entry in entries
         for receipt in entry_liveness_receipts
@@ -5721,6 +5897,8 @@ def _select_lineage_fact_group(
             if state_carrier_feeder_direct
             else state_carrier_helper_corridor
             if state_carrier_helper_corridor
+            else state_transform_helper_corridor
+            if state_transform_helper_corridor
             else entry_liveness
             if entry_liveness
             else retained_prefix_direct
@@ -6202,6 +6380,7 @@ def _legacy_structural_projected_routes(*, source_authority: model.SourceBoundRo
             retained_prefix_source_ref = None
             state_transform_feeder_direct_match = False
             state_carrier_helper_corridor_match = False
+            state_transform_helper_corridor_match = False
             shared_state_carrier_source_bypass_match = False
             route_source_ref = source_ref
             route_source_serial_number = source_by_ref.get(source_ref)
@@ -6241,6 +6420,20 @@ def _legacy_structural_projected_routes(*, source_authority: model.SourceBoundRo
                 route_source_ref, route_source_serial_number = _ref_and_serial(
                     descriptor.route_refs[0], source_by_ref,
                 )
+            if (
+                descriptor.step_kind is PatchStepKind.HELPER_CORRIDOR
+                and _state_transform_helper_corridor_coordinates_match(
+                    plan, claim_proof, descriptor,
+                )
+            ):
+                state_transform_helper_corridor_match = True
+                route_source_ref, route_source_serial_number = _ref_and_serial(
+                    descriptor.route_refs[0], source_by_ref,
+                )
+            proven_feeder_corridor_match = (
+                state_carrier_helper_corridor_match
+                or state_transform_helper_corridor_match
+            )
             if (
                 descriptor.step_kind is PatchStepKind.REDIRECT_BRANCH
                 and _owner_bound_direct_coordinates_match(
@@ -6818,7 +7011,7 @@ def _legacy_structural_projected_routes(*, source_authority: model.SourceBoundRo
                 if (
                     not source_refs
                     or (
-                        not state_carrier_helper_corridor_match
+                        not proven_feeder_corridor_match
                         and source_ref != source_refs[0]
                     )
                 ):
@@ -6872,9 +7065,10 @@ def _legacy_structural_projected_routes(*, source_authority: model.SourceBoundRo
                     except (TypeError, ValueError):
                         continue
                 active_anchored_refs = tuple(family_anchors)
-                if state_carrier_helper_corridor_match:
+                if proven_feeder_corridor_match:
                     admitted_proof_kinds = {
                         route_model.SemanticRouteProofKind.STATE_CARRIER,
+                        route_model.SemanticRouteProofKind.STATE_TRANSFORM,
                     }
                 else:
                     admitted_proof_kinds = {
@@ -6887,7 +7081,25 @@ def _legacy_structural_projected_routes(*, source_authority: model.SourceBoundRo
                 for retained_ref in source_refs:
                     retained_source = _inventory_block(source_inventory, retained_ref)
                     retained_projected = _inventory_block(projected_inventory, retained_ref)
-                    if retained_source.successor_serials != retained_projected.successor_serials:
+                    if (
+                        retained_source.successor_serials
+                        != retained_projected.successor_serials
+                    ):
+                        orphaned_source = (
+                            state_transform_helper_corridor_match
+                            and len(source_refs) == 1
+                            and _is_fully_cloned_orphaned_corridor_source(
+                                plan, source_inventory, projected_inventory,
+                                retained_ref,
+                                descriptors=descriptors,
+                                route_proofs=(
+                                    source_authority.proposal.route_evidence.route_proofs
+                                ),
+                                route_claims=source_authority.proposal.claims,
+                            )
+                        )
+                        if orphaned_source:
+                            continue
                         raise ValueError("projected corridor source successor chain differs")
                 _require_corridor_source_retention(
                     source_inventory, projected_inventory, source_refs,
@@ -6896,11 +7108,16 @@ def _legacy_structural_projected_routes(*, source_authority: model.SourceBoundRo
                 projected_edge_source_row = _inventory_block(
                     projected_inventory, predecessor_ref,
                 )
-                if state_carrier_helper_corridor_match:
-                    if not _state_carrier_helper_corridor_coordinates_match(
-                        plan, proof, descriptor,
+                if proven_feeder_corridor_match:
+                    if not (
+                        _state_carrier_helper_corridor_coordinates_match(
+                            plan, proof, descriptor,
+                        )
+                        or _state_transform_helper_corridor_coordinates_match(
+                            plan, proof, descriptor,
+                        )
                     ):
-                        raise ValueError("carrier corridor coordinates differ")
+                        raise ValueError("feeder corridor coordinates differ")
                 elif (
                     not _ref_matches_identity(source_refs[0], proof.source_identity)
                     or proof.source_owner_identity is None
@@ -6948,7 +7165,7 @@ def _legacy_structural_projected_routes(*, source_authority: model.SourceBoundRo
                     # implicit fallthrough. Preserve its final MOVE, recording
                     # that no source GOTO existed rather than inventing one.
                     if not source_has_goto and (
-                        not state_carrier_helper_corridor_match
+                        not proven_feeder_corridor_match
                         or any(obs.control_transfer_kind is not None for obs in source_obs)
                     ):
                         raise ValueError("corridor source lacks a proven fallthrough")
@@ -7024,10 +7241,14 @@ def _legacy_structural_projected_routes(*, source_authority: model.SourceBoundRo
                 anchored_semantic_target = model.AnchoredBlockRef(
                     new_ref, projected_new_row.anchor_ea,
                 )
-                if state_carrier_helper_corridor_match:
-                    carrier = proof.state_carrier
-                    if carrier is None:
-                        raise ValueError("carrier corridor lacks typed carrier evidence")
+                if proven_feeder_corridor_match:
+                    feeder_proof = (
+                        proof.state_carrier
+                        if state_carrier_helper_corridor_match
+                        else proof.state_transform
+                    )
+                    if feeder_proof is None:
+                        raise ValueError("feeder corridor lacks typed evidence")
                     anchored_proof_source = model.AnchoredBlockRef(
                         predecessor_ref,
                         _inventory_block(source_inventory, predecessor_ref).anchor_ea,
@@ -8713,24 +8934,38 @@ def _make_route_kernels():
                         raise ValueError("corridor source roles differ from exact lineage")
                 elif type(relation) is model.ClonedCarrierRouteCorridorRealization:
                     carrier = proof.state_carrier
-                    if (
+                    transform = proof.state_transform
+                    carrier_match = (
                         proof.proof_kind
-                        is not route_model.SemanticRouteProofKind.STATE_CARRIER
-                        or carrier is None
-                        or not carrier.requires_feeder_clone
-                        or not _state_carrier_helper_corridor_coordinates_match(
+                        is route_model.SemanticRouteProofKind.STATE_CARRIER
+                        and carrier is not None
+                        and _state_carrier_helper_corridor_coordinates_match(
                             plan, proof, draft.descriptor,
                         )
+                    )
+                    transform_match = (
+                        proof.proof_kind
+                        is route_model.SemanticRouteProofKind.STATE_TRANSFORM
+                        and transform is not None
+                        and _state_transform_helper_corridor_coordinates_match(
+                            plan, proof, draft.descriptor,
+                        )
+                    )
+                    if (
+                        not carrier_match
+                        and not transform_match
                     ):
                         raise ValueError(
-                            "carrier relation lacks its exact typed carrier proof"
+                            "feeder relation lacks its exact typed proof"
                         )
+                    feeder_witness = carrier if carrier_match else transform
                     expected_feeder = identity_owner(
-                        carrier.feeder_identity, carrier.feeder_anchor_ea,
+                        feeder_witness.feeder_identity,
+                        feeder_witness.feeder_anchor_ea,
                     )
                     expected_comparison = identity_owner(
-                        carrier.comparison_entry_identity,
-                        carrier.comparison_entry_anchor_ea,
+                        feeder_witness.comparison_entry_identity,
+                        feeder_witness.comparison_entry_anchor_ea,
                     )
                     if (
                         relation.proof_source != expected_proof_owner
@@ -8738,12 +8973,12 @@ def _make_route_kernels():
                         or relation.comparison_entry != expected_comparison
                         or relation.source_corridor != tuple(
                             identity_owner(point.identity, point.anchor_ea)
-                            for point in carrier.corridor[1:-1]
+                            for point in feeder_witness.corridor[1:-1]
                         )
                         or relation.semantic_target.ref != selected_target
                     ):
                         raise ValueError(
-                            "carrier relation roles differ from exact typed evidence"
+                            "feeder relation roles differ from exact typed evidence"
                         )
                 semantic_targets = {
                     draft.relation.new_target.ref

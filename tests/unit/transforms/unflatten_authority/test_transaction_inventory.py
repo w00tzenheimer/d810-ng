@@ -16,6 +16,67 @@ from d810.transforms.unflatten_authority.ids import authority_id, semantic_graph
 _BADADDR = 0xFFFFFFFFFFFFFFFF
 
 
+@pytest.mark.parametrize(
+    "drift",
+    (None, "payload", "anchor", "template", "helper_kind", "unbound"),
+)
+def test_projected_corridor_clone_binds_gap_before_first_native_instruction(drift):
+    """A copied block start is provenance even if its first row begins later."""
+    from d810.ir.flowgraph import FlowGraph, InsnKind, InsnSnapshot, MopSnapshot, OperandKind
+    from d810.ir.semantics import ControlTransferKind
+    from d810.transforms.plan import PatchBlockSpec, PatchPlan
+    from tests.unit.transforms.unflatten_authority.test_bind import _exact_fixture
+
+    _source, proposal, _exclusion, refs = _exact_fixture()
+    helper_ref = PlanBlockRef(proposal.plan_id, "edge_split_corridor:11")
+    payload = InsnSnapshot(4, 0x401002, (), kind=InsnKind.MOV, raw_opcode=4, native_ea=0x401002)
+    old_goto = InsnSnapshot(
+        5, 0x401006, (), kind=InsnKind.GOTO, raw_opcode=5, native_ea=0x401006,
+        control_transfer_kind=ControlTransferKind.GOTO, is_unconditional_jump=True,
+        d=MopSnapshot(kind=OperandKind.BLOCK, block_ref=2),
+    )
+    source_block = BlockSnapshot(
+        1, 0, (2,), (), 0, 0x401000, (payload, old_goto),
+        tail_opcode=5, raw_tail_opcode=5, tail_kind=InsnKind.GOTO,
+        kind=BlockKind.ONE_WAY,
+    )
+    exit_block = BlockSnapshot(
+        2, 0, (), (1,), 0, 0x401010, (), kind=BlockKind.STOP,
+    )
+    source = FlowGraph({1: source_block, 2: exit_block}, 1, 0x401000)
+    synthetic_goto = replace(
+        old_goto, opcode=-1, raw_opcode=None, native_ea=None,
+        d=MopSnapshot(kind=OperandKind.BLOCK, block_ref=3),
+    )
+    copied_payload = replace(payload, opcode=6, raw_opcode=6) if drift == "payload" else payload
+    helper_block = replace(
+        source_block, serial=9, succs=(3,), insn_snapshots=(copied_payload, synthetic_goto),
+        tail_opcode=-1, raw_tail_opcode=None,
+    )
+    helper_anchor = 0x401001 if drift == "anchor" else 0x401000
+    helper_kind = "insert_block" if drift == "helper_kind" else "edge_split_corridor_clone"
+    template = refs[0] if drift == "template" else refs[1]
+    plan = PatchPlan(
+        plan_id=proposal.plan_id, snapshot_id=authority_id("projected-gap"),
+        source_coordinates=() if drift == "unbound" else ((refs[1], 1),),
+        new_blocks=(PatchBlockSpec(helper_ref, helper_kind, template_block=template),),
+    )
+    observed = producer_api.observe_inventory_block(
+        helper_block, owner_ref=helper_ref, owner_anchor_ea=helper_anchor,
+    )
+
+    assert transaction_api._projected_corridor_helper_has_exact_source_anchor(
+        source_graph=source, plan=plan, owner_ref=helper_ref,
+        block=helper_block, observed=observed,
+    ) is (drift is None)
+    normalized = transaction_api._normalize_projected_corridor_helper_anchor(
+        source_graph=source, plan=plan, owner_ref=helper_ref,
+        block=helper_block, observed=observed,
+    )
+    assert normalized.graph_start_ea == 0x401000
+    assert normalized.anchor_ea == (0x401002 if drift is None else helper_anchor)
+
+
 @pytest.mark.parametrize("drift", [None, "payload", "missing_payload", "extra_payload", "foreign_successor", "nonadjacent", "different_corridor", "native_goto"])
 def test_observed_corridor_helper_accepts_only_exact_synthetic_fallthrough(drift):
     from d810.ir.flowgraph import InsnKind, InsnSnapshot, MopSnapshot, OperandKind

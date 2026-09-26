@@ -103,6 +103,9 @@ from d810.analyses.control_flow.materialized_indirect_transfer import (
     route_transfer_target_through_condition_chain,
 )
 from d810.analyses.control_flow.semantic_transition import NativeBoundTransitionRoute
+from d810.analyses.control_flow.semantic_load_leaf import (
+    prove_fresh_full_width_load_leaf,
+)
 from d810.analyses.control_flow.semantic_route_evidence import (
     DecisionDagComparisonWitness,
     DecisionDagRouteWitness,
@@ -155,6 +158,7 @@ from d810.ir.graph_fingerprint import (
 )
 from d810.ir.insn_projection import (
     InstructionProjection,
+    instruction_source_trees_supported_for_semantic_load,
     is_effect_free_operand_tree,
     operand_kinds,
     operand_snapshots,
@@ -3119,6 +3123,7 @@ class _CurrentU32DecisionForestStatus(Enum):
 class _CurrentU32DecisionForestObservation:
     status: _CurrentU32DecisionForestStatus
     decision_dag: DecisionDag | None = None
+    fresh_load_leaf_serials: frozenset[int] = frozenset()
 
 
 @dataclass(frozen=True, slots=True)
@@ -3359,6 +3364,123 @@ class IntervalHandlerLeafReplayCatalog:
         return frozenset(item.serial for item in self.bindings)
 
 
+def _load_leaf_bypass_preserves_live_ins(
+    flow_graph: FlowGraph,
+    reference_dag: DecisionDag | None,
+    *,
+    entry_serial: int,
+    leaf_serial: int,
+    carrier_identity: StorageIdentity,
+    carrier_width: int,
+) -> bool:
+    """Require every skipped dispatcher path to preserve non-carrier values.
+
+    A load can replace a physical state carrier even when the loaded *value*
+    depends on state.  Its conditional remains in the graph.  The relevant
+    shortcut obligation is that the dispatcher path being bypassed neither
+    changes memory nor defines any live-in other than that killed carrier.
+    Require an exact reference path and reciprocal edges before admitting the
+    leaf; a one-sided predecessor list must not hide another path.
+    """
+
+    if (
+        reference_dag is None
+        or reference_dag.width != 32
+        or reference_dag.root != int(entry_serial)
+        or carrier_width <= 0
+    ):
+        return False
+    blocks = flow_graph.blocks
+    for serial, block in blocks.items():
+        successors = tuple(int(value) for value in block.succs)
+        predecessors = tuple(int(value) for value in block.preds)
+        if len(set(successors)) != len(successors) or len(set(predecessors)) != len(predecessors):
+            return False
+        for successor in successors:
+            target = blocks.get(successor)
+            if target is None or int(serial) not in tuple(int(value) for value in target.preds):
+                return False
+        for predecessor in predecessors:
+            source = blocks.get(predecessor)
+            if source is None or int(serial) not in tuple(int(value) for value in source.succs):
+                return False
+    try:
+        paths = tuple(
+            path for path in reference_dag.resolve_paths()
+            if int(path.target) == int(leaf_serial)
+        )
+    except (AttributeError, KeyError, TypeError, ValueError, OverflowError):
+        return False
+    if not paths:
+        return False
+    for path in paths:
+        nodes = tuple(int(serial) for serial in path.path)
+        if not nodes or nodes[0] != int(entry_serial) or len(set(nodes)) != len(nodes):
+            return False
+        for source_serial, target_serial in zip(
+            nodes, (*nodes[1:], int(leaf_serial)), strict=True
+        ):
+            block = blocks.get(source_serial)
+            if block is None or target_serial not in tuple(int(value) for value in block.succs):
+                return False
+            if not all(
+                not raw.is_call
+                and raw.call_kind is None
+                and raw.kind in {
+                    InsnKind.NOP,
+                    InsnKind.MOV,
+                    InsnKind.XDU,
+                    InsnKind.VALUE,
+                    InsnKind.GOTO,
+                    InsnKind.COND_JUMP,
+                    InsnKind.EQUALITY_JUMP,
+                }
+                and instruction_source_trees_supported_for_semantic_load(raw)
+                for raw in block.insn_snapshots
+            ):
+                return False
+            instructions = InstructionProjection.from_block_for_semantic_load_proof(block)
+            if not instructions:
+                return False
+            for index, instruction in enumerate(instructions):
+                if (
+                    instruction.attrs.get("unprojected_source")
+                    or instruction.attrs.get("unprojected_write")
+                    or instruction.effects
+                    or instruction.memory is not None
+                ):
+                    return False
+                if instruction.control is not None:
+                    if (
+                        index != len(instructions) - 1
+                        or instruction.result is not None
+                        or instruction.control.transfer not in {
+                            ControlTransferKind.CONDITIONAL_BRANCH,
+                            ControlTransferKind.GOTO,
+                        }
+                    ):
+                        return False
+                    continue
+                result = instruction.result
+                if result is None:
+                    if instruction.operation is not ValueOpKind.VENDOR or instruction.inputs:
+                        return False
+                    continue
+                if (
+                    storage_identity_from_varnode(result) != carrier_identity
+                    or result.size != carrier_width
+                    or instruction.operation not in {ValueOpKind.MOVE, ValueOpKind.ZEXT}
+                    or not instruction.inputs
+                ):
+                    return False
+                if any(
+                    storage_identity_from_varnode(value) == carrier_identity
+                    for value in instruction.inputs
+                ):
+                    return False
+    return True
+
+
 def _observe_current_u32_decision_forest(
     flow_graph: FlowGraph,
     entry_serial: int,
@@ -3401,6 +3523,64 @@ def _observe_current_u32_decision_forest(
                 _CurrentU32DecisionForestStatus.INVALID
             )
         permitted_non_state_handler_leaf_serials = revalidated
+
+    projected_load_leaf_blocks: dict[int, tuple[Instruction, ...]] = {}
+    proven_load_leaves: dict[tuple[int, StorageIdentity, int], bool] = {}
+    recognized_nested_load_leaves: set[int] = set()
+
+    def projected_load_leaf_block(serial: int) -> tuple[Instruction, ...]:
+        serial = int(serial)
+        if serial not in projected_load_leaf_blocks:
+            block = flow_graph.get_block(serial)
+            if block is None:
+                raise KeyError(serial)
+            projected_load_leaf_blocks[serial] = (
+                InstructionProjection.from_block_for_semantic_load_proof(block)
+            )
+        return projected_load_leaf_blocks[serial]
+
+    def load_leaf_predecessors(serial: int) -> tuple[int, ...]:
+        block = flow_graph.get_block(int(serial))
+        if block is None:
+            raise KeyError(serial)
+        return tuple(int(pred) for pred in block.preds)
+
+    def proven_load_leaf(
+        serial: int, identity: StorageIdentity, width: int,
+    ) -> bool:
+        if int(serial) not in permitted_non_state_handler_leaf_serials:
+            return False
+        key = (int(serial), identity, int(width))
+        if key not in proven_load_leaves:
+            block = flow_graph.get_block(int(serial))
+            sources_supported = bool(
+                block is not None
+                and all(
+                    instruction_source_trees_supported_for_semantic_load(insn)
+                    for insn in block.insn_snapshots
+                )
+            )
+            proven_load_leaves[key] = bool(
+                sources_supported
+                and _load_leaf_bypass_preserves_live_ins(
+                    flow_graph,
+                    reference_dag,
+                    entry_serial=int(entry_serial),
+                    leaf_serial=int(serial),
+                    carrier_identity=identity,
+                    carrier_width=int(width),
+                )
+                and prove_fresh_full_width_load_leaf(
+                    block_serial=int(serial),
+                    entry_serial=int(flow_graph.entry_serial),
+                    projected_block=projected_load_leaf_block,
+                    predecessors_of=load_leaf_predecessors,
+                    expected_state_identities=frozenset({identity}),
+                    expected_state_width=int(width),
+                    selector_source_identities=expected_identities,
+                )
+            )
+        return proven_load_leaves[key]
 
     root_identities: list[StorageIdentity] = []
     for identity in expected_identities:
@@ -3661,6 +3841,9 @@ def _observe_current_u32_decision_forest(
                         expected_state_width=target_carrier_width,
                         selector_source_identities=expected_identities,
                     )
+                    and not proven_load_leaf(
+                        target, target_identity, target_carrier_width,
+                    )
                 ):
                     logger.warning(
                         "current U32 decision forest rejected semantic leaf: "
@@ -3697,6 +3880,9 @@ def _observe_current_u32_decision_forest(
                                 expected_state_identities=frozenset({target_identity}),
                                 expected_state_width=target_carrier_width,
                                 selector_source_identities=expected_identities,
+                            )
+                            or proven_load_leaf(
+                                target, target_identity, target_carrier_width,
                             )
                         )
                     )
@@ -3736,6 +3922,9 @@ def _observe_current_u32_decision_forest(
                             expected_state_width=target_carrier_width,
                             selector_source_identities=expected_identities,
                         )
+                        or proven_load_leaf(
+                            target, target_identity, target_carrier_width,
+                        )
                         or (
                             allow_source_bound_semantic_leaf
                             and (
@@ -3764,6 +3953,28 @@ def _observe_current_u32_decision_forest(
                         return _CurrentU32DecisionForestObservation(
                             _CurrentU32DecisionForestStatus.INVALID
                         )
+                    if (
+                        target_block is not None
+                        and len(tuple(target_block.succs)) == 2
+                        and _is_call_result_overwrite_semantic_leaf(
+                            target_instructions,
+                            expected_state_identities=frozenset({target_identity}),
+                            expected_state_width=target_carrier_width,
+                            require_nested_load=True,
+                        )
+                    ):
+                        if not _load_leaf_bypass_preserves_live_ins(
+                            flow_graph,
+                            reference_dag,
+                            entry_serial=int(entry_serial),
+                            leaf_serial=target,
+                            carrier_identity=target_identity,
+                            carrier_width=target_carrier_width,
+                        ):
+                            return _CurrentU32DecisionForestObservation(
+                                _CurrentU32DecisionForestStatus.INVALID
+                            )
+                        recognized_nested_load_leaves.add(target)
                     continue
             pending.append(
                 (
@@ -3803,7 +4014,11 @@ def _observe_current_u32_decision_forest(
             _CurrentU32DecisionForestStatus.INVALID
         )
     return _CurrentU32DecisionForestObservation(
-        _CurrentU32DecisionForestStatus.VALID, route_dag
+        _CurrentU32DecisionForestStatus.VALID,
+        route_dag,
+        frozenset(recognized_nested_load_leaves) | frozenset(
+            serial for (serial, _, _), proven in proven_load_leaves.items() if proven
+        ),
     )
 
 
@@ -4233,6 +4448,7 @@ def _is_call_result_overwrite_semantic_leaf(
     *,
     expected_state_identities: frozenset[StorageIdentity],
     expected_state_width: int,
+    require_nested_load: bool = False,
 ) -> bool:
     """Prove a branch consumes a fresh call/load value replacing a carrier.
 
@@ -4251,6 +4467,7 @@ def _is_call_result_overwrite_semantic_leaf(
     call_result_values: set[Varnode] = set()
     load_result_values: set[Varnode] = set()
     active_state_call_result: Varnode | None = None
+    active_state_from_load = False
 
     def overlaps_carrier(value: Varnode) -> bool:
         identity = storage_identity_from_varnode(value)
@@ -4272,6 +4489,7 @@ def _is_call_result_overwrite_semantic_leaf(
             if state_inputs:
                 return bool(
                     active_state_call_result is not None
+                    and (not require_nested_load or active_state_from_load)
                     and len(instruction.inputs) == 2
                     and active_state_call_result in instruction.inputs
                     and all(value == active_state_call_result for value in state_inputs)
@@ -4311,6 +4529,7 @@ def _is_call_result_overwrite_semantic_leaf(
                 # first materialize a result, then an explicit U32 MOVE must
                 # kill the active carrier namespace.
                 active_state_call_result = None
+                active_state_from_load = False
             continue
         if (
             instruction.operation is ValueOpKind.LOAD
@@ -4334,6 +4553,7 @@ def _is_call_result_overwrite_semantic_leaf(
             and 0 < instruction.inputs[0].size < instruction.result.size <= expected_state_width
         ):
             active_state_call_result = instruction.result
+            active_state_from_load = True
             continue
         if (
             instruction.operation in (ValueOpKind.MOVE, ValueOpKind.LOW)
@@ -4353,14 +4573,17 @@ def _is_call_result_overwrite_semantic_leaf(
                 )
             ):
                 active_state_call_result = instruction.result
+                active_state_from_load = False
             elif overlaps_carrier(instruction.result):
                 active_state_call_result = None
+                active_state_from_load = False
             continue
         if (
             instruction.result is not None
             and overlaps_carrier(instruction.result)
         ):
             active_state_call_result = None
+            active_state_from_load = False
     return False
 
 
@@ -5703,6 +5926,29 @@ def _has_exact_current_direct_state_write(
     return len(matches) == 1
 
 
+def _fresh_load_leaf_transition_has_direct_entry(
+    transition: StateWriteTransition,
+    flow_graph: FlowGraph,
+    *,
+    state_identity: StorageIdentity,
+    entry_serial: int,
+) -> bool:
+    """Exclude any unproved pre-root alias from a fresh-load leaf shortcut.
+
+    The leaf and comparison-corridor proofs begin at the decision DAG root.
+    A split or feeder before that root may define a live-in used by the leaf;
+    its effects are not covered by those proofs.  For now admit only a current
+    exact state write whose physical successor is the DAG root itself.
+    """
+
+    return _has_exact_current_direct_state_write(
+        transition,
+        flow_graph,
+        state_identity=state_identity,
+        entry_serial=entry_serial,
+    )
+
+
 def _source_materializes_exact_transition_state(
     transition: StateWriteTransition,
     flow_graph: FlowGraph,
@@ -6920,6 +7166,45 @@ def _reconcile_transition_routes_with_decision_dag(
                 resolved_transition, route_fact,
             )
         reconciled.append(resolved_transition)
+    if current_forest_observation.fresh_load_leaf_serials:
+        state_identity = (
+            StorageIdentity(StorageIdentityKind.STACK, int(state_var_stkoff))
+            if state_var_stkoff is not None
+            else (
+                StorageIdentity(StorageIdentityKind.REGISTER, int(state_var_reg))
+                if state_var_reg is not None
+                else None
+            )
+        )
+        for transition in reconciled:
+            if transition.target_handler not in current_forest_observation.fresh_load_leaf_serials:
+                continue
+            if (
+                state_identity is None
+                or not _fresh_load_leaf_transition_has_direct_entry(
+                    transition,
+                    flow_graph,
+                    state_identity=state_identity,
+                    entry_serial=int(decision_dag.root),
+                )
+            ):
+                logger.info(
+                    "fresh-load leaf route rejected: source=%d via=%s leaf=%d "
+                    "reason=unproved_pre_root_prefix",
+                    int(transition.write_block),
+                    "none" if transition.via_block is None else int(transition.via_block),
+                    int(transition.target_handler),
+                )
+                # An empty result is a hard veto. ``None`` permits the
+                # materialized-midtree fallback to reuse the original routes.
+                return ()
+            logger.info(
+                "fresh-load leaf route admitted: source=%d root=%d leaf=%d "
+                "reason=exact_direct_state_write",
+                int(transition.write_block),
+                int(decision_dag.root),
+                int(transition.target_handler),
+            )
     return tuple(reconciled)
 
 

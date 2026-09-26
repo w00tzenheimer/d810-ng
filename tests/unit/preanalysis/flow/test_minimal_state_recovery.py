@@ -822,6 +822,42 @@ def test_reconciliation_reclassifies_stale_partition_at_exact_switch_handoff(
         state_var_reg=None,
     )
 
+    if outcome in {"reclassified", "retained_disconnected_successor"}:
+        monkeypatch.setattr(
+            minimal_state_recovery,
+            "_observe_current_u32_decision_forest",
+            lambda *_args, **_kwargs: minimal_state_recovery._CurrentU32DecisionForestObservation(
+                minimal_state_recovery._CurrentU32DecisionForestStatus.VALID,
+                fresh_load_leaf_serials=frozenset({3}),
+            ),
+        )
+        guarded = minimal_state_recovery._reconcile_transition_routes_with_decision_dag(
+            (transition,),
+            graph,
+            _DualRouteDispatcher(exact_targets={7: provider_target}, interval_rows=()),
+            DecisionDag(32, {2: RouteComparison(2, "jz", 7, 4, 8)}, root=2),
+            (),
+            condition_chain_handlers=frozenset({3, 9}),
+            state_var_stkoff=_STATE_OFF,
+            state_var_reg=None,
+        )
+        assert bool(guarded) is (outcome == "reclassified")
+        if outcome == "retained_disconnected_successor":
+            # A hard safety veto must not enter the legacy materialized-route
+            # fallback, even when that fallback would otherwise be eligible.
+            assert not resolve_materialized_indirect_transfer_targets(
+                (transition,),
+                graph,
+                _DualRouteDispatcher(exact_targets={7: provider_target}, interval_rows=()),
+                (object(),),
+                condition_chain_dag=DecisionDag(
+                    32, {2: RouteComparison(2, "jz", 7, 4, 8)}, root=2,
+                ),
+                condition_chain_handlers=frozenset({3, 9}),
+                state_var_stkoff=_STATE_OFF,
+                state_var_reg=None,
+            )
+
     if outcome.startswith("rejected"):
         assert resolved is None
         return
@@ -7324,9 +7360,95 @@ def test_current_forest_admits_only_an_explicit_non_state_handler_leaf() -> None
     )
 
     assert listed_bridged_stateful.status is minimal_state_recovery._CurrentU32DecisionForestStatus.INVALID
+
+
+@pytest.mark.parametrize(
+    "mutation", ("none", "skipped_live_in", "missing_reverse_edge", "call", "unknown")
+)
+def test_load_leaf_bypass_corridor_preserves_non_state_live_ins(mutation: str) -> None:
+    """A dispatcher shortcut may skip only carrier writes and pure comparisons."""
+
+    carrier = StorageIdentity(StorageIdentityKind.REGISTER, 0)
+    prefix = InsnSnapshot(
+        opcode=0,
+        ea=0x1700,
+        operands=(),
+        l=MopSnapshot(kind=OperandKind.STACK, size=4, stkoff=52),
+        d=MopSnapshot(kind=OperandKind.REGISTER, size=8, reg=0),
+        kind=InsnKind.XDU,
+    )
+    if mutation == "skipped_live_in":
+        prefix = _mov(0x1700, _num(0x1234), replace(_reg(12), size=8))
+    elif mutation == "call":
+        prefix = InsnSnapshot(opcode=0, ea=0x1700, operands=(), kind=InsnKind.CALL, is_call=True)
+    elif mutation == "unknown":
+        prefix = InsnSnapshot(opcode=0, ea=0x1700, operands=(), kind=InsnKind.UNKNOWN)
+    branch = _jz_stack_const(0x1704, 52, 7, 2)
+    blocks = {
+        1: _blk(1, (2, 3), (), (prefix, branch), ea=0x1700),
+        2: _blk(2, (), (1,), (), ea=0x1710),
+        3: _stop(3, (1,)),
+    }
+    if mutation == "missing_reverse_edge":
+        blocks[4] = _blk(4, (2,), (), (), ea=0x1720)
+    graph = FlowGraph(blocks, entry_serial=1, func_ea=0x1700)
+    reference = DecisionDag(32, {1: RouteComparison(1, "jz", 7, 2, 3)}, root=1)
+
+    assert minimal_state_recovery._load_leaf_bypass_preserves_live_ins(
+        graph,
+        reference,
+        entry_serial=1,
+        leaf_serial=2,
+        carrier_identity=carrier,
+        carrier_width=8,
+    ) is (mutation == "none")
+
+
+@pytest.mark.parametrize("pre_root_alias", (False, True))
+def test_fresh_load_leaf_transition_requires_direct_source_to_root(
+    pre_root_alias: bool,
+) -> None:
+    """The DAG proof alone cannot certify instructions before its root."""
+
+    state = StorageIdentity(StorageIdentityKind.STACK, _STATE_OFF)
+    source = _blk(
+        1,
+        (5,) if pre_root_alias else (2,),
+        (),
+        (_mov(0x1100, _num(7), _stk(_STATE_OFF)),),
+        ea=0x1100,
+    )
+    root = _blk(2, (3, 4), (5,) if pre_root_alias else (1,), (), ea=0x1200)
+    blocks = {1: source, 2: root, 3: _stop(3, (2,)), 4: _stop(4, (2,))}
+    if pre_root_alias:
+        blocks[5] = _blk(
+            5, (2,), (1,),
+            (_mov(0x1500, _num(42), replace(_reg(12), size=8)),),
+            ea=0x1500,
+        )
+    graph = FlowGraph(blocks, entry_serial=1, func_ea=0x1000)
+    transition = StateWriteTransition(
+        write_block=1,
+        via_block=5 if pre_root_alias else None,
+        next_state=7,
+        target_handler=3,
+        is_return=True,
+        branch_arm=None,
+    )
+
+    assert minimal_state_recovery._fresh_load_leaf_transition_has_direct_entry(
+        transition,
+        graph,
+        state_identity=state,
+        entry_serial=2,
+    ) is (not pre_root_alias)
+
+
 @pytest.mark.parametrize("low_byte,missing_rhs", ((False, False), (True, False), (True, True)))
 @pytest.mark.parametrize("producer", ("call", "load", "state_address_load", "missing_width_load"))
-def test_current_forest_accepts_call_result_overwriting_the_state_register(low_byte: bool, missing_rhs: bool, producer: str) -> None:
+def test_current_forest_accepts_call_result_overwriting_the_state_register(
+    low_byte: bool, missing_rhs: bool, producer: str, monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """A branch over a call result is semantic even when it reuses the state register."""
 
     state = StorageIdentity(StorageIdentityKind.REGISTER, 8)
@@ -7408,6 +7530,38 @@ def test_current_forest_accepts_call_result_overwriting_the_state_register(low_b
     assert observed.status is (
         minimal_state_recovery._CurrentU32DecisionForestStatus.INVALID if missing_rhs or producer in ("state_address_load", "missing_width_load")
         else minimal_state_recovery._CurrentU32DecisionForestStatus.VALID)
+    assert observed.fresh_load_leaf_serials == (
+        frozenset({2}) if producer == "load" and not missing_rhs else frozenset()
+    )
+    if producer == "load" and not missing_rhs:
+        # Force the dedicated fresh-load route rather than the older simple
+        # load recognizer to verify that reconciliation receives its marker.
+        monkeypatch.setattr(
+            minimal_state_recovery,
+            "_is_call_result_overwrite_semantic_leaf",
+            lambda *_args, **_kwargs: False,
+        )
+        monkeypatch.setattr(
+            minimal_state_recovery,
+            "_is_exact_local_carrier_overwrite_semantic_leaf",
+            lambda *_args, **_kwargs: False,
+        )
+        monkeypatch.setattr(
+            minimal_state_recovery,
+            "prove_fresh_full_width_load_leaf",
+            lambda **_kwargs: True,
+        )
+        fresh_observation = minimal_state_recovery._observe_current_u32_decision_forest(
+            graph,
+            1,
+            expected_identities=frozenset({state}),
+            reference_dag=reference,
+            permitted_non_state_handler_leaf_catalog=catalogue,
+            block_refs_by_serial=refs,
+            dispatcher=dispatcher,
+        )
+        assert fresh_observation.status is minimal_state_recovery._CurrentU32DecisionForestStatus.VALID
+        assert fresh_observation.fresh_load_leaf_serials == frozenset({2})
 
 
 @pytest.mark.parametrize(
@@ -14625,6 +14779,7 @@ def test_exact_low_u32_carrier_proof_carries_selected_source_instruction_ea() ->
     assert proof.state == 7
     assert proof.source_instruction_ea == 0x1104
     assert proof.source_instruction_ea != 0x1100
+    assert proof.requires_feeder_clone is False
 
 
 def test_exact_carrier_proof_publishes_native_not_generated_instruction_ea() -> None:
@@ -15740,6 +15895,100 @@ def test_constant_carrier_suffix_requires_preserved_exact_move(mutation: str) ->
         assert proof.requires_feeder_clone is True
         assert proof.feeder_serial == 2
 
+
+def test_selected_carrier_preserves_two_pure_feeder_moves(_seam) -> None:
+    """Two distinct post-state register setups must travel with the feeder clone.
+
+    The 69814 loader has exactly this shape at
+    blk161@0x7FFF9918690E -> blk179@0x7FFF99187086: EAX delivers the
+    state, then byte and qword stack values initialize unrelated registers.
+    """
+
+    graph, dag = _candidate_prefix_partitioned_feeder_fixture()
+    blocks = dict(graph.blocks)
+    source = blocks[402]
+    feeder = blocks[330]
+    blocks[402] = replace(
+        source,
+        insn_snapshots=(
+            _mov(int(source.start_ea) + 4, _num(_PREFIX_SELECTED_STATE), _reg(8)),
+        ),
+    )
+    blocks[330] = replace(
+        feeder,
+        insn_snapshots=(
+            _mov(int(feeder.start_ea) + 4, _reg(8), _stk(_STATE_OFF)),
+            _mov(
+                int(feeder.start_ea) + 8,
+                replace(_stk(812), size=1),
+                replace(_reg(15), size=1),
+            ),
+            _mov(
+                int(feeder.start_ea) + 12,
+                replace(_stk(808), size=8),
+                replace(_reg(12), size=8),
+            ),
+        ),
+    )
+    graph = FlowGraph(blocks, graph.entry_serial, graph.func_ea)
+    observation = minimal_state_recovery.observe_candidate_scoped_prefix_authority(
+        graph,
+        dag,
+        state_var_stkoff=_STATE_OFF,
+        state_var_reg=None,
+    )
+    assert observation.authority is not None
+    _alternate, selected, direct, *_rest = _candidate_prefix_partitioned_transitions()
+    resolved = _resolve_with_sealed_interval_catalog(
+        (selected, direct),
+        graph,
+        _candidate_prefix_partitioned_dispatcher(),
+        (),
+        condition_chain_dag=dag,
+        condition_chain_handlers=frozenset({100, 101}),
+        state_var_stkoff=_STATE_OFF,
+        candidate_prefix_authority=observation.authority,
+    )
+
+    assert tuple(int(row.write_block) for row in resolved) == (402, 403)
+    assert resolved[0].preserve_via_block is True
+    assert resolved[0].proof is not None
+    assert "preserved_feeder_clone" in resolved[0].proof.route_source_kinds
+
+
+@pytest.mark.parametrize("mutation", ("third", "state", "width"))
+def test_two_move_carrier_feeder_rejects_unproved_suffix(mutation: str) -> None:
+    first = _mov(0x1204, replace(_stk(812), size=1), replace(_reg(15), size=1))
+    second = _mov(0x1208, replace(_stk(808), size=8), replace(_reg(12), size=8))
+    if mutation == "state":
+        second = _mov(0x1208, _num(1), _stk(_STATE_OFF))
+    elif mutation == "width":
+        second = _mov(0x1208, replace(_stk(808), size=8), _reg(12))
+    suffix = (first, second)
+    if mutation == "third":
+        suffix += (_mov(0x120C, _reg(20), _reg(24)),)
+    graph = FlowGraph(
+        {
+            1: _blk(
+                1, (2,), (),
+                (_mov(0x1100, _num(0x387B2F3B), _reg(8)),), ea=0x1100,
+            ),
+            2: _blk(
+                2, (3,), (1,),
+                (_mov(0x1200, _reg(8), _stk(_STATE_OFF)),) + suffix,
+                ea=0x1200,
+            ),
+            3: _blk(3, (), (2,), (), ea=0x1300),
+        },
+        entry_serial=1,
+        func_ea=0x1000,
+    )
+    assert state_carrier.prove_exact_u32_carrier_state_write(
+        graph, 1, 2,
+        state_var_stkoff=_STATE_OFF,
+        state_var_reg=None,
+        required_comparison_serials=frozenset({3}),
+    ) is None
 
 def test_selected_carrier_preserves_post_state_setup_corridor(_seam) -> None:
     """Clone setup blocks between the state feeder and comparison prefix.

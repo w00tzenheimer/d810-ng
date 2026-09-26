@@ -3110,6 +3110,107 @@ def _bound_plan_helper_anchor_from_exact_origins(
     return min(origins)
 
 
+def _projected_corridor_helper_has_exact_source_anchor(
+    *,
+    source_graph: FlowGraph | None,
+    plan: PatchPlan,
+    owner_ref: PlanBlockRef,
+    block: BlockSnapshot,
+    observed: model.InventoryBlockObservation,
+) -> bool:
+    """Recognize only an exact projected clone whose block start precedes its rows.
+
+    A projected corridor clone copies its template's block-start coordinate
+    and native payload.  Some native blocks have no instruction at that start
+    EA; this is not the post-apply ``mba.entry_ea`` allocation artifact.  The
+    observed phase still requires its exact projected inventory and binding.
+    """
+
+    if (
+        source_graph is None
+        or type(owner_ref) is not PlanBlockRef
+        or owner_ref.plan_id != plan.plan_id
+    ):
+        return False
+    specs = tuple(spec for spec in plan.new_blocks if spec.block_id == owner_ref)
+    if len(specs) != 1 or specs[0].kind != "edge_split_corridor_clone":
+        return False
+    template_ref = specs[0].template_block
+    source_coordinates = tuple(
+        serial for ref, serial in plan.source_coordinates if ref == template_ref
+    )
+    if len(source_coordinates) != 1:
+        return False
+    template = source_graph.blocks.get(source_coordinates[0])
+    if template is None or not template.insn_snapshots:
+        return False
+    if (
+        block.native_start_ea is not None
+        or block.start_ea != template.start_ea
+        or observed.anchor_ea != template.start_ea
+        or observed.graph_start_ea != template.start_ea
+        or observed.block_ref != owner_ref
+    ):
+        return False
+    template_rows = template.insn_snapshots
+    copied_rows = (
+        template_rows[:-1]
+        if template_rows[-1].kind is InsnKind.GOTO
+        else template_rows
+    )
+    if not copied_rows or len(block.insn_snapshots) != len(copied_rows) + 1:
+        return False
+    if block.insn_snapshots[:-1] != copied_rows:
+        return False
+    tail = block.insn_snapshots[-1]
+    return bool(
+        block.kind is BlockKind.ONE_WAY
+        and len(block.succs) == 1
+        and tail.opcode == -1
+        and tail.raw_opcode is None
+        and tail.native_ea is None
+        and tail.ea == template_rows[-1].ea
+        and tail.kind is InsnKind.GOTO
+        and tail.control_transfer_kind is ControlTransferKind.GOTO
+        and tail.is_unconditional_jump
+        and not tail.is_conditional_jump
+        and not tail.is_call
+        and tail.d is not None
+        and tail.d.kind is OperandKind.BLOCK
+        and tail.d.block_ref == block.succs[0]
+    )
+
+
+def _normalize_projected_corridor_helper_anchor(
+    *,
+    source_graph: FlowGraph | None,
+    plan: PatchPlan,
+    owner_ref: PlanBlockRef,
+    block: BlockSnapshot,
+    observed: model.InventoryBlockObservation,
+) -> model.InventoryBlockObservation:
+    """Use the first copied native row as a helper's authority coordinate.
+
+    Preserve ``graph_start_ea`` separately: the copied block may begin before
+    its first instruction, but a PlanBlockRef has no native identity range that
+    would authorize binding its subject to that gap.
+    """
+
+    if (
+        observed.anchor_ea in observed.native_instruction_eas
+        or not observed.native_instruction_eas
+        or not _projected_corridor_helper_has_exact_source_anchor(
+            source_graph=source_graph,
+            plan=plan,
+            owner_ref=owner_ref,
+            block=block,
+            observed=observed,
+        )
+    ):
+        return observed
+    return replace(observed, anchor_ea=min(observed.native_instruction_eas))
+
+
 def _normalize_observed_plan_helper_allocation_origins(
     *,
     block: BlockSnapshot,
@@ -3522,6 +3623,7 @@ def _build_semantic_graph_inventory(
     phase: model.UnflattenAuthorityPhase,
     source_subjects: tuple[model.SemanticSubjectRef, ...] = (),
     source_inventory: model.SemanticGraphInventory | None = None,
+    source_graph: FlowGraph | None = None,
     materialization: CanonicalRouteMaterialization | None = None,
     planned_serials: Mapping[PlanBlockRef, int] | None = None,
     observed_patch_binding: ObservedPatchBinding | None = None,
@@ -3687,6 +3789,27 @@ def _build_semantic_graph_inventory(
                 owner_anchor = getattr(block, "native_start_ea", None)
             if owner_anchor is None:
                 owner_anchor = getattr(block, "start_ea", None)
+            if (
+                type(owner_ref) is PlanBlockRef
+                and projected_reference_inventory is not None
+            ):
+                if (
+                    observed_patch_binding is None
+                    or (owner_ref, serial) not in observed_patch_binding.bindings
+                ):
+                    raise ValueError(
+                        "observed helper has no exact patch binding"
+                    )
+                projected_rows = tuple(
+                    row
+                    for row in projected_reference_inventory.blocks
+                    if row.block_ref == owner_ref
+                )
+                if len(projected_rows) != 1:
+                    raise ValueError(
+                        "observed helper has no unique projected helper occurrence"
+                    )
+                owner_anchor = projected_rows[0].anchor_ea
             if type(owner_ref) is PlanBlockRef and (
                 type(owner_anchor) is not int
                 or not 0 <= owner_anchor < 0xFFFFFFFFFFFFFFFF
@@ -3791,6 +3914,17 @@ def _build_semantic_graph_inventory(
                     transfer_ea=None,
                 )
         if (
+            phase is model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT
+            and type(owner_ref) is PlanBlockRef
+        ):
+            observed = _normalize_projected_corridor_helper_anchor(
+                source_graph=source_graph,
+                plan=plan,
+                owner_ref=owner_ref,
+                block=block,
+                observed=observed,
+            )
+        if (
             type(owner_ref) is PlanBlockRef
             and observed.anchor_ea is not None
             and observed.anchor_ea not in observed.native_instruction_eas
@@ -3799,23 +3933,24 @@ def _build_semantic_graph_inventory(
                 raise ValueError(
                     "observed helper allocation EAs require the exact projected inventory"
                 )
-            projected_rows = tuple(
-                row
-                for row in projected_reference_inventory.blocks
-                if row.block_ref == owner_ref
-            )
-            if len(projected_rows) != 1:
-                raise ValueError(
-                    "observed helper has no unique projected helper occurrence"
+            else:
+                projected_rows = tuple(
+                    row
+                    for row in projected_reference_inventory.blocks
+                    if row.block_ref == owner_ref
                 )
-            observed = _normalize_observed_plan_helper_allocation_origins(
-                block=block,
-                observed=observed,
-                projected=projected_rows[0],
-                owner_ref=owner_ref,
-                observed_patch_binding=observed_patch_binding,
-                function_ea=graph.func_ea,
-            )
+                if len(projected_rows) != 1:
+                    raise ValueError(
+                        "observed helper has no unique projected helper occurrence"
+                    )
+                observed = _normalize_observed_plan_helper_allocation_origins(
+                    block=block,
+                    observed=observed,
+                    projected=projected_rows[0],
+                    owner_ref=owner_ref,
+                    observed_patch_binding=observed_patch_binding,
+                    function_ea=graph.func_ea,
+                )
         block_rows.append(observed)
         block_effects, block_terminals = model.resolve_inventory_block_sites(
             serial=observed.serial,
@@ -5971,6 +6106,7 @@ def _prepare_unflatten_authority_in_session(
             phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
             source_subjects=source_inventory.subjects,
             source_inventory=source_inventory,
+            source_graph=source,
             materialization=projected_materialization,
         )
         inventory_ms = _elapsed_ms(inventory_started_ns, perf_counter_ns())

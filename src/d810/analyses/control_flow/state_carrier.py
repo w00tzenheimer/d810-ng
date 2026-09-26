@@ -1248,7 +1248,9 @@ def prove_exact_u32_carrier_state_write(
     if control_instructions and feeder_instructions[-1] is not control_instructions[0]:
         return None
     semantic_suffix = value_instructions[1:]
-    if len(semantic_suffix) > 1:
+    # The exact 69814 feeder has two post-state setup instructions. The
+    # complete sequence is retained in its predecessor-local clone.
+    if len(semantic_suffix) > 2:
         return None
     if any(
         instruction.operation is not ValueOpKind.MOVE
@@ -1263,6 +1265,15 @@ def prove_exact_u32_carrier_state_write(
         or instruction.result.space not in {Space.REGISTER, Space.TEMP}
         or int(instruction.inputs[0].size) != int(instruction.result.size)
         for instruction in semantic_suffix
+    ):
+        return None
+    if (
+        len(semantic_suffix) == 2
+        and (
+            type(semantic_suffix[0].attrs.get("ea")) is not int
+            or type(semantic_suffix[1].attrs.get("ea")) is not int
+            or semantic_suffix[0].attrs["ea"] == semantic_suffix[1].attrs["ea"]
+        )
     ):
         return None
 
