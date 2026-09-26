@@ -180,6 +180,53 @@ def test_dead_store_rejection_persists_unsigned_stack_destination(fake_conn):
     assert payload["source"]["destination_id"] == destination_id
 
 
+def test_dead_store_rejection_persists_generated_source_and_use_eas(fake_conn):
+    """Generated Hex-Rays EAs occupy unsigned addresses above SQLite's limit."""
+    emit(
+        DeadStoreRejectionObserved(
+            func_ea=0x7FFF99A139A0,
+            maturity="MMAT_GLBOPT2",
+            strategy="dead_store_elimination",
+            authoritative=True,
+            block_serial=7,
+            block_start_ea=0xF1C0000000000010,
+            insn_ea=0xF1C0000000000014,
+            ordinal=0,
+            opcode=0x55,
+            destination_kind="stack",
+            destination_id=0x40,
+            destination_width=8,
+            reason="reached_use",
+            use_block_serial=8,
+            use_block_start_ea=0xF1C0000000000020,
+            use_insn_ea=0xF1C0000000000028,
+            use_ordinal=1,
+            use_opcode=0x31,
+            use_kind="read",
+        )
+    )
+
+    row = fake_conn.execute(
+        "SELECT block_start_ea_hex,block_start_ea_i64,insn_ea_hex,insn_ea_i64,"
+        "use_block_start_ea_hex,use_block_start_ea_i64,"
+        "use_insn_ea_hex,use_insn_ea_i64 FROM dead_store_rejections"
+    ).fetchone()
+    assert row == (
+        "0xf1c0000000000010", -1026820715040473072,
+        "0xf1c0000000000014", -1026820715040473068,
+        "0xf1c0000000000020", -1026820715040473056,
+        "0xf1c0000000000028", -1026820715040473048,
+    )
+    payload = json.loads(
+        fake_conn.execute(
+            "SELECT payload_json FROM lifecycle_events "
+            "WHERE event_kind='dead_store_rejection'"
+        ).fetchone()[0]
+    )
+    assert payload["source"]["ea"] == 0xF1C0000000000014
+    assert payload["use"]["ea"] == 0xF1C0000000000028
+
+
 def request_capture_mba_snapshot(
     *,
     blocks,
