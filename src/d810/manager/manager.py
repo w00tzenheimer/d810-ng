@@ -3883,6 +3883,10 @@ class D810Manager:
                 "session_id": str(getattr(event, "session_id", "")),
             }
         )
+        for rule in self.instruction_optimizer_rules:
+            begin = getattr(rule, "begin_decompilation", None)
+            if callable(begin):
+                begin(event)
         if was_active:
             return
         reset_provider_cycles = getattr(
@@ -3920,6 +3924,11 @@ class D810Manager:
             # eventual correct finish.
             native_perf.end_session(session_id)
             return
+
+        for rule in self.instruction_optimizer_rules:
+            end = getattr(rule, "end_decompilation", None)
+            if callable(end):
+                end(event)
 
         finish_provider_cycle = getattr(
             self.instruction_optimizer,

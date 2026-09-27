@@ -164,11 +164,11 @@ class TestAutoInstallSolver(unittest.TestCase):
         way to decline, so it is opt-in and the workbench action is the
         discoverable path.
         """
-        _, _, _, auto_install = parse_mba_solve_options(_config())
+        _, _, _, auto_install, *_ = parse_mba_solve_options(_config())
         self.assertFalse(auto_install)
 
     def test_can_be_enabled(self):
-        _, _, _, auto_install = parse_mba_solve_options(
+        _, _, _, auto_install, *_ = parse_mba_solve_options(
             _config({"auto_install_solver": True})
         )
         self.assertTrue(auto_install)
@@ -226,7 +226,7 @@ class TestAutoInstallSolver(unittest.TestCase):
 
 class TestOptions(unittest.TestCase):
     def test_defaults(self):
-        max_leaves, require_proof, maturities, _ = parse_mba_solve_options(_config())
+        max_leaves, require_proof, maturities, _, *_ = parse_mba_solve_options(_config())
         self.assertEqual(max_leaves, DEFAULT_MAX_LEAVES)
         self.assertTrue(require_proof)
         self.assertEqual(maturities, ("GLOBAL_OPTIMIZED",))
@@ -236,7 +236,7 @@ class TestOptions(unittest.TestCase):
         self.assertEqual(DEFAULT_MAX_LEAVES, 8)
 
     def test_explicit_values(self):
-        max_leaves, require_proof, maturities, _ = parse_mba_solve_options(
+        max_leaves, require_proof, maturities, _, *_ = parse_mba_solve_options(
             _config(
                 {
                     "max_leaves": 4,

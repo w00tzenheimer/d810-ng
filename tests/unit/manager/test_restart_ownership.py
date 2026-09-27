@@ -99,6 +99,30 @@ _MANAGER_METHODS = _class_methods(
 )
 
 
+def test_solve_budgets_require_explicit_backend_support() -> None:
+    configured: list[dict[str, object]] = []
+    legacy = SimpleNamespace(
+        name="CobraSolveRule", configure=lambda options: configured.append(options)
+    )
+    configure = _STATE_METHODS["_configure_rule_for_schedule"]
+    options = {"solve_timeout_ms": 25, "function_solve_budget_ms": 1500}
+
+    with pytest.raises(RuntimeError, match="explicitly supports solve deadlines"):
+        configure(None, legacy, options, {})
+    assert configured == []
+
+    configure(None, legacy, {"solve_timeout_ms": 0}, {})
+    assert configured == [{"solve_timeout_ms": 0}]
+
+    supported = SimpleNamespace(
+        name="CobraSolveRule",
+        supports_solve_budgets=True,
+        configure=lambda value: configured.append(value),
+    )
+    configure(None, supported, options, {})
+    assert configured[-1] == options
+
+
 def test_state_load_populates_optimizer_registry_before_project_activation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

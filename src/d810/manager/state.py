@@ -591,6 +591,17 @@ class D810State(metaclass=SingletonMeta):
         effective_config: dict[str, object],
         constant_stages_by_rule: dict[str, object],
     ) -> None:
+        requested_budgets = (
+            effective_config.get("solve_timeout_ms", 0),
+            effective_config.get("function_solve_budget_ms", 0),
+        )
+        if any(requested_budgets) and (
+            getattr(rule, "supports_solve_budgets", False) is not True
+        ):
+            raise RuntimeError(
+                "mba-solve budgets require a backend that explicitly supports "
+                "solve deadlines; upgrade d810-cobra to 0.1.7 or newer"
+            )
         stage = constant_stages_by_rule.get(rule.name)
         if stage is None:
             rule.configure(effective_config)

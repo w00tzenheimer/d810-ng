@@ -112,6 +112,9 @@ class MbaSolveRequest:
     maturity: IRMaturity
     max_leaves: int
     require_proof: bool
+    solve_timeout_ms: int = 0
+    function_solve_budget_ms: int = 0
+    background_solve_timeout_ms: int = 30_000
 
 
 class MbaSolveCapability(Protocol):
@@ -126,6 +129,9 @@ class MbaSolvePass(PipelinePass):
 
     max_leaves: int = DEFAULT_MAX_LEAVES
     require_proof: bool = True
+    solve_timeout_ms: int = 0
+    function_solve_budget_ms: int = 0
+    background_solve_timeout_ms: int = 30_000
     maturities: tuple[str, ...] = DEFAULT_MATURITIES
     #: Install the solver's proof dependency if it is missing. Off by default:
     #: installing runs pip, which needs the network and can freeze the UI for
@@ -135,6 +141,13 @@ class MbaSolvePass(PipelinePass):
     name: str = MBA_SOLVE_PASS_ID
 
     def __post_init__(self) -> None:
+        for name in (
+            "solve_timeout_ms", "function_solve_budget_ms",
+            "background_solve_timeout_ms",
+        ):
+            value = getattr(self, name)
+            if type(value) is not int or not 0 <= value <= 300_000:
+                raise ValueError(f"{name} must be an integer from 0 to 300000")
         if self.max_leaves < 1:
             raise ValueError("max_leaves must be >= 1")
         if self.max_leaves > 16:
@@ -164,6 +177,9 @@ class MbaSolvePass(PipelinePass):
             maturity=context.maturity,
             max_leaves=self.max_leaves,
             require_proof=self.require_proof,
+            solve_timeout_ms=self.solve_timeout_ms,
+            function_solve_budget_ms=self.function_solve_budget_ms,
+            background_solve_timeout_ms=self.background_solve_timeout_ms,
         )
         try:
             capability = context.capabilities.require(MbaSolveCapability)
@@ -259,7 +275,7 @@ def _solver_effects(result: PassResult) -> tuple[ExecutionEffectRef, ...]:
 
 def parse_mba_solve_options(
     config: PipelineConfig,
-) -> tuple[int, bool, tuple[str, ...], bool]:
+) -> tuple[int, bool, tuple[str, ...], bool, int, int, int]:
     """Validate ``mba-solve`` options, rejecting unknown keys loudly."""
     options: Mapping[str, object] = config.options or {}
     unknown = set(options) - {
@@ -267,6 +283,9 @@ def parse_mba_solve_options(
         "require_proof",
         "maturities",
         "auto_install_solver",
+        "solve_timeout_ms",
+        "function_solve_budget_ms",
+        "background_solve_timeout_ms",
     }
     if unknown:
         raise ValueError(f"mba-solve has unknown options: {sorted(unknown)}")
@@ -299,11 +318,23 @@ def parse_mba_solve_options(
             f"valid names are {sorted(valid)}"
         )
 
-    return max_leaves, require_proof, maturities, auto_install_solver
+    budgets = []
+    for name, default in (
+        ("solve_timeout_ms", 0),
+        ("function_solve_budget_ms", 0),
+        ("background_solve_timeout_ms", 30_000),
+    ):
+        value = options.get(name, default)
+        if type(value) is not int or not 0 <= value <= 300_000:
+            raise ValueError(f"mba-solve options.{name} must be an integer from 0 to 300000")
+        budgets.append(value)
+
+    return max_leaves, require_proof, maturities, auto_install_solver, *budgets
 
 
 def build_mba_solve_pass(config: PipelineConfig) -> MbaSolvePass:
-    max_leaves, require_proof, maturities, auto_install_solver = (
+    (max_leaves, require_proof, maturities, auto_install_solver,
+     solve_timeout_ms, function_solve_budget_ms, background_solve_timeout_ms) = (
         parse_mba_solve_options(config)
     )
     return MbaSolvePass(
@@ -311,6 +342,9 @@ def build_mba_solve_pass(config: PipelineConfig) -> MbaSolvePass:
         require_proof=require_proof,
         maturities=maturities,
         auto_install_solver=auto_install_solver,
+        solve_timeout_ms=solve_timeout_ms,
+        function_solve_budget_ms=function_solve_budget_ms,
+        background_solve_timeout_ms=background_solve_timeout_ms,
     )
 
 
@@ -359,6 +393,9 @@ def register_mba_solve_pass(registry: PassRegistry) -> PassRegistry:
                 "require_proof": True,
                 "maturities": list(DEFAULT_MATURITIES),
                 "auto_install_solver": False,
+                "solve_timeout_ms": 0,
+                "function_solve_budget_ms": 0,
+                "background_solve_timeout_ms": 30_000,
             },
         ),
         stages=stages,
@@ -374,6 +411,36 @@ def register_mba_solve_pass(registry: PassRegistry) -> PassRegistry:
                     minimum=1,
                     maximum=16,
                     default=DEFAULT_MAX_LEAVES,
+                ),
+                FieldEditorSpec(
+                    field_id="solve_timeout_ms",
+                    label="Solve deadline (ms)",
+                    path=("solve_timeout_ms",),
+                    control=FieldControlKind.INTEGER,
+                    description="Cooperative time limit for each CoBRA expression; 0 disables it.",
+                    minimum=0,
+                    maximum=300_000,
+                    default=0,
+                ),
+                FieldEditorSpec(
+                    field_id="function_solve_budget_ms",
+                    label="Function solve allowance (ms)",
+                    path=("function_solve_budget_ms",),
+                    control=FieldControlKind.INTEGER,
+                    description="Total foreground CoBRA solve time per decompilation; 0 disables it.",
+                    minimum=0,
+                    maximum=300_000,
+                    default=0,
+                ),
+                FieldEditorSpec(
+                    field_id="background_solve_timeout_ms",
+                    label="Deferred solve deadline (ms)",
+                    path=("background_solve_timeout_ms",),
+                    control=FieldControlKind.INTEGER,
+                    description="Time limit for a background retry; 0 disables retries.",
+                    minimum=0,
+                    maximum=300_000,
+                    default=30_000,
                 ),
                 FieldEditorSpec(
                     field_id="require_proof",
@@ -408,7 +475,8 @@ def register_mba_solve_pass(registry: PassRegistry) -> PassRegistry:
                 PassEditorSectionSpec(
                     "solver",
                     "Solver",
-                    ("max_leaves", "require_proof", "maturities"),
+                    ("max_leaves", "solve_timeout_ms", "function_solve_budget_ms",
+                     "background_solve_timeout_ms", "require_proof", "maturities"),
                     presentation=PassEditorSectionPresentation.PRIMARY,
                 ),
                 PassEditorSectionSpec(
