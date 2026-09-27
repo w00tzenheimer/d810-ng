@@ -28,6 +28,7 @@ from d810.ir.flowgraph import (
 from d810.ir.semantics import ControlTransferKind
 from d810.ir.expressions import ValueOpKind
 from d810.transforms.graph_modification import (
+    CanonicalizeJumpTableCaseOverlap,
     ConvertToGoto,
     CreateConditionalRedirect,
     ExitPathLoweringGroup,
@@ -96,6 +97,30 @@ def _assert_reciprocal_topology(graph: FlowGraph) -> None:
             assert block.serial in graph.blocks[successor].preds
         for predecessor in block.preds:
             assert block.serial in graph.blocks[predecessor].succs
+
+
+def test_jump_table_default_retarget_is_projected() -> None:
+    """Post-apply topology must include the retired switch's new default edge."""
+    graph = FlowGraph(
+        blocks={
+            0: BlockSnapshot(serial=0, block_type=3, succs=(1,), preds=(), start_ea=0x1000, flags=0, insn_snapshots=()),
+            1: BlockSnapshot(serial=1, block_type=3, succs=(2,), preds=(0,), start_ea=0x1010, flags=0, insn_snapshots=()),
+            2: BlockSnapshot(serial=2, block_type=5, succs=(2, 3), preds=(1, 2), start_ea=0x1020, flags=0, insn_snapshots=()),
+            3: BlockSnapshot(serial=3, block_type=2, succs=(), preds=(2,), start_ea=0x1030, flags=0, insn_snapshots=()),
+        },
+        entry_serial=0,
+        func_ea=0x1000,
+    )
+    modification = CanonicalizeJumpTableCaseOverlap(
+        jtbl_serial=2,
+        retarget_map=((2, 3),),
+    )
+
+    edits = graph_modifications_to_simulated_edits([modification])
+    assert len(edits) == 1
+    assert simulate_edits({serial: list(block.succs) for serial, block in graph.blocks.items()}, edits).adj[2] == [3]
+    plan = compile_patch_plan([modification], graph)
+    assert project_patch_plan(graph, plan, snapshot_id=plan.snapshot_id).graph.get_block(2).succs == (3,)
 
 
 @pytest.mark.parametrize("explicit_goto", [False, True])

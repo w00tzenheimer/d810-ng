@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 from d810.ir.flowgraph import (
     BlockSnapshot,
     FlowGraph,
@@ -17,6 +19,7 @@ from d810.analyses.control_flow.switch_table_analysis import (
     analyze_switch_table_at_dispatcher,
     analyze_switch_table_flow_graph,
     build_state_dispatcher_map_from_cases,
+    exact_u32_switch_case_routes,
     find_switch_loop_guard_blocks,
 )
 
@@ -24,6 +27,7 @@ from d810.analyses.control_flow.switch_table_analysis import (
 def _mop(
     *,
     kind: OperandKind = OperandKind.UNKNOWN,
+    size: int = 0,
     stkoff: int | None = None,
     value: int | None = None,
     stack_refs: tuple[int, ...] = (),
@@ -35,6 +39,7 @@ def _mop(
 ) -> MopSnapshot:
     return MopSnapshot(
         kind=kind,
+        size=size,
         stkoff=stkoff,
         value=value,
         stack_refs=stack_refs,
@@ -238,6 +243,75 @@ def test_switch_memory_load_address_is_not_dispatcher_state() -> None:
     )
 
     assert analyze_switch_table_flow_graph(flow_graph) is None
+
+
+def test_encoded_switch_selector_with_add_retains_stack_state_identity() -> None:
+    """A pure XOR/ADD/XOR selector still reads the stack state, not a cursor."""
+
+    stack_state = _mop(kind=OperandKind.STACK, size=4, stkoff=0xC, stack_refs=(0xC,))
+    selector = _mop(
+        kind=OperandKind.SUBINSN, size=4,
+        sub_kind=InsnKind.VALUE,
+        sub_value_op_kind=ValueOpKind.XOR,
+        sub_l=_mop(
+            kind=OperandKind.SUBINSN, size=4,
+            sub_kind=InsnKind.ADD,
+            sub_value_op_kind=ValueOpKind.ADD,
+            sub_l=_mop(
+                kind=OperandKind.SUBINSN, size=4,
+                sub_kind=InsnKind.VALUE,
+                sub_value_op_kind=ValueOpKind.XOR,
+                sub_l=stack_state,
+                sub_r=_mop(kind=OperandKind.NUMBER, size=4, value=0x9E3779B9),
+            ),
+            sub_r=_mop(kind=OperandKind.NUMBER, size=4, value=0x13579BDF),
+        ),
+        sub_r=_mop(kind=OperandKind.NUMBER, size=4, value=0x2468ACE0),
+    )
+    table_tail = _insn(
+        kind=InsnKind.TABLE_JUMP,
+        left=selector,
+        right=_mop(
+            kind=OperandKind.CASE_LIST,
+            switch_cases=(((0,), 2), ((1,), 3), ((), 1)),
+        ),
+    )
+    graph = _flow_graph({
+        1: _block(1, succs=(2, 3, 1), tail=table_tail),
+        2: _block(2, preds=(1,)),
+        3: _block(3, preds=(1,)),
+    })
+
+    result = analyze_switch_table_flow_graph(graph)
+
+    assert result is not None
+    assert result.state_var_operand.space is Space.STACK
+    assert result.state_dispatcher_map.state_var_stkoff == 0xC
+    assert result.state_dispatcher_map.state_to_handler() == {
+        0x8F2668B8: 2,
+        0x8F2668BB: 3,
+    }
+
+    global_update = InsnSnapshot(
+        opcode=12,
+        ea=0x401010,
+        operands=(),
+        kind=InsnKind.ADD,
+        value_op_kind=ValueOpKind.ADD,
+        l=MopSnapshot(kind=OperandKind.GLOBAL, size=4, gaddr=0x403000),
+        r=MopSnapshot(kind=OperandKind.NUMBER, size=4, value=1),
+        d=MopSnapshot(kind=OperandKind.GLOBAL, size=4, gaddr=0x403000),
+    )
+    side_effect_graph = _flow_graph({
+        **graph.blocks,
+        1: replace(graph.blocks[1], insn_snapshots=(global_update, table_tail)),
+    })
+    assert exact_u32_switch_case_routes(
+        side_effect_graph,
+        result.state_dispatcher_map,
+        dispatcher_serial=1,
+        state_var_stkoff=0xC,
+    ) is None
 
 
 class TestBuildStateDispatcherMapFromCases:

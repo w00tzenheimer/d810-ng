@@ -123,6 +123,7 @@ _TABLE_STATE_VALUE_OPS = frozenset(
         ValueOpKind.AND,
         ValueOpKind.OR,
         ValueOpKind.XOR,
+        ValueOpKind.ADD,
         ValueOpKind.SUB,
         # Hand-built portable fixtures created before nested operation kinds
         # were mandatory expose one state leaf through a VENDOR temp.  It is
@@ -204,6 +205,143 @@ def _extract_cases_from_switch_control(
         for value in case.values:
             cases.append((int(value), int(case.target)))
     return cases
+
+
+def exact_u32_switch_case_routes(
+    flow_graph: FlowGraph,
+    dispatch_map: StateDispatcherMap,
+    *,
+    dispatcher_serial: int,
+    state_var_stkoff: int,
+) -> tuple[tuple[int, int], ...] | None:
+    """Bind current switch cases to encoded U32 states, or abstain.
+
+    Only bijective, pure U32 selector operations are inverted. A table label
+    is not itself the state written by handlers when the selector transforms
+    that state before dispatch.
+    """
+    if (
+        dispatch_map.router_kind is not RouterKind.TABLE
+        or dispatch_map.table_provenance is not TableProvenance.SWITCH
+        or dispatch_map.state_var_stkoff != state_var_stkoff
+    ):
+        return None
+    block = flow_graph.get_block(int(dispatcher_serial))
+    if block is None or block.tail is None or block.tail_kind is not InsnKind.TABLE_JUMP:
+        return None
+    # This receipt authorizes bypassing the table on every recovered route.
+    # A separate instruction in that block may have an observable effect on
+    # every visit (for example, an increment of a global counter).  Proving
+    # its dispensability is a different obligation, so fail closed here.
+    if len(block.insn_snapshots) != 1:
+        return None
+    sequence = project_instruction_sequence(block.tail)
+    if not sequence or len(sequence[-1].inputs) != 1:
+        return None
+    parent = sequence[-1]
+    if parent.control is None or not parent.control.switch_cases:
+        return None
+    producers = {
+        instruction.result: instruction
+        for instruction in sequence[:-1]
+        if instruction.result is not None
+    }
+
+    def inverse(label: int) -> int | None:
+        value = label
+        node = parent.inputs[0]
+        seen: set[Varnode] = set()
+        while node.space is Space.TEMP:
+            if node in seen or int(node.size) != 4:
+                return None
+            seen.add(node)
+            producer = producers.get(node)
+            if (
+                producer is None
+                or producer.effects
+                or producer.memory is not None
+                or producer.control is not None
+            ):
+                return None
+            inputs = producer.inputs
+            if producer.operation is ValueOpKind.MOVE:
+                if len(inputs) != 1:
+                    return None
+                node = inputs[0]
+                continue
+            if producer.operation not in {
+                ValueOpKind.XOR, ValueOpKind.ADD, ValueOpKind.SUB,
+            } or len(inputs) != 2:
+                return None
+            left, right = inputs
+            if right.space is Space.CONST and left.space is not Space.CONST:
+                node, constant = left, right
+            elif (
+                producer.operation in {ValueOpKind.XOR, ValueOpKind.ADD}
+                and left.space is Space.CONST
+                and right.space is not Space.CONST
+            ):
+                node, constant = right, left
+            else:
+                return None
+            if int(constant.size) != 4 or int(node.size) != 4:
+                return None
+            constant_u = int(constant.offset) & 0xFFFFFFFF
+            if producer.operation is ValueOpKind.XOR:
+                value ^= constant_u
+            elif producer.operation is ValueOpKind.ADD:
+                value = (value - constant_u) & 0xFFFFFFFF
+            else:
+                value = (value + constant_u) & 0xFFFFFFFF
+        if (
+            node.space is not Space.STACK
+            or int(node.offset) != int(state_var_stkoff)
+            or int(node.size) != 4
+        ):
+            return None
+        return value & 0xFFFFFFFF
+
+    current_cases: dict[int, int] = {}
+    default_target: int | None = None
+    for case in parent.control.switch_cases:
+        target = int(case.target)
+        if target not in block.succs:
+            return None
+        if not case.values:
+            if default_target is not None:
+                return None
+            default_target = target
+        for label in case.values:
+            label = int(label)
+            if not 0 <= label <= 0xFFFFFFFF or label in current_cases:
+                return None
+            current_cases[label] = target
+    declared_cases: dict[int, int] = {}
+    for row in dispatch_map.rows:
+        if (
+            not (row.is_handler_row or row.is_dispatcher_self_loop)
+            or int(row.dispatcher_block) != int(dispatcher_serial)
+            or row.compare_block != int(dispatcher_serial)
+            or row.router_kind is not RouterKind.TABLE
+            or row.table_provenance is not TableProvenance.SWITCH
+            or int(row.state_const) in declared_cases
+        ):
+            return None
+        declared_cases[int(row.state_const)] = int(row.target_block)
+    if not current_cases or dispatch_map.default_target_block != default_target:
+        return None
+    routes: dict[int, int] = {}
+    for label, target in current_cases.items():
+        state = inverse(label)
+        if state is None or state in routes:
+            return None
+        routes[state] = target
+    # Analysis initially holds the literal switch labels; after normalization
+    # the same map holds the encoded states written by the handlers. Both must
+    # be rebound to the current table before a receipt may be issued.
+    if declared_cases not in (current_cases, routes):
+        return None
+    return tuple(sorted(routes.items()))
 
 
 def _maturity_label(flow_graph: FlowGraph) -> str:
@@ -424,6 +562,23 @@ def analyze_switch_table_at_dispatcher(
         dispatcher_blocks=dispatcher_blocks,
         state_var_stkoff=stkoff,
     )
+    encoded_routes = exact_u32_switch_case_routes(
+        flow_graph,
+        state_dispatcher_map,
+        dispatcher_serial=serial,
+        state_var_stkoff=stkoff,
+    )
+    if encoded_routes is not None:
+        encoded_cases: list[tuple[int | None, int]] = list(encoded_routes)
+        encoded_cases.extend(
+            (None, target) for label, target in cases if label is None
+        )
+        state_dispatcher_map = build_state_dispatcher_map_from_cases(
+            cases=encoded_cases,
+            dispatcher_serial=serial,
+            dispatcher_blocks=dispatcher_blocks,
+            state_var_stkoff=stkoff,
+        )
     _observe_state_dispatcher_map(
         flow_graph, state_dispatcher_map, observe_dispatcher_rows
     )

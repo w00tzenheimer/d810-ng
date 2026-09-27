@@ -66,6 +66,7 @@ class SimulatedEdit:
     fallthrough_target: int | None = None  # only for create_conditional_redirect
     duplicate_target: int | None = None  # only for duplicate_block
     source_successors: tuple[int, ...] = ()  # only for duplicate_block
+    retarget_map: tuple[tuple[int, int], ...] = ()  # only for jtbl_retarget
     conditional_target: int | None = None  # duplicate/create_conditional info
     created_serial: int | None = None  # finalized serial for symbolic block creation
     secondary_created_serial: int | None = None  # second block for multi-block creation
@@ -182,6 +183,12 @@ def simulate_edits(
                 )
                 continue
             result[edit.source] = new_succs
+
+        elif edit.kind == "jtbl_retarget":
+            replacements = dict(edit.retarget_map)
+            result[edit.source] = list(
+                dict.fromkeys(replacements.get(target, target) for target in succs)
+            )
 
         elif edit.kind == "convert_to_goto":
             # Replace ALL successors with single new_target

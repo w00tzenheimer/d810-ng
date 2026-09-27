@@ -1049,7 +1049,10 @@ def retarget_jtbl_block_cases(
             continue
         if _serial_in_predset(removed_blk, blk_serial):
             removed_blk.predset._del(blk_serial)
-            removed_blk.mark_lists_dirty()
+            # The terminal BLT_STOP has ready lists after callinfo is built;
+            # changing its predecessor metadata must not dirty those lists.
+            if int(removed_blk.serial) != int(mba.qty) - 1:
+                removed_blk.mark_lists_dirty()
 
     for added_target in sorted(new_unique_succs - old_unique_succs):
         added_blk = mba.get_mblock(added_target)
@@ -1057,7 +1060,8 @@ def retarget_jtbl_block_cases(
             continue
         if not _serial_in_predset(added_blk, blk_serial):
             added_blk.predset.push_back(blk_serial)
-            added_blk.mark_lists_dirty()
+            if int(added_blk.serial) != int(mba.qty) - 1:
+                added_blk.mark_lists_dirty()
 
     blk.mark_lists_dirty()
     mba.mark_chains_dirty()

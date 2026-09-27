@@ -38,6 +38,7 @@ from d810.transforms.cfg_transaction import (
     PlanBlockRef,
 )
 from d810.transforms.graph_modification import (
+    CanonicalizeJumpTableCaseOverlap,
     CloneConditionalAsGoto,
     CloneConditionalAsGotoFromBranchArm,
     ConvertToGoto,
@@ -53,6 +54,7 @@ from d810.transforms.graph_modification import (
 )
 
 from d810.transforms.plan import (
+    PatchCanonicalizeJumpTableCaseOverlap,
     PatchCloneConditionalAsGoto,
     PatchCloneConditionalAsGotoFromBranchArm,
     PatchConditionalRedirect,
@@ -1093,6 +1095,17 @@ def graph_modifications_to_simulated_edits(
                     )
                 )
 
+            case CanonicalizeJumpTableCaseOverlap(jtbl_serial=src, retarget_map=targets):
+                simulated.append(
+                    SimulatedEdit(
+                        kind="jtbl_retarget",
+                        source=src,
+                        old_target=-1,
+                        new_target=None,
+                        retarget_map=targets,
+                    )
+                )
+
             case ConvertToGoto(block_serial=src, goto_target=new):
                 simulated.append(
                     SimulatedEdit(
@@ -1454,6 +1467,17 @@ def patch_plan_to_simulated_edits(patch_plan: PatchPlan) -> list[SimulatedEdit]:
                         source=src,
                         old_target=old,
                         new_target=new,
+                    )
+                )
+
+            case PatchCanonicalizeJumpTableCaseOverlap(jtbl_serial=src, retarget_map=targets):
+                simulated.append(
+                    SimulatedEdit(
+                        kind="jtbl_retarget",
+                        source=serial(src),
+                        old_target=-1,
+                        new_target=None,
+                        retarget_map=tuple((serial(old), serial(new)) for old, new in targets),
                     )
                 )
 

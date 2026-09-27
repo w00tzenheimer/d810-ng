@@ -180,7 +180,11 @@ from d810.analyses.control_flow.state_machine_analysis import (
     _is_stop_block,
     run_snapshot_constant_fixpoint,
 )
-from d810.analyses.control_flow.switch_table_analysis import analyze_switch_table_at_dispatcher
+from d810.analyses.control_flow.switch_table_analysis import (
+    analyze_switch_table_at_dispatcher,
+    exact_u32_switch_case_routes,
+)
+from d810.capabilities.dispatcher import RouterKind, TableProvenance
 from d810.analyses.control_flow.state_carrier import (
     ExactStateTransformFeeder,
     expected_u32_state_identities,
@@ -232,6 +236,7 @@ from d810.transforms.exit_path_liveness_policy import (
     live_in_variables,
 )
 from d810.transforms.graph_modification import (
+    CanonicalizeJumpTableCaseOverlap,
     ConvertToGoto,
     EdgeRedirectViaPredSplit,
     LowerConditionalStateTransition,
@@ -9718,6 +9723,8 @@ def _break_terminal_switch_dispatcher_cycle(
     modifications: list[object],
     *,
     dispatcher_entry_serial: int,
+    project_modifications=None,
+    exact_switch_verified: bool = False,
 ) -> tuple[list[object], int | None]:
     """Retire an N-way dispatcher without leaving a detached switch cycle.
 
@@ -9738,6 +9745,27 @@ def _break_terminal_switch_dispatcher_cycle(
     )
     if not stop_serials:
         return list(modifications), None
+    if (
+        exact_switch_verified
+        and project_modifications is not None
+        and dispatcher_entry in tuple(int(s) for s in dispatcher_block.succs)
+        and len(stop_serials) == 1
+    ):
+        projected = project_modifications(tuple(modifications))
+        if (
+            projected is not None
+            and dispatcher_entry not in _flow_graph_reachable_serials(projected)
+        ):
+            return (
+                [
+                    *modifications,
+                    CanonicalizeJumpTableCaseOverlap(
+                        jtbl_serial=dispatcher_entry,
+                        retarget_map=((dispatcher_entry, stop_serials[0]),),
+                    ),
+                ],
+                dispatcher_entry,
+            )
     candidates = [
         modification
         for modification in modifications
@@ -14065,6 +14093,32 @@ def _bind_exact_u32_dispatcher_route_receipt(
             tuple(sorted(retired_prefix_serials)),
         )
 
+    if (
+        dispatch_map.router_kind is RouterKind.TABLE
+        and dispatch_map.table_provenance is TableProvenance.SWITCH
+    ):
+        if state_var_stkoff is None or any(
+            int(row.dispatcher_block) not in current_region
+            or row.compare_block not in current_region
+            or int(row.target_block) not in current_serials
+            or (row.is_handler_row and int(row.target_block) in declared_dispatcher)
+            or (row.is_dispatcher_self_loop and int(row.target_block) not in current_region)
+            for row in dispatch_map.rows
+        ):
+            return reject("invalid_switch_map_row")
+        routes = exact_u32_switch_case_routes(
+            flow_graph,
+            dispatch_map,
+            dispatcher_serial=entry,
+            state_var_stkoff=int(state_var_stkoff),
+        )
+        if routes is None:
+            return reject("switch_table_witness_failed")
+        try:
+            return ExactU32DispatcherRouteReceipt(routes)
+        except (TypeError, ValueError):
+            return reject("switch_table_receipt_construction_failed")
+
     exact_targets_by_state: dict[int, set[int]] = {}
     filtered_rows = 0
     for row in dispatch_map.rows:
@@ -16258,6 +16312,13 @@ def emit_minimal_unflatten(
         flow_graph,
         list(mods),
         dispatcher_entry_serial=int(dispatcher_entry_serial),
+        project_modifications=project_modifications,
+        exact_switch_verified=bool(
+            exact_u32_route_receipt is not None
+            and state_dispatcher_map is not None
+            and state_dispatcher_map.router_kind is RouterKind.TABLE
+            and state_dispatcher_map.table_provenance is TableProvenance.SWITCH
+        ),
     )
     if terminal_switch_cleanup_source is not None and logger.info_on:
         logger.info(

@@ -15,6 +15,9 @@ import d810.analyses.control_flow.semantic_route_evidence as semantic_route_evid
 from d810.transforms import minimal_unflatten_emit as minimal_unflatten_emit_module
 
 from d810.capabilities.dispatcher import RouterKind
+from d810.analyses.control_flow.switch_table_analysis import (
+    build_state_dispatcher_map_from_cases,
+)
 from d810.analyses.control_flow.branch_witness_provider import (
     build_static_equality_chain_witness_map,
 )
@@ -106,11 +109,13 @@ from d810.ir.flowgraph import (
     OperandKind,
     PredicateKind,
 )
+from d810.ir.expressions import ValueOpKind
 from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
 from d810.ir.graph_fingerprint import instruction_projection_without_block_references
 from d810.ir.storage_identity import StorageIdentity, StorageIdentityKind
 from d810.ir.semantics import ControlTransferKind
 from d810.transforms.graph_modification import (
+    CanonicalizeJumpTableCaseOverlap,
     ConvertToGoto,
     EdgeRedirectViaPredSplit,
     LowerConditionalStateTransition,
@@ -4014,6 +4019,72 @@ def test_exact_dispatcher_receipt_filters_retired_prefix_rows() -> None:
     assert receipt is not None
     assert receipt.target_for_u32_state(retired_state) is None
     assert receipt.target_for_u32_state(current_state) == 11
+
+
+def test_exact_dispatcher_receipt_inverts_current_encoded_switch_selector() -> None:
+    """An encoded state reaches the case selected by the current U32 expression."""
+
+    def number(value: int) -> MopSnapshot:
+        return MopSnapshot(t=0, size=4, kind=OperandKind.NUMBER, value=value)
+
+    def nested(op: ValueOpKind, left: MopSnapshot, right: MopSnapshot) -> MopSnapshot:
+        return MopSnapshot(
+            t=0, size=4, kind=OperandKind.SUBINSN,
+            sub_kind=InsnKind.VALUE, sub_value_op_kind=op,
+            sub_l=left, sub_r=right,
+        )
+
+    selector = nested(
+        ValueOpKind.XOR,
+        nested(
+            ValueOpKind.ADD,
+            nested(
+                ValueOpKind.XOR,
+                MopSnapshot(t=0, size=4, kind=OperandKind.STACK, stkoff=_STATE),
+                number(0x9E3779B9),
+            ),
+            number(0x13579BDF),
+        ),
+        number(0x2468ACE0),
+    )
+    table = InsnSnapshot(
+        opcode=1, ea=0x1080, operands=(), kind=InsnKind.TABLE_JUMP,
+        l=selector,
+        r=MopSnapshot(
+            t=0, size=0, kind=OperandKind.CASE_LIST,
+            switch_cases=(((0,), 10), ((1,), 11), ((), 2)),
+        ),
+    )
+    graph = FlowGraph(
+        {
+            0: _b(0, (2,), ()),
+            2: _b(2, (10, 11, 2), (0, 10, 11, 2), (table,)),
+            10: _b(10, (2,), (2,)),
+            11: _b(11, (2,), (2,)),
+        },
+        0,
+        0x180055760,
+    )
+    dispatch_map = build_state_dispatcher_map_from_cases(
+        [(0, 10), (1, 11), (None, 2)],
+        dispatcher_serial=2,
+        dispatcher_blocks=frozenset({2}),
+        state_var_stkoff=_STATE,
+    )
+
+    receipt = minimal_unflatten_emit_module._bind_exact_u32_dispatcher_route_receipt(
+        graph,
+        dispatch_map,
+        dispatcher_entry_serial=2,
+        state_var_stkoff=_STATE,
+        state_var_reg=None,
+        dispatcher_region_serials=frozenset({2}),
+    )
+
+    assert receipt is not None
+    assert receipt.target_for_u32_state(0x8F2668B8) == 10
+    assert receipt.target_for_u32_state(0x8F2668BB) == 11
+    assert receipt.target_for_u32_state(0) is None
 
 
 def test_emits_back_edge_redirect_and_entry_bridge(_seam) -> None:
@@ -16513,6 +16584,67 @@ def test_switch_retirement_abstains_when_terminal_corridor_is_ambiguous() -> Non
 
     assert rewritten == modifications
     assert cleanup_source is None
+
+
+def test_switch_retirement_breaks_detached_direct_default_cycle() -> None:
+    """A retired switch must not retain its own default backedge."""
+    flow_graph = FlowGraph(
+        blocks={
+            0: _b(0, (1,), ()),
+            1: _b(1, (2,), (0,)),
+            2: replace(_b(2, (3, 4, 2), (1, 2, 3)), kind=BlockKind.N_WAY),
+            3: _b(3, (2,), (2,)),
+            4: replace(_exit_block(4, (2,)), kind=BlockKind.STOP),
+        },
+        entry_serial=0,
+        func_ea=0x1000,
+    )
+    projected = FlowGraph(
+        blocks={
+            0: _b(0, (1,), ()),
+            1: _b(1, (3,), (0,)),
+            2: replace(_b(2, (3, 4, 2), (2,)), kind=BlockKind.N_WAY),
+            3: _b(3, (4,), (1, 2)),
+            4: replace(_exit_block(4, (3, 2)), kind=BlockKind.STOP),
+        },
+        entry_serial=0,
+        func_ea=0x1000,
+    )
+    modifications = [
+        RedirectGoto(from_serial=1, old_target=2, new_target=3),
+        RedirectGoto(from_serial=3, old_target=2, new_target=4),
+    ]
+
+    rewritten, cleanup_source = (
+        minimal_unflatten_emit_module._break_terminal_switch_dispatcher_cycle(
+            flow_graph,
+            modifications,
+            dispatcher_entry_serial=2,
+            project_modifications=lambda _mods: projected,
+            exact_switch_verified=True,
+        )
+    )
+
+    assert cleanup_source == 2
+    assert rewritten[-1] == CanonicalizeJumpTableCaseOverlap(
+        jtbl_serial=2,
+        retarget_map=((2, 4),),
+    )
+    for verified, candidate_graph in (
+        (False, projected),
+        (True, flow_graph),
+    ):
+        declined, cleanup_source = (
+            minimal_unflatten_emit_module._break_terminal_switch_dispatcher_cycle(
+                flow_graph,
+                modifications,
+                dispatcher_entry_serial=2,
+                project_modifications=lambda _mods: candidate_graph,
+                exact_switch_verified=verified,
+            )
+        )
+        assert declined == modifications
+        assert cleanup_source is None
 
 
 def test_switch_emitter_breaks_terminal_dispatcher_cycle_before_compiling_plan(
