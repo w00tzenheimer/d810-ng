@@ -1,6 +1,6 @@
 {
   "schema": "d810.hash-bound-build-receipt.v1",
-  "source_manifest_sha256": "10669ef25f42e19b626091164097fe770208061b0c9c057f0efb1ff8aa334da3",
+  "source_manifest_sha256": "6590f39dde14573291d195c3dc9c32e4d4892b4fa14803498991ba47a76fe4b4",
   "linked_dll_sha256": "1b002438e8078cb6d11bb061d69ab032363c11c5a6c8a2bdc1fbf02a676a9160",
   "fixtures": [
     {

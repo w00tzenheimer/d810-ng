@@ -20,7 +20,7 @@ MANIFEST_PATH = MASM_ROOT / "hash_bound_seven_manifest.json"
 PROFILE_PATH = (
     REPO_ROOT / "src" / "d810" / "conf" / "hash_bound_v4_user_cfg_const_simplify_solve.json"
 )
-PROFILE_SHA256 = "1c9dd1d14158e2be7e9a838577f79c201e7eed72cd01c5911100068f098f1c12"
+PROFILE_SHA256 = "e258216462dcbf679b5474cd37a24dc9dae5ac3e1580b30268b53c54327d6f08"
 LINKED_DLL_PATH = REPO_ROOT / "samples" / "bins" / "libobfuscated.dll"
 BUILD_RECEIPT_PATH = MASM_ROOT / "hash_bound_seven_build_receipt.json"
 
