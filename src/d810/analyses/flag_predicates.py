@@ -49,8 +49,23 @@ def flags_compare_zero_is_taken(*, equal_test: bool) -> bool:
     return not equal_test
 
 
+def flags_compare_constant_is_taken(
+    constant: int, *, equal_test: bool,
+) -> bool | None:
+    """Decide equality only when the literal contradicts RFLAGS' fixed bit 1.
+
+    A full flags read always has bit 1 set. Other literals may still be
+    impossible for additional architectural reasons, but this predicate does
+    not claim those reasons. ``None`` means the branch remains dynamic here.
+    """
+    if int(constant) & (1 << RFLAGS_RESERVED_SET_BIT):
+        return None
+    return not equal_test
+
+
 __all__ = [
     "RFLAGS_RESERVED_SET_BIT",
     "flags_compare_zero_is_taken",
+    "flags_compare_constant_is_taken",
     "flags_register_can_be_zero",
 ]

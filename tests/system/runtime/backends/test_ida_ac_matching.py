@@ -1046,8 +1046,13 @@ def test_structural_opt_in_requires_matching_persisted_parity_certificate(
     )
 
     assert matching_catalogue.fingerprint == snapshot.fingerprint
-    assert len(warnings) == 1
-    assert "new_safe_coverage_pending=0" in str(warnings[0][-1])
+    parity_warnings = [
+        warning
+        for warning in warnings
+        if str(warning[0]).startswith("Structural matcher parity certificate")
+    ]
+    assert len(parity_warnings) == 1
+    assert "new_safe_coverage_pending=0" in str(parity_warnings[0][-1])
     assert matching_snapshot._structural_parity_authorized is True
     assert matching_snapshot.uses_structural_matching is True
     assert len(matching_snapshot.pattern_candidates) == 1

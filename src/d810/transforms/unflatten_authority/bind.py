@@ -5340,6 +5340,61 @@ def _state_transform_helper_corridor_coordinates_match(
     )
 
 
+def _state_dag_helper_corridor_coordinates_match(
+    plan: PatchPlan,
+    proof: route_model.SemanticRouteProof,
+    descriptor: CanonicalPatchStepDescriptor,
+) -> bool:
+    """Bind a cloned DAG feeder to its proved physical predecessor and arm."""
+    dag = proof.state_dag
+    if (
+        descriptor.step_kind is not PatchStepKind.HELPER_CORRIDOR
+        or descriptor.step_index < 0
+        or descriptor.step_index >= len(plan.steps)
+        or type(plan.steps[descriptor.step_index]) is not PatchEdgeSplitCorridor
+        or proof.proof_kind is not route_model.SemanticRouteProofKind.STATE_DAG
+        or proof.shape is not route_model.SemanticRouteShape.DIRECT
+        or dag is None
+        or proof.source_owner_identity is None
+        or len(proof.destinations) != 1
+        or proof.destinations[0].role is not SemanticEdgeRole.DIRECT
+        or len(descriptor.route_refs) < 5
+        or not descriptor.helper_refs
+    ):
+        return False
+    step = plan.steps[descriptor.step_index]
+    feeder_ref, owner_ref, comparison_ref, target_ref, last_ref = (
+        descriptor.route_refs[:5]
+    )
+    middle = dag.source_to_entry_corridor[:-1]
+    return bool(
+        step.source_new_target is None
+        and step.source_serial == feeder_ref
+        and step.via_pred == owner_ref
+        and step.old_target == comparison_ref
+        and step.new_target == target_ref
+        and step.clone_until == last_ref
+        and len(step.corridor_serials) == len(middle)
+        and len(step.clone_block_ids) == len(step.corridor_serials)
+        and descriptor.helper_refs == step.clone_block_ids
+        and descriptor.route_refs[5:] == step.corridor_serials
+        and step.corridor_serials[0] == feeder_ref
+        and step.corridor_serials[-1] == last_ref
+        and all(
+            _ref_matches_identity(ref, point.identity)
+            for ref, point in zip(step.corridor_serials, middle, strict=True)
+        )
+        and _ref_matches_identity(feeder_ref, dag.source_identity)
+        and _ref_matches_identity(feeder_ref, proof.source_identity)
+        and _ref_matches_identity(owner_ref, proof.source_owner_identity)
+        and _ref_matches_identity(comparison_ref, dag.entry_identity)
+        and _ref_matches_identity(target_ref, dag.target_identity)
+        and _ref_matches_identity(
+            target_ref, proof.destinations[0].target_identity,
+        )
+    )
+
+
 def _retained_prefix_direct_coordinates_match(
     plan: PatchPlan,
     proof: route_model.SemanticRouteProof,
@@ -5740,6 +5795,13 @@ def _select_lineage_fact_group(
         entry for entry in kind_entries(PatchStepKind.HELPER_CORRIDOR)
         if type(plan.steps[entry.descriptor.step_index]) is PatchEdgeSplitCorridor
         and source_ref in plan.steps[entry.descriptor.step_index].corridor_serials
+        and (
+            proof.proof_kind is not route_model.SemanticRouteProofKind.STATE_DAG
+            or proof.source_owner_identity is None
+            or _state_dag_helper_corridor_coordinates_match(
+                plan, proof, entry.descriptor,
+            )
+        )
     )
     lower_exact = tuple(
         entry for entry in kind_entries(PatchStepKind.LOWER_CONDITIONAL)
@@ -6381,6 +6443,7 @@ def _legacy_structural_projected_routes(*, source_authority: model.SourceBoundRo
             state_transform_feeder_direct_match = False
             state_carrier_helper_corridor_match = False
             state_transform_helper_corridor_match = False
+            state_dag_helper_corridor_match = False
             shared_state_carrier_source_bypass_match = False
             route_source_ref = source_ref
             route_source_serial_number = source_by_ref.get(source_ref)
@@ -6429,6 +6492,12 @@ def _legacy_structural_projected_routes(*, source_authority: model.SourceBoundRo
                 state_transform_helper_corridor_match = True
                 route_source_ref, route_source_serial_number = _ref_and_serial(
                     descriptor.route_refs[0], source_by_ref,
+                )
+            if descriptor.step_kind is PatchStepKind.HELPER_CORRIDOR:
+                state_dag_helper_corridor_match = (
+                    _state_dag_helper_corridor_coordinates_match(
+                        plan, claim_proof, descriptor,
+                    )
                 )
             proven_feeder_corridor_match = (
                 state_carrier_helper_corridor_match
@@ -7075,6 +7144,10 @@ def _legacy_structural_projected_routes(*, source_authority: model.SourceBoundRo
                         route_model.SemanticRouteProofKind.STATE_ASSIGNMENT,
                         route_model.SemanticRouteProofKind.STATE_PARTITION,
                     }
+                    if state_dag_helper_corridor_match:
+                        admitted_proof_kinds.add(
+                            route_model.SemanticRouteProofKind.STATE_DAG,
+                        )
                 if proof.proof_kind not in admitted_proof_kinds:
                     raise ValueError("corridor proof kind is unsupported")
                 active_stage = model.RouteRealizationFailureStage.OLD_EDGE_REMOVAL
@@ -7123,6 +7196,10 @@ def _legacy_structural_projected_routes(*, source_authority: model.SourceBoundRo
                     or proof.source_owner_identity is None
                     or predecessor_ref == source_refs[0]
                     or not _ref_matches_identity(predecessor_ref, proof.source_owner_identity)
+                    or (
+                        proof.proof_kind is route_model.SemanticRouteProofKind.STATE_DAG
+                        and not state_dag_helper_corridor_match
+                    )
                 ):
                     raise ValueError("corridor proof source differs")
                 terminal_ref, terminal_serial = _ref_and_serial(_inventory_block(source_inventory, source_refs[-1]).successor_serials[0], source_by_ref)
@@ -7161,11 +7238,14 @@ def _legacy_structural_projected_routes(*, source_authority: model.SourceBoundRo
                         source_tail.instruction_kind is InsnKind.GOTO
                         and source_tail.control_transfer_kind is ControlTransferKind.GOTO
                     )
-                    # The exact carrier replay also admits a sole-successor
-                    # implicit fallthrough. Preserve its final MOVE, recording
-                    # that no source GOTO existed rather than inventing one.
+                    # An exact feeder or DAG replay also admits a sole-successor
+                    # implicit fallthrough. Preserve the final source instruction;
+                    # the clone's GOTO is synthetic, not a copied source transfer.
                     if not source_has_goto and (
-                        not proven_feeder_corridor_match
+                        not (
+                            proven_feeder_corridor_match
+                            or state_dag_helper_corridor_match
+                        )
                         or any(obs.control_transfer_kind is not None for obs in source_obs)
                     ):
                         raise ValueError("corridor source lacks a proven fallthrough")

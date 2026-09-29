@@ -13,6 +13,7 @@ from tests.system.e2e.hash_bound.hash_bound_semantic_oracle import (
     Exit,
     FixtureReference,
     RecoveredSemantics,
+    RouteHandoff,
     Transition,
     evaluate_fixture_semantics,
     load_fixture_references,
@@ -124,6 +125,56 @@ def test_wrong_target_fails(
     wrong = replace(recovered.transitions[0], target_rvas=(0x1050,))
     damaged = replace(recovered, transitions=(wrong, recovered.transitions[1]))
     assert "transition_target_mismatch" in _blocker_codes(reference, damaged)
+
+
+def test_explicit_two_leg_handoff_preserves_expected_terminal_target(
+    reference: FixtureReference, recovered: RecoveredSemantics
+) -> None:
+    first = recovered.transitions[0]
+    second = recovered.transitions[1]
+    via_rva = 0x1030
+    handoff = RouteHandoff(
+        source_partition=first.partition,
+        intermediate_rva=via_rva,
+        next_partition=second.partition,
+        final_target_rvas=first.target_rvas,
+    )
+    second = replace(
+        second,
+        predecessor_eas=(via_rva,),
+        target_rvas=first.target_rvas,
+    )
+    reference = replace(
+        reference,
+        transitions=(first, second),
+        handoffs=(handoff,),
+    )
+    first_leg = replace(first, target_rvas=(via_rva,))
+    recovered = replace(
+        recovered,
+        transitions=(first_leg, second),
+        handoffs=(handoff,),
+    )
+    result = evaluate_fixture_semantics(reference, recovered)
+    assert result.passed
+    assert all(diff.matches for diff in result.transition_diffs)
+
+    assert "transition_target_mismatch" in _blocker_codes(
+        reference,
+        replace(recovered, handoffs=()),
+    )
+    assert "transition_target_mismatch" in _blocker_codes(
+        reference,
+        replace(
+            recovered, transitions=(first_leg, replace(second, target_rvas=(0x1050,)))
+        ),
+    )
+    assert "transition_target_mismatch" in _blocker_codes(
+        reference,
+        replace(
+            recovered, transitions=(replace(first_leg, target_rvas=(0x1031,)), second)
+        ),
+    )
 
 
 def test_extra_target_fails(
@@ -239,6 +290,92 @@ def test_proposal_routes_are_normalized_to_function_relative_partitions() -> Non
             target_rvas=(0x1080,),
         ),
     )
+
+
+@pytest.mark.parametrize(
+    "damage",
+    (
+        None,
+        "unclaimed_second",
+        "foreign_group",
+        "foreign_identity",
+        "wrong_second_state",
+        "missing_second_carrier",
+    ),
+)
+def test_only_exact_claimed_direct_route_handoff_is_projected(
+    damage: str | None,
+) -> None:
+    first_identity = object()
+    middle_identity = object()
+    last_identity = object()
+    first = SimpleNamespace(
+        proof_id="first",
+        proof_kind=SimpleNamespace(value="state_carrier"),
+        atomic_group_id="one-group",
+        shape=SimpleNamespace(value="direct"),
+        source_identity=first_identity,
+        source_anchor_ea=0x180001020,
+        destinations=(
+            SimpleNamespace(
+                state_constant=0xAA,
+                target_identity=middle_identity,
+                target_anchor_ea=0x180001030,
+            ),
+        ),
+        state_carrier=SimpleNamespace(
+            source_identity=first_identity,
+            state_constant=0xAA,
+        ),
+    )
+    second = SimpleNamespace(
+        proof_id="second",
+        proof_kind=SimpleNamespace(value="state_carrier"),
+        atomic_group_id=("other-group" if damage == "foreign_group" else "one-group"),
+        shape=SimpleNamespace(value="direct"),
+        source_identity=(object() if damage == "foreign_identity" else middle_identity),
+        source_anchor_ea=0x180001030,
+        destinations=(
+            SimpleNamespace(
+                state_constant=0xBB,
+                target_identity=last_identity,
+                target_anchor_ea=0x180001040,
+            ),
+        ),
+        state_carrier=(
+            None
+            if damage == "missing_second_carrier"
+            else SimpleNamespace(
+                source_identity=middle_identity,
+                state_constant=0xBC if damage == "wrong_second_state" else 0xBB,
+            )
+        ),
+    )
+    proposal = SimpleNamespace(
+        route_evidence=SimpleNamespace(route_proofs=(first, second)),
+        claims=(
+            SimpleNamespace(
+                route_proof_ids=(
+                    "first" if damage == "unclaimed_second" else "first,second"
+                ).split(","),
+            ),
+        ),
+    )
+    recovered = recovered_semantics_from_proposals(
+        function="fixture",
+        function_ea=0x180001000,
+        entry_rva=0x1000,
+        extent=0x100,
+        linked_sha256="1" * 64,
+        proposals=(proposal,),
+    )
+    expected = RouteHandoff(
+        source_partition="src=0x1020:state=0x000000AA",
+        intermediate_rva=0x1030,
+        next_partition="src=0x1030:state=0x000000BB",
+        final_target_rvas=(0x1040,),
+    )
+    assert recovered.handoffs == ((expected,) if damage is None else ())
 
 
 def test_proposal_route_conflict_fails_closed() -> None:
@@ -464,8 +601,7 @@ def test_tracked_references_are_exactly_the_seven_resolved_fixtures() -> None:
     assert all(not reference.unresolved for reference in references.values())
     assert all(reference.transitions for reference in references.values())
     e086_partitions = {
-        transition.predecessor_eas[0]
-        - references["sub_7FFB0E086BE0"].entry_rva
+        transition.predecessor_eas[0] - references["sub_7FFB0E086BE0"].entry_rva
         for transition in references["sub_7FFB0E086BE0"].transitions
     }
     assert len(e086_partitions) == 21
@@ -477,11 +613,19 @@ def test_tracked_references_are_exactly_the_seven_resolved_fixtures() -> None:
         0x821B,
     } <= e086_partitions
 
+    e511 = references["sub_7FFB0DE51120"]
+    assert e511.handoffs == (
+        RouteHandoff(
+            source_partition="src=0x68318:state=0x6FC4ECF1",
+            intermediate_rva=0x66BFD,
+            next_partition="src=0x66BFD:state=0x2399290D",
+            final_target_rvas=(0x67A2C,),
+        ),
+    )
+
 
 def test_tracked_references_match_the_generated_build_receipt() -> None:
-    receipt_path = _REPO_ROOT / (
-        "samples/src/masm/hash_bound_seven_build_receipt.json"
-    )
+    receipt_path = _REPO_ROOT / ("samples/src/masm/hash_bound_seven_build_receipt.json")
     receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
     references = load_fixture_references(_REFERENCE_PATH)
 
@@ -493,12 +637,11 @@ def test_tracked_references_match_the_generated_build_receipt() -> None:
 
 
 def test_tracked_reference_set_names_the_exact_linked_dll() -> None:
-    receipt_path = _REPO_ROOT / (
-        "samples/src/masm/hash_bound_seven_build_receipt.json"
-    )
+    receipt_path = _REPO_ROOT / ("samples/src/masm/hash_bound_seven_build_receipt.json")
     receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
     linked_dll = _REPO_ROOT / "samples" / "bins" / "libobfuscated.dll"
 
-    assert receipt["linked_dll_sha256"] == hashlib.sha256(
-        linked_dll.read_bytes()
-    ).hexdigest()
+    assert (
+        receipt["linked_dll_sha256"]
+        == hashlib.sha256(linked_dll.read_bytes()).hexdigest()
+    )

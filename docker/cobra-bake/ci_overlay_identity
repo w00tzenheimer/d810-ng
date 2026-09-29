@@ -1,0 +1,5 @@
+# Explicit system-test overlay for the published d810-cobra 0.1.7 wheels.
+# This does not change the 0.1.5 identity baked into the IDA images.
+# columns: arch sha256 version tag_commit core_commit parent_commit wheel_filename
+aarch64 a53455cc9ba4101dc37dc3735708fb740b074e4bbf1fa2614a4e76df577102b4 0.1.7 6ff3f0f763d3ef706170e6fb0362e7e6b5d1073c 80401355e3cf9bb87ff2c8bb7b6d34c8ba72b7f8 6ff3f0f763d3ef706170e6fb0362e7e6b5d1073c d810_cobra-0.1.7-cp313-cp313-manylinux_2_26_aarch64.manylinux_2_28_aarch64.whl
+x86_64 21b657d0de953498268d89590cfb33eaa5ea6813f2b2063ace42fe6d1b847e93 0.1.7 6ff3f0f763d3ef706170e6fb0362e7e6b5d1073c 80401355e3cf9bb87ff2c8bb7b6d34c8ba72b7f8 6ff3f0f763d3ef706170e6fb0362e7e6b5d1073c d810_cobra-0.1.7-cp313-cp313-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl

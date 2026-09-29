@@ -57,6 +57,7 @@ STANDALONE_BUNDLED_PROJECTS = frozenset(
 FIXTURE_ONLY_BUNDLED_PROJECTS = frozenset(
     {
         "call_result_predicate_acceptance.json",
+        "cobra_budgeted_vmexecute_e2e.json",
         "constant_stage_controls.json",
         "dead_store_elimination_fixture.json",
         "hash_bound_v4_user_cfg_const_simplify_solve.json",
@@ -106,6 +107,24 @@ def bundled_runtime_projects() -> tuple[Path, ...]:
         f"unexpected={sorted(actual - CANONICAL_BUNDLED_PROJECTS)})"
     )
     return tuple(CONF_DIR / name for name in sorted(actual))
+
+
+def test_solve_fixture_projects_have_bounded_cobra_solve() -> None:
+    for name in (
+        "hash_bound_v4_user_cfg_const_simplify_solve.json",
+        "eidolon_v3_const_solve.json",
+    ):
+        project = json.loads((CONF_DIR / name).read_text(encoding="utf-8"))
+        solve_passes = [
+            stage
+            for stage in project["additional_configuration"]["pipeline_v2"]
+            if stage.get("pass_id") == "mba-solve"
+        ]
+        assert len(solve_passes) == 1, name
+        options = solve_passes[0]["options"]
+        assert options["solve_timeout_ms"] == 25, name
+        assert options["function_solve_budget_ms"] == 10000, name
+        assert options["background_solve_timeout_ms"] == 30000, name
 
 
 def test_bundled_runtime_projects_are_canonical_v2() -> None:

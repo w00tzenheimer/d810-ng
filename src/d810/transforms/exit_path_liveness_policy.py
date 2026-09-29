@@ -224,6 +224,8 @@ def _block_gen_kill(block: object, state_var_stkoff: int | None):
         state_key = ("stk", int(state_var_stkoff))
 
     for insn in getattr(block, "insn_snapshots", ()) or ():
+        if getattr(insn, "is_assert", False):
+            continue
         # Uses first (a use in the same instruction is not killed by its own def).
         for operand in (getattr(insn, "l", None), getattr(insn, "r", None)):
             for key in _variable_keys(operand):

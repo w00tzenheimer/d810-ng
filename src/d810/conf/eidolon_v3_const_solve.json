@@ -935,7 +935,10 @@
             "GLOBAL_OPTIMIZED"
           ],
           "max_leaves": 12,
-          "require_proof": false
+          "require_proof": false,
+          "solve_timeout_ms": 25,
+          "function_solve_budget_ms": 10000,
+          "background_solve_timeout_ms": 30000
         },
         "pass_id": "mba-solve",
         "preservation": {

@@ -165,6 +165,7 @@ def _event(
 
 def _manager(calls: _CallLog, *, started: bool = False):
     manager = object.__new__(manager_module.D810Manager)
+    manager.instruction_optimizer_rules = []
     manager.stats = _OptimizationStats(calls)
     manager.instruction_optimizer = _InstructionOptimizer(calls)
     manager.block_optimizer = _BlockOptimizer(calls)

@@ -1145,19 +1145,35 @@ class IDAIRTranslator:
             deferred_modifier_module=deferred_modifier,
         )
 
+        # A corridor clone must be observed against the exact instructions
+        # installed by this transaction. Hex-Rays may fold those instructions
+        # through their new predecessor during optimize_local. Native MBA
+        # verification still runs inside the modifier's rollback window.
+        defer_corridor_maintenance = any(
+            type(step) is PatchEdgeSplitCorridor for step in patch_plan.steps
+        )
+
         # Build effective post-apply hook: caller hook + contract check
         effective_hook: Callable[[], None] | None = None
         # NOP cleanup intentionally creates a transient CFG/successor mismatch
         # that Hex-Rays resolves in the apply tail via optimize_local().
         # Running the live post-contract before that cleanup would abort the
         # maintenance step, leaving the MBA in the transient state.
-        if post_apply_hook is not None or (self.contract is not None and not relaxed):
+        if (
+            post_apply_hook is not None
+            or (self.contract is not None and not relaxed)
+            or defer_corridor_maintenance
+        ):
 
             def _combined_post_apply_hook() -> None:
                 if post_apply_hook is not None:
                     post_apply_hook()
                 if self.contract is not None and not relaxed:
                     self.contract.verify(mba, plan=patch_plan, phase="post")
+                if defer_corridor_maintenance:
+                    from d810.hexrays.mutation.cfg_verify import safe_verify
+
+                    safe_verify(mba, "before corridor-clone authority observation")
 
             effective_hook = _combined_post_apply_hook
 
@@ -1181,6 +1197,7 @@ class IDAIRTranslator:
         try:
             result_count = modifier.apply(
                 run_optimize_local=not merge_blocks_cleanup,
+                defer_post_apply_maintenance=defer_corridor_maintenance,
                 run_deep_cleaning=merge_blocks_cleanup,
                 verify_each_mod=verify_each_mod and enable_rollback,
                 rollback_on_verify_failure=verify_each_mod and enable_rollback,

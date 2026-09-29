@@ -12,7 +12,7 @@ from d810.analyses.control_flow.semantic_route_evidence import (
 from d810.ir.semantic_edge import SemanticEdgeRole
 from d810.analyses.value_flow.observation import FactObservation
 from d810.transforms.cfg_transaction import TransactionAttemptId
-from d810.transforms.plan import PatchRedirectGoto
+from d810.transforms.plan import PatchEdgeSplitCorridor, PatchRedirectGoto
 
 from . import model
 from .canonical_session import CanonicalWorkMetrics, process_work_metrics
@@ -34,7 +34,7 @@ def native_bound_transition_route_receipts_from_plan(
     """Project committed-route diagnostics from the plan's canonical authority.
 
     The projection is intentionally non-authoritative.  It correlates a
-    selected native-bound proof with the one exact planned GOTO operation;
+    selected native-bound proof with one exact planned redirect operation;
     the driver still requires that operation to occur exactly once in the
     backend's committed inventory before logging it.
     """
@@ -125,7 +125,6 @@ def native_bound_transition_route_receipts_from_plan(
             if (
                 carrier is None
                 or proof.shape is not SemanticRouteShape.DIRECT
-                or bool(getattr(carrier, "requires_feeder_clone", True))
                 or len(proof.destinations) != 1
                 or proof.destinations[0].role is not SemanticEdgeRole.DIRECT
             ):
@@ -134,25 +133,43 @@ def native_bound_transition_route_receipts_from_plan(
                 step
                 for step in steps
                 if (
-                    type(step) is PatchRedirectGoto
-                    and step.new_target == destination_locator.block_ref
-                    and (
-                        (
-                            getattr(step.from_serial, "identity", None)
-                            == carrier.feeder_identity
-                            and getattr(step.old_target, "identity", None)
-                            == carrier.comparison_entry_identity
+                    (
+                        type(step) is PatchRedirectGoto
+                        and not bool(getattr(carrier, "requires_feeder_clone", True))
+                        and step.new_target == destination_locator.block_ref
+                        and (
+                            (
+                                getattr(step.from_serial, "identity", None)
+                                == carrier.feeder_identity
+                                and getattr(step.old_target, "identity", None)
+                                == carrier.comparison_entry_identity
+                            )
+                            or (
+                                getattr(step.from_serial, "identity", None)
+                                == proof.source_identity
+                                and getattr(step.from_serial, "identity", None)
+                                == carrier.source_identity
+                                and getattr(step.old_target, "identity", None)
+                                == carrier.feeder_identity
+                                and getattr(step.new_target, "identity", None)
+                                == proof.destinations[0].target_identity
+                            )
                         )
-                        or (
-                            getattr(step.from_serial, "identity", None)
-                            == proof.source_identity
-                            and getattr(step.from_serial, "identity", None)
-                            == carrier.source_identity
-                            and getattr(step.old_target, "identity", None)
-                            == carrier.feeder_identity
-                            and getattr(step.new_target, "identity", None)
-                            == proof.destinations[0].target_identity
-                        )
+                    )
+                    or (
+                        type(step) is PatchEdgeSplitCorridor
+                        and step.new_target == destination_locator.block_ref
+                        and getattr(step.via_pred, "identity", None)
+                        == proof.source_identity
+                        and getattr(step.via_pred, "identity", None)
+                        == carrier.source_identity
+                        and getattr(step.source_serial, "identity", None)
+                        == carrier.feeder_identity
+                        and getattr(step.old_target, "identity", None)
+                        == carrier.comparison_entry_identity
+                        and getattr(step.new_target, "identity", None)
+                        == proof.destinations[0].target_identity
+                        and step.source_new_target is None
                     )
                 )
             )
@@ -162,10 +179,10 @@ def native_bound_transition_route_receipts_from_plan(
         old_target_serial = serial_by_ref.get(step.old_target)
         if type(old_target_serial) is not int:
             return ()
-        operation_source_serial = (
-            source_serial
-            if not is_carrier
-            else serial_by_ref.get(step.from_serial)
+        operation_source_serial = serial_by_ref.get(
+            step.via_pred
+            if type(step) is PatchEdgeSplitCorridor
+            else step.from_serial
         )
         if type(operation_source_serial) is not int:
             return ()
@@ -183,7 +200,11 @@ def native_bound_transition_route_receipts_from_plan(
                     f"blk{target_serial}@0x{int(destination.target_anchor_ea):X}"
                 ),
                 operation_key=(
-                    "block_goto_change",
+                    (
+                        "edge_redirect_via_pred_split"
+                        if type(step) is PatchEdgeSplitCorridor
+                        else "block_goto_change"
+                    ),
                     operation_source_serial,
                     old_target_serial,
                     target_serial,

@@ -257,6 +257,40 @@ def test_native_bound_carrier_receipt_projects_from_its_source_bypass() -> None:
     )
 
 
+def test_native_bound_carrier_receipt_projects_from_exact_split_corridor() -> None:
+    """A cloned feeder publishes only its exact committed corridor operation."""
+    from d810.transforms.cfg_transaction import PlanBlockRef
+    from d810.transforms.plan import PatchEdgeSplitCorridor
+
+    plan, _proof = _native_bound_carrier_receipt_fixture()
+    refs = {serial: ref for ref, serial in plan.source_coordinates}
+    step = PatchEdgeSplitCorridor(
+        clone_block_ids=(PlanBlockRef(plan.plan_id, "feeder-clone"),),
+        source_serial=refs[3],
+        via_pred=refs[2],
+        old_target=refs[4],
+        new_target=refs[5],
+        clone_until=refs[3],
+        corridor_serials=(refs[3],),
+    )
+    plan = replace(plan, steps=(step,))
+    receipts = native_bound_transition_route_receipts_from_plan(plan)
+    assert len(receipts) == 1
+    assert receipts[0].fact_id == "native-carrier-receipt"
+    assert receipts[0].operation_key == (
+        "edge_redirect_via_pred_split", 2, 4, 5,
+    )
+    for bad_step in (
+        replace(step, via_pred=refs[4]),
+        replace(step, source_serial=refs[2]),
+        replace(step, old_target=refs[2]),
+        replace(step, new_target=refs[4]),
+    ):
+        assert native_bound_transition_route_receipts_from_plan(
+            replace(plan, steps=(bad_step,))
+        ) == ()
+
+
 @pytest.mark.parametrize(
     "mutation",
     (

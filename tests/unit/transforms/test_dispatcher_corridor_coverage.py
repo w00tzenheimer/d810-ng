@@ -91,6 +91,522 @@ def test_transaction_replay_validator_seams_are_not_exported() -> None:
     assert all(name not in vars(corridor_module) for name in removed)
 
 
+def test_pure_subexpression_stack_refs_keep_their_exact_width() -> None:
+    stack = MopSnapshot(kind=OperandKind.STACK, size=4, stkoff=4, stack_refs=(4,))
+    pure_xor = MopSnapshot(
+        kind=OperandKind.SUBINSN,
+        size=4,
+        stack_refs=(4,),
+        sub_kind=InsnKind.VALUE,
+        sub_value_op_kind=ValueOpKind.XOR,
+        sub_l=stack,
+        sub_r=MopSnapshot(kind=OperandKind.NUMBER, size=4, value=0x42),
+    )
+    assert emit_module._storage_bytes(pure_xor, include_stack_refs=True) == {
+        ("stk", 4), ("stk", 5), ("stk", 6), ("stk", 7),
+    }
+
+    hidden_load = replace(pure_xor, sub_value_op_kind=ValueOpKind.LOAD)
+    assert ("stk", emit_module._STORAGE_UNKNOWN_BYTE) in emit_module._storage_bytes(
+        hidden_load, include_stack_refs=True,
+    )
+    hidden_ref = replace(pure_xor, stack_refs=(4, 100))
+    assert ("stk", emit_module._STORAGE_UNKNOWN_BYTE) in emit_module._storage_bytes(
+        hidden_ref, include_stack_refs=True,
+    )
+
+
+def test_unknown_downstream_stack_read_does_not_revive_overwritten_state() -> None:
+    """A definite handler write kills its prior value, even before a call."""
+    state_write = InsnSnapshot(
+        4, 0x1200, (), kind=InsnKind.MOV,
+        l=MopSnapshot(kind=OperandKind.NUMBER, size=4, value=7),
+        d=MopSnapshot(kind=OperandKind.STACK, size=4, stkoff=100),
+    )
+    other_write = replace(
+        state_write,
+        ea=0x1100,
+        d=MopSnapshot(kind=OperandKind.STACK, size=4, stkoff=200),
+    )
+    call = InsnSnapshot(0x28, 0x1300, (), kind=InsnKind.CALL)
+    graph = FlowGraph({
+        1: _block(1, (2,), (), 0x1100, insns=(other_write,)),
+        2: _block(2, (3,), (1,), 0x1200, insns=(state_write,)),
+        3: _block(3, (), (2,), 0x1300, insns=(call,)),
+    }, entry_serial=1, func_ea=0x1000)
+
+    live = emit_module._storage_live_in_bytes(graph)
+    state_bytes = {("stk", offset) for offset in range(100, 104)}
+    assert emit_module._storage_bytes_overlap(state_bytes, live[3])
+    assert not emit_module._storage_bytes_overlap(state_bytes, live[2])
+    assert {("stk", offset) for offset in range(200, 204)} <= live[2]
+    before_write = FlowGraph({
+        **graph.blocks,
+        2: _block(2, (3,), (1,), 0x1200, insns=(replace(call, ea=0x1200), state_write)),
+    }, entry_serial=1, func_ea=0x1000)
+    assert emit_module._storage_bytes_overlap(
+        state_bytes, emit_module._storage_live_in_bytes(before_write)[2]
+    )
+
+
+def test_assertion_does_not_kill_state_live_before_a_real_read() -> None:
+    state = MopSnapshot(kind=OperandKind.STACK, size=4, stkoff=100)
+    asserted = InsnSnapshot(
+        4, 0x1200, (), kind=InsnKind.MOV, is_assert=True,
+        l=MopSnapshot(kind=OperandKind.NUMBER, size=4, value=7), d=state,
+    )
+    read = InsnSnapshot(
+        4, 0x1204, (), kind=InsnKind.MOV, l=state,
+        d=MopSnapshot(kind=OperandKind.REGISTER, size=4, reg=20),
+    )
+    graph = FlowGraph({
+        1: _block(1, (2,), (), 0x1100),
+        2: _block(2, (), (1,), 0x1200, insns=(asserted, read)),
+    }, entry_serial=1, func_ea=0x1000)
+    assert {("stk", byte) for byte in range(100, 104)} <= (
+        emit_module._storage_live_in_bytes(graph)[2]
+    )
+
+
+def test_conditional_constant_stack_carrier_can_skip_dead_feeder_copy() -> None:
+    """Only the proven branch arm bypasses the shared pure state feeder."""
+    carrier = MopSnapshot(kind=OperandKind.STACK, size=4, stkoff=200)
+    state = MopSnapshot(kind=OperandKind.STACK, size=4, stkoff=100)
+    source_write = InsnSnapshot(
+        4, 0x1100, (), kind=InsnKind.MOV,
+        l=MopSnapshot(kind=OperandKind.NUMBER, size=4, value=7), d=carrier,
+    )
+    feeder_copy = InsnSnapshot(
+        4, 0x1300, (), kind=InsnKind.MOV, l=carrier, d=state,
+    )
+    leaf_overwrite = replace(
+        source_write, ea=0x1500,
+        l=MopSnapshot(kind=OperandKind.NUMBER, size=4, value=8), d=state,
+    )
+    graph = FlowGraph({
+        1: _block(1, (2, 3), (), 0x1100, kind=BlockKind.TWO_WAY,
+                  insns=(source_write,)),
+        2: _block(2, (3,), (1,), 0x1200),
+        3: _block(3, (4,), (1, 2), 0x1300, kind=BlockKind.ONE_WAY,
+                  insns=(feeder_copy,)),
+        4: _block(4, (5, 6), (3,), 0x1400, kind=BlockKind.TWO_WAY),
+        5: _block(5, (8,), (4,), 0x1500, insns=(leaf_overwrite,)),
+        6: _block(6, (), (4,), 0x1600),
+        8: _block(8, (), (5,), 0x1800,
+                  insns=(InsnSnapshot(0x28, 0x1800, (), kind=InsnKind.CALL),)),
+    }, entry_serial=1, func_ea=0x1000)
+    dag = DecisionDag(32, {4: RouteComparison(4, "jz", 7, 5, 6)}, root=4)
+    dispatcher = IntervalDispatcher([
+        IntervalRow(7, 8, 5), IntervalRow(8, 9, 6),
+    ], compute_default=False)
+    transition = StateWriteTransition(
+        1, 7, 5, False, None, via_block=3,
+        proof=TransitionProof("test", "partitioned_literal", True),
+    )
+    redirect = RedirectBranch(1, 3, 5)
+    assert emit_module._source_bound_dead_state_write_leaf_delivery(
+        graph, dispatcher, dag, redirect, (transition,),
+        state_identity=StorageIdentity(StorageIdentityKind.STACK, 100),
+        state_var_stkoff=100, state_var_reg=None,
+        live_in_by_serial=None, storage_live_in_by_serial=None,
+    )
+    changed_source = FlowGraph({
+        **graph.blocks,
+        1: _block(1, (2, 3), (), 0x1100, kind=BlockKind.TWO_WAY,
+                  insns=(replace(source_write, l=MopSnapshot(
+                      kind=OperandKind.NUMBER, size=4, value=9,
+                  )),)),
+    }, entry_serial=1, func_ea=0x1000)
+    assert not emit_module._source_bound_dead_state_write_leaf_delivery(
+        changed_source, dispatcher, dag, redirect, (transition,),
+        state_identity=StorageIdentity(StorageIdentityKind.STACK, 100),
+        state_var_stkoff=100, state_var_reg=None,
+        live_in_by_serial=None, storage_live_in_by_serial=None,
+    )
+
+
+def test_exact_literal_xor_can_skip_only_a_dead_state_feeder() -> None:
+    """A proven XOR is dead only when the routed leaf overwrites state first."""
+
+    left = MopSnapshot(kind=OperandKind.REGISTER, size=4, reg=8)
+    right = MopSnapshot(kind=OperandKind.REGISTER, size=4, reg=12)
+    state = MopSnapshot(kind=OperandKind.STACK, size=4, stkoff=100)
+    left_value = 0x61EAE7DF
+    right_value = 0x30601CAA
+    routed_state = left_value ^ right_value
+    left_move = InsnSnapshot(
+        4, 0x1100, (), kind=InsnKind.MOV,
+        l=MopSnapshot(kind=OperandKind.NUMBER, size=4, value=left_value), d=left,
+    )
+    right_move = InsnSnapshot(
+        4, 0x1104, (), kind=InsnKind.MOV,
+        l=MopSnapshot(kind=OperandKind.NUMBER, size=4, value=right_value), d=right,
+    )
+    xor_write = InsnSnapshot(
+        4, 0x1200, (), kind=InsnKind.VALUE, value_op_kind=ValueOpKind.XOR,
+        l=left, r=right, d=state,
+    )
+    leaf_overwrite = InsnSnapshot(
+        4, 0x1400, (), kind=InsnKind.MOV,
+        l=MopSnapshot(kind=OperandKind.NUMBER, size=4, value=9), d=state,
+    )
+    blocks = {
+        1: _block(1, (2,), (), 0x1100, insns=(left_move, right_move)),
+        2: _block(2, (3,), (1,), 0x1200, insns=(xor_write,)),
+        3: _block(3, (4, 5), (2,), 0x1300, kind=BlockKind.TWO_WAY),
+        4: _block(4, (), (3,), 0x1400, insns=(leaf_overwrite,)),
+        5: _block(5, (), (3,), 0x1500),
+    }
+    dag = DecisionDag(
+        32, {3: RouteComparison(3, "jz", routed_state, 4, 5)}, root=3,
+    )
+    dispatcher = IntervalDispatcher([
+        IntervalRow(routed_state, routed_state + 1, 4),
+    ], compute_default=False)
+    transition = StateWriteTransition(
+        1, routed_state, 4, False, None, via_block=2,
+        proof=TransitionProof("test", "exact_literal_xor", True),
+    )
+
+    def accepted(candidate_blocks: dict[int, BlockSnapshot]) -> bool:
+        return emit_module._source_bound_dead_state_write_leaf_delivery(
+            FlowGraph(candidate_blocks, entry_serial=1, func_ea=0x1000),
+            dispatcher, dag, RedirectGoto(1, 2, 4), (transition,),
+            state_identity=StorageIdentity(StorageIdentityKind.STACK, 100),
+            state_var_stkoff=100, state_var_reg=None,
+            live_in_by_serial=None, storage_live_in_by_serial=None,
+        )
+
+    assert accepted(blocks)
+    assert not accepted({
+        **blocks,
+        1: replace(blocks[1], insn_snapshots=(
+            left_move,
+            replace(right_move, l=MopSnapshot(
+                kind=OperandKind.NUMBER, size=4, value=right_value ^ 1,
+            )),
+        )),
+    })
+    assert not accepted({
+        **blocks,
+        2: replace(blocks[2], insn_snapshots=(
+            replace(xor_write, value_op_kind=ValueOpKind.ADD),
+        )),
+    })
+    assert not accepted({
+        **blocks,
+        2: replace(blocks[2], insn_snapshots=(
+            xor_write, InsnSnapshot(0x28, 0x1204, (), kind=InsnKind.CALL),
+        )),
+    })
+    assert not accepted({
+        **blocks,
+        4: replace(blocks[4], insn_snapshots=(
+            InsnSnapshot(4, 0x13FF, (), kind=InsnKind.MOV, l=state, d=left),
+            leaf_overwrite,
+        )),
+    })
+
+
+def test_live_xor_feeder_clones_across_exact_selected_prefix() -> None:
+    """Preserve the state write when a pure prefix precedes the selected DAG."""
+
+    state_value = 0x309054FA
+    left_value = 0x4530861A
+    right_value = 0x75A0D2E0
+    assert left_value ^ right_value == state_value
+    left = MopSnapshot(kind=OperandKind.REGISTER, size=4, reg=72)
+    right = MopSnapshot(kind=OperandKind.REGISTER, size=4, reg=24)
+    state = MopSnapshot(kind=OperandKind.STACK, size=4, stkoff=4)
+    source = (
+        InsnSnapshot(4, 0x1100, (), kind=InsnKind.MOV,
+                     l=MopSnapshot(kind=OperandKind.NUMBER, size=4, value=left_value),
+                     d=left),
+        InsnSnapshot(4, 0x1104, (), kind=InsnKind.MOV,
+                     l=MopSnapshot(kind=OperandKind.NUMBER, size=4, value=right_value),
+                     d=right),
+    )
+    feeder_write = InsnSnapshot(
+        21, 0x1200, (), kind=InsnKind.VALUE, value_op_kind=ValueOpKind.XOR,
+        l=left, r=right, d=state,
+    )
+    prefix_branch = InsnSnapshot(
+        49, 0x1300, (), kind=InsnKind.COND_JUMP,
+        l=state,
+        r=MopSnapshot(kind=OperandKind.NUMBER, size=4, value=0x40D9BA32),
+        d=MopSnapshot(kind=OperandKind.BLOCK, size=0, block_ref=8),
+        branch_predicate=PredicateKind.SGT, is_conditional_jump=True,
+    )
+    root_branch = InsnSnapshot(
+        47, 0x1400, (), kind=InsnKind.EQUALITY_JUMP,
+        l=state,
+        r=MopSnapshot(kind=OperandKind.NUMBER, size=4, value=state_value),
+        d=MopSnapshot(kind=OperandKind.BLOCK, size=0, block_ref=6),
+        branch_predicate=PredicateKind.EQ, is_conditional_jump=True,
+    )
+    blocks = {
+        1: _block(1, (2,), (), 0x1100, insns=source),
+        2: _block(2, (3,), (1,), 0x1200, insns=(feeder_write,)),
+        3: _block(3, (4, 8), (2,), 0x1300,
+                  kind=BlockKind.TWO_WAY, insns=(prefix_branch,)),
+        4: _block(4, (6, 7), (3,), 0x1400,
+                  kind=BlockKind.TWO_WAY, insns=(root_branch,)),
+        6: _block(6, (), (4,), 0x1600,
+                  insns=(InsnSnapshot(0x28, 0x1600, (), kind=InsnKind.CALL),)),
+        7: _block(7, (), (4,), 0x1700),
+        8: _block(8, (), (3,), 0x1800),
+    }
+    dag = DecisionDag(
+        32, {4: RouteComparison(4, "jz", state_value, 6, 7)}, root=4,
+    )
+    transition = StateWriteTransition(
+        1, state_value, 6, False, None, via_block=2,
+        proof=TransitionProof("test", "source_exact_xor", True),
+    )
+
+    def accepted(candidate_blocks: dict[int, BlockSnapshot]) -> bool:
+        graph = FlowGraph(candidate_blocks, entry_serial=1, func_ea=0x1000)
+        (promoted,) = emit_module._preserve_live_state_carrier_feeders(
+            graph, dag, (transition,), state_var_stkoff=4, state_var_reg=None,
+        )
+        split = EdgeRedirectViaPredSplit(2, 3, 6, 1, clone_until=2)
+        return bool(
+            promoted.preserve_via_block
+            and emit_module._corridor_pred_split_preserves_handler_inputs(
+                graph, dag, split, (split,), (promoted,),
+                state_identity=StorageIdentity(StorageIdentityKind.STACK, 4),
+                state_var_stkoff=4, state_var_reg=None,
+                live_in_by_serial=None,
+                storage_live_in_by_serial=emit_module._storage_live_in_bytes(graph),
+            )
+        )
+
+    assert accepted(blocks)
+    assert not accepted({
+        **blocks,
+        1: replace(blocks[1], insn_snapshots=(
+            source[0],
+            replace(source[1], l=MopSnapshot(
+                kind=OperandKind.NUMBER, size=4, value=right_value ^ 1,
+            )),
+        )),
+    })
+    assert not accepted({
+        **blocks,
+        3: replace(blocks[3], insn_snapshots=(
+            replace(prefix_branch, r=MopSnapshot(
+                kind=OperandKind.NUMBER, size=4, value=0x20000000,
+            )),
+        )),
+    })
+    assert not accepted({
+        **blocks,
+        3: replace(blocks[3], insn_snapshots=(
+            InsnSnapshot(0x28, 0x12FF, (), kind=InsnKind.CALL), prefix_branch,
+        )),
+    })
+
+
+def test_trusted_source_route_can_skip_only_a_dead_state_cell_move() -> None:
+    source = InsnSnapshot(
+        opcode=4, ea=0x1100, operands=(), kind=InsnKind.MOV,
+        l=MopSnapshot(kind=OperandKind.NUMBER, size=4, value=7),
+        d=MopSnapshot(kind=OperandKind.REGISTER, size=4, reg=8),
+    )
+    state_move = InsnSnapshot(
+        opcode=4, ea=0x1700, operands=(), kind=InsnKind.MOV,
+        l=MopSnapshot(kind=OperandKind.REGISTER, size=4, reg=8),
+        d=MopSnapshot(kind=OperandKind.STACK, size=4, stkoff=100),
+    )
+    blocks = {
+        1: _block(1, (7,), (), 0x1100, insns=(source,)),
+        7: _block(7, (2,), (1,), 0x1700, insns=(state_move,)),
+        2: _block(2, (3, 4), (7,), 0x1200),
+        3: _block(3, (), (2,), 0x1300),
+        4: _block(4, (), (2,), 0x1400),
+    }
+    graph = FlowGraph(blocks, entry_serial=1, func_ea=0x1000)
+    dag = DecisionDag(32, {2: RouteComparison(2, "jz", 7, 3, 4)}, root=2)
+    dispatcher = IntervalDispatcher([IntervalRow(7, 8, 3)], compute_default=False)
+    transition = StateWriteTransition(
+        write_block=1, next_state=7, target_handler=3, is_return=False,
+        branch_arm=None, via_block=7,
+        proof=TransitionProof("source-bound", "predecessor_partitioned", True),
+    )
+
+    def accepted(
+        candidate_graph: FlowGraph,
+        candidate: StateWriteTransition,
+        modification: RedirectGoto | RedirectBranch = RedirectGoto(1, 7, 3),
+    ) -> bool:
+        return emit_module._source_bound_dead_state_write_leaf_delivery(
+            candidate_graph, dispatcher, dag, modification,
+            (candidate,), state_identity=StorageIdentity(StorageIdentityKind.STACK, 100),
+            state_var_stkoff=100, state_var_reg=None,
+            live_in_by_serial=None, storage_live_in_by_serial=None,
+        )
+
+    assert accepted(graph, transition)
+    asserted_source = FlowGraph(
+        {**blocks, 1: _block(
+            1, (7,), (), 0x1100, insns=(replace(source, is_assert=True),),
+        )},
+        entry_serial=1, func_ea=0x1000,
+    )
+    assert not accepted(asserted_source, transition)
+    asserted_feeder = FlowGraph(
+        {**blocks, 7: _block(
+            7, (2,), (1,), 0x1700, insns=(replace(state_move, is_assert=True),),
+        )},
+        entry_serial=1, func_ea=0x1000,
+    )
+    assert not accepted(asserted_feeder, transition)
+    wrong_carrier = FlowGraph(
+        {
+            **blocks,
+            1: _block(
+                1, (7,), (), 0x1100,
+                insns=(replace(source, l=MopSnapshot(
+                    kind=OperandKind.NUMBER, size=4, value=9,
+                )),),
+            ),
+        },
+        entry_serial=1, func_ea=0x1000,
+    )
+    assert not accepted(wrong_carrier, transition)
+    wide_source = replace(
+        source,
+        l=MopSnapshot(kind=OperandKind.NUMBER, size=8, value=0x100000007),
+        d=MopSnapshot(kind=OperandKind.REGISTER, size=8, reg=8),
+    )
+    wide_carrier = FlowGraph(
+        {
+            **blocks,
+            1: _block(1, (7,), (), 0x1100, insns=(wide_source,)),
+        },
+        entry_serial=1, func_ea=0x1000,
+    )
+    assert accepted(wide_carrier, transition)
+    wrong_wide_carrier = FlowGraph(
+        {
+            **blocks,
+            1: _block(1, (7,), (), 0x1100, insns=(replace(
+                wide_source,
+                l=MopSnapshot(kind=OperandKind.NUMBER, size=8, value=0x100000009),
+            ),)),
+        },
+        entry_serial=1, func_ea=0x1000,
+    )
+    assert not accepted(wrong_wide_carrier, transition)
+    clobbered_carrier = FlowGraph(
+        {
+            **blocks,
+            1: _block(
+                1, (7,), (), 0x1100,
+                insns=(source, replace(source, ea=0x1101, l=MopSnapshot(
+                    kind=OperandKind.NUMBER, size=4, value=9,
+                ))),
+            ),
+        },
+        entry_serial=1, func_ea=0x1000,
+    )
+    assert not accepted(clobbered_carrier, transition)
+    nested_call = InsnSnapshot(
+        4, 0x1104, (), kind=InsnKind.MOV,
+        l=MopSnapshot(kind=OperandKind.SUBINSN, size=4, sub_kind=InsnKind.CALL),
+        d=MopSnapshot(kind=OperandKind.REGISTER, size=4, reg=20),
+    )
+    nested_call_graph = FlowGraph({
+        **blocks,
+        1: _block(1, (7,), (), 0x1100, insns=(source, nested_call)),
+    }, entry_serial=1, func_ea=0x1000)
+    assert not accepted(nested_call_graph, transition)
+    assert not accepted(graph, replace(transition, proof=None))
+    branch_graph = FlowGraph(
+        {
+            **blocks,
+            1: _block(1, (4, 7), (), 0x1100, kind=BlockKind.TWO_WAY, insns=(source,)),
+            4: _block(4, (), (1, 2), 0x1400),
+        },
+        entry_serial=1, func_ea=0x1000,
+    )
+    assert accepted(branch_graph, transition, RedirectBranch(1, 7, 3))
+    leaf_read = InsnSnapshot(
+        opcode=4, ea=0x1300, operands=(), kind=InsnKind.MOV,
+        l=MopSnapshot(kind=OperandKind.STACK, size=4, stkoff=100),
+        d=MopSnapshot(kind=OperandKind.REGISTER, size=4, reg=20),
+    )
+    reading_graph = FlowGraph(
+        {**blocks, 3: _block(3, (), (2,), 0x1300, insns=(leaf_read,))},
+        entry_serial=1, func_ea=0x1000,
+    )
+    assert not accepted(reading_graph, transition)
+    pointer_read = InsnSnapshot(
+        opcode=0x28, ea=0x1300, operands=(), kind=InsnKind.CALL,
+    )
+    calling_graph = FlowGraph(
+        {**blocks, 3: _block(3, (), (2,), 0x1300, insns=(pointer_read,))},
+        entry_serial=1, func_ea=0x1000,
+    )
+    assert not accepted(calling_graph, transition)
+
+
+def test_fresh_load_leaf_accepts_one_converged_literal_before_goto_source() -> None:
+    """A no-op source can inherit an unconditional exact write at its sole pred."""
+
+    state = MopSnapshot(kind=OperandKind.STACK, size=4, stkoff=100)
+    write = InsnSnapshot(
+        4, 0x1000, (), kind=InsnKind.MOV,
+        l=MopSnapshot(kind=OperandKind.NUMBER, size=4, value=7), d=state,
+    )
+    goto = InsnSnapshot(
+        2, 0x1100, (), kind=InsnKind.GOTO,
+        l=MopSnapshot(kind=OperandKind.BLOCK, block_ref=2),
+    )
+    blocks = {
+        0: _block(0, (1,), (), 0x1000, insns=(write,)),
+        1: _block(1, (2,), (0,), 0x1100, insns=(goto,)),
+        2: _block(2, (3, 4), (1,), 0x1200, kind=BlockKind.TWO_WAY),
+        3: _block(3, (), (2,), 0x1300),
+        4: _block(4, (), (2,), 0x1400),
+    }
+    dag = DecisionDag(32, {2: RouteComparison(2, "jz", 7, 3, 4)}, root=2)
+    dispatcher = IntervalDispatcher([IntervalRow(7, 8, 3)], compute_default=False)
+    transition = StateWriteTransition(
+        1, 7, 3, False, None,
+        proof=TransitionProof("source-bound", "exact_predecessor_literal", True),
+    )
+
+    def accepted(graph: FlowGraph) -> bool:
+        return emit_module._fresh_load_leaf_modifications_have_direct_delivery(
+            graph, (RedirectGoto(1, 2, 3),), (transition,),
+            dispatcher=dispatcher, leaf_serials=frozenset({3}), root_serial=2,
+            state_identity=StorageIdentity(StorageIdentityKind.STACK, 100),
+            reference_dag=dag, state_var_stkoff=100,
+        )
+
+    assert accepted(FlowGraph(blocks, entry_serial=0, func_ea=0x1000))
+    asserted_write = FlowGraph({
+        **blocks,
+        0: _block(0, (1,), (), 0x1000, insns=(replace(write, is_assert=True),)),
+    }, entry_serial=0, func_ea=0x1000)
+    assert not accepted(asserted_write)
+    bad_write = FlowGraph({
+        **blocks,
+        0: _block(0, (1,), (), 0x1000, insns=(replace(
+            write, l=MopSnapshot(kind=OperandKind.NUMBER, size=4, value=9),
+        ),)),
+    }, entry_serial=0, func_ea=0x1000)
+    assert not accepted(bad_write)
+    effectful_source = FlowGraph({
+        **blocks,
+        1: _block(1, (2,), (0,), 0x1100, insns=(
+            InsnSnapshot(0x28, 0x1100, (), kind=InsnKind.CALL), goto,
+        )),
+    }, entry_serial=0, func_ea=0x1000)
+    assert not accepted(effectful_source)
+
+
 def test_coverage_projects_predecessor_scoped_feeder_clone() -> None:
     """A pred-split clone cuts only its exact original dispatcher corridor."""
 
@@ -251,6 +767,135 @@ def test_reference_dag_semantic_branch_leaf_needs_final_delivery_guard() -> None
         leaf_serials=leaves,
         root_serial=2,
         state_identity=StorageIdentity(StorageIdentityKind.STACK, 100),
+    )
+
+
+def test_pre_root_leaf_route_requires_current_source_write_and_proof() -> None:
+    graph = FlowGraph({
+        1: _block(1, (7,), (), 0x1100),
+        7: _block(7, (2,), (1,), 0x1700),
+        2: _block(2, (3, 4), (7,), 0x1200),
+        3: _block(3, (), (2,), 0x1300),
+        4: _block(4, (), (2,), 0x1400),
+    }, entry_serial=1, func_ea=0x1000)
+    reference = DecisionDag(32, {2: RouteComparison(2, "jz", 7, 3, 4)}, root=2)
+    dispatcher = IntervalDispatcher([IntervalRow(7, 8, 3)], compute_default=False)
+    for state in (7, 9):
+        assert not emit_module._fresh_load_leaf_modifications_have_direct_delivery(
+            graph, (RedirectGoto(1, 7, 3),),
+            (StateWriteTransition(1, state, 3, False, None, via_block=7),),
+            dispatcher=dispatcher, leaf_serials=frozenset({3}), root_serial=2,
+            state_identity=StorageIdentity(StorageIdentityKind.STACK, 100),
+            reference_dag=reference, state_var_stkoff=100,
+        )
+    source_write = InsnSnapshot(
+        4, 0x1100, (), kind=InsnKind.MOV,
+        l=MopSnapshot(kind=OperandKind.NUMBER, size=4, value=7),
+        d=MopSnapshot(kind=OperandKind.STACK, size=4, stkoff=100),
+    )
+    proved_graph = FlowGraph({
+        **graph.blocks,
+        1: _block(1, (7,), (), 0x1100, insns=(source_write,)),
+    }, entry_serial=1, func_ea=0x1000)
+    assert emit_module._fresh_load_leaf_modifications_have_direct_delivery(
+        proved_graph, (RedirectGoto(1, 7, 3),),
+        (StateWriteTransition(
+            1, 7, 3, False, None, via_block=7,
+            proof=TransitionProof("test", "exact_literal", True),
+        ),),
+        dispatcher=dispatcher, leaf_serials=frozenset({3}), root_serial=2,
+        state_identity=StorageIdentity(StorageIdentityKind.STACK, 100),
+        reference_dag=reference, state_var_stkoff=100,
+    )
+
+
+def test_direct_root_leaf_rejects_untrusted_or_misrouted_state() -> None:
+    write = InsnSnapshot(
+        4, 0x1100, (), kind=InsnKind.MOV,
+        l=MopSnapshot(kind=OperandKind.NUMBER, size=4, value=9),
+        d=MopSnapshot(kind=OperandKind.STACK, size=4, stkoff=100),
+    )
+    graph = FlowGraph({
+        1: _block(1, (2,), (), 0x1100, insns=(write,)),
+        2: _block(2, (3, 4), (1,), 0x1200),
+        3: _block(3, (), (2,), 0x1300),
+        4: _block(4, (), (2,), 0x1400),
+    }, entry_serial=1, func_ea=0x1000)
+    dag = DecisionDag(32, {2: RouteComparison(2, "jz", 7, 3, 4)}, root=2)
+    dispatcher = IntervalDispatcher([
+        IntervalRow(7, 8, 3), IntervalRow(9, 10, 4),
+    ], compute_default=False)
+    for proof in (None, TransitionProof("test", "literal", True)):
+        assert not emit_module._fresh_load_leaf_modifications_have_direct_delivery(
+            graph, (RedirectGoto(1, 2, 3),),
+            (StateWriteTransition(1, 9, 3, False, None, proof=proof),),
+            dispatcher=dispatcher, leaf_serials=frozenset({3}), root_serial=2,
+            state_identity=StorageIdentity(StorageIdentityKind.STACK, 100),
+            reference_dag=dag, state_var_stkoff=100,
+        )
+    assert not emit_module._fresh_load_leaf_modifications_have_direct_delivery(
+        graph, (RedirectGoto(1, 2, 4),),
+        (StateWriteTransition(1, 9, 4, False, None),),
+        dispatcher=dispatcher, leaf_serials=frozenset({4}), root_serial=2,
+        state_identity=StorageIdentity(StorageIdentityKind.STACK, 100),
+        reference_dag=dag, state_var_stkoff=100,
+    )
+    assert emit_module._fresh_load_leaf_modifications_have_direct_delivery(
+        graph, (RedirectGoto(1, 2, 4),),
+        (StateWriteTransition(
+            1, 9, 4, False, None,
+            proof=TransitionProof("test", "literal", True),
+        ),),
+        dispatcher=dispatcher, leaf_serials=frozenset({4}), root_serial=2,
+        state_identity=StorageIdentity(StorageIdentityKind.STACK, 100),
+        reference_dag=dag, state_var_stkoff=100,
+    )
+
+
+def test_direct_root_leaf_accepts_missing_adapter_row_only_with_exact_proof() -> None:
+    write = InsnSnapshot(
+        4, 0x1100, (), kind=InsnKind.MOV,
+        l=MopSnapshot(kind=OperandKind.NUMBER, size=4, value=7),
+        d=MopSnapshot(kind=OperandKind.STACK, size=4, stkoff=100),
+    )
+    graph = FlowGraph({
+        1: _block(1, (2,), (), 0x1100, insns=(write,)),
+        2: _block(2, (3, 4), (1,), 0x1200),
+        3: _block(3, (), (2,), 0x1300),
+        4: _block(4, (), (2,), 0x1400),
+    }, entry_serial=1, func_ea=0x1000)
+    dag = DecisionDag(32, {2: RouteComparison(2, "jz", 7, 3, 4)}, root=2)
+    missing = SimpleNamespace(resolve_target=lambda _state: None)
+
+    def accepted(proof: TransitionProof | None, dispatcher: object = missing) -> bool:
+        return emit_module._fresh_load_leaf_modifications_have_direct_delivery(
+            graph, (RedirectGoto(1, 2, 3),),
+            (StateWriteTransition(1, 7, 3, False, None, proof=proof),),
+            dispatcher=dispatcher, leaf_serials=frozenset({3}), root_serial=2,
+            state_identity=StorageIdentity(StorageIdentityKind.STACK, 100),
+            reference_dag=dag, state_var_stkoff=100,
+        )
+
+    assert accepted(TransitionProof("test", "exact_literal", True))
+    assert accepted(
+        TransitionProof("test", "exact_literal", True),
+        IntervalDispatcher([], compute_default=False),
+    )
+    assert not accepted(
+        TransitionProof("test", "exact_literal", True),
+        IntervalDispatcher([], default_target=4, compute_default=False),
+    )
+    assert not accepted(None)
+    assert not accepted(
+        TransitionProof("test", "exact_literal", True),
+        SimpleNamespace(resolve_target=lambda _state: 4),
+    )
+    assert not accepted(
+        TransitionProof("test", "exact_literal", True),
+        SimpleNamespace(
+            resolve_target=lambda _state: None,
+            lookup_row=lambda _state: IntervalRow(7, 8, 4),
+        ),
     )
 
 
@@ -560,6 +1205,16 @@ def test_final_guard_admits_only_source_bound_corridor_pred_split() -> None:
         state_var_stkoff=100, state_var_reg=None,
         live_in_by_serial=None, storage_live_in_by_serial=None,
     )
+    asserted_predecessor = FlowGraph({
+        **shared_graph.blocks,
+        1: _block(1, (5,), (), 0x1100, insns=(replace(write, is_assert=True),)),
+    }, entry_serial=1, func_ea=0x1000)
+    assert not emit_module._corridor_pred_split_preserves_handler_inputs(
+        asserted_predecessor, reference, corridor, (corridor, independent_clone),
+        (transition,), state_identity=kwargs["state_identity"],
+        state_var_stkoff=100, state_var_reg=None,
+        live_in_by_serial=None, storage_live_in_by_serial=None,
+    )
     assert not emit_module._corridor_pred_split_preserves_handler_inputs(
         shared_graph, reference, corridor,
         (corridor, replace(independent_clone, source_new_target=4)),
@@ -585,13 +1240,303 @@ def test_final_guard_admits_only_source_bound_corridor_pred_split() -> None:
 
 
 
-def test_cloned_constant_carrier_feeder_preserves_state_read_by_handler() -> None:
+def test_source_carrier_bypasses_only_a_dead_exact_normalizer_chain() -> None:
+    """An exact second selector epoch may precede the final semantic leaf."""
+    from d810.analyses.control_flow.minimal_state_recovery import (
+        _exact_state_normalizer_step,
+    )
+    source_write = InsnSnapshot(
+        4, 0x1100, (), kind=InsnKind.MOV,
+        l=MopSnapshot(kind=OperandKind.NUMBER, size=4, value=7),
+        d=MopSnapshot(kind=OperandKind.REGISTER, size=4, reg=8),
+        value_op_kind=ValueOpKind.MOVE,
+    )
+    normalizer_write = replace(
+        source_write, ea=0x1200,
+        l=MopSnapshot(kind=OperandKind.NUMBER, size=4, value=8),
+    )
+    feeder_write = InsnSnapshot(
+        4, 0x1300, (), kind=InsnKind.MOV,
+        l=MopSnapshot(kind=OperandKind.REGISTER, size=4, reg=8),
+        d=MopSnapshot(kind=OperandKind.STACK, size=4, stkoff=100),
+        value_op_kind=ValueOpKind.MOVE,
+    )
+    blocks = {
+        1: _block(1, (3,), (), 0x1100, insns=(source_write,)),
+        2: _block(2, (3,), (4,), 0x1200, insns=(normalizer_write,)),
+        3: _block(3, (4,), (1, 2), 0x1300, insns=(feeder_write,)),
+        4: _block(4, (2, 5), (3,), 0x1400),
+        5: _block(5, (17, 18), (4,), 0x1500),
+        17: _block(17, (), (5,), 0x1700),
+        18: _block(18, (), (5,), 0x1800),
+    }
+    graph = FlowGraph(blocks, entry_serial=1, func_ea=0x1000)
+    dag = DecisionDag(32, {
+        4: RouteComparison(4, "jz", 7, 2, 5),
+        5: RouteComparison(5, "jz", 8, 17, 18),
+    }, root=4)
+    dispatcher = IntervalDispatcher([
+        IntervalRow(7, 8, 2), IntervalRow(8, 9, 17),
+    ], compute_default=False)
+    transition = StateWriteTransition(
+        1, 7, 17, False, None, via_block=3,
+        proof=TransitionProof("test", "source_carrier_decision_dag_reconciled", True),
+    )
+    modification = RedirectGoto(1, 3, 17)
+
+    step = _exact_state_normalizer_step(
+        graph, dag, 2,
+        expected_state_identities=frozenset({
+            StorageIdentity(StorageIdentityKind.STACK, 100),
+        }),
+    )
+    assert step.valid and step.state == 8 and step.feeder_serial == 3
+
+    def accepted(candidate: FlowGraph) -> bool:
+        return emit_module._source_bound_carrier_leaf_delivery(
+            candidate, dispatcher, dag, modification, (transition,),
+            state_identity=StorageIdentity(StorageIdentityKind.STACK, 100),
+            entry_state=None, entry_target=None,
+            state_var_stkoff=100, state_var_reg=None,
+            live_in_by_serial=None,
+            storage_live_in_by_serial=emit_module._storage_live_in_bytes(candidate),
+        )
+
+    assert dag.route(7) == 2
+    assert emit_module._exact_dead_normalizer_handoff(
+        graph, dispatcher, dag, first_leaf=2, final_leaf=17,
+        feeder_serial=3, state_var_stkoff=100, state_var_reg=None,
+        live_in_by_serial=None, storage_live_in_by_serial=None,
+    )
+    from d810.analyses.control_flow.state_carrier import prove_exact_u32_carrier_state_write
+    witness = prove_exact_u32_carrier_state_write(
+        graph, 1, 3, state_var_stkoff=100, state_var_reg=None,
+        required_comparison_serials=frozenset({4}),
+    )
+    assert witness is not None and not witness.requires_feeder_clone
+    assert (
+        witness.state, witness.source_serial, witness.feeder_serial,
+        witness.comparison_entry_serial, witness.state_identity,
+    ) == (
+        7, 1, 3, 4, StorageIdentity(StorageIdentityKind.STACK, 100),
+    )
+    assert emit_module._skipped_prefix_preserves_handler_live_ins(
+        graph, dag, old_target=4, leaf_serial=17,
+        state_var_stkoff=100, state_var_reg=None,
+    )
+    assert accepted(graph)
+    assertion_then_read = FlowGraph({
+        **blocks,
+        17: _block(17, (), (5,), 0x1700, insns=(
+            InsnSnapshot(
+                4, 0x1700, (), kind=InsnKind.MOV, is_assert=True,
+                l=MopSnapshot(kind=OperandKind.NUMBER, size=4, value=8),
+                d=MopSnapshot(kind=OperandKind.STACK, size=4, stkoff=100),
+            ),
+            InsnSnapshot(
+                4, 0x1704, (), kind=InsnKind.MOV,
+                l=MopSnapshot(kind=OperandKind.STACK, size=4, stkoff=100),
+                d=MopSnapshot(kind=OperandKind.REGISTER, size=4, reg=20),
+            ),
+        )),
+    }, entry_serial=1, func_ea=0x1000)
+    assert not accepted(assertion_then_read)
+    leaf_read = InsnSnapshot(
+        4, 0x1700, (), kind=InsnKind.MOV,
+        l=MopSnapshot(kind=OperandKind.REGISTER, size=4, reg=8),
+        d=MopSnapshot(kind=OperandKind.REGISTER, size=4, reg=20),
+    )
+    assert not accepted(FlowGraph(
+        {**blocks, 17: _block(17, (), (5,), 0x1700, insns=(leaf_read,))},
+        entry_serial=1, func_ea=0x1000,
+    ))
+    leaf_call = InsnSnapshot(0x28, 0x1700, (), kind=InsnKind.CALL)
+    unknown_stack_graph = FlowGraph(
+        {**blocks, 17: _block(17, (), (5,), 0x1700, insns=(leaf_call,))},
+        entry_serial=1, func_ea=0x1000,
+    )
+    assert not accepted(unknown_stack_graph)
+    (promoted,) = emit_module._preserve_live_state_carrier_feeders(
+        unknown_stack_graph, dag, (transition,),
+        state_var_stkoff=100, state_var_reg=None,
+    )
+    assert not promoted.preserve_via_block
+    # Even a stale or incorrectly promoted transition cannot bypass the
+    # final delivery gate when the second state write remains observable.
+    forced = replace(transition, preserve_via_block=True)
+    split = EdgeRedirectViaPredSplit(3, 4, 17, 1, clone_until=3)
+    assert not emit_module._corridor_pred_split_preserves_handler_inputs(
+        unknown_stack_graph, dag, split, (split,), (forced,),
+        state_identity=StorageIdentity(StorageIdentityKind.STACK, 100),
+        state_var_stkoff=100, state_var_reg=None,
+        live_in_by_serial=None,
+        storage_live_in_by_serial=emit_module._storage_live_in_bytes(
+            unknown_stack_graph,
+        ),
+    )
+    state_read = InsnSnapshot(
+        4, 0x1700, (), kind=InsnKind.MOV,
+        l=MopSnapshot(kind=OperandKind.STACK, size=4, stkoff=100),
+        d=MopSnapshot(kind=OperandKind.REGISTER, size=4, reg=20),
+    )
+    state_read_graph = FlowGraph(
+        {**blocks, 17: _block(17, (), (5,), 0x1700, insns=(state_read,))},
+        entry_serial=1, func_ea=0x1000,
+    )
+    assert not emit_module._corridor_pred_split_preserves_handler_inputs(
+        state_read_graph, dag, split, (split,), (forced,),
+        state_identity=StorageIdentity(StorageIdentityKind.STACK, 100),
+        state_var_stkoff=100, state_var_reg=None,
+        live_in_by_serial=None,
+        storage_live_in_by_serial=emit_module._storage_live_in_bytes(
+            state_read_graph,
+        ),
+    )
+
+
+def test_live_second_selector_write_stops_normalizer_chaining() -> None:
+    source_write = InsnSnapshot(
+        4, 0x1100, (), kind=InsnKind.MOV,
+        l=MopSnapshot(kind=OperandKind.NUMBER, size=4, value=7),
+        d=MopSnapshot(kind=OperandKind.REGISTER, size=4, reg=8),
+        value_op_kind=ValueOpKind.MOVE,
+    )
+    normalizer_write = replace(
+        source_write, ea=0x1200,
+        l=MopSnapshot(kind=OperandKind.NUMBER, size=4, value=8),
+    )
+    feeder_write = InsnSnapshot(
+        4, 0x1300, (), kind=InsnKind.MOV,
+        l=MopSnapshot(kind=OperandKind.REGISTER, size=4, reg=8),
+        d=MopSnapshot(kind=OperandKind.STACK, size=4, stkoff=100),
+        value_op_kind=ValueOpKind.MOVE,
+    )
+    blocks = {
+        1: _block(1, (3,), (), 0x1100, insns=(source_write,)),
+        2: _block(2, (3,), (4,), 0x1200, insns=(normalizer_write,)),
+        3: _block(3, (4,), (1, 2), 0x1300, insns=(feeder_write,)),
+        4: _block(4, (2, 5), (3,), 0x1400),
+        5: _block(5, (17, 18), (4,), 0x1500),
+        17: _block(17, (), (5,), 0x1700),
+        18: _block(18, (), (5,), 0x1800),
+    }
+    dag = DecisionDag(32, {
+        4: RouteComparison(4, "jz", 7, 2, 5),
+        5: RouteComparison(5, "jz", 8, 17, 18),
+    }, root=4)
+    first = StateWriteTransition(1, 7, 2, False, None, via_block=3)
+    second = StateWriteTransition(2, 8, 17, False, None, via_block=3)
+    dead_graph = FlowGraph(blocks, entry_serial=1, func_ea=0x1000)
+    call_graph = FlowGraph({
+        **blocks,
+        17: _block(17, (), (5,), 0x1700, insns=(
+            InsnSnapshot(0x28, 0x1700, (), kind=InsnKind.CALL),
+        )),
+    }, entry_serial=1, func_ea=0x1000)
+
+    def live_sources(
+        graph: FlowGraph, transitions: tuple[StateWriteTransition, ...],
+    ) -> frozenset[int]:
+        return emit_module._live_state_normalizer_sources(
+            graph, dag, transitions,
+            state_var_stkoff=100, state_var_reg=None,
+        )
+
+    assert live_sources(dead_graph, (first, second)) == frozenset()
+    assert live_sources(call_graph, (first, second)) == frozenset({2})
+    # Region recovery may see the normalizer's carrier write before it has
+    # recovered the feeder's state value. The exact current graph still
+    # establishes that this is a second selector epoch.
+    unresolved_second = replace(second, next_state=None, target_handler=None)
+    assert live_sources(call_graph, (first, unresolved_second)) == frozenset({2})
+    assert live_sources(call_graph, (first, replace(unresolved_second, via_block=None))) == frozenset()
+    assert live_sources(call_graph, (first, replace(second, next_state=9))) == frozenset()
+    weak_first = replace(
+        first, next_state=6, target_handler=1, via_block=None,
+        proof=TransitionProof(
+            "region_partitioned_fixpoint", "region_seeded", True,
+            route_source_kinds=("interval",),
+        ),
+    )
+    assert emit_module._is_weak_region_seeded_interval_state(
+        weak_first, call_graph, state_var_stkoff=100, state_var_reg=None,
+    )
+    from d810.analyses.control_flow.state_carrier import prove_exact_u32_carrier_state_write
+    assert prove_exact_u32_carrier_state_write(
+        call_graph, 1, 3, state_var_stkoff=100, state_var_reg=None,
+        required_comparison_serials=frozenset({4}),
+    ) is not None
+    assert live_sources(call_graph, (weak_first, unresolved_second, second)) == frozenset({2})
+    strong_conflict = replace(
+        weak_first,
+        proof=TransitionProof("native_bound_transition_route", "exact", True),
+    )
+    assert live_sources(call_graph, (strong_conflict, second)) == frozenset()
+    assert live_sources(call_graph, (first,)) == frozenset()
+
+
+def test_entry_carrier_clone_preserves_state_for_unknown_handler_read() -> None:
+    """The initial edge can clone its exact state MOVE instead of dropping it."""
+    source_write = InsnSnapshot(
+        4, 0x1100, (), kind=InsnKind.MOV,
+        l=MopSnapshot(kind=OperandKind.NUMBER, size=4, value=7),
+        d=MopSnapshot(kind=OperandKind.REGISTER, size=4, reg=8),
+        value_op_kind=ValueOpKind.MOVE,
+    )
+    feeder_write = InsnSnapshot(
+        4, 0x1300, (), kind=InsnKind.MOV,
+        l=MopSnapshot(kind=OperandKind.REGISTER, size=4, reg=8),
+        d=MopSnapshot(kind=OperandKind.STACK, size=4, stkoff=100),
+        value_op_kind=ValueOpKind.MOVE,
+    )
+    graph = FlowGraph({
+        1: _block(1, (3,), (), 0x1100, insns=(source_write,)),
+        3: _block(3, (4,), (1,), 0x1300, insns=(feeder_write,)),
+        4: _block(4, (10, 11), (3,), 0x1400),
+        10: _block(10, (), (4,), 0x1A00, insns=(
+            InsnSnapshot(0x28, 0x1A00, (), kind=InsnKind.CALL),
+        )),
+        11: _block(11, (), (4,), 0x1B00),
+    }, entry_serial=1, func_ea=0x1000)
+    dag = DecisionDag(32, {
+        4: RouteComparison(4, "jz", 7, 10, 11),
+    }, root=4)
+    split = EdgeRedirectViaPredSplit(3, 4, 10, 1, clone_until=3)
+    kwargs = dict(
+        state_identity=StorageIdentity(StorageIdentityKind.STACK, 100),
+        state_var_stkoff=100, state_var_reg=None,
+        live_in_by_serial=None,
+        storage_live_in_by_serial=emit_module._storage_live_in_bytes(graph),
+    )
+    assert emit_module._corridor_pred_split_preserves_handler_inputs(
+        graph, dag, split, (split,), (), entry_state=7, entry_target=10,
+        **kwargs,
+    )
+    assert emit_module._clone_live_entry_state_carrier_feeder(
+        graph, [RedirectGoto(1, 3, 10)], (), dag,
+        dispatcher_entry_serial=3, entry_state=7,
+        state_var_stkoff=100, state_var_reg=None,
+    ) == [split]
+    assert not emit_module._corridor_pred_split_preserves_handler_inputs(
+        graph, dag, split, (split,), (), entry_state=8, entry_target=10,
+        **kwargs,
+    )
+    assert not emit_module._corridor_pred_split_preserves_handler_inputs(
+        graph, dag, split, (split,), (), entry_state=7, entry_target=11,
+        **kwargs,
+    )
+
+
+@pytest.mark.parametrize("source_width", [4, 8])
+def test_cloned_constant_carrier_feeder_preserves_state_read_by_handler(
+    source_width: int,
+) -> None:
     """A source-local clone must execute the exact state MOVE before the leaf."""
 
     source_write = InsnSnapshot(
         opcode=4, ea=0x1100, operands=(), kind=InsnKind.MOV,
-        l=MopSnapshot(kind=OperandKind.NUMBER, size=4, value=7),
-        d=MopSnapshot(kind=OperandKind.REGISTER, size=4, reg=8),
+        l=MopSnapshot(kind=OperandKind.NUMBER, size=source_width, value=7),
+        d=MopSnapshot(kind=OperandKind.REGISTER, size=source_width, reg=8),
     )
     feeder_write = InsnSnapshot(
         opcode=4, ea=0x1500, operands=(), kind=InsnKind.MOV,
@@ -724,13 +1669,17 @@ def test_cloned_constant_carrier_feeder_preserves_state_read_by_handler() -> Non
 
 
 @pytest.mark.parametrize(
-    ("operation", "second_value"),
-    ((ValueOpKind.SUB, 10), (ValueOpKind.XOR, 4)),
+    ("operation", "second_value", "leaf_reads_state"),
+    (
+        (ValueOpKind.SUB, 10, True),
+        (ValueOpKind.XOR, 4, True),
+        (ValueOpKind.XOR, 4, False),
+    ),
 )
 def test_cloned_state_transform_feeder_preserves_state_read_by_handler(
-    operation: ValueOpKind, second_value: int,
+    operation: ValueOpKind, second_value: int, leaf_reads_state: bool,
 ) -> None:
-    """The same source-local rule covers a proven arithmetic state feeder."""
+    """A proven arithmetic state feeder is retained even if the leaf kills state."""
 
     source = (
         InsnSnapshot(
@@ -762,15 +1711,28 @@ def test_cloned_state_transform_feeder_preserves_state_read_by_handler(
             1: _block(1, (5,), (), 0x1100, insns=source),
             5: _block(5, (2,), (1,), 0x1500, insns=(feeder,)),
             2: _block(2, (3, 4), (5,), 0x1200),
-            3: _block(3, (), (2,), 0x1300, insns=(read,)),
+            3: _block(3, (), (2,), 0x1300, insns=(read,) if leaf_reads_state else ()),
             4: _block(4, (), (2,), 0x1400),
         },
         entry_serial=1, func_ea=0x1000,
     )
     reference = DecisionDag(32, {2: RouteComparison(2, "jz", 7, 3, 4)}, root=2)
+    transform_witness = emit_module.prove_exact_u32_state_transform_feeder(
+        graph, 1, 5, state_var_stkoff=100, state_var_reg=None,
+        required_comparison_serials=frozenset({2}), expected_state=7,
+    )
+    assert transform_witness is not None
+    transform_fact = emit_module.SemanticRouteFact(
+        kind=emit_module.SemanticRouteFactKind.STATE_TRANSFORM,
+        owner_serial=1, source_serial=1, source_instruction_ea=transform_witness.source_ea,
+        state_constant=7, target_serial=3,
+        owner_anchor_ea=0x1100, target_anchor_ea=0x1300,
+        path_serials=(1,), path_edges=(), transform_witness=transform_witness,
+    )
     unpromoted = StateWriteTransition(
         1, 7, 3, False, None, via_block=5,
         proof=TransitionProof("test", "state_transform_feeder_decision_dag_reconciled", True),
+        semantic_route_fact=transform_fact,
     )
     (promoted,) = emit_module._preserve_live_state_carrier_feeders(
         graph, reference, (unpromoted,), state_var_stkoff=100, state_var_reg=None,

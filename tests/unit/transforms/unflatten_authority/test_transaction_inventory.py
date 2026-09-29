@@ -1631,6 +1631,18 @@ def test_observed_relocated_stop_tail_receipt_mints_only_exact_corridor_case() -
     assert normalized_owner.successor_serials == (6,)
     assert case.observed_graph.blocks[6].preds == (3,)
 
+    assert transaction_api._reconcile_relocated_stop_tail_origin(
+        receipt=receipts[0], recorded_tail=case.function_ea,
+        observed_patch_binding=case.observed_patch_binding,
+        owner_ref=case.owner_ref, observed_owner_serial=3,
+    ) == case.function_ea
+    with pytest.raises(ValueError, match="overlaps another synthetic tail"):
+        transaction_api._reconcile_relocated_stop_tail_origin(
+            receipt=receipts[0], recorded_tail=case.function_ea + 1,
+            observed_patch_binding=case.observed_patch_binding,
+            owner_ref=case.owner_ref, observed_owner_serial=3,
+        )
+
     foreign_equal_binding = replace(case.observed_patch_binding)
     assert foreign_equal_binding == case.observed_patch_binding
     assert foreign_equal_binding is not case.observed_patch_binding
@@ -1676,6 +1688,40 @@ def test_observed_relocated_stop_tail_receipt_accepts_ordered_multi_corridor_hel
     )
 
     assert len(receipts) == 1
+
+
+def test_observed_relocated_stop_tail_receipt_preserves_one_owner_among_stop_peers() -> None:
+    """Other STOP predecessors do not invalidate this exact owner occurrence."""
+    case = _relocated_stop_tail_receipt_case()
+    source_rows = (
+        case.source_rows[0],
+        replace(case.source_rows[1], predecessor_serials=(3, 7)),
+    )
+    projected_rows = (
+        *case.projected_rows[:-1],
+        replace(case.projected_rows[-1], predecessor_serials=(3, 7, 8)),
+    )
+    blocks = {
+        **case.blocks,
+        6: replace(case.blocks[6], preds=(3, 7, 8)),
+    }
+    kwargs = dict(
+        blocks=blocks,
+        plan=case.plan,
+        source_rows=source_rows,
+        projected_rows=projected_rows,
+        observed_patch_binding=case.observed_patch_binding,
+        planned_serials=case.planned_serials,
+        function_ea=case.function_ea,
+    )
+    receipts = transaction_api._mint_observed_relocated_stop_tail_receipts(**kwargs)
+    assert len(receipts) == 1
+    assert receipts[0].owner_ref == case.owner_ref
+    assert transaction_api._mint_observed_relocated_stop_tail_receipts(
+        **{**kwargs, "source_rows": (
+            source_rows[0], replace(source_rows[1], predecessor_serials=(7,))
+        )}
+    ) == ()
 
 
 def test_observed_relocated_stop_tail_receipt_rejects_rebound_projected_stop() -> None:

@@ -1093,7 +1093,9 @@ DAC_MASM_CASES = [
             "*a1 =",
             "a1[1] =",
         ],
-        deobfuscated_not_contains=["0x37E2E8EF", "while ( 1 )"],
+        # The output still has a real three-word record-iteration loop.  Ban
+        # the dispatcher state and impossible RFLAGS arm, not every loop.
+        deobfuscated_not_contains=["0x37E2E8EF", "0x7BD1407885BAC00"],
         must_change=True,
         required_rules=[],
         expected_rules=["ConstantSubtreeFoldRule"],

@@ -23,6 +23,7 @@ from d810.transforms.plan import (
     PatchRedirectGoto,
     PatchScalarizeLocalAliasAccess,
 )
+from d810.transforms.edit_simulator import _project_lower_conditional_instructions
 from d810.analyses.control_flow.semantic_route_evidence import (
     CanonicalRouteMaterialization,
     CanonicalSemanticEvidence,
@@ -398,8 +399,8 @@ def _mint_observed_relocated_stop_tail_receipts(
         or projected_stop.instruction_observations
         or source_stop.successor_serials
         or projected_stop.successor_serials
-        or source_stop.predecessor_serials != (source_owner.serial,)
-        or projected_stop.predecessor_serials != (projected_owner.serial,)
+        or source_owner.serial not in source_stop.predecessor_serials
+        or projected_owner.serial not in projected_stop.predecessor_serials
         or len(source_owner.instruction_observations)
         != len(projected_owner.instruction_observations)
         or any(
@@ -502,7 +503,7 @@ def _mint_observed_relocated_stop_tail_receipts(
             observed_stop is None
             or not _is_exact_structural_stop(observed_stop)
             or observed_stop.serial != source_stop_serial + len(expected_helpers)
-            or observed_stop.preds != (observed_owner.serial,)
+            or observed_owner.serial not in observed_stop.preds
         ):
             continue
         candidate_rows.append(
@@ -566,6 +567,26 @@ def _consume_observed_relocated_stop_tail_receipt(
             "relocated STOP receipt differs from observed owner occurrence"
         )
     return receipt.synthetic_tail_origin
+
+
+def _reconcile_relocated_stop_tail_origin(
+    *,
+    receipt: _ObservedRelocatedStopTailReceipt,
+    recorded_tail: int | None,
+    observed_patch_binding: ObservedPatchBinding,
+    owner_ref: object,
+    observed_owner_serial: int,
+) -> int:
+    """Coalesce only two exact witnesses of the same synthetic tail."""
+    origin = _consume_observed_relocated_stop_tail_receipt(
+        receipt,
+        observed_patch_binding=observed_patch_binding,
+        owner_ref=owner_ref,
+        observed_owner_serial=observed_owner_serial,
+    )
+    if recorded_tail is not None and recorded_tail != origin:
+        raise ValueError("relocated STOP receipt overlaps another synthetic tail")
+    return origin
 
 
 def _normalize_observed_relocated_stop_tail_origin(
@@ -1977,6 +1998,7 @@ def _resolve_candidate_identities(
     phase: model.UnflattenAuthorityPhase = model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
     projected_reference_inventory: model.SemanticGraphInventory | None = None,
     source_inventory: model.SemanticGraphInventory | None = None,
+    source_graph: FlowGraph | None = None,
     observed_patch_binding: ObservedPatchBinding | None = None,
 ) -> _CandidateIdentityResolution:
     result: dict[object, int] = {}
@@ -2101,16 +2123,93 @@ def _resolve_candidate_identities(
                         explicit_native_start
                     )
                 )
+                retained_source_subset = False
                 if (
-                    projected_origins == witness.native_instruction_eas
+                    type(sealed_ref) is NativeBlockRef
+                    and source_graph is not None
+                    and plan is not None
+                    and model._phase_native_origin_subset_preserves_anchor(
+                        sealed_ref,
+                        witness.anchor_ea,
+                        projected_origins,
+                        witness.native_instruction_eas,
+                    )
+                ):
+                    source_serial = dict(plan.source_coordinates).get(sealed_ref)
+                    source_block = (
+                        None if source_serial is None
+                        else source_graph.get_block(source_serial)
+                    )
+                    if (
+                        source_block is not None
+                        and producer_api.native_instruction_origins(source_block)
+                        == witness.native_instruction_eas
+                    ):
+                        source_instructions = iter(source_block.insn_snapshots)
+                        retained_source_subset = all(
+                            any(source_insn == projected_insn
+                                for source_insn in source_instructions)
+                            for projected_insn in block.insn_snapshots
+                        )
+                if (
+                    (
+                        projected_origins == witness.native_instruction_eas
+                        or retained_source_subset
+                    )
                     and native_start_compatible
                 ):
-                    # The sealed coordinate identifies this retained source
-                    # occurrence even when a projected graph uses a synthetic
-                    # start EA. Require its complete native-origin inventory;
-                    # observed post-apply blocks rebind independently below.
+                    # Source-origin loss needs an exact retained instruction
+                    # subsequence; matching EAs alone cannot certify payloads.
+                    # Observed post-apply blocks rebind independently below.
                     result[sealed_ref] = int(block.serial)
                     continue
+                if (
+                    native_start_compatible
+                    and source_graph is not None
+                    and type(sealed_ref) is NativeBlockRef
+                ):
+                    source_block = source_graph.get_block(int(block.serial))
+                    lowering_steps = tuple(
+                        step for step in plan.steps
+                        if type(step) is PatchLowerConditionalStateTransition
+                        and step.source_serial == sealed_ref
+                    )
+                    if source_block is not None and len(lowering_steps) == 1:
+                        step = lowering_steps[0]
+                        coordinates = dict(plan.source_coordinates)
+                        arm_serials = (
+                            coordinates.get(step.false_target_serial),
+                            coordinates.get(step.true_target_serial),
+                        )
+                        try:
+                            expected = _project_lower_conditional_instructions(
+                                source_block, plan,
+                            )
+                            source_origins = producer_api.native_instruction_origins(
+                                source_block,
+                            )
+                        except (TypeError, ValueError):
+                            pass
+                        else:
+                            if (
+                                source_origins == witness.native_instruction_eas
+                                and expected != source_block.insn_snapshots
+                                and tuple(block.insn_snapshots) == expected
+                                and projected_origins == tuple(sorted({
+                                    int(insn.ea) for insn in expected
+                                    if insn.ea is not None
+                                }))
+                                and block.kind is BlockKind.TWO_WAY
+                                and block.tail_kind is InsnKind.COND_JUMP
+                                and len(block.succs) == 2
+                                and set(block.succs) == set(arm_serials)
+                                and len(set(arm_serials)) == 2
+                            ):
+                                # Only the exact, typed suffix replacement
+                                # retains its source occurrence. A different
+                                # edited body still has to rebind normally.
+                                result[sealed_ref] = int(block.serial)
+                                continue
                 if type(sealed_ref) is LogicalBlockRef:
                     raise ValueError(
                         "projected logical source occurrence changed native origins"
@@ -2446,6 +2545,16 @@ def _resolve_candidate_identities(
                 phase=phase,
                 function_ea=graph.func_ea,
             )
+            if tail_origin is None and projected_reference_inventory is not None:
+                projected_rows = tuple(
+                    row for row in projected_reference_inventory.blocks
+                    if row.block_ref == ref
+                )
+                if len(projected_rows) == 1:
+                    tail_origin = _observed_unmodified_native_tail_origin(
+                        block_values[serial], owner_ref=ref, plan=plan,
+                        projected=projected_rows[0], function_ea=graph.func_ea,
+                    )
             if tail_origin is not None:
                 synthetic_tail_origin_by_serial[serial] = tail_origin
         if projected_reference_inventory is not None:
@@ -2496,6 +2605,7 @@ def _projected_serials(
     phase: model.UnflattenAuthorityPhase = model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
     projected_reference_inventory: model.SemanticGraphInventory | None = None,
     source_inventory: model.SemanticGraphInventory | None = None,
+    source_graph: FlowGraph | None = None,
     observed_patch_binding: ObservedPatchBinding | None = None,
 ) -> dict[object, int]:
     """Compatibility view over the closed candidate-identity resolution."""
@@ -2509,6 +2619,7 @@ def _projected_serials(
             phase=phase,
             projected_reference_inventory=projected_reference_inventory,
             source_inventory=source_inventory,
+            source_graph=source_graph,
             observed_patch_binding=observed_patch_binding,
         ).serial_bindings
     )
@@ -3095,6 +3206,50 @@ def _observed_native_identity_origins(
         )
         return None
     return tail_origin
+
+
+def _observed_unmodified_native_tail_origin(
+    block: BlockSnapshot,
+    *,
+    owner_ref: NativeBlockRef,
+    plan: PatchPlan,
+    projected: model.InventoryBlockObservation,
+    function_ea: int,
+) -> int | None:
+    """Recognize one backend GOTO appended to an otherwise unchanged owner.
+
+    A corridor edit can make Hex-Rays materialize a fallthrough GOTO in an
+    adjacent native block that is not itself a patch owner.  The function-entry
+    EA on that new tail is an allocation coordinate, not this block's origin.
+    Admit it only when the entire pre-tail body and successor equal the sealed
+    projected row; ordinary native-origin validation still checks the body.
+    """
+    if (
+        type(owner_ref) is not NativeBlockRef
+        or type(projected) is not model.InventoryBlockObservation
+        or projected.block_ref != owner_ref
+        or projected.block_kind is not block.kind
+        or tuple(projected.successor_serials) != tuple(block.succs)
+        or len(block.succs) != 1
+        or len(block.insn_snapshots) != len(projected.instruction_observations) + 1
+        or function_ea in owner_ref.identity.exact_instruction_eas
+        or any(
+            owner_ref in descriptor.owner_refs
+            for descriptor in canonical_patch_step_descriptors(plan)
+        )
+        or not _is_exact_unconditional_goto_to(block, block.succs[0])
+    ):
+        return None
+    tail = block.insn_snapshots[-1]
+    tail_origin = tail.native_ea if type(tail.native_ea) is int else tail.ea
+    if tail_origin != function_ea:
+        return None
+    body = replace(block, insn_snapshots=block.insn_snapshots[:-1])
+    if producer_api._inventory_instruction_rows(body) != projected.instruction_observations:
+        return None
+    if producer_api.native_instruction_origins(body) != projected.native_instruction_eas:
+        return None
+    return function_ea
 
 
 def _bound_plan_helper_anchor_from_exact_origins(
@@ -3743,6 +3898,7 @@ def _build_semantic_graph_inventory(
             phase=phase,
             projected_reference_inventory=projected_reference_inventory,
             source_inventory=source_inventory,
+            source_graph=source_graph,
             observed_patch_binding=observed_patch_binding,
         )
         serial_by_ref = dict(candidate_identity_resolution.serial_bindings)
@@ -3877,12 +4033,9 @@ def _build_semantic_graph_inventory(
             None,
         )
         if relocated_stop_tail_receipt is not None:
-            if recorded_tail is not None:
-                raise ValueError(
-                    "relocated STOP receipt overlaps another synthetic tail"
-                )
-            recorded_tail = _consume_observed_relocated_stop_tail_receipt(
-                relocated_stop_tail_receipt,
+            recorded_tail = _reconcile_relocated_stop_tail_origin(
+                receipt=relocated_stop_tail_receipt,
+                recorded_tail=recorded_tail,
                 observed_patch_binding=observed_patch_binding,
                 owner_ref=owner_ref,
                 observed_owner_serial=serial,

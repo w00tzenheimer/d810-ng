@@ -161,7 +161,7 @@ JUMP_FIXER_RULE_SPECS: tuple[RuleEditorSpec, ...] = (
     _jump_rule(
         "JmpRuleFlagsOpaquePredicate",
         "Flags-register opaque predicate",
-        "Resolve jz/jnz predicates that compare a full EFLAGS/RFLAGS read with zero.",
+        "Resolve jz/jnz predicates that compare a full EFLAGS/RFLAGS read with a literal whose bit 1 is clear.",
         family_id="opaque-predicates",
         family_label="Opaque predicates",
         subfamily_id="flags-register",

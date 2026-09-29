@@ -74,15 +74,25 @@ class TestNativeBoundTransitionRoutes:
             for batch in planned_receipt_batches
             for receipt in batch
         )
-        assert len(planned_receipts) == 3, (
-            "expected exactly three typed native-bound receipts in emitted plans, got: "
+        assert len(planned_receipts) == 4, (
+            "expected four typed native-bound receipts in emitted plans, got: "
             f"{planned_receipts}"
         )
-        assert len(receipt_messages) == 3, (
-            "expected exactly three native-bound receipt calls, got: "
+        by_state = {receipt.state: receipt for receipt in planned_receipts}
+        assert len(by_state) == 4
+        # The first selector epoch reaches the pure normalizer. Its separate
+        # second epoch must remain explicit because the eventual call can
+        # observe the newly written state slot.
+        assert (
+            by_state[0x1BABC1DC].target_block
+            == by_state[0x1939CB36].current_block
+        )
+        assert by_state[0x1BABC1DC].operation_key[0] == "block_goto_change"
+        assert len(receipt_messages) == 4, (
+            "expected four native-bound receipt calls, got: "
             f"{receipt_messages}"
         )
-        assert len(set(receipt_messages)) == 3, (
+        assert len(set(receipt_messages)) == 4, (
             "duplicate native-bound receipt call: "
             f"{receipt_messages}"
         )
@@ -100,5 +110,6 @@ class TestNativeBoundTransitionRoutes:
         assert identities == {
             (0x16AA65E9, "interval_dispatcher_row"),
             (0x1939CB36, "interval_dispatcher_row"),
+            (0x1BABC1DC, "state_dispatcher_map_exact_row"),
             (0x079323F9, "state_dispatcher_map_exact_row"),
         }

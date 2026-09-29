@@ -870,6 +870,42 @@ def test_recorded_cobra_wheel_replaces_the_in_container_source_build(
     assert not (tmp_path / ".tmp" / "cobra-linux").exists()
 
 
+def test_ci_overlay_accepts_only_an_explicit_hash_verified_wheel(
+    tmp_path: Path,
+) -> None:
+    """The newer CI wheel must not change the image's baked identity."""
+    wheel = tmp_path / "d810_cobra-0.1.7-cp313-cp313-manylinux_2_28_aarch64.whl"
+    wheel.write_bytes(b"recorded CI wheel fixture")
+    sha = hashlib.sha256(wheel.read_bytes()).hexdigest()
+    overlay = tmp_path / "ci_overlay_identity"
+    overlay.write_text(
+        f"aarch64 {sha} 0.1.7 {'a' * 40} {'b' * 40} {'a' * 40} {wheel.name}\n",
+        encoding="utf-8",
+    )
+    env = {
+        "D810_COBRA_WHEEL": str(wheel),
+        "D810_COBRA_WHEEL_SHA256": sha,
+        "D810_COBRA_CI_OVERLAY_IDENTITY": str(overlay),
+    }
+    result, calls = _run(tmp_path, "exec", "--", "true", extra_env=env)
+    assert result.returncode == 0, result.stderr
+    assert 'importlib.metadata.version("d810-cobra") == "0.1.7"' in _container_run(calls)
+    assert "extension: d810-cobra (wheel" in result.stdout
+    assert "baked" not in result.stdout
+    assert not any("D810_COBRA_CI_OVERLAY_IDENTITY" in call for call in calls)
+
+    overlay.write_text(
+        f"aarch64 {sha} 0.1.7 {'a' * 40} {'b' * 40} {'a' * 40} {wheel.name} extra\n",
+        encoding="utf-8",
+    )
+    invalid_root = tmp_path / "invalid"
+    invalid_root.mkdir()
+    invalid, invalid_calls = _run(invalid_root, "exec", "--", "true", extra_env=env)
+    assert invalid.returncode != 0
+    assert invalid_calls == []
+    assert "malformed CoBRA CI overlay row" in invalid.stderr
+
+
 def test_recorded_cobra_wheel_reports_its_verified_provenance(
     tmp_path: Path,
 ) -> None:

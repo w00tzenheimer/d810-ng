@@ -24,6 +24,16 @@ class Transition:
 
 
 @dataclass(frozen=True, slots=True)
+class RouteHandoff:
+    """One explicitly referenced, claimed two-leg route in native coordinates."""
+
+    source_partition: str
+    intermediate_rva: int
+    next_partition: str
+    final_target_rvas: tuple[int, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class Effect:
     order: int
     kind: str
@@ -51,6 +61,7 @@ class FixtureReference:
     exits: tuple[Exit, ...]
     assumptions: tuple[str, ...] = ()
     unresolved: tuple[str, ...] = ()
+    handoffs: tuple[RouteHandoff, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,6 +76,7 @@ class RecoveredSemantics:
     unresolved: tuple[str, ...] = ()
     raw_computed_dispatcher_jump: bool = False
     pseudocode: str = ""
+    handoffs: tuple[RouteHandoff, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,10 +90,11 @@ class SemanticDiff:
     key: str
     expected: object
     observed: object
+    certified_handoff: bool = False
 
     @property
     def matches(self) -> bool:
-        return self.expected == self.observed
+        return self.expected == self.observed or self.certified_handoff
 
 
 @dataclass(frozen=True, slots=True)
@@ -127,6 +140,89 @@ def _route_transition(
         predecessor_eas=(source_rva,),
         constraints=(f"selector_state == {state_text}",),
         target_rvas=target_rvas,
+    )
+
+
+def _claimed_route_handoffs(
+    proofs: tuple[object, ...],
+    *,
+    by_partition: dict[str, Transition],
+    function_ea: int,
+    entry_rva: int,
+) -> tuple[RouteHandoff, ...]:
+    """Project only exact, unambiguous consecutive claimed carrier routes.
+
+    This is a test-only comparison witness. It does not turn an arbitrary
+    shared EA into a semantic handoff or claim that an intermediate write may
+    be elided. A fixture must separately name every permitted handoff.
+    """
+
+    def direct_carrier(proof: object) -> bool:
+        destinations = tuple(getattr(proof, "destinations", ()))
+        carrier = getattr(proof, "state_carrier", None)
+        return bool(
+            getattr(getattr(proof, "shape", None), "value", None) == "direct"
+            and getattr(getattr(proof, "proof_kind", None), "value", None)
+            == "state_carrier"
+            and len(destinations) == 1
+            and carrier is not None
+            and getattr(carrier, "source_identity", None)
+            == getattr(proof, "source_identity", None)
+            and int(getattr(carrier, "state_constant", -1))
+            == int(getattr(destinations[0], "state_constant", -2))
+        )
+
+    eligible = tuple(proof for proof in proofs if direct_carrier(proof))
+    handoffs: set[RouteHandoff] = set()
+    for first in eligible:
+        first_destination = first.destinations[0]
+        next_proofs = tuple(
+            second
+            for second in eligible
+            if second is not first
+            and getattr(first, "atomic_group_id", None)
+            == getattr(second, "atomic_group_id", None)
+            and getattr(first_destination, "target_identity", None)
+            == getattr(second, "source_identity", None)
+            and int(first_destination.target_anchor_ea) == int(second.source_anchor_ea)
+        )
+        if len(next_proofs) != 1:
+            continue
+        second = next_proofs[0]
+        first_transition = _route_transition(
+            first,
+            function_ea=function_ea,
+            entry_rva=entry_rva,
+        )
+        second_transition = _route_transition(
+            second,
+            function_ea=function_ea,
+            entry_rva=entry_rva,
+        )
+        if (
+            first_transition.partition not in by_partition
+            or second_transition.partition not in by_partition
+            or first_transition.target_rvas != second_transition.predecessor_eas
+            or first_transition.predecessor_eas == second_transition.predecessor_eas
+        ):
+            continue
+        handoffs.add(
+            RouteHandoff(
+                source_partition=first_transition.partition,
+                intermediate_rva=second_transition.predecessor_eas[0],
+                next_partition=second_transition.partition,
+                final_target_rvas=second_transition.target_rvas,
+            )
+        )
+    return tuple(
+        sorted(
+            handoffs,
+            key=lambda item: (
+                item.source_partition,
+                item.intermediate_rva,
+                item.next_partition,
+            ),
+        )
     )
 
 
@@ -191,6 +287,13 @@ def recovered_semantics_from_proposals(
         by_partition.pop(partition, None)
         unresolved.append(f"conflicting route partition {partition}")
 
+    handoffs = _claimed_route_handoffs(
+        tuple(available[proof_id] for proof_id in sorted(claimed & available.keys())),
+        by_partition=by_partition,
+        function_ea=function_ea,
+        entry_rva=entry_rva,
+    )
+
     return RecoveredSemantics(
         function=function,
         entry_rva=entry_rva,
@@ -202,6 +305,7 @@ def recovered_semantics_from_proposals(
         unresolved=tuple(sorted(set(unresolved))),
         raw_computed_dispatcher_jump=raw_computed_dispatcher_jump,
         pseudocode=pseudocode,
+        handoffs=handoffs,
     )
 
 
@@ -345,8 +449,34 @@ def evaluate_fixture_semantics(
     for partition in sorted(expected_transitions.keys() | observed_transitions.keys()):
         expected = expected_transitions.get(partition)
         observed = observed_transitions.get(partition)
+        handoff_certified = False
+        if expected is not None and observed is not None:
+            matching_handoffs = tuple(
+                handoff
+                for handoff in reference.handoffs
+                if handoff.source_partition == partition
+                and handoff in recovered.handoffs
+                and handoff.intermediate_rva != expected.predecessor_eas[0]
+                and observed.target_rvas == (handoff.intermediate_rva,)
+                and expected.target_rvas == handoff.final_target_rvas
+                and (
+                    next_transition := observed_transitions.get(handoff.next_partition)
+                )
+                is not None
+                and next_transition.predecessor_eas == (handoff.intermediate_rva,)
+                and next_transition.target_rvas == handoff.final_target_rvas
+                and (expected_next := expected_transitions.get(handoff.next_partition))
+                is not None
+                and expected_next.target_rvas == handoff.final_target_rvas
+            )
+            handoff_certified = len(matching_handoffs) == 1
         transition_diffs.append(
-            SemanticDiff(key=partition, expected=expected, observed=observed)
+            SemanticDiff(
+                key=partition,
+                expected=expected,
+                observed=observed,
+                certified_handoff=handoff_certified,
+            )
         )
         if expected is None:
             _add_blocker(
@@ -371,7 +501,7 @@ def evaluate_fixture_semantics(
                 "transition_partition_mismatch",
                 f"partition {partition!r} has different predecessor/path evidence",
             )
-        if expected.target_rvas != observed.target_rvas:
+        if expected.target_rvas != observed.target_rvas and not handoff_certified:
             _add_blocker(
                 blockers,
                 "transition_target_mismatch",
@@ -440,9 +570,7 @@ def _parse_int(value: object, *, field: str) -> int:
     raise ValueError(f"{field} must be an integer or base-prefixed string")
 
 
-def _parse_transition(
-    raw: dict[str, object], *, entry_rva: int
-) -> Transition:
+def _parse_transition(raw: dict[str, object], *, entry_rva: int) -> Transition:
     source_offset = _parse_int(raw["source_offset"], field="source_offset")
     state_constant = _parse_int(raw["state"], field="state") & 0xFFFFFFFFFFFFFFFF
     target_offsets = tuple(
@@ -457,6 +585,36 @@ def _parse_transition(
         predecessor_eas=(source_rva,),
         constraints=(f"selector_state == {state_text}",),
         target_rvas=tuple(entry_rva + offset for offset in target_offsets),
+    )
+
+
+def _parse_handoff(raw: dict[str, object], *, entry_rva: int) -> RouteHandoff:
+    final_offsets = tuple(raw["final_target_offsets"])
+    intermediate_offset = _parse_int(
+        raw["intermediate_offset"],
+        field="handoff.intermediate_offset",
+    )
+    first = _parse_transition(
+        {
+            "source_offset": raw["source_offset"],
+            "state": raw["state"],
+            "target_offsets": final_offsets,
+        },
+        entry_rva=entry_rva,
+    )
+    second = _parse_transition(
+        {
+            "source_offset": intermediate_offset,
+            "state": raw["intermediate_state"],
+            "target_offsets": final_offsets,
+        },
+        entry_rva=entry_rva,
+    )
+    return RouteHandoff(
+        source_partition=first.partition,
+        intermediate_rva=entry_rva + intermediate_offset,
+        next_partition=second.partition,
+        final_target_rvas=first.target_rvas,
     )
 
 
@@ -531,6 +689,10 @@ def load_fixture_references(
             exits=tuple(_parse_exit(dict(value)) for value in raw.get("exits", ())),
             assumptions=tuple(str(value) for value in raw.get("assumptions", ())),
             unresolved=tuple(str(value) for value in raw.get("unresolved", ())),
+            handoffs=tuple(
+                _parse_handoff(dict(value), entry_rva=entry_rva)
+                for value in raw.get("handoffs", ())
+            ),
         )
         if reference.function in references:
             raise ValueError(f"duplicate fixture reference: {reference.function}")
@@ -538,7 +700,23 @@ def load_fixture_references(
             raise ValueError(f"non-positive extent for {reference.function}")
         if len(reference.linked_sha256) != 64:
             raise ValueError(f"invalid linked SHA-256 for {reference.function}")
-        _by_partition(reference.transitions)
+        transition_by_partition = _by_partition(reference.transitions)
+        if len(set(reference.handoffs)) != len(reference.handoffs):
+            raise ValueError(f"duplicate route handoff for {reference.function}")
+        for handoff in reference.handoffs:
+            first = transition_by_partition.get(handoff.source_partition)
+            second = transition_by_partition.get(handoff.next_partition)
+            if (
+                first is None
+                or second is None
+                or first.target_rvas != handoff.final_target_rvas
+                or second.predecessor_eas != (handoff.intermediate_rva,)
+                or second.target_rvas != handoff.final_target_rvas
+                or not entry_rva
+                <= handoff.intermediate_rva
+                < entry_rva + reference.extent
+            ):
+                raise ValueError(f"invalid route handoff for {reference.function}")
         if tuple(effect.order for effect in reference.effects) != tuple(
             range(len(reference.effects))
         ):

@@ -11433,12 +11433,21 @@ class DeferredGraphModifier:
         items = []
         for item_index, modification in enumerate(modifications):
             source_serial = int(modification.block_serial)
+            # Several predecessor edges may clone the same feeder to the same
+            # destination. Identify an edge split by the predecessor it
+            # actually rewires, not by the shared feeder block.
+            operation_source_serial = (
+                int(modification.via_pred)
+                if modification.mod_type == ModificationType.EDGE_REDIRECT_VIA_PRED_SPLIT
+                and modification.via_pred is not None
+                else source_serial
+            )
             target_serial = (
                 None
                 if modification.new_target is None
                 else int(modification.new_target)
             )
-            source_identity, source_anchor = _identity_and_anchor(source_serial)
+            source_identity, source_anchor = _identity_and_anchor(operation_source_serial)
             target_identity, target_anchor = _identity_and_anchor(target_serial)
             old_target_serial = modification.old_target
             if old_target_serial is None and modification.mod_type in (
@@ -11458,7 +11467,7 @@ class DeferredGraphModifier:
                             old_target_serial = int(destination)
             operation_key = make_mba_mutation_operation_key(
                 modification.mod_type.name.lower(),
-                source_serial=source_serial,
+                source_serial=operation_source_serial,
                 old_target_serial=(
                     None
                     if old_target_serial is None
@@ -11471,7 +11480,7 @@ class DeferredGraphModifier:
                     item_index=item_index,
                     mutation_kind=modification.mod_type.name.lower(),
                     source_serial=(
-                        source_serial if source_anchor is not None else None
+                    operation_source_serial if source_anchor is not None else None
                     ),
                     source_anchor_ea=source_anchor,
                     source_identity=source_identity,
@@ -18466,6 +18475,12 @@ class DeferredGraphModifier:
                     is_0_way=False,
                     verify=False,
                 )
+                if (
+                    cloned_blk.head is not None
+                    and cloned_blk.head.opcode == ida_hexrays.m_nop
+                    and cloned_blk.head.next is not None
+                ):
+                    cloned_blk.remove_from_block(cloned_blk.head)
                 if clone_expected_serials:
                     self._bind_patch_block_creation(
                         clone_expected_serials[index], cloned_blk.serial

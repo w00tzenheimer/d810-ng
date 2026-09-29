@@ -885,6 +885,38 @@ def test_entry_carrier_adapter_mints_state_carrier_fact_from_bound_interval_leaf
     assert fact.carrier_witness.feeder_serial == 3
 
 
+def test_entry_carrier_adapter_accepts_exact_cloned_state_feeder() -> None:
+    """A predecessor-local clone preserves the entry state MOVE for the handler."""
+    state = 0x16AA65E9
+    graph, dag = _task5_carrier_fixture(initial_state=state)
+    refs = _entry_dispatcher_map_test_refs(graph)
+    dispatcher = IntervalDispatcher([IntervalRow(0, 0x100000000, 10)])
+    catalogue = minimal_unflatten_emit_module._normalized_condition_chain_handler_leaves(
+        graph, dispatcher, exact_handler_serials=frozenset({10}),
+        block_refs_by_serial=refs, source_generation=7,
+    )
+    carrier = minimal_unflatten_emit_module._PlannedEntryEndpointLiveness(
+        state, 1, 3, 10, (), False,
+    )
+    split = EdgeRedirectViaPredSplit(3, 4, 10, 1, clone_until=3)
+    kwargs = dict(
+        carrier=carrier,
+        state_identity=StorageIdentity(StorageIdentityKind.STACK, _STATE),
+        block_refs_by_serial=refs, replay_leaf_catalogue=catalogue,
+        source_generation=7, decision_dag=dag,
+    )
+    fact = minimal_unflatten_emit_module._entry_dispatcher_map_route_fact(
+        graph, dispatcher, final_modifications=(split,), **kwargs,
+    )
+    assert fact is not None
+    assert fact.kind is SemanticRouteFactKind.STATE_CARRIER
+    assert fact.carrier_witness is not None
+    assert minimal_unflatten_emit_module._entry_dispatcher_map_route_fact(
+        graph, dispatcher,
+        final_modifications=(replace(split, clone_until=4),), **kwargs,
+    ) is None
+
+
 def test_entry_carrier_adapter_rejects_catalogue_generation_and_target_ref_drift() -> None:
     """The carrier adapter cannot replay a leaf against a different binding."""
 
@@ -4479,6 +4511,33 @@ def test_seeded_native_bound_transition_retains_typed_route_fact() -> None:
     assert transition.semantic_route_fact.kind is SemanticRouteFactKind.NATIVE_BOUND
     assert transition.semantic_route_fact.source_instruction_ea == route.source_instruction_ea
     assert transition.semantic_route_fact.fact_id == "seed"
+
+
+def test_native_bound_route_replaces_unresolved_recovery_placeholder() -> None:
+    """A draft with no state/target does not own the exact native route."""
+    graph = FlowGraph(
+        {
+            4: _b(4, (5,), ()),
+            5: _b(5, (), (4,)),
+            3: _b(3, (), ()),
+        },
+        4,
+        0x1000,
+    )
+    unresolved = StateWriteTransition(4, None, None, False, None)
+    route = _native_bound_route(source=4, state=0x10, target=3, fact_id="seed")
+
+    seeded = minimal_unflatten_emit_module._seed_native_bound_backedge_transitions(
+        graph, (unresolved,), (route,),
+        dispatcher_entry_serial=2,
+        dispatcher_region_serials=frozenset({2, 5}),
+    )
+
+    assert seeded is not None
+    assert len(seeded) == 2
+    assert seeded[0] is unresolved
+    assert seeded[1].semantic_route_fact is not None
+    assert seeded[1].semantic_route_fact.fact_id == "seed"
 
 
 def test_native_bound_fact_shared_by_two_owners_abstains_atomically() -> None:
@@ -8921,6 +8980,52 @@ def test_conditional_handler_redirects_unique_arm_glue_before_bst_spine(_seam) -
         if isinstance(mod, RedirectGoto)
     }
     assert gotos == {(195, 131, 221), (230, 9, 104)}
+
+
+def test_conditional_arm_does_not_redirect_a_preserved_shared_state_feeder(_seam) -> None:
+    """A predecessor-local clone must not be replaced by a global arm route."""
+    graph = FlowGraph(
+        blocks={
+            8: _b(8, (9, 131), ()),
+            9: _b(9, (8,), (230,)),
+            131: _b(131, (8,), (195,)),
+            194: _b(194, (195, 230), ()),
+            195: _b(195, (131, 196), (194,), (_mov_reg(0x1195, 0x20, 20),)),
+            196: _b(196, (), (195,)),
+            230: _b(230, (9,), (194,), (_mov_reg(0x1230, 0x10, 20),)),
+            103: _b(103, (500,), ()),
+            220: _b(220, (501,), ()),
+            500: _b(500, (8,), (103,)),
+            501: _b(501, (8,), (220,)),
+            104: _b(104, (), ()),
+            221: _b(221, (), ()),
+        },
+        entry_serial=194,
+        func_ea=0x1000,
+    )
+    handler = HandlerTransition(
+        handler=194,
+        states=(0xA0716E5B,),
+        arms=(
+            TransitionArm(0x20, 221, False, 194, 220, 220, (194, 195, 131, 220)),
+            TransitionArm(0x10, 104, False, 194, 103, 103, (194, 230, 9, 103)),
+        ),
+    )
+
+    mods, forecasts = _build_conditional_arm_redirects_with_forecasts(
+        graph,
+        _disp({0x10: 104, 0x20: 221}, exit_block=99),
+        (handler,),
+        dispatcher_entry_serial=8,
+        existing=set(),
+        protected_feeder_blocks={195},
+    )
+    assert forecasts == ()
+    assert {
+        (mod.from_serial, mod.old_target, mod.new_target)
+        for mod in mods
+        if isinstance(mod, RedirectGoto)
+    } == {(230, 9, 104)}
 
 
 @pytest.mark.parametrize("is_indirect", (False, True))

@@ -150,6 +150,7 @@ jobs:
             D810_DOCKER_IMAGE: ghcr.io/w00tzenheimer/idapro-9.4-speedups:x11
             D810_DOCKER_MEMORY: 4g
             D810_NO_CYTHON: "1"
+            D810_COBRA_CI_OVERLAY_IDENTITY: ${{ github.workspace }}/docker/cobra-bake/ci_overlay_identity
         steps:
             - name: "Checkout ${{ github.ref }} ( ${{ github.sha }} )"
               uses: actions/checkout@v4
@@ -169,8 +170,18 @@ jobs:
                   docker pull "$D810_DOCKER_IMAGE"
                   test "$(docker image inspect "$D810_DOCKER_IMAGE" --format '{{.Architecture}}')" = arm64
 
+            - name: Fetch hash-pinned CoBRA CI overlay
+              run: |
+                  read -r sha version wheel < <(awk '$1 == "aarch64" { print $2, $3, $7 }' "$D810_COBRA_CI_OVERLAY_IDENTITY")
+                  test -n "$sha" && test -n "$version" && test -n "$wheel"
+                  wheel_path="$RUNNER_TEMP/$wheel"
+                  curl --fail --location --retry 3 --output "$wheel_path" "https://github.com/w00tzenheimer/d810-CoBRA/releases/download/v$version/$wheel"
+                  printf '%s  %s\n' "$sha" "$wheel_path" | sha256sum -c -
+                  echo "D810_COBRA_WHEEL=$wheel_path" >> "$GITHUB_ENV"
+                  echo "D810_COBRA_WHEEL_SHA256=$sha" >> "$GITHUB_ENV"
+
             - name: Run system tests through the canonical harness
-              run: ./tools/scripts/run_system_tests_docker.sh system --shards 3 -- -q
+              run: ./tools/scripts/run_system_tests_docker.sh system --shards 3 --enable-diag-snapshot -- -q
 
     system-tests-speedups:
         name: "system-tests (idapro-9.4, speedups)"
@@ -180,6 +191,7 @@ jobs:
             D810_DOCKER_IMAGE: ghcr.io/w00tzenheimer/idapro-9.4-speedups:x11
             D810_DOCKER_MEMORY: 4g
             D810_NO_CYTHON: "0"
+            D810_COBRA_CI_OVERLAY_IDENTITY: ${{ github.workspace }}/docker/cobra-bake/ci_overlay_identity
         steps:
             - name: "Checkout ${{ github.ref }} ( ${{ github.sha }} )"
               uses: actions/checkout@v4
@@ -199,5 +211,15 @@ jobs:
                   docker pull "$D810_DOCKER_IMAGE"
                   test "$(docker image inspect "$D810_DOCKER_IMAGE" --format '{{.Architecture}}')" = arm64
 
+            - name: Fetch hash-pinned CoBRA CI overlay
+              run: |
+                  read -r sha version wheel < <(awk '$1 == "aarch64" { print $2, $3, $7 }' "$D810_COBRA_CI_OVERLAY_IDENTITY")
+                  test -n "$sha" && test -n "$version" && test -n "$wheel"
+                  wheel_path="$RUNNER_TEMP/$wheel"
+                  curl --fail --location --retry 3 --output "$wheel_path" "https://github.com/w00tzenheimer/d810-CoBRA/releases/download/v$version/$wheel"
+                  printf '%s  %s\n' "$sha" "$wheel_path" | sha256sum -c -
+                  echo "D810_COBRA_WHEEL=$wheel_path" >> "$GITHUB_ENV"
+                  echo "D810_COBRA_WHEEL_SHA256=$sha" >> "$GITHUB_ENV"
+
             - name: Build current speedups and run system tests through the canonical harness
-              run: ./tools/scripts/run_system_tests_docker.sh system --shards 3 -- -q
+              run: ./tools/scripts/run_system_tests_docker.sh system --shards 3 --enable-diag-snapshot -- -q

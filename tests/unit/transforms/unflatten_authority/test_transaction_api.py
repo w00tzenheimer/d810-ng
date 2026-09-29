@@ -2810,6 +2810,134 @@ def test_projected_native_source_with_synthetic_start_keeps_sealed_owner() -> No
     assert dict(cross_ref_resolution.serial_bindings) == {}
 
 
+def test_projected_native_source_retains_anchor_preserving_origin_subset() -> None:
+    """A sealed source owner survives phase-local loss of a tail origin."""
+    from d810.core.native_preanalysis_key import NativePreanalysisKey
+    from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
+    from d810.ir.flowgraph import BlockKind, BlockSnapshot, FlowGraph, InsnKind, InsnSnapshot
+    from d810.transforms.cfg_transaction import NativeBlockRef
+
+    key = NativePreanalysisKey("input", "x86", 64, 0, "f" * 64, "p" * 64, "s" * 64)
+    owner = NativeBlockRef(StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x1000, 0x1008),), native_key=key,
+        exact_instruction_eas=(0x1000, 0x1004),
+    ))
+    retained = BlockSnapshot(
+        0, 0, (), (), 0, 0x1000,
+        (InsnSnapshot(1, 0x1000, (), kind=InsnKind.CALL, raw_opcode=1),),
+        tail_opcode=1, kind=BlockKind.ZERO_WAY, tail_kind=InsnKind.CALL,
+        raw_tail_opcode=1, native_start_ea=0x1000,
+    )
+    graph = FlowGraph({0: retained, 1: replace(retained, serial=1)}, 0, 0x1000)
+    source_block = replace(
+        retained,
+        insn_snapshots=(
+            retained.insn_snapshots[0],
+            InsnSnapshot(2, 0x1004, (), kind=InsnKind.CALL, raw_opcode=2),
+        ),
+        tail_opcode=2, raw_tail_opcode=2,
+    )
+    source_graph = FlowGraph({0: source_block}, 0, 0x1000)
+    catalog = model.SourceIdentityCatalog(
+        key, 0, (model.SourceBlockIdentityWitness(owner, 0x1000, (0x1000, 0x1004)),),
+    )
+    proposal = SimpleNamespace(source_identity_catalog=catalog, claims=(), route_evidence=None)
+    plan = SimpleNamespace(source_coordinates=((owner, 0),), new_blocks=(), steps=())
+
+    resolution = transaction_api._resolve_candidate_identities(
+        graph, proposal, plan=plan, source_graph=source_graph,
+        phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+    )
+    assert dict(resolution.serial_bindings) == {owner: 0}
+
+    anchor_lost = replace(
+        retained,
+        insn_snapshots=(InsnSnapshot(2, 0x1004, (), kind=InsnKind.CALL, raw_opcode=2),),
+        tail_opcode=2, raw_tail_opcode=2,
+    )
+    rejected = transaction_api._resolve_candidate_identities(
+        FlowGraph({0: anchor_lost}, 0, 0x1000), proposal,
+        plan=plan, source_graph=source_graph,
+        phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+    )
+    assert dict(rejected.serial_bindings) == {}
+
+
+def test_projected_conditional_lowering_retains_exact_source_owner() -> None:
+    """A planned suffix replacement retains its sealed source occurrence."""
+    from d810.core.native_preanalysis_key import NativePreanalysisKey
+    from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
+    from d810.ir.flowgraph import BlockKind, BlockSnapshot, FlowGraph, InsnKind, InsnSnapshot
+    from d810.transforms.cfg_transaction import NativeBlockRef
+    from d810.transforms.edit_simulator import _project_lower_conditional_instructions
+    from d810.transforms.graph_modification import SyntheticCounterBoundCondition
+    from d810.transforms.plan import PatchLowerConditionalStateTransition
+
+    key = NativePreanalysisKey("input", "x86", 64, 0, "f" * 64, "p" * 64, "s" * 64)
+
+    def owner(ea: int, origins: tuple[int, ...]) -> NativeBlockRef:
+        return NativeBlockRef(StableBlockIdentity.from_intervals(
+            tuple(NativeEaInterval(value, value + 1) for value in (ea, *origins)),
+            native_key=key, exact_instruction_eas=origins,
+        ))
+
+    source_ref = owner(0x1000, (0x1004, 0x1008))
+    false_ref = owner(0x2000, (0x2004,))
+    true_ref = owner(0x3000, (0x3004,))
+    original = BlockSnapshot(
+        0, 0, (1,), (), 0, 0x1000,
+        (
+            InsnSnapshot(1, 0x1004, (), kind=InsnKind.VALUE, raw_opcode=1),
+            InsnSnapshot(2, 0x1008, (), kind=InsnKind.GOTO, raw_opcode=2),
+        ),
+        kind=BlockKind.ONE_WAY, tail_kind=InsnKind.GOTO,
+    )
+    false_block = BlockSnapshot(1, 0, (), (0,), 0, 0x2000, ())
+    true_block = BlockSnapshot(2, 0, (), (), 0, 0x3000, ())
+    source_graph = FlowGraph({0: original, 1: false_block, 2: true_block}, 0, 0x1000)
+    plan = SimpleNamespace(
+        source_coordinates=((source_ref, 0), (false_ref, 1), (true_ref, 2)),
+        new_blocks=(),
+        steps=(PatchLowerConditionalStateTransition(
+            source_ref, false_ref, 0x1004,
+            SyntheticCounterBoundCondition(
+                counter_size=4, bound=100, counter_stkoff=56, counter_reg=None,
+                signed=True,
+            ),
+            false_ref, true_ref,
+        ),),
+    )
+    lowered = _project_lower_conditional_instructions(original, plan)
+    candidate = replace(
+        original, succs=(1, 2), insn_snapshots=lowered,
+        kind=BlockKind.TWO_WAY, tail_kind=InsnKind.COND_JUMP,
+        tail_opcode=lowered[-1].opcode, raw_tail_opcode=lowered[-1].raw_opcode,
+    )
+    graph = FlowGraph({0: candidate, 1: false_block, 2: true_block}, 0, 0x1000)
+    proposal = SimpleNamespace(
+        source_identity_catalog=model.SourceIdentityCatalog(
+            key, 0, (model.SourceBlockIdentityWitness(
+                source_ref, 0x1000, (0x1004, 0x1008),
+            ),),
+        ),
+        claims=(), route_evidence=None,
+    )
+
+    resolution = transaction_api._resolve_candidate_identities(
+        graph, proposal, plan=plan, source_graph=source_graph,
+        phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+    )
+    assert dict(resolution.serial_bindings) == {source_ref: 0}
+
+    forged = replace(candidate, insn_snapshots=(replace(lowered[-1], opcode=99),))
+    forged_resolution = transaction_api._resolve_candidate_identities(
+        FlowGraph({0: forged, 1: false_block, 2: true_block}, 0, 0x1000),
+        proposal, plan=plan, source_graph=source_graph,
+        phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+    )
+    assert dict(forged_resolution.serial_bindings) == {}
+
+
 def test_logical_clone_catalog_ref_is_not_labeled_as_function_exit() -> None:
     """Logical refs also name native clone occurrences; they are not exits."""
     from d810.transforms.cfg_transaction import LogicalBlockRef
@@ -4095,6 +4223,47 @@ def test_direct_observed_route_rewrite_preserves_anchor_subset_structurally():
         and cell.key.dimension is model.SafetyDimension.STRUCTURAL_ACCOUNTING
     )
     assert structural.state is model.ObligationState.SATISFIED
+
+
+def test_unmodified_native_block_generated_goto_keeps_exact_source_identity():
+    """A backend-only tail on an untouched source block is not a native row."""
+    from d810.ir.block_identity import NativeBlockRef, NativeEaInterval, StableBlockIdentity
+    from d810.ir.flowgraph import BlockKind, BlockSnapshot, ControlTransferKind, InsnKind, InsnSnapshot, MopSnapshot, OperandKind
+    from d810.transforms.unflatten_authority import producer_api, transaction_api
+
+    _source, proposal, _exclusion, refs = exact_fixture()
+    function_ea = 0x6000
+    owner = BlockSnapshot(
+        1, 0, (2,), (), 0, 0x6100,
+        (InsnSnapshot(4, 0x6100, (), kind=InsnKind.VALUE, raw_opcode=4),),
+        tail_opcode=4, kind=BlockKind.ONE_WAY, tail_kind=InsnKind.VALUE,
+        raw_tail_opcode=4,
+    )
+    ref = NativeBlockRef(StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x6100, 0x6104),),
+        native_key=refs[0].identity.native_key,
+        exact_instruction_eas=(0x6100,),
+    ))
+    plan = PatchPlan(
+        plan_id=proposal.plan_id,
+        source_generation=1,
+        source_coordinates=((ref, 1),),
+    )
+    projected = producer_api.observe_inventory_block(
+        owner, owner_ref=ref, owner_anchor_ea=owner.start_ea,
+    )
+    tail = InsnSnapshot(
+        55, function_ea, (),
+        l=MopSnapshot(kind=OperandKind.BLOCK, block_ref=owner.succs[0]),
+        kind=InsnKind.GOTO, raw_opcode=55,
+        control_transfer_kind=ControlTransferKind.GOTO,
+        is_unconditional_jump=True, native_ea=function_ea,
+    )
+    observed = replace(owner, insn_snapshots=(*owner.insn_snapshots, tail))
+    assert transaction_api._observed_unmodified_native_tail_origin(
+        observed, owner_ref=ref, plan=plan, projected=projected,
+        function_ea=function_ea,
+    ) == function_ea
 
 
 def test_direct_observed_validation_uses_one_inventory_without_reassessment(monkeypatch):

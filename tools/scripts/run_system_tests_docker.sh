@@ -160,14 +160,17 @@
 #                          wheel (.whl). Installing it skips the in-container clone,
 #                          toolchain install and C++ build entirely. Mutually exclusive
 #                          with D810_COBRA_ROOT; requires D810_COBRA_WHEEL_SHA256. The
-#                          accepted wheels are the PUBLISHED PyPI artifacts, kept in
-#                          _gitless/resource/cobra-wheels/0.1.5-published/.
+#                          default accepted wheels are the PUBLISHED 0.1.5
+#                          artifacts recorded in docker/cobra-bake/published_identity.
 #   D810_COBRA_WHEEL_SHA256  Required with D810_COBRA_WHEEL: 64 lowercase hex characters.
 #                          Must match both the bytes on disk and a wheel recorded in this
-#                          script; an unrecorded wheel is rejected before any docker run.
-#                          An identical filename does NOT imply identical bytes: the
-#                          preflight builds in ../0.1.5-preflight/ carry the same names
-#                          and sizes as the published wheels and are deliberately refused.
+#                          runner's identity tables; an unrecorded wheel is rejected
+#                          before any docker run. An identical filename does NOT imply
+#                          identical bytes: preflight builds of 0.1.5 share names and
+#                          sizes with the published wheels and are refused.
+#   D810_COBRA_CI_OVERLAY_IDENTITY  Optional absolute path to a published-wheel
+#                          table for explicit D810_COBRA_WHEEL mode only. It never
+#                          changes the baked-image identity or source-build pin.
 #   D810_COBRA_HARNESS_WHEEL_SHA256  TEST HARNESS ONLY. One extra accepted wheel
 #                          identity, so the unit tests can exercise wheel mode with a
 #                          committed fixture instead of a multi-megabyte artifact that
@@ -558,6 +561,56 @@ _cobra_load_published_identity() {
   fi
 }
 _cobra_load_published_identity
+# An explicit CI wheel may be newer than the wheel baked into the image. Keep
+# the bake/source pin above unchanged; this additional table authorizes only
+# the exact wheel bytes supplied by D810_COBRA_WHEEL. It is never consulted for
+# the default baked or source-built modes.
+_cobra_load_ci_overlay_identity() {
+  local file="$D810_COBRA_CI_OVERLAY_IDENTITY" arch sha version tag core parent wheel extra
+  local rows=0 release="" seen=" "
+  if [ -z "${D810_COBRA_WHEEL:-}" ]; then
+    echo "ERROR: D810_COBRA_CI_OVERLAY_IDENTITY requires D810_COBRA_WHEEL" >&2
+    exit 1
+  fi
+  if [[ "$file" != /* ]] || [ ! -r "$file" ]; then
+    echo "ERROR: D810_COBRA_CI_OVERLAY_IDENTITY must name an absolute readable file: $file" >&2
+    exit 1
+  fi
+  while read -r arch sha version tag core parent wheel extra; do
+    case "$arch" in ""|\#*) continue ;; esac
+    if [[ ! "$arch" =~ ^(aarch64|x86_64)$ ]] \
+      || [[ ! "$sha" =~ ^[0-9a-f]{64}$ ]] \
+      || [[ ! "$tag" =~ ^[0-9a-f]{40}$ ]] \
+      || [[ ! "$core" =~ ^[0-9a-f]{40}$ ]] \
+      || [[ ! "$parent" =~ ^[0-9a-f]{40}$ ]] \
+      || [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] \
+      || [ -n "$extra" ] \
+      || [[ "$wheel" != d810_cobra-${version}-cp313-cp313-*${arch}.whl ]]; then
+      echo "ERROR: malformed CoBRA CI overlay row in $file: $arch $sha" >&2
+      exit 1
+    fi
+    if [[ "$seen" == *" $arch "* ]]; then
+      echo "ERROR: duplicate CoBRA CI overlay architecture $arch in $file" >&2
+      exit 1
+    fi
+    if [ -n "$release" ] && [ "$release" != "$version|$tag|$core|$parent" ]; then
+      echo "ERROR: $file describes more than one CoBRA CI overlay release" >&2
+      exit 1
+    fi
+    release="$version|$tag|$core|$parent"
+    seen="$seen$arch "
+    COBRA_RECORDED_WHEELS="$COBRA_RECORDED_WHEELS
+$sha $version|$arch|$tag|$core"
+    rows=$((rows + 1))
+  done < "$file"
+  if [ "$rows" -eq 0 ]; then
+    echo "ERROR: $file names no CoBRA CI overlay wheels" >&2
+    exit 1
+  fi
+}
+if [ -n "${D810_COBRA_CI_OVERLAY_IDENTITY+x}" ]; then
+  _cobra_load_ci_overlay_identity
+fi
 COBRA_EXTENSION_ENABLED=1
 COBRA_SOURCE_MODE="pinned-remote"
 COBRA_PARENT_SOURCE_ID="$COBRA_SOURCE_REVISION"
@@ -696,7 +749,7 @@ if [ -n "${D810_COBRA_WHEEL+x}" ] || [ -n "${D810_COBRA_WHEEL_SHA256+x}" ]; then
       COBRA_WHEEL_IDENTITY="harness-fixture"
       echo "WARNING: D810_COBRA_HARNESS_WHEEL_SHA256 accepted $D810_COBRA_WHEEL as a TEST HARNESS fixture; it is not a published d810-cobra artifact and this run must not be treated as one" >&2
     else
-      echo "ERROR: D810_COBRA_WHEEL_SHA256 $D810_COBRA_WHEEL_SHA256 is not a recorded d810-cobra wheel; the accepted published wheels live in _gitless/resource/cobra-wheels/0.1.5-published/ (an identical filename does not imply identical bytes)" >&2
+      echo "ERROR: D810_COBRA_WHEEL_SHA256 $D810_COBRA_WHEEL_SHA256 is not a recorded d810-cobra wheel (an identical filename does not imply identical bytes)" >&2
       exit 1
     fi
   fi
@@ -2095,7 +2148,7 @@ fi
 # Forward every set D810_* env var to the container via docker -e flags.
 # Wrapper-only vars (those that only affect this script) are excluded.
 _d810_extra_env_flags() {
-  local _skip=" D810_DOCKER_IMAGE D810_DOCKER_MEMORY D810_EGGLOG_ROOT D810_COBRA_ROOT D810_COBRA_WHEEL D810_COBRA_WHEEL_SHA256 D810_COBRA_HARNESS_WHEEL_SHA256 D810_REPO_ROOT D810_WORKTREE_ROOT D810_MEMORY_LIMIT_BYTES D810_SYSTEM_BATCH_SIZE D810_REMOTE_DOCKER_HOST D810_REMOTE_VOLUME D810_REMOTE_SMB_SHARE D810_REMOTE_SHARE_ROOT D810_REMOTE_SMB_USER "
+  local _skip=" D810_DOCKER_IMAGE D810_DOCKER_MEMORY D810_EGGLOG_ROOT D810_COBRA_ROOT D810_COBRA_WHEEL D810_COBRA_WHEEL_SHA256 D810_COBRA_CI_OVERLAY_IDENTITY D810_COBRA_HARNESS_WHEEL_SHA256 D810_REPO_ROOT D810_WORKTREE_ROOT D810_MEMORY_LIMIT_BYTES D810_SYSTEM_BATCH_SIZE D810_REMOTE_DOCKER_HOST D810_REMOTE_VOLUME D810_REMOTE_SMB_SHARE D810_REMOTE_SHARE_ROOT D810_REMOTE_SMB_USER "
   local _out=""
   local _var _val
   for _var in ${!D810_@}; do

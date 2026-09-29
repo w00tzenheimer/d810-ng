@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
@@ -107,6 +108,7 @@ def _last_insn(block: object) -> object | None:
 def _is_valid_tail_goto_merge_candidate(
     cfg: FlowGraph,
     candidate: TailGotoMergeCandidate,
+    instruction_ea_counts: Mapping[int, int],
 ) -> bool:
     block = cfg.blocks.get(candidate.block_serial)
     successor = cfg.blocks.get(candidate.successor_serial)
@@ -127,7 +129,22 @@ def _is_valid_tail_goto_merge_candidate(
         return False
     if int(tail.ea) <= 0 or int(tail.ea) != int(candidate.insn_ea):
         return False
+    # Hex-Rays may clone a native instruction into multiple microcode blocks.
+    # A NOP keyed only by block serial and EA is not a safe merge when that EA
+    # has another live occurrence; deep cleaning can then change reachability
+    # beyond the fall-through edge certified by this candidate.
+    if instruction_ea_counts.get(int(candidate.insn_ea), 0) != 1:
+        return False
     return _tail_targets_successor(tail, candidate.successor_serial)
+
+
+def _instruction_ea_counts(cfg: FlowGraph) -> Mapping[int, int]:
+    return Counter(
+        int(insn.ea)
+        for block in cfg.blocks.values()
+        for insn in block.insn_snapshots
+        if int(insn.ea) > 0
+    )
 
 
 def collect_tail_goto_merge_candidates(
@@ -136,6 +153,7 @@ def collect_tail_goto_merge_candidates(
     """Collect validated tail-goto merge candidates from a FlowGraph."""
     if cfg is None:
         return ()
+    instruction_ea_counts = _instruction_ea_counts(cfg)
     candidates: list[TailGotoMergeCandidate] = []
     for block in cfg.blocks.values():
         if len(block.succs) != 1:
@@ -148,7 +166,7 @@ def collect_tail_goto_merge_candidates(
             successor_serial=int(block.succs[0]),
             insn_ea=int(tail.ea),
         )
-        if _is_valid_tail_goto_merge_candidate(cfg, candidate):
+        if _is_valid_tail_goto_merge_candidate(cfg, candidate, instruction_ea_counts):
             candidates.append(candidate)
     return tuple(candidates)
 
@@ -162,10 +180,15 @@ def extract_tail_goto_merge_candidates(
     raw_candidates = _coerce_tail_goto_merge_candidates(
         flow_graph.metadata.get(TAIL_GOTO_MERGE_METADATA_KEY)
     )
+    if not raw_candidates:
+        return ()
+    instruction_ea_counts = _instruction_ea_counts(flow_graph)
     return tuple(
         candidate
         for candidate in raw_candidates
-        if _is_valid_tail_goto_merge_candidate(flow_graph, candidate)
+        if _is_valid_tail_goto_merge_candidate(
+            flow_graph, candidate, instruction_ea_counts
+        )
     )
 
 

@@ -384,6 +384,7 @@ class TestNativePerfInstrumentation:
         # lifecycle methods touch is a no-op test double; provider selection,
         # begin/end, receipt logging, and event metadata remain production code.
         manager = object.__new__(D810Manager)
+        manager.instruction_optimizer_rules = []
         manager.start_profiling = lambda _event: None
         manager.stop_profiling = lambda _event: None
         manager._start_timer = lambda: None
@@ -482,6 +483,7 @@ class TestNativePerfInstrumentation:
         from d810.manager.manager import D810Manager
 
         manager = object.__new__(D810Manager)
+        manager.instruction_optimizer_rules = []
         manager.start_profiling = lambda _event: None
 
         def fail_stop_profiling(_event):
@@ -586,6 +588,7 @@ class TestNativePerfInstrumentation:
         )
 
         manager = object.__new__(D810Manager)
+        manager.instruction_optimizer_rules = []
         manager.start_profiling = lambda _event: None
         manager.stop_profiling = lambda _event: None
         manager._start_timer = lambda: None

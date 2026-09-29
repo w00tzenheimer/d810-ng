@@ -1081,6 +1081,17 @@
           ]
         }
       ],
+      "handoffs": [
+        {
+          "source_offset": "0x17B8",
+          "state": "0x6FC4ECF1",
+          "intermediate_offset": "0x9D",
+          "intermediate_state": "0x2399290D",
+          "final_target_offsets": [
+            "0xECC"
+          ]
+        }
+      ],
       "effects": [],
       "exits": [],
       "assumptions": [

@@ -2158,6 +2158,15 @@ class TestIDAIntegration:
             _factory,
         )
 
+        from d810.hexrays.mutation import cfg_verify
+
+        verified: list[tuple[object, str]] = []
+        monkeypatch.setattr(
+            cfg_verify,
+            "safe_verify",
+            lambda mba, reason: verified.append((mba, reason)),
+        )
+
         backend = IDAIRTranslator()
         patch_plan = _compile_test_patch_plan(
             [
@@ -2192,6 +2201,14 @@ class TestIDAIntegration:
             expected_clones,
             550,
         )
+        apply_kwargs = next(
+            call[1] for call in created[0].calls if call[0] == "apply"
+        )
+        assert apply_kwargs["defer_post_apply_maintenance"] is True
+        apply_kwargs["post_apply_hook"]()
+        assert verified == [
+            (created[0].mba, "before corridor-clone authority observation")
+        ]
 
     def test_compile_insert_requires_exact_source_graph(
         self,

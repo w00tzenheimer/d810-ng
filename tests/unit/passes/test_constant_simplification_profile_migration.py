@@ -27,6 +27,7 @@ LEGACY_KEYS = {
     "persist_global_const_annotations",
 }
 EXPECTED_MEMORY_POLICIES = {
+    "cobra_budgeted_vmexecute_e2e.json": AGGRESSIVE_MEMORY_POLICY,
     "constant_stage_controls.json": AGGRESSIVE_MEMORY_POLICY,
     "dead_store_elimination_fixture.json": AGGRESSIVE_MEMORY_POLICY,
     "default_constants_and_mba_simplifiers.json": AGGRESSIVE_MEMORY_POLICY,

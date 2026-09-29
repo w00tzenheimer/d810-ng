@@ -8,7 +8,7 @@ from d810.hexrays.expr.ast import AstConstant, AstLeaf, AstNode
 from d810.hexrays.ir.mop_utils import mop_to_ast
 from d810.backends.ast.z3 import Z3MopProver
 from d810.core import getLogger
-from d810.analyses.flag_predicates import flags_compare_zero_is_taken
+from d810.analyses.flag_predicates import flags_compare_constant_is_taken
 from d810.optimizers.microcode.flow.jumps.handler import JumpOptimizationRule
 
 
@@ -915,7 +915,7 @@ _FLAGS_READ_HELPERS = frozenset({"__readeflags", "__readflags"})
 
 
 class JmpRuleFlagsOpaquePredicate(JumpOptimizationRule):
-    """Decide ``jz``/``jnz`` against a full flags read compared with zero.
+    """Decide ``jz``/``jnz`` against impossible full-flags literals.
 
     ``pushfq; pop rax; test rax, rax; jz`` is an opaque predicate: RFLAGS bit 1
     is architecturally always 1, so the register is never zero. See
@@ -948,20 +948,23 @@ class JmpRuleFlagsOpaquePredicate(JumpOptimizationRule):
         if blk is None or blk.nextb is None:
             return None
 
-        # One side must be the flags read, the other a literal zero. Accept
-        # either order; the obfuscator emits `test rax, rax` but the microcode
-        # normalises to a compare against #0 whose operand order is not fixed.
+        # One side must be the flags read and the other an exact literal.
+        # Accept either order; Hex-Rays does not fix the operand order.
         left, right = instruction.l, instruction.r
-        if _is_zero_constant(right) and _is_flags_read(blk, instruction, left):
-            pass
-        elif _is_zero_constant(left) and _is_flags_read(blk, instruction, right):
-            pass
+        right_constant = _literal_constant(right)
+        left_constant = _literal_constant(left)
+        if right_constant is not None and _is_flags_read(blk, instruction, left):
+            constant = right_constant
+        elif left_constant is not None and _is_flags_read(blk, instruction, right):
+            constant = left_constant
         else:
             return None
 
-        taken = flags_compare_zero_is_taken(
-            equal_test=(instruction.opcode == ida_hexrays.m_jz)
+        taken = flags_compare_constant_is_taken(
+            constant, equal_test=(instruction.opcode == ida_hexrays.m_jz)
         )
+        if taken is None:
+            return None
         target = int(instruction.d.b) if taken else int(blk.nextb.serial)
         # Announce the decision. The framework's "Rule %s matched" line does not
         # reach the dump on this path, and a fold nobody can attribute is a fold
@@ -969,10 +972,11 @@ class JmpRuleFlagsOpaquePredicate(JumpOptimizationRule):
         # constant-fold verdicts.
         if _opaque_logger.debug_on:
             _opaque_logger.debug(
-                "flags-opaque-predicate: blk[%d] %s vs #0 -> %s, goto blk[%d] "
+                "flags-opaque-predicate: blk[%d] %s vs #0x%X -> %s, goto blk[%d] "
                 "(ea=0x%X)",
                 int(blk.serial),
                 "jz" if instruction.opcode == ida_hexrays.m_jz else "jnz",
+                constant,
                 "always taken" if taken else "never taken",
                 target,
                 int(getattr(instruction, "ea", 0) or 0),
@@ -980,10 +984,10 @@ class JmpRuleFlagsOpaquePredicate(JumpOptimizationRule):
         return self._make_goto_ins(instruction, target)
 
 
-def _is_zero_constant(mop) -> bool:
+def _literal_constant(mop) -> int | None:
     if mop is None or mop.t != ida_hexrays.mop_n:
-        return False
+        return None
     try:
-        return int(mop.nnn.value) == 0
+        return int(mop.nnn.value)
     except Exception:
-        return False
+        return None

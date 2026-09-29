@@ -1046,6 +1046,66 @@ def test_decision_dag_route_fact_binds_unique_predecessor_state_write_to_goto_de
     assert revoked.physical_state_write is mismatched
 
 
+@pytest.mark.parametrize(
+    "mutation", ("assert_only", "overwritten", "partial_overwrite", "nested_call"),
+)
+def test_current_physical_state_write_rejects_nonexecuting_or_stale_value(
+    mutation: str,
+) -> None:
+    state = 7
+    first = _mov(0x1100, _num(state), _stk(_STATE_OFF))
+    if mutation == "assert_only":
+        writes = (replace(first, is_assert=True),)
+    elif mutation == "overwritten":
+        writes = (first, _mov(0x1104, _num(9), _stk(_STATE_OFF)))
+    elif mutation == "partial_overwrite":
+        writes = (first, _mov(
+            0x1104, replace(_num(9), size=1),
+            replace(_stk(_STATE_OFF + 1), size=1),
+        ))
+    else:
+        writes = (first, _mov(
+            0x1104,
+            MopSnapshot(kind=OperandKind.SUBINSN, size=4, sub_kind=InsnKind.CALL),
+            _reg(8),
+        ))
+    graph = FlowGraph({
+        1: _blk(1, (2,), (), writes, ea=0x1100),
+        2: _blk(2, (3,), (1,), (_goto(0x1200, 3),), ea=0x1200),
+        3: _blk(3, (), (2,), (), ea=0x1300),
+    }, entry_serial=1, func_ea=0x1000)
+    identity = StorageIdentity(StorageIdentityKind.STACK, _STATE_OFF)
+    assert minimal_state_recovery._native_bound_physical_state_write_witness(
+        graph, source_serial=1, state_identity=identity, state_constant=state,
+    ) is None
+    assert minimal_state_recovery._unique_predecessor_state_write_delivery(
+        graph, delivery_serial=2, state_identity=identity, state_constant=state,
+    ) is None
+    assert minimal_state_recovery._partition_owner_state_write_delivery(
+        graph, owner_serial=1, delivery_serial=2,
+        state_identity=identity, state_constant=state,
+    ) is None
+    assert not minimal_state_recovery._has_exact_current_direct_state_write(
+        StateWriteTransition(1, state, 3, False, None), graph,
+        state_identity=identity, entry_serial=2,
+    )
+    assert not minimal_state_recovery._source_materializes_exact_transition_state(
+        StateWriteTransition(1, state, 3, False, None), graph,
+        state_var_stkoff=_STATE_OFF, state_var_reg=None,
+    )
+
+
+def test_assertion_is_not_a_source_local_register_assignment() -> None:
+    graph = FlowGraph({
+        1: _blk(1, (), (), (
+            replace(_mov(0x1100, _num(7), _reg(8)), is_assert=True),
+        ), ea=0x1100),
+    }, entry_serial=1, func_ea=0x1000)
+    assert minimal_state_recovery._source_local_constant_register_write(
+        graph, 1, 8,
+    ) is None
+
+
 @pytest.mark.parametrize("mutation", ("two_predecessors", "nonreciprocal", "wrong_state"))
 def test_predecessor_state_write_requires_unique_reciprocal_exact_assignment(
     mutation: str,
@@ -8316,6 +8376,27 @@ def test_valid_normalizer_still_chains_when_it_is_also_a_transition_source() -> 
     )
 
     assert tuple(int(row.target_handler) for row in resolved) == (19, 19)
+
+
+def test_live_state_normalizer_remains_a_separate_transition_source() -> None:
+    graph, dag = _typed_state_route_reconciliation_fixture()
+    incoming = _coarse_transition(14, 0x1BABC1DC, 2)
+    normalizer_row = _coarse_transition(2, 0x1939CB36, 19)
+
+    resolved = resolve_materialized_indirect_transfer_targets(
+        (incoming, normalizer_row),
+        graph,
+        _dispatcher({}, exit_block=99),
+        (),
+        condition_chain_dag=dag,
+        condition_chain_handlers=frozenset({2, 13, 15, 19}),
+        state_var_stkoff=_STATE_OFF,
+        live_state_normalizer_sources=frozenset({2}),
+    )
+
+    assert tuple(int(row.write_block) for row in resolved) == (14, 2)
+    assert tuple(int(row.target_handler) for row in resolved) == (2, 19)
+    assert all(row.semantic_route_fact is not None for row in resolved)
 
 
 def test_outside_interval_routes_through_surviving_effectful_handler() -> None:

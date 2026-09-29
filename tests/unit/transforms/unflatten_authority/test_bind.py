@@ -23020,6 +23020,57 @@ def test_state_transform_helper_corridor_selects_only_exact_cloned_feeder() -> N
         )
 
 
+def test_state_dag_helper_corridor_selects_its_physical_predecessor() -> None:
+    """Sibling clones of one feeder must not claim each other's DAG proof."""
+    from d810.transforms.unflatten_authority.proposal import (
+        canonical_patch_step_descriptors,
+    )
+
+    authority, original_plan, inventory, *_ = _compiler_corridor_unsupported_case(
+        proof_kind=route_model.SemanticRouteProofKind.STATE_DAG,
+    )
+    original = original_plan.steps[0]
+    assert type(original).__name__ == "PatchEdgeSplitCorridor"
+    refs = {row.serial: row.block_ref for row in inventory.blocks}
+    matching = replace(original, via_pred=refs[5])
+    sibling = replace(original, via_pred=refs[3])
+    plan = replace(original_plan, steps=(sibling, matching))
+    descriptors = canonical_patch_step_descriptors(plan)
+    proof = replace(
+        authority.proposal.route_evidence.route_proofs[0],
+        source_owner_identity=refs[5].identity,
+        source_owner_anchor_ea=0x2000,
+    )
+    claim = next(
+        row for row in authority.proposal.claims
+        if type(row) is model.EquivalentSemanticRouteClaim
+    )
+    index = bind._LineageFactGroupIndex(tuple(
+        bind._LineageFactGroupEntry(descriptor, (), (), None)
+        for descriptor in descriptors
+    ))
+
+    selected = bind._select_lineage_fact_group(
+        index, plan=plan, claim=claim, proof=proof,
+        source_inventory=inventory,
+    )
+    assert selected.descriptor.step_index == 1
+
+    duplicate_plan = replace(original_plan, steps=(matching, matching))
+    duplicate_index = bind._LineageFactGroupIndex(tuple(
+        bind._LineageFactGroupEntry(descriptor, (), (), None)
+        for descriptor in canonical_patch_step_descriptors(duplicate_plan)
+    ))
+    with pytest.raises(
+        bind._LineageFactViolation,
+        match="ambiguous owning step groups",
+    ):
+        bind._select_lineage_fact_group(
+            duplicate_index, plan=duplicate_plan, claim=claim, proof=proof,
+            source_inventory=inventory,
+        )
+
+
 def test_state_transform_helper_corridor_realizes_exact_cloned_feeder() -> None:
     authority, plan, source, projected, facts, attempt = (
         _compiler_corridor_unsupported_case(

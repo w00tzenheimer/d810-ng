@@ -11,6 +11,7 @@ import pytest
 
 from d810.analyses.flag_predicates import (
     RFLAGS_RESERVED_SET_BIT,
+    flags_compare_constant_is_taken,
     flags_compare_zero_is_taken,
     flags_register_can_be_zero,
 )
@@ -46,3 +47,15 @@ def test_the_two_directions_disagree():
     assert flags_compare_zero_is_taken(equal_test=True) is not (
         flags_compare_zero_is_taken(equal_test=False)
     )
+
+
+@pytest.mark.parametrize("constant", [0, 1, 0x7BD1407885BAC00])
+def test_flags_equality_with_bit_one_clear_is_impossible(constant):
+    assert flags_compare_constant_is_taken(constant, equal_test=True) is False
+    assert flags_compare_constant_is_taken(constant, equal_test=False) is True
+
+
+@pytest.mark.parametrize("constant", [2, 3, 0x7BD1407885BAC02])
+def test_flags_equality_with_bit_one_set_remains_undecided(constant):
+    assert flags_compare_constant_is_taken(constant, equal_test=True) is None
+    assert flags_compare_constant_is_taken(constant, equal_test=False) is None

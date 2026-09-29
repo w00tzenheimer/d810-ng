@@ -15,6 +15,7 @@ directory is the tracked, reviewable half of that arrangement:
 | file | role |
 |-|-|
 | `published_identity` | **the single source of truth**: version, per-arch wheel name + sha256, tag/core/parent commits. Nothing else declares them |
+| `ci_overlay_identity` | exact published 0.1.7 wheel identities for an explicit system-test override; it does not change the image bake or default source pin |
 | `cobra_identity.sh` | reads `published_identity` into shell variables, plus the label comparison; sourced by the image build script |
 | `stage_cobra_bake_context.sh` | copies the one architecture-matching published wheel, its `SHA256SUMS` line and the verifier into a Docker build context |
 | `verify_cobra_install.py` | manifest + compiled-extension import + known-answer solve + identity assertions; run by the bake step, by the build script's verification table, and by hand |
@@ -54,6 +55,17 @@ when nothing is.
 builds. The runner refuses a baked image whose `parent_commit` does not equal
 its own pin, so a baked run and a source-built run always describe the same
 upstream code.
+
+## Explicit CI wheel overlay
+
+The ARM64 system-test jobs download the published 0.1.7 wheel named in
+`ci_overlay_identity`, verify its SHA-256, and pass its absolute path and digest
+to the Docker runner. With `D810_COBRA_CI_OVERLAY_IDENTITY` set, the runner
+accepts those exact wheel bytes only in explicit `D810_COBRA_WHEEL` mode. It
+still checks the container architecture and installed package. Without those
+variables, the image's 0.1.5 bake and the pinned source-build behavior are
+unchanged. This deliberately avoids relabeling an existing 0.1.5 image as
+0.1.7.
 
 ## The two wheel identities
 

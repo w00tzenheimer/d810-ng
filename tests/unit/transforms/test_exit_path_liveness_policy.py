@@ -1,3 +1,5 @@
+from dataclasses import replace
+
 from d810.ir.flowgraph import (
     BlockSnapshot,
     FlowGraph,
@@ -8,8 +10,19 @@ from d810.ir.flowgraph import (
     PredicateKind,
 )
 from d810.transforms.exit_path_liveness_policy import (
+    _block_gen_kill,
     exit_path_blocks_live_violations,
 )
+
+
+def test_assertion_does_not_kill_live_stack_value() -> None:
+    block = _b(1, (), (), (
+        replace(_mov_const(0x1000, _LIVE, 7), is_assert=True),
+        _use_stk(0x1004, _LIVE),
+    ))
+    generated, killed = _block_gen_kill(block, _STATE)
+    assert ("stk", _LIVE) in generated
+    assert ("stk", _LIVE) not in killed
 
 
 _OP_MOV = 4

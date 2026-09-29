@@ -752,18 +752,13 @@ def _native_bound_physical_state_write_witness(
     if block is None:
         return None
     expected = int(state_constant) & 0xFFFFFFFF
-    candidates: list[InsnSnapshot] = []
-    for snapshot in block.insn_snapshots:
-        if _is_exact_u32_literal_state_move(
-            snapshot,
-            state_identity=state_identity,
-            state_constant=expected,
-        ):
-            candidates.append(snapshot)
-    if len(candidates) != 1:
+    write = _unique_current_physical_u32_state_move(
+        block, state_identity=state_identity, state_constant=expected,
+    )
+    if write is None:
         return None
     return SemanticPhysicalStateWriteWitness(
-        _instruction_projection(candidates[0]),
+        _instruction_projection(write),
         state_identity,
         4,
         expected,
@@ -791,6 +786,56 @@ def _is_exact_u32_literal_state_move(
         and (int(instruction.inputs[0].offset) & 0xFFFFFFFF)
         == (int(state_constant) & 0xFFFFFFFF)
     )
+
+
+def _unique_current_physical_u32_state_move(
+    block: BlockSnapshot,
+    *,
+    state_identity: StorageIdentity,
+    state_constant: int,
+) -> InsnSnapshot | None:
+    """Find one executable literal write that remains current at block exit.
+
+    The structural predicate above also recognizes IDA assertion facts by
+    design.  A physical witness must exclude them and any later state clobber.
+    """
+    matches = tuple(
+        (index, snapshot)
+        for index, snapshot in enumerate(block.insn_snapshots)
+        if not snapshot.is_assert
+        and _is_exact_u32_literal_state_move(
+            snapshot,
+            state_identity=state_identity,
+            state_constant=state_constant,
+        )
+    )
+    if len(matches) != 1:
+        return None
+    index, write = matches[0]
+    suffix = tuple(
+        snapshot for snapshot in block.insn_snapshots[index + 1:]
+        if not snapshot.is_assert
+    )
+    try:
+        if project_instruction_effect_sites(replace(block, insn_snapshots=suffix)):
+            return None
+    except (TypeError, ValueError, OverflowError):
+        return None
+    for later in suffix:
+        instruction = project_instruction(later)
+        result_identity = storage_identity_from_varnode(instruction.result)
+        if (
+            instruction.result is not None
+            and result_identity is not None
+            and result_identity.kind is state_identity.kind
+            and int(instruction.result.offset) < int(state_identity.offset) + 4
+            and int(instruction.result.offset) + int(instruction.result.size)
+            > int(state_identity.offset)
+        ):
+            return None
+        if later.kind in {InsnKind.CALL, InsnKind.STORE, InsnKind.UNKNOWN}:
+            return None
+    return write
 
 
 def _unique_predecessor_state_write_delivery(
@@ -824,21 +869,15 @@ def _unique_predecessor_state_write_delivery(
     ):
         return None
     expected = int(state_constant) & 0xFFFFFFFF
-    writes = tuple(
-        snapshot
-        for snapshot in predecessor.insn_snapshots
-        if _is_exact_u32_literal_state_move(
-            snapshot,
-            state_identity=state_identity,
-            state_constant=expected,
-        )
+    write = _unique_current_physical_u32_state_move(
+        predecessor, state_identity=state_identity, state_constant=expected,
     )
-    if len(writes) != 1:
+    if write is None:
         return None
     return (
         delivery_snapshot,
         SemanticPhysicalStateWriteWitness(
-            _instruction_projection(writes[0]),
+            _instruction_projection(write),
             state_identity,
             4,
             expected,
@@ -895,21 +934,15 @@ def _partition_owner_state_write_delivery(
     if delivery_snapshot is None:
         return None
     expected = int(state_constant) & 0xFFFFFFFF
-    writes = tuple(
-        snapshot
-        for snapshot in owner.insn_snapshots
-        if _is_exact_u32_literal_state_move(
-            snapshot,
-            state_identity=state_identity,
-            state_constant=expected,
-        )
+    write = _unique_current_physical_u32_state_move(
+        owner, state_identity=state_identity, state_constant=expected,
     )
-    if len(writes) != 1:
+    if write is None:
         return None
     return (
         delivery_snapshot,
         SemanticPhysicalStateWriteWitness(
-            _instruction_projection(writes[0]),
+            _instruction_projection(write),
             state_identity,
             4,
             expected,
@@ -1246,6 +1279,8 @@ def _source_local_constant_register_write(
         return None
     result: int | None = None
     for instruction in block.insn_snapshots:
+        if instruction.is_assert:
+            continue
         left, _right, destination = operand_storages(instruction)
         if _reg_of(destination) != int(state_var_reg):
             continue
@@ -5205,6 +5240,7 @@ def _route_u32_state_through_decision_dag(
     entry_serial: int | None = None,
     semantic_transition_sources: frozenset[int] = frozenset(),
     semantic_handler_entries: frozenset[int] = frozenset(),
+    live_state_normalizer_sources: frozenset[int] = frozenset(),
 ) -> _DecisionDagStateRoute | None:
     """Route one transition state from its exact comparison entry."""
 
@@ -5385,6 +5421,11 @@ def _route_u32_state_through_decision_dag(
             step.valid
             and target in semantic_handler_entries
             and (
+                (
+                    target in live_state_normalizer_sources
+                    and target in semantic_transition_sources
+                )
+                or
                 via_block is None
                 or step.feeder_serial is None
                 or int(via_block) != int(step.feeder_serial)
@@ -5427,6 +5468,7 @@ def _route_state_through_decision_dag(
     entry_serial: int | None = None,
     semantic_transition_sources: frozenset[int] = frozenset(),
     semantic_handler_entries: frozenset[int] = frozenset(),
+    live_state_normalizer_sources: frozenset[int] = frozenset(),
 ) -> _DecisionDagStateRoute | None:
     """Route one typed transition through the current decision DAG."""
     if transition.next_state is None:
@@ -5437,6 +5479,7 @@ def _route_state_through_decision_dag(
         via_block=transition.via_block, entry_serial=entry_serial,
         semantic_transition_sources=semantic_transition_sources,
         semantic_handler_entries=semantic_handler_entries,
+        live_state_normalizer_sources=live_state_normalizer_sources,
     )
 
 
@@ -5914,16 +5957,11 @@ def _has_exact_current_direct_state_write(
         or int(source.serial) not in tuple(int(item) for item in entry.preds)
     ):
         return False
-    matches = tuple(
-        snapshot
-        for snapshot in source.insn_snapshots
-        if _is_exact_u32_literal_state_move(
-            snapshot,
-            state_identity=state_identity,
-            state_constant=int(transition.next_state),
-        )
-    )
-    return len(matches) == 1
+    return _unique_current_physical_u32_state_move(
+        source,
+        state_identity=state_identity,
+        state_constant=int(transition.next_state),
+    ) is not None
 
 
 def _fresh_load_leaf_transition_has_direct_entry(
@@ -5980,17 +6018,11 @@ def _source_materializes_exact_transition_state(
     source = flow_graph.get_block(int(transition.write_block))
     if source is None:
         return False
-    matches = tuple(
-        snapshot
-        for snapshot in source.insn_snapshots
-        if not snapshot.is_assert
-        and _is_exact_u32_literal_state_move(
-            snapshot,
-            state_identity=state_identity,
-            state_constant=int(transition.next_state),
-        )
-    )
-    return len(matches) == 1
+    return _unique_current_physical_u32_state_move(
+        source,
+        state_identity=state_identity,
+        state_constant=int(transition.next_state),
+    ) is not None
 
 
 def _reconcile_transition_routes_with_decision_dag(
@@ -6008,6 +6040,7 @@ def _reconcile_transition_routes_with_decision_dag(
     state_var_reg: int | None,
     candidate_prefix_authority: CandidateScopedPrefixAuthority | None = None,
     exact_u32_route_receipt: ExactU32DispatcherRouteReceipt | None = None,
+    live_state_normalizer_sources: frozenset[int] = frozenset(),
 ) -> tuple[StateWriteTransition, ...] | None:
     """Recompute each concrete route from immutable source/DAG evidence."""
 
@@ -6126,6 +6159,7 @@ def _reconcile_transition_routes_with_decision_dag(
         int(transition.write_block)
         for transition in transitions
         if transition.next_state is not None
+        or int(transition.write_block) in live_state_normalizer_sources
     )
     fully_partitioned_transform_glues = _fully_partitioned_state_transform_glues(
         transitions,
@@ -6214,6 +6248,7 @@ def _reconcile_transition_routes_with_decision_dag(
                     entry_serial=int(route_authority_dag.root),
                     semantic_transition_sources=semantic_transition_sources,
                     semantic_handler_entries=condition_chain_handlers,
+                    live_state_normalizer_sources=live_state_normalizer_sources,
                 )
             )
             if route_fact is None:
@@ -6734,6 +6769,7 @@ def _reconcile_transition_routes_with_decision_dag(
                 entry_serial=route_entry,
                 semantic_transition_sources=frozenset(route_transition_sources),
                 semantic_handler_entries=condition_chain_handlers,
+                live_state_normalizer_sources=live_state_normalizer_sources,
             )
         )
         if route is None or effective.next_state is None:
@@ -7426,6 +7462,7 @@ def resolve_materialized_indirect_transfer_targets(
     state_var_reg: int | None = None,
     candidate_prefix_authority: CandidateScopedPrefixAuthority | None = None,
     exact_u32_route_receipt: ExactU32DispatcherRouteReceipt | None = None,
+    live_state_normalizer_sources: frozenset[int] = frozenset(),
 ) -> tuple[StateWriteTransition, ...]:
     """Reconnect concrete router misses using resolver-materialization proof.
 
@@ -7467,6 +7504,7 @@ def resolve_materialized_indirect_transfer_targets(
             state_var_reg=state_var_reg,
             candidate_prefix_authority=candidate_prefix_authority,
             exact_u32_route_receipt=exact_u32_route_receipt,
+            live_state_normalizer_sources=live_state_normalizer_sources,
         )
         if reconciled is None:
             materialized_midtree_refinement = bool(
