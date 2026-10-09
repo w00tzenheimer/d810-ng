@@ -10,6 +10,23 @@
         "logoPath": "resources/d810ng-logo.png",
         "idaVersions": ">=9.0",
         "description": "D810-ng (Next Generation) is an updated, tested, refactored, and optimized IDA Pro plugin that serves as a framework and deobfuscation harness used to deobfuscate code at decompilation time by modifying IDA Pro microcode.",
-        "version": "0.6.6"
+        "version": "0.6.6",
+        "urls": {
+            "repository": "https://github.com/w00tzenheimer/d810-ng"
+        },
+        "authors": [
+            {
+                "name": "w00tzenheimer",
+                "email": "w00tzenheimer@gmail.com"
+            },
+            {
+                "name": "Mahmoud Abdelkader",
+                "email": "mabdelkader@gmail.com"
+            },
+            {
+                "name": "Boris Batteux",
+                "email": "boris.batteux@eshard.com"
+            }
+        ]
     }
 }
