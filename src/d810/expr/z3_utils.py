@@ -429,8 +429,10 @@ def z3_check_mop_inequality(
     mop2: ida_hexrays.mop_t | None,
     solver: z3.Solver | None = None,
 ) -> bool:
+    # Unequality must be proven; when it cannot be established, report False
+    # so callers keep the original control flow instead of removing branches.
     if mop1 is None or mop2 is None:
-        return True
+        return False
     # Convert MopSnapshot to mop_t at boundary
     if isinstance(mop1, MopSnapshot):
         mop1 = mop1.to_mop()
@@ -440,10 +442,10 @@ def z3_check_mop_inequality(
     # Invalid/freed SWIG objects will not have essential attributes
     if not hasattr(mop1, 't') or not hasattr(mop1, 'size'):
         logger.warning("z3_check_mop_inequality: mop1 is invalid or freed SWIG object")
-        return True
+        return False
     if not hasattr(mop2, 't') or not hasattr(mop2, 'size'):
         logger.warning("z3_check_mop_inequality: mop2 is invalid or freed SWIG object")
-        return True
+        return False
     # TODO(w00tzenheimer): should we use this?
     # if mop1.t == mop2.t and mop1.size == mop2.size:
     #     # Quick negatives when structure same.
@@ -489,7 +491,7 @@ def z3_check_mop_inequality(
         return cached
     exprs = mop_list_to_z3_expression_list([mop1, mop2])
     if len(exprs) != 2:
-        return True
+        return False
     z3_mop1, z3_mop2 = exprs
     _solver = solver if solver is not None else get_solver()
     _solver.push()
