@@ -79,6 +79,7 @@ class OllvmDispatcherInfo(GenericDispatcherInfo):
                 and mb.tail.opcode in FLATTENING_JUMP_OPCODES
             ):
                 if mb.tail.r.t != ida_hexrays.mop_n:
+                    mb = mb.nextb
                     continue
                 if mb.tail.l.t == ida_hexrays.mop_r or (
                     mb.tail.l.t == ida_hexrays.mop_d and mb.tail.l.d.opcode == ida_hexrays.m_and
