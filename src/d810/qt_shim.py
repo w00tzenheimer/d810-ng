@@ -32,7 +32,6 @@ Usage:
 
 from __future__ import annotations
 
-import pathlib
 import sys
 from d810.core.typing import Any, Literal, Union, cast
 
@@ -48,24 +47,28 @@ def _is_ida_gui_available() -> bool:
     - Running in headless IDA (idat64/idat32)
     - Running via idalib/idapro module
     - Running in pytest or other non-GUI environment
+
+    Detection relies on ``idaapi.is_idaq()`` instead of the name of
+    ``sys.executable``: when IDAPython runs from a virtual environment,
+    ``sys.executable`` points to ``python.exe`` rather than ``ida64.exe``.
     """
-    exec_name = pathlib.Path(sys.executable).name.lower()
-
-    # Check if we're in IDA at all
-    in_ida = exec_name.startswith("ida")
-    if not in_ida:
-        return False
-
     try:
         import idaapi
     except ImportError:
         return False
 
-    return idaapi.is_idaq()
+    try:
+        return bool(idaapi.is_idaq())
+    except AttributeError:
+        return False
 
 
 # Skip Qt imports entirely if not in GUI mode
 _QT_AVAILABLE = _is_ida_gui_available()
+
+# Populated with the sip module when the PyQt5 binding is active. IDA's
+# bundled PyQt5 does not always ship the sip submodule, so it may stay None.
+sip: Any = None
 
 
 # Version detection constants (similar to six.PY2, six.PY3)
@@ -575,7 +578,16 @@ else:
     except ImportError:
         # Fall back to PyQt5 (IDA 9.1, Qt5)
         try:
-            from PyQt5 import QtCore, QtGui, QtWidgets, sip
+            from PyQt5 import QtCore, QtGui, QtWidgets
+
+            try:
+                from PyQt5 import sip
+            except ImportError:
+                try:
+                    import sip as sip
+                except ImportError:
+                    sip = None
+
             from PyQt5.QtCore import QEvent, QObject, Qt, QTimer
             from PyQt5.QtGui import (
                 QBrush,
@@ -586,6 +598,7 @@ else:
                 QKeyEvent,
                 QKeySequence,
                 QPalette,
+                QPixmap,
                 QStandardItem,
                 QStandardItemModel,
                 QTextCursor,
@@ -607,7 +620,6 @@ else:
                 QMainWindow,
                 QMenu,
                 QMessageBox,
-                QPixmap,
                 QPushButton,
                 QScrollArea,
                 QShortcut,
@@ -836,8 +848,13 @@ def wrapinstance(ptr: int, base) -> object:
     """
     if QT6:
         return shiboken6.wrapInstance(ptr, base)  # type: ignore[name-defined]
-    else:
-        return sip.wrapinstance(ptr, base)  # type: ignore[name-defined]
+    if sip is None:
+        raise RuntimeError(
+            "PyQt5's sip module is not available; cannot wrap a C++ pointer "
+            "as a Qt object. Install a compatible PyQt5/sip build or use a "
+            "Qt binding that provides shiboken."
+        )
+    return sip.wrapinstance(ptr, base)  # type: ignore[union-attr]
 
 
 # Set up compatibility shims immediately upon import
